@@ -789,6 +789,23 @@ fn thread_bounded(
             let rbindings = db.push_list(rpairs);
             Some((db.push_list(vec![let_head, rbindings, rbody]), cur))
         }
+        // A NESTED `handle` in the handled body — handlers COMPOSE inside-out. Reduce the inner handle
+        // recursively (`reduce_handle`), which discharges ITS OWN effect and rewrites its performs to
+        // plain code; the result may still perform the OUTER effect (an effect the inner handler does not
+        // discharge), which we then thread under the OUTER context. So `(handle_B … (handle_A … body))`
+        // folds `A` away first, leaving `B` performs for `B`'s fold. The inner reduction is
+        // self-contained (it threads its OWN init/state); its result is a value in the OUTER context, so
+        // the outer state passes THROUGH unchanged at this node (the inner handle's own state is not the
+        // outer's). This is what makes two nested intra-program handlers work.
+        Resolved::Handle {
+            init: inner_init,
+            arms: inner_arms,
+            body: inner_body,
+        } => {
+            let reduced = reduce_handle(db, inner_init, &inner_arms, inner_body)?;
+            // Thread the reduced result (which may still perform the outer effect) under the outer ctx.
+            thread_bounded(db, reduced, state, ctx, inline_depth)
+        }
         // An ordinary application / arithmetic / comparison / connective / `not` over sub-expressions:
         // thread state through the operands in left-to-right order, rebuilding the same head. This
         // covers `(+ (E.op) 1)`, `(List.push s (E.op))`, etc. The head itself is not a perform (that

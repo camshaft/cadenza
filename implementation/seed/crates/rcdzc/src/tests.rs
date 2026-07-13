@@ -4254,13 +4254,14 @@ mod match_engine {
 
     #[test]
     fn a_list_push_extends_and_its_runtime_length_counts() {
-        // `List.push(l, x)` appends `x`, building a new persistent list on the `vec-*` heap. The result
-        // is NOT a compile-time-visible literal (it is a `Core::ListPush`), so `List.len` of it does NOT
-        // fold — it emits the runtime `vec-len`. So `(List.len (List.push (list 1 2 3) 4))` exercises the
-        // full runtime path: the literal `(list 1 2 3)` bulk-builds (a flat `arr` + one `vec-of-arr`),
-        // then `vec-push` appends the 4, then `vec-len` → 4.
+        // `List.push(l, x)` appends `x`, building a new persistent list on the `vec-*` heap. To exercise
+        // the RUNTIME `vec-push` (not the constant fold — a constant `(list …)` + `push` now folds to a
+        // literal), the base list is BUILT at run time by a push-loop (`build 0 3 (list)` = `[0 1 2]`),
+        // so `List.push` sees a runtime list handle; then `vec-len` counts 3 + 1 = 4.
         let Some(out) = run_on_heap(
-            "(module m (def (main) ((. List len) ((. List push) (list 1 2 3) 4))) (export main))",
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) ((. List len) ((. List push) (build 0 3 (list)) 9))) (export main))",
         ) else {
             eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
             return;
@@ -4270,11 +4271,14 @@ mod match_engine {
 
     #[test]
     fn a_list_concat_joins_and_its_runtime_length_sums() {
-        // `List.concat(a, b)` joins two lists into a new persistent one (`vec-concat`, consuming both).
-        // `(List.len (List.concat (list 1 2) (list 3 4 5)))` builds both spines then concatenates, so the
-        // runtime `vec-len` counts 2 + 3 = 5. Pins the runtime concat + length path.
+        // `List.concat(a, b)` joins two lists into a new persistent one (`vec-concat`, consuming both). To
+        // exercise the RUNTIME concat (a constant-list concat now folds), a RUNTIME-built list (`build 0 2`
+        // = `[0 1]`) is concatenated with a constant `(list 3 4 5)`; a runtime operand forces
+        // `Core::ListConcat`, so `vec-len` counts 2 + 3 = 5. Pins the runtime concat + length path.
         let Some(out) = run_on_heap(
-            "(module m (def (main) ((. List len) ((. List concat) (list 1 2) (list 3 4 5)))) (export main))",
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) ((. List len) ((. List concat) (build 0 2 (list)) (list 3 4 5)))) (export main))",
         ) else {
             eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
             return;
@@ -4299,11 +4303,13 @@ mod match_engine {
     #[test]
     fn a_list_update_replaces_and_its_length_is_unchanged() {
         // `List.update(l, i, x)` replaces the element at index `i`, returning a new list of the SAME
-        // length (a replacement, not a growth). The result never folds (a `Core::ListUpdate`), so
-        // `List.len` of it emits the runtime `vec-len`: `(List.len (List.update (list 10 20 30) 1 99))`
-        // = 3. Pins the runtime `vec-update` path and that update preserves the element count.
+        // length (a replacement, not a growth). To exercise the RUNTIME `vec-update` (a constant-list
+        // update now folds), the list is BUILT at run time (`build 0 3` = `[0 1 2]`); `vec-len` of the
+        // updated list is still 3. Pins the runtime `vec-update` path and that update preserves the count.
         let Some(out) = run_on_heap(
-            "(module m (def (main) ((. List len) ((. List update) (list 10 20 30) 1 99))) (export main))",
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (main) ((. List len) ((. List update) (build 0 3 (list)) 1 99))) (export main))",
         ) else {
             eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
             return;
@@ -4323,6 +4329,37 @@ mod match_engine {
             )
             .as_deref(),
             Some("CDZ0203")
+        );
+    }
+
+    #[test]
+    fn constant_list_push_concat_update_fold_and_escape() {
+        // A `List.push`/`concat`/`update` over COMPILE-TIME-VISIBLE list literals FOLDS to a constant
+        // `(list …)` — no runtime heap — so the result escapes the boundary as its value form (like a
+        // written literal). `List.at`/`len` of the folded list also fold; here each is measured by
+        // `List.len` (a scalar Int64 across the boundary) to pin the folded length without the compound
+        // escape ABI: push 3+1 = 4, concat 2+2 = 4, in-range update keeps length 3.
+        for (prog, want) in [
+            ("((. List push) (list 1 2 3) 4)", 4),
+            ("((. List concat) (list 1 2) (list 3 4))", 4),
+            ("((. List update) (list 10 20 30) 1 99)", 3),
+        ] {
+            let src = format!("(module m (def (main) ((. List len) {prog})) (export main))");
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "constant list op folds: {prog}"
+            );
+        }
+        // An OUT-OF-RANGE constant `List.update` index is a PROVABLE trap — rejected at compile time
+        // (CDZ0304), NOT a shipped runtime trap (matches the runtime `vec-update` OOB trap).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) ((. List len) ((. List update) (list 1 2 3) 5 99))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0304"),
+            "a constant out-of-range List.update is a provable trap (CDZ0304)"
         );
     }
 
@@ -4477,32 +4514,30 @@ mod match_engine {
             };
             cdz_run::run(&bytes, &opts).expect("run")
         };
+        // The list is BUILT at run time (`build 0 3` = `[0 1 2]`) so `List.update` stays a RUNTIME
+        // `vec-update` (a constant-list update folds — an OOB constant index is caught at COMPILE time as
+        // CDZ0304, a separate path; this test pins the RUNTIME index guard). A helper wraps the shared
+        // build-loop + update-len; each call passes a different runtime index.
+        let prog = |idx: &str| {
+            format!(
+                "(module m \
+                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                   (def (main) (List.len (List.update (build 0 3 (list)) {idx} 99))) (export main))"
+            )
+        };
         // A wrapping OOB index (2^32 → 0) must TRAP, not silently update element 0.
         assert!(
-            matches!(
-                run(
-                    "(module m (def (main) (List.len (List.update (list 1 2 3) 4294967296 99))) (export main))"
-                ),
-                cdz_run::Outcome::Trap(_)
-            ),
+            matches!(run(&prog("4294967296")), cdz_run::Outcome::Trap(_)),
             "an index that wraps below the length must trap, not alias into a valid slot"
         );
         // A real OOB index (no wrap) still traps.
         assert!(
-            matches!(
-                run(
-                    "(module m (def (main) (List.len (List.update (list 1 2 3) 5 99))) (export main))"
-                ),
-                cdz_run::Outcome::Trap(_)
-            ),
+            matches!(run(&prog("5")), cdz_run::Outcome::Trap(_)),
             "a genuinely out-of-bounds index must trap"
         );
         // NO OVER-TRAP: an in-bounds update still succeeds and preserves the length.
         assert!(
-            matches!(
-                run("(module m (def (main) (List.len (List.update (list 1 2 3) 2 99))) (export main))"),
-                cdz_run::Outcome::Value(ref s) if s == "3"
-            ),
+            matches!(run(&prog("2")), cdz_run::Outcome::Value(ref s) if s == "3"),
             "an in-bounds update must still succeed"
         );
     }
@@ -5046,9 +5081,14 @@ mod match_engine {
         // scratch with the arm bodies' temps at the shared floor, an invalid module). Pins that fix + the
         // built-in `Option` carrying a user sum through the runtime nested matcher (corpus §'a runtime
         // Option carrying a user sum is matched by a nested constructor pattern').
+        // The list of `N` is BUILT at run time by a push-loop over a RUNTIME parameter (`build 0 1` pushes
+        // `(N.L i)` for the runtime index `i`), so it is a genuine `vec-push` handle — a constant `(list)`
+        // + a constant `push` now folds, which would defeat the runtime-matcher coverage. `List.at … 0` is
+        // then a runtime `(Some (N.L 0))`, and `(Some (N.L v))` binds v=0.
         let Some(out) = run_on_heap(
             "(module m (type N (L Int64) (P Int64)) \
-               (def (main) (match ((. List at) ((. List push) (list) (N.L 7)) 0) \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (N.L i))) out)) \
+               (def (main) (match ((. List at) (build 0 1 (list)) 0) \
                              ((Some (N.L v)) v) ((Some (N.P v)) (+ v 100)) ((None _) -1))) \
                (export main))",
         ) else {
@@ -5056,7 +5096,7 @@ mod match_engine {
             return;
         };
         assert_eq!(
-            out, "7",
+            out, "0",
             "nested match over a runtime List.at Some(user-sum)"
         );
     }
@@ -5754,6 +5794,62 @@ mod match_engine {
             ),
             120
         );
+    }
+
+    #[test]
+    fn a_scalar_match_probe_against_zero_uses_eqz() {
+        // A `0`-literal match arm — the shape of every recursion base case `(match n (0 …) …)` — probes
+        // `scrutinee == 0`, which is exactly `i64.eqz` (one instruction), not a pushed `0` + `eq` (two).
+        // Mirrors the comparison path's `(= n 0)` → eqz. A NONZERO probe keeps `const ; eq`.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let code = {
+            let ast = crate::testkit::parse(
+                "(module m (def (f (: n Int64)) (match n (0 10) (1 20) (_ 30))) (def (main) 0) (export main))",
+            );
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // The `0` arm is an `eqz`; the `1` arm is a `const 1 ; eq`.
+        assert!(
+            code.contains(&Lir::I64Eqz),
+            "the `0` probe must be an i64.eqz, got: {code:?}"
+        );
+        assert!(
+            code.contains(&Lir::ConstI64(1)) && code.contains(&Lir::I64Eq),
+            "the nonzero `1` probe keeps const ; eq, got: {code:?}"
+        );
+        // Exactly ONE eqz (the `0` arm) and ONE const-0 must NOT be pushed for the probe.
+        assert_eq!(
+            code.iter().filter(|i| matches!(i, Lir::I64Eqz)).count(),
+            1,
+            "only the single `0` arm becomes an eqz"
+        );
+        // Value parity: dispatch is unchanged.
+        use wasmtime::component::Val;
+        let src = "(module m (def (f (: n Int64)) (match n (0 10) (1 20) (_ 30))) (export f))";
+        let bytes = component(src);
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(0)]), 10);
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(1)]), 20);
+        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(9)]), 30);
     }
 
     #[test]
@@ -7978,6 +8074,25 @@ mod stage1 {
     }
 
     #[test]
+    fn nested_intra_program_handlers_compose_inside_out() {
+        // E3-nested: two nested `handle`s compose — the fold reduces the INNER handle first (discharging
+        // its effect), leaving the OUTER effect's performs for the outer fold. `(A.a)` resumes 22 (inner),
+        // `(B.b)` resumes 20 (outer), so `(+ (A.a) (B.b))` = 42. The inner handle in the outer's body is
+        // recursively `reduce_handle`d, then threaded under the outer context.
+        let src = "(do (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64))) \
+                   (def (main) (handle 0 ((B.b (u) s (resume 20 s))) \
+                     (handle 0 ((A.a (u) s (resume 22 s))) (+ (A.a) (B.b))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("nested intra-program handlers compose"),
+                "main"
+            ),
+            42
+        );
+    }
+
+    #[test]
     fn a_recursive_effectful_case_the_fold_cannot_serve_declines_not_hangs() {
         // E3 boundary: a recursive effectful walk the single-state fast path cannot serve (a 2-arm
         // handler over a compound list state) must DECLINE cleanly — NOT hang. Regression guard for the
@@ -9474,6 +9589,39 @@ mod stage1 {
         assert_eq!(
             run_returns_with::<i64>(&bytes2, "main", &[Val::Bool(false)]),
             9
+        );
+    }
+
+    #[test]
+    fn a_function_crosses_a_recursive_boundary_as_a_runtime_closure() {
+        use wasmtime::component::Val;
+        // The genuine runtime-closure case (`call_indirect`): a function argument passed to a RECURSIVE
+        // higher-order function, applied inside the recursion. `apply-sum` cannot inline (it recurses),
+        // so its function parameter `g` is a real runtime CLOSURE VALUE — the lambda `(fn (x) (* x 2))`
+        // is LAMBDA-LIFTED to a standalone function, passed as a funcref-table slot, and applied via
+        // `call_indirect`. `apply-sum g n = g(n) + g(n-1) + … + g(1)`, so with `g = (*2)` the result is
+        // `2·(n + (n-1) + … + 1) = n·(n+1)`. `core-semantics.md` §A Function Is A First-Class Value.
+        let src = "(module m \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (* x 2)) n)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(0)]), 0);
+        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(1)]), 2);
+        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(3)]), 12);
+        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(5)]), 30);
+        // A DIFFERENT lifted lambda through the same recursive HOF — `(+ x 100)` — so the result is
+        // `sum(k=1..n) (k + 100) = n(n+1)/2 + 100n`. Pins that the closure carries the RIGHT code (the
+        // table slot selects the applied function), not a fixed one.
+        let src2 = "(module m \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (+ x 100)) n)) (export main))";
+        let bytes2 = compile_component(&crate::codec::encode(&parse(src2))).expect("compile");
+        // n=3: (3+100)+(2+100)+(1+100) = 306.
+        assert_eq!(
+            run_returns_with::<i64>(&bytes2, "main", &[Val::S64(3)]),
+            306
         );
     }
 

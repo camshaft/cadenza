@@ -95,6 +95,14 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             out.push(op::RETURN_CALL);
             uleb128(*func as u64, out);
         }
+        Lir::CallIndirect(type_index) => {
+            // `call_indirect <type> <table>`: the opcode, then the functype's TYPE-section index, then
+            // the table index (always 0 — the one funcref table). The arguments and the table-slot i32
+            // are already on the stack (the slot is popped as the indirection index).
+            out.push(op::CALL_INDIRECT);
+            uleb128(*type_index as u64, out);
+            uleb128(0, out); // table index 0
+        }
         Lir::CallImport(name) => {
             // Resolve the op name to its import function index (its position in the import section).
             // A `CallImport` for an op not in the import set is a compiler bug — `collect_used_ops`
@@ -426,12 +434,45 @@ pub fn core_module(
     }
     let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n, &code_items));
 
+    // TABLE + ELEMENT sections — present ONLY when the program has lambda-lifted closures (a runtime
+    // closure applies through `call_indirect` over the one funcref table). The table holds one funcref
+    // per lifted lambda; the active element segment (at offset 0) fills slot `k` with lifted lambda
+    // `k`'s absolute wasm function index, so a `Core::Closure { code: k }` stored slot selects its code.
+    // Empty for a program with no closure → NO table/element section, byte-identical to before.
+    let n_lifted = layout.lifted.len();
+    let (table_sec, elem_sec) = if n_lifted == 0 {
+        (Vec::new(), Vec::new())
+    } else {
+        // Table section: one funcref table (element type 0x70), limits { min = max = n_lifted }.
+        let mut table_entry = vec![0x70u8]; // funcref element type
+        table_entry.push(0x01); // limits flag: has-max
+        uleb128(n_lifted as u64, &mut table_entry); // min
+        uleb128(n_lifted as u64, &mut table_entry); // max
+        let table_sec = section(wasm_abi::CORE_SEC_TABLE, &wasm_vec(1, &table_entry));
+        // Element section: one active segment for table 0 at offset 0, listing each lifted function's
+        // absolute wasm index in table-slot order (`i32.const 0` offset expr, then the func-index vector).
+        let mut seg = Vec::new();
+        seg.push(0x00); // segment flags: active, table 0, funcref, func-index list
+        seg.push(op::I32_CONST); // offset init expr: i32.const 0
+        crate::backend::wasm::encode::sleb128(0, &mut seg);
+        seg.push(op::END);
+        let mut idxs = Vec::new();
+        for slot in 0..n_lifted {
+            uleb128(layout.lifted_abs(slot) as u64, &mut idxs);
+        }
+        seg.extend_from_slice(&wasm_vec(n_lifted, &idxs));
+        let elem_sec = section(wasm_abi::CORE_SEC_ELEMENT, &wasm_vec(1, &seg));
+        (table_sec, elem_sec)
+    };
+
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);
     core.extend_from_slice(&type_sec);
     core.extend_from_slice(&import_sec);
     core.extend_from_slice(&func_sec);
+    core.extend_from_slice(&table_sec);
     core.extend_from_slice(&export_sec);
+    core.extend_from_slice(&elem_sec);
     core.extend_from_slice(&code_sec);
     // The `name` custom section (Mode E, D0) is now appended by `wasm::append_debug_sections` AFTER this
     // returns — uniformly for BOTH the ordinary path and the resource-escape path — so `core_module`
