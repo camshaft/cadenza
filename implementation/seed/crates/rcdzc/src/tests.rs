@@ -16917,6 +16917,27 @@ mod stage1 {
     }
 
     #[test]
+    fn an_unbound_effect_name_in_a_handle_anchors_to_a_user_node() {
+        // `(handle Nope …)` names an effect that does not exist → CDZ0101. The desugar drops the head
+        // effect name and projects it into each arm as `(. Nope op)`; the FIRST arm reuses the SOURCE
+        // effect-name occurrence (M31), so the unbound-name reject anchors to the real `Nope` token —
+        // a user node with `file:line:col` — not a spanless minted atom.
+        let src = "(do (def (main) (handle Nope 0 ((go () s (resume 1 s))) 5)) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let d = crate::diagnostics(&mut db)
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("Nope"))
+            .expect("an unbound-effect CDZ0101");
+        let node = d
+            .node
+            .expect("the unbound-effect CDZ0101 must carry a node, not be unanchored");
+        assert!(
+            db.is_user_node(crate::ast::StructId(node)),
+            "node {node} must be the source `Nope` occurrence, not a synthesized atom"
+        );
+    }
+
+    #[test]
     fn an_undeclared_handler_op_close_to_a_declared_one_suggests_it() {
         // The effect-op "did you mean?" (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route
         // To A Fix): a handler arm names `emitt`, a typo of the effect's declared `emit` → CDZ0403 names
