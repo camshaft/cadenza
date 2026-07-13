@@ -75,6 +75,8 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Bytes(_) => Ty::Bytes,
         // A char literal (`#\a`) is the monomorphic `Ty::Char`.
         Resolved::Char(_) => Ty::Char,
+        // A symbol literal (`#"metre"`) is the monomorphic `Ty::Symbol` (DISTINCT from `Ty::String`).
+        Resolved::SymbolConst(_) => Ty::Symbol,
         // A `(bin …)` in value position CONSTRUCTS a byte sequence → `Ty::Bytes`.
         Resolved::Bin { .. } => Ty::Bytes,
         // A `bin` PATTERN binder: an integer segment decodes an `Int`, a `bytes` segment a `Bytes`.
@@ -2048,6 +2050,23 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
             ));
             return;
         }
+        // Comparing a SYMBOL to the plain STRING it wraps is a comparison ACROSS THE NOMINAL BOUNDARY —
+        // CDZ0202 (17-symbols "a string compared to a symbol is a type error"). A Symbol is a nominal over
+        // String; a nominal value never silently compares equal to the untagged shape it was declared
+        // distinct from (`type-system.md` §Nominal Types Are Not Comparable Across Their Boundary), the
+        // same rule the nominal-record-vs-plain-record case pins. Reported HERE for the right code (the
+        // generic scheme-unify below would give the plain CDZ0203); fires on either operand order.
+        if matches!(
+            (&a, &b),
+            (Ty::Symbol, Ty::String) | (Ty::String, Ty::Symbol)
+        ) {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: comparing a Symbol to a String across the nominal boundary (CDZ0202)");
+            out.push(Reject::coded(
+                Code::NominalMismatch,
+                "a Symbol and a String are not comparable across the nominal boundary",
+            ));
+            return;
+        }
     }
     // A built-in arithmetic/comparison/equality operator with a TEXT operand (String/Bytes) against a
     // SCALAR operand (a number, a Bool, a Char) is a CROSS-KIND clash — a malformed operation, CDZ0201,
@@ -3656,6 +3675,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::Param { .. }
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::SymbolConst(_)
         | Resolved::Bytes(_)
         | Resolved::Char(_)
         | Resolved::Float(_)

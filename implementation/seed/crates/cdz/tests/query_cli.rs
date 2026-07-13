@@ -1451,6 +1451,36 @@ fn fix_all_deletes_a_latent_authority_effect_and_recompiles_clean() {
 }
 
 #[test]
+fn check_shows_one_error_for_a_misspelled_handler_op_not_a_cascade() {
+    // A misspelled handler op surfaces as ONE actionable CDZ0403 (with a `did you mean` fix), NOT that
+    // error PLUS the emit path's "not yet reducible by the tail-resumptive fold" decline — the malformed
+    // handler can't fold, so the decline is a consequence of the misspelling. An agent that applies the
+    // `replace with get` fix should not then see a confusing second error.
+    let dir = scratch_dir("check_handler_cascade");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(do (effect E (op get (-> Unit Int64))) \
+         (def (main) (handle E 0 ((gett (u) s (resume s s))) 42)) (export main))\n",
+    )
+    .unwrap();
+    let (ok, stdout, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(!ok, "still an error");
+    assert!(
+        stdout.contains("CDZ0403") && stdout.contains("replace with `get`"),
+        "the coded reject + its fix: {stdout}"
+    );
+    assert!(
+        !stdout.contains("not yet reducible"),
+        "the reducibility decline must not shadow the coded reject: {stdout}"
+    );
+    // Exactly one `error` line (the coded reject); the `help` line is not an error.
+    let error_lines = stdout.lines().filter(|l| l.contains("error")).count();
+    assert_eq!(error_lines, 1, "one primary error, not a cascade: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn fix_all_wraps_a_no_home_effect_in_a_host_delegation_and_recompiles_clean() {
     // CDZ0401's `Edit::Wrap` end-to-end: an ungranted effect gets `(host (E) <body>)` wrapped around the
     // entrypoint body, and the repaired file re-checks clean. The wrap verifies (recompile, no regression),
