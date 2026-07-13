@@ -8226,6 +8226,27 @@ mod stage1 {
     }
 
     #[test]
+    fn recursion_is_detected_through_a_nested_do() {
+        // A self-call inside a nested `(do …)` is a real recursion edge. `resolve_do` collapses a `do` to
+        // `Ref{last}` (intermediates discarded as pure), which would hide a self-call in a `do` item from
+        // `is_recursive`'s callee walk — so `collect_callees` reads a `do` by raw AST and descends every
+        // item. Without this, `sum-to` here would read as NON-recursive and inline without end (a hang) or
+        // miscompile. `(do 0 (sum-to (- n 1)))` puts the self-call as the last item, and `(do (dummy) …)`
+        // shape (a discarded intermediate then the recursive tail) is exactly the effect-walk shape. This
+        // pins recursion detection through `do` at the plain (non-effect) level. `sum-to 3` = 3+2+1+0 = 6.
+        let src = "(module m (def (sum-to n) (if (= n 0) 0 (do 7 (+ n (sum-to (- n 1)))))) \
+                   (def (main) (sum-to 3)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("recursion through a nested do is detected and compiles"),
+                "main"
+            ),
+            6
+        );
+    }
+
+    #[test]
     fn nested_intra_program_handlers_compose_inside_out() {
         // E3-nested: two nested `handle`s compose — the fold reduces the INNER handle first (discharging
         // its effect), leaving the OUTER effect's performs for the outer fold. `(A.a)` resumes 22 (inner),
