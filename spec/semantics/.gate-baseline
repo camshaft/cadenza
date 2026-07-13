@@ -255,6 +255,8 @@ pass	a hexadecimal integer literal
 pass	a hexadecimal literal is case-insensitive
 pass	a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern
 pass	a hexadecimal literal with digit separators
+pass	a host effect with a non-kebab NAME crosses under a normalized interface extern name
+pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 pass	a host-called closure applied to a different argument tracks the input
 pass	a host-called closure with a different body dispatches the right code
 pass	a lambda applied in the scope of the binding it captures observes that binding

@@ -469,8 +469,8 @@ pub fn assemble_host(
         for (i, f) in host_fns.iter().enumerate() {
             decls.push(0x01); // ty decl
             decls.extend_from_slice(&f.comp_functype);
-            decls.push(0x04); // export decl
-            decls.extend_from_slice(&extern_name(&f.op));
+            decls.push(0x04); // export decl — the op's COMPONENT extern name (kebab-normalized).
+            decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
             decls.push(0x01); // sort: component func
             uleb128(i as u64, &mut decls);
         }
@@ -480,20 +480,22 @@ pub fn assemble_host(
     };
     let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type));
 
-    // sec 10: import the effect interface as an instance of component type 0, under the effect's name.
+    // sec 10: import the effect interface as an instance of component type 0, under the effect's name —
+    // KEBAB-normalized (a non-kebab effect name like `Log` is not a valid component import extern name).
     let import_sec = {
-        let mut item = extern_name(iface);
+        let mut item = extern_name(&super::kebab_extern_name(iface));
         item.push(0x05); // ComponentTypeRef::Instance sort
         uleb128(0, &mut item); // type index 0
         section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
     };
 
     // sec 6 (first): alias each op out of the imported effect instance (component instance 0) → component
-    // funcs `0..h`.
+    // funcs `0..h`. The alias reads the op by the COMPONENT extern name the instance-type exports it under
+    // (the kebab-normalized op name), so it must match the export decl above.
     let op_alias_sec = {
         let mut items = Vec::new();
         for f in host_fns {
-            items.extend_from_slice(&comp_alias_item(0, &f.op));
+            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
         }
         section(sec::ALIAS, &wasm_vec(h, &items))
     };
@@ -646,7 +648,7 @@ pub fn assemble_host_mem(
             decls.push(0x01);
             decls.extend_from_slice(&f.comp_functype);
             decls.push(0x04);
-            decls.extend_from_slice(&extern_name(&f.op));
+            decls.extend_from_slice(&extern_name(&super::kebab_extern_name(&f.op)));
             decls.push(0x01);
             uleb128(i as u64, &mut decls);
         }
@@ -656,19 +658,20 @@ pub fn assemble_host_mem(
     };
     let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type));
 
-    // sec 10: import the effect interface as an instance of component type 0.
+    // sec 10: import the effect interface as an instance of component type 0 (kebab-normalized name).
     let import_sec = {
-        let mut item = extern_name(iface);
+        let mut item = extern_name(&super::kebab_extern_name(iface));
         item.push(0x05);
         uleb128(0, &mut item);
         section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
     };
 
-    // sec 6 (first): alias each op out of the imported effect instance (comp instance 0) → comp funcs.
+    // sec 6 (first): alias each op out of the imported effect instance (comp instance 0) → comp funcs. The
+    // alias name is the kebab-normalized op name the instance-type export decl uses (they must match).
     let op_alias_sec = {
         let mut items = Vec::new();
         for f in host_fns {
-            items.extend_from_slice(&comp_alias_item(0, &f.op));
+            items.extend_from_slice(&comp_alias_item(0, &super::kebab_extern_name(&f.op)));
         }
         section(sec::ALIAS, &wasm_vec(h, &items))
     };

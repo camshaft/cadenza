@@ -16839,6 +16839,43 @@ mod stage1 {
     }
 
     #[test]
+    fn a_non_kebab_effect_and_op_name_emit_a_valid_component() {
+        // REGRESSION (the effect-boundary residual of the export-name kebab fix): a non-kebab effect NAME
+        // (the imported interface's extern name) or OPERATION name (a func the interface exports) emitted
+        // an INVALID component ("import name `Log` is not a valid extern name") with no diagnostic. Both
+        // boundary names must be kebab-normalized. `wasmparser::validate` rejected the pre-fix bytes.
+        let up_effect = "(do (effect Log (op msg (-> Unit Int64))) \
+                   (def (main) (host (Log) (Log.msg))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(up_effect)))
+            .expect("an uppercase effect name must compile");
+        wasmparser::validate(&bytes)
+            .expect("an uppercase effect name must emit a VALID component (kebab interface import)");
+        // The interface import name is the kebab-normalized `log`, not the verbatim `Log`.
+        assert!(
+            bytes.windows(3).any(|w| w == b"log") && !contains_extern_name(&bytes, "Log"),
+            "the interface import extern name must be kebab `log`, not `Log`"
+        );
+
+        // The operation-name site: an uppercase op `Ask` normalizes to `ask` at the interface's func
+        // export decl + its alias (they must agree, or the alias fails to resolve).
+        let up_op = "(do (effect e (op Ask (-> Unit Int64))) \
+                   (def (main) (host (e) (e.Ask))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(up_op)))
+            .expect("an uppercase op name must compile");
+        wasmparser::validate(&bytes)
+            .expect("an uppercase op name must emit a VALID component (kebab func extern)");
+    }
+
+    /// Whether the component bytes contain `name` as a length-prefixed extern name (`<len><name>`) — a
+    /// crude but sufficient check that a NON-kebab source name did not leak verbatim into an extern
+    /// position. (`Log` is 3 bytes, prefixed by the uleb length `0x03`.)
+    fn contains_extern_name(bytes: &[u8], name: &str) -> bool {
+        let mut needle = vec![name.len() as u8];
+        needle.extend_from_slice(name.as_bytes());
+        bytes.windows(needle.len()).any(|w| w == needle.as_slice())
+    }
+
+    #[test]
     fn a_do_block_of_host_calls_sequences_them() {
         // E2h-seq: a `(do (log.emit "first") (log.emit "second"))` — two side-effecting host-call
         // statements — lowers to a `Core::Seq` that EMITS each statement in order (their calls both cross
