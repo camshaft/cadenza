@@ -1298,6 +1298,21 @@
   (input  (do (def (main) (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 (+ 1 1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) (export main)))
   (output (: 65 Int64)))
 
+(case "a deeply nested expression is diagnosed by the parser, never crashes it"
+  (doc    "The PARSER's recursive descent (both the s-expr reader and the ML Pratt parser) must return a
+           clean diagnostic on pathologically deep nesting, not overflow the native stack and abort the
+           process (SIGABRT). The COMPILER already guards this — the case above declines a deep nest at
+           the descent-depth bound — but the parser, which runs FIRST on any source-ingesting path
+           (`convert`/`check`/`fix`, and critically the guide's `cdz-wasm` on untrusted browser input at
+           a ~1MB stack), had no equivalent limit: a depth ≳25000 source crashed with 'thread main has
+           overflowed its stack' where `cdz compile` on the same shape cleanly rejects. Both readers now
+           carry a nesting-depth guard (mirroring the compiler's limit) that returns a parse error past
+           the bound. This small depth-8 witness parses and evaluates fine (=> 9), pinning the SHAPE; the
+           crash needs a depth-25000 generator, impractical to inline. Fix: a parse-time depth guard, the
+           read-side analogue of the compiler's descent-depth limit.")
+  (input  (do (def (main) (+ (+ (+ (+ (+ (+ (+ (+ 1 1) 1) 1) 1) 1) 1) 1) 1)) (export main)))
+  (output (: 9 Int64)))
+
 ; --- A nested CALL chain compiles in roughly LINEAR time, never exponential ----------------------
 ; The deeply-nested-CONSTANT case above declines cleanly at a pathological depth (the descent-depth
 ; guard). A nested CALL chain `(f (f (f … 0)))` is a DIFFERENT cost: each level β-inlines the callee

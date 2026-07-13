@@ -101,6 +101,8 @@ pub fn parse(src: &str, file: FileId) -> Parsed {
         spans: SpanTable::new(file),
         errors: Vec::new(),
         arm_bar_terminates: false,
+        depth: 0,
+        depth_exceeded: false,
     };
     let root = p.program();
     Parsed {
@@ -138,6 +140,20 @@ struct Parser<'a> {
     /// Any bracket (`(`/`[`/`{`) that starts a fresh sub-expression clears this, so `(a | b)` inside an
     /// arm body is still bitwise-or. (Corpus has zero infix-`|`, so this only future-proofs.)
     arm_bar_terminates: bool,
+    /// The current recursion depth of `expr` — incremented on entry and decremented on exit. Every
+    /// nested sub-expression funnels through `expr` (the Pratt hub: bracket forms, keyword forms, and
+    /// the infix right operand all call it), so bounding it bounds the native stack. Past
+    /// [`crate::sexpr::MAX_NESTING_DEPTH`] `expr` records one error and returns an `<error>` node
+    /// instead of recursing, guarding against a stack overflow (SIGABRT) on pathologically deep input —
+    /// the ML-surface analogue of the s-expr reader's guard (shares the one limit constant).
+    depth: u32,
+    /// Set once the depth limit is hit — a FATAL, unrecoverable parse condition. The ordinary
+    /// error-recovery model (record an error, keep the cursor, make progress) cannot apply here: the
+    /// thousands of unconsumed deeply-nested tokens would drive every enclosing loop to re-enter `expr`,
+    /// hit the limit again, and spin (a non-terminating hang, not a crash). So once set, [`Self::at_end`]
+    /// reports end-of-input: every parse loop (`program`, `paren`, arg lists, …) terminates immediately
+    /// and the stack unwinds without reprocessing the deep tail. One diagnostic, clean termination.
+    depth_exceeded: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -180,7 +196,10 @@ impl<'a> Parser<'a> {
         self.tok().map(|t| t.kind).unwrap_or(Kind::Error)
     }
     fn at_end(&self) -> bool {
-        self.pos >= self.tokens.len()
+        // A depth-exceeded parse is fatally poisoned: report end-of-input so every parse loop
+        // terminates at once and the stack unwinds without reprocessing the deep token tail (see
+        // `depth_exceeded`).
+        self.depth_exceeded || self.pos >= self.tokens.len()
     }
     fn text(&self, t: Token) -> &'a str {
         &self.src[t.span.start..t.span.end]
@@ -456,6 +475,20 @@ impl<'a> Parser<'a> {
     /// Parse an expression whose infix operators bind at least `min_prec`.
     fn expr(&mut self, min_prec: u8) -> StructId {
         let start = self.cur_span();
+        // DEPTH GUARD: every nested sub-expression funnels through `expr` (bracket/keyword forms and the
+        // infix right operand all call it), so bounding this recursion bounds the native stack. Past the
+        // limit, record ONE error and return an `<error>` node WITHOUT recursing — a clean diagnostic
+        // instead of a stack overflow (SIGABRT). Shares the s-expr reader's limit (see `MAX_NESTING_DEPTH`).
+        if self.depth >= crate::sexpr::MAX_NESTING_DEPTH {
+            // Record ONE error and POISON the parser (fatal): further parsing would spin on the deep
+            // unconsumed tail. `depth_exceeded` makes `at_end` true, so all enclosing loops stop.
+            if !self.depth_exceeded {
+                self.error("expression nests too deeply to parse");
+                self.depth_exceeded = true;
+            }
+            return self.error_node(start);
+        }
+        self.depth += 1;
         let mut left = self.prefix();
         left = self.postfix(left, start);
         while let Some(op_name) = self.infix_op() {
@@ -478,6 +511,7 @@ impl<'a> Parser<'a> {
             let span = start.merge(self.prev_span());
             left = self.list(vec![head, left, right], span);
         }
+        self.depth -= 1;
         left
     }
 
@@ -1782,6 +1816,28 @@ mod tests {
             p.errors
         );
         p.arenas
+    }
+
+    #[test]
+    fn deeply_nested_input_is_diagnosed_not_crashed() {
+        // The Pratt parser recurses through `expr` per nesting level; unguarded, a pathologically deep
+        // nest overflowed the native stack (SIGABRT) or — once a naive guard returned an error node
+        // without stopping — SPUN on the unconsumed deep tail (a hang). The depth guard records ONE
+        // error and POISONS the parser (`depth_exceeded` ⇒ `at_end`), so parsing TERMINATES with a
+        // clean diagnostic. The nest here exceeds `crate::sexpr::MAX_NESTING_DEPTH`.
+        let n = (crate::sexpr::MAX_NESTING_DEPTH as usize) + 50;
+        let src = format!("{}1{}", "(".repeat(n), ")".repeat(n));
+        let p = read_ml(&src);
+        assert!(
+            !p.ok() && p.errors.iter().any(|e| e.message.contains("nests too deeply")),
+            "deep nesting must be a clean depth-limit error, not a crash/hang; got {:?}",
+            p.errors
+        );
+        // A nest well under the limit still parses cleanly (no over-rejection).
+        let ok = (crate::sexpr::MAX_NESTING_DEPTH as usize) - 1;
+        let shallow = format!("{}1{}", "(".repeat(ok), ")".repeat(ok));
+        let ps = read_ml(&shallow);
+        assert!(ps.ok(), "a nest just under the limit must parse: {:?}", ps.errors);
     }
 
     #[test]

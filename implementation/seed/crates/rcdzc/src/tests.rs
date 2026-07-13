@@ -22922,30 +22922,26 @@ mod stage1 {
 
     #[test]
     fn a_pathologically_deep_expression_declines_not_crashes() {
-        // A `(+ 1 (+ 1 …))` nest far past the recursive-descent depth bound. The compiler must DECLINE
-        // (a resource-limit rejection) rather than overflow its own stack and abort — a compiler
-        // completes or declines on well-formed input, never crashes. A shallow nest still folds (the
-        // 64-deep corpus case folds to 65); this pins the deep end declines instead of aborting.
-        //
-        // Run through the SAME host-stack helper the `rcdzc` bin uses: the decline is enforced by the
-        // recursive-descent depth guard (`DESCENT_DEPTH_LIMIT`), and reaching that guard needs a stack
-        // deeper than a default `cargo test` worker thread's (≈2 MB, which overflows at ~depth 179 in a
-        // debug build). `run_with_compiler_stack` sizes the stack FROM the guard, so the semantic guard
-        // is what fires here just as it does at the bin — no `RUST_MIN_STACK` to remember. See
-        // `rcdzc::host`.
-        let msg = crate::host::run_with_compiler_stack(|| {
-            let mut body = "1".to_string();
-            for _ in 0..4000 {
-                body = format!("(+ 1 {body})");
-            }
-            let src = format!("(module m (def (main) {body}) (export main))");
-            compile_component(&crate::codec::encode(&parse(&src)))
-                .expect_err("a pathologically deep expression must decline")
-                .message
-        });
+        // A `(+ 1 (+ 1 …))` nest far past the recursive-descent depth bound must DECLINE (a
+        // resource-limit rejection) rather than overflow the stack and abort — a completes-or-declines,
+        // never-crashes property. The guard now lives at TWO layers, and the PARSER's fires FIRST: the
+        // reader (`cadenza-syntax::sexpr`, `MAX_NESTING_DEPTH`) returns a clean `ReadError` before the
+        // arena is even built, so a source-ingesting path (`convert`/`check`, `cdz-wasm` on untrusted
+        // input) never reaches the compiler with pathological depth. (The compiler's own
+        // `DESCENT_DEPTH_LIMIT` still guards a deep BINARY AST that bypasses the reader.) Here the reader
+        // is the first line of defence: a 4000-deep nest is a `ReadError`, not a panic/crash — and the
+        // guard trips long before the reader's own recursion could overflow, so no large stack is needed.
+        let mut body = "1".to_string();
+        for _ in 0..4000 {
+            body = format!("(+ 1 {body})");
+        }
+        let src = format!("(module m (def (main) {body}) (export main))");
+        let err = cadenza_syntax::sexpr::read(&src)
+            .expect_err("a pathologically deep expression must be a clean reader error, not a crash");
         assert!(
-            msg.contains("deeply") || msg.contains("recursion") || msg.contains("resource"),
-            "got: {msg}"
+            err.0.contains("deeply") || err.0.contains("nests"),
+            "got: {}",
+            err.0
         );
     }
 
