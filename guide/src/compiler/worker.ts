@@ -12,6 +12,7 @@ import init, {
   type_at as wasmTypeAt,
   define_at as wasmDefineAt,
   references_at as wasmReferencesAt,
+  semantic_tokens as wasmSemanticTokens,
   emit_rust as wasmEmitRust,
   core_module as wasmCoreModule,
   repl_eval as wasmReplEval,
@@ -83,6 +84,17 @@ export interface DefineAtInfo {
   to: number;
   refFrom: number;
   refTo: number;
+}
+
+/**
+ * One semantically-classified token — a source byte range plus the ROLE the compiler assigned it
+ * (`type`/`constructor`/`function`/`param`/`variable`/`effect`/`label`/`keyword`/`number`/`string`/
+ * `char`/`bytes`/`symbol`/`literal`/`unbound`). The editor maps `kind` to a colour. Byte offsets.
+ */
+export interface SemanticTok {
+  from: number;
+  to: number;
+  kind: string;
 }
 
 let ready: Promise<void> | null = null;
@@ -169,6 +181,14 @@ const api = {
   async referencesAt(text: string, from: Surface, byteOffset: number): Promise<Uint32Array> {
     await ensureReady();
     return new Uint32Array(wasmReferencesAt(text, from, byteOffset));
+  },
+
+  /// Semantic syntax-highlight tokens for the whole buffer — each a byte range + a role the compiler
+  /// classified (see `SemanticTok`). Empty when the buffer doesn't parse (the editor keeps its lexical
+  /// colours). The editor overlays these on top of the fast lexical tokenizer.
+  async semanticTokens(text: string, from: Surface): Promise<SemanticTok[]> {
+    await ensureReady();
+    return wasmSemanticTokens(text, from).map((t) => ({ from: t.from, to: t.to, kind: t.kind }));
   },
 
   // `to` may be a surface or an output-only view ("debug"/"flat"); the wasm accepts the wider set.

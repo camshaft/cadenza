@@ -8,10 +8,11 @@ import CodeMirror from "@uiw/react-codemirror";
 import { EditorView } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
 import { cadenzaLanguage } from "../editor/cadenzaLanguage.ts";
-import { cadenzaHighlighting } from "../editor/theme.ts";
+import { cadenzaHighlighting, cadenzaSemanticTheme } from "../editor/theme.ts";
 import { cadenzaHover } from "./cadenzaHover.ts";
 import { cadenzaGotoDef } from "./cadenzaGotoDef.ts";
 import { cadenzaHighlightRefs } from "./cadenzaHighlightRefs.ts";
+import { cadenzaSemanticHighlight } from "./cadenzaSemanticHighlight.ts";
 import { cadenzaLinter, lintGutter } from "./lintField.ts";
 import type { Diag, Surface } from "../compiler/client.ts";
 
@@ -68,6 +69,7 @@ export function PlaygroundEditor({ value, onChange, surface, onDiagnostics, onCu
     () => [
       cadenzaLanguage,
       cadenzaHighlighting,
+      cadenzaSemanticTheme,
       editorTheme,
       lintGutter(),
       cadenzaLinter({
@@ -78,6 +80,7 @@ export function PlaygroundEditor({ value, onChange, surface, onDiagnostics, onCu
       cadenzaHover({ surface: () => surfaceRef.current, prepare: identityPrepare }),
       cadenzaGotoDef({ surface: () => surfaceRef.current, prepare: identityPrepare }),
       cadenzaHighlightRefs({ surface: () => surfaceRef.current, prepare: identityPrepare }),
+      cadenzaSemanticHighlight({ surface: () => surfaceRef.current, prepare: identityPrepare }),
       EditorView.updateListener.of((u) => {
         if (u.selectionSet) {
           const head = u.state.selection.main.head;

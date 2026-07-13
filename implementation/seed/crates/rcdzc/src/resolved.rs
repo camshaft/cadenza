@@ -747,6 +747,33 @@ impl Prim {
             _ => None,
         }
     }
+
+    /// Whether this primitive DENOTES A TYPE — a ground type-value (`Bool`/`String`/…) or a type
+    /// CONSTRUCTOR (`List`/`Map`/`Int`/`->`/`Tuple`/… — applied in type position to build a `Ty`). This
+    /// is the single role split a `(meta apply)`-carrying record can't reveal on its own: a `List` module
+    /// and the `+` operator BOTH resolve through `(meta apply)` to a `Prim`, but `List` builds a TYPE
+    /// while `+` computes a VALUE. Which one a prim is is a property the prelude fixes when it authors the
+    /// intrinsic — so the fact lives here beside `is_arith`/`ground_type`, not in a name table
+    /// downstream. Used only by the highlight query to colour a type-former distinctly from a value op;
+    /// it changes no compiled byte. A variant/value constructor (`SumNew`/`TupleNew`/…) is NOT here — it
+    /// builds a VALUE, not a type.
+    pub fn denotes_type(self) -> bool {
+        self.ground_type().is_some()
+            || matches!(
+                self,
+                Prim::IntCtor
+                    | Prim::UIntCtor
+                    | Prim::FloatCtor
+                    | Prim::FnCtor
+                    | Prim::TupleCtor
+                    | Prim::RecordCtor
+                    | Prim::ListCtor
+                    | Prim::MapCtor
+                    | Prim::SetCtor
+                    | Prim::SumCtor
+                    | Prim::QtyCtor
+            )
+    }
 }
 
 /// The resolved meaning of one AST node. Children are referenced by AST `StructId`; a query descends

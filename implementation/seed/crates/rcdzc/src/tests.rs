@@ -26692,8 +26692,8 @@ mod sidecar_driven {
     use crate::backend::Target;
     use crate::compile::compile;
     use crate::sidecar::{
-        self, KIND_DIAGNOSTICS, KIND_EXPORTS, KIND_RESOLVE, KIND_SCOPE, KIND_TYPE_AT,
-        KIND_TYPE_INFO, KIND_USES, Query, Request,
+        self, KIND_DIAGNOSTICS, KIND_EXPORTS, KIND_HIGHLIGHT, KIND_RESOLVE, KIND_SCOPE,
+        KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request,
     };
     use crate::testkit::parse;
 
@@ -27288,6 +27288,138 @@ mod sidecar_driven {
         let out = compile(&inputs(src, &[Request::Query(Query::Exports)]), &[]);
         assert!(!out.has_error());
         assert_eq!(artifact_text(&out, KIND_EXPORTS).as_deref(), Some(""));
+    }
+
+    /// Run the `Highlight` query over `src` and collect the SET of `kind` strings assigned to the leaf
+    /// whose source spelling is `spelling` — a highlight is node-id-keyed, so re-resolve the spelling to
+    /// its node id(s) through the arena and pick their kinds. Returns every kind seen for that spelling
+    /// (usually one, but a name used in two roles — e.g. a type in two positions — could differ).
+    fn highlight_kinds_of(src: &str, spelling: &str) -> Vec<String> {
+        let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
+        assert!(!out.has_error(), "{:?}", out.diagnostics);
+        let text = artifact_text(&out, KIND_HIGHLIGHT).expect("a highlight artifact");
+        // node-id → kind
+        let by_id: std::collections::BTreeMap<u32, String> = text
+            .lines()
+            .filter_map(|l| {
+                let mut p = l.splitn(2, '\t');
+                let id: u32 = p.next()?.parse().ok()?;
+                Some((id, p.next()?.to_string()))
+            })
+            .collect();
+        // Find every leaf whose name spelling matches, then read its kind.
+        let arenas = parse(src);
+        let mut kinds = Vec::new();
+        for i in 0..arenas.structure.len() {
+            let id = crate::ast::StructId(i as u32);
+            if arenas.as_name(id) == Some(spelling)
+                && let Some(k) = by_id.get(&id.0)
+            {
+                kinds.push(k.clone());
+            }
+        }
+        kinds
+    }
+
+    #[test]
+    fn highlight_classifies_a_builtin_constructor() {
+        // `Some` and `None` are sum VARIANT constructors — read off the `(meta variant)` channel, not a
+        // name match. `Option` (the type) is a TYPE. The distinction a lexical `Capitalized→type` pass
+        // cannot make (it would paint all three the same).
+        let src =
+            "(module m (def (main) (match (Some 7) ((Some x) x) ((None u) 0))) (export main))";
+        assert_eq!(
+            highlight_kinds_of(src, "Some"),
+            vec!["constructor", "constructor"]
+        );
+        assert_eq!(highlight_kinds_of(src, "None"), vec!["constructor"]);
+    }
+
+    #[test]
+    fn highlight_classifies_a_type_name() {
+        // A type in annotation position AND a type-module operand both read as `type` — via `(meta t)` /
+        // the type-constructor prim, not the leading capital.
+        let src = "(module m (def (main) (: (List.len (list 1 2)) Int64)) (export main))";
+        assert_eq!(highlight_kinds_of(src, "Int64"), vec!["type"]);
+        // `List` heads a member access `(. List len)` → the OPERAND leaf is the type-module `List`.
+        assert_eq!(highlight_kinds_of(src, "List"), vec!["type"]);
+    }
+
+    #[test]
+    fn highlight_classifies_functions_params_and_locals_distinctly() {
+        // `inc` (a def with a parameter) → function; `x` (its parameter) → param, at BOTH the binder and
+        // the reference; `main` (nullary def) referenced nowhere here; a `let` local → variable.
+        let src = "(module m \
+                   (def (inc (: x Int64)) (+ x 1)) \
+                   (def (main) (let ((y 5)) (inc y))) \
+                   (export main))";
+        // `inc` — the def's NAME occurrence (a declaration of a function) AND the call site both read as
+        // `function` (the name denotes the lambda either way). Two occurrences.
+        assert_eq!(highlight_kinds_of(src, "inc"), vec!["function", "function"]);
+        // `x`: the parameter binder + its use in the body — both `param`.
+        assert_eq!(highlight_kinds_of(src, "x"), vec!["param", "param"]);
+        // `y`: the let binder + its use — both `variable`.
+        assert_eq!(highlight_kinds_of(src, "y"), vec!["variable", "variable"]);
+    }
+
+    #[test]
+    fn highlight_flags_an_unbound_name() {
+        // An unbound reference (a typo) is `unbound` — the one classification a lexical tokenizer can
+        // never make. `+` is a prelude operation → `function`.
+        let src = "(module m (def (main) (+ 1 nope)) (export main))";
+        assert_eq!(highlight_kinds_of(src, "nope"), vec!["unbound"]);
+        assert_eq!(highlight_kinds_of(src, "+"), vec!["function"]);
+    }
+
+    #[test]
+    fn highlight_colours_literals_by_kind() {
+        // Each literal leaf carries its own kind; a keyword head is `keyword`.
+        let src = "(module m (def (main) (if true 42 0)) (export main))";
+        assert_eq!(highlight_kinds_of(src, "if"), vec!["keyword"]);
+        // `true`/`42`/`0` are non-NAME leaves (Bool / Int), so the by-name helper can't find them; check
+        // the raw artifact carries a `literal` (the bool) and a `number` (the ints).
+        let out = compile(&inputs(src, &[Request::Query(Query::Highlight)]), &[]);
+        let text = artifact_text(&out, KIND_HIGHLIGHT).unwrap();
+        assert!(
+            text.lines().any(|l| l.ends_with("\tliteral")),
+            "the bool literal is classified: {text}"
+        );
+        assert!(
+            text.lines().any(|l| l.ends_with("\tnumber")),
+            "a number token is classified: {text}"
+        );
+    }
+
+    #[test]
+    fn highlight_does_not_flag_binder_declarations_as_unbound() {
+        // A binding DECLARATION (a module name, a variant-pattern PAYLOAD binder) is not a reference — it
+        // must NOT read as `unbound` on a clean program. Regression guard: a whole-program leaf walk that
+        // resolved these as value lookups reported a spurious `unbound` (they bind before they resolve).
+        let src =
+            "(module m (def (main) (match (Some 7) ((Some v) v) ((None u) 0))) (export main))";
+        // The module name binds the wrapper — a `variable`, never `unbound`.
+        assert_eq!(highlight_kinds_of(src, "m"), vec!["variable"]);
+        // `v`: the payload binder in `(Some v)` + its use in the arm body — both `variable`, none unbound.
+        let v = highlight_kinds_of(src, "v");
+        assert!(
+            !v.is_empty() && v.iter().all(|k| k == "variable"),
+            "payload binder + use are variables, not unbound: {v:?}"
+        );
+        // `u`: the `(None u)` payload binder (unused) — a `variable`, not unbound.
+        assert_eq!(highlight_kinds_of(src, "u"), vec!["variable"]);
+    }
+
+    #[test]
+    fn highlight_treats_a_record_field_and_member_key_as_labels() {
+        // A record field name and a member-access key are DATA (symbols), never resolved to a value — so
+        // they are `label`, not a spurious unbound name.
+        let src = "(module m (def (main) (. (record (x 1) (y 2)) x)) (export main))";
+        // `x` appears as a record field name AND as the member key — both `label` (never `unbound`).
+        let kinds = highlight_kinds_of(src, "x");
+        assert!(
+            !kinds.is_empty() && kinds.iter().all(|k| k == "label"),
+            "record field / member key are labels: {kinds:?}"
+        );
     }
 }
 

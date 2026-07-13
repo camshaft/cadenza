@@ -12,11 +12,12 @@ import CodeMirror from "@uiw/react-codemirror";
 import { EditorView } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
 import { cadenzaLanguage } from "./cadenzaLanguage.ts";
-import { cadenzaHighlighting } from "./theme.ts";
+import { cadenzaHighlighting, cadenzaSemanticTheme } from "./theme.ts";
 import { cadenzaLinter, lintGutter } from "../playground/lintField.ts";
 import { cadenzaHover } from "../playground/cadenzaHover.ts";
 import { cadenzaGotoDef } from "../playground/cadenzaGotoDef.ts";
 import { cadenzaHighlightRefs } from "../playground/cadenzaHighlightRefs.ts";
+import { cadenzaSemanticHighlight } from "../playground/cadenzaSemanticHighlight.ts";
 import type { Surface } from "../compiler/client.ts";
 
 const editorTheme = EditorView.theme({
@@ -79,6 +80,8 @@ export function CodeEditor({ value, onChange, readOnly, minHeight = "auto", ide 
       cadenzaHover({ surface: ide.surface, prepare: ide.prepare }),
       cadenzaGotoDef({ surface: ide.surface, prepare: ide.prepare }),
       cadenzaHighlightRefs({ surface: ide.surface, prepare: ide.prepare }),
+      cadenzaSemanticHighlight({ surface: ide.surface, prepare: ide.prepare }),
+      cadenzaSemanticTheme,
     ];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [!!ide]);
