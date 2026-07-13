@@ -2556,9 +2556,14 @@ fn check_application(
         // Comparing a SYMBOL to the plain STRING it wraps is a comparison ACROSS THE NOMINAL BOUNDARY —
         // CDZ0202 (17-symbols "a string compared to a symbol is a type error"). A Symbol is a nominal over
         // String; a nominal value never silently compares equal to the untagged shape it was declared
-        // distinct from (`type-system.md` §Nominal Types Are Not Comparable Across Their Boundary), the
-        // same rule the nominal-record-vs-plain-record case pins. Reported HERE for the right code (the
-        // generic scheme-unify below would give the plain CDZ0203); fires on either operand order.
+        // distinct from, the same rule the nominal-record-vs-plain-record case pins. Reported HERE for the
+        // right code (the generic scheme-unify below would give the plain CDZ0203); fires on either operand
+        // order. (A comparison of two DIFFERENT nominal types is likewise rejected — as the generic CDZ0203
+        // type mismatch — since two distinct `decl`s never unify.)
+        //= spec/capabilities/type-system.md#nominal-types-are-not-comparable-across-their-boundary
+        //# A comparison between a nominal value and the underlying structural value of the same shape MUST be rejected by a type-tracking generation, so that a nominal value never silently compares equal to the untagged shape it was declared distinct from.
+        //= spec/capabilities/type-system.md#nominal-types-are-not-comparable-across-their-boundary
+        //# A comparison whose operands are of two different nominal types MUST be rejected by a type-tracking generation, because the purpose of declaring a type nominal is to give its values an identity that is not interchangeable with a same-shape value of another type.
         if matches!(
             (&a, &b),
             (Ty::Symbol, Ty::String) | (Ty::String, Ty::Symbol)
