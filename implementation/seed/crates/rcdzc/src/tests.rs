@@ -7171,6 +7171,26 @@ mod stage1 {
     }
 
     #[test]
+    fn a_top_level_value_definition_binds_a_name() {
+        // 11-modules "a top-level value definition binds a name usable by the program's functions": a
+        // bare-name `(def NAME VALUE)` at the top level (signature is a NAME atom, not a `(sig param…)`
+        // list) is a VALUE definition — `answer` binds to `42`, resolvable by name in a sibling function,
+        // the same shape a nullary `(def (answer) 42)` denotes but written as name-plus-value.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def answer 42) (def (main) answer) (export main))",
+        )))
+        .expect("a top-level value def binds its name");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
+        // A value def may bind a COMPOUND (a record), projected by a sibling function — the value def's
+        // body is an arbitrary expression, not only a scalar.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def tbl (record (a 7) (b 8))) (def (main) (. tbl b)) (export main))",
+        )))
+        .expect("a top-level value def may bind a record");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 8);
+    }
+
+    #[test]
     fn a_do_local_declaration_scope_is_backward_only() {
         // Sequential scope: a form sees only the declarations BEFORE it. A FORWARD reference (`y`'s value
         // `(+ x 1)` references `x` declared AFTER it) is unbound — a declaration does not see later ones.
