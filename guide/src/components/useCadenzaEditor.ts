@@ -8,14 +8,17 @@ import { compile, renderSyntax } from "../compiler/client.ts";
 import { run as runComponent, type RunOutcome } from "../runner/client.ts";
 import { useSyntax, type Surface } from "../syntax/SyntaxContext.tsx";
 import type { Diag } from "../compiler/client.ts";
+import { applyFix as applyFixToText } from "../playground/applyFix.ts";
 
 /// The outcome of compiling + running the current buffer — a superset of the runner's `RunOutcome`
-/// that also carries a compile decline (diagnostics, no component).
+/// that also carries a compile decline (diagnostics, no component). A decline carries `wrapPrefixBytes`
+/// — the scaffolding `wrapModule` prepended before the snippet — so a fix's byte range (over the
+/// compiled text) maps back onto the editor text.
 export type EditorOutcome =
   | { kind: "value"; text: string }
   | { kind: "trap"; message: string }
   | { kind: "timeout" }
-  | { kind: "declined"; diags: Diag[] };
+  | { kind: "declined"; diags: Diag[]; wrapPrefixBytes: number };
 
 /// Make a snippet compilable by supplying the `export` (and, for a bare expression, a `main` to hold
 /// it) the compiler needs — a bare expression alone declines ("nothing is public"). Authored snippets
@@ -102,6 +105,15 @@ export async function renderSnippet(
   return stripModule(rendered, to);
 }
 
+/// The UTF-8 byte length of the scaffolding `wrapModule` prepended before the snippet — the offset
+/// that maps a compiled-text byte position back onto the editor text. `wrapModule` embeds the trimmed
+/// snippet verbatim, so we locate it in the wrapped output; 0 if it isn't found (already-complete).
+function wrapPrefixOf(editorText: string, wrapped: string): number {
+  const trimmed = editorText.trim();
+  const idx = trimmed ? wrapped.indexOf(trimmed) : -1;
+  return idx < 0 ? 0 : new TextEncoder().encode(wrapped.slice(0, idx)).length;
+}
+
 export interface CadenzaEditor {
   /** Current editor text, in `surface`. */
   text: string;
@@ -112,6 +124,8 @@ export interface CadenzaEditor {
   reset: () => void;
   /** Compile + run the current buffer, returning a normalized outcome. */
   run: () => Promise<EditorOutcome>;
+  /** Apply a diagnostic's structural fix to the snippet (`wrapPrefixBytes` from the decline). */
+  applyFix: (d: Diag, wrapPrefixBytes: number) => void;
 }
 
 /// `source` is authored once in `authoredIn`; the hook keeps the live text in the active surface.
@@ -173,8 +187,9 @@ export function useCadenzaEditor(
 
   const run = useCallback(async (): Promise<EditorOutcome> => {
     const program = wrap ? wrapModule(text, shownSurface.current) : text;
+    const wrapPrefixBytes = wrap ? wrapPrefixOf(text, program) : 0;
     const out = await compile(program, shownSurface.current);
-    if (!out.component) return { kind: "declined", diags: out.diagnostics };
+    if (!out.component) return { kind: "declined", diags: out.diagnostics, wrapPrefixBytes };
     const result: RunOutcome = await runComponent(out.component, shownSurface.current);
     switch (result.kind) {
       case "value":
@@ -186,10 +201,22 @@ export function useCadenzaEditor(
       case "error":
         return {
           kind: "declined",
-          diags: [{ error: true, code: "", message: result.message, node: -1, from: 0, to: 0 }],
+          diags: [{ error: true, code: "", message: result.message, node: -1, from: 0, to: 0, fix: null }],
+          wrapPrefixBytes,
         };
     }
   }, [text, wrap]);
+
+  /// Apply a diagnostic's structural fix to the snippet. The fix's byte range is over the COMPILED
+  /// (wrapped) text; `wrapPrefixBytes` maps it back onto the editor text, which `setText` then updates.
+  const applyFix = useCallback(
+    (d: Diag, wrapPrefixBytes: number) => {
+      if (!d.fix) return;
+      const next = applyFixToText(text, d.fix, wrapPrefixBytes);
+      if (next != null) setText(next);
+    },
+    [text],
+  );
 
   const reset = useCallback(() => {
     const target = shownSurface.current;
@@ -202,5 +229,5 @@ export function useCadenzaEditor(
     }
   }, [authoredIn, source, wrap]);
 
-  return { text, setText, surface: shownSurface.current, reset, run };
+  return { text, setText, surface: shownSurface.current, reset, run, applyFix };
 }

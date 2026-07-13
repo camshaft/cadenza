@@ -16,6 +16,8 @@ import { useCadenzaEditor, wrapModule, type EditorOutcome } from "./useCadenzaEd
 import { StatusIcon } from "./StatusIcon.tsx";
 import { OpenInPlayground } from "./OpenInPlayground.tsx";
 import type { Surface } from "../syntax/SyntaxContext.tsx";
+import type { Diag } from "../compiler/client.ts";
+import { fixConfidence, fixIsApplicable } from "../playground/applyFix.ts";
 
 /// Wrap the editor text into a compilable program for diagnostics/hover, AND report the UTF-8 byte
 /// length of the wrapper prefix so spans map back to the editor text. `wrapModule` trims the snippet,
@@ -105,7 +107,13 @@ export function Runnable({ source, authoredIn = "sexpr", wrap = true, expect = "
       </div>
 
       {status.phase !== "idle" && (
-        <StatusPane busy={busy} outcome={status.phase === "done" ? status.outcome : null} expect={expect} />
+        <StatusPane
+          busy={busy}
+          outcome={status.phase === "done" ? status.outcome : null}
+          expect={expect}
+          surface={editor.surface}
+          onApplyFix={editor.applyFix}
+        />
       )}
     </div>
   );
@@ -115,10 +123,14 @@ function StatusPane({
   busy,
   outcome,
   expect,
+  surface,
+  onApplyFix,
 }: {
   busy: boolean;
   outcome: EditorOutcome | null;
   expect: "value" | "error";
+  surface: Surface;
+  onApplyFix: (d: Diag, wrapPrefixBytes: number) => void;
 }) {
   if (busy || !outcome) {
     return (
@@ -164,8 +176,20 @@ function StatusPane({
           )}
           {outcome.diags.map((d, i) => (
             <div key={i}>
-              {d.code && <span className="font-semibold">{d.code} </span>}
-              {d.message}
+              <div>
+                {d.code && <span className="font-semibold">{d.code} </span>}
+                {d.message}
+              </div>
+              {d.fix && fixIsApplicable(d.fix, surface) && (
+                <button
+                  onClick={() => onApplyFix(d, outcome.wrapPrefixBytes)}
+                  title={d.fix.verified ? "Compiler-proven — safe to apply" : "A suggestion — confirm it matches your intent"}
+                  className="mt-1 inline-flex items-center gap-1 rounded border border-cadenza-600/40 bg-cadenza-600/10 px-2 py-0.5 text-[11px] text-cadenza-200 transition hover:bg-cadenza-600/20"
+                >
+                  💡 {fixActionLabel(d)}
+                  <span className="text-cadenza-400/70">· {fixConfidence(d.fix)}</span>
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -180,4 +204,18 @@ function StatusPane({
       <div className="min-w-0">{body}</div>
     </div>
   );
+}
+
+/// The concrete edit a fix performs, for the Apply button's label — derived from kind + payload since
+/// the compiler's prose label isn't carried over the wasm ABI.
+function fixActionLabel(d: Diag): string {
+  const fix = d.fix!;
+  switch (fix.kind) {
+    case "wrap":
+      return `Wrap in \`${fix.replacement}\``;
+    case "insert":
+      return "Add the missing arms";
+    default:
+      return `Replace with \`${fix.replacement}\``;
+  }
 }
