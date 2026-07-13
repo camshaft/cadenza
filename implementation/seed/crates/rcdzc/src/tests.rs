@@ -13162,6 +13162,86 @@ mod match_engine {
     }
 
     #[test]
+    fn a_provably_nonnegative_index_elides_the_list_at_lower_bound_check() {
+        // BOUNDS-CHECK LOWER-HALF ELISION: `List.at`/`Bytes.at` test `(index >= 0) & (index < len)`. When
+        // the index is provably NON-NEGATIVE (a masked value `(& i 3)`, a length, an unsigned type), the
+        // `index >= 0` half is a compile-time `true` — drop it, test only `index < len`. Pins the elision
+        // at the Lir level (a masked index emits NO `index >= 0` sub-check) AND that a PLAIN (possibly
+        // negative) index keeps it; runtime value parity confirms the upper bound still catches OOB.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // A `List.at` bounds check has ONE `i64.lt_s` (the upper `index < len`). The LOWER check adds a
+        // `ConstI64(0)` immediately followed by `i64.ge_s`. A masked index `(& i 3)` (∈ [0,3]) drops it;
+        // a plain param index keeps it.
+        let has_lower_check = |c: &[Lir]| {
+            c.windows(2)
+                .any(|w| matches!(w, [Lir::ConstI64(0), Lir::I64GeS]))
+        };
+        let masked = select(
+            "(module m (def (f (: xs (List Int64)) (: i Int64)) \
+               (match (List.at xs (& i 3)) ((Some x) x) (None -1))) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !has_lower_check(&masked),
+            "a masked (nonneg) index drops the `index >= 0` lower-bound check, got: {masked:?}"
+        );
+        let plain = select(
+            "(module m (def (f (: xs (List Int64)) (: i Int64)) \
+               (match (List.at xs i) ((Some x) x) (None -1))) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            has_lower_check(&plain),
+            "a plain (possibly-negative) index KEEPS the `index >= 0` check, got: {plain:?}"
+        );
+
+        // RUNTIME VALUE PARITY: the upper bound still catches OOB; the elision does not change results.
+        // The list is RUNTIME-BUILT via a push-loop (`build 0 3 (list)` = [0 1 2]) so `List.at` genuinely
+        // runs on the value heap (never folds — `run_on_heap` asserts the runtime import). A masked nonneg
+        // index in bounds → the element; a masked index past the end → None; a plain negative index → None.
+        let cases = [
+            ("(match (List.at xs (& n 3)) ((Some x) x) (None -1))", "1", "1"), // (&1 3)=1 → xs[1]=1
+            ("(match (List.at xs (& n 15)) ((Some x) x) (None -1))", "7", "-1"), // (&7 15)=7 >= len 3 → None
+            ("(match (List.at xs n) ((Some x) x) (None -1))", "-1", "-1"),       // negative → None
+        ];
+        for (body, arg, want) in cases {
+            let Some(out) = run_on_heap(&format!(
+                "(module m \
+                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                   (def (main) (let ((xs (build 0 3 (list))) (n {arg})) {body})) (export main))"
+            )) else {
+                eprintln!("runtime wasm not found; skipping bounds-elision run");
+                return;
+            };
+            assert_eq!(out, want, "List.at bounds elision parity for {body} @ n={arg}");
+        }
+    }
+
+    #[test]
     fn a_runtime_list_at_result_is_matched_by_a_nested_constructor_pattern() {
         // The reader idiom: a fallible access yields an `Option` whose `Some` payload is a USER sum, and a
         // NESTED pattern deconstructs both in one arm. `(List.at (List.push (list) (N.L 7)) 0)` is a

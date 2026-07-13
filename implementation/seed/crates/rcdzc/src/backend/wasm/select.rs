@@ -3069,16 +3069,24 @@ fn emit(
             out.push(Lir::LocalSet(list_slot));
             emit(db, index, slots, base + 3, high, scratch_ty, layout, out)?; // [index:i64]
             out.push(Lir::LocalSet(index_slot));
-            // in_bounds = (index >= 0) & (index < len), all in i64.
-            out.push(Lir::LocalGet(index_slot));
-            out.push(Lir::ConstI64(0));
-            out.push(Lir::I64GeS); // [index >= 0]
+            // in_bounds = (index >= 0) & (index < len), all in i64. LOWER-BOUND ELISION: when the index is
+            // provably NON-NEGATIVE (a masked/length/unsigned/refined value), the `index >= 0` half is a
+            // compile-time `true`, so drop it and test only `index < len` — a masked index (`(& i 15)`), a
+            // `List.len`, or a loop counter refined `≥ 0` sheds the redundant lower check (3 ops).
+            let index_nonneg = crate::lower::value_provably_nonneg(db, index);
+            if !index_nonneg {
+                out.push(Lir::LocalGet(index_slot));
+                out.push(Lir::ConstI64(0));
+                out.push(Lir::I64GeS); // [index >= 0]
+            }
             out.push(Lir::LocalGet(index_slot));
             out.push(Lir::LocalGet(list_slot));
             out.push(Lir::CallImport(OP_VEC_LEN)); // [.., index, len:i32]
             out.push(Lir::I64ExtendI32U); // [.., index, len:i64]
-            out.push(Lir::I64LtS); // [index >= 0, index < len]
-            out.push(Lir::I32And); // [in_bounds]
+            out.push(Lir::I64LtS); // [(index >= 0,) index < len]
+            if !index_nonneg {
+                out.push(Lir::I32And); // [in_bounds]
+            }
             out.push(Lir::If(BlockType::Val(ValType::I32)));
             // THEN — Some(element). `vec-get` yields the element handle BORROWED; `dup` retains it (rc++)
             // so the `Some` payload can own a reference while the list keeps its own. `dup(handle)`
@@ -3333,16 +3341,23 @@ fn emit(
             out.push(Lir::LocalSet(bytes_slot));
             emit(db, index, slots, base + 2, high, scratch_ty, layout, out)?; // [index:i64]
             out.push(Lir::LocalSet(index_slot));
-            // in_bounds = (index >= 0) & (index < len), all in i64.
-            out.push(Lir::LocalGet(index_slot));
-            out.push(Lir::ConstI64(0));
-            out.push(Lir::I64GeS); // [index >= 0]
+            // in_bounds = (index >= 0) & (index < len), all in i64. LOWER-BOUND ELISION (see `ListAt`): a
+            // provably NON-NEGATIVE index (a masked/length/unsigned/refined value) makes `index >= 0` a
+            // compile-time `true`, so drop it and test only `index < len`.
+            let index_nonneg = crate::lower::value_provably_nonneg(db, index);
+            if !index_nonneg {
+                out.push(Lir::LocalGet(index_slot));
+                out.push(Lir::ConstI64(0));
+                out.push(Lir::I64GeS); // [index >= 0]
+            }
             out.push(Lir::LocalGet(index_slot));
             out.push(Lir::LocalGet(bytes_slot));
             out.push(Lir::CallImport(OP_BYTES_LEN)); // [.., index, len:i32]
             out.push(Lir::I64ExtendI32U); // [.., index, len:i64]
-            out.push(Lir::I64LtS); // [index >= 0, index < len]
-            out.push(Lir::I32And); // [in_bounds]
+            out.push(Lir::I64LtS); // [(index >= 0,) index < len]
+            if !index_nonneg {
+                out.push(Lir::I32And); // [in_bounds]
+            }
             out.push(Lir::If(BlockType::Val(ValType::I32)));
             // THEN — Some(box-int(bytes-get(bytes, index))). `bytes-get` yields the byte as an i32 VALUE
             // (0..=255); zero-extend to i64 and box it into an `Int64` handle for the `Some` payload.
