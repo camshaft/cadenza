@@ -175,6 +175,7 @@ pass	a conditionally-selected variant is returned as a runtime sum result
 pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a consistent annotation type-checks against the inferred type
 pass	a constant argument out of a narrow parameter's range is rejected, not laundered
+pass	a constant integer widens to BigInt and narrows back through Int64 unchanged
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant left shift of 1 by 63 overflows and is rejected
 pass	a constant tuple is returned as a program result
@@ -287,6 +288,7 @@ pass	a handle body reads an enclosing function parameter
 pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm for an operation the effect does not declare is rejected
 pass	a handler arm that resumes NON-tail folds through a PURE one-hole continuation
+pass	a handler arm that resumes NON-tail folds when the perform is in a let init
 pass	a handler arm that resumes NON-tail folds when the perform is in a match scrutinee
 pass	a handler arm that resumes NON-tail folds when the perform is in an and lhs
 pass	a handler arm that resumes NON-tail folds when the perform is in an if condition
@@ -1065,6 +1067,8 @@ pass	every not-a-number value is equal to every not-a-number value
 pass	expect makes a checked-arithmetic result trap on overflow
 pass	expect unwraps the ok case of a runtime result
 pass	expect unwraps the present case of a runtime optional
+pass	extending a record adds a new field
+pass	extending a record with an already-present field is rejected
 pass	extracting a high byte composes shift and mask
 pass	false is less than true
 pass	float division rounds under the fixed mode
@@ -1159,6 +1163,7 @@ pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
 pass	multiplying quantities multiplies their dimensions
+pass	narrowing a constant BigInt out of the target range is rejected at compile time
 pass	negating a runtime Int64 near the boundary is exact just above the min
 pass	negating a runtime narrow integer just above its min is exact
 pass	negation inverts a boolean
@@ -1186,6 +1191,8 @@ pass	partial application captures a runtime parameter in the residual lambda
 pass	performing a string-parameter operation with a non-string argument is a type error
 pass	performing an operation with a wrong-type argument for a compound parameter is a type error
 pass	performing an operation with an argument of the wrong type is a type error
+pass	popping a field yields its value and the remaining record
+pass	popping an absent field is rejected
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a record onto an absent field is rejected
@@ -1322,6 +1329,7 @@ pass	the union contains the elements of either set
 pass	the unit value
 pass	the value-yielding insert reports the value it replaced
 pass	the value-yielding remove reports the value it dropped
+pass	the widening carries a full-width magnitude through BigInt
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	the width-indexed and aliased float annotations of one value do not conflict
 pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly
@@ -1385,6 +1393,9 @@ pass	unquote with more than one operand inside a quasiquote is malformed
 pass	unsigned comparison orders by magnitude, not by signed interpretation
 pass	updating a list index replaces that element, leaving others
 pass	updating a list slot with an element of a different type is a type error
+pass	updating a record field changes its type to the new value's
+pass	updating a record field replaces its value
+pass	updating an absent record field is rejected
 pass	wrapping addition of in-range operands is ordinary addition
 pass	wrapping addition wraps modulo two to the sixty-fourth on overflow
 pass	wrapping arithmetic algebraic identities hold at the range boundaries
@@ -1483,14 +1494,10 @@ todo	exact rational arithmetic is exact and normalized
 todo	exact rational division is total and exact for a nonzero divisor
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-todo	extending a record adds a new field
-todo	extending a record with an already-present field is rejected
 todo	negating a runtime Int64 overflows at Int64.min
 todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 todo	pattern matching over AST distinguishes forms
-todo	popping a field yields its value and the remaining record
 todo	popping a tuple yields element zero and the remaining tuple
-todo	popping an absent field is rejected
 todo	projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs
 todo	projecting the result of a function that threads a tuple parameter must not trap
 todo	quasiquote constructs AST with selective evaluation
@@ -1513,7 +1520,4 @@ todo	unquote in quasiquote evaluates normally and embeds
 todo	unquote-splicing splices list elements into parent
 todo	unsigned 8-bit addition that overflows its width traps
 todo	unsigned subtraction below zero traps rather than wrapping
-todo	updating a record field changes its type to the new value's
-todo	updating a record field replaces its value
-todo	updating an absent record field is rejected
 todo	wrapping arithmetic uses the distinct wrapping type

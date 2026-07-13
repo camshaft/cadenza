@@ -49,11 +49,12 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // type position projects `(meta t)`; it is not applyable (no `(meta apply)`).
     names.insert("Bool".to_string(), ground_type_record(ast, "Bool"));
     names.insert("Unit".to_string(), ground_type_record(ast, "Unit"));
-    // `BigInt` — the arbitrary-precision integer ground type (a NULLARY type like `String`/`Symbol`).
-    // B0 binds it as a bare ground-type record so `BigInt` in type position reduces to `Ty::BigInt`
-    // (via `(meta t) = (intrinsic "BigInt")` → `Prim::BigIntTy` → `ground_type`). Its `of` conversion
-    // field + arithmetic arrive in B1 (constant folding) — B0 is byte-neutral, nothing constructs one.
-    names.insert("BigInt".to_string(), ground_type_record(ast, "BigInt"));
+    // `BigInt` — the arbitrary-precision integer (a NULLARY type like `String`/`Symbol`). The module
+    // record carries `(meta t) = (intrinsic "BigInt")` (so `BigInt` in type position reduces to
+    // `Ty::BigInt`) PLUS the `of` widening conversion (`∀a. (Int a) → BigInt`, B1 — constant-folds; a
+    // runtime source declines until the runtime limb ops). Arithmetic + the reverse checked narrowing
+    // arrive in later increments.
+    names.insert("BigInt".to_string(), bigint_module(ast));
 
     // The unit VALUE, bound to the bare name `unit` — an alias for the empty list `()`, the other
     // spelling of the same value (core-semantics.md #Unit And The Empty Tuple Are The Same Value;
@@ -87,6 +88,16 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // and being ordinary names they are SHADOWABLE (a local `(let ((tuple …)) …)` wins via the
     // scope-first lookup, never reaching this entry). This is what removes the head-vs-value resolution
     // split — the name is looked up, the symbol is the unspellable primitive.
+    //
+    // The alias is an ORDINARY prelude name (like any built-in module), so it obeys Binding Is Lexical:
+    // a program binding named `tuple`/`record` shadows it in scope, and the name resolves identically in
+    // head and value position (never recognized as the constructor where a program name would not be).
+    //= spec/capabilities/core-semantics.md#a-compound-value-has-a-symbol-constructor-and-a-shadowable-alias
+    //# Each such primitive MUST ALSO be reachable through an ordinary **alias name** — `tuple` for `("tuple" …)`, `record` for `("record" …)` — bound in the prelude exactly as any other built-in name, and therefore subject to *Binding Is Lexical* and *A Built-In Module Is A Record Of Its Operations*: a reference to the alias MUST resolve to the nearest enclosing binding of that name.
+    //= spec/capabilities/core-semantics.md#a-compound-value-has-a-symbol-constructor-and-a-shadowable-alias
+    //# Consequently a program binding named `tuple` or `record` (by `let`, a definition, or a parameter) MUST shadow the built-in alias for the extent of its scope — an application `(tuple a b)` in that scope MUST apply the bound value, not construct a tuple — precisely as a binding named `list` shadows the list constructor.
+    //= spec/capabilities/core-semantics.md#a-compound-value-has-a-symbol-constructor-and-a-shadowable-alias
+    //# The alias name MUST resolve identically in application-head position and in value position: the language MUST NOT recognize the alias name as the built-in constructor in a position a program-defined name would not be, so that one name never resolves two ways by syntactic position (the resolution split *Binding Is Lexical* forbids).
     names.insert("tuple".to_string(), ctor_record(ast, "tuple-new"));
     names.insert("record".to_string(), ctor_record(ast, "record-new"));
     // `list` — the list-VALUE constructor alias (`(list 1 2 3)`), variadic + homogeneous → `Ty::List`.
@@ -340,12 +351,15 @@ fn record_module(ast: &mut Arenas) -> StructId {
     // The row operations, each an operator record whose `(meta t)` is the permissive `∀a. a → a`
     // placeholder (bypassed — `infer::apply_type` computes the result type, `check_application` skips the
     // scheme-unify). `project`/`without` take a record + a LITERAL field-name list; `merge` takes two
-    // record VALUES (no label list).
+    // record VALUES; `extend`/`with` a record + a `(name value)` pair; `pop` a record + a bare field name.
     let mut children = vec![head, apply_field];
     for (name, prim) in [
         ("project", "record-project"),
         ("without", "record-without"),
         ("merge", "record-merge"),
+        ("extend", "record-extend"),
+        ("with", "record-with"),
+        ("pop", "record-pop"),
     ] {
         let lambda = row_op_placeholder_type(ast);
         let op = list_op_record(ast, prim, lambda);
@@ -860,6 +874,43 @@ fn symbol_of_type(ast: &mut Arenas) -> StructId {
     let body = arrow_type(ast, string, symbol);
     let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The `BigInt` module record — carries `(meta t) = (intrinsic "BigInt")` (so bare `BigInt` in type
+/// position IS `Ty::BigInt`, like `Symbol`/`String`) PLUS the `of` conversion field. B1 adds `of`
+/// (`∀a. (Int a) → BigInt`, the widening from any fixed-width integer); arithmetic + the reverse
+/// checked narrowing arrive later.
+fn bigint_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let ty_val = intrinsic_node(ast, "BigInt");
+    let t_field = meta_field(ast, "t", ty_val);
+    let mut children = vec![head, t_field];
+    // `of : ∀a. (Int a) → BigInt` — the EXACT widening from a fixed-width integer (never traps; every
+    // fixed-width value fits the unbounded type). The `(fn (a) …)` wrapper makes it a SCHEME generic over
+    // the source width, exactly as `wrap`/the arithmetic operators are.
+    let of_ty = bigint_of_type(ast);
+    let of_op = list_op_record(ast, "bigint-of", of_ty);
+    let of_key = push_atom(ast, Leaf::Name("of".to_string()));
+    children.push(push_list(ast, vec![of_key, of_op]));
+    push_list(ast, children)
+}
+
+/// The type-lambda `(fn (a) (-> (Int a) BigInt))` for `BigInt.of` — generic over the SOURCE integer
+/// width `a` (like `wrap`'s source), with the fixed result `BigInt`. `infer` reads it as the scheme
+/// `∀a. (Int a) → BigInt`, so any fixed-width integer converts and the generic application rule fills
+/// the result `Ty::BigInt`; a non-integer source fails to unify with `(Int a)` (CDZ0301).
+fn bigint_of_type(ast: &mut Arenas) -> StructId {
+    let int_a = {
+        let int = push_atom(ast, Leaf::Name("Int".to_string()));
+        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        push_list(ast, vec![int, a])
+    };
+    let bigint = intrinsic_node(ast, "BigInt");
+    let body = arrow_type(ast, int_a, bigint);
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let params = push_list(ast, vec![a_param]);
     push_list(ast, vec![fn_head, params, body])
 }
 

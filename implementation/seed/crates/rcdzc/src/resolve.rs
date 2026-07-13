@@ -2506,6 +2506,27 @@ pub(crate) fn record_op_labels(db: &Db, node: StructId) -> Option<Vec<Symbol>> {
     Some(labels)
 }
 
+/// A record row operation's BARE field-name operand (`Record.pop r z`) as a label — the `read_key` rule,
+/// exposed for the row ops. `None` if `node` is not a bare label (a malformed operand).
+pub(crate) fn read_label(db: &Db, node: StructId) -> Option<Symbol> {
+    read_key(db, node)
+}
+
+/// A record row operation's `(name value)` PAIR operand (`Record.extend`/`Record.with`'s `(z v)`) as
+/// `(label, value-occurrence)`. The name is a LABEL (via `read_key`); the value is an ordinary expression
+/// (its type/value flow normally — unlike `project`/`without`'s inert label list). `None` if `node` is not
+/// a two-element `(name value)` list with a bare-label name (a malformed operand).
+pub(crate) fn record_op_pair(db: &Db, node: StructId) -> Option<(Symbol, StructId)> {
+    let Struct::List(items) = db.ast.get(node) else {
+        return None;
+    };
+    if items.len() != 2 {
+        return None;
+    }
+    let label = read_key(db, items[0])?;
+    Some((label, items[1]))
+}
+
 fn read_key(db: &Db, node: StructId) -> Option<Symbol> {
     if let Some(n) = db.ast.as_name(node) {
         return Some(Symbol::plain(n));

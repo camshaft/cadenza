@@ -2046,6 +2046,7 @@ fn emit_distinct_sig_resource(
         ret_vt: ValType,
         arg_bytes: Vec<u8>,
         result_byte: u8,
+        ret_is_bytes: bool,
     }
     let mut ginfos: Vec<GroupInfo> = Vec::new();
     for sig in &sigs {
@@ -2060,8 +2061,18 @@ fn emit_distinct_sig_resource(
             .iter()
             .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
             .collect::<Result<_, _>>()?;
-        let result_byte = closure_boundary_byte(&ret_ty)
-            .ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
+        // A byte-rope (`Bytes`/`String`) result crosses `call-<g>` as `list<u8>` (not an inline scalar), so
+        // it skips the scalar-boundary-byte check; `result_byte` is a placeholder (unused for byte-rope).
+        let ret_is_bytes = matches!(
+            ret_ty.strip_nominal(),
+            crate::ty::Ty::Bytes | crate::ty::Ty::String
+        );
+        let result_byte = if ret_is_bytes {
+            0
+        } else {
+            closure_boundary_byte(&ret_ty)
+                .ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
+        };
         let arg_vts: Vec<ValType> = arg_tys
             .iter()
             .map(|t| {
@@ -2075,6 +2086,7 @@ fn emit_distinct_sig_resource(
             ret_vt,
             arg_bytes,
             result_byte,
+            ret_is_bytes,
         });
     }
     // Effect-escape fence: no lifted body may perform a host effect.
@@ -2185,10 +2197,17 @@ fn emit_distinct_sig_resource(
     // G resource types → the envelope prepends 2*G resource intrinsics before the defined funcs, so fix
     // `import_base` accordingly (else `abs`/`lifted_abs`/the element segment are off by 2*(G-1)).
     let intrinsics = (2 * sigs.len()) as u32;
+    let any_bytes = ginfos.iter().any(|gi| gi.ret_is_bytes);
     let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
         used.insert("arr-get");
         used.insert("get-int");
         used.insert("drop");
+        if any_bytes {
+            // A byte-rope group's `call-<g>` copies the closure's Bytes/String out via a `bytes-len`/
+            // `bytes-get` loop into linear memory (the `list<u8>` payload).
+            used.insert("bytes-len");
+            used.insert("bytes-get");
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -2245,11 +2264,13 @@ fn emit_distinct_sig_resource(
             arg_vts: ginfos[gi].arg_vts.clone(),
             ret_vt: ginfos[gi].ret_vt,
             lifted_slot: slot,
+            ret_is_bytes: ginfos[gi].ret_is_bytes,
         });
         abi_groups.push(envelope::SigGroupAbi {
             makes: abi_makes,
             arg_bytes: ginfos[gi].arg_bytes.clone(),
             result_byte: ginfos[gi].result_byte,
+            ret_is_bytes: ginfos[gi].ret_is_bytes,
         });
     }
 
