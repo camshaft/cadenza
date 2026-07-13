@@ -10734,6 +10734,24 @@ mod stage1 {
     }
 
     #[test]
+    fn a_delegated_effect_reached_through_a_recursive_callee_compiles() {
+        // E2h-rec: `main` delegates `log` and calls a RECURSIVE `go` that performs `log.emit` on each
+        // step. Two coupled fixes: (1) `body_reaches_effect` (the CDZ0404 latent-authority check) now
+        // FOLLOWS a recursive callee (visited-set guarded), so `log` is seen as reached — no false
+        // "latent authority"; (2) `go`'s `log.emit` lowers to a `Core::HostCall` via
+        // `perform_host_target`'s program-delegation fallback (the enclosing entrypoint delegates `log`),
+        // and the `(do (log.emit "x") (go …))` body sequences it via `Core::Seq` (E2h-seq) so the call is
+        // EMITTED, not dropped. Compiles to a component importing `log` (gate → unit + observed log.emit).
+        let src = "(do (effect log (op emit (-> String Unit))) \
+                   (def (go n) (if (= n 0) unit (do (log.emit \"x\") (go (- n 1))))) \
+                   (def (main) (host (log) (go 1))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a host effect reached through a recursive callee must compile"
+        );
+    }
+
+    #[test]
     fn a_recursive_fn_threads_two_nested_handlers_states_at_once() {
         // E3h-B: a recursive `loop` runs under TWO nested stateful handlers — `A` (countdown seeded 3,
         // `tick` threads `s-1`) governs recursion depth, `B` (accumulator seeded 0, `bump` threads `s+10`)

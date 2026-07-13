@@ -1074,7 +1074,7 @@ todo	an association list is searched by key with a tuple-carrying Option match
 todo	an empty map is unequal to a non-empty map, not a type error
 todo	an empty quote is rejected, not a crash
 pass	an entrypoint delegation lets a program reach its host function
-todo	an entrypoint delegation reaches an effect performed in a recursive callee
+pass	an entrypoint delegation reaches an effect performed in a recursive callee
 todo	an explicit annotation overrides the default-integer pragma
 todo	an export and a like-named metadata key do not collide
 todo	an integer width above the 64-bit ceiling is rejected
