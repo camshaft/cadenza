@@ -1075,8 +1075,71 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
-    /// `[e, …]`.
+    /// Like [`Self::bracketed`], but a `Leaf::Name("..")` marker in `items` glues to the FOLLOWING
+    /// item as a single `.. rest` comma-slot (rendered by `emit_rest`) — the inverse of the reader's
+    /// flat `… ".." rest` rest/spread shape. An ordinary item renders via `emit`. Used by the list/map
+    /// construction literals AND their patterns, so `..` reads back uniformly in every position.
+    fn bracketed_rest(
+        &mut self,
+        open: &str,
+        close: &str,
+        pad: bool,
+        items: &[StructId],
+        mut emit: impl FnMut(&mut Self, StructId),
+        mut emit_rest: impl FnMut(&mut Self, StructId),
+    ) {
+        self.doc.cbox(INDENT);
+        self.doc.word(open.to_string());
+        if items.is_empty() {
+            self.doc.word(close.to_string());
+            self.doc.end();
+            return;
+        }
+        self.doc.break_with(if pad { 1 } else { 0 }, 0);
+        let mut i = 0;
+        let mut first = true;
+        while i < items.len() {
+            if !first {
+                self.doc.word(",");
+                self.doc.space();
+            }
+            first = false;
+            // A `..` marker consumes the next item as its rest binder (`.. rest`); a marker with no
+            // following item is malformed input — render it as a bare `..` so nothing is dropped.
+            if self.head_name(items[i]).as_deref() == Some("..") && i + 1 < items.len() {
+                self.doc.word(".. ");
+                emit_rest(self, items[i + 1]);
+                i += 2;
+            } else {
+                emit(self, items[i]);
+                i += 1;
+            }
+        }
+        self.doc.break_with(if pad { 1 } else { 0 }, -INDENT);
+        self.doc.word(close.to_string());
+        self.doc.end();
+    }
+
+    /// Whether `items` contains a `Leaf::Name("..")` rest/spread marker — a list/map carrying one must
+    /// render through the rest-aware path (`bracketed_rest`) rather than the plain `bracketed`.
+    fn has_rest_marker(&self, items: &[StructId]) -> bool {
+        items
+            .iter()
+            .any(|&e| self.head_name(e).as_deref() == Some(".."))
+    }
+
+    /// `[e, …]`, with an optional `.. rest` spread (`[1, 2, .. rest]`).
     fn print_list_literal(&mut self, elems: &[StructId]) {
+        if self.has_rest_marker(elems) {
+            return self.bracketed_rest(
+                "[",
+                "]",
+                false,
+                elems,
+                |p, e| p.expr(e, 0),
+                |p, e| p.expr(e, 0),
+            );
+        }
         self.bracketed("[", "]", false, elems, |p, e| p.expr(e, 0));
     }
 
@@ -1156,16 +1219,20 @@ impl<'a> Printer<'a> {
                 if !names.is_empty() && names.iter().all(|&n| self.a.as_name(n).is_some()))
     }
 
-    /// `#{ key = v, … }`.
+    /// `#{ key = v, … }`, with an optional `.. rest` spread (`#{ 1 = v, .. rest }`).
     fn print_map(&mut self, entries: &[StructId]) {
-        self.bracketed("#{", "}", true, entries, |p, entry| {
+        let entry = |p: &mut Self, entry: StructId| {
             if let Struct::List(pair) = p.a.get(entry) {
                 let (key, value) = (pair[0], pair[1]);
                 p.expr(key, 0);
                 p.doc.word(" = ");
                 p.expr(value, 0);
             }
-        });
+        };
+        if self.has_rest_marker(entries) {
+            return self.bracketed_rest("#{", "}", true, entries, entry, |p, e| p.expr(e, 0));
+        }
+        self.bracketed("#{", "}", true, entries, entry);
     }
 
     /// `match scrut { pat => body, … }` — one arm per line (consistent box) when broken.
@@ -1238,6 +1305,29 @@ impl<'a> Printer<'a> {
                     self.doc.word(")");
                     return;
                 }
+                // list pattern `(list p… .. rest)` -> `[p, …, .. rest]`, the value list literal's twin
+                // in pattern position (unconditional like the tuple pattern — a pattern head `list` is
+                // the list constructor by grammar). A `..` marker glues to its rest binder.
+                if self.head_name(items[0]).as_deref() == Some("list") {
+                    self.print_pattern_seq("[", "]", &items[1..], |p, e| p.pattern(e));
+                    return;
+                }
+                // map pattern `(map (k p) … .. rest)` -> `#{ k = p, …, .. rest }`, the key-directed
+                // twin of the map literal. Each entry is a `(key sub-pattern)` pair; the key is a value
+                // expression, the value slot a sub-pattern.
+                if self.head_name(items[0]).as_deref() == Some("map")
+                    && self.is_map_pattern(&items[1..])
+                {
+                    self.print_pattern_seq("#{ ", " }", &items[1..], |p, entry| {
+                        if let Struct::List(pair) = p.a.get(entry) {
+                            let (key, sub) = (pair[0], pair[1]);
+                            p.expr(key, 0);
+                            p.doc.word(" = ");
+                            p.pattern(sub);
+                        }
+                    });
+                    return;
+                }
                 // dotted constructor `(. A B)` prints as A.B
                 if self.head_name(items[0]).as_deref() == Some(".")
                     && items.len() == 3
@@ -1266,6 +1356,50 @@ impl<'a> Printer<'a> {
                 };
                 self.leaf(&leaf);
             }
+        }
+    }
+
+    /// Render a list/map PATTERN's items as `open p, …, .. rest close`, inline (patterns are small; no
+    /// break box). A `Leaf::Name("..")` marker glues to the following item as `.. rest`, the inverse of
+    /// the reader's flat rest shape; every other item renders via `emit`. Twin of `bracketed_rest` for
+    /// the always-inline pattern surface.
+    fn print_pattern_seq(
+        &mut self,
+        open: &str,
+        close: &str,
+        items: &[StructId],
+        mut emit: impl FnMut(&mut Self, StructId),
+    ) {
+        self.doc.word(open.to_string());
+        let mut i = 0;
+        let mut first = true;
+        while i < items.len() {
+            if !first {
+                self.doc.word(", ");
+            }
+            first = false;
+            if self.head_name(items[i]).as_deref() == Some("..") && i + 1 < items.len() {
+                self.doc.word(".. ");
+                self.pattern(items[i + 1]);
+                i += 2;
+            } else {
+                emit(self, items[i]);
+                i += 1;
+            }
+        }
+        self.doc.word(close.to_string());
+    }
+
+    /// A map PATTERN the `#{ k = p, … }` surface handles: each entry is a `(key sub-pattern)` pair,
+    /// with an optional trailing `.. rest` marker + one binder (as the reader writes it). A shape that
+    /// is not well-formed falls back to the generic `map(...)` call form so it still round-trips.
+    fn is_map_pattern(&self, items: &[StructId]) -> bool {
+        match items
+            .iter()
+            .position(|&a| self.head_name(a).as_deref() == Some(".."))
+        {
+            Some(i) => i + 2 == items.len() && self.is_pairs(&items[..i]),
+            None => self.is_pairs(items),
         }
     }
 
@@ -1440,9 +1574,20 @@ impl<'a> Printer<'a> {
             })
     }
 
-    /// A map the `#{ key: v, … }` surface handles: every entry is a `(key value)` pair (any key).
+    /// A map the `#{ key: v, … }` surface handles: every entry is a `(key value)` pair (any key),
+    /// with an optional trailing `.. rest` spread (a `Leaf::Name("..")` marker followed by one binder,
+    /// as the reader writes it). The pairs before the marker must be well-formed; the marker + its
+    /// binder are rendered by `bracketed_rest`. A map whose `..` is not a well-formed trailing
+    /// `.. rest` falls back to the generic call form so it still round-trips.
     fn is_map_shape(&self, args: &[StructId]) -> bool {
-        self.is_pairs(args)
+        match args
+            .iter()
+            .position(|&a| self.head_name(a).as_deref() == Some(".."))
+        {
+            // `.. rest` must be the LAST group (marker at len-2, one binder at len-1); before it, pairs.
+            Some(i) => i + 2 == args.len() && self.is_pairs(&args[..i]),
+            None => self.is_pairs(args),
+        }
     }
 
     /// A def the `def name(…) = body` (function) surface handles: a signature LIST `(name p…)` (head
@@ -2194,6 +2339,54 @@ mod tests {
         // a 1-element tuple pattern prints `(a,)` (trailing comma), re-reading as a 1-tuple not `(a)`.
         let a = sexpr::read("(match p ((tuple a) a) (_ 0))").unwrap();
         assert!(print(&a, 80).contains("(a,) =>"), "got: {}", print(&a, 80));
+    }
+
+    #[test]
+    fn rest_operator_round_trips_across_collections() {
+        // `..` is the ONE rest/spread marker, uniform across list/map in BOTH construction and
+        // pattern position. It re-reads as itself (`.. rest`), never the old `` `..` `` name escape.
+
+        // --- construction spread ---
+        assert_eq!(assert_roundtrip("[1, 2, .. rest]", 80), "[1, 2, .. rest]");
+        assert_eq!(assert_roundtrip("[.. rest]", 80), "[.. rest]");
+        assert_eq!(
+            assert_roundtrip("#{ 1 = 10, .. rest }", 80),
+            "#{ 1 = 10, .. rest }"
+        );
+
+        // --- pattern (list) ---
+        assert_eq!(
+            assert_roundtrip("match xs with | [] => 0 | [x, .. rest] => x", 80),
+            "match xs with\n  | [] => 0\n  | [x, .. rest] => x"
+        );
+        // a catch-all rest with no leading binders.
+        assert_eq!(
+            assert_roundtrip("match xs with | [.. all] => 7", 80),
+            "match xs with\n  | [.. all] => 7"
+        );
+
+        // --- pattern (map) ---
+        assert_eq!(
+            assert_roundtrip("match m with | #{ 1 = v, .. rest } => v | _ => 0", 80),
+            "match m with\n  | #{ 1 = v, .. rest } => v\n  | _ => 0"
+        );
+
+        // --- the s-expr surface is the oracle: the flat `… ".." rest` shape prints as `.. rest`,
+        //     the SAME shape the compiler's list/map lowering scans for (no arena change). ---
+        let a = sexpr::read("(match xs ((list x .. rest) x))").unwrap();
+        assert!(
+            print(&a, 80).contains("[x, .. rest] =>"),
+            "got: {}",
+            print(&a, 80)
+        );
+        let a = sexpr::read("(match m ((map (1 v) .. rest) v) (_ 0))").unwrap();
+        assert!(
+            print(&a, 80).contains("#{ 1 = v, .. rest } =>"),
+            "got: {}",
+            print(&a, 80)
+        );
+        let a = sexpr::read("(list 1 2 .. rest)").unwrap();
+        assert_eq!(print(&a, 80), "[1, 2, .. rest]");
     }
 
     #[test]

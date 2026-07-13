@@ -62,6 +62,12 @@ export function coreModule(text: string, from: Surface): Promise<Uint8Array | nu
   return client().coreModule(text, from);
 }
 
+/// Evaluate a REPL expression against a buffer's definitions (the playground's mini-REPL). Returns a
+/// compile outcome; the caller runs the component through the run client just like a normal example.
+export function replEval(buffer: string, expr: string, from: Surface): Promise<CompileOutcome> {
+  return client().replEval(buffer, expr, from);
+}
+
 export function runtimeHash(): Promise<string> {
   return client().runtimeHash();
 }

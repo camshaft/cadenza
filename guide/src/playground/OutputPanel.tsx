@@ -2,8 +2,9 @@
 /// jump), and AST (the raw tree the compiler sees — a nearly-free differentiator).
 
 import { useState } from "react";
-import type { Diag } from "../compiler/client.ts";
+import type { Diag, Surface } from "../compiler/client.ts";
 import { StatusIcon } from "../components/StatusIcon.tsx";
+import { ReplPanel, type ReplEntry } from "./ReplPanel.tsx";
 
 export type RunView =
   | { kind: "idle" }
@@ -13,7 +14,7 @@ export type RunView =
   | { kind: "timeout" }
   | { kind: "error"; message: string };
 
-type Tab = "result" | "diagnostics" | "ast" | "compiled";
+type Tab = "result" | "repl" | "diagnostics" | "ast" | "compiled";
 
 /// What the program compiled to, for the "Compiled" tab. `wat`/`rustSync`/`rustAsync` are filled
 /// lazily (null until computed) so a run doesn't pay for views the reader hasn't opened.
@@ -34,13 +35,17 @@ interface Props {
   diagnostics: Diag[];
   ast: string;
   compiled: CompiledInfo | null;
+  /** The surface the REPL input is written in (mirrors the editor). */
+  surface: Surface;
+  /** Evaluate a REPL expression against the current buffer (see `ReplPanel`). */
+  onReplEval: (expr: string) => Promise<ReplEntry["result"]>;
   /** Jump the editor to a diagnostic's source range. */
   onJumpTo: (from: number, to: number) => void;
   /** Ask the page to compute a Compiled sub-view (WAT / Rust / Rust-async) on demand. */
   onNeedCompiledView: (view: CompiledView) => void;
 }
 
-export function OutputPanel({ run, diagnostics, ast, compiled, onJumpTo, onNeedCompiledView }: Props) {
+export function OutputPanel({ run, diagnostics, ast, compiled, surface, onReplEval, onJumpTo, onNeedCompiledView }: Props) {
   const [tab, setTab] = useState<Tab>("result");
   const errorCount = diagnostics.filter((d) => d.error).length;
 
@@ -49,6 +54,9 @@ export function OutputPanel({ run, diagnostics, ast, compiled, onJumpTo, onNeedC
       <div className="flex items-center gap-1 border-b border-slate-700/60 bg-slate-800/50 px-2 py-1">
         <TabButton active={tab === "result"} onClick={() => setTab("result")}>
           Result
+        </TabButton>
+        <TabButton active={tab === "repl"} onClick={() => setTab("repl")}>
+          REPL
         </TabButton>
         <TabButton active={tab === "diagnostics"} onClick={() => setTab("diagnostics")}>
           Diagnostics
@@ -71,14 +79,22 @@ export function OutputPanel({ run, diagnostics, ast, compiled, onJumpTo, onNeedC
         </TabButton>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto p-3 font-mono text-[13px]">
-        {tab === "result" && <ResultBody run={run} />}
-        {tab === "diagnostics" && <DiagnosticsBody diagnostics={diagnostics} onJumpTo={onJumpTo} />}
-        {tab === "ast" && (
-          <pre className="whitespace-pre-wrap text-slate-400">{ast || "— run or edit to see the tree —"}</pre>
-        )}
-        {tab === "compiled" && <CompiledBody compiled={compiled} onNeed={onNeedCompiledView} />}
-      </div>
+      {/* The REPL owns its own scroll + a pinned input row, so it gets the bare flex box (no
+          `overflow-auto`); the static views share the scrolling, padded wrapper. */}
+      {tab === "repl" ? (
+        <div className="min-h-0 flex-1 p-3 font-mono text-[13px]">
+          <ReplPanel surface={surface} onEval={onReplEval} />
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-auto p-3 font-mono text-[13px]">
+          {tab === "result" && <ResultBody run={run} />}
+          {tab === "diagnostics" && <DiagnosticsBody diagnostics={diagnostics} onJumpTo={onJumpTo} />}
+          {tab === "ast" && (
+            <pre className="whitespace-pre-wrap text-slate-400">{ast || "— run or edit to see the tree —"}</pre>
+          )}
+          {tab === "compiled" && <CompiledBody compiled={compiled} onNeed={onNeedCompiledView} />}
+        </div>
+      )}
     </div>
   );
 }

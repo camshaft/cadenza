@@ -890,6 +890,7 @@ fn walk_for_dead_traps(
         | Resolved::Lambda { .. }
         | Resolved::SumPayload { .. }
         | Resolved::BinField { .. }
+        | Resolved::MapField { .. }
         | Resolved::Poison(_) => {}
     }
 }

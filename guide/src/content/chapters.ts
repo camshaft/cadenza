@@ -128,6 +128,15 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Floats.tsx")),
   },
   {
+    // NOT "playground": the top-level `/playground` route (the full IDE) is matched before `/:slug`,
+    // so a chapter with that slug would be shadowed and unreachable. Use a distinct slug.
+    slug: "using-the-playground",
+    title: "The playground",
+    blurb: "The full editor: a REPL, compiled-output views, and shareable links.",
+    section: "Wrapping up",
+    Component: lazy(() => import("./chapters/Playground.tsx")),
+  },
+  {
     slug: "whats-next",
     title: "Where to go next",
     blurb: "A recap, one last program, and how to keep exploring.",

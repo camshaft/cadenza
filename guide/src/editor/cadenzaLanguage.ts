@@ -9,7 +9,7 @@ import { StreamLanguage, type StringStream } from "@codemirror/language";
 const KEYWORDS = new Set([
   // ML surface
   "fn", "def", "let", "in", "if", "then", "else", "match", "with", "module",
-  "export", "effect", "handle", "host", "op", "type", "do", "guard",
+  "export", "import", "from", "effect", "handle", "host", "op", "type", "do", "guard",
   // s-expression heads that read as keywords
   "lambda", "record", "tuple", "list", "map", "set", "quote", "quasiquote",
 ]);

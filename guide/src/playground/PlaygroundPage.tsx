@@ -12,7 +12,8 @@ import { OutputPanel, type RunView, type CompiledInfo } from "./OutputPanel.tsx"
 import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples.ts";
 import { decodeShareHash, encodeShareHash } from "./share.ts";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
-import { compile, renderSyntax, emitRust, coreModule, type Diag, type Surface } from "../compiler/client.ts";
+import { compile, renderSyntax, emitRust, coreModule, replEval, type Diag, type Surface } from "../compiler/client.ts";
+import type { ReplEntry } from "./ReplPanel.tsx";
 import { toWat } from "./wat.ts";
 import type { CompiledView } from "./OutputPanel.tsx";
 import { run as runComponent } from "../runner/client.ts";
@@ -61,11 +62,19 @@ export default function PlaygroundPage() {
   // surface right after a share-hash seed, so the buffer's real surface and the ref disagree).
   const lastRun = useRef<{ text: string; surface: Surface }>({ text: initial.src, surface: initial.surface });
   // The surface the current `text` is written in — so a toggle re-renders the buffer (preserving
-  // edits) rather than trying to parse it in the wrong surface.
-  const shownSurface = useRef(surface);
+  // edits) rather than trying to parse it in the wrong surface. Initialized to the SEEDED buffer's
+  // surface (known synchronously), NOT the reactive `surface` (which defaults to ML and only reconciles
+  // in the mount effect below) — otherwise a callback firing before that effect (e.g. a REPL call on a
+  // freshly-shared s-expr buffer) would parse the buffer in the wrong surface.
+  const shownSurface = useRef(initial.surface);
   // Becomes true once the mount effect has chosen the starting buffer, so the persist effect doesn't
   // save the initial default over a restored buffer.
   const seeded = useRef(false);
+  // Guards the surface-toggle effect against its mount invocation: on mount the buffer already matches
+  // `shownSurface` (both are the seeded surface), so there's nothing to convert — and converting then
+  // would race the mount effect's `setSurface`, corrupting the buffer (parsing s-expr as ML). Only a
+  // genuine post-mount toggle should re-render the buffer.
+  const didMountSurface = useRef(false);
 
   // Seed the buffer on first mount, in priority order: a shared link (URL hash) → the reader's last
   // saved buffer (localStorage) → the default example rendered into the active surface (the default is
@@ -94,6 +103,13 @@ export default function PlaygroundPage() {
 
   // On a global surface toggle, re-render the current buffer into the new surface (preserving edits).
   useEffect(() => {
+    // Skip the mount invocation (see `didMountSurface`): the seeded buffer already matches
+    // `shownSurface` (both `initial.surface`), and converting here would race the mount reconciliation.
+    if (!didMountSurface.current) {
+      didMountSurface.current = true;
+      shownSurface.current = initial.surface;
+      return;
+    }
     if (surface === shownSurface.current) return;
     const from = shownSurface.current;
     let cancelled = false;
@@ -187,6 +203,32 @@ export default function PlaygroundPage() {
       }
     },
     [],
+  );
+
+  // Evaluate one REPL expression against the current buffer: compile buffer-defs + expr into one
+  // module (`replEval`), then run the emitted component through the SAME run path the Run button uses,
+  // rendering the value in the buffer's surface. A compile decline surfaces the first error's message.
+  const replCall = useCallback(
+    async (expr: string): Promise<ReplEntry["result"]> => {
+      const srf = shownSurface.current;
+      const out = await replEval(text, expr, srf);
+      if (!out.component) {
+        const firstErr = out.diagnostics.find((d) => d.error);
+        return { kind: "error", message: firstErr ? `${firstErr.code || ""} ${firstErr.message}`.trim() : "declined" };
+      }
+      const r = await runComponent(out.component, srf);
+      switch (r.kind) {
+        case "value":
+          return { kind: "value", text: r.text };
+        case "trap":
+          return { kind: "trap", message: r.message };
+        case "timeout":
+          return { kind: "timeout" };
+        default:
+          return { kind: "error", message: r.message };
+      }
+    },
+    [text],
   );
 
   // ⌘/Ctrl-Enter runs.
@@ -318,6 +360,8 @@ export default function PlaygroundPage() {
             diagnostics={diags}
             ast={ast}
             compiled={compiled}
+            surface={surface}
+            onReplEval={replCall}
             onJumpTo={jumpTo}
             onNeedCompiledView={needCompiledView}
           />

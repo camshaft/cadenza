@@ -14,6 +14,7 @@ import init, {
   references_at as wasmReferencesAt,
   emit_rust as wasmEmitRust,
   core_module as wasmCoreModule,
+  repl_eval as wasmReplEval,
   render_syntax as wasmRenderSyntax,
   render_value as wasmRenderValue,
   required_runtime_hash as wasmRuntimeHash,
@@ -134,6 +135,17 @@ const api = {
     await ensureReady();
     const bytes = wasmCoreModule(text, from);
     return bytes ? new Uint8Array(bytes) : null;
+  },
+
+  /// Evaluate a REPL `expr` against the `buffer`'s definitions — the playground's mini-REPL. Returns a
+  /// CompileOutcome (component + diagnostics) exactly like `compile`, so the caller runs the component
+  /// through the same run worker. The buffer's exports are dropped; the expression becomes the sole
+  /// entry, so a scalar OR compound result flows through the normal run path.
+  async replEval(buffer: string, expr: string, from: Surface): Promise<CompileOutcome> {
+    await ensureReady();
+    const r = wasmReplEval(buffer, expr, from);
+    const component = r.component ? new Uint8Array(r.component) : null;
+    return { component, diagnostics: r.diagnostics.map(toDiag) };
   },
 
   async runtimeHash(): Promise<string> {

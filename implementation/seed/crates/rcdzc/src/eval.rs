@@ -891,6 +891,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         | Resolved::Ref { .. }
         | Resolved::SumPayload { .. }
         | Resolved::BinField { .. }
+        | Resolved::MapField { .. }
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)

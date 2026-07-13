@@ -484,6 +484,13 @@ fn string_module(ast: &mut Arenas) -> StructId {
     let at_op = list_op_record(ast, "str-at", at_ty);
     let at_key = push_atom(ast, Leaf::Name("at".to_string()));
     children.push(push_list(ast, vec![at_key, at_op]));
+    // `scalar-at : String → Int64 → (Option Char)` — the fallible read of the CHAR (single Unicode scalar)
+    // at a scalar position (the char-typed companion of `at`, which yields a one-scalar String). In range
+    // → `(Some #\c)`, out → `None`. Addresses SCALAR values, not bytes. A constant string FOLDS.
+    let scalar_at_ty = str_scalar_at_type(ast);
+    let scalar_at_op = list_op_record(ast, "str-scalar-at", scalar_at_ty);
+    let scalar_at_key = push_atom(ast, Leaf::Name("scalar-at".to_string()));
+    children.push(push_list(ast, vec![scalar_at_key, scalar_at_op]));
     // `concat : String → String → String` — the total binary join (the compiler builds error messages
     // and export names this way). On two constant strings it FOLDS to their concatenation.
     let concat_ty = string_concat_type(ast);
@@ -720,6 +727,26 @@ fn str_at_type(ast: &mut Arenas) -> StructId {
     let index_arrow = arrow_type(ast, int64, option_string); // (-> Int64 (Option String))
     let string = intrinsic_node(ast, "String");
     let body = arrow_type(ast, string, index_arrow); // (-> String (-> Int64 (Option String)))
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type `(fn () (-> String (-> Int64 (Option Char))))` for `String.scalar-at` — the fallible read of
+/// the CHAR at a scalar position (`String → Int64 → (Option Char)`, the char-typed companion of
+/// `String.at`). A ZERO-PARAM `fn` wrapper (see [`str_at_type`]). The `String` param is `(intrinsic
+/// "String")` (→ `Ty::String`); the result `(Option Char)` — `Option` an ordinary prelude name applied to
+/// the `(intrinsic "Char")` type node (→ `Ty::Char`), reducing to `Ty::Sum{Option, [Char]}`.
+fn str_scalar_at_type(ast: &mut Arenas) -> StructId {
+    let option_char = {
+        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let char_ty = intrinsic_node(ast, "Char");
+        push_list(ast, vec![option, char_ty])
+    };
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let index_arrow = arrow_type(ast, int64, option_char); // (-> Int64 (Option Char))
+    let string = intrinsic_node(ast, "String");
+    let body = arrow_type(ast, string, index_arrow); // (-> String (-> Int64 (Option Char)))
     let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])

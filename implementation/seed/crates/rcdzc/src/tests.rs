@@ -2758,6 +2758,94 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_comparison_against_a_narrow_types_own_bound_is_simplified() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let no_cmp = |c: &[Lir]| {
+            !c.iter().any(|i| {
+                matches!(
+                    i,
+                    Lir::I32LtS
+                        | Lir::I32GtS
+                        | Lir::I32LeS
+                        | Lir::I32GeS
+                        | Lir::I64LtS
+                        | Lir::I64GtS
+                        | Lir::I64LeS
+                        | Lir::I64GeS
+                )
+            })
+        };
+        // Int8 [-128, 127]: `<= 127` / `>= -128` are tautologies; `> 127` / `< -128` are unsatisfiable.
+        let le_max = lir("(: x Int8)", "(<= x 127)");
+        assert!(
+            le_max.contains(&Lir::ConstI32(1)) && no_cmp(&le_max),
+            "Int8 (<= x 127) → true; got {le_max:?}"
+        );
+        let gt_max = lir("(: x Int8)", "(> x 127)");
+        assert!(
+            gt_max.contains(&Lir::ConstI32(0)) && no_cmp(&gt_max),
+            "Int8 (> x 127) → false; got {gt_max:?}"
+        );
+        let ge_min = lir("(: x Int8)", "(>= x -128)");
+        assert!(
+            ge_min.contains(&Lir::ConstI32(1)) && no_cmp(&ge_min),
+            "Int8 (>= x -128) → true; got {ge_min:?}"
+        );
+        let lt_min = lir("(: x Int8)", "(< x -128)");
+        assert!(
+            lt_min.contains(&Lir::ConstI32(0)) && no_cmp(&lt_min),
+            "Int8 (< x -128) → false; got {lt_min:?}"
+        );
+        // `>= max` rewrites to `== max`; a constant INSIDE the range does NOT fold.
+        let inside = lir("(: x Int8)", "(< x 127)");
+        assert!(
+            inside.iter().any(|i| matches!(i, Lir::I32LtS)),
+            "Int8 (< x 127) is not a bound → keeps lt_s; got {inside:?}"
+        );
+        // Full-width Int64 bound folds too.
+        let f64max = lir("(: x Int64)", "(<= x 9223372036854775807)");
+        assert!(
+            f64max.contains(&Lir::ConstI32(1)) && no_cmp(&f64max),
+            "Int64 (<= x MAX) → true; got {f64max:?}"
+        );
+
+        // VALUE PARITY over runtime narrow inputs — the fold agrees with the true comparison. An `Int8`
+        // param takes `Val::S8`, a `UInt8` param `Val::U8`.
+        assert!(run::<bool>("(: x Int8)", "(<= x 127)", &[Val::S8(127)]));
+        assert!(run::<bool>("(: x Int8)", "(<= x 127)", &[Val::S8(-128)]));
+        assert!(!run::<bool>("(: x Int8)", "(> x 127)", &[Val::S8(100)]));
+        assert!(run::<bool>("(: x Int8)", "(>= x -128)", &[Val::S8(-128)]));
+        assert!(!run::<bool>("(: x Int8)", "(< x -128)", &[Val::S8(-128)]));
+        // UInt8 max (255) — the new unsigned-narrow-max coverage.
+        assert!(run::<bool>("(: x UInt8)", "(<= x 255)", &[Val::U8(255)]));
+        assert!(!run::<bool>("(: x UInt8)", "(> x 255)", &[Val::U8(255)]));
+    }
+
+    #[test]
     fn if_with_one_zero_branches_materializes_the_boolean() {
         // `(if c 1 0)` is the condition coerced to the result's integer width — `(if c 0 1)` its
         // negation — with NO `select` and NO branch. The emitted shape is checked in select.rs's Lir
@@ -6422,6 +6510,39 @@ mod match_engine {
             out, "(: (None unit) (Option Char))",
             "Char.from-int None escape"
         );
+    }
+
+    #[test]
+    fn string_scalar_at_reads_the_char_by_scalar_position() {
+        // 13-strings CHAR increment 3 (`collections-and-text.md` §Reading A String's Scalar At A Position
+        // Is Total): `String.scalar-at : String → Int64 → (Option Char)` reads the CHAR at a Unicode
+        // SCALAR position — `Some #\c` in bounds, `None` out — the char-typed companion of `String.at`.
+        // It addresses SCALAR values, not bytes: `"café"` scalar 3 is `é` (a 2-byte scalar), not a byte.
+        // A constant string + index FOLDS to `(Option Char)`, crossing the boundary via the escape path.
+        let Some(out) = escape_render(
+            "(module m (def (main) ((. String scalar-at) \"hello\" 1)) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+            return;
+        };
+        assert_eq!(out, "(: (Some #\\e) (Option Char))", "in-bounds scalar");
+        // Scalar-not-byte: `café` = c,a,f,é (4 scalars); scalar 3 is `é`.
+        let Some(out) = escape_render(
+            "(module m (def (main) ((. String scalar-at) \"café\" 3)) (export main))",
+        ) else {
+            return;
+        };
+        assert_eq!(
+            out, "(: (Some #\\é) (Option Char))",
+            "multibyte scalar by position"
+        );
+        // Out of bounds → None.
+        let Some(out) =
+            escape_render("(module m (def (main) ((. String scalar-at) \"hi\" 5)) (export main))")
+        else {
+            return;
+        };
+        assert_eq!(out, "(: (None unit) (Option Char))", "out-of-bounds → None");
     }
 
     #[test]
@@ -13483,6 +13604,26 @@ mod stage1 {
             (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) (sumapply (fn ((: b Int64)) (g n b)) 2)) \
             (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
         assert_eq!(run_closure(flat, 5).unwrap(), "13"); // (5+2)+(5+1)
+    }
+
+    #[test]
+    fn a_predicate_closure_returning_bool_drives_an_early_exit_hof() {
+        // A closure whose RESULT type is Bool. `(fn (x) (= x k))` is a `(-> Int64 Bool)` value threaded
+        // through the recursive `anyp` ("does any i in n..1 satisfy it?"), which short-circuits on the
+        // first `true`. The closure's boolean result crosses the `call_indirect` (the lifted signature
+        // returns an i32) and drives `anyp`'s `if`. With k=2 over 3,2,1 the predicate holds at x=2 → true →
+        // 100; a k absent from the range → false → 0.
+        let src = "(module m \
+            (def (anyp (: g (-> Int64 Bool)) (: n Int64)) \
+              (if (= n 0) false (if (g n) true (anyp g (- n 1))))) \
+            (def (main (: k Int64)) (if (anyp (fn ((: x Int64)) (= x k)) 3) 100 0)) (export main))";
+        let Some(r) = run_closure(src, 2) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "100"); // x=2 satisfies the predicate
+        assert_eq!(run_closure(src, 1).unwrap(), "100"); // x=1 satisfies at the last step
+        assert_eq!(run_closure(src, 5).unwrap(), "0"); // none of 3,2,1 equal 5
     }
 
     #[test]
