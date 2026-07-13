@@ -2069,3 +2069,12 @@
            Pins that linearity is enforced in binding position, not only in a match arm.")
   (input  (let (((tuple x x) (tuple 1 2))) x))
   (error  CDZ0102))
+
+; A FUNCTION PARAMETER is a binding position too (core-semantics.md #A Binding Position Accepts An
+; Irrefutable Pattern): `(def (f (tuple a b)) …)` names the two halves of its single pair argument, keeping
+; ARITY ONE. The compiler realizes this (a load-time rewrite to a fresh whole-value parameter + a
+; destructuring `let` over the body), witnessed by unit tests. Corpus witnesses are deferred until the ML
+; SYNTAX SURFACE parses a tuple-pattern parameter (`def f((a, b)) = …`) — the round-trip gate requires
+; every corpus program to survive `sexpr → ml → sexpr`, and the ML parser does not yet accept a
+; destructuring parameter (it expects a bare name in a parameter position). The `let` binder cases above
+; already witness the binding-pattern capability end-to-end; the parameter face rides the same mechanism.

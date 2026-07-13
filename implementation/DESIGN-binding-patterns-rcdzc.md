@@ -2,9 +2,12 @@
 
 **Author:** design pass (compiler), then a currency rewrite against the shipped query resolver.
 **Audience:** the implementer of rcdzc task #153, + future me.
-**Status:** IN PROGRESS. The `let` happy path is SPIKED and works (see §0.1); the validation hooks
-(refutable / wrong-arity / non-linear) and the whole `param`/`fn` case are NOT landed. Corpus/spec are
-NOT yet extended (§10 step 0 still owed).
+**Status:** Increment A LANDED (mostly). The `let` case is complete (resolution + validation + spec +
+corpus + tests, landed on `spec`). The `def` parameter case is complete via a load-time rewrite (§5.2,
+approach b). REMAINING: the `fn`-lambda parameter case (declines today — the rewrite covers top-level
+`def`s, not inline lambdas) and a literal-ATOM parameter `(def (f 0) …)` (still silently accepted — a
+pre-existing malformed-param gap, out of this feature's scope). Increment B (records, single-variant
+sums) is deferred.
 
 This is the plan for letting a *binding position* (a function parameter, a `let` binder, a `fn` parameter,
 a `do`-block `def`) hold an **irrefutable pattern** — `(def (f (tuple a b)) …)`, `(let (((tuple a b) v)) …)`
@@ -262,41 +265,46 @@ wrapper. This is the whole of `let` resolution — proven end-to-end (§0.1). **
 not see its own binders**: Case 2 passes `stop_before = Some(from)`, so the value's own references resolve
 in the outer scope (preserved by the existing window logic).
 
-### 5.2 `def` / `fn` parameter resolution — `resolve.rs` (OWED, the harder half)
+### 5.2 `def` parameter — a load-time rewrite (LANDED, approach b)
 
 A parameter is a **formal**, not a value occurrence: a bare parameter reference resolves to `Resolved::Param
-{ binder }` (`resolve.rs:150`), and its type is a fresh variable solved at the call site (or by an
-annotation). Cases 3/4 of `binder_in` (`resolve.rs:497`/`515`) and the per-scope index `build_scope_binders`
-(`db.rs:1280`) both assume each parameter is a bare name (or `(: name T)`) — `param_binder` reads exactly
-one name per parameter slot.
+{ binder }` (`resolve.rs:150`), substituted by the argument at β-reduction. Rooting a `SumPayload` directly
+at a param formal (approach a) would need a new β-reduction arm (β-reduce handles `Ref`/`Param`, not a
+`SumPayload` over a substituted param) and coordinated edits across `is_param_occurrence` /
+`build_scope_binders` / `resolved_of`. **Approach b — a load-time rewrite — is what LANDED**, because it
+reduces the parameter case to the already-proven destructuring-`let` case with zero new resolver seams:
 
-To support a tuple-pattern parameter, a body reference to one of its element binders (`a` in `(def (f
-(tuple a b)) …)`) must resolve to `SumPayload` reading `Elem(0)` **of the parameter formal**. Two viable
-shapes (pick during implementation — this is the open design decision of Increment A):
+```
+(def (f (tuple a b)) BODY)   →   (def (f p$0) (let (((tuple a b) p$0)) BODY))
+```
 
-- **(a) `SumPayload` rooted at the param formal.** Extend Cases 3/4 (and/or `build_scope_binders`) so a
-  parameter that is a tuple pattern is descended by `find_binder_in_tuple`, and an element reference
-  resolves to `SumPayload { scrutinee: <the param-formal occurrence>, steps, heads }`. The "scrutinee" is
-  the whole-pair formal; `SumPayload` infer already handles a `Param` scrutinee (it just reads
-  `type_of(scrutinee)` and walks the path). The whole-pair formal needs its own occurrence to root at —
-  the tuple-pattern node itself can serve, resolving to `Param` when referenced as a whole. This keeps
-  arity at 1 and needs no new IR. **Risk to verify:** that a `SumPayload` over a `Param` scrutinee infers
-  and lowers correctly when the param type is solved from the call site (the tuple type must be pinned —
-  the pattern's arity should pin it, exactly as a match tuple pattern pins the scrutinee's arity at
-  `infer.rs:182`).
-- **(b) synthesize a hidden `let`.** Give the parameter a fresh whole-pair name and treat the body as
-  `(let (((tuple a b) <fresh>)) body)` — reusing the spiked 5.1 path exactly. Cleaner reuse, but requires
-  synthesizing a binding node the resolver can see, which the demand-driven model has no precedent for
-  (there is no node-synthesis in resolve today). Likely more invasive than (a).
+`binding_params::lower` (`binding_params.rs`, called from `Db::load` right after `accum::introduce`)
+rewrites each `def` whose parameter is a destructuring pattern (a compound list that is not a `(: name T)`
+annotation): the parameter slot becomes a fresh whole-value name `p$k`, and the body is wrapped in one
+`(let (((<pattern>) p$k)) …)` per pattern parameter (nested, outermost = the first parameter). It reuses
+the ORIGINAL pattern occurrence as the `let` LHS and the original body, so a body reference to `a`/`b`
+ascends into the synthesized `let` and resolves to the `SumPayload` element read the §5.1 path already
+handles; `p$k` binds the whole argument. This mirrors `accum::introduce`'s load-time synthesis exactly
+(fresh AST resolves through the ordinary scope walk — no re-resolution corruption), and **arity is
+preserved** — `f` still takes one argument per pattern parameter.
 
-**Recommendation:** try (a) first (no node synthesis, matches the demand-driven grain); fall back to (b)
-only if rooting a `SumPayload` at a `Param` proves not to infer. Either way **arity is preserved** — the
-parameter occupies one argument slot; the destructure is in how references read it, not in the signature
-(the ABI is the signature, `ir.rs`; expanding a tuple param into N wasm params would break `fst`'s
-export/call signature).
+A refutable / non-linear / ill-shaped parameter pattern is NOT classified here — the synthesized `let`
+carries it to `check_binding_pattern` (§5.3), which faults it with the binding-position code (CDZ0210 /
+CDZ0102 / CDZ0201) through the one validation path the `let` case owns. So a `(Some x)` parameter is
+CDZ0210, a `(tuple x x)` parameter is CDZ0102 — the same codes the equivalent `let` binder gets. (Broadening
+the rewrite to ALL compound params, not just tuples, is what turns the confusing CDZ0101-unbound a
+non-rewritten `(Some x)` param would give its binder into the honest coverage code.)
 
-`fn` parameters (`resolve.rs:497`, `resolve_lambda` `resolve.rs:1679`) ride the identical mechanism —
-`build_scope_binders` already handles `fn` and `def` uniformly.
+**Verified** (unit tests + corpus): single / nested / multiple / mixed-name tuple parameters, a runtime
+argument, a heap-carrying tuple, and a higher-order `(def (app f (tuple a b)) (f a b))` all compile and
+run; refutable/non-linear parameters reject.
+
+**NOT yet covered — the `fn`-lambda parameter.** `(fn ((tuple a b)) …)` is an INLINE lambda, not a
+top-level `def` in `defs`, so `binding_params::lower` does not reach it — a `fn`-tuple-param currently
+DECLINES (CDZ0101 on its binders). Extending the rewrite to descend `fn` forms in the AST (wrap the lambda
+body in the same `let`, replace the param) is the follow-up. Also out of scope: a literal-ATOM parameter
+`(def (f 0) …)` is still silently accepted (a bare atom is not a destructuring pattern, so the rewrite
+skips it — a pre-existing malformed-param gap, unrelated to destructuring).
 
 ### 5.3 Validation hook — the NEW work (OWED)
 

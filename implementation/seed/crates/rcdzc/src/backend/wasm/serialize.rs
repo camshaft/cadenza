@@ -97,6 +97,27 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             out.push(op::F64_CONST);
             out.extend_from_slice(&bits.to_le_bytes());
         }
+        // `f32.const` — the opcode then the 4 raw bit-pattern bytes, little-endian (fixed-width, NOT LEB).
+        Lir::F32ConstBits(bits) => {
+            out.push(op::F32_CONST);
+            out.extend_from_slice(&bits.to_le_bytes());
+        }
+        // Float arithmetic / equality / width conversion — a single opcode byte each (operands on the
+        // stack), from the generated table. Mirrors the integer arith serialization.
+        Lir::F64Add => out.push(op::F64_ADD),
+        Lir::F64Sub => out.push(op::F64_SUB),
+        Lir::F64Mul => out.push(op::F64_MUL),
+        Lir::F64Div => out.push(op::F64_DIV),
+        Lir::F32Add => out.push(op::F32_ADD),
+        Lir::F32Sub => out.push(op::F32_SUB),
+        Lir::F32Mul => out.push(op::F32_MUL),
+        Lir::F32Div => out.push(op::F32_DIV),
+        Lir::F64Eq => out.push(op::F64_EQ),
+        Lir::F64Ne => out.push(op::F64_NE),
+        Lir::F32Eq => out.push(op::F32_EQ),
+        Lir::F32Ne => out.push(op::F32_NE),
+        Lir::F32DemoteF64 => out.push(op::F32_DEMOTE_F64),
+        Lir::F64PromoteF32 => out.push(op::F64_PROMOTE_F32),
         Lir::LocalGet(idx) => {
             out.push(op::LOCAL_GET);
             uleb128(*idx as u64, out);

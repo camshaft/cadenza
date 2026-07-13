@@ -68,6 +68,7 @@ pass	a capturing closure stored in a tuple is extracted and applied
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a checked result is consumed by matching its Option at run time
 pass	a closure argument is another closure's result
+pass	a closure captures a boolean and reads it back inside its lifted body through a recursive HOF
 pass	a closure captures a function value and applies it through a recursive HOF
 pass	a closure captures another closure and applies it
 pass	a closure captures the binding in scope where it was created
@@ -119,7 +120,12 @@ pass	a decimal token trailing letters is a malformed literal, not an unbound nam
 pass	a declaration in a do block shadows an outer binding
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
 pass	a deeply nested constant expression compiles or declines without crashing
+pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
+pass	a delegated effect performed inside an intra-program handler
 pass	a delegation naming an effect that is never reached is rejected as latent authority
+pass	a dependent size of zero binds an empty body and leaves the rest untouched
+pass	a dependent-size segment binds exactly the number of bytes an earlier segment named
+pass	a dependent-size segment that overruns the remaining bytes falls through
 pass	a destructuring let over a runtime value binds its parts
 pass	a different function argument through the same recursive higher-order function
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
@@ -137,8 +143,10 @@ pass	a field is projected off a record bound through a match arm
 pass	a field is projected off a record unwrapped from a result with expect
 pass	a field is projected off a record unwrapped from an optional with expect
 pass	a field read follows the record's SORTED field order, not its written order
+pass	a final bytes segment binds the remainder after the sized segments
 pass	a fixpoint loop that threads a growing list accumulator returns that list
 pass	a fixpoint that re-seeds a fresh list each round via a helper returns a list
+pass	a float annotation reaches the 32-bit width
 pass	a float in integer-width position is rejected
 pass	a float width outside the admitted set is rejected
 pass	a floating-point literal
@@ -178,6 +186,7 @@ pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm for an operation the effect does not declare is rejected
 pass	a handler folds a counter across the operations it discharges
 pass	a handler resumes its continuation at most once by default
+pass	a header of packed nibbles and a length-prefixed body round-trips
 pass	a helper decodes bytes to a string and consumes the fallible result
 pass	a helper projects a record parameter constrained by its argument
 pass	a helper projects a tuple parameter constrained by its argument
@@ -196,6 +205,7 @@ pass	a le pattern segment reads a fixed-width integer little-endian
 pass	a left shift by a floating-point count does not silently promote
 pass	a left shift by the bit width or more traps rather than wrapping
 pass	a left shift that overflows Int64 traps like multiplication
+pass	a length-prefixed frame is built from a size segment and a bytes segment
 pass	a let binder may be a tuple pattern that destructures the value
 pass	a let binding is in scope in its body
 pass	a let binding shadows a built-in constructor name in application-head position
@@ -227,6 +237,7 @@ pass	a literal inside a tuple pattern matches a runtime element
 pass	a literal inside an Ok pattern refines a Result match
 pass	a literal segment before a binder dispatches then reads the payload
 pass	a literal segment matches a magic-number header by equality
+pass	a magic header and a length-prefixed chunk parse together
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
 pass	a match binder over a narrow scrutinee returns the bound value
@@ -258,6 +269,7 @@ pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
 pass	a named capturing closure applied directly folds through its capture
 pass	a named capturing closure applied more than once folds at each use
+pass	a named float width alias and its width-indexed expansion name the same type
 pass	a named function is partially applied, bound, and used
 pass	a named higher-order function receives a lambda argument
 pass	a named multi-argument function applies in explicit curried form
@@ -385,6 +397,9 @@ pass	a runtime conditional selects its then-branch when the runtime condition ho
 pass	a runtime conjunction still shields a comparison right operand whose subexpression traps
 pass	a runtime division by zero traps
 pass	a runtime division truncates toward zero
+pass	a runtime float addition emits the machine add
+pass	a runtime float division rounds under the fixed mode
+pass	a runtime float multiplication emits the machine mul
 pass	a runtime greater-than compares by signed order
 pass	a runtime left shift by the bit width or more traps
 pass	a runtime left shift multiplies by a power of two
@@ -468,6 +483,7 @@ pass	a sum value annotated as a scalar type is rejected
 pass	a sum-match recursion that accumulates a built-in list returns a list
 pass	a sum-type value is constructed through a variant
 pass	a sum-type value is deconstructed by an exhaustive match
+pass	a tag-length-value record round-trips through construct then match
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a tail-recursive function returning a tuple is tuple-valued
 pass	a three-element runtime tuple is returned as a result
@@ -549,6 +565,7 @@ pass	an effect that declares an operation name twice is rejected
 pass	an element is projected from a runtime-constructed tuple
 pass	an element is projected from a tuple returned by a function
 pass	an element is projected from a tuple returned by a nullary function
+pass	an element pattern matches a list by its length and elements
 pass	an element read across a concatenation boundary is the right value
 pass	an empty binary form is the empty byte sequence
 pass	an empty byte-string literal is the empty byte sequence
@@ -650,8 +667,12 @@ pass	concatenation is associative by content
 pass	conditional propagation respects a shadowing rebind of the condition variable
 pass	conjunction is true exactly when both operands are true
 pass	conjunction shields a trapping right operand when the left is false
+pass	constructing a bit-field from a value wider than its width is rejected
 pass	constructing a byte sequence with a negative value is a type error
 pass	constructing a byte sequence with a value out of range is a type error
+pass	constructing a sized bytes segment whose value length differs from the size is rejected
+pass	constructing a u8 segment from a value above its range is rejected
+pass	constructing an unsigned segment from a negative value is rejected
 pass	constructor pattern binders capture the payload uniformly
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
 pass	decoding a surrogate code point encoded as UTF-8 yields none
@@ -755,6 +776,7 @@ pass	over-applying a constructor is a type error, not a silent argument drop
 pass	over-applying a lambda by an extra argument is a type error
 pass	over-applying a named function by an extra argument is a type error
 pass	overflow of the default integer traps deterministically
+pass	parsing a length-framed message and rebuilding it yields the original bytes
 pass	partial application captures a let-bound value in the residual lambda
 pass	partial application captures a runtime parameter in the residual lambda
 pass	performing a string-parameter operation with a non-string argument is a type error
@@ -866,6 +888,7 @@ pass	tuples are deconstructed by pattern matching
 pass	two constant records with the same fields in different written order are equal
 pass	two constant sums with the same payload but different variants are not equal
 pass	two definitions imported under the same name are rejected
+pass	two dependent-size segments each bind the count a preceding segment named
 pass	two different variants of the SAME sum compare unequal
 pass	two differing runtime Ok values of a multi-parameter sum compare unequal by a heap walk
 pass	two differing runtime sum values compare unequal by a heap walk
@@ -928,20 +951,12 @@ todo	a default-integer pragma fixes a type but adds no conversion — no-promoti
 todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a default-integer pragma naming a non-integer type is rejected
 todo	a delegated capability is not itself an export field
-pass	a delegated effect performed inside an intra-program handler
-todo	a dependent size of zero binds an empty body and leaves the rest untouched
-todo	a dependent-size segment binds exactly the number of bytes an earlier segment named
-todo	a dependent-size segment that overruns the remaining bytes falls through
 todo	a dimensionless quantity carries the group identity Unit.one
 todo	a diverging expression unifies with an integer position
 todo	a factorial that overflows the integer type traps through the recursion
-todo	a final bytes segment binds the remainder after the sized segments
 todo	a final unquote-splice binds the remaining elements as a list
-todo	a float annotation reaches the 32-bit width
 todo	a function deriving a velocity from a distance and a time
 todo	a function whose body always diverges has result type Never
-todo	a header of packed nibbles and a length-prefixed body round-trips
-todo	a length-prefixed frame is built from a size segment and a bytes segment
 todo	a list built by a recursive push-loop is then iterated by index
 todo	a list mixing integer and float elements is a type error
 todo	a list of maps with different keys is homogeneous, not a type error
@@ -951,7 +966,6 @@ todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
 todo	a list value consumed by two operations in one function is not freed early
 todo	a literal subterm in a quote pattern matches by equality
-todo	a magic header and a length-prefixed chunk parse together
 todo	a map entry with no value expression is rejected, not a crash
 todo	a map literal with keys of two different types is a type error
 todo	a map mixing integer and float values is a type error
@@ -975,7 +989,6 @@ todo	a module's delegated capability is reachable as metadata, not as an export
 todo	a multi-argument call node is evaluated by iterating its payload arg list
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a name bound to a string keys a map by its value, not the literal name
-todo	a named float width alias and its width-indexed expansion name the same type
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested unquote pattern matches a sub-AST by shape
 todo	a nominal record compared to a plain record of the same shape is a type error
@@ -1026,7 +1039,6 @@ todo	a symbol compared to a string is a type error
 todo	a symbol converts back to its content string
 todo	a symbol is constructed from a string
 todo	a symbol's identity is its content, not how the content was derived
-todo	a tag-length-value record round-trips through construct then match
 todo	a tail-recursive string accumulator builds a runtime string and its length is measured
 todo	a transformation over the built-in Ast composes across a function call
 todo	a truncating conversion to an unusual width keeps that width's low bits
@@ -1050,7 +1062,6 @@ todo	an arbitrary-precision integer multiplication does not overflow
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 todo	an association list is searched by key with a tuple-carrying Option match
-todo	an element pattern matches a list by its length and elements
 todo	an empty map is unequal to a non-empty map, not a type error
 todo	an empty quote is rejected, not a crash
 todo	an entrypoint delegation lets a program reach its host function
@@ -1079,11 +1090,7 @@ todo	comparing two same-shape nominal sum types is a type error, not false
 todo	comparing two units of one dimension converts before comparing
 todo	concatenating tuples preserves each element's type
 todo	concatenating two tuples appends their elements
-todo	constructing a bit-field from a value wider than its width traps
 todo	constructing a rational with a zero denominator traps
-todo	constructing a sized bytes segment whose value length differs from the size traps
-todo	constructing a u8 segment from a value above its range traps
-todo	constructing an unsigned segment from a negative value traps
 todo	converting a BigInt back to a fixed width is checked and traps when out of range
 todo	converting a char to its integer scalar value is total
 todo	converting a fixed-width integer to BigInt is explicit
@@ -1136,7 +1143,6 @@ todo	multiplying quantities multiplies their dimensions
 todo	negative integer to byte uses two's complement
 todo	ordering a string against an integer is a type error regardless of operand order
 todo	ordering an integer against a string is a type error
-todo	parsing a length-framed message and rebuilding it yields the original bytes
 todo	pattern matching over AST distinguishes forms
 todo	popping a field yields its value and the remaining record
 todo	popping a tuple yields element zero and the remaining tuple
@@ -1189,7 +1195,6 @@ todo	the underlying numeric type obeys the numeric core — no silent promotion 
 todo	the union contains the elements of either set
 todo	the value-yielding insert reports the value it replaced
 todo	the value-yielding remove reports the value it dropped
-todo	two dependent-size segments each bind the count a preceding segment named
 todo	two distinct names bound to the same value key the same map entry
 todo	two equal chars compare equal
 todo	two maps of different sizes are unequal, not a type error

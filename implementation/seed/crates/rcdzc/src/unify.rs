@@ -278,16 +278,31 @@ fn resolve_width(subst: &Subst, w: Width) -> Width {
 /// Whether variable `v` occurs in `t` (after substitution) — the occurs-check that keeps the variable
 /// graph acyclic, so binding `v := t` cannot create an infinite type.
 fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
-    match subst.apply(t) {
-        Ty::Var(w) => v == w,
-        Ty::Fn(p, r) => occurs(subst, v, &p) || occurs(subst, v, &r),
+    // WALK the type, resolving each `Ty::Var` through the substitution chain in place — do NOT
+    // `subst.apply(t)` (which deep-REBUILDS the whole type into a fresh tree) at every node. The old code
+    // applied the full substitution at the root AND again at each recursive descent, so one occurs-check
+    // over a size-`N` type was O(N²); driven by a deeply-nested generic-sum value (each enclosing `(Some
+    // x)` unifies its `?0` against the O(depth) type below it), that made type-checking O(N³). Following
+    // the var chain here — the standard union-find `walk` — keeps a solved variable resolvable while
+    // making the check O(N): every node is visited once, and a `Ty::Var` costs only its chain length
+    // (bounded by the acyclic-substitution invariant the occurs-check itself maintains). The RESULT is
+    // identical: `v` occurs in `subst.apply(t)` iff, resolving each variable of `t` through `subst`, some
+    // position reaches the (unsolved) variable `v`.
+    match t {
+        // Resolve the variable: a solved one continues into its solution (chasing the chain, as
+        // `apply` did via `self.apply(t)`); an unsolved one is compared to `v`.
+        Ty::Var(w) => match subst.tys.get(w) {
+            Some(sol) => occurs(subst, v, sol),
+            None => v == *w,
+        },
+        Ty::Fn(p, r) => occurs(subst, v, p) || occurs(subst, v, r),
         Ty::Record(fields) => fields.values().any(|ft| occurs(subst, v, ft)),
         Ty::Tuple(elems) => elems.iter().any(|ft| occurs(subst, v, ft)),
         // A GENERIC sum's type ARGS may hold a variable (a deferred payload) — check each. A monomorphic
         // sum has empty args, so no variable occurs in it (like the ground types).
         Ty::Sum { args, .. } => args.iter().any(|ft| occurs(subst, v, ft)),
         // A list's element type may hold the variable (`List ?0`).
-        Ty::List(elem) => occurs(subst, v, &elem),
+        Ty::List(elem) => occurs(subst, v, elem),
         Ty::Int(_)
         | Ty::Float(_)
         | Ty::Bool
@@ -612,6 +627,58 @@ mod tests {
         let mut s = Subst::new();
         let f = Ty::Fn(Box::new(Ty::Var(0)), Box::new(Ty::Var(0)));
         assert!(unify(&mut s, &Ty::Var(0), &f).is_err());
+    }
+
+    #[test]
+    fn occurs_check_follows_the_substitution_chain_through_a_solved_var() {
+        // The occurs-check must resolve variables THROUGH the substitution, not only look at the
+        // syntactic type it is handed — the property the O(N) `walk` rewrite of `occurs` must preserve.
+        // Solve `?1 = ?0`, then try `?0 = (-> ?1 Bool)`: syntactically `?0` does not appear in the body,
+        // but `?1` RESOLVES to `?0`, so binding `?0` here would make `?0 = (-> ?0 Bool)` — an infinite
+        // type. `occurs` must chase `?1 → ?0` and reject. (The old deep-`apply` did this by rebuilding the
+        // whole type first; the walk does it by following the var chain in place — same verdict.)
+        let mut s = Subst::new();
+        assert!(unify(&mut s, &Ty::Var(1), &Ty::Var(0)).is_ok()); // ?1 = ?0
+        let body = Ty::Fn(Box::new(Ty::Var(1)), Box::new(Ty::Bool));
+        assert!(
+            unify(&mut s, &Ty::Var(0), &body).is_err(),
+            "occurs must follow ?1 → ?0 and reject the cycle"
+        );
+    }
+
+    #[test]
+    fn occurs_check_accepts_a_deep_nested_sum_without_cycle() {
+        // A DEEPLY-nested generic-sum type — the shape whose occurs-check was O(size²) (making a deep
+        // `(Some (Some … 5))` value O(N³) to type-check). Binding a fresh `?0` to a size-`N` nested sum
+        // that does NOT contain `?0` must succeed (no cycle) — and, post-fix, in O(N). Build `Sum(Sum(…(?1)))`
+        // 500 deep and unify `?0` against it: `?0` does not occur, so it binds cleanly.
+        let mut inner = Ty::Var(1);
+        for _ in 0..500 {
+            inner = Ty::Sum {
+                decl: crate::ast::StructId(0),
+                name: "Option".into(),
+                args: vec![inner],
+            };
+        }
+        let mut s = Subst::new();
+        assert!(
+            unify(&mut s, &Ty::Var(0), &inner).is_ok(),
+            "a deep nested sum not containing ?0 binds without a spurious cycle"
+        );
+        // And the SAME deep sum WITH `?0` at its core is correctly rejected as infinite.
+        let mut cyclic = Ty::Var(0);
+        for _ in 0..500 {
+            cyclic = Ty::Sum {
+                decl: crate::ast::StructId(0),
+                name: "Option".into(),
+                args: vec![cyclic],
+            };
+        }
+        let mut s2 = Subst::new();
+        assert!(
+            unify(&mut s2, &Ty::Var(0), &cyclic).is_err(),
+            "a deep nested sum containing ?0 at its core is an infinite type"
+        );
     }
 
     #[test]
