@@ -1083,3 +1083,34 @@
               (export tag)))
   (call   tag (: 9 Int64) (: 200 Int64))
   (output (9 200)))
+
+; A STRING closure result crosses the same way a `Bytes` one does. A `String` is a UTF-8 byte-rope handle,
+; representationally IDENTICAL to `Bytes` (the same value-heap `bytes-*` store), so a closure returning a
+; `String` takes the very same compound-result `call` path — its `call` copies the UTF-8 bytes into linear
+; memory and returns them as `list<u8>` (the encoded bytes, not a decoded string). `emit_closure_resource`
+; routes a `String` result to the bytes shape exactly as a `Bytes` result (`ret_is_bytes` accepts both).
+
+(case "a closure returning a constant String crosses as its UTF-8 bytes"
+  (doc    "`(fn (n) \"hi\")` — the closure's result is a `String`. `call(handle, 0)` copies the UTF-8 bytes
+           of \"hi\" (`[104, 105]`) out through the canonical `list<u8>` ABI, and the host reads `(104 105)`.
+           Pins that a `String` result crosses as its bytes on the same path as `Bytes` (a byte-rope handle
+           is a byte-rope handle).")
+  (input  (do (def (main) (fn ((: n Int64)) "hi")) (export main)))
+  (call   main (: 0 Int64))
+  (output (104 105)))
+
+(case "a closure returning a runtime String (concat) crosses as its bytes"
+  (doc    "`(fn (n) (String.concat \"ab\" \"c\"))` — a RUNTIME String built by `concat` (not a folded
+           constant handle). `call(handle, 0)` → the UTF-8 bytes of \"abc\" = `[97, 98, 99]`. Confirms the
+           bytes copy reads a genuine runtime byte-rope handle, not only a compile-time-known string.")
+  (input  (do (def (main) (fn ((: n Int64)) ((. String concat) "ab" "c"))) (export main)))
+  (call   main (: 0 Int64))
+  (output (97 98 99)))
+
+(case "a capturing closure returning a String"
+  (doc    "`(def (mk k) (fn (n) (String.concat \"x\" \"y\")))` — a make-parameterized closure whose result
+           is a String. `make(7)` builds it, then `call(handle, 0)` → the bytes of \"xy\" = `[120, 121]`.
+           Composes make-param capture with a `String` closure result.")
+  (input  (do (def (mk (: k Int64)) (fn ((: n Int64)) ((. String concat) "x" "y"))) (export mk)))
+  (call   mk (: 7 Int64) (: 0 Int64))
+  (output (120 121)))
