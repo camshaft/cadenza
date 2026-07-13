@@ -303,6 +303,21 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (Amb.flip))) (export main)))
   (output (: 11 Int64)))
 
+(case "a handler arm that resumes NON-tail folds through a PURE one-hole continuation"
+  (doc    "The general one-shot arm generalizes past the identity-continuation sliver: when the performed
+           operation sits inside a larger PURE expression its delimited continuation is a pure one-hole
+           context `C = body[perform := []]` (capabilities-and-effects.md #A Handler May Resume Anywhere).
+           Here the body is `(+ 100 (Amb.flip))`, so `C = (+ 100 [])` — effect-free — and `(resume 10 s)`
+           returns into it, yielding `C[10] = (+ 100 10)`. The arm `(+ 1 (resume 10 s))` then evaluates to
+           `(+ 1 (+ 100 10))` = 111. No reified continuation object is needed while `C` is pure (it may even
+           be duplicated by a multi-shot resume with no effect change); a perform under a CONDITIONAL — a
+           non-uniform continuation — still awaits the frame machinery.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 100 (Amb.flip)))) (export main)))
+  (output (: 111 Int64)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the

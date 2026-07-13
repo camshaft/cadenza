@@ -280,6 +280,7 @@ pass	a guarded wildcard arm falls through to a tail-recursive call
 pass	a handle body reads an enclosing function parameter
 pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm for an operation the effect does not declare is rejected
+pass	a handler arm that resumes NON-tail folds through a PURE one-hole continuation
 pass	a handler arm that resumes NON-tail folds when the perform is the whole body
 pass	a handler folds a counter across the operations it discharges
 pass	a handler resumes its continuation at most once by default

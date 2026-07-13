@@ -19846,16 +19846,98 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_tail_resume_with_a_real_continuation_declines() {
-        // The E5 BOUNDARY: a non-tail resume whose perform is NOT in tail position — `(+ 100 (Amb.flip))`
-        // — has a non-identity continuation `(+ 100 [])` that `resume` must return into. Realizing it needs
-        // the captured-continuation machinery (defunctionalized frames), a later increment; `reduce_handle`
-        // declines rather than mis-fold. Contrast the identity-continuation case above, which folds.
-        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+    fn an_e5_pure_one_hole_continuation_folds() {
+        // E5 PURE ONE-HOLE-CONTINUATION: a non-tail resume whose perform is NOT in tail position —
+        // `(+ 100 (Amb.flip))` — has a PURE one-hole continuation `C = (+ 100 □)` that `resume` returns
+        // into. Because `C` is effect-free, `(resume v s)` folds to `C[v]`, so the arm body's resume is
+        // rewritten to a copy of the body with the perform replaced by the resume value:
+        //   arm `(+ 1 (resume 10 s))`, `C = (+ 100 □)` → `(+ 1 (+ 100 10))` = 111. No frame machinery.
+        let single = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 100 (Amb.flip)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(single)))
+                    .expect("a pure one-hole continuation folds"),
+                "main"
+            ),
+            111
+        );
+        // A MULTI-shot arm over the same pure continuation DUPLICATES `C` safely (it is effect-free):
+        //   `(* (resume 1 s) (resume 2 s))`, `C = (+ 100 □)` → `(* (+ 100 1) (+ 100 2))` = 101*102 = 10302.
+        let multi = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (* (resume 1 s) (resume 2 s)))) (+ 100 (Amb.flip)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(multi)))
+                    .expect("a multi-shot pure one-hole continuation folds"),
+                "main"
+            ),
+            10302
+        );
+    }
+
+    #[test]
+    fn a_non_tail_resume_under_a_conditional_continuation_declines() {
+        // The E5 BOUNDARY (still): a non-tail resume whose perform sits under a CONDITIONAL —
+        // `(if (< (Amb.flip) 5) 1 2)` — has a NON-UNIFORM continuation (the perform's result flows into a
+        // branch selector, not one downstream computation), so `pure_hole` returns Impure and the fold
+        // declines rather than mis-fold. Realizing it needs the captured-continuation machinery
+        // (defunctionalized frames), a later increment. Contrast the pure one-hole case above, which folds.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 5) 1 2))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a non-tail resume with a real continuation must decline (needs E5 frame capture)"
+            "a non-tail resume under a conditional continuation must decline (needs E5 frame capture)"
+        );
+    }
+
+    #[test]
+    fn a_tail_resumptive_arm_with_a_non_tail_perform_body_still_threads() {
+        // ADVERSARIAL: the pure one-hole block must NOT hijack a TAIL-resumptive arm. Here the arm body
+        // `(resume s (+ s 1))` IS a tail resume, so `tail_resume` is `Some` and the block is skipped — the
+        // ordinary state-threading path runs. `(+ 100 (Get.next))` seed 0: `Get.next` reads state 0 (the
+        // resume value is `s`), threads `s+1` forward → `(+ 100 0)` = 100. Pins that a non-tail perform in
+        // the body does not tempt the pure-continuation fold when the arm is tail-resumptive.
+        let src = "(do (effect Get (op next (-> Unit Int64))) \
+                   (def (main) (handle Get 0 ((next (u) s (resume s (+ s 1)))) (+ 100 (Get.next)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a tail-resumptive arm threads even with a non-tail perform body"),
+                "main"
+            ),
+            100
+        );
+    }
+
+    #[test]
+    fn a_pure_one_hole_continuation_with_a_pure_sibling_folds() {
+        // The pure one-hole context may have PURE siblings around the hole — `(- (* 2 (Amb.flip)) 3)` has
+        // `C = (- (* 2 □) 3)`, effect-free. arm `(+ 1 (resume 10 s))` → `(+ 1 (- (* 2 10) 3))` = `(+ 1 17)`
+        // = 18. Pins that the hole is located correctly inside a nested strict operator tree and the pure
+        // siblings (`2`, `3`) are preserved in the spliced continuation.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (- (* 2 (Amb.flip)) 3))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a pure one-hole continuation with pure siblings folds"),
+                "main"
+            ),
+            18
+        );
+    }
+
+    #[test]
+    fn two_performs_in_the_handle_body_decline_the_pure_one_hole_fold() {
+        // ADVERSARIAL: the pure one-hole fold requires EXACTLY ONE discharged perform on the spine. Two
+        // performs `(+ (Amb.flip) (Amb.flip))` is a TWO-hole context — `pure_hole` returns Impure and the
+        // fold declines (this needs sequential state threading / real continuations, not a single splice).
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ (Amb.flip) (Amb.flip)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "two performs in the handle body must decline the single-hole fold"
         );
     }
 
