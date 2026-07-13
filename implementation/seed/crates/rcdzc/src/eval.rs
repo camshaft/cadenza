@@ -1702,10 +1702,14 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
         // variant `(type Tag (Named String) …)` then unified its `"x"` argument against `Unit` ("cannot
         // unify Unit with String"). The same round-trip hole the `Bytes` arm above fixed for bytes.
         Ty::String => db.push_name("String"),
-        // A float type-value: the bare name `Float64` (a leaf), round-tripping with `decode_ty`'s
-        // `"Float64"` arm — so a `(: e Float64)` annotation encodes/decodes faithfully rather than
-        // collapsing to the `Unit` stub (the same round-trip hole the `String`/`Bytes` arms closed).
-        Ty::Float => db.push_name("Float64"),
+        // A float type-value: the bare aliased name `Float32`/`Float64` (a leaf), round-tripping with
+        // `decode_ty`'s matching arm — so a `(: e Float64)` annotation encodes/decodes faithfully. The
+        // width picks the alias; every admitted width has one.
+        Ty::Float(ft) => db.push_name(if ft.ground_width() == 32 {
+            "Float32"
+        } else {
+            "Float64"
+        }),
         // Var/Any shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
         _ => db.push_name("Unit"),
     }

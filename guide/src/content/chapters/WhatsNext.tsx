@@ -24,7 +24,8 @@ export default function WhatsNext() {
         (<Ch to="/ordering">Comparison &amp; ordering</Ch>), bundle data into tuples and records and
         take it apart (<Ch to="/data">Tuples &amp; records</Ch>,{" "}
         <Ch to="/records-tuples">Working with records &amp; tuples</Ch>), decide by shape with{" "}
-        <Ch to="/pattern-matching">pattern matching</Ch>, work with <Ch to="/lists">lists</Ch>, handle{" "}
+        <Ch to="/pattern-matching">pattern matching</Ch>, work with <Ch to="/lists">lists</Ch> and{" "}
+        <Ch to="/strings">strings</Ch>, handle{" "}
         <Ch to="/errors">absence and errors</Ch> with <C>Option</C>/<C>Result</C>, and you know how
         Cadenza's <Ch to="/numbers">numbers</Ch> behave.
       </P>

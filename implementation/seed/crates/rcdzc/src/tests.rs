@@ -14435,6 +14435,12 @@ mod debug_info {
             stdout.contains("countdown") || stdout.contains("main"),
             "no source function name in the dump:\n{stdout}"
         );
+        // The compile unit declares a source language (DW_LANG_C) — a CU with no language reads as
+        // "<not loaded>" in a real debugger, which then declines to format scalar values.
+        assert!(
+            stdout.contains("DW_AT_language") && stdout.contains("DW_LANG_C"),
+            "the CU must declare DW_LANG_C:\n{stdout}"
+        );
     }
 
     // ── Mode S: the detached `dwarf` sidecar artifact (§9.2) ───────────────────────────────────────
@@ -14534,6 +14540,62 @@ mod debug_info {
         assert!(
             stdout.contains("countdown") || stdout.contains("main"),
             "no fn name:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn the_dwarf_sidecar_loads_in_lldb() {
+        // A SECOND, INDEPENDENT oracle beyond llvm-dwarfdump (design §6 "wall #2" — does a REAL
+        // debugger, not just the lenient dump parser, consume our hand-rolled DWARF?). lldb loads the
+        // bare sidecar core module, recognizes it as a `wasm32` target, and parses the compile unit —
+        // reporting its source language (which requires the `DW_AT_language` we emit; a CU without it
+        // reads as "<not loaded>"). Skips if lldb is absent.
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m \
+                     (def (countdown (: n Int64)) (if (< n 1) 0 (countdown (- n 1)))) \
+                     (def (main) (countdown 5)) \
+                     (export main))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        let dwarf = out.artifact("dwarf").expect("a dwarf artifact").to_vec();
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-lldb-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write dwarf sidecar");
+        // Dump the compile unit via lldb's Python API — `str(CompileUnit)` includes `language = "…"` and
+        // the source file, which is exactly what a debugger reads from our CU DIE + line-program header.
+        let output = match Command::new("lldb")
+            .arg("--batch")
+            .arg("-o")
+            .arg(
+                "script m=lldb.target.module_iter().__next__(); \
+                 print('CU=' + str(m.compile_unit_iter().__next__()))",
+            )
+            .arg(path.to_str().unwrap())
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("lldb not found; skipping the second-oracle check");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // lldb recognizes the module as a wasm32 target (it accepts our bare core module).
+        assert!(
+            stdout.contains("wasm32"),
+            "lldb did not recognize a wasm32 target:\n{stdout}\n{stderr}"
+        );
+        // It parsed a compile unit and read our declared source language (proving DW_AT_language landed —
+        // an absent language would print `language = "<not loaded>"`).
+        assert!(
+            stdout.contains("CU=") && stdout.contains("language = \"c\""),
+            "lldb did not read the CU's source language:\n{stdout}\n{stderr}"
         );
     }
 

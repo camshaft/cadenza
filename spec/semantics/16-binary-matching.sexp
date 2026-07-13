@@ -100,6 +100,28 @@
   (input  (= (bin (bits 1 1) (bits 2 3) (bits 5 4)) (Bytes.of (list 0b1010_0101))))
   (output (: true Bool)))
 
+(case "a bit-field wider than a byte packs across the byte boundary big-endian"
+  (doc    "A `(bits v k)` segment may be WIDER than 8 bits, spanning multiple bytes: `(bin (bits 258 16))`
+           packs 258 = 0x0102 into a 16-bit field, closing two bytes big-endian = `(Bytes.of (list 1 2))`.
+           And bit-fields whose widths sum across a byte boundary pack contiguously: `(bin (bits 1 4) (bits
+           0 8) (bits 0 4))` lays a nibble 1, then 8 zero bits, then a zero nibble — 16 bits = two bytes
+           `(Bytes.of (list 16 0))` (the leading nibble 1 is the high 4 bits of byte 0 = 0x10). Pins that
+           bit-field packing crosses byte boundaries most-significant-bit-first, not only sub-byte fields
+           that close a single byte.")
+  (needs  binary-matching)
+  (input  (= (bin (bits 258 16)) (Bytes.of (list 1 2))))
+  (output (: true Bool)))
+
+(case "a bit-field value that needs more bits than its width does not fit its segment"
+  (doc    "A `(bits v k)` segment holds only the low `k` bits, so a value needing more than `k` bits has no
+           defined encoding — construction is rejected (`binary value does not fit segment`, CDZ0304, the
+           value-overflow companion of a u8 given 256). `(bin (bits 16 4) (bits 0 4))` gives 16, which needs
+           5 bits, to a 4-bit field — rejected. Pins that a bit-field range-checks its value against its
+           declared width, not silently truncating it to the low bits (which would encode 0 and lose data).")
+  (needs  binary-matching)
+  (input  (bin (bits 16 4) (bits 0 4)))
+  (error  CDZ0304))
+
 (case "a length-prefixed frame is built from a size segment and a bytes segment"
   (doc    "`(bin (u16 (Bytes.len payload)) (bytes payload))` writes payload's length as a big-endian
            u16 prefix, then splices payload — the length-framing idiom that replaces hand-rolled
