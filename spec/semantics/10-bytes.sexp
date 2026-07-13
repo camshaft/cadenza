@@ -31,7 +31,6 @@
            OBSERVABLE form is the byte-string display `b\"…\"` (options/binary-syntax): a printable
            ASCII byte stands for itself and any other byte is a `\\xNN` escape, so bytes 1, 2, 3 —
            all non-printable — render `b\"\\x01\\x02\\x03\"`.")
-  (needs  bytes)
   (input  (Bytes.of (list 1 2 3)))
   (output (: b"\x01\x02\x03" Bytes)))
 
@@ -39,21 +38,18 @@
   (doc    "Witnesses Bytes structural equality: two byte sequences are equal exactly
            when they carry the same bytes in the same order (core-semantics.md
            #Equality Is Structural, at the Bytes value form).")
-  (needs  bytes)
   (input  (= (Bytes.of (list 10 20 30)) (Bytes.of (list 10 20 30))))
   (output (: true Bool)))
 
 (case "the length of a byte sequence is its byte count"
   (doc    "Witnesses Bytes.len — the compiler needs a byte count to lay out a wasm
            section's size prefix.")
-  (needs  bytes)
   (input  (Bytes.len (Bytes.of (list 0 255 128))))
   (output (: 3 Int64)))
 
 (case "concatenating two byte sequences appends their bytes in order"
   (doc    "Witnesses Bytes.concat — the compiler assembles a wasm module by
            concatenating encoded sections.")
-  (needs  bytes)
   (input  (= (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4)))
              (Bytes.of (list 1 2 3 4))))
   (output (: true Bool)))
@@ -61,7 +57,6 @@
 (case "indexing a byte sequence returns Some of the byte at that position"
   (doc    "Witnesses fallible Bytes indexing (collections-and-text.md #Indexing And Lookup Are Fallible,
            Not Trapping): an in-bounds index yields the byte as an Int64 in 0..=255 wrapped in Some.")
-  (needs  fallible-access)
   (input  (Bytes.at (Bytes.of (list 7 8 9)) 1))
   (output (: (Some 8) (Option Int64))))
 
@@ -72,7 +67,6 @@
            runtime trap — the ill-formed byte cannot even be constructed. To turn a wider integer into a
            byte, TRUNCATE deliberately with `(UInt8.wrap n)` (total, never traps); a bare `256` is not a
            truncation request, it is an ill-typed literal.")
-  (needs  bytes)
   (input  (Bytes.of (list 0 256)))
   (error  CDZ0302))
 
@@ -86,7 +80,6 @@
            at COMPILE TIME (CDZ0302), the low-end companion of the `256` case. A byte is a UInt8; a UInt8
            literal is bounded on BOTH sides. NOT wrapped to 255 via a truncating `as u8`: to truncate a
            wider value into a byte you write `(UInt8.wrap -1)` = 255 explicitly.")
-  (needs  bytes)
   (input  (Bytes.of (list -1)))
   (error  CDZ0302))
 
@@ -94,7 +87,6 @@
   (doc    "Witnesses fallible Bytes indexing on the absent side, mirroring List.at
            (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping): an out-of-bounds
            index yields None rather than trapping.")
-  (needs  fallible-access)
   (input  (Bytes.at (Bytes.of (list 7 8 9)) 5))
   (output (: (None unit) (Option Int64))))
 
@@ -103,7 +95,6 @@
            it MUST yield None (fallible Bytes indexing), NOT cast the negative index to a large unsigned
            offset and read an unspecified byte. The negative-index companion of the out-of-bounds `5`
            case above, mirroring the List.at negative-index case (05-compound-types).")
-  (needs  fallible-access)
   (input  (Bytes.at (Bytes.of (list 7 8 9)) -1))
   (output (: (None unit) (Option Int64))))
 
@@ -118,7 +109,6 @@
   (doc    "`(Bytes.of (list))` is the zero-length byte sequence; its length is 0. Pins that Bytes.len
            handles the empty sequence (a length-prefix computation must yield 0, not underflow or read a
            phantom byte).")
-  (needs  bytes)
   (input  (Bytes.len (Bytes.of (list))))
   (output (: 0 Int64)))
 
@@ -127,7 +117,6 @@
            same (empty) bytes in order, so they are structurally equal (core-semantics.md #Equality Is
            Structural, at the Bytes value form). Pins that Bytes equality treats the empty sequence as a
            genuine value equal to itself, not a special-cased nothing.")
-  (needs  bytes)
   (input  (= (Bytes.of (list)) (Bytes.of (list))))
   (output (: true Bool)))
 
@@ -135,7 +124,6 @@
   (doc    "`(Bytes.concat b (Bytes.of (list)))` = b: appending zero bytes changes nothing. Pins the
            right identity of Bytes.concat — a concat that mishandles a zero-length operand (e.g. writes a
            stray length prefix) would break the compiler's section assembly.")
-  (needs  bytes)
   (input  (= (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list))) (Bytes.of (list 1 2))))
   (output (: true Bool)))
 
@@ -143,7 +131,6 @@
   (doc    "The left-identity companion: `(Bytes.concat (Bytes.of (list)) b)` = b. Pins that
            concatenation handles a zero-length LEFT operand too, not only a zero-length right operand —
            both sides of concat treat the empty sequence as the identity.")
-  (needs  bytes)
   (input  (= (Bytes.concat (Bytes.of (list)) (Bytes.of (list 3 4))) (Bytes.of (list 3 4))))
   (output (: true Bool)))
 
@@ -160,7 +147,6 @@
            depends only on the bytes in order, not on grouping. Pins the associativity law a
            deferred-concatenation representation must preserve — re-grouping the concatenation tree is
            unobservable (memory-and-resource-model.md #Sharing Is Not Observable).")
-  (needs  bytes)
   (input  (= (Bytes.concat (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) (Bytes.of (list 5 6)))
              (Bytes.concat (Bytes.of (list 1 2)) (Bytes.concat (Bytes.of (list 3 4)) (Bytes.of (list 5 6))))))
   (output (: true Bool)))
@@ -184,7 +170,6 @@
            30))`. A slice is an ordinary Bytes value; a representation that shares the parent's storage
            to realize it MUST be indistinguishable from this copy (memory-and-resource-model.md #Sharing
            Is Not Observable). `expect` unwraps the in-bounds slice.")
-  (needs  fallible-access)
   (input  (= (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")
              (Bytes.of (list 20 30))))
   (output (: true Bool)))
@@ -193,7 +178,6 @@
   (doc    "`(Bytes.len (Option.expect (Bytes.slice b 1 2) …))` = 2: length reads the slice's OWN byte count, not
            the parent's. A view representation that stored a length must report the slice's length, never
            the backing sequence's — the sharing is not observable through length.")
-  (needs  fallible-access)
   (input  (Bytes.len (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")))
   (output (: 2 Int64)))
 
@@ -202,7 +186,6 @@
            the slice's start, not the parent's start. Pins that a view representation adds its offset —
            indexing is relative to the slice, so sharing the parent's storage is not observable through
            indexing.")
-  (needs  fallible-access)
   (input  (Bytes.at (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds") 0))
   (output (: (Some 20) (Option Int64))))
 
@@ -211,7 +194,6 @@
            = Some `(Bytes.of (list 2 3))` — reads the LOGICAL bytes in order, independent of how the
            sequence was assembled. Pins that a slice over a deferred-concatenation representation crosses
            leaf boundaries correctly, seeing bytes not physical layout (#Sharing Is Not Observable).")
-  (needs  fallible-access)
   (input  (= (Option.expect (Bytes.slice (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) 1 2)
                      "slice is in bounds")
              (Bytes.of (list 2 3))))
@@ -221,7 +203,6 @@
   (doc    "`(Bytes.slice b 2 0)` yields Some of the empty byte sequence — equal to `(Bytes.of (list))`.
            Pins the degenerate slice: taking zero bytes at an in-bounds start yields the identity of
            concatenation, present as Some, not None.")
-  (needs  fallible-access)
   (input  (= (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 0) "slice is in bounds")
              (Bytes.of (list))))
   (output (: true Bool)))
@@ -230,7 +211,6 @@
   (doc    "`(Bytes.slice b 2 3)` on a 4-byte sequence asks for 3 bytes starting at index 2 — running one
            byte past the end — so it MUST yield None rather than read beyond the sequence or return a
            short result (fallible, on the same footing as Bytes.at out-of-bounds).")
-  (needs  fallible-access)
   (input  (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 3))
   (output (: (None unit) (Option Bytes))))
 
@@ -238,7 +218,6 @@
   (doc    "`(Bytes.slice b -1 2)` uses a start below 0 — no byte at position -1 — so it MUST yield None,
            NOT cast the negative start to a large unsigned offset. The negative-index companion of the
            past-the-end case, mirroring the Bytes.at negative-index None.")
-  (needs  fallible-access)
   (input  (Bytes.slice (Bytes.of (list 10 20 30 40)) -1 2))
   (output (: (None unit) (Option Bytes))))
 
@@ -256,7 +235,6 @@
            materializes the slice into independent storage, changing resource use but not the value.
            Pins that compact is value-preserving — equal by bytes in order to the un-compacted slice
            (memory-and-resource-model.md #Retained Storage Is What A Value's Representation Holds Live).")
-  (needs  fallible-access)
   (input  (= (Bytes.compact (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds"))
              (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds")))
   (output (: true Bool)))
@@ -265,7 +243,6 @@
   (doc    "`(Bytes.compact b)` = `b`: compacting a sequence that already owns its storage changes
            nothing observable. Pins that compact is always value-preserving, whether or not the operand
            shares storage — it never alters the bytes, only (possibly) the storage backing them.")
-  (needs  bytes)
   (input  (= (Bytes.compact (Bytes.of (list 1 2 3))) (Bytes.of (list 1 2 3))))
   (output (: true Bool)))
 
@@ -285,7 +262,6 @@
            back to `b\"ABC\"`, byte-identical to a const byte sequence. Bytes 65 66 67 are the printable
            ASCII `A B C`, so the byte-string display shows them literally. Pins that Bytes is a runtime
            value, not only a compile-time literal — the compiler's output type flowing at run time.")
-  (needs  bytes)
   (input  (do
             (def (mk n) (Bytes.of (list n 66 67)))
             (def (main)  (mk 65)) (export main)))
@@ -299,7 +275,6 @@
            the byte bound is carried by the UInt8 TYPE and that crossing into it from a wider value is the
            explicit total `wrap`, not a runtime range trap — there is no out-of-range byte to trap on,
            because a UInt8 is in range by construction. `Bytes.len` reads the result to a scalar (1).")
-  (needs  bytes)
   (input  (do
             (def (mk n) (Bytes.len (Bytes.of (list (UInt8.wrap n)))))
             (def (main)  (mk 258)) (export main)))
@@ -309,7 +284,6 @@
   (doc    "`Bytes.len` of a byte sequence carrying a runtime byte: the seed folds a runtime Bytes value
            to a SCALAR count via the runtime's bytes-len, the fold-to-scalar half of the idiom (like a
            recursive list sum). `(Bytes.len (Bytes.of (list n 2 3)))` = 3 for any `n`.")
-  (needs  bytes)
   (input  (do
             (def (sz n) (Bytes.len (Bytes.of (list n 2 3))))
             (def (main)  (sz 9)) (export main)))
@@ -323,7 +297,6 @@
            green either way. `(Bytes.concat (Bytes.of (list a)) (Bytes.of (list b 9)))` = `b\"\\x07\\x08\\t\"`
            for `a=7 b=8` — bytes 7 (BEL), 8 (backspace), 9 (tab) render as escapes (9 is the `\\t` special
            escape). Pins runtime concatenation — how a compiler joins the byte fragments of its output.")
-  (needs  bytes)
   (input  (do
             (def (join a b) (Bytes.concat (Bytes.of (list a)) (Bytes.of (list b 9))))
             (def (main)      (join 7 8)) (export main)))
@@ -336,7 +309,6 @@
            `(rep 4)` = `b\"XXXX\"` (byte 88 is the printable ASCII `X`). This is exactly the shape a
            self-hosted compiler uses to emit a component's wasm bytes — concatenating byte fragments in
            a recursion whose depth is driven by the program being compiled.")
-  (needs  bytes)
   (input  (do
             (def (rep n) (if (< n 1)
                             (Bytes.of (list))
@@ -358,7 +330,6 @@
            a single-primitive slip (wrong mask, wrong shift, dropped continuation bit) changes the
            output, so this is a tighter check on the emit path than any primitive alone. The companion
            `(uleb 100)` (100 < 128) exits in one byte to `b\"d\"`, exercising the base case.")
-  (needs  bytes)
   (input  (do
             (def (uleb n)
               (if (< n 128)
@@ -372,7 +343,6 @@
            the encoder's `(< n 128)` arm emits exactly one byte and does not recurse. `(uleb 100)` =
            `b\"d\"` (byte 100 is ASCII `d`). Pins the terminator arm in isolation from the recursive
            multibyte path, so a regression in either arm is localized.")
-  (needs  bytes)
   (input  (do
             (def (uleb n)
               (if (< n 128)
@@ -394,7 +364,6 @@
            `Bytes` shape), not via an `if`-on-discriminant detour. This is the `lower`/`serialize` shape a
            self-hosted compiler is written in — the exhaustive per-variant byte map that turns a typed IR
            node into its instruction bytes.")
-  (needs  bytes)
   (input  (do
             (type Expr (Lit Int64) (Neg Expr) (Add (Tuple Expr Expr)))
             (def (emit e)
@@ -418,7 +387,6 @@
            operand. This is how a self-hosted compiler assembles its output: `serialize` folds a code
            stream (a list of encoded instruction/section fragments) into the component's byte vector,
            the list-fold companion of the per-node tree-walk emitter above.")
-  (needs  bytes)
   (input  (do
             (type BL BNil (BCons (Tuple Bytes BL)))
             (def (build n) (if (< n 1)
@@ -444,7 +412,6 @@
            indistinguishable from a fresh copy (memory-and-resource-model.md #Sharing Is Not Observable).
            Bytes 20, 30 are non-printable, so the byte-string display escapes them. Pins the fallible
            slice on a runtime value — how a compiler reads a sub-range of its input bytes without copying.")
-  (needs  fallible-access)
   (input  (do
             (def (sl b s n) (Bytes.slice (Bytes.of (list b 20 30 40)) s n))
             (def (main)     (sl 10 1 2)) (export main)))
@@ -455,7 +422,6 @@
            running one byte past the end — so it yields None, never reading beyond the sequence or
            returning a short result. The runtime companion of the const past-the-end case, pinning that
            the bound is checked on the value at run time.")
-  (needs  fallible-access)
   (input  (do
             (def (sl b s n) (Bytes.slice (Bytes.of (list b 20 30 40)) s n))
             (def (main)     (sl 10 2 3)) (export main)))
@@ -466,7 +432,6 @@
            yields None, NOT a large unsigned offset from casting the negative start. The runtime
            companion of the const negative-start case: the check is on the signed value, so a runtime
            negative start is caught before it can wrap.")
-  (needs  fallible-access)
   (input  (do
             (def (sl b s n) (Bytes.slice (Bytes.of (list b 20 30 40)) s n))
             (def (main)     (sl 10 -1 2)) (export main)))
@@ -539,7 +504,6 @@
            Storage Is What A Value's Representation Holds Live), changing storage use but never the value. Pins
            that compact is value-preserving on a runtime value — how a compiler keeps a small slice of a
            large input while letting the input be reclaimed. `(mk 1)` = `b\"\\x01\\x02\\x03\"`.")
-  (needs  bytes)
   (input  (do
             (def (mk n) (Bytes.compact (Bytes.of (list n 2 3))))
             (def (main) (mk 1)) (export main)))
@@ -559,7 +523,6 @@
            binder `x` is the Int64 byte (Bytes.at boxes a byte, and the match unboxes it to the scalar),
            so it unifies with the scalar `None` arm — the reader's per-byte dispatch. Pins that a runtime
            `Bytes.at` Option matches like any `Option<Int64>`.")
-  (needs  fallible-access)
   (input  (do
             (def (at b i) (match (Bytes.at b i) ((Some x) x) (None -1)))
             (def (main)   (at (Bytes.of (list 10 20 30)) 1)) (export main)))
@@ -569,7 +532,6 @@
   (doc    "The out-of-bounds companion: `(at (Bytes.of (list 10 20 30)) 9)` reads past the end, so the
            match takes the `None` arm and returns -1. Pins that both arms of a runtime `Bytes.at` match
            are reachable and unify — the terminating branch of the byte-walk.")
-  (needs  fallible-access)
   (input  (do
             (def (at b i) (match (Bytes.at b i) ((Some x) x) (None -1)))
             (def (main)   (at (Bytes.of (list 10 20 30)) 9)) (export main)))
@@ -584,7 +546,6 @@
            widening (correct only for a CONSTANT element, whose core folds through the width; a runtime
            element must take the runtime read). A constant-element read (`(Bytes.at (Bytes.of (list 5))
            0)`) folds and was always fine; this pins the runtime-stored byte is widened on read.")
-  (needs  fallible-access)
   (input  (do
             (def (main (: n UInt8)) (match (Bytes.at (Bytes.of (list n)) 0) ((Some x) x) ((None _) -1)))
             (export main)))
@@ -597,7 +558,6 @@
            with the accumulator. `(go (Bytes.of (list 10 20 30)) 0 0)` sums to 60. Pins that a recursive
            function driving over the input bytes by matching `Bytes.at` compiles and runs — the core
            `bytes → AST` loop a self-hosted front end is built on.")
-  (needs  fallible-access)
   (input  (do
             (def (go b i acc)
               (match (Bytes.at b i)
@@ -615,7 +575,6 @@
            annotated form pins the SCRATCH-SLOT discipline directly (the unannotated form additionally
            needs argument-position inference — a separate increment). `be(b\"\\x01\\x02\", 0, 2)` =
            byte[0]*place(1) + byte[1]*place(0) = 1*256 + 2*1 = 258.")
-  (needs  fallible-access)
   (input  (do
             (def (byte-at (: b Bytes) i) (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
             (def (place k) (if (< k 1) 1 (* 256 (place (- k 1)))))
@@ -637,7 +596,6 @@
            as the LEB128 case composes them into the writer's — a single-primitive slip (wrong shift,
            wrong mask, wrong place value) changes the decoded number, so this is a tighter check on the
            input path than any primitive alone.")
-  (needs  fallible-access)
   (input  (do
             (def (byte-at b i)  (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
             (def (major b i)    (>> (byte-at b i) 5))
@@ -662,7 +620,6 @@
            instead of -10), or a boolean's arg mistaken for a small int, would corrupt every literal a
            self-hosted front end reads. Completes the reader's decode surface: head dispatch (which
            operation), length iteration (how many children), and atom decode (each leaf's value).")
-  (needs  fallible-access)
   (input  (do
             (def (byte-at b i)    (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
             (def (cbor-major b i) (>> (byte-at b i) 5))
@@ -693,7 +650,6 @@
            self-hosted reader's major-7 branch makes when it assumes bool (a CBOR float `3.14` decoding
            to `false`). The reader's fix is to route a non-boolean major-7 value to a decline (KError),
            not default it; this case pins the discrimination the decline depends on.")
-  (needs  fallible-access)
   (input  (do
             (def (classify-simple arg)
               (if (= arg 21) 1
@@ -716,7 +672,6 @@
            prefix must not be mistaken for the whole name, or the reader would mis-resolve every operator
            whose name is a prefix of another. The positive companion (exact match → 1) is the head
            resolution the whole-module compile path already exercises end-to-end.")
-  (needs  fallible-access)
   (input  (do
             (def (byte-at b i)       (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
             (def (cbor-info b i)     (& (byte-at b i) 31))
@@ -748,7 +703,6 @@
            root]` and to advance across an application's argument forms — mutual recursion (`cbor-skip` ↔
            `skip-elems`) over runtime input bytes, the navigation half of `bytes → AST` that the
            head-decode's value-extraction half complements.")
-  (needs  fallible-access)
   (input  (do
             (def (byte-at b i)       (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
             (def (cbor-major b i)    (>> (byte-at b i) 5))
@@ -781,7 +735,6 @@
            A single-primitive slip (wrong child offset, wrong head extraction, a navigation miscount)
            reads the wrong operand and changes the result, so this is a tighter check on the reader than
            any primitive alone — the input dual of the LEB128 known-answer emit case.")
-  (needs  fallible-access)
   (input  (do
             (def (byte-at b i)       (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
             (def (cbor-major b i)    (>> (byte-at b i) 5))
@@ -817,7 +770,6 @@
            reader drives a loop by an array length decoded from the input (the shape of reading a
            module's def list or a call's argument list), the count half of `bytes → AST` that the
            head-index-dispatch case complements.")
-  (needs  fallible-access)
   (input  (do
             (def (byte-at b i)       (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
             (def (cbor-major b i)    (>> (byte-at b i) 5))
@@ -847,7 +799,6 @@
            it a reader walking a module's def list would miscount offsets the moment it met a tagged
            name, reading the wrong element. Completes the item-kind coverage of `cbor-skip` (array /
            string / tag / scalar) the reader needs to traverse the whole canonical AST.")
-  (needs  fallible-access)
   (input  (do
             (def (byte-at b i)       (match (Bytes.at b i) ((Some x) x) ((None _) 0)))
             (def (cbor-major b i)    (>> (byte-at b i) 5))
@@ -879,7 +830,6 @@
            67))` (bytes 65 66 67 = ASCII `A B C`), so the literal and the explicit form are the same
            value (options/binary-syntax; the `#\"…\"`/`a.b` sugar pattern). Pins that the byte-string
            literal is reader sugar, not a distinct value form.")
-  (needs  bytes)
   (input  (= b"ABC" (Bytes.of (list 65 66 67))))
   (output (: true Bool)))
 
@@ -888,14 +838,12 @@
            137 and `PNG` are the printable bytes 80 78 71, so the literal reads to the PNG magic
            prefix. Pins that `\\xNN` and printable-ASCII bytes read to the same values the explicit
            list names — the reader escape set is the inverse of the display escape set.")
-  (needs  bytes)
   (input  (= b"\x89PNG" (Bytes.of (list 137 80 78 71))))
   (output (: true Bool)))
 
 (case "an empty byte-string literal is the empty byte sequence"
   (doc    "`(= b\"\" (Bytes.of (list)))` is true: `b\"\"` reads to the zero-length byte sequence. Pins
            the degenerate literal, the byte-string spelling of `(Bytes.of (list))`.")
-  (needs  bytes)
   (input  (= b"" (Bytes.of (list))))
   (output (: true Bool)))
 
@@ -904,7 +852,6 @@
            to that same `b\"…\"` text. `b\"A\\nB\"` carries the printable `A`, a newline (the `\\n`
            special escape), and `B`; passing it through a runtime function and rendering the result
            yields `b\"A\\nB\"` — reading and displaying a byte sequence are inverses.")
-  (needs  bytes)
   (input  (do
             (def (id b) b)
             (def (main) (id b"A\nB")) (export main)))

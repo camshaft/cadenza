@@ -82,7 +82,6 @@
            ill-typed and the compiler rejects it (CDZ0201, core-semantics.md #A Record Has A Fixed Set
            Of Named Fields), or declines if it does not yet cover the fixed-field-set rule
            (reject-don't-miscompile).")
-  (needs      collections)
   (input      (record (a 1) (a 2)))
   (error      CDZ0201))
 
@@ -90,7 +89,6 @@
   (doc    "The duplicate need not be adjacent: `(record (a 1) (b 2) (a 3))` still names `a` twice, so
            it is ill-typed (CDZ0201). Pins that the fixed-field-set check is over the whole field list,
            not only consecutive names.")
-  (needs      collections)
   (input      (record (a 1) (b 2) (a 3)))
   (error      CDZ0201))
 
@@ -120,7 +118,6 @@
            registers each variant without the check binds `A` twice with two payload types (`(T.A 5)` and
            `(T.A true)` both construct), an ambiguous variant the closed set forbids. A generation that does
            not yet detect a duplicate variant name declines rather than binding one.")
-  (needs      sum-type-declaration)
   (input      (do
                 (type T (A Int64) (A Bool))
                 (def (main) 1) (export main)))
@@ -139,7 +136,6 @@
            the run boundary as the program's result. A field's type is whatever the field holds, not
            uniformly Int64 (an Int64 field already works; this pins a Bool field does too — the
            companion of the boolean tuple-element case).")
-  (needs   collections)
   (input   (. (record (flag true)) flag))
   (output  (: true Bool)))
 
@@ -227,7 +223,6 @@
            `(. (record (a 1)) 0)` applies a positional accessor to a non-tuple — a type error
            (CDZ0201), the mirror of `(. (tuple 1 2) f)` (member access on a tuple) above. Pins that
            `(. x N)` requires a tuple, rejecting a record operand.")
-  (needs     collections)
   (input     (. (record (a 1)) 0))
   (error     CDZ0201))
 
@@ -283,7 +278,6 @@
            reached through a PARAMETER has genuinely unknown arity and correctly declines instead; here the
            arity is known from the callee's return.) A generation that does not yet range-check a fn-return
            tuple's access declines rather than emitting the trapping access.")
-  (needs     sum-type-declaration)
   (input     (do
                (def (mk) (tuple 1 2))
                (def (main) (. (mk) 2)) (export main)))
@@ -313,7 +307,6 @@
            on a record parameter → 'unknown record shape'); `(. x N)` on a parameter must not emit invalid
            bytes where the record accessor cleanly declines. A generation that cannot yet thread the
            parameter tuple's shape declines rather than emitting an invalid component.")
-  (needs     collections)
   (input     (do
                (def (fst t) (. t 0))
                (def (main)  (fst (tuple 7 8))) (export main)))
@@ -496,7 +489,6 @@
            first element is a runtime sum. Bound by `let`, positional access `1` reads its second element, the Int64
            `9`. Pins that positional access on a materialized runtime tuple reads and unboxes a scalar
            element (`arr-get` + `get-int`), the index half of a decoder threading `(node, index)`.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Node (NLit Int64) (NAdd (Tuple Node Node)))
             (def (mk) (tuple (NLit 5) 9))
@@ -509,7 +501,6 @@
            payload 5. Pins that a runtime `(. x N)` yields a heap element a `match` can dispatch on —
            the node half of a decoder's `(node, index)` pair (the exact shape a `bytes → AST` reader
            threads through `let`).")
-  (needs  sum-type-declaration)
   (input  (do
             (type Node (NLit Int64) (NAdd (Tuple Node Node)))
             (def (mk) (tuple (NLit 5) 9))
@@ -599,7 +590,6 @@
            pipeline). This is distinct from a trap in a runtime-LIVE arm, which stays a build failure per
            `reference-compiler.md` #A Compile-Provable Trap Fails The Build: only the dead branch is
            shielded. `resolve` of `(NPrim '+' …)` takes the `KAdd` arm, so `kind-of` of the result is 1.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Node (NInt Int64) (NPrim (Tuple String Node Node)))
             (type Core (KConst Int64) (KAdd (Tuple Core Core)))
@@ -731,7 +721,6 @@
            once and read by the functions (`(def default-mode (Mode.Fast unit))`), the sum analogue of a
            top-level opcode record. Pins that a top-level value definition binding a sum is in scope for
            every function and dispatches by its variant, exactly as a bound record projects.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C (R unit) (G unit) (B unit))
             (def chosen (C.G unit))
@@ -972,7 +961,6 @@
            SAME `List` type as a literal — its representation (an RRB persistent tree join) is
            unobservable (#A List's Representation Is Unspecified And Unobservable), so it renders as one
            flat `(list …)`. The self-hosting compiler assembles output in linear time with this op.")
-  (needs      collections)
   (input  (do (def (main) (List.concat (list 1 2) (list 3 4))) (export main)))
   (output (: (list 1 2 3 4) (List Int64))))
 
@@ -981,7 +969,6 @@
            of the second list to the first, so the result length is the sum. Reads through the joined
            trie via `vec-len` exactly as a push-built list (collections-and-text.md §A List's
            Representation Is Unspecified And Unobservable).")
-  (needs      collections)
   (input  (do (def (main) (List.len (List.concat (list 1 2 3) (list 4 5)))) (export main)))
   (output (: 5 Int64)))
 
@@ -1026,7 +1013,6 @@
            the concatenation is the FIRST element of the second operand, so the join places the second
            list's elements immediately after the first's. Pins that `List.at` reads a concatenated list
            by the same total ordering as a literal.")
-  (needs      fallible-access)
   (input  (do
             (def (main)
               (Option.expect (List.at (List.concat (list 10 20 30) (list 40 50)) 3) "in bounds")) (export main)))
@@ -1036,7 +1022,6 @@
   (doc    "`(List.len (List.concat (list 7 8 9) (list)))` = 3 — concatenating with the empty list yields
            a list equal to the other operand (collections-and-text.md §A List Is Grown By Functional
            Construction: the empty-operand identity). The empty right operand contributes no elements.")
-  (needs      collections)
   (input  (do (def (main) (List.len (List.concat (list 7 8 9) (list)))) (export main)))
   (output (: 3 Int64)))
 
@@ -1046,7 +1031,6 @@
            emits a runtime `vec-concat`. This is the `code-cat`/emit-assembly idiom a self-hosted
            compiler is written in: joining encoded fragments in linear time rather than pushing one
            element at a time (O(n²)).")
-  (needs      collections)
   (input  (do
             (def (cat a b) (List.concat a b))
             (def (main) (List.len (cat (list 1 2 3) (list 4 5 6 7)))) (export main)))
@@ -1059,7 +1043,6 @@
            error (CDZ0203, the same element-type conflict the `(list 1 true)` literal raises). A
            generation that skipped this would render the result at one operand's element type,
            mistyping the other's elements — a wrong value, not merely a missing rejection.")
-  (needs      collections)
   (input  (do (def (main) (List.len (List.concat (list 1 2) (list true)))) (export main)))
   (error CDZ0203))
 
@@ -1275,7 +1258,6 @@
            entrypoint directly compiles; only passing it into a helper and binding the payload does not
            yet, so this case guards that the built-in Option's payload kind survives the boundary as a
            user sum's does.")
-  (needs  fallible-access)
   (input  (do
             (def (unwrap o d) (match o ((Some x) x) ((None _) d)))
             (def (main) (unwrap (Some 42) 99)) (export main)))
@@ -1291,7 +1273,6 @@
            consumer helper — earlier this declined 'arms differ in kind' because the `Some` binder
            bound as an opaque handle across the parameter boundary; now the arm-unification recovers
            it. `(at (Bytes.of (list 10 20 30)) 1)` = 20.")
-  (needs  fallible-access)
   (input  (do
             (def (unwrap o d) (match o ((Some x) x) ((None _) d)))
             (def (at b i)     (unwrap (Bytes.at b i) -1))
@@ -1322,7 +1303,6 @@
            Bytes.at result' above), the match-unwrap form works for `List.at`, and the expect result works
            when returned or matched (not added). A generation that does not yet propagate a runtime list's
            element type through `Option.expect` into arithmetic declines rather than miscompiling.")
-  (needs  fallible-access)
   (input  (do
             (def (f xs) (+ (Option.expect (List.at xs 1) "in bounds") 10))
             (def (main) (f (list 10 20 30))) (export main)))
@@ -1356,7 +1336,6 @@
            kind across branches reaches a nested-Option arm against a None arm, the nested-payload sibling
            of the single-level fallible-result unification above. A generation that does not yet unify a
            None arm with a nested-Some arm at the result boundary declines rather than miscompiling.")
-  (needs  fallible-access)
   (input  (do
             (def (cl n)   (if (< n 0) (None unit) (Some (Some n))))
             (def (main)   (cl 5)) (export main)))
@@ -1371,7 +1350,6 @@
            head and tail from each Cons node's payload tuple. Pins that a program whose RESULT is a
            scalar it folded out of a runtime heap value compiles and runs — the `map`/`fold`-over-nodes
            idiom the compiler leans on, distinct from a program whose result IS the heap value.")
-  (needs  sum-type-declaration)
   (input  (do
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (sm xs) (match xs
@@ -1392,7 +1370,6 @@
            by compile-time spine unrolling (the case above can). Pins runtime sum-match CONSUMPTION:
            `sum-disc` selects the arm, `sum-payload`/`arr-get` bind the head and tail, and the recursive
            call is a real runtime `call` rather than an unbounded compile-time inline.")
-  (needs  sum-type-declaration)
   (input  (do
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (count n) (if (< n 1)
@@ -1416,7 +1393,6 @@
            Int64 while `out` becomes heap, and `List.len` on the result declines 'of a non-list value'
            (the match-form twin of the if-form accumulator case in 13-strings; a compiler that walks a
            function list building a return-kind table is exactly this shape).")
-  (needs  sum-type-declaration)
   (input  (do
             (type FL FNil (FCons (Tuple Int64 FL)))
             (def (recompute funcs out)
@@ -1462,7 +1438,6 @@
            param direction of unification) converges `ktab` to heap, so the call emits a real `call`, not
            an inline. This is the fresh-re-seed-plus-list-result form the case above noted as the open
            frontier — now representable.")
-  (needs  sum-type-declaration)
   (input  (do
             (type FL FNil (FCons (Tuple Int64 FL)))
             (def (recompute funcs out)
@@ -1485,7 +1460,6 @@
            cons cell. Here the scrutinee is an inline list, so the whole match is decided at compile
            time; the recursive-fold-over-a-runtime-parameter form (below) additionally needs a
            materialized list tail for the rest binder.")
-  (needs  list-patterns)
   (input  (do (def (main)
             (+ (match (list) ((list) 1) ((list a .. r) 2))
                (+ (match (list 7 8) ((list a b) (+ a b)) (_ 0))
@@ -1510,7 +1484,6 @@
            needs a list-tail primitive, so it is gated behind `list-pattern-runtime-tail` until that
            lands (until then it declines \"runtime list element-pattern (rest binder) needs a list-tail
            primitive\").")
-  (needs  list-pattern-runtime-tail)
   (input  (do
             (def (sum xs) (match xs
                             ((list)           0)
@@ -1529,7 +1502,6 @@
            consumed by runtime discriminant dispatch, binding a nested tuple payload of two heap
            sub-nodes and recursing into each — the exact `(match node ((Expr.Add …) …) …)` idiom a
            self-hosted evaluator/compiler is written in.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Expr (Lit Int64) (Add (Tuple Expr Expr)) (Mul (Tuple Expr Expr)))
             (def (ev e) (match e
@@ -1552,7 +1524,6 @@
            compile to a real function reading the heap, never emit heap-accessor calls into a scalar
            module with no such imports (which produced an invalid component). `left` of `Pair(Leaf 7,
            Leaf 9)` is `Leaf 7`, whose leaf value is 7.")
-  (needs  sum-type-declaration)
   (input  (do
             (type T (Leaf Int64) (Pair (Tuple T T)))
             (def (left x) (match x ((T.Leaf n) (T.Leaf n)) ((T.Pair (tuple a b)) a)))
@@ -1572,7 +1543,6 @@
            (`(tuple a b)` in §\"a function returns a heap sub-node\") and a wide flat binder; only the
            NESTING is exercised here. `ev (Bin 0 (Lit 20) (Bin 1 (Lit 22) (Lit 8)))` computes
            `20 + (22 - 8) = 34`.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Expr (Lit Int64) (Bin (Tuple Int64 (Tuple Expr Expr))))
             (def (ev e) (match e
@@ -1599,7 +1569,6 @@
            missing `(Some (E.Neg _))` would be non-exhaustive, CDZ0210). `(first-lit (list (E.Lit 5)))` = 5.
            This is the ctor-under-Option companion of the nested-tuple-in-payload case above, and the shape
            a self-hosted compiler uses to read one element of a node list.")
-  (needs  sum-type-declaration)
   (input  (do
             (type E (Lit Int64) (Neg Int64))
             (def (first-lit xs) (match (List.at xs 0)
@@ -1623,7 +1592,6 @@
            reader to its resolved-IR pipeline (distinct from the `Expr` self-evaluator above, which stays
            within one type; here the transform crosses sum types, and the intermediate `Core` is a genuine
            runtime value the producer materializes and the consumer walks).")
-  (needs  sum-type-declaration)
   (input  (do
             (type Node (NInt Int64) (NPrim (Tuple String Node Node)))
             (type Core (KConst Int64) (KAdd (Tuple Core Core)) (KSub (Tuple Core Core)) (KMul (Tuple Core Core)))
@@ -1655,7 +1623,6 @@
            enclosing type annotation (`IntList`) disambiguates the name. This is the runtime construction
            half of the recursive-sum idiom the const case §\"a recursive sum type works with pattern
            matching\" folds; here the payload is a genuine runtime value so it lives on the value heap.")
-  (needs  sum-type-declaration)
   (input  (do
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (f n) (IntList.Cons (tuple n (IntList.Nil ()))))
@@ -1673,7 +1640,6 @@
            args-less type constructor (which would not unify with the `(Tree Int64)` a `Branch` value
            carries). The parameter is annotated because inferring a recursive-sum parameter's
            instantiation from its match arms is a separate increment.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Tree (Leaf a) (Branch (Tuple Tree Tree)))
             (def (sm (: t (Tree Int64)))
@@ -1693,7 +1659,6 @@
            `(List Rose)` is `(List (Rose a))`. `sz` returns the child count of an `RNode`. Pins that the
            bare-self-reference-carries-the-params rule descends through a compound payload type (`List`,
            and equally `Tuple`/`Option`), not only a top-level bare occurrence.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Rose (RLeaf a) (RNode (List Rose)))
             (def (sz (: t (Rose Int64)))
@@ -1717,7 +1682,6 @@
            shape) and is not on the self-hosting critical path (a compiler returns bytes, not a rendered
            list). Pins decline-don't-miscompile: the wrong answer `(Cons 0)` — reading the Cons
            payload's tuple handle as a boxed integer — is a FAIL, never an accepted output.")
-  (needs  sum-type-declaration)
   (input  (do
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (count n) (if (< n 1)
@@ -1735,7 +1699,6 @@
            payload position (a `Tree.Node`'s left and right), the render dual of a tree-consuming fold —
            a rendering that walked only one child, or truncated at a fixed depth, would produce a wrong
            structure (decline-don't-miscompile: the wrong shape is a FAIL, never an accepted output).")
-  (needs  sum-type-declaration)
   (input  (do
             (type Tree (Leaf Int64) (Node (Tuple Tree Tree)))
             (def (build n) (if (< n 1)
@@ -1809,7 +1772,6 @@
            a sum, deconstructed in one arm — with multiple same-outer arms falling through correctly on
            the inner discriminant. Without it the runtime matcher declined `unsupported payload binder`
            (it bound a `(tuple …)` or a bare name, not a nested constructor).")
-  (needs  sum-type-declaration)
   (input  (do
             (type N (L Int64) (P Int64))
             (type W (Wrap N) Empty)
@@ -1826,7 +1788,6 @@
            (N.L v))` matches (5), not the `N.P` arm — the inner discriminant discriminates. Together
            with the case above these pin all three arms of a nested runtime dispatch reachable: inner
            `N.L`, inner `N.P`, and the outer `Empty` fall-through.")
-  (needs  sum-type-declaration)
   (input  (do
             (type N (L Int64) (P Int64))
             (type W (Wrap N) Empty)
@@ -1844,7 +1805,6 @@
            arm, binding v=7, while `(None _)` is the empty-access arm. Pins the built-in polymorphic
            `Option` carrying a user sum through the runtime nested matcher — the `List.at`/`Bytes.at`
            result a compiler threads when it decodes a node list.")
-  (needs  sum-type-declaration)
   (input  (do
             (type N (L Int64) (P Int64))
             (def (main) (match (List.at (List.push (list) (N.L 7)) 0)
@@ -1936,7 +1896,6 @@
            `(Comb (tuple (Comb …) r))` takes. The seed declines (\"unsupported nested payload binder\"):
            it lowers a ctor-directly-under-ctor and a flat tuple binder, but not a ctor inside a tuple
            slot. A generation composing the two reproduces 42.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Inner (A Int64) (B Int64))
             (type Outer (Wrap (Tuple Inner Int64)))
@@ -1955,7 +1914,6 @@
            input, same result (42). Pins that the composed pattern is a surface convenience over
            bind-then-re-match, which IS lowered — a kernel is not blocked, only more verbose (this is
            the one-level-at-a-time peel a HOL `dest_eq` uses to route around the gap above).")
-  (needs  sum-type-declaration)
   (input  (do
             (type Inner (A Int64) (B Int64))
             (type Outer (Wrap (Tuple Inner Int64)))
@@ -1984,7 +1942,6 @@
            h t))`, the payloads boxed as one tuple handle), and recurses on `t`. `len` of a 3-element list
            is 3. Was CDZ0101 'unbound name `t`' before multi-payload destructure was lowered — `t` is
            bound by the `Cons` pattern; now it destructures the payload tuple's second element.")
-  (needs  sum-type-declaration)
   (input  (do
             (type IntList Nil (Cons Int64 IntList))
             (def (len (: l IntList)) (match l ((IntList.Nil) 0) ((IntList.Cons h t) (+ 1 (len t)))))
@@ -1997,7 +1954,6 @@
            binds `h` and adds it to the recursive `(sm t)` over the tail. `1 + 2 + 3` = 6. Pins that both
            positional binders of a multi-payload variant resolve at their tuple-element positions (the
            head at `[Payload, Elem(0)]`, the tail at `[Payload, Elem(1)]`), not just the trailing one.")
-  (needs  sum-type-declaration)
   (input  (do
             (type IntList Nil (Cons Int64 IntList))
             (def (sm (: l IntList)) (match l ((IntList.Nil) 0) ((IntList.Cons h t) (+ h (sm t)))))
@@ -2011,7 +1967,6 @@
            so the nested switch resolves. `snd` returns the list's second element; for `(Cons 10 (Cons 20
            Nil))` → 20; a shorter list falls to the `_` arm. Pins that the positional-payload sugar
            composes with a nested constructor pattern (the shape a kernel equation-arm takes).")
-  (needs  sum-type-declaration)
   (input  (do
             (type IntList Nil (Cons Int64 IntList))
             (def (snd (: l IntList)) (match l ((IntList.Cons h (IntList.Cons h2 rest)) h2) (_ 0)))
@@ -2025,7 +1980,6 @@
            wrong value or emit invalid wasm). The correct-arity sibling `(Mk a b)` compiles and computes;
            only the over-arity pattern faults, the same arity check an explicit `(tuple …)` payload
            pattern enforces.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Pair (Mk Int64 Int64))
             (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a b c) (+ a b))))
@@ -2060,7 +2014,6 @@
            `concl`/`dest_thm` takes when it returns a payload term for the CALLER to consume — the
            reason such an accessor fails while inline extraction compiles. A generation threading the
            payload's shape through the return reproduces the projected element 1.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Term (Var Int64) (Neg Int64))
             (type Box (B (Tuple (List Int64) Term)))
@@ -2080,7 +2033,6 @@
            it through a bare function RETURN. A HOL kernel routes around `concl`-then-match by
            destructuring the `Thm` inline in the arm that needs the conclusion (the pattern the working
            spike used to verify a minted theorem).")
-  (needs  sum-type-declaration)
   (input  (do
             (type Term (Var Int64) (Neg Int64))
             (type Box (B (Tuple (List Int64) Term)))
@@ -2167,7 +2119,6 @@
            Without that per-slot recovery the binders stay opaque `Heap` and the match declines
            'equality of differing kinds' / 'arms differ in kind'. This is the assoc-list an environment
            or a string→index symbol table is built on.")
-  (needs  sum-type-declaration)
   (input  (do
             (def (lookup xs i k)
               (match (List.at xs i)
@@ -2179,7 +2130,6 @@
 (case "lists are equal by elements in order"
   (doc    "Witnesses collections-and-text.md #A List Is An Ordered Homogeneous Sequence (equality).
            Needs the primitive collections the seed realizes to build an AST (list/map/record).")
-  (needs collections)
   (input  (= (list 1 2 3) (list 1 2 3)))
   (output (: true Bool)))
 
@@ -2203,7 +2153,6 @@
            type (different-arity tuples are rejected as different shapes). Pins that list equality does not
            treat length as a shape mismatch — a compiler reusing the tuple-arity incompatibility check on
            lists wrongly rejects this well-typed total comparison as 'different shapes'.")
-  (needs  collections)
   (input  (= (list 1 2) (list 1 2 3)))
   (output (: false Bool)))
 
@@ -2218,7 +2167,6 @@
            the list is not homogeneous and the compiler rejects it as a type mismatch (CDZ0203,
            collections-and-text.md #A List Is An Ordered Homogeneous Sequence), or declines if it does
            not yet cover the homogeneity rule.")
-  (needs     collections)
   (input     (list 1 true))
   (error     CDZ0203))
 
@@ -2228,7 +2176,6 @@
            element types and is not homogeneous — the compiler rejects it (CDZ0201). Pins that
            homogeneity holds across the numeric types too, not only across obviously unrelated kinds
            like Int64 and Bool.")
-  (needs     collections)
   (input     (list 1 2.5))
   (error     CDZ0201))
 
@@ -2255,7 +2202,6 @@
            back as booleans (`(List.push (list 10 20) false)` → `(list true true false)`) — a wrong value,
            not merely a missing rejection. A generation that does not yet check the pushed element's type
            declines rather than building the mistyped list.")
-  (needs     collections)
   (input     (List.push (list 1 2) true))
   (error     CDZ0203))
 
@@ -2277,7 +2223,6 @@
            integers 20 and 30 as booleans — a wrong value. Pins that both functional-construction
            operators enforce the element-type rule the literal does. A generation that does not yet check
            the replacement element's type declines rather than building the mistyped list.")
-  (needs     collections)
   (input     (List.update (list 1 2 3) 1 true))
   (error     CDZ0203))
 
@@ -2293,7 +2238,6 @@
            types (type-system.md #Structural Values Are Comparable Only When Their Shapes Match). A
            list of them is not homogeneous → CDZ0201, exactly as comparing them `(= (record (a 1))
            (record (b 2)))` is rejected.")
-  (needs     collections)
   (input     (list (record (a 1)) (record (b 2))))
   (error     CDZ0201))
 
@@ -2302,7 +2246,6 @@
            list of them is not homogeneous → CDZ0201 (comparing them is likewise rejected as different
            shapes). Pins that the list-element homogeneity check compares tuple ARITY, not just that
            both elements are tuples.")
-  (needs     collections)
   (input     (list (tuple 1 2) (tuple 1 2 3)))
   (error     CDZ0201))
 
@@ -2324,7 +2267,6 @@
            list-homogeneity manifestation of the different-keyset map-comparison bug (shapes_incompatible
            shares one arm for Record and Map). MUST be true. Contrast the record/tuple cases above, which
            ARE non-homogeneous because field set / arity IS the type.")
-  (needs     collections)
   (input     (= (list (map ("a" 1)) (map ("b" 2))) (list (map ("a" 1)) (map ("b" 2)))))
   (output    (: true Bool)))
 
@@ -2332,7 +2274,6 @@
   (doc    "Witnesses collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping: a
            well-typed list access whose index is in range yields the element wrapped in Some — an
            Option, not a bare value — so absence and presence share one total return type.")
-  (needs fallible-access)
   (input  (List.at (list 1 2 3) 1))
   (output (: (Some 2) (Option Int64))))
 
@@ -2341,7 +2282,6 @@
            well-typed list access whose index is out of range yields None rather than trapping or
            reading an unspecified value. A program that requires the element unwraps this Option with
            `expect` (core-semantics.md #Requiring The Value Of An Optional Traps On Absence).")
-  (needs fallible-access)
   (input  (List.at (list 1 2 3) 5))
   (output (: (None unit) (Option Int64))))
 
@@ -2357,7 +2297,6 @@
            yield None (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping), NOT
            wrap the negative index to a large unsigned offset and read an unspecified element. The
            negative-index companion of the out-of-bounds `5` case above; both yield None.")
-  (needs fallible-access)
   (input  (List.at (list 1 2 3) -1))
   (output (: (None unit) (Option Int64))))
 
@@ -2369,7 +2308,6 @@
            value's type (an unannotated escape of a value with a free type variable is rejected — see 07
            \"an escaped value with an unresolved payload type is rejected\"); the None still renders `(None
            unit)`.")
-  (needs fallible-access)
   (input  (: (List.at (list) 0) (Option Int64)))
   (output (: (None unit) (Option Int64))))
 
@@ -2384,7 +2322,6 @@
            `List.at args i` for each argument. Distinct from the top-level `List.at` cases above (the list
            is a direct parameter there); here the list arrives through a sum payload, the shape a
            self-hosted compiler's IR nodes carry.")
-  (needs  sum-type-declaration)
   (input  (do
             (type K (KK (Tuple Int64 (List Int64))))
             (def (f c) (match c ((K.KK (tuple fi xs)) (match (List.at xs 0) ((Some x) x) ((None _) -1)))))
@@ -2403,7 +2340,6 @@
            its payload arg list — distinct from the single-element case above (here the payload list holds
            recursive sum values and is walked in full, the exact shape a `lower`/`ev` pass over a call
            node with a variable argument count takes).")
-  (needs  sum-type-declaration)
   (input  (do
             (type Core (KConst Int64) (KCall (Tuple Int64 (List Core))))
             (def (sum-args xs i n) (if (< i n)
@@ -2418,7 +2354,6 @@
 
 (case "map equality is independent of insertion order"
   (doc    "Witnesses collections-and-text.md #A Map Associates Keys With Values.")
-  (needs collections)
   (input  (= (map ("a" 1) ("b" 2)) (map ("b" 2) ("a" 1))))
   (output (: true Bool)))
 
@@ -2445,7 +2380,6 @@
            rather than answering; the map path emits an equality that answers false. MUST be true. A
            generation whose map equality cannot yet compare a runtime map against a const one declines
            rather than answering false.")
-  (needs   collections)
   (input   (let ((j (+ 2 3))) (let ((k 5)) (= (map (j 1)) (map (k 1))))))
   (output  (: true Bool)))
 
@@ -2465,7 +2399,6 @@
            in scope, not compile-time labels). A reader that treated the key as the literal name would key
            by `\"a\"` and this equality would be false. Pins the positive half of the map-key-is-a-value
            rule (the unbound-key scope-error case below is the negative half). MUST be true.")
-  (needs      collections)
   (input      (let ((a 5)) (= (map (a 1)) (Map.insert Map.empty 5 1))))
   (output     (: true Bool)))
 
@@ -2475,7 +2408,6 @@
            overwrites `(a 1)`), size 1 — keys are compared by value (collections-and-text.md #Keys Are
            Compared By Value), and 5 = 5. If the key were the literal name, `a` and `b` would be distinct
            string keys and the map would have size 2. MUST be 1.")
-  (needs      collections)
   (input      (let ((a 5)) (let ((b 5)) (Map.size (map (a 1) (b 2))))))
   (output     (: 1 Int64)))
 
@@ -2495,7 +2427,6 @@
            that the value-not-literal rule holds at String key type too, ruling out a type-driven ident
            coercion (a reader that stringified an ident only for a String key type would still be wrong
            here — the key is the bound value `\"x\"`, not the name). MUST be true.")
-  (needs      collections)
   (input      (let ((a "x")) (= (map (a 1)) (Map.insert Map.empty "x" 1))))
   (output     (: true Bool)))
 
@@ -2504,7 +2435,6 @@
            both bound to `\"k\"`, so `(map (a 1) (b 2))` has ONE entry at key `\"k\"` (size 1) — keys
            compared by value, and `\"k\"` = `\"k\"`. If the key were the literal name, they would be
            distinct string keys `\"a\"`/`\"b\"` and size would be 2. MUST be 1.")
-  (needs      collections)
   (input      (let ((a "k")) (let ((b "k")) (Map.size (map (a 1) (b 2))))))
   (output     (: 1 Int64)))
 
@@ -2540,7 +2470,6 @@
            family: a position that must EVALUATE its operand must not reinterpret an unresolvable name as a
            String). A generation that does not yet evaluate a map key as a scoped value declines rather than
            coercing.")
-  (needs      collections)
   (input      (map (undefined-key 1)))
   (error      CDZ0101))
 
@@ -2555,7 +2484,6 @@
   (doc    "`(map (a 1) (b true))` associates `a`→Int64 and `b`→Bool: the values do not share one type,
            so the map is not well-typed and the compiler rejects it (CDZ0201, collections-and-text.md
            #A Map Associates Keys With Values — values of ONE type).")
-  (needs      collections)
   (input      (= (map ("a" 1) ("b" true)) (map ("a" 1) ("b" true))))
   (error      CDZ0201))
 
@@ -2564,7 +2492,6 @@
            (numeric-model.md #Numeric Types Do Not Silently Promote), so `(map (a 1) (b 2.5))` has two
            value types and is ill-typed — CDZ0201. Pins that map value-homogeneity holds across the
            numeric types too, mirroring the list case.")
-  (needs      collections)
   (input      (= (map ("a" 1) ("b" 2.5)) (map ("a" 1) ("b" 2.5))))
   (error      CDZ0201))
 
@@ -2594,7 +2521,6 @@
            2))` here — the construction-path half the value check already covers. A generation that does
            not yet check a map literal's key homogeneity on construction declines rather than building a
            heterogeneous-key map.")
-  (needs      collections)
   (input      (let ((j 5)) (let ((k true)) (map (j 1) (k 2)))))
   (error      CDZ0201))
 
@@ -2609,7 +2535,6 @@
            so a map associating them as values is not value-homogeneous — CDZ0201 (collections-and-text.md
            #A Map Associates Keys With Values: values of ONE type). Mirrors the list-of-diff-field-records
            case.")
-  (needs      collections)
   (input      (= (map ("a" (record (x 1))) ("b" (record (y 2)))) (map ("a" (record (x 1))) ("b" (record (y 2))))))
   (error      CDZ0201))
 
@@ -2617,7 +2542,6 @@
   (doc    "`(tuple 1 2)` and `(tuple 1 2 3)` are different tuple types (different lengths), so a map
            with them as values is not value-homogeneous — CDZ0201. Pins that the map-value homogeneity
            check compares tuple ARITY, mirroring the list case.")
-  (needs      collections)
   (input      (= (map ("a" (tuple 1 2)) ("b" (tuple 1 2 3))) (map ("a" (tuple 1 2)) ("b" (tuple 1 2 3)))))
   (error      CDZ0201))
 
@@ -2626,7 +2550,6 @@
            most once.\" `(map (a 1) (a 2))` repeats the key `a`, so it is ill-typed and the compiler
            rejects it (CDZ0201) rather than build it — a repeated key makes the association ambiguous
            (which value does `a` hold?).")
-  (needs      collections)
   (input      (= (map ("a" 1) ("a" 2)) (map ("a" 1) ("a" 2))))
   (error      CDZ0201))
 
@@ -2637,7 +2560,6 @@
            collections-and-text.md #A Map Associates Keys With Values). Comparing values of two
            different types is a type error the compiler rejects (CDZ0201), even though they carry the
            same keys mapped to the same values.")
-  (needs      collections)
   (input      (= (map ("a" 1) ("b" 2)) (record (a 1) (b 2))))
   (error      CDZ0201))
 
@@ -2646,7 +2568,6 @@
            An empty map and an empty record are different types (type-system.md #Structural Values Are
            Comparable Only When Their Shapes Match), so the comparison is a type error the compiler
            rejects (CDZ0201).")
-  (needs      collections)
   (input      (= (map) (record)))
   (error      CDZ0201))
 
@@ -2671,7 +2592,6 @@
            associate the same keys, so `=` is FALSE (collections-and-text.md #A Map Associates Keys With
            Values), NOT a type error. The seed wrongly treats the key set as a shape and rejects the
            comparison (CDZ0201) — a miscompile that refuses a valid program. MUST be false.")
-  (needs      collections)
   (input      (= (map ("a" 1) ("b" 2)) (map ("a" 1) ("c" 2))))
   (output     (: false Bool)))
 
@@ -2682,7 +2602,6 @@
            size-difference companion of the case above; the seed rejects it (CDZ0201) rather than
            yielding false — the same miscompile. Contrast records `(= (record (a 1)) (record (a 1) (b
            2)))`, which IS a type error, because a record's field set IS its shape.")
-  (needs      collections)
   (input      (= (map ("a" 1)) (map ("a" 1) ("b" 2))))
   (output     (: false Bool)))
 
@@ -2692,7 +2611,6 @@
            emptiness on one side of a map comparison yields false, not a shape-mismatch rejection
            (contrast the empty-map-vs-empty-record case above, which IS a type error because map and
            record are different types). MUST be false.")
-  (needs      collections)
   (input      (= (map) (map ("a" 1))))
   (output     (: false Bool)))
 
@@ -2701,7 +2619,6 @@
            a field from the RECORD it is applied to; applied to a value that is not a record it is a
            type error. A map is not a record (its keys are a collection, not a fixed field set), so
            `(. m a)` on a map `m` is rejected (CDZ0201) rather than projecting the entry for `a`.")
-  (needs      collections)
   (input      (let ((m (map ("a" 1) ("b" 2)))) (. m a)))
   (error      CDZ0201))
 
@@ -2744,7 +2661,6 @@
            are comparable only when their sets of field names are identical. `(record (a 1))` and
            `(record (b 1))` have disjoint field names — different shapes — so the comparison is a type
            error (CDZ0203).")
-  (needs      collections)
   (input      (= (record (a 1)) (record (b 1))))
   (error      CDZ0203))
 
@@ -2754,7 +2670,6 @@
            shapes. The comparison is a type error the compiler rejects (CDZ0203). (Contrast `(record
            (a 1))` vs `(record (a 2))` — same shape, different value — which is an ordinary false, not
            a type error.)")
-  (needs      collections)
   (input      (= (record (a 1)) (record (a 1) (b 2))))
   (error      CDZ0203))
 
@@ -2904,7 +2819,6 @@
            ill-typed value `(T.Mk \"x\")`, and matching it binds the String where an Int64 is declared. A
            generation that does not yet check a unary variant's payload type declines rather than
            constructing the mistyped value.")
-  (needs     sum-type-declaration)
   (input     (do
                (type T (Mk Int64))
                (def (main) (T.Mk "x")) (export main)))
@@ -2934,7 +2848,6 @@
            (tuple 1 2 3))` and lets a downstream `(. p 2)` project a position the declared two-element
            payload lacks, yielding 3 — a wrong value the declared arity forbids. A generation that does not
            yet check a tuple-typed payload declines rather than constructing the mistyped value.")
-  (needs     sum-type-declaration)
   (input     (do
                (type T (Pair (Tuple Int64 Int64)))
                (def (main) (T.Pair (tuple 1 2 3))) (export main)))
@@ -2950,7 +2863,6 @@
            would make the sum spuriously generic and read the payload as an unresolvable variable, so
            `P.Pt` would look NULLARY and reject the construction (CDZ0201 'a nullary variant takes the
            unit value'). Must construct and fold to 7.")
-  (needs  sum-type-declaration)
   (input  (do
             (type P (Pt (Record (x Int64) (y Int64))) O)
             (def (sum r) (+ (. r x) (. r y)))
@@ -2965,7 +2877,6 @@
            (`(Some 5)`). Pins that a record-payload sum value crosses the boundary through the sum-escape
            resource path, its lowercase field names carried through as labels (not misread as type
            parameters).")
-  (needs  sum-type-declaration)
   (input  (do
             (type P (Pt (Record (x Int64) (y Int64))) O)
             (def (main) (P.Pt (record (x 1) (y 2)))) (export main)))
@@ -2986,7 +2897,6 @@
            to the host renders `(: (Sm 42) Opt)`: the variant's BARE name `Sm` applied to its payload,
            exactly as a built-in `(Some 5)` renders (not the member-access `((. Opt Sm) 42)`). Pins that a
            user variant's value form is a variant name, uniform with built-in sums.")
-  (needs  sum-type-declaration)
   (input  (do (type Opt (Sm Int64) (Nn)) (def (main) (Opt.Sm 42)) (export main)))
   (output (: (Sm 42) Opt)))
 
@@ -2994,7 +2904,6 @@
   (doc    "The nullary companion: `(Opt.Nn)` (a nullary user variant, its payload the unit value) escapes
            as `(: (Nn unit) Opt)` — the bare variant name `Nn` applied to `unit`, exactly as a built-in
            `(None unit)` renders. Pins the bare-name render for a nullary user variant.")
-  (needs  sum-type-declaration)
   (input  (do (type Opt (Sm Int64) (Nn)) (def (main) (Opt.Nn)) (export main)))
   (output (: (Nn unit) Opt)))
 
@@ -3003,7 +2912,6 @@
            SECOND variant `(E.B 7)` renders `(: (B 7) E)`: the bare name of the matched variant (the
            second, not the first), disambiguated by the `E` annotation. Pins that the renderer picks the
            correct variant name by discriminant and renders it bare.")
-  (needs  sum-type-declaration)
   (input  (do (type E (A Int64) (B Int64)) (def (main) (E.B 7)) (export main)))
   (output (: (B 7) E)))
 
@@ -3016,7 +2924,6 @@
            compiler that reduced a generic ctor's type-lambda for scalar/list/sum payloads but not a
            tuple/record one read `B`'s payload as unresolvable and misjudged `B` NULLARY, rejecting the
            construction (CDZ0201).")
-  (needs  sum-type-declaration)
   (input  (do
             (type Box (B (Tuple a Int64)) N)
             (def (main) (match (Box.B (tuple 7 8)) ((Box.B (tuple x y)) (+ x y)) (Box.N 0)))
@@ -3029,7 +2936,6 @@
            Int64`; the `(Box.B r)` arm binds the record payload and `(. r val)` projects 7. Pins that a
            type parameter inside a RECORD field type is threaded through the constructor scheme (the field
            NAME `val` stays a label), the record sibling of the tuple-payload case above.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Box (B (Record (val a))) N)
             (def (main) (match (Box.B (record (val 7))) ((Box.B r) (. r val)) (Box.N 0)))
@@ -3092,7 +2998,6 @@
            variant names (`Neg`, `Lit`, `App`, …) happen to collide with prelude ones is not misjudged
            by the collided prelude arity. Without the override the prelude's nullary `Neg` misfires
            CDZ0201 on the program's `(Expr.Neg …)`.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Expr (Lit Int64) (Neg Expr))
             (def (depth e) (match e ((Expr.Lit n) 0) ((Expr.Neg x) (+ 1 (depth x)))))
@@ -3107,7 +3012,6 @@
            builds `NNil` (bare) and matches its `((Node.NNil _) …)` arm → 1; `(classify 7)` builds
            `(Node.NLit 7)` → 7. Pins that the bare nullary form both constructs and matches — the shape
            a reader takes writing `NNil` for an empty node rather than the verbose `(Node.NNil unit)`.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Node (NLit Int64) NNil)
             (def (classify n) (if (= n 0) NNil (Node.NLit n)))
@@ -3123,7 +3027,6 @@
            renders `b\"B\"`. Pins that a match-arm-returns-fresh-compound needs no `if`-on-discriminant
            workaround: this is the compiler's own emit/lower DISPATCH shape (dispatch on a node's variant,
            build its output bytes).")
-  (needs  sum-type-declaration)
   (input  (do
             (type Expr (Lit Int64) (Neg Int64))
             (def (emit e) (match e ((Expr.Lit n) (Bytes.of (list 66))) ((Expr.Neg n) (Bytes.of (list 124)))))
@@ -3137,7 +3040,6 @@
            'B' for the Lit, 0x7C '|' appended for the Neg). Pins that a match arm may both build a fresh
            compound AND recurse — the shape is inferred and the runtime Bytes assemble correctly, the
            exact shape a self-hosted backend's `lower`/`serialize` takes.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Expr (Lit Int64) (Neg Expr))
             (def (lower e) (match e
@@ -3221,7 +3123,6 @@
            tag alone (deterministic-value-form.md #A Value Has One Canonical Byte Form). The value
            form names the variant BARE (`Red`), not qualified by its type — the same form the whole
            corpus renders ((Pos unit), (Some 42)).")
-  (needs  sum-type-declaration)
   (input  (do
             (type Color Red Green Blue)
             (Color.Red unit)))
@@ -3233,7 +3134,6 @@
            declares Result where Ok carries an Int64 and Err carries Unit (nullary). Both are
            single-arity: Ok takes Int64, Err takes Unit. Constructors: Result.Ok, Result.Err. The
            value form names the variant BARE (`Ok`), not qualified — as the whole corpus renders.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Result (Ok Int64) Err)
             (Result.Ok 42)))
@@ -3244,7 +3144,6 @@
            constructors in the enclosing scope as members of a record named after the type.
            After (type Status Ready Waiting), both Status.Ready and Status.Waiting are
            Constructor values accessible via member access.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Status Ready Waiting)
             (match (Status.Ready unit)
@@ -3257,7 +3156,6 @@
            requirement: a sum can have both nullary (take Unit) and payload-carrying (take data)
            constructors. (type Maybe (Just Int64) Nothing) declares Maybe where Just takes
            Int64 and Nothing takes Unit — both single-arity, uniformly handled.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Maybe (Just Int64) Nothing)
             (match (Maybe.Just 7)
@@ -3408,7 +3306,6 @@
            themselves be constructor patterns (the decision tree descends `[Elem(i)]` then switches on each
            element's discriminant) — the pair-of-sums shape a self-hosted compiler folds two sub-trees
            with.")
-  (needs  sum-type-declaration)
   (input  (do
             (type E (Lit Int64) (Add (Tuple E E)))
             (def (f a b) (match (tuple a b)
@@ -3477,7 +3374,6 @@
   (doc    "Witnesses type-system.md #Sum Types Are Declarable: sum types can be recursive — a variant
            can carry the type itself. (type IntList (Cons (Tuple Int64 IntList)) Nil) is a linked list.
            Pattern matching deconstructs recursively. This is critical: the AST is a recursive sum type.")
-  (needs  sum-type-declaration)
   (input  (do
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (let ((xs (IntList.Cons (tuple 1 (IntList.Cons (tuple 2 (IntList.Nil ())))))))
@@ -3546,7 +3442,6 @@
            `false` — the untagged structural comparison the nominal boundary forbids, a wrong value the
            spec says must be caught rather than answered. A generation that does not yet track nominal
            tags on a sum declines rather than answering false (reject-don't-miscompile).")
-  (needs    sum-type-declaration)
   (input    (do
               (type A (Mk Int64))
               (type B (Mk Int64))
@@ -3571,7 +3466,6 @@
            `(list 7 8 9)` for `n=7`. The elements are runtime values (the first is a parameter), so the
            list lives on the value heap, and the whole grown value renders `(list …)` — the same form a
            list literal renders, because growth changes only the representation, not the type.")
-  (needs  list-growth)
   (input  (do
             (def (mk n) (List.push (List.push (List.push (list) n) 8) 9))
             (def (main)  (mk 7)) (export main)))
@@ -3581,7 +3475,6 @@
   (doc    "`List.len` reads the element count as a scalar — the fold-to-scalar half of the idiom, like
            `Bytes.len`. `(List.len (List.push (List.push (list) n) 8))` = 2 for any `n`. Pins that the
            length operation reads a list however it was built (grown here, not a literal).")
-  (needs  list-growth)
   (input  (do
             (def (sz n) (List.len (List.push (List.push (list) n) 8)))
             (def (main)  (sz 7)) (export main)))
@@ -3591,7 +3484,6 @@
   (doc    "`List.update` is a functional constructor producing a NEW list with one index replaced,
            leaving the operand list unchanged. Updating index 0 of a two-element list to a runtime `n`
            yields `(list 99 2)` for `n=99`. The replace-at-index is defined for the in-bounds index 0.")
-  (needs  list-growth)
   (input  (do
             (def (put n) (List.update (List.push (List.push (list) 1) 2) 0 n))
             (def (main)  (put 99)) (export main)))
@@ -3611,7 +3503,6 @@
            3). A genuinely out-of-bounds update must TRAP, not alias into a valid slot via the wrap — the
            guard traps when the i64 index does not fit u32. Contrast the in-bounds and real-OOB cases
            around it: only an index in [2^32, 2^32+length) hit this gap. Expected: a trap.")
-  (needs  list-growth)
   (input  (do (def (main) (List.len (List.update (list 1 2 3) 4294967296 99))) (export main)))
   (call   main)
   (trap   "index out of bounds"))
@@ -3622,7 +3513,6 @@
            does not alias 5 below the length. Triangulates that the bug was specifically the i64→i32
            index truncation discarding the high bits before the bounds check, not OOB detection in
            general. Expected: a trap.")
-  (needs  list-growth)
   (input  (do (def (main) (List.len (List.update (list 1 2 3) 5 99))) (export main)))
   (call   main)
   (trap   "index out of bounds"))
@@ -3636,7 +3526,6 @@
            functional sequence consumed to a scalar. Pins that a recursive builder's list return
            value flows through the recursion (its kind converges to a heap value) and is consumable —
            the representation carrying it (a persistent tree) is an unobservable implementation detail.")
-  (needs  list-growth)
   (input  (do
             (def (build v i n) (if (< i n) (build (List.push v i) (+ i 1) n) v))
             (def (main)         (List.len (build (list) 0 5))) (export main)))
@@ -3658,7 +3547,6 @@
            argument-accumulation loop: `(read-args … i out) = (read-args … (+ i 1) (List.push out
            (read-node …)))`, which builds the `(list Node)` of a call's operands — so a self-hosted
            compiler cannot construct a multi-argument call's arg list until this infers a list return.")
-  (needs  list-growth)
   (input  (do
             (def (build n acc) (if (< n 1) acc (build (- n 1) (List.push acc n))))
             (def (main)        (List.len (build 3 (list)))) (export main)))
@@ -3676,7 +3564,6 @@
            together, over a `let`-bound runtime list. Distinct from the build-only case above (which only
            measures the built list's length) and the read-only payload-`List.at` cases (which index a
            pre-built list): this composes build and read, the complete arg-list idiom.")
-  (needs  list-growth)
   (input  (do
             (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out i)) out))
             (def (sum-at xs i n) (if (< i n)
@@ -3694,7 +3581,6 @@
            consumed by multiple operations in one scope is dup'd, not freed by the first drop — the Perceus
            reference-counting discipline for a shared immutable heap value (memory-and-resource-model.md).
            Distinct from the single-thread push cases above, which never share a list across two consumers.")
-  (needs  list-growth)
   (input  (do
             (def (scan xs k) (match (List.at xs k) ((None _) 0) ((Some h) (+ h (scan xs (+ k 1))))))
             (def (use e n) (scan (List.push e n) 0))
@@ -3713,7 +3599,6 @@
            constraints are discovered, so every recursive call lowers to a real function call. Folds
            the result to a scalar so the case is representation-independent: `lower` of the tree for
            `(20 + 22)` yields three instructions, whose count is 3.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Instr (IConst Int64) IAdd)
             (type Code CNil (CCons (Tuple Instr Code)))
@@ -3745,7 +3630,6 @@
            (functional construction — collections-and-text.md §A Map Is Built By Functional
            Construction); `Map.lookup` is total, yielding `(Some v)` for a present key (§Indexing And
            Lookup Are Fallible, Not Trapping — the map clause). Here the key `1` maps to `10`.")
-  (needs  maps)
   (input  (do (def (main) (Map.lookup (Map.insert Map.empty 1 10) 1)) (export main)))
   (output (: (Some 10) (Option Int64))))
 
@@ -3753,7 +3637,6 @@
   (doc    "`Map.lookup` on a key the map does not contain yields `(None unit)` — the total-lookup rule
            (collections-and-text.md, the map clause of §Indexing And Lookup Are Fallible, Not
            Trapping): absence is data, not a trap. `2` is not a key of a map that holds only `1`.")
-  (needs  maps)
   (input  (do (def (main) (Map.lookup (Map.insert Map.empty 1 10) 2)) (export main)))
   (output (: (None unit) (Option Int64))))
 
@@ -3783,7 +3666,6 @@
            realized computed-key-literal defect behind the const/runtime map-equality miscompile. A
            generation whose computed-key map literal is not yet a proper runtime map declines rather than
            mis-dispatching.")
-  (needs  maps)
   (input  (do
             (def (main)
               (let ((j (+ 2 3)))
@@ -3796,7 +3678,6 @@
   (doc    "Adding a key that is already present REPLACES its value rather than adding a second entry
            (collections-and-text.md §A Map Is Built By Functional Construction, preserving each key at
            most once). After inserting `1↦10` then `1↦99`, `Map.size` is 1 and the key holds 99.")
-  (needs  maps)
   (input  (do
             (def (main) (Map.size (Map.insert (Map.insert Map.empty 1 10) 1 99))) (export main)))
   (output (: 1 Int64)))
@@ -3804,7 +3685,6 @@
 (case "removing a key drops its association and the size"
   (doc    "`Map.remove` produces a NEW map without the key (functional construction), and removing a
            key the map holds lowers the size by one. Two keys inserted, one removed → size 1.")
-  (needs  maps)
   (input  (do
             (def (main)
               (Map.size (Map.remove (Map.insert (Map.insert Map.empty 1 10) 2 20) 1))) (export main)))
@@ -3814,7 +3694,6 @@
   (doc    "Removing a key the map does not contain yields a map equal to the operand rather than
            trapping (collections-and-text.md §A Map Is Built By Functional Construction — removal is
            total). Size is unchanged at 1.")
-  (needs  maps)
   (input  (do (def (main) (Map.size (Map.remove (Map.insert Map.empty 1 10) 2))) (export main)))
   (output (: 1 Int64)))
 
@@ -3823,7 +3702,6 @@
            (collections-and-text.md §A Map Is Built By Functional Construction — the two-form rule).
            Replacing key `1`'s value `10` with `99` reports the prior `(Some 10)`; here we project that
            optional. Adding a NEW key would report `(None unit)`.")
-  (needs  maps)
   (input  (do
             (def (main) (. (Map.swap (Map.insert Map.empty 1 10) 1 99) 0)) (export main)))
   (output (: (Some 10) (Option Int64))))
@@ -3833,7 +3711,6 @@
            <new-map>)`. Removing the present key `1` (value `10`) reports `(Some 10)`; taking an ABSENT
            key reports `(None unit)` and leaves the map unchanged (removal is total). Here we project
            the reported optional.")
-  (needs  maps)
   (input  (do
             (def (main) (. (Map.take (Map.insert Map.empty 1 10) 1) 0)) (export main)))
   (output (: (Some 10) (Option Int64))))
@@ -3863,7 +3740,6 @@
            dotted-application') — the map is the only heap collection whose operations do not yet take a
            parameter operand. A generation that does not yet lower a `Map.*` on a parameter operand declines
            rather than miscompiling.")
-  (needs  maps)
   (input  (do
             (def (count mp) (Map.size mp))
             (def (main) (count (Map.insert (Map.insert Map.empty 1 10) 2 20))) (export main)))
@@ -3874,7 +3750,6 @@
            deterministic canonical key order (collections-and-text.md §A Map Renders As Its Entries In
            Canonical Key Order, §Map Iteration Is Deterministic) — independent of insertion order, and
            distinguishable from a record. Inserting 2↦20 then 1↦10 renders in key order.")
-  (needs  maps)
   (input  (do (def (main) (Map.insert (Map.insert Map.empty 2 20) 1 10)) (export main)))
   (output (: (map (1 10) (2 20)) (Map Int64 Int64))))
 
@@ -3897,7 +3772,6 @@
            produces a new map value and must satisfy the same one-value-type rule the literal does — the
            functional-construction companion, mirroring the `List.push`/`List.update` homogeneity cases. A
            generation that does not yet check the inserted value's type declines rather than building it.")
-  (needs  maps)
   (input  (do (def (main) (Map.insert (Map.insert Map.empty 1 10) 2 true)) (export main)))
   (error  CDZ0201))
 
@@ -3908,7 +3782,6 @@
            (CDZ0201). `Map.insert` must enforce the key's type against the map's key type as the value case
            does. A generation that does not yet check the inserted key's type declines rather than building
            the mixed-key map.")
-  (needs  maps)
   (input  (do (def (main) (Map.insert (Map.insert Map.empty 1 10) true 20)) (export main)))
   (error  CDZ0201))
 
@@ -3924,7 +3797,6 @@
            (Map Int64 Int64)`, and `Map.lookup 1` yields `(Some (map (2 20)))` — the inner map, whose size
            is 1. Pins that a map value nests (a map is an ordinary heap value, stored/read like any
            compound), so `Map.size` of the looked-up inner map is 1.")
-  (needs  maps)
   (input  (do (def (main)
                 (match (Map.lookup (Map.insert Map.empty 1 (map (2 20))) 1)
                   ((Some inner) (Map.size inner))
@@ -3945,7 +3817,6 @@
            map-keys are EQUAL maps collapse to one. `(map ((map (1 10)) 1) ((map (1 10)) 2))` names the key
            `(map (1 10))` twice → ONE entry, size 1 (the same each-key-at-most-once rule as any key type). A
            key compared by handle identity would keep both. MUST be 1.")
-  (needs  maps)
   (input  (do (def (main) (Map.size (map ((map (1 10)) 1) ((map (1 10)) 2)))) (export main)))
   (output (: 1 Int64)))
 
@@ -3954,7 +3825,6 @@
            has TWO entries (size 2) — the map-keys `(map (1 10))` and `(map (2 20))` are unequal values, so
            they do not collapse. Pins that a map key is discriminated by its canonical VALUE (contrast the
            equal-map-keys case above, size 1).")
-  (needs  maps)
   (input  (do (def (main) (Map.size (map ((map (1 10)) 1) ((map (2 20)) 2)))) (export main)))
   (output (: 2 Int64)))
 
@@ -3970,7 +3840,6 @@
            Key-Directed Patterns, ask-61): the arm matches because key `1` is present, binding `v` to
            its value `10`. The catch-all covers the non-match — exhaustiveness needs it, since a map's
            key set is unbounded (no shape to cover).")
-  (needs  map-patterns)
   (input  (do
             (def (main)
               (match (Map.insert Map.empty 1 10)
@@ -3982,7 +3851,6 @@
   (doc    "The companion: the `(map (2 v))` arm does NOT match a map lacking key `2`, so the match falls
            through to the catch-all — the key-directed pattern is a genuine presence test, not a blanket
            match. Pins the absent-key non-match.")
-  (needs  map-patterns)
   (input  (do
             (def (main)
               (match (Map.insert Map.empty 1 10)
@@ -3994,7 +3862,6 @@
   (doc    "`(map (1 v) .. rest)` binds `v` to key 1's value AND `rest` to the map with key 1 removed
            (the operand minus the named keys — the map analogue of the list `.. rest`, ask-61). Here
            `rest` still holds key 2, so its size is 1.")
-  (needs  map-patterns)
   (input  (do
             (def (main)
               (match (Map.insert (Map.insert Map.empty 1 10) 2 20)

@@ -86,7 +86,6 @@
            equality compares nan against nan (equal, canonical byte form) and 1.0 against 1.0 (equal), so the
            lists are equal. Pins that the canonical-byte-form float rule recurses through list elements
            too, alongside an ordinary equal float element.")
-  (needs  collections)
   (input  (= (list Float64.nan 1.0) (list Float64.nan 1.0)))
   (output (: true Bool)))
 
@@ -103,7 +102,6 @@
            false — the field `x` holds -0.0 in one record and 0.0 in the other, distinct canonical byte
            forms, so the records are unequal. Pins the canonical-byte-form float distinction through a
            record field, the field-access analogue of the tuple-element case.")
-  (needs  collections)
   (input  (= (record (x -0.0)) (record (x 0.0))))
   (output (: false Bool)))
 
@@ -222,7 +220,6 @@
            compounds but has not emitted the runtime heap walk. The runtime-compound companion of the
            runtime-float and two-runtime-string equality cases above — all three are the same
            not-yet-emitted runtime comparison. A generation emitting the heap walk reproduces true.")
-  (needs  sum-type-declaration)
   (input  (do
             (type N (I Int64) (J Int64))
             (def (mk n) (N.I n))
@@ -234,7 +231,6 @@
            2)`, so the heap walk finds their payloads differ and the comparison is false → 0. Confirms
            the runtime compound comparison is a genuine structural test, not a constant fold. The seed
            declines the same way as the equal case.")
-  (needs  sum-type-declaration)
   (input  (do
             (type N (I Int64) (J Int64))
             (def (mk n) (N.I n))
@@ -250,7 +246,6 @@
            payload → true → 1 (core-semantics.md #Equality Is Structural). Pins that `=` emits the
            runtime structural comparison (`value-eq`), not only the compile-time fold — the observable
            of the heap walk the two cases above document but do not exercise.")
-  (needs  sum-type-declaration)
   (input  (do
             (type N (I Int64) (J Int64))
             (def (sumto n) (if (< n 1) 0 (+ n (sumto (- n 1)))))
@@ -263,7 +258,6 @@
            comparison is false → 0. Confirms `value-eq` is a genuine content test on the recursion-built
            (unfoldable) operand, not a fold that happened to say true. The discriminant agrees (both `I`),
            so this isolates the PAYLOAD comparison.")
-  (needs  sum-type-declaration)
   (input  (do
             (type N (I Int64) (J Int64))
             (def (sumto n) (if (< n 1) 0 (+ n (sumto (- n 1)))))
@@ -279,7 +273,6 @@
            AST subtrees takes; it CANNOT fold (the spine is runtime-built). Pins that `value-eq` recurses
            through a nested recursive sum, not just a one-level payload. Both operands are OWNED
            temporaries the borrowing compare must reclaim (no leak).")
-  (needs  sum-type-declaration)
   (input  (do
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (build n) (if (< n 1) (IntList.Nil ())
@@ -292,7 +285,6 @@
            `[2,1]` differ at the FIRST node (head 3 vs 2, and different spine length), so the heap walk
            returns false → 0 without needing to prove the whole structure. Confirms the recursive
            `value-eq` is a genuine structural comparison over the runtime-built spine, not a fold.")
-  (needs  sum-type-declaration)
   (input  (do
             (type IntList (Cons (Tuple Int64 IntList)) Nil)
             (def (build n) (if (< n 1) (IntList.Nil ())
@@ -308,7 +300,6 @@
            unequal → 0 even though their payloads match. Pins that runtime `value-eq` — like the constant
            fold — distinguishes `I 5` from `J 5`; an implementation comparing only payloads would wrongly
            report equal.")
-  (needs  sum-type-declaration)
   (input  (do
             (type N (I Int64) (J Int64))
             (def (pick b n) (if b (N.I n) (N.J n)))
@@ -372,7 +363,6 @@
            high-water. A generation that reused the condition's handle slot for the branch's arithmetic
            emitted an invalid module (`expected i64, found i32`); this exercises the branch-scratch
            discipline that keeps a heap-handle condition and a scalar branch in one function well-typed.")
-  (needs  sum-type-declaration)
   (input  (do
             (type N (I Int64) (J Int64))
             (def (mk n) (N.I n))
@@ -388,7 +378,6 @@
            i64 iteration arithmetic — which a folding match (`(match (N.I n) …)` reducing to `n == 3`) would
            never exercise. `bump` keeps the scrutinee a genuine heap value, so the match is a real runtime
            dispatch in the loop condition.")
-  (needs  sum-type-declaration)
   (input  (do
             (type N (I Int64) (J Int64))
             (def (bump n) (if (< n 0) (N.J n) (N.I n)))
@@ -419,7 +408,6 @@
            discipline), AND the guarded-wildcard block nesting must be exactly one `if` (the tail-depth
            discipline). `find(0)` = 3. This is the exact shape a proof/AST search takes: scan upward,
            returning when a structural equality on a constructed term holds, else recurse.")
-  (needs  sum-type-declaration)
   (input  (do
             (type N (I Int64) (J Int64))
             (def (mk n) (N.I n))
@@ -435,7 +423,6 @@
            by the arm bodies' i64 iteration arithmetic — the probe chain starts ABOVE the scrutinee emit's
            high-water, not a bare `base+1`. A generation that fixed the probe floor at `base+1` reused a
            value-eq handle slot for the branch arithmetic (`expected i64, found i32`).")
-  (needs  sum-type-declaration)
   (input  (do
             (type N (I Int64) (J Int64))
             (def (mk n) (N.I n))
@@ -452,7 +439,6 @@
            arithmetic must not reuse (the two `if` branches share one function-global local declaration).
            Pins that the probe-else starts scratch above the THEN's high-water — the same discipline the
            `if`-condition and guarded-wildcard cases exercise, here at the literal-probe/guard seam.")
-  (needs  sum-type-declaration)
   (input  (do
             (type N (I Int64) (J Int64))
             (def (mk n) (N.I n))
@@ -469,7 +455,6 @@
            must not reuse. Pins the branch-scratch discipline at the SUM-match seam (`emit_sum_cont`'s
            guarded-arm + disc-switch), distinct from the scalar-match probe chain: the fall-through of BOTH
            the guard `if` and the disc-switch `if` must clear the arm's heap-handle high-water.")
-  (needs  sum-type-declaration)
   (input  (do
             (type N (I Int64) (J Int64))
             (def (bump n) (if (< n 0) (N.J n) (N.I n)))
@@ -509,7 +494,6 @@
            compounds is ALREADY achievable by hand — the missing built-in `=` heap walk is a
            convenience over this, not a new expressive power — so a program (a proof kernel comparing
            terms, a compiler comparing AST nodes) is not blocked, only more verbose.")
-  (needs  sum-type-declaration)
   (input  (do
             (type N (I Int64) (J Int64))
             (def (mk n) (N.I n))
@@ -613,7 +597,6 @@
   (doc    "`(compare 1 2)` is `(Ordering.Less unit)` — the three-way comparison reports that 1 is less
            than 2 as the `Less` variant of the Ordering sum, not a boolean (core-semantics.md #A Total
            Order Is Observed Through A Three-Way Comparison). Pins the Less arm of the three-way result.")
-  (needs  ordering)
   (input  (compare 1 2))
   (output (: (Less unit) Ordering)))
 
@@ -621,7 +604,6 @@
   (doc    "`(compare 2 2)` is `(Ordering.Equal unit)` — the middle variant, distinct from both Less and
            Greater. Pins that the three-way comparison reports equality as its own variant rather than
            collapsing it into one of the strict relations.")
-  (needs  ordering)
   (input  (compare 2 2))
   (output (: (Equal unit) Ordering)))
 
@@ -629,7 +611,6 @@
   (doc    "`(compare 3 2)` is `(Ordering.Greater unit)` — the Greater variant. Together with the Less and
            Equal cases this pins all three variants of the Ordering result are reachable and correctly
            discriminated by the value relation.")
-  (needs  ordering)
   (input  (compare 3 2))
   (output (: (Greater unit) Ordering)))
 
@@ -639,7 +620,6 @@
            Three-Way Comparison, 2nd sentence): matching `(compare 1 2)` selects the `Less` arm, yielding
            -1. Pins that a comparison result dispatches through the same exhaustive match as any other
            sum, so every consumer handles all three cases.")
-  (needs  ordering)
   (input  (match (compare 1 2)
             ((Ordering.Less _)    -1)
             ((Ordering.Equal _)   0)
@@ -652,7 +632,6 @@
            exactly when `(compare 1 2)` is `(Ordering.Less unit)`. This case pins that agreement — `(< 1
            2)` is true and the compare above is Less, so a type's one order is surfaced two ways that
            cannot diverge.")
-  (needs  ordering)
   (input  (< 1 2))
   (output (: true Bool)))
 
@@ -661,7 +640,6 @@
            lexicographic order of its Unicode scalar values, collections-and-text.md #String Comparison
            Is Defined On Scalar Values), so compare works over it exactly as over Int64. Pins that the
            three-way comparison is offered by every type with a total order, not only the numeric types.")
-  (needs  ordering)
   (input  (compare "a" "b"))
   (output (: (Less unit) Ordering)))
 
@@ -673,7 +651,6 @@
            normal-termination value of a program evaluated only for its effect (core-semantics.md #An
            Expression Evaluated Only For Its Effect Yields The Unit Value). The (output …) primary clause
            pins the terminal condition; the (host-calls …) observation pins the call sequence.")
-  (needs  effects)
   (input  (do
             (effect log (op emit (-> String Unit)))
             (def (main)
@@ -689,7 +666,6 @@
            \"first\" is observed before \"second\". The run terminates normally with the unit value
            (core-semantics.md #An Expression Evaluated Only For Its Effect Yields The Unit Value); the
            (output …) clause pins that terminal condition and the (host-calls …) observation pins the order.")
-  (needs  effects)
   (input  (do
             (effect log (op emit (-> String Unit)))
             (def (main)

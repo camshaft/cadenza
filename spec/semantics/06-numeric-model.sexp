@@ -104,7 +104,6 @@
 
 (case "wrapping arithmetic uses the distinct wrapping type"
   (doc    "Witnesses numeric-model.md #Overflow Is Defined via the distinct wrapping type.")
-  (needs numeric-model)
   (input  (+% Wrapping64.max 1))
   (output (: -9223372036854775808 Wrapping64)))
 
@@ -125,7 +124,6 @@
   (doc    "Witnesses numeric-model.md #Exact Arithmetic Is Exact; reduced to lowest terms per
            options/numeric-model/. `(+ (Rational.of 1 3) (Rational.of 1 6))` = 1/3 + 1/6 = 1/2 exactly,
            the canonical rational value form (no float rounding — a Float64 sum would not be exact).")
-  (needs numeric-model)
   (input  (+ (Rational.of 1 3) (Rational.of 1 6)))
   (output (: 1/2 Rational)))
 
@@ -134,7 +132,6 @@
            denominator share no common factor), so 2/4 and 1/2 are ONE value with one canonical byte
            form (numeric-model.md #An Exact Rational Has A Canonical Normalized Form). Normalization is a
            function of the number, not of how it was written.")
-  (needs numeric-model)
   (input  (Rational.of 2 4))
   (output (: 1/2 Rational)))
 
@@ -143,7 +140,6 @@
            equality is structural over the normalized pair (deterministic-value-form.md #A Value Has One
            Canonical Byte Form). Pins that equality compares canonical forms, not the raw numerator/
            denominator a program supplied.")
-  (needs numeric-model)
   (input  (= (Rational.of 2 4) (Rational.of 1 2)))
   (output (: true Bool)))
 
@@ -153,7 +149,6 @@
            Has A Canonical Normalized Form). So `(Rational.of 1 -2)`, `(Rational.of -1 2)`, and
            `(Rational.of -1 -2)`'s companions all resolve to one signed canonical form; here the result
            is negative.")
-  (needs numeric-model)
   (input  (Rational.of 1 -2))
   (output (: -1/2 Rational)))
 
@@ -162,7 +157,6 @@
            forced strictly positive), so a both-negative pair is a positive rational. Companion of the
            sign-on-numerator case, pinning that sign normalization is by the number's sign, not by which
            component carried the minus.")
-  (needs numeric-model)
   (input  (Rational.of -1 -2))
   (output (: 1/2 Rational)))
 
@@ -171,7 +165,6 @@
            a NONZERO rational is total and exact — it neither truncates (as integer `/` does) nor rounds
            (as float `/` does) — and the result is normalized to lowest terms. This is the exactness the
            type is opted into for.")
-  (needs numeric-model)
   (input  (/ (Rational.of 1 2) (Rational.of 3 4)))
   (output (: 2/3 Rational)))
 
@@ -180,7 +173,6 @@
            Crossing between the integer and the rational is explicit (`Rational.of-int` in), never an
            implicit promotion, the same no-promotion discipline the integer widths obey. Its canonical
            written form is 5/1.")
-  (needs numeric-model)
   (input  (Rational.of-int 5))
   (output (: 5/1 Rational)))
 
@@ -189,7 +181,6 @@
            traps (numeric-model.md #A Rational With A Zero Denominator Is Not A Value), the rational
            analogue of integer division by zero. A defined runtime trap, distinct from producing an
            unspecified value.")
-  (needs numeric-model)
   (input  (Rational.of 1 0))
   (trap   "rational with zero denominator"))
 
@@ -198,7 +189,6 @@
            is rejected (CDZ0301) rather than promoting the 1 to 1/1, exactly as an Int64/Float64 mix is
            (numeric-model.md #Numeric Types Do Not Silently Promote). To add the integer, a program
            writes the conversion explicitly: `(+ (Rational.of 1 2) (Rational.of-int 1))`.")
-  (needs numeric-model)
   (input  (+ (Rational.of 1 2) 1))
   (error  CDZ0301))
 
@@ -218,7 +208,6 @@
            85070591730234615847396907784232501249, NOT a trap and NOT a wrap (numeric-model.md #An
            Arbitrary-Precision Integer Has Unbounded Range). The same product over Int64 traps
            (`integer overflow`); BigInt's representation grows instead. THE reason the type exists.")
-  (needs numeric-model)
   (input  (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807)))
   (output (: 85070591730234615847396907784232501249 BigInt)))
 
@@ -227,7 +216,6 @@
            exact value with no width worry. Pins that BigInt carries a magnitude the fixed-width family
            cannot (this literal would not fit any `(Int N)`/`(UInt N)` with N ≤ 64) and that its
            canonical written form is the ordinary decimal.")
-  (needs numeric-model)
   (input  (: 100000000000000000000 BigInt))
   (output (: 100000000000000000000 BigInt)))
 
@@ -235,7 +223,6 @@
   (doc    "`(BigInt.of 42)` converts the Int64 42 up to the BigInt 42 — the explicit widening into the
            unbounded type. A BigInt and the Int64 42 are DISTINCT types with distinct canonical forms;
            the conversion is always written, never implicit.")
-  (needs numeric-model)
   (input  (BigInt.of 42))
   (output (: 42 BigInt)))
 
@@ -244,7 +231,6 @@
            so 300 does not fit and it TRAPS (numeric-model.md #A Conversion Between Integer Types Is
            Explicit — the checked form), exactly as `((UInt 8).of 300)` on an Int64 does. Pins that
            narrowing OUT of BigInt is checked, not a silent truncation.")
-  (needs numeric-model)
   (input  ((UInt 8).of (BigInt.of 300)))
   (trap   "integer overflow"))
 
@@ -253,7 +239,6 @@
            (CDZ0301) rather than absorbing the Int64 1 into BigInt (numeric-model.md #Numeric Types Do
            Not Silently Promote). The unbounded type does not swallow a fixed-width operand; to add, a
            program writes `(+ (BigInt.of 1) (BigInt.of 1))`.")
-  (needs numeric-model)
   (input  (+ (BigInt.of 1) 1))
   (error  CDZ0301))
 
@@ -275,7 +260,6 @@
            `double`'s body is a BigInt, x is a BigInt, and `(double (BigInt.of 21))` = 42 : BigInt — the
            ergonomic escape hatch: a bignum-heavy module writes bare literals without `(BigInt.of …)`
            around each. Pins that the declared default is the type an unconstrained literal takes.")
-  (needs numeric-model)
   (input  (do
             (module crypto
               (pragma default-integer BigInt)
@@ -289,7 +273,6 @@
            exactly as any BigInt/Int64 mix is (numeric-model.md #A Declared Default Fixes A Type, Not A
            Conversion). THE load-bearing case: the default changed what type the literal STARTS as, it
            did NOT introduce a coercion — the feature buys ergonomics without weakening no-promotion.")
-  (needs numeric-model)
   (input  (do
             (module m
               (pragma default-integer BigInt)
@@ -302,7 +285,6 @@
            annotation takes precedence over the module default (numeric-model.md #A Declared Default
            Fixes A Type…, last sentence). Pins that the default only decides the OTHERWISE-UNCONSTRAINED
            case; a constrained literal keeps its constrained type.")
-  (needs numeric-model)
   (input  (do
             (module m
               (pragma default-integer BigInt)
@@ -316,7 +298,6 @@
            stays Int64 regardless of `app`'s default (numeric-model.md #A Declared Default Applies At The
            Definition Site). Importing a module never changes the type of code inside it; the result is
            Int64, not BigInt. THE case that keeps the feature compatible with separate compilation.")
-  (needs numeric-model)
   (input  (do
             (module lib
               (def (answer) 42))
@@ -332,7 +313,6 @@
            Integer Literal Type). The pragma KEY is recognized and its argument is a valid type — it just
            fails the integer-domain predicate — so this is the numeric CDZ0303, distinct from the
            structural CDZ0602 (malformed args) and CDZ0601 (unknown key).")
-  (needs numeric-model)
   (input  (do
             (module m
               (pragma default-integer Float64)
@@ -1291,7 +1271,6 @@
            the default Int64 (numeric-model.md #Integer Types Have Fixed Widths). Its canonical value
            form is the integer 200 at type UInt8; the boundary maps UInt8 to the component model's u8
            (options/numeric-model/ boundary mapping).")
-  (needs  numeric-model)
   (input  (: 200 UInt8))
   (output (: 200 UInt8)))
 
@@ -1299,7 +1278,6 @@
   (doc    "`UInt8.max` is 255 — the largest value UInt8 holds, the per-width analogue of Int64.max.
            Each fixed-width type carries its own bounds (numeric-model.md #Integer Types Have Fixed
            Widths); a compiler laying out a byte reaches for exactly this bound.")
-  (needs  numeric-model)
   (input  UInt8.max)
   (output (: 255 UInt8)))
 
@@ -1307,7 +1285,6 @@
   (doc    "`Int8.min` is -128 — the smallest value the two's-complement Int8 holds (its range is
            -128..=127, asymmetric like every signed two's-complement width). Pins that a signed narrow
            width carries its own signed bounds.")
-  (needs  numeric-model)
   (input  Int8.min)
   (output (: -128 Int8)))
 
@@ -1316,7 +1293,6 @@
            distinguishes UInt64 from Int64. It is a well-typed UInt64 value, not an out-of-range
            literal, because the annotation names the unsigned width. The boundary maps it to the
            component model's u64.")
-  (needs  numeric-model)
   (input  UInt64.max)
   (output (: 18446744073709551615 UInt64)))
 
@@ -1327,7 +1303,6 @@
            range and MUST trap — the per-width analogue of `(+ Int64.max 1)`. Each fixed-width type is
            checked at its OWN range, not only at 64 bits; a naive lowering that computed in i32 and
            kept 256 would produce a value outside UInt8.")
-  (needs  numeric-model)
   (input  (+ (: 255 UInt8) (: 1 UInt8)))
   (trap   "integer overflow"))
 
@@ -1336,7 +1311,6 @@
            0..=255), so the subtraction overflows the unsigned range and MUST trap. The unsigned-
            underflow companion of the overflow case: a checked unsigned type traps below zero, it does
            not wrap to 255.")
-  (needs  numeric-model)
   (input  (- (: 0 UInt8) (: 1 UInt8)))
   (trap   "integer overflow"))
 
@@ -1344,7 +1318,6 @@
   (doc    "`(+ (: 127 Int8) (: 1 Int8))` = 128, one past Int8.max (127), so it overflows the checked
            Int8 range and MUST trap. Pins that the narrow SIGNED width is checked at its own boundary
            too — a wrap would give -128 (Int8.min), the classic signed-overflow wrong value.")
-  (needs  numeric-model)
   (input  (+ (: 127 Int8) (: 1 Int8)))
   (trap   "integer overflow"))
 
@@ -1360,7 +1333,6 @@
            it is rejected (CDZ0301) rather than silently widening the UInt8 to Int32. The width analogue
            of the `(+ 2 2.0)` Int/Float no-promotion case (numeric-model.md #Numeric Types Do Not
            Silently Promote).")
-  (needs  numeric-model)
   (input  (+ (: 1 UInt8) (: 2 Int32)))
   (error  CDZ0301))
 
@@ -1369,7 +1341,6 @@
            still distinct types — so it is rejected (CDZ0301). Signedness is not silently reinterpreted;
            the author must convert one side explicitly. Pins that no-promotion holds across signedness,
            not only across width.")
-  (needs  numeric-model)
   (input  (+ (: 1 Int32) (: 2 UInt32)))
   (error  CDZ0301))
 
@@ -1383,7 +1354,6 @@
   (doc    "`(UInt8.of (: 200 Int32))` converts the Int32 200 to UInt8 — 200 is within 0..=255, so the
            checked conversion succeeds and yields the UInt8 200. Pins that T.of is the explicit,
            range-checked conversion the no-silent-promotion rule requires between widths.")
-  (needs  numeric-model)
   (input  (UInt8.of (: 200 Int32)))
   (output (: 200 UInt8)))
 
@@ -1392,7 +1362,6 @@
            conversion MUST trap rather than silently truncate to 0 (numeric-model.md #Integer Types Have
            Fixed Widths — a checked conversion traps on an out-of-range value). Contrast UInt8.wrap
            below, which keeps the low bits.")
-  (needs  numeric-model)
   (input  (UInt8.of (: 256 Int32)))
   (trap   "integer overflow"))
 
@@ -1400,7 +1369,6 @@
   (doc    "`(UInt8.of (: -1 Int32))` converts -1 to UInt8, but UInt8 has no negative values, so the
            checked conversion MUST trap. Contrast `(UInt8.wrap -1)` = 255 below. Pins that T.of checks
            the sign boundary, not only the magnitude boundary.")
-  (needs  numeric-model)
   (input  (UInt8.of (: -1 Int32)))
   (trap   "integer overflow"))
 
@@ -1409,7 +1377,6 @@
            (0x100 -> 0x00), so it yields 0 rather than trapping. This is the byte-truncation
            the LEB128 encoder uses (06-numeric #integer to byte wraps on overflow).
            Pins T.wrap as the low-bits conversion distinct from the checked T.of.")
-  (needs  numeric-model)
   (input  (UInt8.wrap (: 256 Int32)))
   (output (: 0 UInt8)))
 
@@ -1418,7 +1385,6 @@
            representation (all ones), so it yields 255
            (06-numeric #negative integer to byte uses two's complement).
            Pins that T.wrap reinterprets the low bits, where T.of would trap on the negative value.")
-  (needs  numeric-model)
   (input  (UInt8.wrap (: -1 Int32)))
   (output (: 255 UInt8)))
 
@@ -1434,7 +1400,6 @@
            pattern is -1 (which would rank below 0) — so this pins that UInt64's ordering is UNSIGNED
            (i64.lt_u), the dual of `(< Int64.min Int64.max)` which pins Int64's ordering as signed
            (i64.lt_s). Signedness selects the compare.")
-  (needs  numeric-model)
   (input  (< (: 0 UInt64) UInt64.max))
   (output (: true Bool)))
 
@@ -1444,7 +1409,6 @@
            #arithmetic right shift preserves the sign bit — `(>> -256 7)` = -2); on an UNSIGNED type the
            same operator is the logical shift (i64.shr_u). Pins that signedness selects arithmetic vs
            logical shift, the property signed/unsigned LEB128 both depend on.")
-  (needs  numeric-model)
   (input  (>> UInt8.max (: 1 UInt8)))
   (output (: 127 UInt8)))
 
@@ -1457,7 +1421,6 @@
   (doc    "`UInt32.max` = 4294967295 = 2^32 - 1, the largest 32-bit unsigned value — the width a wasm
            section size, LEB128 operand, and table/memory index occupy. Pins UInt32 at its boundary; a
            compiler that carried this as an i64 would lose the width the module format actually uses.")
-  (needs  numeric-model)
   (input  UInt32.max)
   (output (: 4294967295 UInt32)))
 
@@ -1466,7 +1429,6 @@
            range and MUST trap — even though 2^32 fits comfortably in the i64 the seed would use. Pins
            that UInt32 is checked at 32 bits, not at 64: a compiler computing a section size must trap
            on a 32-bit overflow, not silently carry a value the wasm format cannot encode.")
-  (needs  numeric-model)
   (input  (+ UInt32.max (: 1 UInt32)))
   (trap   "integer overflow"))
 
@@ -1487,7 +1449,6 @@
            is reconciled to `n`'s width regardless of its (left) position, exactly as the const-RIGHT
            `(+ n 1)` form is. Was INVALID WASM (the left literal emitted as an i64 constant beside the i32
            variable). Pins operand-width reconciliation is position-independent.")
-  (needs  numeric-model)
   (input  (do (def (main (: n UInt8)) (+ 1 n)) (export main)))
   (call   main (: 5 UInt8))
   (output (: 6 UInt8)))
@@ -1496,7 +1457,6 @@
   (doc    "The multiplication companion: `(* 2 n)` with `n : UInt8`, n = 3, is 6. Confirms the const-LEFT
            reconciliation is not addition-specific — every narrow binary op narrows a bare literal
            operand to the op's width on either side. Was invalid wasm.")
-  (needs  numeric-model)
   (input  (do (def (main (: n UInt8)) (* 2 n)) (export main)))
   (call   main (: 3 UInt8))
   (output (: 6 UInt8)))
@@ -1508,7 +1468,6 @@
            reconciled at emit, not through a shared result type). Was invalid wasm; the const-RIGHT `(< n
            1)` always worked. Pins the reconciliation covers comparisons (and by the same rule `- & | ^ <<
            >> =`).")
-  (needs  numeric-model)
   (input  (do (def (main (: n UInt8)) (if (< 1 n) 1 0)) (export main)))
   (call   main (: 5 UInt8))
   (output (: 1 Int64)))
@@ -1524,7 +1483,6 @@
            the alias `(UInt 8)`. The value form is the integer 200 at the unsigned 8-bit type either way;
            the canonical output is written with the aliased name. Pins that the width-indexed constructor
            applied to 8 is the same type the alias names, not a distinct one.")
-  (needs  numeric-model)
   (input  (: 200 (UInt 8)))
   (output (: 200 UInt8)))
 
@@ -1533,7 +1491,6 @@
            same type under two names, so the annotations agree and the value is well-typed (NOT a CDZ0203
            annotation conflict). Pins the alias equivalence through the annotation-conflict checker: an
            alias and its expansion are interchangeable, never contradictory.")
-  (needs  numeric-model)
   (input  (: (: 5 (UInt 32)) UInt32))
   (output (: 5 UInt32)))
 
@@ -1550,7 +1507,6 @@
            well-typed value of `(UInt 48)`, its bound computed from N=48 (numeric-model.md #An Integer
            Type Is Indexed By A Compile-Time Width). Pins that a non-aliased in-range width is
            first-class, not a special case the language lacks.")
-  (needs  numeric-model)
   (input  (: 281474976710655 (UInt 48)))
   (output (: 281474976710655 (UInt 48))))
 
@@ -1560,7 +1516,6 @@
            not drawn from a fixed width table. Pins that a non-aliased width is checked at its own width
            exactly as an aliased one is; a naive lowering that only checked the 8/16/32/64 boundaries
            would carry 2^48 as a wrong value.")
-  (needs  numeric-model)
   (input  (+ (: 281474976710655 (UInt 48)) (: 1 (UInt 48))))
   (trap   "integer overflow"))
 
@@ -1569,7 +1524,6 @@
            bits of -1's two's-complement representation (48 ones) = 2^48 - 1. Pins that `T.wrap` computes
            its mask from N for a non-aliased width too — the low-N-bits rule is uniform across every
            width, aliased or not (options/numeric-model/ #Conversions are explicit).")
-  (needs  numeric-model)
   (input  ((UInt 48).wrap (: -1 Int64)))
   (output (: 281474976710655 (UInt 48))))
 
@@ -1587,7 +1541,6 @@
            admitted 1..=64 range, so the type is rejected at compile time (CDZ0302), the width analogue of
            any generic instantiation whose argument fails its constraint. Not a runtime trap: the type
            itself is ill-formed.")
-  (needs  numeric-model)
   (input  (: 0 (UInt 0)))
   (error  CDZ0302))
 
@@ -1597,14 +1550,12 @@
            rejected at compile time exactly as `(UInt 0)` is. A negative width MUST NOT be silently
            dropped so the literal keeps its default Int64 — the ill-formed width is the rejection, not a
            footnote to a value the annotation is ignored to produce.")
-  (needs  numeric-model)
   (input  (: 5 (Int -8)))
   (error  CDZ0302))
 
 (case "a negative unsigned integer width is rejected"
   (doc    "`(: 5 (UInt -1))` — the unsigned companion, width -1. Same negative-width rejection (CDZ0302)
            as the signed case; the sign of the constructor does not make a negative width admissible.")
-  (needs  numeric-model)
   (input  (: 5 (UInt -1)))
   (error  CDZ0302))
 
@@ -1613,7 +1564,6 @@
            narrow width, 300 would overflow it; if the width were silently dropped to Int64, 300 fits and
            the program returns 300. Neither is correct — the ill-formed negative width is rejected
            (CDZ0302) before any literal-fit check, so the outcome is the rejection, not 300.")
-  (needs  numeric-model)
   (input  (: 300 (Int -8)))
   (error  CDZ0302))
 
@@ -1622,7 +1572,6 @@
            width (the CDZ0302 registry entry covers 'a negative width, or a non-natural width'). Rejected
            at compile time, not silently degraded to Int64. A non-integer value in width position is
            ill-formed exactly as a negative one is.")
-  (needs  numeric-model)
   (input  (: 300 (Int true)))
   (error  CDZ0302))
 
@@ -1630,7 +1579,6 @@
   (doc    "`(: 300 (Int 8.0))` puts a Float where a natural width belongs — a non-natural width, CDZ0302.
            `(Int 8)` would be a valid 8-bit type in which 300 overflows; the float `8.0` is neither
            accepted-as-8 nor overflow-checked — it is an ill-formed width, rejected.")
-  (needs  numeric-model)
   (input  (: 300 (Int 8.0)))
   (error  CDZ0302))
 
@@ -1638,7 +1586,6 @@
   (doc    "`(: 300 (Int Int64))` puts a type-value where a width natural belongs — a non-natural width,
            CDZ0302. Completes the non-natural-width family (negative / bool / float / type) that shares
            one rule: a width the compiler cannot read as a natural in 1..=64 is rejected, never dropped.")
-  (needs  numeric-model)
   (input  (: 300 (Int Int64)))
   (error  CDZ0302))
 
@@ -1648,7 +1595,6 @@
            wider than 64 bits is reserved to the opt-in big-integer layer, not the width-indexed
            constructor (options/numeric-model/ #Widths above 64 are reserved). Pins the upper boundary of
            the width constraint.")
-  (needs  numeric-model)
   (input  (: 5 (UInt 65)))
   (error  CDZ0302))
 
@@ -1659,7 +1605,6 @@
            the ceiling, at which point `(UInt 128)` becomes valid with no surface-syntax change. Until
            then, more than 64 bits uses the big-integer type. Pins that the ceiling is a constraint, not a
            parse error.")
-  (needs  numeric-model)
   (input  (: 5 (UInt 128)))
   (error  CDZ0302))
 

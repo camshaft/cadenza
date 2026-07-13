@@ -386,7 +386,6 @@
            bound to a name, passed as an argument, returned from a function. A Type is an ordinary
            first-class value whose type is the type of types (type-system.md #Types Are First-Class
            Values Whose Type Is The Type Of Types).")
-  (needs  type-system)
   (input  (let ((t Int64)) t))
   (output (: Int64 Type)))
 
@@ -395,7 +394,6 @@
            Does Not Go Wrong: `(: (+ 1 2) Int64)` type-checks because inference determines the
            expression's type is Int64 and the annotation unifies with it, so the program compiles and
            evaluates to 3. The passing companion to the CDZ0203 rejections above.")
-  (needs  type-system)
   (input  (: (+ 1 2) Int64))
   (output (: 3 Int64)))
 
@@ -500,7 +498,6 @@
            — a record entry is a `(name value)` pair. The compiler rejects it (CDZ0201), never
            panicking reaching for the absent value node. Same never-crash class as the `(let ((x)) x)`
            binding-with-no-value case above, for a record entry.")
-  (needs  collections)
   (input  (record (a)))
   (error  CDZ0201))
 
@@ -509,7 +506,6 @@
            `(key value)` pair, so this is ill-formed. The compiler rejects it (CDZ0201), never
            panicking reaching for the absent value node. Pins that both the `record` and `map`
            construction paths bounds-check an entry before indexing its value.")
-  (needs  collections)
   (input  (map ("a")))
   (error  CDZ0201))
 
@@ -532,7 +528,6 @@
            Int64 because Never unifies with any type. With b=true the program yields 1; the else-branch
            never runs but must TYPE-CHECK. A generation without the Never-unifies rule would reject the
            branch-type mismatch. Pins that a divergent branch does not spoil a well-typed conditional.")
-  (needs  never)
   (input  (do
             (def (f b) (if b 1 (trap "unreachable")))
             (def (main) (f true)) (export main)))
@@ -544,7 +539,6 @@
            any expected type. The call diverges at run time (the trap), so the program's terminal
            condition is the trap, not a value. Pins that a Never-returning function is callable in a
            typed position — the honest type for a function that never returns normally.")
-  (needs  never)
   (input  (do
             (def (bomb) (trap "unreachable"))
             (def (main) (+ 1 (bomb))) (export main)))
@@ -558,7 +552,6 @@
            Or Rejected), NOT a CDZ0210 non-exhaustive rejection. The scrutinee diverges before the match,
            so the program traps. Pins that the empty sum makes a zero-arm match vacuously exhaustive
            rather than an error.")
-  (needs  never)
   (input  (do
             (def (never-returns) (trap "unreachable"))
             (def (main) (match (never-returns))) (export main)))
