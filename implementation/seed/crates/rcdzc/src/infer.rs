@@ -2803,17 +2803,22 @@ fn check_resume_result_type(db: &mut Db, arm: &crate::resolved::HandleArm, out: 
     let value_ty = type_of(db, value);
     if !value_ty.agrees_with(&result) {
         trace!(target: "rcdzc::infer", value = value.0, "fault: resume value's type does not match the operation's result type (CDZ0201)");
-        out.push(
-            Reject::coded(
-                Code::Malformed,
-                format!(
-                    "a handler resumes with a value of type {} but the operation's result type is {}",
-                    value_ty.render_name(),
-                    result.render_name()
-                ),
-            )
-            .at(value),
-        );
+        let mut reject = Reject::coded(
+            Code::Malformed,
+            format!(
+                "a handler resumes with a value of type {} but the operation's result type is {}",
+                value_ty.render_name(),
+                result.render_name()
+            ),
+        )
+        .at(value);
+        // A resume value that mismatches the op result by a NUMERIC/TEXT coercion — `(resume x s)` with
+        // `x:Int8` where the op returns Int64 → `(Int64.of x)` — has the same one-shot repair every other
+        // expected-vs-actual site does (arg/annotation/let-binder/ctor-payload). Offer it here too.
+        if let Some(fix) = numeric_text_coercion_fix(db, &result, &value_ty, value) {
+            reject = reject.with_fix(fix);
+        }
+        out.push(reject);
     }
 }
 

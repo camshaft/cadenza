@@ -21273,6 +21273,56 @@ mod stage1 {
     }
 
     #[test]
+    fn a_mistyped_resume_reports_one_error_with_a_coercion_fix_when_applicable() {
+        // A resume value whose type mismatches the op result (CDZ0201) ALSO makes the handler unfoldable,
+        // so `lower` emits the "not yet reducible" decline alongside — a CONSEQUENCE. `dedup_faults` drops
+        // that decline (like it does for a malformed handler), so a mistyped resume is ONE primary error.
+        // And when the mismatch is a numeric COERCION (`(resume x s)` with x:Int8, op result Int64), it
+        // carries the `(Int64.of …)` fix — the resume position joins arg/annotation/let-binder/ctor-payload.
+        let errors_of = |src: &str| -> Vec<crate::abi::Diagnostic> {
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .into_iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .collect()
+        };
+        let errs = errors_of(
+            "(do (effect E (op a (-> Int64 Int64))) \
+               (def (main (: x Int8)) (handle E unit ((a (n) s (resume x s))) (E.a 1))) (export main))",
+        );
+        assert_eq!(errs.len(), 1, "a mistyped resume = one error: {errs:?}");
+        assert_eq!(errs[0].code.as_deref(), Some("CDZ0201"));
+        assert_eq!(
+            errs[0].fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!("(Int64.of {})", crate::abi::WRAP_HOLE)).as_deref(),
+            "the coercible resume carries the `.of` fix: {}",
+            errs[0].message
+        );
+        // A NON-coercible resume (Bool where Int64) is still ONE error, but no fix (no conversion applies).
+        let be = errors_of(
+            "(do (effect E (op a (-> Int64 Int64))) \
+               (def (main) (handle E unit ((a (n) s (resume true s))) (E.a 1))) (export main))",
+        );
+        assert_eq!(
+            be.len(),
+            1,
+            "a Bool resume = one error (no cascade): {be:?}"
+        );
+        assert!(
+            be[0].fix.is_none(),
+            "no coercion Bool→Int64: {:?}",
+            be[0].fix
+        );
+    }
+
+    #[test]
     fn a_noncanonical_handle_is_rejected_as_one_cdz0201() {
         // The retired effect-name-less shape `(handle <seed> (arm…) body)` — no effect in the head, the
         // arm op written dotted — is NOT the canonical handler form. `effects::desugar_handles` re-spells

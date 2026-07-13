@@ -1062,6 +1062,14 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             Some(Code::HandlerUndeclaredOp) | Some(Code::HandlerNotExhaustive)
         )
     });
+    // A resume-value/result-type mismatch (CDZ0201) ALSO makes the handler unfoldable — same relationship
+    // the malformed-handler rejects have with the "not yet reducible" decline. Suppress the decline when
+    // such a reject is present so a mistyped resume reports ONE primary error (with its coercion fix).
+    let has_resume_result_reject = faults.iter().any(|r| {
+        r.code == Some(Code::Malformed)
+            && r.message
+                .contains(crate::diag::RESUME_RESULT_MISMATCH_MARKER)
+    });
     // Likewise: a NON-CANONICAL handle (the retired effect-name-less shape) is rejected at resolve time
     // (`resolve_noncanonical_handle`, a CDZ0201). Because the handle never resolved as a handler, its
     // body's perform is seen by the entrypoint no-home walk as reached with NO enclosing handler → a
@@ -1188,7 +1196,7 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             {
                 return false;
             }
-            if has_malformed_handler_reject
+            if (has_malformed_handler_reject || has_resume_result_reject)
                 && r.is_decline()
                 && r.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE
             {
