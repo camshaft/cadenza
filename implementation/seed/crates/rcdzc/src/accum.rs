@@ -59,11 +59,17 @@ fn push_name(ast: &mut Arenas, name: &str) -> StructId {
 /// at load, after `scan_top_level` and BEFORE the parent index / `def_by_name` are built, so the
 /// synthesized def is indexed and resolvable like any other. A def that does not match is left untouched.
 pub(crate) fn introduce(ast: &mut Arenas, defs: &mut Vec<Def>) {
+    // Index each top-level `(def sig body)` FORM by its signature occurrence ONCE, up front — an O(items)
+    // pass. `match_linear_recursion` needs the enclosing form (to swap its body child), and the parent
+    // index is not built yet; a per-def LINEAR scan of the module items (the old `find_def_form`) made
+    // this O(defs²) — a module of N defs spent ~50% of the whole compile re-scanning items, each an
+    // `as_form(item, "def")` string compare. The map turns that into an O(1) lookup per def.
+    let def_forms = index_def_forms(ast);
     // Collect the rewrites first (an immutable scan of `defs`), then apply — so the synthesis (which
     // reads `defs` for name collisions) sees a stable view.
     let mut plans: Vec<(usize, Match)> = Vec::new();
     for (i, d) in defs.iter().enumerate() {
-        if let Some(m) = match_linear_recursion(ast, d) {
+        if let Some(m) = match_linear_recursion(ast, d, &def_forms) {
             plans.push((i, m));
         }
     }
@@ -104,7 +110,11 @@ struct Match {
 /// is accepted (base in THEN, the guide's shape; or base in ELSE, a flipped condition). Any number of
 /// parameters is accepted — every self-call argument is threaded through the accumulator unchanged
 /// (reassociation is sound whether a parameter is a recursion variable or a pass-through).
-fn match_linear_recursion(ast: &Arenas, d: &Def) -> Option<Match> {
+fn match_linear_recursion(
+    ast: &Arenas,
+    d: &Def,
+    def_forms: &crate::fxhash::FxHashMap<u32, StructId>,
+) -> Option<Match> {
     // At least one parameter, each a bare name (an annotated `(: n T)` is fine — take the inner name).
     // Extra parameters (pass-throughs like a limit/config, or a second recursion variable) are threaded
     // through the accumulator unchanged — reassociation is sound regardless of how many params vary.
@@ -117,10 +127,8 @@ fn match_linear_recursion(ast: &Arenas, d: &Def) -> Option<Match> {
         .map(|p| param_binder_name(ast, *p))
         .collect::<Option<_>>()?;
     let body = d.body?;
-    // Locate the enclosing `(def sig body)` FORM (its body child is swapped to the seed call). The parent
-    // index is not built yet, so find the module item whose `def` sig == this def's `sig_occ`.
-    let def_form = find_def_form(ast, d.sig_occ)?;
-    // Body must be `(if COND THEN ELSE)`.
+    // Body must be `(if COND THEN ELSE)` — the cheap structural gate FIRST, so a non-`if` def (the common
+    // case) rejects before any map lookup.
     let if_tail = ast.as_form(body, "if")?;
     let [cond, then_, else_] = if_tail else {
         return None;
@@ -144,6 +152,11 @@ fn match_linear_recursion(ast: &Arenas, d: &Def) -> Option<Match> {
     if int_literal(ast, base_val)? != identity {
         return None;
     }
+    // Locate the enclosing `(def sig body)` FORM (its body child is swapped to the seed call). The parent
+    // index is not built yet at load time, so this is an O(1) read of the prebuilt `sig_occ → form` index
+    // (was a per-def linear scan of the module items → O(defs²)). Only reached once every cheaper check
+    // has passed, so a non-matching def never even looks it up.
+    let def_form = *def_forms.get(&d.sig_occ.0)?;
     Some(Match {
         def_form,
         param_names,
@@ -280,24 +293,35 @@ fn apply(ast: &mut Arenas, defs: &mut Vec<Def>, def_ix: usize, m: Match) {
 
 // ── helpers ──────────────────────────────────────────────────────────────────────────────────────
 
-/// The top-level `(def sig …)` FORM occurrence whose signature is `sig_occ`. Scans the module's items
-/// (the transform runs before the parent index, so a parent lookup is unavailable). `None` if not found
-/// (a def not directly under `(module …)`/`(do …)` — then the rewrite is skipped, leaving it untouched).
-fn find_def_form(ast: &Arenas, sig_occ: StructId) -> Option<StructId> {
-    let items = match ast.get(ast.root) {
+/// Index every top-level `(def sig body)` FORM occurrence by its SIGNATURE occurrence (`sig_occ.0`), in
+/// ONE pass over the module's items — the O(items) prebuild the per-def rewrite reads O(1). The transform
+/// runs before the parent index (a parent lookup is unavailable), so this is how a matched def finds its
+/// enclosing form (to swap the body child). A def not directly under `(module …)`/`(do …)` is simply
+/// absent from the map — its rewrite is then skipped, leaving it untouched (unchanged behavior vs the old
+/// per-def `find` returning `None`). Keyed by the raw `u32` so the map needs no `StructId` hashing impl.
+fn index_def_forms(ast: &Arenas) -> crate::fxhash::FxHashMap<u32, StructId> {
+    let items: &[StructId] = match ast.get(ast.root) {
         Struct::List(top) => {
             // `(module NAME item…)` → items after NAME; `(do item…)` → all tail; else the root itself.
-            match ast.as_name(*top.first()?) {
-                Some("module") => top.get(2..).unwrap_or(&[]).to_vec(),
-                Some("do") => top[1..].to_vec(),
-                _ => vec![ast.root],
+            match top.first().and_then(|&h| ast.as_name(h)) {
+                Some("module") => top.get(2..).unwrap_or(&[]),
+                Some("do") => &top[1..],
+                _ => std::slice::from_ref(&ast.root),
             }
         }
-        _ => return None,
+        _ => return crate::fxhash::FxHashMap::default(),
     };
-    items
-        .into_iter()
-        .find(|&item| ast.as_form(item, "def").and_then(|t| t.first().copied()) == Some(sig_occ))
+    let mut map = crate::fxhash::FxHashMap::default();
+    for &item in items {
+        if let Some(t) = ast.as_form(item, "def")
+            && let Some(&sig) = t.first()
+        {
+            // First writer wins (a duplicate sig_occ cannot occur — each form has a distinct signature
+            // node — but a defensive `or_insert` keeps the first, matching the old `find`'s first-hit).
+            map.entry(sig.0).or_insert(item);
+        }
+    }
+    map
 }
 
 /// The identity element of an associative binary op the transform reassociates, recognizing BOTH
@@ -429,6 +453,35 @@ mod tests {
         assert_eq!(db.defs[acc].params.len(), 2, "accumulator has (n, acc)");
         let sm = db.def_by_name("sm").unwrap();
         assert_eq!(db.defs[sm].params.len(), 1, "sm still has (n)");
+    }
+
+    /// The def-form index (`index_def_forms`) must locate the enclosing `(def …)` FORM of a matching
+    /// recursion NO MATTER its position among many defs — the property that lets the per-def form lookup
+    /// be O(1) instead of a per-def linear item scan (the old `find_def_form`, which made an N-def module
+    /// O(N²) — profiled at ~50% of the whole compile). A transformable `sm` placed AFTER a run of
+    /// unrelated defs still gains its `sm$acc`, and the unrelated defs are left untouched.
+    #[test]
+    fn introduce_finds_a_matching_def_among_many_others() {
+        let mut src = String::from("(module m");
+        for i in 0..50 {
+            src.push_str(&format!(" (def (g{i} x) (+ x {i}))"));
+        }
+        // The one transformable linear recursion, buried in the middle-to-end of the module.
+        src.push_str(" (def (sm (: n Int64)) (if (= n 0) 0 (+ n (sm (- n 1)))))");
+        for i in 50..100 {
+            src.push_str(&format!(" (def (g{i} x) (+ x {i}))"));
+        }
+        src.push_str(" (export sm))");
+        let db = Db::load(crate::testkit::parse(&src));
+        assert!(
+            db.def_by_name("sm$acc").is_some(),
+            "the buried linear recursion is still found + transformed by the sig→form index"
+        );
+        // A non-matching neighbour never gains an accumulator (its form is indexed but never rewritten).
+        assert!(
+            db.def_by_name("g0$acc").is_none() && db.def_by_name("g99$acc").is_none(),
+            "non-matching defs are left untouched"
+        );
     }
 
     #[test]
