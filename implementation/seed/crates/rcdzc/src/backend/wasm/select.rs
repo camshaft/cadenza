@@ -2377,15 +2377,10 @@ fn emit(
             little_endian,
         } => {
             let w = width as u32;
-            let bytes_slot = base;
-            if base + 1 > *high {
-                *high = base + 1;
-            }
-            scratch_ty.insert(bytes_slot, ValType::I32);
-            emit(db, bytes, slots, base + 1, high, scratch_ty, layout, out)?; // [bytes]
-            out.push(Lir::LocalSet(bytes_slot));
-            // Assemble the value: for MSB-first position p (0=MSB), the byte at buffer position `pos` is
-            // shifted left by (w-1-p)*8 and OR'd in. `le` reverses which buffer byte is the MSB.
+            // The `bytes` operand is the materialized scrutinee (a `LocalRef` — a cheap `local.get`), so
+            // it is RE-EMITTED per `bytes-get` rather than stashed in a scratch slot. Claiming a scratch
+            // slot here (typed i32) collided with an i64 slot in a nested-if match chain; re-emitting the
+            // handle avoids any scratch of our own, so nothing this arm emits can re-type a shared slot.
             out.push(Lir::ConstI64(0)); // [acc:i64]
             for p in 0..w {
                 let shift = (w - 1 - p) * 8; // MSB-first bit position
@@ -2394,7 +2389,7 @@ fn emit(
                 } else {
                     byte_offset + p
                 };
-                out.push(Lir::LocalGet(bytes_slot)); // [acc, bytes]
+                emit(db, bytes, slots, base, high, scratch_ty, layout, out)?; // [acc, bytes]
                 out.push(Lir::ConstI32(pos as i32)); // [acc, bytes, pos]
                 out.push(Lir::CallImport(OP_BYTES_GET)); // [acc, byte:i32]
                 out.push(Lir::I64ExtendI32U); // [acc, byte:i64] (0..=255)

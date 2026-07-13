@@ -1704,20 +1704,7 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
         // Build from the LAST arm backward: `acc` starts at the catch-all body's occurrence, and each
         // preceding `(bin …)` arm wraps it as `(if <predicate> <arm-body> <acc>)`. A synthesized `if`
         // node's core is pre-filled so it lowers directly (no re-resolution).
-        // This slice handles ONE `(bin …)` arm + a catch-all (the common shape: parse one format, else
-        // fall back). Two or more bin arms would chain nested `if`s whose per-arm predicate scratch does
-        // not yet compose cleanly (a slot-typing collision across arms) — decline that until the next
-        // slice, rather than emit an invalid module.
-        let bin_arm_count = classified
-            .iter()
-            .filter(|a| matches!(a, BinArm::Bin(..)))
-            .count();
-        if bin_arm_count > 1 {
-            return Core::Poison(Reject::decline(
-                "a runtime bin match with more than one bin arm is not yet lowered (one bin arm + catch-all)",
-            ));
-        }
-        // MATERIALIZE the scrutinee ONCE: it is read many times (the arm's length probe + literal probes
+        // MATERIALIZE the scrutinee ONCE: it is read many times (each arm's length probe + literal probes
         // + the matched arm's binder reads), so recomputing the `BinBuild` per read would both re-run the
         // construction AND clash scratch slots. Mark it a KEPT binding and read it through a `LocalRef`, so
         // it evaluates once into a slot and every read is a `local.get`. The whole match is wrapped in a

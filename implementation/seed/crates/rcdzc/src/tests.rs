@@ -6132,6 +6132,17 @@ mod match_engine {
             "-9",
             "runtime length mismatch → catch-all"
         );
+        // MULTI-ARM dispatch: a leading literal tag selects among 2+ `(bin …)` arms (a chain of `if`s over
+        // the runtime scrutinee). tag 1 → x ; tag 2 → y+1000 ; else → catch-all. Exercises the nested-if
+        // scratch discipline (each arm's `BinIntRead` re-reads the materialized scrutinee, no slot clash).
+        let m2 = "(module m (def (main (: t Int64) (: v Int64)) (match (bin (u8 t) (u16 v)) ((bin (u8 1) (u16 x)) x) ((bin (u8 2) (u16 y)) (+ y 1000)) (_ -1))) (export main))";
+        assert_eq!(run(m2, &["1", "42"]), "42", "runtime multi-arm: tag 1");
+        assert_eq!(run(m2, &["2", "42"]), "1042", "runtime multi-arm: tag 2");
+        assert_eq!(
+            run(m2, &["9", "42"]),
+            "-1",
+            "runtime multi-arm: no tag → catch-all"
+        );
     }
 
     #[test]
