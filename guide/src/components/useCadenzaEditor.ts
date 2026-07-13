@@ -34,8 +34,8 @@ export function wrapModule(src: string, surface: Surface): string {
     return `(module m (def (main) ${trimmed}) (export main))`;
   }
   if (/^module\b/.test(trimmed)) return trimmed;
-  if (/^(def|type)\b/.test(trimmed)) return `module m {\n${indent(trimmed)}\n  export(main)\n}`;
-  return `module m {\n  def main() = ${trimmed}\n  export(main)\n}`;
+  if (/^(def|type)\b/.test(trimmed)) return `module m {\n${indent(trimmed)}\n  export { main }\n}`;
+  return `module m {\n  def main() = ${trimmed}\n  export { main }\n}`;
 }
 
 /// Indent each line of a multi-line ML definitions block by two spaces (module-body indentation).
@@ -46,7 +46,8 @@ function indent(src: string): string {
     .join("\n");
 }
 
-/// Strip the `module m { … }` / `(module m … (export main))` scaffolding a `wrapModule` added, back to
+/// Strip the `module m { … }` (ML) / `(module m … (export main))` (s-expr) scaffolding a `wrapModule`
+/// added — in ML the export surface is `export { main }` — back to
 /// the bare definitions (or expression), for DISPLAY. The inverse of `wrapModule` over a RENDERED
 /// module; used so the surface toggle can round-trip a defs-only snippet (which isn't a single form)
 /// through the compiler by wrapping first, rendering, then stripping. Returns the input unchanged if
@@ -63,10 +64,10 @@ export function stripModule(rendered: string, surface: Surface): string {
     if (bare && !/\(def\b|\(type\b/.test(bare[1])) return bare[1].trim();
     return body;
   }
-  // ML: `module m {\n <body> \n}` → dedented body minus the `export(...)` line.
+  // ML: `module m {\n <body> \n}` → dedented body minus the `export { … }` line.
   const m = /^module\s+\w+\s*\{\s*\n([\s\S]*)\n\s*\}\s*$/.exec(t);
   if (!m) return rendered;
-  const lines = m[1].split("\n").filter((l) => !/^\s*export\(/.test(l));
+  const lines = m[1].split("\n").filter((l) => !/^\s*export\s*[({]/.test(l));
   const dedented = dedent(lines.join("\n"));
   // Unwrap a synthesized `def main() = <expr>` (single def, no helpers) back to the expression. Match
   // only the horizontal gap after `=` (`[^\S\n]*`, NOT `\s*`) so a multi-line body's continuation
