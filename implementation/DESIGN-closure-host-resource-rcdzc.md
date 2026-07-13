@@ -472,11 +472,23 @@ the component type. The new work:
   escape's `encode` walker for a tuple/String result; a `Bytes` result IS the payload, simplest first), the
   envelope lifts `call` with Memory/Realloc, `closure_boundary_byte`/`emit_closure_resource` route a compound
   result to the list shape instead of declining.
-- **REMAINING (all optional, none blocking):** hand-emit the compound-result `call` (oracle above is the
-  anchor); a compound closure ARG (host→guest decode — the decode direction, harder); a compound-RESULT plain
-  export alongside a closure (compose the closure envelope with the value-escape's `cadenza:run/run` shape);
-  a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>`
-  repeated-call handle. Everything else DONE.
+- **✅ BYTES-RESULT CLOSURE SERIALIZER SEAM LANDED `@68e568be`.** The production core-module serializer for a
+  closure whose result is a runtime `Bytes` — `serialize::closure_bytes_resource_core_module`. Structurally
+  the single-export scalar core, but `call` returns an i32 retptr (not a scalar) and the core carries a
+  MEMORY + `cabi_realloc`. `call(self, args…)` recovers the cell rep, `call_indirect`s the lifted closure (it
+  returns a runtime `Bytes` HANDLE), DROPs the cell (own<t> release), runs a `bytes-len`/`bytes-get` copy
+  loop writing the payload to `OUT=8` + the canonical `(ptr=OUT, len=n)` return area, DROPs the Bytes handle,
+  returns the retptr `0`. Reuses the value-escape's `to_bytes` copy-loop shape. Test
+  `closure_bytes_resource_core_module_is_structurally_valid` (closure body builds `[x,x+1]` via
+  `bytes-alloc`/`bytes-set`) — the shape `oracle_closure_list_component` proved runs. Gate 1352p/0f.
+- **REMAINING (all optional, none blocking):** wire the Bytes-result seam through the ENVELOPE (lift `call`
+  with Memory/Realloc — a `assemble_closure_bytes_resource` fork of `assemble_closure_resource`) + EMIT
+  (`closure_boundary_byte`/`emit_closure_resource` route a `Bytes` result to the bytes-`call` shape + import
+  `bytes-len`/`bytes-get`) + a corpus case, for the end-to-end `Bytes`-returning closure; then a
+  String/tuple/list result (reuse the escape's `encode` walker instead of the raw `to_bytes` copy); a compound
+  closure ARG (host→guest decode — harder); a compound-RESULT plain export alongside a closure; a closure
+  TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call
+  handle. Everything else DONE.
 
 ## Risks / open questions
 

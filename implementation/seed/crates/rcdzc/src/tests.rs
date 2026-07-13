@@ -7684,6 +7684,70 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_63_bit_wide_range_does_not_overflow_the_range_lattice() {
+        // ⚠ REGRESSION (compiler panic in a CHECKED build): the range lattice computed `(1i64 << bits) - 1`
+        // at several sites, but at `bits == 63` the shift `1i64 << 63` is `i64::MIN`, so `− 1` OVERFLOWS
+        // (a debug/`release-debug` panic; release silently wrapped to the correct i64::MAX). A `UInt64 >> 1`
+        // has range `[0, 2^63-1]` (bits = 64 − 1 = 63) — the `Shr` arm's type-width bound — so ANY program
+        // shaped `(>> x:UInt64 1)` crashed the compiler. Also reachable via `is_full_mask_for` (a value
+        // whose range reaches `2^63-1` → bits 63) and `resolved_int_bounds` (a `UInt63`). All three now
+        // special-case `bits/w == 63` → `i64::MAX`. This test COMPILES each shape; a panic fails the build.
+        use crate::db::Db;
+        let compiles = |params: &str, body: &str| {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            // The panic was inside selection's range queries — this call is what used to abort.
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select");
+        };
+        // `UInt64 >> 1` → range `[0, 2^63-1]`, bits = 63 (the `Shr` type-width arm). Used to panic.
+        compiles("(: x UInt64)", "(: (>= (>> x 1) 0) Bool)");
+        // The 63-bit range flowing into `is_full_mask_for` (mask covering `[0, 2^63-1]`).
+        compiles(
+            "(: x UInt64)",
+            "(: (& (>> x 1) 9223372036854775807) UInt64)",
+        );
+
+        // VALUE PARITY at the boundary: `(>= (>> x 1) 0)` is a tautology (a logical shift of a nonneg is
+        // nonneg); `(>> x 1)` halves; the covering mask is a no-op.
+        assert_eq!(run::<u64>("(: x UInt64)", "(>> x 1)", &[Val::U64(100)]), 50);
+        assert_eq!(
+            run::<i64>(
+                "(: x UInt64)",
+                "(if (>= (>> x 1) 0) 111 222)",
+                &[Val::U64(100)]
+            ),
+            111
+        );
+        assert_eq!(
+            run::<u64>(
+                "(: x UInt64)",
+                "(& (>> x 1) 9223372036854775807)",
+                &[Val::U64(9223372036854775806)]
+            ),
+            4611686018427387903
+        );
+    }
+
+    #[test]
     fn a_logical_shift_dropping_all_significant_bits_folds_to_zero() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;
@@ -9165,6 +9229,46 @@ mod match_engine {
             Some("(true unit)"),
             "message: {}",
             d2.message
+        );
+    }
+
+    #[test]
+    fn a_non_exhaustive_match_in_a_called_function_is_reported_once_not_duplicated() {
+        // A non-exhaustive match in a function that is also CALLED was reported TWICE: once at the def (the
+        // def-body check, with the insert-arms fix) and once re-anchored to the call site (the lowering walk
+        // inlines the callee and re-reaches the same poison; its fix targets a SYNTHESIZED node). An agent
+        // saw one defect as two errors, the second worse (points at the caller, its fix stripped). Now
+        // `dedup_faults` drops the copy whose fix targets a non-user node when the same (code, message) is
+        // reported with a fix editing a USER node. Exactly ONE CDZ0210 survives, at the match, with its fix.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (type C R G B) (def (f (: c C)) (match c ((R) 1) ((G) 2))) \
+               (def (main) (f (R))) (export main))",
+        )));
+        let ne: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0210"))
+            .collect();
+        assert_eq!(
+            ne.len(),
+            1,
+            "a called function's non-exhaustive match reports ONCE, not per call: {ne:?}"
+        );
+        assert!(
+            ne[0].fix.is_some(),
+            "the surviving copy is the authoritative one, with its insert-arms fix"
+        );
+        // SAFETY (the M7 concern): TWO GENUINELY-DISTINCT matches — same missing variant, different defs —
+        // must BOTH survive (each fix edits its own user node, so neither is the dropped "non-user" copy).
+        let two = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (type C R G B) (def (f (: c C)) (match c ((R) 1) ((G) 2))) \
+               (def (g (: c C)) (match c ((R) 9) ((G) 8))) (export f) (export g))",
+        )));
+        assert_eq!(
+            two.iter()
+                .filter(|d| d.code.as_deref() == Some("CDZ0210"))
+                .count(),
+            2,
+            "two distinct non-exhaustive matches are NOT merged: {two:?}"
         );
     }
 
@@ -16665,6 +16769,26 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_sum_carrying_a_set_renders_via_the_value_encode_walker() {
+        // A recursive sum carrying a SET (a `SetList` — a tree of sets) now COMPILES its value-encode
+        // escape. `shape_of` emits `ShapeNode::Set` (descriptor tag 12) for a SCALAR-element set, and the
+        // runtime `value-encode` iterates the CHAMP + SORTS the elements into canonical key-VALUE order,
+        // rendering `(Set.of (list …))` (guarded byte-exact + canonical-order in cdz-runtime's
+        // `value_encode_renders_a_set_in_canonical_order`). A non-scalar-element set still declines.
+        use crate::testkit::parse;
+        let src = "(module m (type SetList (Cons (Tuple (Set Int64) SetList)) Nil) \
+                     (def (build (: n Int64)) (if (< n 1) (SetList.Nil ()) \
+                        (SetList.Cons (tuple (Set.of (list n)) (build (- n 1)))))) \
+                     (def (main) (build 2)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a recursive sum carrying a Set compiles via the value-encode walker");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "the set-bearing recursive-sum escape imports the runtime"
+        );
+    }
+
+    #[test]
     fn a_value_eq_on_a_sum_payload_string_compiles() {
         // Comparing a variant's PAYLOAD (a `SumPayload`/tuple-element read) to a constant string —
         // `(= h "+")` where `h` is bound from a `(NPrim (tuple h a b))` payload — is the shape a recursive
@@ -23036,30 +23160,27 @@ mod stage1 {
 
     #[test]
     fn a_pathologically_deep_expression_declines_not_crashes() {
-        // A `(+ 1 (+ 1 …))` nest far past the recursive-descent depth bound. The compiler must DECLINE
-        // (a resource-limit rejection) rather than overflow its own stack and abort — a compiler
-        // completes or declines on well-formed input, never crashes. A shallow nest still folds (the
-        // 64-deep corpus case folds to 65); this pins the deep end declines instead of aborting.
-        //
-        // Run through the SAME host-stack helper the `rcdzc` bin uses: the decline is enforced by the
-        // recursive-descent depth guard (`DESCENT_DEPTH_LIMIT`), and reaching that guard needs a stack
-        // deeper than a default `cargo test` worker thread's (≈2 MB, which overflows at ~depth 179 in a
-        // debug build). `run_with_compiler_stack` sizes the stack FROM the guard, so the semantic guard
-        // is what fires here just as it does at the bin — no `RUST_MIN_STACK` to remember. See
-        // `rcdzc::host`.
-        let msg = crate::host::run_with_compiler_stack(|| {
-            let mut body = "1".to_string();
-            for _ in 0..4000 {
-                body = format!("(+ 1 {body})");
-            }
-            let src = format!("(module m (def (main) {body}) (export main))");
-            compile_component(&crate::codec::encode(&parse(&src)))
-                .expect_err("a pathologically deep expression must decline")
-                .message
-        });
+        // A `(+ 1 (+ 1 …))` nest far past the recursive-descent depth bound must DECLINE (a
+        // resource-limit rejection) rather than overflow the stack and abort — a completes-or-declines,
+        // never-crashes property. The guard now lives at TWO layers, and the PARSER's fires FIRST: the
+        // reader (`cadenza-syntax::sexpr`, `MAX_NESTING_DEPTH`) returns a clean `ReadError` before the
+        // arena is even built, so a source-ingesting path (`convert`/`check`, `cdz-wasm` on untrusted
+        // input) never reaches the compiler with pathological depth. (The compiler's own
+        // `DESCENT_DEPTH_LIMIT` still guards a deep BINARY AST that bypasses the reader.) Here the reader
+        // is the first line of defence: a 4000-deep nest is a `ReadError`, not a panic/crash — and the
+        // guard trips long before the reader's own recursion could overflow, so no large stack is needed.
+        let mut body = "1".to_string();
+        for _ in 0..4000 {
+            body = format!("(+ 1 {body})");
+        }
+        let src = format!("(module m (def (main) {body}) (export main))");
+        let err = cadenza_syntax::sexpr::read(&src).expect_err(
+            "a pathologically deep expression must be a clean reader error, not a crash",
+        );
         assert!(
-            msg.contains("deeply") || msg.contains("recursion") || msg.contains("resource"),
-            "got: {msg}"
+            err.0.contains("deeply") || err.0.contains("nests"),
+            "got: {}",
+            err.0
         );
     }
 
@@ -29753,6 +29874,121 @@ mod closure_host_resource {
         validator
             .validate_all(&core)
             .expect("closure-resource core module validates");
+    }
+
+    /// COMPOUND-RESULT compiler serializer: `serialize::closure_bytes_resource_core_module` — the production
+    /// core a closure whose result is a runtime `Bytes` emits — is structurally valid. The closure body
+    /// `(env, x) -> Bytes` builds a 2-byte `[x, x+1]` (`bytes-alloc`/`bytes-set`); `call` dispatches it via
+    /// `call_indirect`, copies the returned Bytes handle to the `(ptr, len)` return area (`bytes-len`/
+    /// `bytes-get` loop over the exported memory), and drops both the cell + the Bytes handle. The core
+    /// carries a MEMORY + `cabi_realloc` (a scalar `call` needs neither) so the canonical `list<u8>` ABI can
+    /// read the return area — the shape `oracle_closure_list_component` proved runs under wasmtime.
+    #[test]
+    fn closure_bytes_resource_core_module_is_structurally_valid() {
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        // Imports (any order — the serializer maps name→index by position): the cell ops (make + call), the
+        // Bytes ops (the closure body builds a Bytes; `call` copies it), drop (own<t> + Bytes release).
+        let imports = vec![
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.bytes_alloc,
+            OPS.bytes_get,
+            OPS.bytes_len,
+            OPS.bytes_set,
+            OPS.drop,
+            OPS.get_int,
+        ];
+        // Defined func 0 = the export body `main : () -> own<closure>` — build a 1-slot cell (slot 0, no
+        // captures), returning the cell handle.
+        let fn_ty = Ty::Fn(Box::new(s64.clone()), Box::new(Ty::Bytes));
+        let export_body = SelectedFunc {
+            params: vec![],
+            ret: fn_ty.clone(),
+            code: vec![
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0),
+                Lir::ConstI64(0),
+                Lir::CallImport("box-int"),
+                Lir::CallImport("arr-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // Defined func 1 = the lifted closure `(env: i32, x: i64) -> Bytes(i32)` = the 2-byte `[x, x+1]`.
+        // bytes-alloc(2); bytes-set(_, 0, wrap x); bytes-set(_, 1, wrap x + 1).
+        let lifted_body = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: Ty::Bytes,
+            code: vec![
+                Lir::ConstI32(2),
+                Lir::CallImport("bytes-alloc"),
+                Lir::ConstI32(0),
+                Lir::LocalGet(1),
+                Lir::I32WrapI64,
+                Lir::CallImport("bytes-set"),
+                Lir::ConstI32(1),
+                Lir::LocalGet(1),
+                Lir::I32WrapI64,
+                Lir::ConstI32(1),
+                Lir::I32Add,
+                Lir::CallImport("bytes-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let funcs = vec![export_body, lifted_body];
+
+        let export = ExportPlan {
+            name: "main".to_string(),
+            def: 0,
+            body: crate::ast::StructId(0),
+            params: vec![],
+            result: fn_ty.clone(),
+        };
+        let lifted = LiftedLambda {
+            body: crate::ast::StructId(0),
+            params: vec![(crate::ast::StructId(0), s64.clone())],
+            ret_ty: Ty::Bytes,
+            captures: vec![],
+        };
+        let import_base = imports.len() as u32 + 2; // k ops + resource-new + resource-rep
+        let layout =
+            Layout::with_lifted(vec![export], vec![0], import_base, vec![lifted], vec![true]);
+        let export_abs = import_base;
+        let lifted_type_idx = layout.lifted_type_index(0, import_base);
+
+        let core = crate::backend::wasm::serialize::closure_bytes_resource_core_module(
+            &funcs,
+            &imports,
+            export_abs,
+            &[ValType::I64], // the closure's one arg
+            &[],             // nullary export → make() has no params
+            lifted_type_idx,
+            &layout,
+        )
+        .expect("compound-result closure-resource core serializes");
+
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&core)
+            .expect("compound-result closure-resource core module validates");
     }
 
     /// MULTI-EXPORT compiler serializer: `serialize::multi_closure_resource_core_module` — the production

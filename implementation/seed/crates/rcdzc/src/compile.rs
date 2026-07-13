@@ -912,7 +912,7 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // conversion conflicting with the built-in family table or an earlier declaration is CDZ0502
     // (`units-of-measure.md` §A Named Unit's Conversion Is Unique). An agreeing redeclaration is fine.
     crate::infer::check_unit_defines(db, &mut faults);
-    dedup_faults(faults)
+    dedup_faults(db, faults)
 }
 
 /// Collapse duplicate faults — the SAME issue reported by more than one collection pass. A fault is
@@ -923,7 +923,7 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
 /// drop the rest. DISTINCT occurrences (same code, DIFFERENT node — e.g. two separate unbound uses)
 /// are NOT duplicates and both survive. An UNANCHORED fault (`at == None`) dedups by code+message, so
 /// two different unanchored declines still both show.
-fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
+fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
     // If any CDZ0401 (an ungranted effect reached with no home) was produced, the emit path's UNCODED
     // "performed with no enclosing handler here" DECLINE is the same root cause reported more weakly —
     // drop it so one ungranted effect yields ONE primary `error:` (the coded CDZ0401), not a coded
@@ -1003,6 +1003,26 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
         .iter()
         .filter(|r| r.fix.is_some())
         .filter_map(|r| no_field_key(&r.message))
+        .collect();
+    // A defect INSIDE a called function's body — a non-exhaustive `(match c …)` (CDZ0210) on a parameter —
+    // is reported TWICE: once at the DEFINITION (the def's own body check, anchored at the real match node,
+    // its fix editing that match) and once re-anchored to a CALL SITE (`collect_reached_poisons` inlines the
+    // callee and re-reaches the same poison; its fix targets the SYNTHESIZED reduced-match node). Both are
+    // coded, both carry a fix HERE (the call-site copy's fix is stripped only LATER, at the ABI edge, when
+    // its synthesized target is found non-user) — so a plain (code, message) or fix-vs-no-fix test cannot
+    // tell them apart yet. The discriminator is the FIX'S EDIT TARGET: the authoritative copy edits a USER
+    // node (the source match); the duplicate edits a synthesized node. Collect the (code, message) of every
+    // fault whose fix targets a USER node; drop a same-(code,message) copy whose fix targets a NON-user one.
+    // SAFE: two genuinely-distinct same-(code,message) matches each edit their OWN user node, so neither is
+    // dropped (both fixes target user nodes → neither is the "non-user" copy).
+    let user_fix_keys: std::collections::HashSet<(Option<Code>, &str)> = faults
+        .iter()
+        .filter(|r| {
+            r.fix
+                .as_ref()
+                .is_some_and(|f| db.is_user_node(f.edit.target()))
+        })
+        .map(|r| (r.code, r.message.as_str()))
         .collect();
     // The SAME fault reported once ANCHORED (a node stamped by the reached-poison walk) and once
     // UNANCHORED (the resolve-level poison surfaced with no `at`) — e.g. `(record (a 1) (a 2))`'s
@@ -1111,6 +1131,19 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
             // in `lower`, not here.)
             if r.fix.is_none()
                 && no_field_key(&r.message).is_some_and(|k| fixed_field_cores.contains(k))
+            {
+                return false;
+            }
+            // The re-anchored body-defect duplicate (see `user_fix_keys`): a coded fault whose fix targets a
+            // SYNTHESIZED (non-user) node, when the SAME (code, message) is ALSO reported with a fix editing a
+            // USER node, is the call-site copy of a callee body defect — drop it, keeping the authoritative
+            // definition-anchored copy whose fix edits the real source. E.g. a non-exhaustive `(match c …)` in
+            // a CALLED `f`: CDZ0210 at the def (fix edits the match) + the inlined copy at the `(f …)` call
+            // (fix edits the reduced match, a synthesized node).
+            if r.fix
+                .as_ref()
+                .is_some_and(|f| !db.is_user_node(f.edit.target()))
+                && user_fix_keys.contains(&(r.code, r.message.as_str()))
             {
                 return false;
             }
