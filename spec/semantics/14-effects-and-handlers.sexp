@@ -297,6 +297,21 @@
   (call   main (: 9 Int64))
   (output (: 1 Int64)))
 
+(case "a handler arm that resumes NON-tail folds when the perform is the whole body"
+  (doc    "The GENERAL one-shot arm — a `resume` NOT in tail position, so the arm does work AFTER resuming
+           (`(Amb.flip (u) s (+ 1 (resume 10 s)))` adds 1 to whatever the continuation returns). This is
+           the powerful case (capabilities-and-effects.md #A Handler May Resume Anywhere). Its full form
+           needs a reified continuation, but when the performed operation is the WHOLE handle body its
+           continuation is the IDENTITY (nothing runs after the perform), so `(resume 10 s)` yields 10 in
+           place and the arm evaluates to `(+ 1 10)` = 11 — no continuation object needed. Witnesses the
+           identity-continuation sliver of the general-resume class; a non-tail resume whose perform sits
+           inside a larger expression (a non-identity continuation) still awaits the frame machinery.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle 0 ((Amb.flip (u) s (+ 1 (resume 10 s)))) (Amb.flip))) (export main)))
+  (output (: 11 Int64)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the

@@ -15362,6 +15362,49 @@ mod stage1 {
     }
 
     #[test]
+    fn an_e5_identity_continuation_non_tail_resume_folds() {
+        // E5 identity-continuation slice: a NON-tail resume where the perform IS the whole handle body, so
+        // its continuation is the IDENTITY (nothing runs after). `(resume v s)` = `v` in place, so the arm
+        // body with resume→value is the handle value — no frame capture needed. `(handle 0 ((Amb.flip (u)
+        // s (+ 1 (resume 10 s)))) (Amb.flip))` → `(+ 1 10)` = 11. Even a MULTI-shot arm folds here (each
+        // `resume v` is `v`, no continuation to duplicate): `(+ (resume 1 s) (resume 2 s))` → 3.
+        let single = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle 0 ((Amb.flip (u) s (+ 1 (resume 10 s)))) (Amb.flip))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(single)))
+                    .expect("an identity-continuation non-tail resume folds"),
+                "main"
+            ),
+            11
+        );
+        let multi = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle 0 ((Amb.flip (u) s (+ (resume 1 s) (resume 2 s)))) (Amb.flip))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(multi)))
+                    .expect("a multi-shot identity-continuation resume folds"),
+                "main"
+            ),
+            3
+        );
+    }
+
+    #[test]
+    fn a_non_tail_resume_with_a_real_continuation_declines() {
+        // The E5 BOUNDARY: a non-tail resume whose perform is NOT in tail position — `(+ 100 (Amb.flip))`
+        // — has a non-identity continuation `(+ 100 [])` that `resume` must return into. Realizing it needs
+        // the captured-continuation machinery (defunctionalized frames), a later increment; `reduce_handle`
+        // declines rather than mis-fold. Contrast the identity-continuation case above, which folds.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle 0 ((Amb.flip (u) s (+ 1 (resume 10 s)))) (+ 100 (Amb.flip)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a non-tail resume with a real continuation must decline (needs E5 frame capture)"
+        );
+    }
+
+    #[test]
     fn a_perform_threads_through_strict_one_operand_forms() {
         // E-fold arms for `not` / projection / member / annotation — STRICT one-operand forms that had no
         // thread arm (a perform inside declined, though `if`/`match` fold). Each threads its operand:

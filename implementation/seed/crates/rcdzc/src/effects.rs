@@ -1170,6 +1170,50 @@ pub fn reduce_handle(
     // hoist requires every preceding sibling pure. Runs to a fixpoint (bounded). A shape it cannot lift
     // (a perform under a conditional the hoist could not raise to tail) is left as-is and declines below.
     let body = hoist_resumptive_conditional(db, body, &ctx);
+    // E5 IDENTITY-CONTINUATION slice (general one-shot, the trivial-continuation case). When the handle
+    // BODY is EXACTLY a perform `(E.op args…)` of a discharged op, that perform sits in the handle's TAIL
+    // position, so its CONTINUATION is the IDENTITY (there is no surrounding computation to return into).
+    // A NON-tail resume then needs no captured continuation: `(resume v s)` yields `v` in place (the
+    // identity applied to `v`), so the handle's value is the arm body with every `(resume v s)` rewritten
+    // to `v` — `(handle 0 ((Amb.flip (u) s (+ 1 (resume 10 s)))) (Amb.flip))` → `(+ 1 10)` = 11. Even a
+    // MULTI-shot arm (`(+ (resume 1 s) (resume 2 s))`) is sound here: each `resume v` is just `v`, no
+    // continuation to duplicate. This is the sliver of E5 that needs no frame machinery; a perform NOT in
+    // tail position (`(+ 100 (Amb.flip))`) has a non-identity continuation and still declines (real E5).
+    if let Resolved::Apply { head, args } = resolved_of(db, body)
+        && let Some((decl, idx)) = is_perform(db, head, &ctx)
+        && let Some(arm) = ctx.arms.get(&(decl, idx)).cloned()
+        && !ctx.abortive.contains(&(decl, idx))
+        && tail_resume(db, arm.body).is_none()
+    {
+        // Only the IDENTITY-continuation case: the args must be pure (no nested perform whose own
+        // continuation would be non-trivial) and the resume's NEXT-STATE is irrelevant (nothing runs
+        // after — the continuation is empty). Substitute the arm params ↦ (pure-copied) args and the
+        // state binder ↦ the init seed, then rewrite every tail/non-tail `(resume v s)` → `v`.
+        if args.iter().all(|&a| !subtree_performs(db, a, &ctx)) {
+            let mut subst: HashMap<StructId, StructId> = HashMap::default();
+            if arm.params.len() == args.len() {
+                for (&p, &a) in arm.params.iter().zip(args.iter()) {
+                    if !is_unit_param(db, p) {
+                        subst.insert(p, copy_pure(db, a));
+                    }
+                }
+            } else if arm.params.len() == 1 && args.is_empty() {
+                let p = arm.params[0];
+                if !is_unit_param(db, p) {
+                    let unit = db.push_list(vec![]);
+                    subst.insert(p, unit);
+                }
+            } else {
+                return None;
+            }
+            subst.insert(arm.state, init);
+            let substituted = crate::eval::beta_reduce(db, arm.body, &subst);
+            // Rewrite every `(resume v s)` → `v` (identity continuation). The arm body's free names (an
+            // enclosing param) keep their pinned resolution through `beta_reduce`/`copy_pure`, so no
+            // re-anchor is needed (a free `x` in `(+ x (resume 10 s))` resolves against the handle scope).
+            return Some(rewrite_resume_to_value(db, substituted));
+        }
+    }
     // Thread the INIT state through the body in evaluation order. The handle's value is the body's
     // value (the accumulated state is observable only through the operations), so we return the
     // rewritten body; the final threaded state is discarded (the body never reads it directly).
@@ -2668,6 +2712,28 @@ fn tail_resume(db: &mut Db, node: StructId) -> Option<(StructId, StructId)> {
     match resolved_of(db, node) {
         Resolved::Resume { value, next_state } => Some((value, next_state)),
         _ => None,
+    }
+}
+
+/// Rewrite every `(resume value next-state)` in `node` to a fresh copy of its VALUE — the E5 identity-
+/// continuation reduction. When the perform sits in the handle body's tail position the continuation is
+/// the identity, so `resume v s` is just `v` (there is nothing to return into, and the next-state is dead
+/// — nothing runs after). A resume anywhere in the arm body (tail or not, once or many times) reduces this
+/// way. Non-resume nodes are copied structurally so the result is self-contained. The value copy detaches
+/// it from the dead `resume` node's scope (fresh parentage when spliced).
+fn rewrite_resume_to_value(db: &mut Db, node: StructId) -> StructId {
+    if let Resolved::Resume { value, .. } = resolved_of(db, node) {
+        return copy_pure(db, value);
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let rewritten: Vec<StructId> = children
+                .iter()
+                .map(|&c| rewrite_resume_to_value(db, c))
+                .collect();
+            db.push_list(rewritten)
+        }
+        Struct::Atom(_) => copy_pure(db, node),
     }
 }
 
