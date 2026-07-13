@@ -3,6 +3,16 @@
 //! into one [`Arenas`] under a synthesized `(do …)` root, so the existing `Db::load` sees exactly
 //! one program in one arena — the same thing it sees for a single file, just assembled from many.
 //!
+//! Every module in the tree is supplied as its CANONICAL BINARY AST (an `ast`-kinded artifact — the
+//! codec's bytes, `ast-encoding.md`), so linking reads each module by its binary form and its identity
+//! is that AST, never a textual rendering:
+//!
+//= spec/contracts/source-tree-encoding.md#a-module-is-stored-as-its-canonical-binary-ast
+//# Each module in a source tree MUST be stored as the canonical binary AST fixed by the ast-encoding contract.
+//!
+//= spec/contracts/source-tree-encoding.md#a-module-is-stored-as-its-canonical-binary-ast
+//# The canonical encoding of the tree MUST NOT depend on any textual rendering of a module, because a module's identity is its binary AST rather than a rendering of it.
+//!
 //! This is INTRA-PACKAGE linking only: nothing crosses a component boundary, so there is zero
 //! component-ABI / envelope work. Monomorphization is the existing β-reduction; one component is the
 //! existing backend. The link step is the structured analogue of the bootstrap Makefile's `cat`, but
