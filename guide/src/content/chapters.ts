@@ -63,7 +63,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Comparison & ordering",
     blurb: "Comparisons, and the three-way shape of a total order.",
     section: "Fundamentals",
-    exercises: 1,
+    exercises: 2,
     Component: lazy(() => import("./chapters/Ordering.tsx")),
   },
   {
