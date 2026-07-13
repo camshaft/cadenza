@@ -100,26 +100,50 @@ export default function MapsSets() {
       <H2>Your turn</H2>
       <Exercise
         id="maps-sets:1"
-        prompt={<>Count the distinct elements of <C>(list 3 1 3 3 2)</C> — the answer is <C>3</C>.</>}
-        starter={`(Set.len (Set.of ?))`}
-        solution={`(Set.len (Set.of (list 3 1 3 3 2)))`}
-        expected="3"
-        hint={<>Pass the list to <C>Set.of</C>; the set keeps only distinct values, so the three <C>3</C>s count once.</>}
+        prompt={
+          <>
+            How many elements are in <em>both</em> <C>{`{1,2,3}`}</C> and <C>{`{2,3,4}`}</C>? Use{" "}
+            <C>Set.intersection</C> and count the result — the shared elements are <C>2</C> and <C>3</C>,
+            so the answer is <C>2</C>.
+          </>
+        }
+        starter={`(Set.len
+  (Set.? (Set.of (list 1 2 3)) (Set.of (list 2 3 4))))`}
+        solution={`(Set.len
+  (Set.intersection (Set.of (list 1 2 3)) (Set.of (list 2 3 4))))`}
+        expected="2"
+        hint={
+          <>
+            "In both" is the intersection — <C>Set.intersection</C>. Only <C>2</C> and <C>3</C> appear in
+            each set.
+          </>
+        }
       />
 
       <Exercise
         id="maps-sets:2"
-        prompt={<>Look up key <C>2</C> in a map that stores <C>2 → 20</C>, so the answer is <C>20</C>.</>}
+        prompt={
+          <>
+            A map stores key <C>5</C> twice: first <C>5 → 11</C>, then <C>5 → 88</C>. Since a re-insert
+            replaces, looking up <C>5</C> should give the <em>later</em> value, <C>88</C>. Fill in the
+            replacement value.
+          </>
+        }
         starter={`(def (main)
-  (match (Map.lookup (Map.insert (Map.empty) 2 20) ?)
-    ((Some v) v)
-    ((None _) 0)))`}
+  (Option.expect
+    (Map.lookup (Map.insert (Map.insert (Map.empty) 5 11) 5 ?) 5)
+    "missing"))`}
         solution={`(def (main)
-  (match (Map.lookup (Map.insert (Map.empty) 2 20) 2)
-    ((Some v) v)
-    ((None _) 0)))`}
-        expected="20"
-        hint={<>Look up the key you inserted — <C>2</C>.</>}
+  (Option.expect
+    (Map.lookup (Map.insert (Map.insert (Map.empty) 5 11) 5 88) 5)
+    "missing"))`}
+        expected="88"
+        hint={
+          <>
+            The second insert at key <C>5</C> wins, so the value you put there — <C>88</C> — is what the
+            lookup returns.
+          </>
+        }
       />
     </article>
   );

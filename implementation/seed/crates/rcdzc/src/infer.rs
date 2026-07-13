@@ -1071,7 +1071,7 @@ fn collect_param_constraints(
                 for &arg in args.iter() {
                     let applied = subst.apply(&cur);
                     if let Ty::Fn(param, result) = applied {
-                        let at = arg_ty_in_env(db, arg, env, subst);
+                        let at = arg_ty_in_env(db, arg, env, subst, fresh);
                         let _ = crate::unify::unify(subst, &param, &at);
                         cur = *result;
                     } else {
@@ -1088,7 +1088,7 @@ fn collect_param_constraints(
                         if let Some(&binder) = ordered.get(i)
                             && let Some(pvar) = env.get(&binder)
                         {
-                            let at = arg_ty_in_env(db, arg, env, subst);
+                            let at = arg_ty_in_env(db, arg, env, subst, fresh);
                             let _ = crate::unify::unify(subst, pvar, &at);
                         }
                     }
@@ -1115,7 +1115,7 @@ fn collect_param_constraints(
                         if let Some(pt) = callee_param_ty(db, callee, i)
                             && !matches!(pt, Ty::Any | Ty::Var(_))
                         {
-                            let at = arg_ty_in_env(db, arg, env, subst);
+                            let at = arg_ty_in_env(db, arg, env, subst, fresh);
                             let _ = crate::unify::unify(subst, &at, &pt);
                         }
                     }
@@ -1139,7 +1139,7 @@ fn collect_param_constraints(
                 let result = Ty::Var(fresh.var());
                 let mut arrow = result;
                 for &arg in args.iter().rev() {
-                    let at = arg_ty_in_env(db, arg, env, subst);
+                    let at = arg_ty_in_env(db, arg, env, subst, fresh);
                     arrow = Ty::Fn(Box::new(at), Box::new(arrow));
                 }
                 let _ = crate::unify::unify(subst, &hvar, &arrow);
@@ -1154,7 +1154,7 @@ fn collect_param_constraints(
         }
         Resolved::If { cond, then_, else_ } => {
             // The condition must be Bool — constrain it (a bare-param condition `(if n …)` pins n Bool).
-            let ct = arg_ty_in_env(db, cond, env, subst);
+            let ct = arg_ty_in_env(db, cond, env, subst, fresh);
             let _ = crate::unify::unify(subst, &ct, &Ty::Bool);
             collect_param_constraints(db, cond, env, def, subst, fresh);
             collect_param_constraints(db, then_, env, def, subst, fresh);
@@ -1164,13 +1164,13 @@ fn collect_param_constraints(
         // pins `p` Bool), then descend.
         Resolved::And { lhs, rhs, .. } => {
             for &op in &[lhs, rhs] {
-                let t = arg_ty_in_env(db, op, env, subst);
+                let t = arg_ty_in_env(db, op, env, subst, fresh);
                 let _ = crate::unify::unify(subst, &t, &Ty::Bool);
                 collect_param_constraints(db, op, env, def, subst, fresh);
             }
         }
         Resolved::Not { operand } => {
-            let t = arg_ty_in_env(db, operand, env, subst);
+            let t = arg_ty_in_env(db, operand, env, subst, fresh);
             let _ = crate::unify::unify(subst, &t, &Ty::Bool);
             collect_param_constraints(db, operand, env, def, subst, fresh);
         }
@@ -1183,7 +1183,7 @@ fn collect_param_constraints(
             // to a scrutinee that IS a parameter — a scrutinee that is a CALL RESULT (`(List.at xs i)`)
             // carries its own instantiation that this shape-unify would corrupt, so it is left to the
             // ordinary application constraints.
-            let st = arg_ty_in_env(db, scrutinee, env, subst);
+            let st = arg_ty_in_env(db, scrutinee, env, subst, fresh);
             let scrut_is_param = matches!(
                 resolved_of(db, scrutinee),
                 Resolved::Ref { value } if env.contains_key(&value)
@@ -1229,6 +1229,7 @@ fn collect_param_constraints(
                 body: StructId,
                 env: &crate::fxhash::FxHashMap<StructId, Ty>,
                 subst: &Subst,
+                fresh: &mut Fresh,
             ) -> Option<Ty> {
                 // The arm's type must be a STILL-OPEN var for it to be a constrainable pass-through: an
                 // echoed BARE param whose var is unsolved, or a fn-param application `(f n)` whose result
@@ -1245,7 +1246,7 @@ fn collect_param_constraints(
                     // `(f n)` — a fn-typed param applied. Its type is `f`'s result var (peeled by
                     // `arg_ty_in_env`).
                     Resolved::Apply { head, .. } if binder_var_of(db, head, env).is_some() => {
-                        arg_ty_in_env(db, body, env, subst)
+                        arg_ty_in_env(db, body, env, subst, fresh)
                     }
                     // A PAYLOAD BINDER of the scrutinee being solved — `n` in `(match t ((Tree.Leaf n) n)
                     // …)` returned directly by the arm. Its type is `t`'s local instantiation walked down
@@ -1262,7 +1263,7 @@ fn collect_param_constraints(
                             Resolved::Param { binder } if env.contains_key(&binder)
                         ) =>
                     {
-                        arg_ty_in_env(db, body, env, subst)
+                        arg_ty_in_env(db, body, env, subst, fresh)
                     }
                     _ => return None,
                 };
@@ -1271,14 +1272,14 @@ fn collect_param_constraints(
             }
             let arm_list: Vec<StructId> = arms.iter().map(|(_, b)| *b).collect();
             for &body in &arm_list {
-                let Some(pvar) = open_arm_var(db, body, env, subst) else {
+                let Some(pvar) = open_arm_var(db, body, env, subst, fresh) else {
                     continue;
                 };
                 for &other in &arm_list {
-                    if other == body || open_arm_var(db, other, env, subst).is_some() {
+                    if other == body || open_arm_var(db, other, env, subst, fresh).is_some() {
                         continue; // self, or another open arm — no determined type to borrow
                     }
-                    let ot = arg_ty_in_env(db, other, env, subst);
+                    let ot = arg_ty_in_env(db, other, env, subst, fresh);
                     let applied = subst.apply(&ot);
                     if !matches!(applied, Ty::Any | Ty::Var(_)) {
                         let _ = crate::unify::unify(subst, &pvar, &applied);
@@ -1412,6 +1413,7 @@ fn arg_ty_in_env(
     arg: StructId,
     env: &crate::fxhash::FxHashMap<StructId, Ty>,
     subst: &Subst,
+    fresh: &mut Fresh,
 ) -> Ty {
     // A reference to a parameter being solved → its variable. A body param reference resolves to
     // `Ref { value: <param binder> }` (or a bare `Param { binder }`).
@@ -1426,12 +1428,35 @@ fn arg_ty_in_env(
                 return subst.apply(var);
             }
         }
+        // A LIST built from parameter references — `(list i)` where `i` is a param being solved. Its
+        // element type must be read through the LOCAL `subst` (where `(+ i 1)` pinned `i` to `Int w`),
+        // NOT `type_of((list i))` — mid-solve `db.param_types` is empty, so `type_of` reads `i` as `Any`
+        // and the whole list types `List Any`. Building the element type via `arg_ty_in_env` recursively
+        // links the inner element's var into the subst, so pinning `i` pins the nested element (a runtime
+        // `(List (List Int64))` accumulator grounds instead of stranding the inner element at `Any`). The
+        // `list` NAME-alias form (`ListNew`) is the same shape reached through `Apply`, handled below.
+        Resolved::List { elems } => {
+            let mut elem_ty = Ty::Any;
+            for &e in elems.iter() {
+                elem_ty = elem_ty.join(&arg_ty_in_env(db, e, env, subst, fresh));
+            }
+            return Ty::List(Box::new(subst.apply(&elem_ty)));
+        }
         // An APPLICATION OF A FN-TYPED PARAMETER being solved — `(f h)` where `f` is in `env`. Its type is
         // `f`'s var peeled by one arrow per argument, read from the LOCAL `subst` (where the arrow was
         // unified in `collect_param_constraints`), NOT from `type_of` — `db.param_types` is still empty
         // mid-solve, so `type_of((f h))` would be `Any` and the result would never link to `f`'s arrow.
         // This is what lets `(+ (f h) …)` flow Int64 back to `f`'s result var, solving the fn param.
         Resolved::Apply { head, args } => {
+            // The `list` NAME alias (`(list i)` via `ListNew`) is a list built from its arguments — the
+            // element type read through the LOCAL subst, exactly as the `Resolved::List` arm above.
+            if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::ListNew) {
+                let mut elem_ty = Ty::Any;
+                for &e in args.iter() {
+                    elem_ty = elem_ty.join(&arg_ty_in_env(db, e, env, subst, fresh));
+                }
+                return Ty::List(Box::new(subst.apply(&elem_ty)));
+            }
             if let Some(var) = binder_var_of(db, head, env) {
                 let mut cur = subst.apply(&var);
                 for _ in 0..args.len() {
@@ -1441,6 +1466,29 @@ fn arg_ty_in_env(
                     }
                 }
                 return cur;
+            }
+            // An OPERATOR/INTRINSIC application (`(List.push out (list i))`) whose result must carry the
+            // element type an argument built from a param being solved contributes — but `type_of` reads
+            // that arg's param as `Any` mid-solve, stranding the result's element (a runtime `(List (List
+            // Int64))` accumulator returned `(List (List Any))`). Instantiate the head's scheme HERE and
+            // unify each argument's LOCAL-subst type (`arg_ty_in_env`, so `(list i)`'s element links to
+            // `i`'s var) into the curried parameter positions; the applied result then carries the pinned
+            // element. A local `Fresh`/`Subst` seeded from the caller's keeps the caller's bindings visible
+            // without polluting them. Falls through to `type_of` when the head has no scheme.
+            if let Some(scheme) = crate::eval::scheme_of(db, head, fresh) {
+                let mut local = subst.clone();
+                let mut cur = crate::unify::instantiate(&scheme, fresh);
+                for &arg in args.iter() {
+                    let applied = local.apply(&cur);
+                    if let Ty::Fn(param, result) = applied {
+                        let at = arg_ty_in_env(db, arg, env, &local, fresh);
+                        let _ = crate::unify::unify(&mut local, &param, &at);
+                        cur = *result;
+                    } else {
+                        break;
+                    }
+                }
+                return local.apply(&cur);
             }
         }
         // A PAYLOAD BINDER of the parameter being solved — `n` in `(match t ((Tree.Leaf n) …))`, which
@@ -1781,6 +1829,16 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             };
         }
     }
+    // Each `Record.*` row operation below computes a NEW closed `Ty::Record` from the OPERANDS' record
+    // shapes alone (project keeps the named subset, without drops them, merge unions, extend/with insert)
+    // — it never mutates an operand type and never leaves a row variable open in the result, so the
+    // reshaped record is a fresh value with a statically-fixed field set and the emitted component carries
+    // no runtime field-set computation.
+    //= spec/capabilities/type-system.md#a-record-row-is-reshaped-only-through-an-explicit-operation-yielding-a-new-value
+    //# A record row operation MUST yield a new record value and MUST NOT alter the operand records, consistent with the immutable value heap, so that reshaping a record is the derivation of a new value with a new shape and not a mutation of an existing one.
+    //= spec/capabilities/type-system.md#a-record-row-is-reshaped-only-through-an-explicit-operation-yielding-a-new-value
+    //# The shape of a record row operation's result MUST be determined statically from the operands' shapes, so that the emitted component carries a concrete closed record shape and the operation introduces no runtime field set.
+    //
     // `Record.project r (a c)` — narrow `r` to the named fields. The result is a NEW closed record type
     // whose fields are EXACTLY the named ones, each carrying the type it had in `r` (`type-system.md` §A
     // Record Is Restricted To A Named Set Of Its Fields). The second operand is a LITERAL field-name list
@@ -1788,6 +1846,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // unit / `Wrap`'s width). A named field ABSENT from `r`'s record type has no type to carry — it is
     // the CDZ0212 rejection (reported by `check_application`); here it is simply dropped from the result
     // shape so the value column stays a sane record. A non-record operand → `Any` (faulted elsewhere).
+    //= spec/capabilities/type-system.md#a-record-is-restricted-to-a-named-set-of-its-fields
+    //# A program MUST be able to project a record onto a stated set of field names, yielding a record whose fields are exactly those names bound to the values the operand holds for them, so that narrowing a record to a sub-shape is an explicit operation rather than an overloaded equality.
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordProject)
         && args.len() == 2
         && let Ty::Record(fields) = type_of(db, args[0])
@@ -1804,6 +1864,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // `Record.without r (b)` — `r` MINUS the named fields (the complement of `project`). The result is a
     // NEW record type keeping every field of `r` whose label is NOT named. Same literal field-name list;
     // an absent named field is CDZ0212 (`check_application`), not reflected in the shape.
+    //= spec/capabilities/type-system.md#a-record-is-reduced-by-dropping-a-named-set-of-its-fields
+    //# A program MUST be able to derive a record that drops a stated set of field names from an operand record, yielding a record whose fields are exactly the operand's remaining fields, so that removing a field is the complement of projecting the fields kept.
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordWithout)
         && args.len() == 2
         && let Ty::Record(fields) = type_of(db, args[0])
@@ -1821,6 +1883,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // field of BOTH operands. The field sets MUST be disjoint (a shared name is CDZ0211, reported by
     // `check_application`); the type here is the union regardless (a shared field's fault fires there, and
     // last-writer here keeps the shape sane). A non-record operand → the generic path (Any).
+    //= spec/capabilities/type-system.md#two-records-are-combined-only-when-their-field-sets-are-disjoint
+    //# A program MUST be able to combine two records into one whose field set is the union of the operands' field sets, each field bound to the value its source record holds, so that merging records is the row analogue of forming a record from two groups of fields.
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordMerge)
         && args.len() == 2
         && let (Ty::Record(a), Ty::Record(b)) = (type_of(db, args[0]), type_of(db, args[1]))
@@ -1839,6 +1903,10 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // The presence/absence fault (extend→CDZ0211 if present, with→CDZ0212 if absent) is `check_application`'s;
     // the shape here is the same insert for both. The second operand is a `(name value)` pair read by
     // `record_op_pair`; `v` IS an evaluated value (its type is `typeof(v)`), unlike a label list.
+    //= spec/capabilities/type-system.md#a-field-is-added-to-or-replaced-in-a-record-by-a-derived-operation
+    //# A program MUST be able to derive a record that adds a field absent from an operand record, and a combination that adds a field the operand already contains MUST be rejected at compile time with the machine-readable code for a field that is already present, so that adding a field never silently overwrites an existing one.
+    //= spec/capabilities/type-system.md#a-field-is-added-to-or-replaced-in-a-record-by-a-derived-operation
+    //# A program MUST be able to derive a record that replaces a field present in an operand record with a new value of a possibly different type, so that updating a field is an explicit operation distinct from adding one and the replacement's type is whatever the new value holds.
     if matches!(
         crate::eval::meta_apply_of(db, head),
         Some(crate::resolved::Prim::RecordExtend | crate::resolved::Prim::RecordWith)
@@ -1870,9 +1938,22 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         let rest_ty = Ty::Record(std::sync::Arc::new(rest));
         return Ty::Tuple(std::sync::Arc::from([field_ty, rest_ty]));
     }
+    // Each `Tuple.*` positional row op below derives a NEW `Ty::Tuple` (or `Ty::Unit` for the empty
+    // prefix) from the OPERANDS' element types — cat sums the arities, split-at/pop partition — so the
+    // result arity is fixed statically from the operand arities, an operand tuple is never mutated, and
+    // the emitted component carries a concrete tuple shape rather than a runtime-length tuple.
+    //= spec/capabilities/type-system.md#a-tuple-is-reshaped-positionally-by-an-explicit-operation-yielding-a-new-value
+    //# A program MUST be able to derive a new tuple from existing tuples by an explicit positional operation — concatenating two tuples or splitting one at a stated position — rather than by an implicit change of arity, consistent with a tuple being a fixed-size positional value whose length is part of its type.
+    //= spec/capabilities/type-system.md#a-tuple-is-reshaped-positionally-by-an-explicit-operation-yielding-a-new-value
+    //# A tuple positional operation MUST yield a new tuple value and MUST NOT alter the operand tuples, consistent with the immutable value heap, so that reshaping a tuple is the derivation of a new value and not a mutation.
+    //= spec/capabilities/type-system.md#a-tuple-is-reshaped-positionally-by-an-explicit-operation-yielding-a-new-value
+    //# The arity of a tuple positional operation's result MUST be determined statically from the operands' arities, so that the emitted component carries a concrete tuple shape and the operation introduces no runtime-length tuple.
+    //
     // `Tuple.cat a b` — the concatenation of two tuples' element types (`type-system.md` §Two Tuples Are
     // Concatenated Into One Of Their Combined Length). Result arity = the sum; each element keeps its
     // source position's type. A non-tuple operand → the generic path (Any).
+    //= spec/capabilities/type-system.md#two-tuples-are-concatenated-into-one-of-their-combined-length
+    //# A program MUST be able to concatenate two tuples into one whose elements are the first tuple's elements in order followed by the second tuple's elements in order, so that its arity is the sum of the operands' arities and each element keeps the type of its source position.
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::TupleCat)
         && args.len() == 2
         && let (Ty::Tuple(a), Ty::Tuple(b)) = (type_of(db, args[0]), type_of(db, args[1]))
@@ -1885,6 +1966,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // `(Tuple <prefix-tuple> <suffix-tuple>)`; `k=0` makes the empty prefix the UNIT value (the empty
     // tuple IS unit), so the prefix type is `Ty::Unit`, not a zero-arity tuple. `k` out of `0..=arity` is
     // CDZ0201 (`check_application`); here an out-of-range k falls through to the generic path (Any).
+    //= spec/capabilities/type-system.md#a-tuple-is-split-at-a-position-into-a-prefix-and-a-suffix
+    //# A program MUST be able to split a tuple at a stated position into a pair of tuples — a prefix holding the elements before the position and a suffix holding the elements from the position onward — so that partitioning a tuple positionally is an explicit operation yielding both parts.
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::TupleSplitAt)
         && args.len() == 2
         && let Ty::Tuple(elems) = type_of(db, args[0])
@@ -2720,17 +2803,22 @@ fn check_resume_result_type(db: &mut Db, arm: &crate::resolved::HandleArm, out: 
     let value_ty = type_of(db, value);
     if !value_ty.agrees_with(&result) {
         trace!(target: "rcdzc::infer", value = value.0, "fault: resume value's type does not match the operation's result type (CDZ0201)");
-        out.push(
-            Reject::coded(
-                Code::Malformed,
-                format!(
-                    "a handler resumes with a value of type {} but the operation's result type is {}",
-                    value_ty.render_name(),
-                    result.render_name()
-                ),
-            )
-            .at(value),
-        );
+        let mut reject = Reject::coded(
+            Code::Malformed,
+            format!(
+                "a handler resumes with a value of type {} but the operation's result type is {}",
+                value_ty.render_name(),
+                result.render_name()
+            ),
+        )
+        .at(value);
+        // A resume value that mismatches the op result by a NUMERIC/TEXT coercion — `(resume x s)` with
+        // `x:Int8` where the op returns Int64 → `(Int64.of x)` — has the same one-shot repair every other
+        // expected-vs-actual site does (arg/annotation/let-binder/ctor-payload). Offer it here too.
+        if let Some(fix) = numeric_text_coercion_fix(db, &result, &value_ty, value) {
+            reject = reject.with_fix(fix);
+        }
+        out.push(reject);
     }
 }
 
@@ -3957,10 +4045,26 @@ fn map_duplicate_const_key(db: &mut Db, entries: &[(StructId, StructId)]) -> Opt
         if let Some(token) = literal_key_token(db, key)
             && !seen.insert(token)
         {
-            return Some(Reject::coded(
+            // The mechanical repair: DELETE the redundant `(key value)` entry — the entry is `key`'s
+            // enclosing list (`parent_of(key)`). An earlier entry already binds this key; a map holds each
+            // key once. Anchor at the entry so `cdz fix` edits it. Heuristic: WHICH duplicate to drop (and
+            // whether the author meant a different key) is a guess, but removing THIS one resolves the
+            // ambiguity. (Falls back to an unanchored reject if the entry structure is unexpected.)
+            let mut reject = Reject::coded(
                 Code::Malformed,
                 "a map contains each key at most once (a duplicate literal key)",
-            ));
+            );
+            if let Some(entry) = db.parent_of(key)
+                && matches!(db.ast.get(entry), crate::ast::Struct::List(_))
+            {
+                reject = reject
+                    .at(entry)
+                    .with_fix(crate::diag::Fix::delete_heuristic(
+                        entry,
+                        "remove the duplicate map entry",
+                    ));
+            }
+            return Some(reject);
         }
     }
     None
@@ -5336,7 +5440,19 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // widest fixed integer — the honest current story (the numeric model reserves wider values
                 // to a big-integer layer not yet constructible), so the author knows the value simply has
                 // no representable fixed type rather than expecting a `--from`-style flag.
+                // A bare literal overflowing the signed-Int64 default that STILL FITS UNSIGNED 64 (`2^63 ..
+                // 2^64-1`, e.g. `18446744073709551615`) has a concrete fixed type — `UInt64` — it just is
+                // not the default a bare literal takes. The mechanical repair: ANNOTATE it `(: <lit>
+                // UInt64)` (the annotation grounds the literal to UInt64, whose range holds it). Only the
+                // BARE case (`context.is_none()`) and only when the value fits unsigned 64 — a value past
+                // 2^64-1 has NO fixed type (BigInt is not literal-spellable), so no fix. When a fix applies,
+                // the message says UInt64 holds it rather than "Int64 is the widest".
+                let fits_u64 = context.is_none() && v.fits_width(false, 64);
                 let msg = match int_width_range(signed, width) {
+                    Some(range) if fits_u64 => format!(
+                        "integer literal is out of range for {ty_name} (the valid range is {range}) — \
+                         it fits `UInt64`; annotate it `(: … UInt64)`"
+                    ),
                     Some(range) if context.is_none() => format!(
                         "integer literal is out of range for {ty_name} (the valid range is {range}; \
                          Int64 is the widest fixed-size integer)"
@@ -5346,7 +5462,16 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     ),
                     None => format!("integer literal is out of range for {ty_name}"),
                 };
-                out.push(Reject::coded(Code::Malformed, msg));
+                let mut reject = Reject::coded(Code::Malformed, msg);
+                if fits_u64 {
+                    reject = reject.with_fix(Fix::wrap_heuristic(
+                        id,
+                        "(: ",
+                        " UInt64)",
+                        "annotate the literal `UInt64` (its range holds this value)",
+                    ));
+                }
+                out.push(reject);
             }
         }
         Resolved::Prim(_)

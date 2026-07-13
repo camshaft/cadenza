@@ -1,0 +1,43 @@
+# cdz-smith — a coverage-friendly fuzzer for the reference compiler (`rcdzc`).
+#
+# It GENERATES Cadenza programs (as canonical s-expr text), feeds each through the real
+# `rcdzc` compile path IN-PROCESS, and treats a PANIC (an `.unwrap()`/`.expect(`/`unreachable!`
+# firing — a compiler bug, never a user error, since the compiler reports every "no" as DATA:
+# a `Diagnostic`/decline) or a TIMEOUT as a finding. Findings are shrunk, deduplicated by crash
+# SITE, and dropped into `spec/semantics/failures/` as a runnable `.sexp` reproducer + a `.md`
+# triage note — the queue an existing monitoring loop already watches and fixes.
+#
+# The design mirrors the compiler's own "errors are data" contract: a DECLINE or a coded
+# rejection is EXPECTED output, not a bug; only an unwinding panic or a runaway is filed. The
+# generator is byte-cursor-driven (a `&[u8]` → program map) so the same core is reachable three
+# ways: a seeded PRNG loop (the continuous driver), a `bolero` property test (shrinking +
+# `cargo test` integration + optional coverage-guided libFuzzer), and a one-shot subprocess
+# worker the driver spawns for hang/hard-crash isolation.
+[package]
+name = "cdz-smith"
+version = "0.0.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "cdz-smith"
+path = "src/bin/cdz-smith.rs"
+
+[dependencies]
+# The compiler under test, linked as a library. `compile_component` already runs the compile on a
+# 64 MB guard-stack worker thread (so deep-but-finite recursion hits the semantic DESCENT_DEPTH_LIMIT
+# and declines cleanly instead of overflowing) and RE-RAISES a worker-thread panic on the caller via
+# `resume_unwind` — so a `catch_unwind` around it observes every panic. That IS our crash oracle.
+rcdzc = { path = "../rcdzc" }
+
+# The front-end: parses generated s-expr text to the two-arena AST, then `codec::encode` produces the
+# binary-AST bytes `rcdzc::compile_component` consumes. This is the exact bridge rcdzc's own testkit
+# uses (`sexpr::read` → `codec::encode` → `compile_component`).
+cadenza-syntax = { path = "../cadenza-syntax" }
+
+[dev-dependencies]
+# Same version the value-heap runtime already fuzzes with. `#[derive(TypeGenerator)]` +
+# `bolero::check!()` give shrinking and (under `cargo bolero`) coverage-guided engines for free.
+bolero = "0.13.4"

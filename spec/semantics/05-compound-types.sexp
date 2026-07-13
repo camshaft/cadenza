@@ -1011,6 +1011,20 @@
             (def (main) (build Map.empty 3)) (export main)))
   (output (: (map (1 1) (2 2) (3 3)) (Map Int64 Int64))))
 
+(case "a runtime list of lists escapes with its nested element type"
+  (doc    "A runtime-built `(List (List Int64))` — a list whose ELEMENTS are themselves lists — crosses
+           the host boundary. The value-encode walker already recurses over the nested-list element
+           VALUES; the compiler's shape-descriptor `Framed` frame carries a RECURSIVE type node, so the
+           element type is rendered fully nested: the value form is `(: (list (list …) …) (List (List
+           Int64)))` — the inner `(List Int64)` observable, not flattened to a bare `List`. `build i n`
+           pushes the singleton `(list i)` for i in 0..n → `[[0] [1] [2]]`. Pins that nesting the element
+           type through the frame is not lost at the boundary.")
+  (input  (do
+            (def (build i n out)
+              (if (< i n) (build (+ i 1) n (List.push out (list i))) out))
+            (def (main) (build 0 3 (list))) (export main)))
+  (output (: (list (list 0) (list 1) (list 2)) (List (List Int64)))))
+
 (case "two lists are concatenated into one flat list"
   (doc    "`(List.concat (list 1 2) (list 3 4))` produces `(list 1 2 3 4)` — the elements of the first
            list in order followed by those of the second (collections-and-text.md §A List Is Grown By
@@ -1924,6 +1938,22 @@
             (def (main) (build 3)) (export main)))
   (call   main)
   (output (: (Cons 3 (Cons 2 (Cons 1 (Nil unit)))) L)))
+
+(case "a multi-payload variant whose spread element is itself a compound escapes correctly"
+  (doc    "The flattening `Spread` recurses into each element's own shape, so a multi-payload variant one
+           of whose payloads is a COMPOUND renders that element by its own value form UNDER the flattened
+           variant. `(P Int64 (Option Int64))` escapes `(P 5 (Some 5))` — the second payload keeps its
+           `(Some …)` sum form while the two payloads are spread flat under `P` (not `(P (tuple 5 (Some
+           5)))`). Pins that spread-flattening composes with a nested sum/tuple/record element (the element
+           is walked by its shape; only the variant-level tuple boxing is elided), distinct from the
+           scalar-only multi-payload case above.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (P Int64 (Option Int64)) (E))
+            (def (mk (: b Int64)) (if (> b 0) (W.P b (Some b)) (W.E)))
+            (def (main) (mk 5)) (export main)))
+  (call   main)
+  (output (: (P 5 (Some 5)) W)))
 
 ; The case above dispatches a nested Sum by matching the outer variant then a SEPARATE inner match on
 ; the bound payload. A nested pattern deconstructs both tags in ONE arm — `(Ok (Ok n))` matches an Ok
@@ -3075,6 +3105,22 @@
               ((guard (Some x) (> x 0)) x)
               ((None) 0)))
   (error    CDZ0210))
+
+(case "a match pattern naming a non-existent variant is a coded rejection"
+  (doc    "A match arm whose constructor pattern names a variant the scrutinee's sum does NOT declare —
+           `(V.Q)` on `(type V (A Int64) (B))`, where `V` has no variant `Q` — is a rejection that NAMES
+           the offending variant, CDZ0201, the SAME code the value position `(V.Q)` gets (a sum record's
+           variants ARE its fields, so `Q` is `record has no field \`Q\``). This is distinct from a
+           variant of a DIFFERENT sum used on this scrutinee (`Some` on a `V` — CDZ0203, a real variant of
+           the wrong type) and from a non-exhaustive match (CDZ0210, every arm a valid variant but a
+           variant left uncovered): here the pattern head resolves to NO variant at all. A generation that
+           DECLINED such a pattern uncoded (a to-do) rather than rejecting it silently accepted a mistyped
+           variant name; the pattern position must match the value position's coded diagnostic.")
+  (input    (do (type V (A Int64) (B))
+                (def (f v) (match v ((V.A n) n) ((V.Q) 0)))
+                (def (main) (f (V.B)))
+                (export main)))
+  (error    CDZ0201))
 
 ; --- A redundant match arm — the DUAL of non-exhaustiveness -----------------------------------
 ; core-semantics.md #Matching Is Exhaustive Or Rejected has a dual: where a NON-exhaustive match leaves a

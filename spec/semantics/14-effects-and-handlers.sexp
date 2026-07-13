@@ -368,6 +368,22 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip))) (+ x x)))) (export main)))
   (output (: 21 Int64)))
 
+(case "a handler arm that resumes NON-tail folds a perform in an if branch by handler distribution"
+  (doc    "A perform in an `if` BRANCH (a CONDITIONALLY-run position) folds when the CONDITION is pure, by
+           HANDLER DISTRIBUTION — a commuting conversion: `(handle E s arms (if c t e))` is equivalent to
+           `(if c (handle E s arms t) (handle E s arms e))`. The condition runs exactly once (it is pure, so
+           it advances no handler state), and each branch becomes a smaller handle body the pure one-hole
+           fold already serves — only the taken branch runs, seeing the seed state. Here `(if (< 3 5) (+ 1
+           (Amb.flip)) 0)` distributes: the true branch `(handle … (+ 1 (Amb.flip)))` has `C = (+ 1 [])`, so
+           `(resume 10 s)` = `C[10]` = 11 and the arm `(+ 1 (resume 10 s))` = `(+ 1 11)` = 12; the false
+           branch is a pure body. `(< 3 5)` is true → 12. A perform in the CONDITION itself (not a pure
+           condition) still declines — distributing it would need the frame machinery.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (+ 1 (Amb.flip)) 0))) (export main)))
+  (output (: 12 Int64)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the
@@ -1110,3 +1126,21 @@
             (def (main) (+ 20 22)) (export main)))
   (output (: 42 Int64))
   (host-calls))
+
+(case "two effects declared with the same name are distinct, not one merged effect"
+  (doc    "Two `(effect Log …)` declarations name the SAME bare `Log` but declare DIFFERENT operation
+           sets — the first only `emit`, the second only `record`. They are two DISTINCT effects
+           (capabilities-and-effects.md #An Effect's Operations Are A Closed Set: an effect's identity is
+           its declaration, not its name), NOT one effect merging both operation sets. A bare `Log`
+           reference resolves the first-declared, whose closed operation set is `{emit}`; so a handler arm
+           naming `record` — the SECOND Log's operation — names an operation the first Log does not
+           declare, rejected CDZ0403. Pins that a same-name second declaration never leaks its operations
+           into the first (were the two conflated into one effect declaring `{emit, record}`, the `record`
+           arm would be accepted). This is the effect twin of the duplicate-definition rule (11-modules):
+           a name resolves to one declaration, never a silent union across same-named declarations.")
+  (input  (do
+            (effect Log (op emit (-> Int64 Int64)))
+            (effect Log (op record (-> Int64 Int64)))
+            (def (main)
+              (handle Log 0 ((record (n) s (resume n s))) 0)) (export main)))
+  (error  CDZ0403))

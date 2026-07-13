@@ -102,25 +102,35 @@ impl std::fmt::Display for ConvertError {
 }
 impl std::error::Error for ConvertError {}
 
-/// Rewrite a trailing `at byte N` in an s-expr reader error message to `at LINE:COL`, using `src` to map
-/// the offset — so a multi-line s-expr parse error points at a place a user/editor can navigate to
-/// (`(module …\n  )))` → "at 4:3", not "at byte 40"). The reader bakes the byte offset into its
-/// `ReadError` string (it has no line:col at the recursive-descent site); the callers that HOLD the
-/// source (this module, `cdz`'s loader) map it here. A message with no `at byte N` tail (e.g.
+/// Rewrite an `at byte N` in a reader error message to `at LINE:COL`, using `src` to map the offset —
+/// so a multi-line parse error points at a place a user/editor can navigate to (`(module …\n  )))` →
+/// "at 4:3", not "at byte 40"). The reader bakes the byte offset into its error string (it has no
+/// line:col at the recursive-descent site); the callers that HOLD the source (this module, `cdz`'s
+/// loader) map it here. Handles a byte number that is NOT at the very end — the JSON reader writes
+/// `invalid literal at byte 6 (expected `null`)`, with text after the offset — by rewriting just the
+/// `at byte <digits>` run and keeping the trailing text. A message with no `at byte N` (e.g.
 /// "unterminated list", "unexpected end of input") is returned unchanged.
 pub fn locate_byte_in_message(msg: &str, src: &str) -> String {
     const MARKER: &str = " at byte ";
-    // The reader only ever appends ` at byte N` at the END, so the last marker is the one to rewrite.
+    // The LAST marker is the position one (an earlier "byte" would be prose); rewrite its digit run.
     let Some(marker_at) = msg.rfind(MARKER) else {
         return msg.to_string();
     };
-    let (prefix, tail) = msg.split_at(marker_at);
-    let num = &tail[MARKER.len()..];
-    let Ok(byte) = num.parse::<usize>() else {
-        return msg.to_string(); // not a bare trailing integer — leave untouched
+    let after = marker_at + MARKER.len();
+    // The digit run immediately after the marker — may be followed by trailing text (` (expected …)`).
+    let digits_end = after
+        + msg[after..]
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(msg.len() - after);
+    let Ok(byte) = msg[after..digits_end].parse::<usize>() else {
+        return msg.to_string(); // no integer after the marker — leave untouched
     };
     let (line, col) = crate::query::driver::line_col(src, byte);
-    format!("{prefix} at {line}:{col}")
+    format!(
+        "{} at {line}:{col}{}",
+        &msg[..marker_at],
+        &msg[digits_end..]
+    )
 }
 
 /// Read `input` (bytes) in `from` format into arenas.
@@ -266,6 +276,13 @@ mod tests {
         assert_eq!(
             locate_byte_in_message("weird at byte xyz", src),
             "weird at byte xyz"
+        );
+        // A byte offset NOT at the end — the JSON reader's `invalid literal at byte N (expected …)` —
+        // maps the offset and KEEPS the trailing text (byte 6 = line 1, col 7 in `{"a": nul}`).
+        let json_src = "{\"a\": nul}";
+        assert_eq!(
+            locate_byte_in_message("invalid literal at byte 6 (expected `null`)", json_src),
+            "invalid literal at 1:7 (expected `null`)"
         );
     }
 

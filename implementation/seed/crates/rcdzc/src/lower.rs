@@ -431,6 +431,30 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                                 format!("tuple index {index} is out of range"),
                             )),
                         }
+                    } else if let Core::Tuple { elems } = core_of(db, operand) {
+                        // The RESOLVED fold (`reduce_to_tuple_elems`) sees through a `(tuple …)` literal
+                        // but NOT an operand whose tuple is produced by a tuple OPERATION — `Tuple.split-at`
+                        // / `Tuple.pop`, which `lower_tuple_split_at`/`lower_tuple_pop` FOLD to a constant
+                        // `Core::Tuple` but which resolve as a `Prim` application, not a `Resolved::Tuple`.
+                        // Fold the projection through that constant tuple's CORE, exactly as the literal
+                        // path does: `(. (Tuple.split-at (tuple 10 20) 0) 1)` → element 1 = the suffix tuple
+                        // `(tuple 10 20)`, with NO heap build. This is what makes `Tuple.split-at` at the
+                        // k=0 / k=arity boundary — whose empty side is a `Unit` element — usable: the
+                        // constant fold reaches the same representation the byte-identical literal `(tuple
+                        // unit (tuple 10 20))` does, instead of a runtime `Core::Proj` whose `Unit` element
+                        // hits the not-yet-built value-heap path. Only fires when the resolved fold failed
+                        // AND the operand still lowered to a constant tuple (a runtime tuple's `core_of` is
+                        // not `Core::Tuple`, so it correctly stays a runtime `Core::Proj` below).
+                        match elems.get(index) {
+                            Some(&elem) => {
+                                trace!(target: "rcdzc::fold", node = id.0, index, "tuple projection folds through a constant-tuple operation result (no heap build)");
+                                core_of(db, elem)
+                            }
+                            None => Core::Poison(Reject::coded(
+                                Code::Malformed,
+                                format!("tuple index {index} is out of range"),
+                            )),
+                        }
                     } else {
                         trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, index, "tuple projection stays runtime (operand is a runtime tuple)");
                         Core::Proj { operand, index }
@@ -572,6 +596,29 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // Both operand orders (`a`&`!a` / `!a`&`a`) are handled by `bool_complement_pair`.
                 _ if bool_complement_pair(db, lhs, rhs) && is_trap_free(db, lhs) => {
                     Core::ConstBool(!is_and) // and → false ; or → true
+                }
+                // COMPLEMENTARY-COMPARISON LAW: `(or (< a b) (>= a b))` → true, `(and (< a b) (>= a b))` →
+                // false — two comparisons on the SAME operand PAIR whose operators are exact COMPLEMENTS
+                // (`< `↔`>=`, `<=`↔`>`) partition the total order, so their `or` is exhaustive (always true)
+                // and their `and` is exclusive (always false). A redundant range guard (`(or (< x c) (>= x
+                // c))`). DISCARDS both operands, so gated on `is_trap_free` for each (a comparison is
+                // trap-free iff its operands are; a `(< (/ a b) 5)` with a trapping `/` keeps the runtime
+                // form). `complementary_comparisons` checks same-pair + complement-op.
+                _ if complementary_comparisons(db, lhs, rhs)
+                    && is_trap_free(db, lhs)
+                    && is_trap_free(db, rhs) =>
+                {
+                    Core::ConstBool(!is_and) // or → true ; and → false
+                }
+                // SUBSUMPTION: two comparisons on the SAME runtime operand `v` against constants with the
+                // SAME operator (both `<`, both `<=`, both `>`, or both `>=`) — one implies the other, so
+                // the redundant one drops. `and` keeps the STRONGER (tighter bound), `or` the WEAKER
+                // (looser): `(and (< v 5) (< v 10))` → `(< v 5)`, `(or (< v 5) (< v 10))` → `(< v 10)`. The
+                // kept comparison still evaluates `v` (its trap, if any, is preserved) — no operand is
+                // dropped, only the redundant second bound. `subsuming_comparison` returns the occurrence to
+                // keep (`lhs` or `rhs`).
+                _ if let Some(keep) = subsuming_comparison(db, lhs, rhs, is_and) => {
+                    core_of(db, keep)
                 }
                 _ => Core::And { lhs, rhs, is_and },
             },
@@ -2963,6 +3010,19 @@ fn pattern_constraints(
         };
     }
     let Some(disc) = crate::eval::variant_disc_of(db, head) else {
+        // The head names no variant. A `(. Sum Q)` head where `Q` is not a variant of the sum
+        // (`((V.Q) …)` on a `(type V (A …) (B))`) lowers as a MEMBER ACCESS that already carries the
+        // precise coded fault — `CDZ0201: record has no field \`Q\`` (a sum record's variants ARE its
+        // fields), the SAME code the value position `(V.Q)` gets. Propagate that coded poison rather than
+        // the generic UNCODED "not a variant constructor" decline, so a mistyped variant in a match
+        // pattern NAMES the offending variant and is graded a rejection (not a to-do). (The infer-side
+        // `no_field_reject` adds a "did you mean?" suggestion at the value position; this lowering path
+        // emits the bare coded message — the code + named variant are the load-bearing improvement.)
+        if let Core::Poison(reject) = core_of(db, head)
+            && reject.code.is_some()
+        {
+            return Err(reject);
+        }
         return Err(Reject::decline(
             "a sum match pattern head is not a variant constructor",
         ));
@@ -4636,65 +4696,99 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
             let root = builder.shape_of(db, ty)?;
             Some(builder.encode(root))
         }
-        // A LIST result: build the List shape, then wrap in a PARAMETRIC `Framed("List", [<elem>], …)`
-        // frame so the value form renders `(: (list …) (List <elem>))` — the element type OBSERVABLE,
-        // matching the constant-List value form. The element must be a scalar type-NAME (`Int64`/`Bool`/
-        // `String`/a nominal) so it splices as one type atom; a NESTED-element list (`(List (List Int64))`)
-        // would need a compound type-arg node — a later refinement, decline for now.
-        crate::ty::Ty::List(elem) => {
-            if !is_scalar_type_arg(elem) {
-                return None; // nested/compound-element list type node not yet built
-            }
+        // A LIST/SET/MAP result: build the value shape, then wrap in a PARAMETRIC `Framed(<type-node>, …)`
+        // frame so the value form renders `(: (list …) (List <elem>))` etc. — the element/key/value types
+        // OBSERVABLE, matching the constant-collection value form. The type node is built RECURSIVELY from
+        // the full type (`type_node_of`), so a nested element type crosses too: `(List (List Int64))`,
+        // `(Map Int64 (Set Int64))`, `(Set (Tuple Int64 Int64))`. The inner VALUE shape (`shape_of`) already
+        // recurses over nested collections, so the walker renders them; only the type node needed lifting.
+        crate::ty::Ty::List(_) | crate::ty::Ty::Set(_) | crate::ty::Ty::Map(_, _) => {
+            let type_node = type_node_of(ty)?;
             let inner = builder.shape_of(db, ty)?;
-            let framed = builder.push(ShapeNode::Framed(
-                "List".to_string(),
-                vec![elem.render_name()],
-                inner,
-            ));
-            Some(builder.encode(framed))
-        }
-        // A SET result: `(: ((. Set of) (list …)) (Set <elem>))`. Parametric `Framed("Set", [<elem>], …)`;
-        // the element must be a scalar type NAME (it splices as one type-arg atom).
-        crate::ty::Ty::Set(elem) => {
-            if !is_scalar_type_arg(elem) {
-                return None;
-            }
-            let inner = builder.shape_of(db, ty)?;
-            let framed = builder.push(ShapeNode::Framed(
-                "Set".to_string(),
-                vec![elem.render_name()],
-                inner,
-            ));
-            Some(builder.encode(framed))
-        }
-        // A MAP result: `(: (map (k v) …) (Map <k> <v>))`. Parametric `Framed("Map", [<k>, <v>], …)`; BOTH
-        // the key AND value must be scalar type NAMES (each splices as one type-arg atom — a compound
-        // value or key type-node is a later refinement, decline).
-        crate::ty::Ty::Map(k, v) => {
-            if !is_scalar_type_arg(k) || !is_scalar_type_arg(v) {
-                return None;
-            }
-            let inner = builder.shape_of(db, ty)?;
-            let framed = builder.push(ShapeNode::Framed(
-                "Map".to_string(),
-                vec![k.render_name(), v.render_name()],
-                inner,
-            ));
+            let framed = builder.push(ShapeNode::Framed(type_node, inner));
             Some(builder.encode(framed))
         }
         _ => None,
     }
 }
 
-/// Whether a type is a SCALAR whose name splices as a single bare type-arg atom in a parametric value-form
-/// type node (`(List <t>)`/`(Set <t>)`/`(Map <k> <v>)`). Int/Bool/String/Unit qualify; a compound
-/// (List/Map/Set/Tuple/Sum) `render_name` is a parenthesized NODE, not a bare atom — those need a compound
-/// type-arg node (a later refinement), so they decline here.
-fn is_scalar_type_arg(ty: &crate::ty::Ty) -> bool {
-    matches!(
-        ty,
-        crate::ty::Ty::Int(_) | crate::ty::Ty::Bool | crate::ty::Ty::String | crate::ty::Ty::Unit
-    )
+/// The RECURSIVE type node for a `Framed` frame's type position — mirrors `Ty::render_name` structurally
+/// so the runtime's `render_type_node` reproduces the same written type. A leaf (a scalar/nominal/nullary
+/// sum) is a bare-name node with no children; a parametric type (`List`/`Set`/`Map`/`Tuple`/`Record`/a
+/// generic sum) is a head plus child type nodes, nested to any depth. `None` for a type that never appears
+/// as an escaping collection element (Fn/Qty/Var/Any/Type) — the escape declines rather than misrender it.
+fn type_node_of(ty: &crate::ty::Ty) -> Option<TypeNode> {
+    use crate::ty::Ty;
+    let leaf = |s: String| TypeNode {
+        head: s,
+        children: vec![],
+    };
+    Some(match ty {
+        Ty::Int(_)
+        | Ty::Bool
+        | Ty::Unit
+        | Ty::String
+        | Ty::Char
+        | Ty::Symbol
+        | Ty::BigInt
+        | Ty::Float(_)
+        | Ty::Bytes => leaf(ty.render_name()),
+        Ty::List(e) => TypeNode {
+            head: "List".to_string(),
+            children: vec![type_node_of(e)?],
+        },
+        Ty::Set(e) => TypeNode {
+            head: "Set".to_string(),
+            children: vec![type_node_of(e)?],
+        },
+        Ty::Map(k, v) => TypeNode {
+            head: "Map".to_string(),
+            children: vec![type_node_of(k)?, type_node_of(v)?],
+        },
+        Ty::Tuple(elems) => {
+            let mut children = Vec::with_capacity(elems.len());
+            for e in elems.iter() {
+                children.push(type_node_of(e)?);
+            }
+            TypeNode {
+                head: "Tuple".to_string(),
+                children,
+            }
+        }
+        // A record renders as `(record (name Type) …)`: each field is itself a node `(name <type>)` — head
+        // = the field name, one child = the field's type node. `render_type_node` reproduces `(name Type)`.
+        Ty::Record(fields) => {
+            let mut children = Vec::with_capacity(fields.len());
+            for (k, t) in fields.iter() {
+                children.push(TypeNode {
+                    head: k.name.clone(),
+                    children: vec![type_node_of(t)?],
+                });
+            }
+            TypeNode {
+                head: "record".to_string(),
+                children,
+            }
+        }
+        // A monomorphic sum renders as its bare name; a generic sum as `(Name arg…)`.
+        Ty::Sum { name, args, .. } => {
+            if args.is_empty() {
+                leaf(name.clone())
+            } else {
+                let mut children = Vec::with_capacity(args.len());
+                for a in args {
+                    children.push(type_node_of(a)?);
+                }
+                TypeNode {
+                    head: name.clone(),
+                    children,
+                }
+            }
+        }
+        Ty::Nominal { name, .. } => leaf(name.clone()),
+        // Qty/Fn/Var/Any/Type: not an escaping collection element/arg — decline rather than misrender.
+        _ => return None,
+    })
 }
 
 /// A shape-table entry (indices reference other entries — recursion closes via `Ref`).
@@ -4714,16 +4808,24 @@ enum ShapeNode {
     Ref(u32),
     Set(u32),
     Map(u32, u32),
-    /// A `(: <value> (<head> <arg>…))` frame — a PARAMETRIC type node (e.g. `(List Int64)`), each `arg` a
-    /// bare type name. The runtime `value-encode` decodes this as descriptor tag 15 and renders the
-    /// parametric type node, so a runtime List result crosses as `(: (list …) (List Int64))`.
-    Framed(String, Vec<String>, u32),
+    /// A `(: <value> <type-node>)` frame — an arbitrary (possibly NESTED) type node. The runtime
+    /// `value-encode` decodes this as descriptor tag 15 and renders the type node RECURSIVELY, so a runtime
+    /// collection crosses as `(: (list …) (List Int64))` — or, with nesting, `(: … (List (List Int64)))`.
+    Framed(TypeNode, u32),
     /// A MULTI-payload variant's payload — a tuple handle at run time whose elements render FLATTENED
     /// under the variant head (`(Cons h t)`, NOT `(Cons (tuple h t))`). The runtime (descriptor tag 16)
     /// reads it exactly like a `Tuple` (each element via `arr-get`) but renders the elements DIRECTLY as
     /// the variant's children rather than wrapping them in a `tuple` form. Only a `Sum` variant references
     /// a `Spread` (it is the multi-payload variant payload); a genuine tuple VALUE stays a `Tuple`.
     Spread(Vec<u32>),
+}
+
+/// A compile-time-built TYPE node for a `Framed` frame's type position, written to the descriptor wire as
+/// `[ head ][ n_children ]( TypeNode )*n` and rebuilt+rendered by the runtime's `render_type_node`. A leaf
+/// (a scalar/nominal) has no children; `(List Int64)` = head `List`, one child `Int64`; nests arbitrarily.
+struct TypeNode {
+    head: String,
+    children: Vec<TypeNode>,
 }
 
 /// Builds the shape table, memoizing each `Ty::Sum` by its declaration occurrence so a recursive
@@ -4943,13 +5045,32 @@ impl ShapeTableBuilder {
                     leb(&mut d, *k as u64);
                     leb(&mut d, *v as u64);
                 }
-                ShapeNode::Framed(head, args, i) => {
-                    d.push(15); // matches the runtime `decode_shape` tag 15 = Framed (14 = Float32)
-                    name(&mut d, head);
-                    leb(&mut d, args.len() as u64);
-                    for a in args {
-                        name(&mut d, a);
+                ShapeNode::Framed(type_node, i) => {
+                    // recursive TypeNode wire: [ head ][ n_children ]( TypeNode )*n — the runtime's
+                    // `decode_type_node` mirrors this depth-first walk.
+                    fn write_type_node(out: &mut Vec<u8>, tn: &TypeNode) {
+                        fn leb(out: &mut Vec<u8>, mut v: u64) {
+                            loop {
+                                let mut b = (v & 0x7f) as u8;
+                                v >>= 7;
+                                if v != 0 {
+                                    b |= 0x80;
+                                }
+                                out.push(b);
+                                if v == 0 {
+                                    break;
+                                }
+                            }
+                        }
+                        leb(out, tn.head.len() as u64);
+                        out.extend_from_slice(tn.head.as_bytes());
+                        leb(out, tn.children.len() as u64);
+                        for c in &tn.children {
+                            write_type_node(out, c);
+                        }
                     }
+                    d.push(15); // matches the runtime `decode_shape` tag 15 = Framed (14 = Float32)
+                    write_type_node(&mut d, type_node);
                     leb(&mut d, *i as u64);
                 }
                 ShapeNode::Spread(idxs) => {
@@ -6814,6 +6935,105 @@ fn bool_complement_pair(db: &mut Db, lhs: StructId, rhs: StructId) -> bool {
         matches!(core_of(db, maybe_not), Core::Not { operand } if core_equiv(db, operand, other))
     };
     is_not_of(db, rhs, lhs) || is_not_of(db, lhs, rhs)
+}
+
+/// Whether `lhs`/`rhs` are two comparisons on the SAME operand pair whose operators are exact COMPLEMENTS
+/// over the total order — `< `/`>=` or `<=`/`>` — so together they partition every value: their `or` is
+/// always TRUE (exhaustive) and their `and` always FALSE (disjoint). `(or (< a b) (>= a b))` → true,
+/// `(and (< a b) (>= a b))` → false. Requires BOTH to be `Core::Compare` with `core_equiv` operand pairs
+/// (same order — `< a b` complements `>= a b`, NOT `>= b a`) and complementary ops. `=`/`Compare` are not
+/// ordering complements and never match. Drives the complementary-comparison fold (caller trap-guards).
+fn complementary_comparisons(db: &mut Db, lhs: StructId, rhs: StructId) -> bool {
+    let Core::Compare {
+        op: lop,
+        lhs: la,
+        rhs: lb,
+    } = core_of(db, lhs)
+    else {
+        return false;
+    };
+    let Core::Compare {
+        op: rop,
+        lhs: ra,
+        rhs: rb,
+    } = core_of(db, rhs)
+    else {
+        return false;
+    };
+    // Exact ordering complements: `<` ↔ `>=`, `<=` ↔ `>` (either assignment to lhs/rhs).
+    let complement = matches!(
+        (lop, rop),
+        (Prim::Lt, Prim::Ge) | (Prim::Ge, Prim::Lt) | (Prim::Le, Prim::Gt) | (Prim::Gt, Prim::Le)
+    );
+    // Same operand pair in the SAME order (the operators already encode the direction).
+    complement && core_equiv(db, la, ra) && core_equiv(db, lb, rb)
+}
+
+/// SUBSUMPTION between two comparisons on the SAME runtime operand `v` against CONSTANTS with the SAME
+/// operator — one implies the other, so `(and …)`/`(or …)` keeps just one. Returns the occurrence to KEEP
+/// (`lhs` or `rhs`), or `None` when the shape does not match. `is_and` selects which survives: `and` keeps
+/// the STRONGER (tighter) bound, `or` the WEAKER (looser). Restricted to IDENTICAL operators so no
+/// off-by-one bound arithmetic is needed — `< c` is stronger than `< d` iff `c <= d` (smaller upper bound);
+/// `> c` is stronger iff `c >= d` (larger lower bound); `<=`/`>=` compare the same way. The runtime operand
+/// `v` must be `core_equiv` on both sides and on the SAME side (both `(cmp v const)` or both `(cmp const v)`
+/// — a mirrored pair would flip the direction). The kept comparison still evaluates `v`, so no trap drops.
+fn subsuming_comparison(
+    db: &mut Db,
+    lhs: StructId,
+    rhs: StructId,
+    is_and: bool,
+) -> Option<StructId> {
+    let Core::Compare {
+        op: lop,
+        lhs: la,
+        rhs: lb,
+    } = core_of(db, lhs)
+    else {
+        return None;
+    };
+    let Core::Compare {
+        op: rop,
+        lhs: ra,
+        rhs: rb,
+    } = core_of(db, rhs)
+    else {
+        return None;
+    };
+    if lop != rop {
+        return None; // identical operator only (avoids `<`/`<=` bound normalization edge cases)
+    }
+    let as_int = |db: &mut Db, id: StructId| match core_of(db, id) {
+        Core::ConstInt(v) => v.to_i64(),
+        _ => None,
+    };
+    // Identify `(v, c)` for each side with the runtime operand `v` on the SAME side (both left, both right).
+    // `v_left` = the compare is `(cmp v c)`; else `(cmp c v)` — a mixed arrangement flips the effective
+    // direction, so require the same arrangement on both.
+    let (lv, lc, l_v_left) = match (as_int(db, lb), as_int(db, la)) {
+        (Some(c), _) => (la, c, true),  // `(cmp v c)`
+        (_, Some(c)) => (lb, c, false), // `(cmp c v)`
+        _ => return None,
+    };
+    let (rv, rc, r_v_left) = match (as_int(db, rb), as_int(db, ra)) {
+        (Some(c), _) => (ra, c, true),
+        (_, Some(c)) => (rb, c, false),
+        _ => return None,
+    };
+    if l_v_left != r_v_left || !core_equiv(db, lv, rv) {
+        return None; // same operand on the same side
+    }
+    // With `v` on the left: `< `/`<=` are UPPER bounds (stronger = smaller c), `>`/`>=` LOWER bounds
+    // (stronger = larger c). With `v` on the RIGHT (`c < v` ≡ `v > c`), the sense flips. Compute whether
+    // the LHS comparison is the stronger (tighter) one.
+    let upper_bound_on_v = matches!(
+        (lop, l_v_left),
+        (Prim::Lt | Prim::Le, true) | (Prim::Gt | Prim::Ge, false)
+    );
+    // For an upper bound on `v`, smaller constant ⇒ stronger; for a lower bound, larger ⇒ stronger.
+    let lhs_stronger = if upper_bound_on_v { lc <= rc } else { lc >= rc };
+    // `and` keeps the stronger; `or` keeps the weaker.
+    let keep_lhs = if is_and { lhs_stronger } else { !lhs_stronger };
+    Some(if keep_lhs { lhs } else { rhs })
 }
 
 /// The NESTED-BITWISE COLLAPSE for an outer TOTAL, ASSOCIATIVE bitwise op (`&`/`|`/`^`) whose operands

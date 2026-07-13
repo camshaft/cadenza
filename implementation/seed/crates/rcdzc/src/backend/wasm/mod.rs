@@ -268,9 +268,10 @@ pub fn emit(
             // walker a recursive sum uses): the encode body bakes the compiler's shape descriptor as a heap
             // Bytes, calls `value-encode(rep, desc)` to render the value form (`(: (list …) (List <e>))` /
             // `(: (map (k v) …) (Map <k> <v>))` / `(: ((. Set of) (list …)) (Set <e>))`, entries in
-            // canonical key order), and copies it out. `sum_shape_descriptor`'s List/Map/Set arms build a
-            // parametric `Framed(<head>, [<type-args>], …)` frame so the element/key/value types are
-            // observable (scalar element/key/value only — a compound type-arg node is a later refinement).
+            // canonical key order), and copies it out. `sum_shape_descriptor`'s List/Map/Set arm builds a
+            // parametric `Framed(<type-node>, …)` frame so the element/key/value types are observable — the
+            // type node is RECURSIVE, so a nested element crosses too (`(List (List Int64))`, `(Map K (Set
+            // V))`), and the inner value shape already recurses to render the nested collection values.
             return emit_recursive_sum_resource(db, layout, e.def, &desc, spans);
         } else if let Some(tpl) = crate::lower::runtime_value_form_template(&result) {
             // A RUNTIME compound (not constant-foldable — a recursive return, a call whose result is
@@ -2486,6 +2487,7 @@ fn emit_roundtrip_resource(
         ret_vt: crate::backend::wasm::lir::ValType,
         abi_params: Vec<envelope::ConsumeParamAbi>,
         result_byte: u8,
+        ret_is_bytes: bool,
     }
     let mut make_specs: Vec<MakeSpec> = Vec::new();
     for p in &producers {
@@ -2544,15 +2546,23 @@ fn emit_roundtrip_resource(
         }
         let ret_vt = valtype_of(&c.result)
             .ok_or_else(|| Reject::decline("consumer result has no machine valtype"))?;
-        // The consumer's OWN result boundary byte — not the shared closure result. A consumer may return a
-        // different type than the closure it applies (e.g. `(> (g x) 0)` → Bool), so its functype result is
-        // its own `c.result`, which must be a scalar boundary type.
-        let consumer_result_byte = closure_boundary_byte(&c.result).ok_or_else(|| {
-            Reject::decline(format!(
-                "a consumer result of type {} has no scalar host-boundary representation",
-                c.result.render_name()
-            ))
-        })?;
+        // The consumer's OWN result boundary shape — not the shared closure result. A consumer may return a
+        // different type than the closure it applies (e.g. `(> (g x) 0)` → Bool). A byte-rope (`Bytes`/
+        // `String`) result crosses as `list<u8>` (the compound consumer); a scalar takes its inline byte.
+        let ret_is_bytes = matches!(
+            c.result.strip_nominal(),
+            crate::ty::Ty::Bytes | crate::ty::Ty::String
+        );
+        let consumer_result_byte = if ret_is_bytes {
+            0 // unused by the byte-rope path; the consumer returns list<u8>
+        } else {
+            closure_boundary_byte(&c.result).ok_or_else(|| {
+                Reject::decline(format!(
+                    "a consumer result of type {} has no scalar host-boundary representation",
+                    c.result.render_name()
+                ))
+            })?
+        };
         consume_specs.push(ConsumeSpec {
             def: c.def,
             name: c.name.clone(),
@@ -2560,6 +2570,7 @@ fn emit_roundtrip_resource(
             ret_vt,
             abi_params,
             result_byte: consumer_result_byte,
+            ret_is_bytes,
         });
     }
     // Per PLAIN export: source name (core + kebab boundary name), param bytes, scalar result byte.
@@ -2607,10 +2618,16 @@ fn emit_roundtrip_resource(
     for &body in &lifted_bodies {
         select::collect_used_ops(db, body, &mut lifted_ops);
     }
+    let any_bytes = consume_specs.iter().any(|c| c.ret_is_bytes);
     let (imports, mut funcs, layout) = resource_escape_build(db, layout, |used| {
         used.insert("arr-get");
         used.insert("get-int");
         used.insert("drop");
+        if any_bytes {
+            // A byte-rope consumer copies its returned Bytes/String out via a `bytes-len`/`bytes-get` loop.
+            used.insert("bytes-len");
+            used.insert("bytes-get");
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -2653,6 +2670,7 @@ fn emit_roundtrip_resource(
                 })?,
                 params: c.params.clone(),
                 ret_vt: c.ret_vt,
+                ret_is_bytes: c.ret_is_bytes,
             })
         })
         .collect::<Result<_, Reject>>()?;
@@ -2693,6 +2711,7 @@ fn emit_roundtrip_resource(
             name: c.name.clone(),
             params: c.abi_params.clone(),
             result_byte: c.result_byte,
+            ret_is_bytes: c.ret_is_bytes,
         })
         .collect();
     let abi_plain: Vec<envelope::PlainExportAbi> = plain_specs
@@ -2819,6 +2838,7 @@ fn emit_distinct_sig_roundtrip_resource(
         abi_params: Vec<envelope::ConsumeParamAbi>,
         ret_vt: crate::backend::wasm::lir::ValType,
         result_byte: u8,
+        ret_is_bytes: bool,
     }
     struct PlainS {
         def: usize,
@@ -2896,8 +2916,18 @@ fn emit_distinct_sig_roundtrip_resource(
             }
             let ret_vt = valtype_of(&e.result)
                 .ok_or_else(|| Reject::decline("consumer result has no valtype"))?;
-            let result_byte = closure_boundary_byte(&e.result)
-                .ok_or_else(|| closure_boundary_reject("result", &e.result))?;
+            // A byte-rope (`Bytes`/`String`) consumer result crosses as `list<u8>` (the compound consumer);
+            // a scalar takes its inline byte.
+            let ret_is_bytes = matches!(
+                e.result.strip_nominal(),
+                crate::ty::Ty::Bytes | crate::ty::Ty::String
+            );
+            let result_byte = if ret_is_bytes {
+                0 // unused by the byte-rope path; the consumer returns list<u8>
+            } else {
+                closure_boundary_byte(&e.result)
+                    .ok_or_else(|| closure_boundary_reject("result", &e.result))?
+            };
             cons.push(ConsS {
                 def: e.def,
                 group,
@@ -2906,6 +2936,7 @@ fn emit_distinct_sig_roundtrip_resource(
                 abi_params,
                 ret_vt,
                 result_byte,
+                ret_is_bytes,
             });
         }
     }
@@ -2934,10 +2965,16 @@ fn emit_distinct_sig_roundtrip_resource(
         select::collect_used_ops(db, body, &mut lifted_ops);
     }
     let intrinsics = (2 * sigs.len()) as u32;
+    let any_bytes = cons.iter().any(|c| c.ret_is_bytes);
     let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
         used.insert("arr-get");
         used.insert("get-int");
         used.insert("drop");
+        if any_bytes {
+            // A byte-rope consumer copies its returned Bytes/String out via a `bytes-len`/`bytes-get` loop.
+            used.insert("bytes-len");
+            used.insert("bytes-get");
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -2987,11 +3024,13 @@ fn emit_distinct_sig_roundtrip_resource(
                 consume_abs,
                 params: c.params.clone(),
                 ret_vt: c.ret_vt,
+                ret_is_bytes: c.ret_is_bytes,
             });
             abi_cons.push(envelope::ClosureConsumeAbi {
                 name: c.name.clone(),
                 params: c.abi_params.clone(),
                 result_byte: c.result_byte,
+                ret_is_bytes: c.ret_is_bytes,
             });
         }
         ser_groups.push(serialize::RtSigGroup {
