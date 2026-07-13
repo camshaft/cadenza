@@ -92,6 +92,14 @@ pub enum Code {
     /// operations are a closed, statically-known set (like a sum's variants), so discharging an operation
     /// that does not exist is ill-formed.
     HandlerUndeclaredOp,
+    /// A handler does NOT bind every operation its effect declares — a non-exhaustive handler
+    /// (`capabilities-and-effects.md` §A Handler Discharges Its Effect). A `handle E` names ONE effect
+    /// and its arms ARE that effect's operations; because an effect's operations are a closed,
+    /// statically-known set (like a sum's variants), a handle must discharge the WHOLE set — the effect
+    /// analogue of match exhaustiveness. A handler missing an operation is ill-formed: it would leave an
+    /// operation of the effect it claims to discharge silently without a home. (Discharging a subset
+    /// across LAYERS is nested handles, each exhaustive for its own effect.)
+    HandlerNotExhaustive,
     /// A host delegation names an effect the delegated computation never reaches — latent authority
     /// (`capabilities-and-effects.md` §Host Delegation Is An Entrypoint's Prerogative). The manifest must
     /// be exactly the effects that escape, no more and no fewer, so a granted-but-unexercised capability
@@ -134,6 +142,7 @@ impl Code {
             Code::NonExhaustive => "CDZ0210",
             Code::EffectNoHome => "CDZ0401",
             Code::HandlerUndeclaredOp => "CDZ0403",
+            Code::HandlerNotExhaustive => "CDZ0405",
             Code::LatentAuthority => "CDZ0404",
             Code::IllFormedBinary => "CDZ0220",
             Code::DimensionMismatch => "CDZ0501",

@@ -12364,6 +12364,27 @@ mod stage1 {
     }
 
     #[test]
+    fn a_non_exhaustive_handler_is_cdz0405() {
+        // A `handle E` names ONE effect and its arms ARE that effect's operations; an effect's operations
+        // are a closed set, so a handler must discharge the WHOLE set (CDZ0405 —
+        // `capabilities-and-effects.md` §A Handler Discharges Its Effect, the effect analogue of match
+        // exhaustiveness). `Diag` declares `emit` + `collect`; a `handle Diag` binding only `emit` leaves
+        // `collect` undischarged — rejected. Written in the CANONICAL shape so the load-time desugar
+        // (effect + seed promoted, bare arm op) is exercised on the way to the check.
+        let src = "(do (effect Diag (op emit (-> Int64 Unit)) (op collect (-> Unit (List Int64)))) \
+                   (def (main) (handle Diag (list) ((emit (code) s (resume unit (List.push s code)))) \
+                                 (do (Diag.emit 1) 0))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a handler missing an operation must be rejected");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0405"),
+            "expected CDZ0405 (non-exhaustive handler), got: {}",
+            err.message
+        );
+    }
+
+    #[test]
     fn a_delegation_of_an_unreached_effect_is_cdz0404() {
         // E2a: a `host` delegation naming an effect the body never reaches is latent authority — CDZ0404
         // (`capabilities-and-effects.md` §Host Delegation Is An Entrypoint's Prerogative). `main`

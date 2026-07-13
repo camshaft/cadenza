@@ -553,6 +553,9 @@ impl<'a> Parser<'a> {
                 Some(Keyword::Module) => self.module_expr(),
                 Some(Keyword::Import) => self.import_expr(),
                 Some(Keyword::Export) => self.export_expr(),
+                Some(Keyword::Effect) => self.effect_expr(),
+                Some(Keyword::Handle) => self.handle_expr(),
+                Some(Keyword::Host) => self.host_expr(),
                 Some(_) => {
                     // `in`/`then`/`else` bare in prefix position is an error; keep the ident as a
                     // name so we make progress and the arena stays well-formed.
@@ -968,6 +971,173 @@ impl<'a> Parser<'a> {
         items.extend(self.brace_name_list());
         let span = start.merge(self.prev_span());
         self.list(items, span)
+    }
+
+    /// `effect Name { op : Type  … }`  ->  `(effect Name (op op Type) …)`. An effect declaration: a
+    /// name then a brace-delimited block of operation signatures, each `op : Type` (the operation name
+    /// and its type). Mirrors `module Name { … }` — the members are juxtaposed (a type self-delimits at
+    /// the next op name, since a `->` type never continues into a bare name), with an optional comma
+    /// tolerated between ops. Each op lowers to `(op <name> <type>)`, the shape the s-expr surface uses.
+    fn effect_expr(&mut self) -> StructId {
+        let start = self.cur_span();
+        let head = self.keyword_head("effect", start);
+        self.bump(); // `effect`
+        let name = self.binder();
+        let mut items = vec![head, name];
+        self.expect(Kind::LBrace, "`{`");
+        while !self.at(Kind::RBrace) && !self.at_end() {
+            let before = self.pos;
+            items.push(self.effect_op());
+            if self.at(Kind::Comma) {
+                self.bump(); // tolerate a `,` between operation signatures
+            }
+            // Forward-progress guard: a stray token that begins no op signature is skipped so the loop
+            // cannot spin.
+            if self.pos == before {
+                self.bump();
+            }
+        }
+        self.expect(Kind::RBrace, "`}`");
+        let span = start.merge(self.prev_span());
+        self.list(items, span)
+    }
+
+    /// One effect operation signature `op : Type`  ->  `(op <op> <Type>)`, matching the corpus
+    /// `(op ask (-> Unit Int64))` shape. An operation type is always a function arrow. The common
+    /// form `P -> R` parses via [`Self::type_ref`] to the flat `(-> P R)`. A NULLARY operation whose
+    /// parameter is elided is written with a LEADING arrow — `op : -> R` -> `(-> R)`, the one-element
+    /// arrow that types as `Unit -> R` — so both the explicit-unit `(-> Unit R)` and the elided
+    /// `(-> R)` forms have a distinct, round-tripping surface.
+    fn effect_op(&mut self) -> StructId {
+        let start = self.cur_span();
+        let op_head = self.name("op", start);
+        let op_name = self.binder();
+        self.expect(Kind::Colon, "`:`");
+        let ty = if self.at(Kind::Arrow) {
+            // Leading `->`: a nullary-elided operation type `(-> R)`.
+            let arrow_start = self.cur_span();
+            self.bump(); // `->`
+            let arrow = self.name("->", arrow_start);
+            let result = self.type_ref();
+            let arrow_span = arrow_start.merge(self.prev_span());
+            self.list(vec![arrow, result], arrow_span)
+        } else {
+            self.type_ref()
+        };
+        let span = start.merge(self.prev_span());
+        self.list(vec![op_head, op_name, ty], span)
+    }
+
+    /// `handle E(seed) with | op(p…, state) => body … in body`  ->
+    /// `(handle E seed ((op (p…) state body) …) body)` — the CANONICAL effect-handler shape. The effect
+    /// `E` and its initial `seed` are promoted into the head (one `handle` discharges exactly ONE
+    /// effect; multi-effect handling is nested `handle`s); an omitted `(seed)` is the stateless `unit`
+    /// seed. Each arm is an OPERATION of `E` written bare (`op`, not `E.op`); its parenthesized binder
+    /// list is `params…, state` — the LAST binder is the resumption STATE, the rest are the operation's
+    /// parameters (symmetric with `resume(value, next_state)`, where state is last on both sides). The
+    /// arm op is left bare here; `rcdzc`'s handle desugar rewrites it to the `(. E op)` projection and
+    /// drops `E` from the head, yielding the internal `(handle seed (arm…) body)` the compiler lowers.
+    fn handle_expr(&mut self) -> StructId {
+        let start = self.cur_span();
+        let head = self.keyword_head("handle", start);
+        self.bump(); // `handle`
+        let effect = self.binder(); // the effect name E
+        // Optional seed `E(seed)`; `E` (or `E()`) alone is the degenerate stateless `unit` seed.
+        let seed = if self.at(Kind::LParen) {
+            self.bump(); // `(`
+            let s = if self.at(Kind::RParen) {
+                let sp = self.cur_span();
+                self.name("unit", sp)
+            } else {
+                self.expr(0)
+            };
+            self.expect(Kind::RParen, "`)`");
+            s
+        } else {
+            self.name("unit", start)
+        };
+        self.expect_keyword(Keyword::With, "`with`");
+        if self.at(Kind::Pipe) {
+            self.bump(); // optional leading `|`
+        }
+        let arms_start = self.cur_span();
+        let mut arms = Vec::new();
+        loop {
+            arms.push(self.handle_arm());
+            if self.at(Kind::Pipe) {
+                self.bump(); // `|` before the next arm
+            } else {
+                break;
+            }
+        }
+        let arms_span = arms_start.merge(self.prev_span());
+        let arms_list = self.list(arms, arms_span);
+        self.expect_keyword(Keyword::In, "`in`");
+        let body = self.expr(0);
+        let span = start.merge(self.prev_span());
+        self.list(vec![head, effect, seed, arms_list, body], span)
+    }
+
+    /// One handler arm `op(p…, state) => body`  ->  `(op (p…) state body)`. The binder list's LAST
+    /// entry is the resumption state; everything before it is the operation's parameters (so a nullary
+    /// operation is `op(state)` → an empty param list). The body runs until the next arm's `|` or `in`.
+    fn handle_arm(&mut self) -> StructId {
+        let start = self.cur_span();
+        let op = self.binder(); // bare operation name (resolved against the handle's effect)
+        let binders_start = self.cur_span();
+        self.expect(Kind::LParen, "`(`");
+        let mut binders = Vec::new();
+        if !self.at(Kind::RParen) {
+            loop {
+                let before = self.pos;
+                binders.push(self.binder());
+                if !self.sep_continue(Kind::RParen) {
+                    break;
+                }
+                if self.pos == before {
+                    self.bump(); // no binder consumed — avoid a missing-`,` spin
+                }
+            }
+        }
+        self.expect(Kind::RParen, "`)`");
+        // The last binder is the STATE; the rest are the operation's parameters.
+        let state = if let Some(s) = binders.pop() {
+            s
+        } else {
+            let sp = self.cur_span();
+            self.error("a handle arm needs a state binder: `op(…, state)`");
+            self.error_node(sp)
+        };
+        let params_span = binders_start.merge(self.prev_span());
+        let params = self.list(binders, params_span);
+        self.expect(Kind::FatArrow, "`=>`");
+        let saved = self.arm_bar_terminates;
+        self.arm_bar_terminates = true;
+        let body = self.expr(0);
+        self.arm_bar_terminates = saved;
+        let span = start.merge(self.prev_span());
+        self.list(vec![op, params, state, body], span)
+    }
+
+    /// `host E, … in body`  ->  `(host (E …) body)` — an entrypoint delegation of one or more effects
+    /// to the component boundary. The effects are a comma-separated name list; the body is the delegated
+    /// computation. Mirrors `handle`'s `… in body` tail (reusing the `in` keyword as the body delimiter).
+    fn host_expr(&mut self) -> StructId {
+        let start = self.cur_span();
+        let head = self.keyword_head("host", start);
+        self.bump(); // `host`
+        let effects_start = self.cur_span();
+        let mut effects = vec![self.binder()];
+        while self.at(Kind::Comma) {
+            self.bump(); // `,`
+            effects.push(self.binder());
+        }
+        let effects_span = effects_start.merge(self.prev_span());
+        let effects_list = self.list(effects, effects_span);
+        self.expect_keyword(Keyword::In, "`in`");
+        let body = self.expr(0);
+        let span = start.merge(self.prev_span());
+        self.list(vec![head, effects_list, body], span)
     }
 
     /// `import { name, … } from "path"`  ->  `(import "path" (name …))`. Brings a sibling module's
@@ -1683,6 +1853,95 @@ mod tests {
             panic!()
         };
         assert_eq!(a.head_name(arm0[0]), Some("guard"));
+    }
+
+    #[test]
+    fn effect_decl_builds_op_signatures() {
+        // `effect Diag { emit : Int64 -> Unit, collect : -> List(Int64) }` ->
+        // `(effect Diag (op emit (-> Int64 Unit)) (op collect (-> (List Int64))))`. The leading-arrow
+        // op type is the nullary-elided one-element `(-> R)`.
+        let a = parse_ok("effect Diag { emit : Int64 -> Unit, collect : -> List(Int64) }");
+        let tail = a.as_form(a.root, "effect").unwrap();
+        assert_eq!(a.as_name(tail[0]), Some("Diag"));
+        let emit = a.as_form(tail[1], "op").unwrap();
+        assert_eq!(a.as_name(emit[0]), Some("emit"));
+        let emit_ty = a.as_form(emit[1], "->").unwrap();
+        assert_eq!(emit_ty.len(), 2, "P -> R is a two-element arrow");
+        let collect = a.as_form(tail[2], "op").unwrap();
+        let collect_ty = a.as_form(collect[1], "->").unwrap();
+        assert_eq!(
+            collect_ty.len(),
+            1,
+            "nullary-elided `-> R` is a one-element arrow"
+        );
+    }
+
+    #[test]
+    fn handle_promotes_effect_and_seed_with_state_last() {
+        // `handle Fresh(0) with | next(u, s) => resume(s, s + 1) in body` ->
+        // `(handle Fresh 0 ((next (u) s (resume s (+ s 1)))) body)`: the effect NAME and seed are the
+        // head's 1st/2nd children, the arm op is BARE, and the LAST binder `s` is the state.
+        let a = parse_ok("handle Fresh(0) with | next(u, s) => resume(s, s + 1) in Fresh.next()");
+        let tail = a.as_form(a.root, "handle").unwrap();
+        // `as_form` returns the tail (head excluded): [effect, seed, arms, body].
+        assert_eq!(tail.len(), 4, "handle E seed (arms) body");
+        assert_eq!(
+            a.as_name(tail[0]),
+            Some("Fresh"),
+            "effect name promoted to head"
+        );
+        assert_eq!(a.as_name(tail[1]), None); // seed is the int 0, not a name
+        let crate::ast::Struct::List(arms) = a.get(tail[2]) else {
+            panic!("arms list")
+        };
+        let crate::ast::Struct::List(arm0) = a.get(arms[0]) else {
+            panic!("one arm")
+        };
+        assert_eq!(arm0.len(), 4, "arm = op (params) state body");
+        assert_eq!(a.as_name(arm0[0]), Some("next"), "bare op, not Fresh.next");
+        let crate::ast::Struct::List(params) = a.get(arm0[1]) else {
+            panic!("params list")
+        };
+        assert_eq!(params.len(), 1, "one param `u` (state `s` is separate)");
+        assert_eq!(a.as_name(params[0]), Some("u"));
+        assert_eq!(a.as_name(arm0[2]), Some("s"), "last binder is the state");
+    }
+
+    #[test]
+    fn handle_stateless_seed_elides_to_unit() {
+        // `handle Choose with | pick(s) => resume(5, s) in …`: no `(seed)` → seed is `unit`; the arm's
+        // single binder is the state, so the param list is empty (a nullary operation).
+        let a = parse_ok("handle Choose with | pick(s) => resume(5, s) in Choose.pick()");
+        let tail = a.as_form(a.root, "handle").unwrap();
+        assert_eq!(a.as_name(tail[0]), Some("Choose"));
+        assert_eq!(a.as_name(tail[1]), Some("unit"), "elided seed is unit");
+        let crate::ast::Struct::List(arms) = a.get(tail[2]) else {
+            panic!()
+        };
+        let crate::ast::Struct::List(arm0) = a.get(arms[0]) else {
+            panic!()
+        };
+        let crate::ast::Struct::List(params) = a.get(arm0[1]) else {
+            panic!()
+        };
+        assert!(
+            params.is_empty(),
+            "nullary op: state consumed the only binder"
+        );
+        assert_eq!(a.as_name(arm0[2]), Some("s"));
+    }
+
+    #[test]
+    fn host_delegation_builds_effect_list() {
+        // `host ask, log in body` -> `(host (ask log) body)`.
+        let a = parse_ok("host ask, log in ask.ask()");
+        let tail = a.as_form(a.root, "host").unwrap();
+        let crate::ast::Struct::List(effects) = a.get(tail[0]) else {
+            panic!("effect list")
+        };
+        assert_eq!(effects.len(), 2);
+        assert_eq!(a.as_name(effects[0]), Some("ask"));
+        assert_eq!(a.as_name(effects[1]), Some("log"));
     }
 
     #[test]

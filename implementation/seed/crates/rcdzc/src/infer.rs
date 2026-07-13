@@ -3029,6 +3029,32 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 check_resume_result_type(db, arm, out);
                 collect(db, arm.body, out);
             }
+            // A HANDLER MUST DISCHARGE ITS EFFECT'S WHOLE OPERATION SET (CDZ0405). A `handle E` names one
+            // effect whose operations are a closed set, so — like a match over a sum — it must bind EVERY
+            // operation; a handler missing one leaves that operation of the effect it claims to discharge
+            // without a home. Only checked when NO arm named an undeclared operation (a CDZ0403 arm makes
+            // the discharged effect ambiguous, so its own fault is the one to report). Anchored at the
+            // handled body (the handle form's own occurrence).
+            let has_undeclared = arms
+                .iter()
+                .any(|arm| crate::effects::arm_op_names_undeclared_operation(db, arm.op));
+            if !has_undeclared {
+                let missing = crate::effects::handler_missing_operations(db, &arms);
+                if !missing.is_empty() {
+                    let list = missing.join(", ");
+                    out.push(
+                        Reject::coded(
+                            Code::HandlerNotExhaustive,
+                            format!(
+                                "this handler does not bind every operation its effect declares \
+                                 (missing: {list}) — a handle must discharge its effect's whole \
+                                 operation set"
+                            ),
+                        )
+                        .at(body),
+                    );
+                }
+            }
             collect(db, body, out);
         }
         Resolved::Resume { value, next_state } => {

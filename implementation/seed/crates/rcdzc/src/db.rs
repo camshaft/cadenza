@@ -660,6 +660,12 @@ impl Db {
         // (which must index the synthesized nodes so a name inside a synthesized op type resolves).
         let mut effect_decls = effect_decls;
         crate::effects::synthesize(&mut ast, &mut effect_decls);
+        // Desugar every CANONICAL handler `(handle E seed (bare-op-arm…) body)` — effect + seed promoted
+        // into the head, arms written bare — into the INTERNAL `(handle seed ((. E op)-arm…) body)` the
+        // resolver/effects/infer/lower/compile consume. Runs BEFORE the parent index so the rewritten
+        // `(. E op)` projections resolve like hand-written member access. A handle already in internal
+        // shape (4 children) is left untouched, so a hand-authored internal program still compiles.
+        crate::effects::desugar_handles(&mut ast);
         // ACCUMULATOR INTRODUCTION: rewrite a linear NON-tail recursion (`f n = if base 0 (+ n (f (- n
         // 1)))`) into a tail-recursive accumulator def (which `select`'s loop transform then compiles to a
         // constant-stack `loop`). Synthesizes a fresh accumulator def and re-seeds the original — appending
