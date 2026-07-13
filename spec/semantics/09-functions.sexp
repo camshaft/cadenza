@@ -54,6 +54,26 @@
   (call   main (: 10 Int64))
   (output (: 15 Int64)))
 
+; A capturing lambda BOUND to a name (a `let` binding) and then applied — `(let ((g (fn (x) (+ x k))))
+; (g 5))` where `g` closes over an enclosing `k`. Binding the closure to a name does not change that it
+; folds when applied: `g` is copy-propagated (a lambda value is never kept as a runtime slot), so `(g 5)`
+; β-reduces to `(+ 5 k)` and `k` resolves to its enclosing binding. Pins that a NAMED capturing closure
+; applied directly folds exactly as the anonymous form does.
+
+(case "a named capturing closure applied directly folds through its capture"
+  (doc    "`(let ((k 10)) (let ((g (fn (x) (+ x k)))) (g 5)))` — `g` is a let-bound closure capturing the
+           outer `k`; applying it yields (+ 5 10) = 15. A NAMED capturing closure applied directly must
+           fold like the anonymous `((fn (x) (+ x k)) 5)` form — the name binding is transparent.")
+  (input  (let ((k 10)) (let ((g (fn ((: x Int64)) (+ x k)))) (g 5))))
+  (output (: 15 Int64)))
+
+(case "a named capturing closure applied more than once folds at each use"
+  (doc    "The same named closure `g` applied twice — `(+ (g 5) (g 6))` with `g = (fn (x) (+ x k))`,
+           k = 10 — folds each application: (5+10) + (6+10) = 31. Two uses of a capturing closure each
+           β-reduce independently; the closure value is not built at run time.")
+  (input  (let ((k 10)) (let ((g (fn ((: x Int64)) (+ x k)))) (+ (g 5) (g 6)))))
+  (output (: 31 Int64)))
+
 (case "a function is passed as an argument (higher-order)"
   (doc    "Witnesses core-semantics.md §A Function Is A First-Class Value: apply-twice takes a function
            f and a value v and applies f to the result of applying f to v.")

@@ -2301,6 +2301,18 @@ fn callee_def_index(db: &mut Db, head: StructId) -> Option<usize> {
 /// pays for itself only when it avoids a recompute). A constant, a single-use binding, or a poison is
 /// propagated (byte-neutral).
 fn should_keep_binding(db: &mut Db, init: StructId, scope: &[StructId]) -> bool {
+    // A LAMBDA-valued binding is NEVER kept as a runtime `let` slot — it is copy-propagated so its
+    // applications fold (β-reduce) at each use. Short-circuit HERE, before `is_runtime_computation` calls
+    // `core_of(init)` — which for a lambda runs `lower_lambda_value`, LIFTING it speculatively and (for a
+    // capturing lambda) polluting `db.captured_ref` with the body's capturing-reference occurrences. Those
+    // occurrences are SHARED with the fold's reduced body (`(g 5)` → `(+ 5 k)` reuses the original `k`
+    // occurrence), so the stale `captured_ref` entry would then make the FOLDED `k` lower to a
+    // `Core::Captured` env-read in the ENCLOSING scope (where there is no env) — a miscompile (reading an
+    // uninitialized local). Checking `resolved_of` (not `core_of`) avoids triggering the lift. A lambda
+    // that genuinely escapes to runtime is lifted at its USE site, not kept here.
+    if matches!(resolved_of(db, init), Resolved::Lambda { .. }) {
+        return false;
+    }
     // A value that folds to a constant / atom leaves no computation to share — always propagate.
     if !is_runtime_computation(db, init) {
         return false;

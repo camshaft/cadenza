@@ -10473,6 +10473,38 @@ mod stage1 {
     }
 
     #[test]
+    fn a_named_capturing_closure_applied_directly_folds() {
+        // A capturing lambda BOUND to a name (`let ((g (fn (x) (+ x k))))`) and applied `(g 5)` where `g`
+        // closes over an enclosing `k`. `g` is copy-propagated (a lambda value is never KEPT as a runtime
+        // `let` slot — `should_keep_binding` short-circuits it), so `(g 5)` β-reduces to `(+ 5 k)` and `k`
+        // folds through its enclosing binding. Regression guard: a prior version LIFTED `g` speculatively
+        // during the keep check, polluting `db.captured_ref` with `k`'s occurrence → the FOLDED `k` then
+        // lowered to a `Core::Captured` env-read in the enclosing scope (an uninitialized-local
+        // miscompile). The lambda-valued-binding short-circuit fixes it.
+        assert_eq!(
+            run_main("(let ((k 10)) (let ((g (fn ((: x Int64)) (+ x k)))) (g 5)))"),
+            15
+        );
+        // Applied more than once — each use folds independently: (5+10)+(6+10) = 31.
+        assert_eq!(
+            run_main("(let ((k 10)) (let ((g (fn ((: x Int64)) (+ x k)))) (+ (g 5) (g 6))))"),
+            31
+        );
+        // Capturing an enclosing PARAMETER through a named binding (not just a `let`).
+        let src = "(module m \
+            (def (f (: k Int64)) (let ((g (fn ((: x Int64)) (+ x k)))) (g 5))) \
+            (def (main (: k Int64)) (f k)) (export main))";
+        assert_eq!(
+            run_returns_with::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
+                "main",
+                &[wasmtime::component::Val::S64(10)]
+            ),
+            15
+        );
+    }
+
+    #[test]
     fn a_runtime_selected_function_applies_via_case_of_case() {
         use wasmtime::component::Val;
         // `((if c f g) x)` with a RUNTIME condition — the function is chosen at run time. The
