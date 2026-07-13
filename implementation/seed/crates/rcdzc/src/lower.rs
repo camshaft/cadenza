@@ -1035,6 +1035,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         let pat_ty = match probe {
             crate::core::Probe::Int(_) => Some(crate::ty::Ty::int()),
             crate::core::Probe::Bool(_) => Some(crate::ty::Ty::Bool),
+            crate::core::Probe::Str(_) => Some(crate::ty::Ty::String),
             crate::core::Probe::Wild => None,
         };
         if let Some(pt) = pat_ty
@@ -1092,6 +1093,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     let const_scrut = match &scrut_core {
         Core::ConstInt(v) => Some(GuardFoldScrut::Int(v.clone())),
         Core::ConstBool(b) => Some(GuardFoldScrut::Bool(*b)),
+        Core::ConstStr(s) => Some(GuardFoldScrut::Str(s.clone())),
         _ => None,
     };
     if let Some(sc) = const_scrut {
@@ -1100,6 +1102,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             let probe_hit = match &sc {
                 GuardFoldScrut::Int(v) => probe_matches_int(probe, v),
                 GuardFoldScrut::Bool(b) => probe_matches_bool(probe, *b),
+                GuardFoldScrut::Str(s) => probe_matches_str(probe, s),
             };
             if !probe_hit {
                 continue; // this arm's pattern doesn't match the constant — try the next
@@ -1172,6 +1175,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
 enum GuardFoldScrut {
     Int(IntValue),
     Bool(bool),
+    Str(String),
 }
 
 /// Walk a constant-value path from `root` down `steps`, returning the leaf's core if EVERY step lands
@@ -2050,6 +2054,10 @@ fn classify_probe(db: &mut Db, pat: StructId) -> Option<crate::core::Probe> {
     match resolved_of(db, pat) {
         Resolved::Int(v) => Some(crate::core::Probe::Int(v)),
         Resolved::Bool(b) => Some(crate::core::Probe::Bool(b)),
+        // A STRING-literal pattern (`("hello" …)`). Only the constant-scrutinee fold uses it (a runtime
+        // string match declines — `is_scalar` is Int/Bool); it is classified here so a match on a
+        // constant string selects its arm.
+        Resolved::Str(s) => Some(crate::core::Probe::Str(s)),
         _ => None,
     }
 }
@@ -2061,7 +2069,7 @@ fn probe_matches_int(probe: &crate::core::Probe, v: &IntValue) -> bool {
     match probe {
         crate::core::Probe::Int(p) => p.eq_value(v),
         crate::core::Probe::Wild => true,
-        crate::core::Probe::Bool(_) => false,
+        crate::core::Probe::Bool(_) | crate::core::Probe::Str(_) => false,
     }
 }
 
@@ -2070,7 +2078,18 @@ fn probe_matches_bool(probe: &crate::core::Probe, b: bool) -> bool {
     match probe {
         crate::core::Probe::Bool(p) => *p == b,
         crate::core::Probe::Wild => true,
-        crate::core::Probe::Int(_) => false,
+        crate::core::Probe::Int(_) | crate::core::Probe::Str(_) => false,
+    }
+}
+
+/// Whether a probe matches a constant string scrutinee (for the fold). A `Wild` matches anything; a
+/// string literal matches by VALUE equality (the `ConstStr` scrutinee and pattern are both already NFC-
+/// normalized by the reader, so `==` is exact — the same basis as the constant `String` equality fold).
+fn probe_matches_str(probe: &crate::core::Probe, s: &str) -> bool {
+    match probe {
+        crate::core::Probe::Str(p) => p == s,
+        crate::core::Probe::Wild => true,
+        crate::core::Probe::Int(_) | crate::core::Probe::Bool(_) => false,
     }
 }
 

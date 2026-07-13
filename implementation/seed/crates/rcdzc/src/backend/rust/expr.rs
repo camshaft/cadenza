@@ -944,6 +944,14 @@ fn emit_match_impl(
         let pat = match arm.probe {
             crate::core::Probe::Int(ref v) => int_pattern(db, scrutinee, v)?,
             crate::core::Probe::Bool(x) => (if x { "true" } else { "false" }).to_string(),
+            // A string-literal probe only ever FOLDS (a constant scrutinee); a runtime string match
+            // declines at `is_scalar` before a `Core::Match` is built, so no `Probe::Str` reaches a
+            // runtime match emit on either backend.
+            crate::core::Probe::Str(_) => {
+                return Err(crate::diag::Reject::decline(
+                    "a runtime string-literal match is not yet emitted",
+                ));
+            }
             crate::core::Probe::Wild => "_".to_string(),
         };
         let guard = match arm.guard {

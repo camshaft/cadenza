@@ -60,6 +60,11 @@ pub enum Probe {
     Int(IntValue),
     /// `scrutinee == this boolean` — a boolean-literal pattern.
     Bool(bool),
+    /// `scrutinee == this string` — a string-literal pattern (`("hello" …)`). Only the CONSTANT-scrutinee
+    /// FOLD is realized (a constant scrutinee selects the first arm whose string equals it); a RUNTIME
+    /// string scrutinee is not a scalar (`is_scalar` is Int/Bool), so its match declines until the runtime
+    /// string-equality probe is emitted (a later increment).
+    Str(String),
     /// The wildcard `_` OR a bare binder — always matches.
     Wild,
 }

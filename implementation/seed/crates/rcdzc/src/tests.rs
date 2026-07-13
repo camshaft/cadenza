@@ -4017,6 +4017,72 @@ mod match_engine {
     }
 
     #[test]
+    fn a_constant_string_scrutinee_selects_the_matching_string_literal_arm() {
+        // 02-binding "matching on string literals": a STRING-literal pattern `("hello" …)` selects the arm
+        // whose string EQUALS a constant scrutinee (by value, both NFC — the constant `String` equality
+        // basis). The scrutinee folds (a literal, or a `String.concat`/`String.slice` that folds to a
+        // constant), so the whole match folds to the selected arm — no runtime string equality op.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (match \"hello\" (\"hello\" 1) (\"world\" 2) (_ 0))) (export main))"
+                ),
+                "main"
+            ),
+            1
+        );
+        // A later arm + fall-through to the wildcard.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (match \"world\" (\"hello\" 1) (\"world\" 2) (_ 0))) (export main))"
+                ),
+                "main"
+            ),
+            2
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (match \"xyz\" (\"hello\" 1) (\"world\" 2) (_ 0))) (export main))"
+                ),
+                "main"
+            ),
+            0
+        );
+        // A scrutinee produced by a folding String op — `(String.concat \"a\" \"b\")` → \"ab\".
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (match ((. String concat) \"a\" \"b\") (\"ab\" 100) (_ 200))) (export main))"
+                ),
+                "main"
+            ),
+            100
+        );
+    }
+
+    #[test]
+    fn a_string_match_is_well_formed_or_rejected() {
+        // A String is an OPEN type (like Int64) — no finite literal set exhausts it, so a string match
+        // MUST end in a wildcard `_`; without one it is non-exhaustive (CDZ0210).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (match \"hi\" (\"hi\" 1) (\"yo\" 2))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210")
+        );
+        // A pattern whose type disagrees with the scrutinee — an Int literal against a String scrutinee —
+        // is a shape/type error (CDZ0201), checked structurally before the fold.
+        assert_eq!(
+            reject_code("(module m (def (main) (match \"hi\" (5 1) (_ 0))) (export main))")
+                .as_deref(),
+            Some("CDZ0201")
+        );
+    }
+
+    #[test]
     fn applying_a_non_function_is_a_coded_type_error() {
         // 09-functions "applying a non-function/boolean/float is a type error": a value that is NOT a
         // function has no defined result when applied (`core-semantics.md` §Applying A Function Binds Its

@@ -736,6 +736,15 @@ fn collect_cont_ops(
             match probe {
                 crate::core::Probe::Int(_) => out.insert(OP_GET_INT),
                 crate::core::Probe::Bool(_) => out.insert(OP_GET_BOOL),
+                // A string-literal probe reaches only the CONSTANT-scrutinee fold (top-level scalar match);
+                // the sum decision-tree does not classify a `Resolved::Str` payload pattern, and a runtime
+                // string scrutinee declines at `is_scalar` — so no `Probe::Str` is ever emitted to a
+                // runtime `LitTest`. (A runtime string-equality probe is a later increment.)
+                crate::core::Probe::Str(_) => {
+                    unreachable!(
+                        "a string-literal probe folds; it is never emitted to a runtime LitTest"
+                    )
+                }
                 crate::core::Probe::Wild => false,
             };
             collect_cont_ops(db, then_, out);
@@ -3106,6 +3115,13 @@ fn emit_probe_condition(
         // A Bool is canonical i32 0/1: `p == true` IS `p` (nothing more), `p == false` is `i32.eqz`.
         crate::core::Probe::Bool(true) => {}
         crate::core::Probe::Bool(false) => out.push(Lir::I32Eqz),
+        // A string-literal probe only ever FOLDS (a constant scrutinee) — a runtime string scrutinee is
+        // not a scalar (`is_scalar`), so a `Probe::Str` never reaches the runtime scalar probe emit.
+        crate::core::Probe::Str(_) => {
+            unreachable!(
+                "a string-literal probe folds; it is never emitted as a runtime scalar probe"
+            )
+        }
         crate::core::Probe::Wild => {}
     }
 }
@@ -3278,6 +3294,11 @@ fn emit_probe_chain(
             crate::core::Probe::Bool(b) => {
                 out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
                 out.push(Lir::I32Eq);
+            }
+            crate::core::Probe::Str(_) => {
+                unreachable!(
+                    "a string-literal probe folds; a runtime string match declines at is_scalar"
+                )
             }
             crate::core::Probe::Wild => unreachable!("has_literal_probe"),
         }
@@ -3899,6 +3920,14 @@ fn emit_sum_cont(
                     out.push(Lir::CallImport(OP_GET_BOOL)); // [i32]
                     out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
                     out.push(Lir::I32Eq); // [bool]
+                }
+                crate::core::Probe::Str(_) => {
+                    // The sum decision-tree does not classify a string-literal payload pattern (a
+                    // `Resolved::Str` is not a recognized `LitTest` probe there), so no `Probe::Str`
+                    // reaches this sum-payload literal-test emit. A string-literal probe folds instead.
+                    return Err(Reject::decline(
+                        "a string-literal payload pattern is not yet emitted at run time",
+                    ));
                 }
                 crate::core::Probe::Wild => {
                     return Err(Reject::decline("a wildcard literal test is a compiler bug"));
