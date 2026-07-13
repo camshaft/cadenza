@@ -315,6 +315,56 @@
             (export main)))
   (output (: 7 Int64)))
 
+; --- A RECURSIVE higher-order function with an UNANNOTATED function-typed parameter --------------
+; core-semantics.md §A Function Is A First-Class Value: a recursive traversal takes a CALLBACK and applies
+; it per element — `map`/`fold` over a recursive sum. The callback parameter `f` need not be annotated:
+; its type is inferred from its USE as a call head (`(f h)` ⇒ `f : (-> typeof(h) result)`), the function
+; analogue of inferring a data parameter's type from a pattern match. The recursive-parameter solve gives
+; each fn-typed parameter its arrow shape before collecting constraints, so `(+ (f h) …)` flows the result
+; type back to the arrow. Without it a recursive HOF's callback stayed unconstrained → the recursive-def
+; guard declined "annotate its parameters"; annotating was the only recourse. These pin that the
+; annotation is now optional — the recursion-over-a-sum-with-a-callback idiom compiles bare.
+
+(case "a recursive fold over a sum list infers its unannotated callback parameter"
+  (doc    "`sum-f` recurses over `(type L Nil (Cons Int64 L))`, applying an UNANNOTATED callback `f` to
+           each head and summing: `(+ (f h) (sum-f f t))`. `f`'s type is inferred `(-> Int64 Int64)` from
+           `(f h)` (h : Int64) and the `+` that consumes its result — no annotation on `f`. Applied with
+           `(fn (x) (+ x 1))` over `[1, 2]` → (1+1) + (2+1) = 5. Was 'a recursive function with an
+           unannotated parameter is not yet inferred' before fn-typed recursive params were solved.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type L Nil (Cons Int64 L))
+            (def (sum-f f (: l L)) (match l ((L.Nil) 0) ((L.Cons h t) (+ (f h) (sum-f f t)))))
+            (def (main) (sum-f (fn ((: x Int64)) (+ x 1)) (L.Cons 1 (L.Cons 2 L.Nil))))
+            (export main)))
+  (output (: 5 Int64)))
+
+(case "a recursive map rebuilding a sum list infers its unannotated callback"
+  (doc    "The map companion: `map-f` REBUILDS the list, applying an unannotated `f` to each element —
+           `(L.Cons (f h) (map-f f t))`. `f` infers `(-> Int64 Int64)` from `(f h)` in a `Cons`-payload
+           position. `(fn (x) (* x 2))` over `[3, 4]` yields `[6, 8]`; the caller reads the head → 6. Pins
+           the inference works when the callback's result feeds a CONSTRUCTOR payload, not only an operator.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type L Nil (Cons Int64 L))
+            (def (map-f f (: l L)) (match l ((L.Nil) L.Nil) ((L.Cons h t) (L.Cons (f h) (map-f f t)))))
+            (def (main) (match (map-f (fn ((: x Int64)) (* x 2)) (L.Cons 3 (L.Cons 4 L.Nil))) ((L.Cons h t) h) ((L.Nil) 0)))
+            (export main)))
+  (output (: 6 Int64)))
+
+(case "a recursive fold with an unannotated two-argument callback parameter"
+  (doc    "The callback takes TWO arguments — `(fn (a b) (+ a b))` — and `fold` threads an accumulator:
+           `(fold f (f acc h) t)`. `f` infers `(-> Int64 (-> Int64 Int64))` from the two-argument
+           application `(f acc h)`, so a multi-argument callback param is inferred at its full arity, not
+           just unary. `1 + 2 + 3` = 6. Pins the arrow-shaping is over the application's argument COUNT.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type L Nil (Cons Int64 L))
+            (def (fold f (: acc Int64) (: l L)) (match l ((L.Nil) acc) ((L.Cons h t) (fold f (f acc h) t))))
+            (def (main) (fold (fn ((: a Int64) (: b Int64)) (+ a b)) 0 (L.Cons 1 (L.Cons 2 (L.Cons 3 L.Nil)))))
+            (export main)))
+  (output (: 6 Int64)))
+
 (case "a closure capturing two enclosing bindings folds through nested arithmetic"
   (doc    "`(fn (x) (+ (* x a) b))` captures BOTH `a` and `b` from enclosing lets; applied to 5 with
            a = 2, b = 3 → (5·2)+3 = 13. Pins that MULTIPLE distinct captures from different enclosing

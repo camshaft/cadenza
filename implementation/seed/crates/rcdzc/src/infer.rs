@@ -884,6 +884,13 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
 
     let mut subst = Subst::new();
     if let Some(body) = db.defs[def].body {
+        // PRE-PASS: give every FN-TYPED parameter its arrow shape BEFORE the main constraint walk. A
+        // parameter applied as a function (`(f h)`) must be an arrow when any enclosing operator reads
+        // `(f h)`'s type — otherwise the operator (`(+ (f h) …)`) unifies `f`'s bare var directly with the
+        // operand type (Int64), collapsing `f` to a scalar instead of a function. This walk unifies each
+        // env-param head with `(-> a0 … aN result)` of fresh vars (arity = the application's argument
+        // count), so `f`'s var is `Ty::Fn(…)` by the time its result flows back from `(+ (f h) …)`.
+        shape_fn_typed_params(db, body, &env, &mut subst, &mut fresh);
         collect_param_constraints(db, body, &env, def, &mut subst, &mut fresh);
     }
 
@@ -897,6 +904,44 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
     }
 
     db.solving_params.remove(&def);
+}
+
+/// Walk the resolved body and, for every application whose HEAD is a parameter in `env` (a fn-typed
+/// parameter applied as a function, `(f h)`), unify that parameter's variable with a curried arrow of
+/// FRESH vars — one arrow level per argument, a fresh result var. Runs BEFORE `collect_param_constraints`
+/// so a fn-typed parameter already has its `Ty::Fn` shape when the main walk reads an application of it
+/// (otherwise an enclosing operator collapses the bare param var to a scalar). Idempotent per param: a
+/// second application at the same arity re-unifies the same shape; a genuine arity mismatch is a fault
+/// reported elsewhere. Descends every sub-expression that runs (mirrors `collect_param_constraints`'
+/// structural coverage via the generic child walk).
+fn shape_fn_typed_params(
+    db: &mut Db,
+    node: StructId,
+    env: &crate::fxhash::FxHashMap<StructId, Ty>,
+    subst: &mut Subst,
+    fresh: &mut Fresh,
+) {
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && let Some(hvar) = binder_var_of(db, head, env)
+        // Only shape a head that is NOT a known callable (a def/op has its own scheme path) — a bare
+        // fn-typed parameter. `binder_var_of` already restricts to an env param, so this holds.
+        && crate::eval::scheme_of(db, head, fresh).is_none()
+        && callee_def_index_for_infer(db, head).is_none()
+    {
+        let result = Ty::Var(fresh.var());
+        let mut arrow = result;
+        for _ in 0..args.len() {
+            arrow = Ty::Fn(Box::new(Ty::Var(fresh.var())), Box::new(arrow));
+        }
+        let _ = crate::unify::unify(subst, &hvar, &arrow);
+    }
+    // Descend into every child (the head and args of an apply, and all structural children of any form)
+    // so a fn-typed-param application nested anywhere in the body is shaped.
+    if let crate::ast::Struct::List(children) = db.ast.get(node) {
+        for c in children.clone() {
+            shape_fn_typed_params(db, c, env, subst, fresh);
+        }
+    }
 }
 
 /// Ground a solved parameter type: a still-unsolved variable that a numeric use constrained becomes the
@@ -988,6 +1033,29 @@ fn collect_param_constraints(
                         }
                     }
                 }
+            }
+            // A PARAMETER APPLIED AS A FUNCTION — `(f h)` where `f` is a fn-typed parameter being solved.
+            // Its use as a call head constrains it to a function type: unify `f`'s var with `(-> arg0 ->
+            // arg1 -> … -> result)`, where each `argᵢ` is the applied argument's type and `result` is a
+            // fresh var. Without this, a recursive HOF's callback param (`(def (map-f f (: l L)) … (f h)
+            // …)`) stayed a free `Var` → grounded `Any` → the recursive-def guard declined "annotate its
+            // parameters". A fn-typed param used ONLY as a head is the function analogue of the "param used
+            // only as a call argument" case handled above. `binder_var_of` finds the param's var when the
+            // head resolves (through a `Ref`) to a binder in `env`; a non-param head (a def/op) took a
+            // branch above, and an already-scheme'd head is not a bare param, so this only fires for a
+            // genuine fn-typed parameter.
+            if crate::eval::scheme_of(db, head, fresh).is_none()
+                && callee_def_index_for_infer(db, head).is_none()
+                && let Some(hvar) = binder_var_of(db, head, env)
+            {
+                // Build `(-> a0 (-> a1 … (-> aN result)))` from the applied arguments, then unify.
+                let result = Ty::Var(fresh.var());
+                let mut arrow = result;
+                for &arg in args.iter().rev() {
+                    let at = arg_ty_in_env(db, arg, env, subst);
+                    arrow = Ty::Fn(Box::new(at), Box::new(arrow));
+                }
+                let _ = crate::unify::unify(subst, &hvar, &arrow);
             }
             // Descend into the head (a computed head) and every argument for THEIR own constraints.
             if matches!(resolved_of(db, head), Resolved::Apply { .. }) {
@@ -1218,11 +1286,44 @@ fn arg_ty_in_env(
                 return subst.apply(var);
             }
         }
+        // An APPLICATION OF A FN-TYPED PARAMETER being solved — `(f h)` where `f` is in `env`. Its type is
+        // `f`'s var peeled by one arrow per argument, read from the LOCAL `subst` (where the arrow was
+        // unified in `collect_param_constraints`), NOT from `type_of` — `db.param_types` is still empty
+        // mid-solve, so `type_of((f h))` would be `Any` and the result would never link to `f`'s arrow.
+        // This is what lets `(+ (f h) …)` flow Int64 back to `f`'s result var, solving the fn param.
+        Resolved::Apply { head, args } => {
+            if let Some(var) = binder_var_of(db, head, env) {
+                let mut cur = subst.apply(&var);
+                for _ in 0..args.len() {
+                    match cur {
+                        Ty::Fn(_, result) => cur = subst.apply(&result),
+                        _ => break,
+                    }
+                }
+                return cur;
+            }
+        }
         _ => {}
     }
     // Not a parameter reference — its ordinary type. (Reads the type column; a nested op over a param
     // returns the op's result type, which the enclosing unify relates to the param var separately.)
     type_of(db, arg)
+}
+
+/// The type VARIABLE of the parameter a call HEAD names, if the head resolves (through a `Ref`) to a
+/// binder in `env` — i.e. the head IS a fn-typed parameter being solved (`(f h)`). Returns the var
+/// (freshly cloned so the caller can unify a function type into it); `None` for a non-parameter head (a
+/// def, an operator, a literal). The head analogue of `arg_ty_in_env`'s param-reference lookup.
+fn binder_var_of(
+    db: &mut Db,
+    head: StructId,
+    env: &crate::fxhash::FxHashMap<StructId, Ty>,
+) -> Option<Ty> {
+    match resolved_of(db, head) {
+        Resolved::Ref { value } => env.get(&value).cloned(),
+        Resolved::Param { binder } => env.get(&binder).cloned(),
+        _ => None,
+    }
 }
 
 /// The parameter NAME occurrences of def `def` in signature order (the order arguments match). Mirrors

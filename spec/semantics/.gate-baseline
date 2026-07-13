@@ -505,6 +505,8 @@ pass	a recursive def with a match base case computes over its argument
 pass	a recursive effectful walk under a state-threading handler compiles without leaking an internal name
 pass	a recursive emitter dispatches on a sum's variants to build bytes per node
 pass	a recursive fold of a cons-list to bytes is the whole program result
+pass	a recursive fold over a sum list infers its unannotated callback parameter
+pass	a recursive fold with an unannotated two-argument callback parameter
 pass	a recursive function counts down through a stateful effect and bails at zero
 pass	a recursive function folds a linked list of runtime-determined length
 pass	a recursive function folds a runtime linked list to a scalar
@@ -514,6 +516,7 @@ pass	a recursive function threads two nested handlers' states at once
 pass	a recursive function with an annotated parameter walks and bails through an abortive handler
 pass	a recursive list accumulator grown by push and returned in the base arm stays a list
 pass	a recursive lower from a sum to Bytes assembles its output in match arms
+pass	a recursive map rebuilding a sum list infers its unannotated callback
 pass	a recursive parameter used only as a call argument infers from the callee's parameter type
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
