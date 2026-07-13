@@ -1693,3 +1693,39 @@
   (input  (do (def (main (: n Int8)) (- 0 n)) (export main)))
   (call   main (: -128 Int8))
   (trap   "integer overflow"))
+
+; --- A narrow op with a control-flow (if/let) operand: the WIDTH is decided by the operands, not by an
+; --- unrelated narrow param in the CONDITION. These pin the boundary that a narrow op whose deferred-width
+; --- branch is wrapped down to the op's width KEEPS its overflow guard (the wrap-down reconciliation does
+; --- NOT drop the range-check), and — conversely — that an op whose operands are all deferred-width
+; --- literals is genuinely Int64 and its wide result is CORRECT (not a leaked narrow overflow). ------------
+
+(case "an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct"
+  (doc    "`(def (main (: n Int8)) (+ (if (< n 5) 100 0) 100))` — the `Int8` param `n` appears ONLY in the
+           condition `(< n 5)`; the `+`'s two operands are the `if` (whose branches are bare deferred-width
+           literals) and the bare literal `100`, so both default to Int64 and the `+` is an Int64 add. With
+           n=3 the then-branch 100 is selected and 100 + 100 = 200 — a perfectly representable Int64. The
+           result is 200, NOT a trap: there is no Int8 constraint on the arithmetic to overflow. (A narrow
+           param in a nearby CONDITION must not be mistaken for a width constraint on the enclosing op.)")
+  (input  (do (def (main (: n Int8)) (+ (if (< n 5) 100 0) 100)) (export main)))
+  (call   main (: 3 Int8))
+  (output (: 200 Int64)))
+
+(case "a genuinely-narrow op with a wrapped-down if-operand still traps on overflow"
+  (doc    "When the op IS constrained narrow — here by a return annotation `(: (+ …) Int8)` — the deferred-
+           width `if`-branch operand (an i64 slot) is wrapped down to the op's Int8 width, and the op's
+           overflow range-check MUST survive that wrap-down. With n=3 the branch is 100 and 100 + 100 = 200
+           overflows Int8 (max 127), so it TRAPS — exactly as the plain `(: (+ 100 100) Int8)` would. Pins
+           that the wrap-down reconciliation of a control-flow operand does not drop the narrow guard.")
+  (input  (do (def (main (: n Int8)) (: (+ (if (< n 5) 100 0) 100) Int8)) (export main)))
+  (call   main (: 3 Int8))
+  (trap   "integer overflow"))
+
+(case "a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range"
+  (doc    "The value companion of the trap above: the SAME `(: (+ (if (< n 5) 100 0) 100) Int8)` with n=9
+           takes the else-branch 0, so 0 + 100 = 100 fits Int8 and the result is 100 — the wrap-down guard
+           does not over-fire on an in-range result. Together the two cases pin the narrow overflow guard
+           surviving the if-operand wrap-down in BOTH directions (overflow traps, in-range is exact).")
+  (input  (do (def (main (: n Int8)) (: (+ (if (< n 5) 100 0) 100) Int8)) (export main)))
+  (call   main (: 9 Int8))
+  (output (: 100 Int8)))
