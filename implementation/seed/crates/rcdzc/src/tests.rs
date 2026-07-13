@@ -22316,6 +22316,149 @@ mod closure_host_resource {
             .expect("multi-export closure-resource core module validates");
     }
 
+    /// ROUND-TRIP compiler serializer (C-HOST-4): `serialize::roundtrip_resource_core_module` — the core a
+    /// producer+consumer program emits — is structurally valid. A `make` produces a closure resource; a
+    /// separate `apply` CONSUMER takes the closure resource back (as an i32 handle) + a scalar, `resource
+    /// .rep`s the handle to the guest cell, and calls the consumer body which applies the closure
+    /// (`Core::CallClosure`). Pins the consumer-wrapper index layout the round-trip oracle proved runnable.
+    #[test]
+    fn roundtrip_resource_core_module_is_structurally_valid() {
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::backend::wasm::serialize::{ClosureMake, ClosureConsume, ConsumeParam};
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        let imports = vec![
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.get_int,
+        ];
+        let fn_ty = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone()));
+        // Producer body `() -> own<closure>`: build a 1-slot cell holding box-int(0) (table slot 0).
+        let producer = SelectedFunc {
+            params: vec![],
+            ret: fn_ty.clone(),
+            code: vec![
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0),
+                Lir::ConstI64(0),
+                Lir::CallImport("box-int"),
+                Lir::CallImport("arr-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // Consumer body `(g_cell: i32, x: i64) -> i64` = `(g x)` — the CallClosure sequence over a CELL
+        // param (slot 0) and scalar arg (slot 1): push env(cell) + x, arr-get(cell,0)→get-int→wrap,
+        // call_indirect the lifted functype. (The serializer's wrapper `resource.rep`s the boundary handle
+        // to this cell before calling this body.)
+        // import_base (k+2) + order.len() (2) + slot 0 = the lifted functype's type index in the core.
+        let lifted_type_idx_placeholder = imports.len() as u32 + 2 + 2; // = layout.lifted_type_index(0)
+        let consumer_body = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: s64.clone(),
+            code: vec![
+                Lir::LocalGet(0), // env (the cell)
+                Lir::LocalGet(1), // x
+                Lir::LocalGet(0),
+                Lir::ConstI32(0),
+                Lir::CallImport("arr-get"),
+                Lir::CallImport("get-int"),
+                Lir::I32WrapI64,
+                Lir::CallIndirect(lifted_type_idx_placeholder),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // Lifted `(env: i32, x: i64) -> i64` = x + 1.
+        let lifted = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: s64.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(1), Lir::I64Add],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // funcs = [producer(def0), consumer_body(def1), lifted] — two order defs, one lifted appended.
+        let funcs = vec![producer, consumer_body, lifted];
+
+        let import_base = imports.len() as u32 + 2;
+        let layout = Layout::with_lifted(
+            vec![
+                ExportPlan {
+                    name: "make-it".to_string(),
+                    def: 0,
+                    body: crate::ast::StructId(0),
+                    params: vec![],
+                    result: fn_ty.clone(),
+                },
+                ExportPlan {
+                    name: "apply-it".to_string(),
+                    def: 1,
+                    body: crate::ast::StructId(0),
+                    params: vec![],
+                    result: s64.clone(),
+                },
+            ],
+            vec![0, 1],
+            import_base,
+            vec![LiftedLambda {
+                body: crate::ast::StructId(0),
+                params: vec![(crate::ast::StructId(0), s64.clone())],
+                ret_ty: s64.clone(),
+                captures: vec![],
+            }],
+            vec![true],
+        );
+        let lifted_type_idx = layout.lifted_type_index(0, import_base);
+        assert_eq!(
+            lifted_type_idx, lifted_type_idx_placeholder,
+            "the consumer body's call_indirect type index must match the lifted lambda's"
+        );
+        let makes = vec![ClosureMake {
+            export_name: "make-it".to_string(),
+            export_abs: import_base, // producer at emission position 0
+            param_vts: vec![],
+        }];
+        let consumers = vec![ClosureConsume {
+            export_name: "apply-it".to_string(),
+            consume_abs: import_base + 1, // consumer body at emission position 1
+            params: vec![ConsumeParam::Closure, ConsumeParam::Scalar(ValType::I64)],
+            ret_vt: ValType::I64,
+        }];
+
+        let core = crate::backend::wasm::serialize::roundtrip_resource_core_module(
+            &funcs,
+            &imports,
+            &makes,
+            &consumers,
+            lifted_type_idx,
+            &layout,
+        )
+        .expect("round-trip closure-resource core serializes");
+
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&core)
+            .expect("round-trip closure-resource core module validates");
+    }
+
     /// C-HOST-1 END-TO-END (the whole COMPILER pipeline): a real `(def (main) (fn (x) (+ x 1)))` program
     /// compiles to a closure-resource component (`emit_closure_resource` → `closure_resource_core_module`
     /// → `assemble_closure_resource`), and the HOST calls it — `make()` → closure handle, `call(handle, 5)`
