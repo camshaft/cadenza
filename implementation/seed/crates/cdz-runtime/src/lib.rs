@@ -948,6 +948,7 @@ fn op_sum_payload(h: Handle) -> Handle {
 mod doc {
     pub const SCHEMA_HEADER: [u8; 8] = *b"cdzast\x00\x01";
     pub const KIND_INT_POS_DEC: u8 = 0;
+    pub const KIND_STR: u8 = 7;
     pub const KIND_BOOL_FALSE: u8 = 8;
     pub const KIND_BOOL_TRUE: u8 = 9;
     pub const KIND_NAME: u8 = 10;
@@ -1091,6 +1092,7 @@ enum DocLeaf {
     Name(String),
     Int(bool, Vec<u8>), // (negative, big-endian magnitude)
     Bool(bool),
+    Str(Vec<u8>), // UTF-8 body verbatim (the runtime String's raw bytes)
 }
 enum DocStruct {
     Atom(u32),
@@ -1120,6 +1122,13 @@ impl DocBuilder {
     }
     fn bool_leaf(&mut self, b: bool) -> u32 {
         self.leaves.push(DocLeaf::Bool(b));
+        (self.leaves.len() - 1) as u32
+    }
+    /// A string leaf — the UTF-8 body verbatim (the codec's `KIND_STR`, `write_bytes` = LEB len + bytes,
+    /// identical framing to a `Name` leaf but a distinct kind). Not deduped (like `int_leaf`/`bool_leaf`):
+    /// the codec DECODER re-interns leaves on read, so a repeated string in the pool is harmless.
+    fn str_leaf(&mut self, bytes: Vec<u8>) -> u32 {
+        self.leaves.push(DocLeaf::Str(bytes));
         (self.leaves.len() - 1) as u32
     }
     fn atom(&mut self, leaf: u32) -> u32 {
@@ -1157,6 +1166,12 @@ impl DocBuilder {
                     out.push(doc::KIND_NAME);
                     doc_leb(&mut out, n.len() as u64);
                     out.extend_from_slice(n.as_bytes());
+                }
+                DocLeaf::Str(bytes) => {
+                    // KIND_STR + write_bytes (LEB len + UTF-8 body) — same framing as a Name, distinct kind.
+                    out.push(doc::KIND_STR);
+                    doc_leb(&mut out, bytes.len() as u64);
+                    out.extend_from_slice(bytes);
                 }
             }
         }
@@ -1254,9 +1269,16 @@ fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shap
                         let l = b.name_leaf("unit");
                         out.push(b.atom(l));
                     }
-                    // Float/Str/Bytes runtime rendering is a later slice (the sum vertical targets
-                    // Int/Bool/Unit payloads first); a descriptor carrying them declines here.
-                    Shape::Float | Shape::Str | Shape::Bytes => return None,
+                    Shape::Str => {
+                        // A String leaf stores its UTF-8 bytes in `raw` (see `op_str_new`/`op_str_get`);
+                        // emit them verbatim as a KIND_STR leaf. Read the raw in one borrow.
+                        let bytes = with_node(h, Vec::new(), |n| n.raw.as_slice().to_vec());
+                        let l = b.str_leaf(bytes);
+                        out.push(b.atom(l));
+                    }
+                    // Float/Bytes runtime rendering is a later slice (Float needs the Decimal
+                    // significand/exponent encoding; Bytes needs a rope flatten); they decline here.
+                    Shape::Float | Shape::Bytes => return None,
                     Shape::Tuple(elems) => {
                         if elems.is_empty() {
                             let l = b.name_leaf("unit");
@@ -5557,7 +5579,12 @@ mod tests {
                 let l = b.name_leaf("unit");
                 b.atom(l)
             }
-            S::Float | S::Str | S::Bytes => return None,
+            S::Str => {
+                let bytes = with_node(h, Vec::new(), |n| n.raw.as_slice().to_vec());
+                let l = b.str_leaf(bytes);
+                b.atom(l)
+            }
+            S::Float | S::Bytes => return None,
             S::Tuple(elems) => {
                 if elems.is_empty() {
                     let l = b.name_leaf("unit");
@@ -5661,6 +5688,130 @@ mod tests {
         assert!(doc.len() > DEEP, "a {DEEP}-element list yields a document with at least one struct per node");
         op_drop(v);
         assert_eq!(live_nodes(), 0, "no leak after the deep list is dropped");
+    }
+
+    /// `value-encode` renders a String payload (`Shape::Str`) as a `KIND_STR` leaf — the codec's string
+    /// leaf (kind 7, `write_bytes` = LEB len + UTF-8 body). Previously `encode_value` DECLINED on
+    /// `Shape::Str` (returned `None`), so a recursive value carrying a string (an AST node, a JSON tree)
+    /// could not cross the host boundary at all, even though the wire format has the kind. Byte-exact.
+    #[test]
+    fn value_encode_renders_a_string_leaf() {
+        reset();
+        let before = live_nodes();
+        // Descriptor: table [0] = Str, root = 0. Tag 3 = Str.
+        let desc: &[u8] = &[0x01, 0x03, 0x00]; // table_len=1, [0]=Str(tag 3), root=0
+        let s = op_str_new(String::from("hi"));
+        let got = op_value_encode_form(s, desc).expect("encode a String value");
+        // header(8) · leaf_count=1 · leaf0 = KIND_STR(7) len=2 'h' 'i' · struct_count=1 ·
+        // struct0 = TAG_ATOM(0) leaf 0 · root=0
+        let expect: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\0\1
+            0x01, // leaf_count = 1
+            0x07, 0x02, 0x68, 0x69, // KIND_STR, len 2, "hi"
+            0x01, // struct_count = 1
+            0x00, 0x00, // TAG_ATOM, leaf id 0
+            0x00, // root = 0
+        ];
+        assert_eq!(got, expect, "String value form must be a KIND_STR leaf, byte-identical to the codec");
+        op_drop(s);
+
+        // An EMPTY string round-trips (zero-length body).
+        let e = op_str_new(String::new());
+        let got_e = op_value_encode_form(e, desc).expect("encode empty String");
+        let expect_e: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x01, 0x07, 0x00, 0x01, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(got_e, expect_e, "empty String → KIND_STR with a zero-length body");
+        op_drop(e);
+
+        // A multi-byte (UTF-8) string keeps its bytes verbatim (length is BYTES, not scalars).
+        let u = op_str_new(String::from("é")); // 2 UTF-8 bytes: 0xC3 0xA9
+        let got_u = op_value_encode_form(u, desc).expect("encode UTF-8 String");
+        assert_eq!(&got_u[8..13], &[0x01, 0x07, 0x02, 0xC3, 0xA9], "UTF-8 body verbatim, len = byte count");
+        op_drop(u);
+
+        assert_eq!(live_nodes(), before, "no leak: every string value dropped");
+    }
+
+    /// A String nested inside a recursive sum encodes (the real use — a value form like an AST node with
+    /// an identifier, or a `List Str`). Descriptor: a Cons/Nil list whose element is a Str. Drives the
+    /// iterative walk through Sum → Tuple → Str and back via Ref, and checks byte-identity vs the oracle.
+    #[test]
+    fn value_encode_string_list_matches_recursive_reference() {
+        reset();
+        // Descriptor built programmatically (nested shapes are error-prone as a hand array):
+        // table [0]=Str, [1]=Sum[(Cons→2),(Nil→3)], [2]=Tuple[→0,→1], [3]=Unit, [4]=Named("SL"→1); root=4.
+        let mut d: Vec<u8> = Vec::new();
+        let leb = |out: &mut Vec<u8>, v: u64| {
+            let mut v = v;
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        };
+        let name = |out: &mut Vec<u8>, s: &str| {
+            let mut tmp = Vec::new();
+            let mut v = s.len() as u64;
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                tmp.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+            out.extend_from_slice(&tmp);
+            out.extend_from_slice(s.as_bytes());
+        };
+        leb(&mut d, 5); // table_len
+        d.push(3); // [0] Str
+        d.push(9); // [1] Sum
+        leb(&mut d, 2);
+        name(&mut d, "Cons");
+        leb(&mut d, 2);
+        name(&mut d, "Nil");
+        leb(&mut d, 3);
+        d.push(6); // [2] Tuple [→0, →1]
+        leb(&mut d, 2);
+        leb(&mut d, 0);
+        leb(&mut d, 1);
+        d.push(5); // [3] Unit
+        d.push(10); // [4] Named("SL" → 1)
+        name(&mut d, "SL");
+        leb(&mut d, 1);
+        leb(&mut d, 4); // root
+
+        // Build ["a", "bb", "ccc"] as Cons(tuple s rest)…Nil.
+        let strs = ["a", "bb", "ccc"];
+        let mut acc = op_sum_new(1, op_arr_alloc(0)); // Nil
+        for s in strs.iter().rev() {
+            let pair = op_arr_alloc(2);
+            op_arr_set(pair, 0, op_str_new(String::from(*s)));
+            op_arr_set(pair, 1, acc);
+            acc = op_sum_new(0, pair);
+        }
+        let iter_doc = op_value_encode_form(acc, &d).expect("iterative encode of a Str list");
+        // Recursive oracle over the same value.
+        let descriptor = decode_descriptor(&d).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, acc, descriptor.root, 0).expect("recursive");
+        let rec_doc = b.finish(root);
+        assert_eq!(iter_doc, rec_doc, "iterative and recursive String-list encode must agree");
+        // The three string bodies appear in the leaf pool.
+        assert!(iter_doc.windows(1).any(|w| w == b"a"), "string 'a' present");
+        assert!(iter_doc.windows(3).any(|w| w == b"ccc"), "string 'ccc' present");
+        op_drop(acc);
+        assert_eq!(live_nodes(), 0, "no leak");
     }
 
     fn alloc_calls() -> u64 {

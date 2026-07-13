@@ -1381,6 +1381,26 @@
             (def (main) (sm (count 5))) (export main)))
   (output (: 15 Int64)))
 
+(case "a recursive NEWTYPE traversal recurses on its projected recursive field"
+  (doc    "The single-variant NEWTYPE form of the linked-list traversal: `(type Lst (Mk (Option (Tuple
+           Int64 Lst))))` wraps the recursive spine in a nominal `Mk`. `sm` matches out the `Mk`, then the
+           `Option`, and on the `Some` arm recurses on the tail `(. p 1)` — the recursive `Lst` field
+           PROJECTED out of the payload tuple. This field's type is the μ back-edge (a bare `Ty::Sum{decl}`)
+           while `sm`'s param is the folded `Ty::Nominal{decl}` — the SAME recursive type reached by fold vs
+           unfold, so they must unify. (They wrongly `differ`ed, rejecting CDZ0203 and blocking every
+           recursive-newtype count/length/sum.) `sm` of a 3-element list `[10,20,30]` = 60. Building and
+           one-level matching already worked; this pins the recursive field projection into a same-typed
+           recursive call — the canonical newtype-linked-list traversal.")
+  (input  (do
+            (type Lst (Mk (Option (Tuple Int64 Lst))))
+            (def (sm (: l Lst)) (match l
+                                  ((Mk o) (match o
+                                            ((Some p) (+ (. p 0) (sm (. p 1))))
+                                            ((None u) 0)))))
+            (def (main) (sm (Mk (Some (tuple 10 (Mk (Some (tuple 20 (Mk (Some (tuple 30 (Mk (None unit)))))))))))))
+            (export main)))
+  (output (: 60 Int64)))
+
 (case "a sum-match recursion that accumulates a built-in list returns a list"
   (doc    "The ACCUMULATOR companion of the fold above, and the shape a compiler's per-function
            return-kind table takes: `recompute` recurses by `match`-destructuring a user-sum parameter

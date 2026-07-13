@@ -259,6 +259,37 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             }
             Ok(())
         }
+        // A RECURSIVE NOMINAL, FOLDED vs UNFOLDED. A recursive newtype `(type Lst (Mk (Option (Tuple Int64
+        // Lst))))` presents its μ back-edge as a bare `Ty::Sum{decl}` (the derivation-path divergence noted
+        // in the Nominal arm above) while the DECLARED / value form is `Ty::Nominal{decl}` — SAME `decl`.
+        // So a recursive field PROJECTED out of the compound (`(. p 1) : Ty::Sum{decl:Lst}`) must unify
+        // with the folded declared param (`Ty::Nominal{decl:Lst}`) — they are the one recursive type, just
+        // reached by different paths (fold vs unfold). Match on EQUAL `decl` (a nominal's back-edge reuses
+        // its own declaration occurrence; a genuine sum's decl is a distinct `(type …)` occurrence, so this
+        // never conflates `Option` with `Lst`) + args, exactly as the two same-variant arms do. Without
+        // this, the canonical recursive-newtype traversal (`count`/`length`/`sum` recursing on the tail)
+        // was rejected CDZ0203 "Lst and Lst differ".
+        (
+            Ty::Sum {
+                decl: da, args: aa, ..
+            },
+            Ty::Nominal {
+                decl: db, args: ab, ..
+            },
+        )
+        | (
+            Ty::Nominal {
+                decl: da, args: aa, ..
+            },
+            Ty::Sum {
+                decl: db, args: ab, ..
+            },
+        ) if da == db && aa.len() == ab.len() => {
+            for (x, y) in aa.iter().zip(ab.iter()) {
+                unify(subst, x, y)?;
+            }
+            Ok(())
+        }
         // `String` is monomorphic — it unifies only with itself (no element/arg to recurse on).
         (Ty::String, Ty::String) => Ok(()),
         // `Char` is monomorphic — it unifies only with itself.

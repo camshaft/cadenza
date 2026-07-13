@@ -249,12 +249,24 @@ pub fn emit(
             if let Some(desc) = crate::lower::sum_shape_descriptor(db, &result) {
                 return emit_recursive_sum_resource(db, layout, e.def, &desc, spans);
             }
-        } else if matches!(result, crate::ty::Ty::Bytes) {
+        } else if matches!(result, crate::ty::Ty::Bytes | crate::ty::Ty::String) {
             // A RUNTIME `Bytes` result (a `concat`/recursion-built sequence — not a compile-time constant)
             // crosses through the resource shape, but its value form is VARIABLE-length: `encode()` LOOPS,
             // writing the static prefix, the runtime `bytes-len` as a LEB, a `bytes-get` copy loop, then
             // the static suffix (`DESIGN-runtime-bytes-escape-walker.md`). The FIRST looping walker.
-            if let Some(form) = crate::lower::runtime_bytes_form(db) {
+            //
+            // A RUNTIME `String` (a `String.concat`/recursion-built UTF-8 rope) is the SAME byte-leaf heap
+            // rep as Bytes (`String.concat` is `bytes-concat`), so it escapes through the SAME walker — only
+            // the value-form framing differs (`(: "…" String)` vs `(: b"…" Bytes)`, via `runtime_string_form`
+            // vs `runtime_bytes_form`). This gives a runtime String `encode` + the `len`/`is-empty`/`to-bytes`
+            // methods for free (VM: String-as-resource-with-methods), replacing the prior "String has no
+            // component boundary representation" decline.
+            let form = if matches!(result, crate::ty::Ty::String) {
+                crate::lower::runtime_string_form(db)
+            } else {
+                crate::lower::runtime_bytes_form(db)
+            };
+            if let Some(form) = form {
                 return emit_runtime_bytes_resource(db, layout, e.def, &form, spans);
             }
         } else if let Some(tpl) = crate::lower::runtime_value_form_template(&result) {
@@ -922,10 +934,17 @@ fn resource_escape_dwarf(
         return Ok(Some(resource_dwarf_from_core(
             db, &layout, &funcs, &imports, &main_core, span_data,
         )?));
-    } else if matches!(result, crate::ty::Ty::Bytes) {
-        let Some(form) = crate::lower::runtime_bytes_form(db) else {
+    } else if matches!(result, crate::ty::Ty::Bytes | crate::ty::Ty::String) {
+        // Mode S mirrors Mode E: a runtime String escapes through the SAME bytes walker (its String value
+        // form), so route it here too — else its sidecar would decline while the embedded component emits.
+        let form = if matches!(result, crate::ty::Ty::String) {
+            crate::lower::runtime_string_form(db)
+        } else {
+            crate::lower::runtime_bytes_form(db)
+        };
+        let Some(form) = form else {
             return Err(Reject::decline(
-                "a DWARF sidecar for this runtime-Bytes export is not yet supported (no value form)",
+                "a DWARF sidecar for this runtime-Bytes/String export is not yet supported (no value form)",
             ));
         };
         let (imports, funcs, layout) = resource_escape_build(db, layout, |used| {

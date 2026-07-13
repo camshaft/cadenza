@@ -183,6 +183,7 @@ pass	a deeper nested call chain still folds in linear time near the inliner limi
 pass	a deeply nested constant expression compiles or declines without crashing
 pass	a deeply nested literal in a tuple let-binder is refutable and rejected
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
+pass	a default-integer pragma naming a non-integer type is rejected
 pass	a delegated capability is not itself an export field
 pass	a delegated effect performed inside an intra-program handler
 pass	a delegation naming an effect that is never reached is rejected as latent authority
@@ -290,6 +291,7 @@ pass	a left shift by a floating-point count does not silently promote
 pass	a left shift by the bit width or more traps rather than wrapping
 pass	a left shift that overflows Int64 traps like multiplication
 pass	a length-prefixed frame is built from a size segment and a bytes segment
+pass	a let binder may be a single-variant-sum pattern that destructures the payload
 pass	a let binder may be a tuple pattern that destructures the value
 pass	a let binding is in scope in its body
 pass	a let binding shadows a built-in constructor name in application-head position
@@ -378,6 +380,7 @@ pass	a multi-payload pattern of the wrong arity is a malformed destructure
 pass	a multi-payload variant destructures its payloads positionally
 pass	a multi-segment bin concatenates mixed-width signed and unsigned segments in order
 pass	a multi-variant constructor nested in a tuple let-binder is refutable and rejected
+pass	a multi-variant-sum binding pattern is refutable and rejected
 pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a name bound to a string keys a map by its value, not the literal name
@@ -508,6 +511,7 @@ pass	a record with a duplicate field name is a type error
 pass	a record with a non-adjacent duplicate field name is a type error
 pass	a record with a runtime field is returned as a program result
 pass	a recursive HOF infers a callback whose RESULT is a sum matched in the body
+pass	a recursive NEWTYPE traversal recurses on its projected recursive field
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
 pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
 pass	a recursive byte walk threading a Bytes parameter through a helper infers without annotation
@@ -661,6 +665,8 @@ pass	a signed narrow-width parameter plus a bare literal computes at the paramet
 pass	a signed pattern segment reads a two's-complement integer as negative
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block
+pass	a single-variant-sum binding pattern destructures a multi-payload constructor positionally
+pass	a single-variant-sum binding pattern nests inside another
 pass	a slice spanning a concatenation sees the logical bytes
 pass	a slice whose end is beyond the string length yields None
 pass	a slice whose end precedes its start yields None
@@ -1328,7 +1334,6 @@ todo	a built-in Ast constructor applied to a wrong-type payload is a type error
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type
-todo	a default-integer pragma naming a non-integer type is rejected
 todo	a factorial that overflows the integer type traps through the recursion
 todo	a final unquote-splice binds the remaining elements as a list
 todo	a function whose body always diverges has result type Never

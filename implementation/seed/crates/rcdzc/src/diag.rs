@@ -74,6 +74,15 @@ pub enum Code {
     NumericMismatch,
     /// An integer literal that does not fit the width its use requires.
     IntOutOfRange,
+    /// A `(pragma default-integer <T>)` directive naming a type OUTSIDE the integer domain the numeric
+    /// model admits — a well-formed directive (recognized key, one type argument) whose argument is a
+    /// valid type that simply is not an integer type (`Float64`, a record, …), so it fails the
+    /// integer-domain predicate (`numeric-model.md` §A Module May Declare Its Default Integer Literal
+    /// Type: the default MUST name an integer type). In the CDZ03xx NUMERIC band — a numeric-domain
+    /// failure, not a structural one — DISTINCT from `MalformedDirective` (CDZ0602, wrong arity) and
+    /// `UnknownDirective` (CDZ0601, an unknown key): the key and arity are right, only the numeric
+    /// domain of the named type is wrong.
+    NonIntegerDefault,
     /// A constant operation whose defined outcome on its (compile-time-known) operands is a trap —
     /// e.g. a provable overflow. A compile-provable trap fails the build rather than shipping a
     /// component that traps at run time (`reference-compiler.md` §A Compile-Provable Trap Fails The
@@ -216,6 +225,7 @@ impl Code {
             Code::TypeMismatch => "CDZ0203",
             Code::NumericMismatch => "CDZ0301",
             Code::IntOutOfRange => "CDZ0302",
+            Code::NonIntegerDefault => "CDZ0303",
             Code::ConstTrap => "CDZ0304",
             Code::DeadTrap => "CDZ0305",
             Code::UnusedBinding => "CDZ0306",

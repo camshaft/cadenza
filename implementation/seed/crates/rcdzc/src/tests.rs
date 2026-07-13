@@ -4092,6 +4092,128 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_dividend_provably_below_its_divisor_folds_div_to_zero_and_rem_to_itself() {
+        // RANGE-BASED div/rem: when `x` is provably in `[0, C-1]` for a positive constant divisor `C`, the
+        // truncating `x / C` is 0 and `x % C` is `x` (the divisor is too big to divide `x` once). A masked
+        // value modding by a larger constant — `(% (& x 7) 100)` → `x & 7`, `(/ (& x 7) 100)` → 0 — drops a
+        // hardware divide entirely. Bounded by hi < C (a range reaching C does NOT fold). Pins the
+        // elimination at the Lir level (no div/rem) AND value parity, including the boundary + un-folded case.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let divrem = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64DivS | Lir::I64DivU | Lir::I64RemS | Lir::I64RemU))
+                .count()
+        };
+        // `(& x 7) ∈ [0,7]`, divisor 100 → `% 100` folds to `x & 7` (no rem), `/ 100` folds to 0 (no div).
+        let remf = lir("(: x Int64)", "(: (% (: (& x 7) Int64) 100) Int64)");
+        assert_eq!(
+            divrem(&remf),
+            0,
+            "rem of a small dividend folds away, got: {remf:?}"
+        );
+        assert!(
+            remf.contains(&Lir::I64And),
+            "the mask that bounds the dividend stays, got: {remf:?}"
+        );
+        let divf = lir("(: x Int64)", "(: (/ (: (& x 7) Int64) 100) Int64)");
+        assert_eq!(
+            divrem(&divf),
+            0,
+            "div of a small dividend folds to 0, got: {divf:?}"
+        );
+        // Boundary: `(& x 15) ∈ [0,15]`, divisor 16 → hi=15 < 16 folds; divisor 15 → hi=15 NOT < 15, stays.
+        assert_eq!(
+            divrem(&lir("(: x Int64)", "(: (% (: (& x 15) Int64) 16) Int64)")),
+            0,
+            "hi 15 < 16 → fold"
+        );
+        assert_eq!(
+            divrem(&lir("(: x Int64)", "(: (% (: (& x 15) Int64) 15) Int64)")),
+            1,
+            "hi 15 !< 15 → keep rem"
+        );
+
+        // VALUE PARITY: folded cases + the un-folded case compute the real result.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (& x 7) Int64) 100) Int64)",
+                &[Val::S64(255)]
+            ),
+            7
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (/ (: (& x 7) Int64) 100) Int64)",
+                &[Val::S64(255)]
+            ),
+            0
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (& x 15) Int64) 16) Int64)",
+                &[Val::S64(200)]
+            ),
+            8
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (& x 15) Int64) 15) Int64)",
+                &[Val::S64(255)]
+            ),
+            0
+        ); // 15%15
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (% (: (& x 15) Int64) 15) Int64)",
+                &[Val::S64(200)]
+            ),
+            8
+        ); // 8%15
+
+        // TRAP PRESERVATION: the `/` fold DISCARDS its dividend, so a trapping dividend keeps its trap —
+        // `(& (/ 100 z) 7)` contains a ÷z that must still trap at z=0 (the fold declines, `x` not trap-free).
+        assert!(
+            traps(
+                "(: z Int64)",
+                "(: (/ (: (& (: (/ 100 z) Int64) 7) Int64) 100) Int64)",
+                &[Val::S64(0)]
+            ),
+            "a trapping dividend keeps its trap (the discarding / fold declines)"
+        );
+    }
+
+    #[test]
     fn a_signed_pow2_div_of_a_nonneg_dividend_drops_the_round_toward_zero_bias() {
         // A signed `/`/`%` by a power of two normally emits the round-toward-zero BIAS sequence (needed
         // only to correct NEGATIVE dividends). When the dividend is provably NON-NEGATIVE — a mask
@@ -7378,6 +7500,26 @@ mod recursion {
     }
 
     #[test]
+    fn a_recursive_newtype_traversal_recurses_on_its_projected_field() {
+        // OVER-REJECTION regression: a recursive NEWTYPE `(type Lst (Mk (Option (Tuple Int64 Lst))))` whose
+        // recursive field is PROJECTED out (`(. p 1) : Lst`) and passed to a same-typed recursive call was
+        // rejected CDZ0203 "Lst and Lst must be the same type here, but differ". The projected field's type
+        // is the μ back-edge (a bare `Ty::Sum{decl}`) while the declared param is the folded
+        // `Ty::Nominal{decl}` — the SAME recursive type, so `unify`/`agrees_with` must treat a `Sum{decl}`
+        // and a `Nominal{decl}` with EQUAL `decl` as the one type. `sm` of a 3-element list = 60.
+        // Assert it TYPE-CHECKS + emits (the regression was a CDZ0203 type reject at compile time). The
+        // program imports the value-heap runtime (it builds a runtime linked list), so the runtime RUN is
+        // covered by the corpus gate (via cdz-run's composition); here we pin that it COMPILES clean — the
+        // recursive field projection no longer diverges from the declared type.
+        let src = "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) (def (sm (: l Lst)) (match l ((Mk o) (match o ((Some p) (+ (. p 0) (sm (. p 1)))) ((None u) 0))))) (def (main) (sm (Mk (Some (tuple 10 (Mk (Some (tuple 20 (Mk (Some (tuple 30 (Mk (None unit))))))))))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a recursive-newtype traversal recursing on its projected field must type-check + emit \
+             (was rejected CDZ0203 'Lst and Lst differ')"
+        );
+    }
+
+    #[test]
     fn a_recursive_factorial_runs() {
         // fac(5) = 120 — recursion through multiplication (checked; in range here).
         let bytes = component(
@@ -9346,6 +9488,37 @@ mod match_engine {
         assert_eq!(
             reject_code("(do (pragma frobnicate 3) (def (main) 1) (export main))").as_deref(),
             Some("CDZ0601")
+        );
+    }
+
+    #[test]
+    fn a_default_integer_pragma_naming_a_non_integer_type_is_cdz0303() {
+        // 06-numeric-model "a default-integer pragma naming a non-integer type is rejected" +
+        // `numeric-model.md` §A Module May Declare Its Default Integer Literal Type: the directive names
+        // the type otherwise-unconstrained integer literals default to, so it MUST name an INTEGER type. A
+        // well-formed directive (recognized key, one type argument) whose argument reduces to a non-integer
+        // type-value (`Float64`) fails the integer-domain predicate — the NUMERIC-domain rejection CDZ0303,
+        // distinct from the structural CDZ0602 (wrong arity) and CDZ0601 (unknown key): key + arity are
+        // right, only the numeric domain is wrong. The fault anchors at the pragma form, which sorts before
+        // the later module reference, so it is the reported error rather than the downstream unbound-`m`.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-integer Float64) (def (x) 5)) ((. m x) unit))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0303")
+        );
+        // A valid INTEGER default the numeric model admits but this compiler does not YET represent as a
+        // `Ty` (`BigInt`) does NOT reduce to a concrete type-value, so the conservative domain predicate
+        // does NOT fire (an unrepresented integer type is a legitimate default, not a domain violation) —
+        // the program declines downstream on the still-unmodeled pragma (CDZ0101, unbound `m`), never a
+        // false CDZ0303. Pins that CDZ0303 fires only on a type PROVEN non-integer, not on absence of proof.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-integer BigInt) (def (x) 5)) ((. m x) unit))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0101")
         );
     }
 
@@ -11646,6 +11819,33 @@ mod match_engine {
         )
         .expect("runtime present");
         assert_eq!(out, "(: b\"ABC\" Bytes)", "runtime concat escape");
+    }
+
+    #[test]
+    fn a_runtime_built_string_escapes_via_the_looping_walker() {
+        // A RUNTIME `String` (a `String.concat`/recursion-built UTF-8 rope — not a compile-time constant)
+        // now crosses the host boundary, where before it DECLINED ("String has no component boundary
+        // representation"). A runtime String is the SAME byte-leaf heap rep as Bytes (`String.concat` is
+        // `bytes-concat`), so it escapes through the SAME looping walker — only the value form differs
+        // (`(: "…" String)` vs `(: b"…" Bytes)`). `(rep "hi" 3)` appends "x" three times → "hixxx".
+        let Some(out) = escape_render(
+            "(module m (def (rep s n) (if (< n 1) s (rep ((. String concat) s \"x\") (- n 1)))) \
+                       (def (main) (rep \"hi\" 3)) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime-String escape run");
+            return;
+        };
+        assert_eq!(
+            out, "(: \"hixxx\" String)",
+            "runtime String escape renders as a String"
+        );
+
+        // A single runtime concat (no recursion): concat "a"+"b" built via the byte-rope → "ab".
+        let out = escape_render(
+            "(module m (def (mk s) ((. String concat) s \"b\")) (def (main) (mk \"a\")) (export main))",
+        )
+        .expect("runtime present");
+        assert_eq!(out, "(: \"ab\" String)", "runtime String concat escape");
     }
 
     #[test]
@@ -15488,6 +15688,28 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_sum_carrying_a_string_renders_via_the_value_encode_walker() {
+        // A recursive sum whose payload carries a STRING (a `StrList` — the shape of an AST node with an
+        // identifier, a JSON tree) now COMPILES its value-encode escape. Previously `sum_shape_descriptor`
+        // DECLINED on the `Ty::String` payload (`shape_of` returned None → no descriptor → the escape fell
+        // through), so a string-bearing recursive value could not cross the host boundary at all — even
+        // though the codec wire format has KIND_STR. `shape_of` now emits `ShapeNode::Str` (descriptor tag
+        // 3) and the runtime `value-encode` renders a KIND_STR leaf (guarded byte-exact in cdz-runtime's
+        // `value_encode_renders_a_string_leaf`). Pin that it compiles + imports the runtime.
+        use crate::testkit::parse;
+        let src = "(module m (type StrList (Cons (Tuple String StrList)) Nil) \
+                     (def (build (: n Int64)) (if (< n 1) (StrList.Nil ()) \
+                        (StrList.Cons (tuple \"x\" (build (- n 1)))))) \
+                     (def (main) (build 2)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a recursive sum carrying a String compiles via the value-encode walker");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "the string-bearing recursive-sum escape imports the runtime"
+        );
+    }
+
+    #[test]
     fn a_value_eq_on_a_sum_payload_string_compiles() {
         // Comparing a variant's PAYLOAD (a `SumPayload`/tuple-element read) to a constant string —
         // `(= h "+")` where `h` is bound from a `(NPrim (tuple h a b))` payload — is the shape a recursive
@@ -17682,6 +17904,30 @@ mod stage1 {
         assert!(
             db.is_user_node(crate::ast::StructId(node)),
             "node {node} must be a user node (the op key), not the synthesized projection"
+        );
+    }
+
+    #[test]
+    fn a_misspelled_handler_arm_op_does_not_also_report_no_home() {
+        // A misspelled arm op (`emitt` for declared `emit`) is the primary CDZ0403 ("did you mean
+        // `emit`?", with its fix). It must NOT ALSO report CDZ0401 no-home on the handled body's
+        // `(E.emit …)`: the arm typo leaves `emit` undischarged, so the perform spuriously looks
+        // home-less — a cascade of the arm typo (fixing the arm spelling clears both). Only the root
+        // CDZ0403 should surface.
+        let src = "(do (effect E (op emit (-> Int64 Unit))) \
+                   (def (main) (handle E 0 ((emitt (v) s (resume unit s))) (E.emit 5))) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let codes: Vec<String> = crate::diagnostics(&mut db)
+            .into_iter()
+            .filter_map(|d| d.code)
+            .collect();
+        assert!(
+            codes.iter().any(|c| c == "CDZ0403"),
+            "the misspelled arm op is a CDZ0403; got {codes:?}"
+        );
+        assert!(
+            !codes.iter().any(|c| c == "CDZ0401"),
+            "the no-home CDZ0401 is a cascade of the arm typo and must be suppressed; got {codes:?}"
         );
     }
 
@@ -20363,6 +20609,60 @@ mod stage1 {
             match cdz_run::run(&bytes, &opts).expect("run") {
                 cdz_run::Outcome::Value(s) => assert_eq!(s, want, "code {arg}"),
                 cdz_run::Outcome::Trap(t) => panic!("composed 3-variant run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_wide_sum_match_with_named_binders_dispatches_correctly() {
+        // A match over a MANY-variant sum, each arm binding the payload by a NAME (`(Vi x) → …`). This is
+        // the shape whose compile was O(N²): each arm's payload-binder `x` resolved as an "unbound name"
+        // and ran the O(scope) nearest-name typo scan, AND each arm head `Vi` resolved via an O(variants)
+        // `variant_ctor_field` scan, AND the redundant-arm check's `Vec::contains` was O(arms) per arm —
+        // three O(N²)s. The fixes (lazy unbound-suggestion at the fault-surfacing site, a
+        // `variant_ctor_index`, a redundant-arm `HashSet`) make it LINEAR. This test LOCKS IN the behavior
+        // they must preserve: every arm dispatches to the value derived from its OWN bound payload, so a
+        // dropped/misindexed binder or ctor would return the wrong value. 12 variants — enough that the
+        // ctor index + binder resolution are genuinely exercised, small enough to run fast.
+        use crate::testkit::parse;
+        let n = 12;
+        let variants: String = (0..n).map(|i| format!(" (V{i} Int64)")).collect();
+        let arms: String = (0..n).map(|i| format!(" ((V{i} x) (+ x {i}))")).collect();
+        // `pick k` builds `Vk 100`; `code k` matches it and returns `100 + k` (payload + arm index) — so
+        // the binder `x` (=100) MUST reach each arm's body for the answer to be right.
+        let mut pick = String::from("(V0 100)");
+        for i in (0..n).rev() {
+            pick = format!("(if (= n {i}) (V{i} 100) {pick})");
+        }
+        let src = format!(
+            "(module m (type T{variants}) \
+               (def (pick (: n Int64)) {pick}) \
+               (def (code (: n Int64)) (match (pick n){arms})) \
+               (export code))"
+        );
+        let bytes =
+            compile_component(&crate::codec::encode(&parse(&src))).expect("compile wide-sum match");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed wide-sum run");
+            return;
+        };
+        for k in [0, 5, 11] {
+            let opts = cdz_run::RunOpts {
+                export: Some("code".to_string()),
+                args: vec![k.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => {
+                    assert_eq!(
+                        s,
+                        (100 + k).to_string(),
+                        "arm V{k}: payload 100 + index {k}"
+                    )
+                }
+                cdz_run::Outcome::Trap(t) => panic!("wide-sum run trapped: {t}"),
             }
         }
     }
