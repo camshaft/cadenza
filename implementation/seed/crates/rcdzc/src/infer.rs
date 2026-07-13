@@ -1462,6 +1462,13 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 }
                 continue;
             }
+            // A do-local `(type …)` / `(effect …)` is a DECLARATION, not a value expression — its sum/
+            // effect record is synthesized at load (`db::collect_nested_decls`) and its names resolve
+            // through the ordinary decl paths. There is nothing to type-check as a value (resolving the
+            // form as one would decline "unbound name `type`"), so skip it, like a `def`.
+            if matches!(db.ast.head_name(f), Some("type") | Some("effect")) {
+                continue;
+            }
             collect(db, f, out);
         }
         return;

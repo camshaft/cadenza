@@ -3174,26 +3174,29 @@
            declare Color with three nullary constructors. Each constructor is single-arity taking
            Unit per the uniform constructor requirement. The constructors bind in a Color record:
            Color.Red, Color.Green, Color.Blue. Applying the nullary constructor `(Color.Red unit)`
-           yields the Sum value that renders `(Color.Red unit)` — the same `(Variant unit)` form
-           every nullary variant takes ((None unit), (Sign.Pos unit)); a nullary variant carries
+           yields the Sum value that renders `(Red unit)` — the same bare `(Variant unit)` form
+           every nullary variant takes ((None unit), (Pos unit)); a nullary variant carries
            unit, so its one canonical value form is the constructor applied to unit, never a bare
-           tag (deterministic-value-form.md #A Value Has One Canonical Byte Form).")
+           tag alone (deterministic-value-form.md #A Value Has One Canonical Byte Form). The value
+           form names the variant BARE (`Red`), not qualified by its type — the same form the whole
+           corpus renders ((Pos unit), (Some 42)).")
   (needs  sum-type-declaration)
   (input  (do
             (type Color Red Green Blue)
             (Color.Red unit)))
-  (output (: (Color.Red unit) Color)))
+  (output (: (Red unit) Color)))
 
 (case "a sum type variant can carry data"
   (doc    "Witnesses type-system.md #Sum Types Are Declarable Constructed And Deconstructed (1st
            sentence: 'each optionally carrying data'). Syntax (type Result (Ok Int64) Err)
            declares Result where Ok carries an Int64 and Err carries Unit (nullary). Both are
-           single-arity: Ok takes Int64, Err takes Unit. Constructors: Result.Ok, Result.Err.")
+           single-arity: Ok takes Int64, Err takes Unit. Constructors: Result.Ok, Result.Err. The
+           value form names the variant BARE (`Ok`), not qualified — as the whole corpus renders.")
   (needs  sum-type-declaration)
   (input  (do
             (type Result (Ok Int64) Err)
             (Result.Ok 42)))
-  (output (: (Result.Ok 42) Result)))
+  (output (: (Ok 42) Result)))
 
 (case "sum type constructors are in scope after declaration"
   (doc    "Witnesses type-system.md #Sum Types Are Declarable: declaring a sum type binds its

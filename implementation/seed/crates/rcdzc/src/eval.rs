@@ -775,6 +775,11 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
     // match, which would only see the collapsed `Ref{last}` and miss the intermediates.)
     if let Some(items) = db.ast.as_form(node, "do") {
         for &item in items.to_vec().iter() {
+            // A do-local `(type …)` / `(effect …)` is a DECLARATION with no callees — skip it (descending
+            // would resolve its `type`/`effect` head as an unbound value). Every other form runs.
+            if matches!(db.ast.head_name(item), Some("type") | Some("effect")) {
+                continue;
+            }
             collect_callees(db, item, out);
         }
         return;

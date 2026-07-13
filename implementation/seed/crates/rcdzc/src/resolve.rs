@@ -1517,7 +1517,10 @@ fn resolve_do(db: &Db, id: StructId) -> Resolved {
     // a `let` (a form sees only the declarations BEFORE it). But a sequencing block YIELDS its last
     // form's value, so the last form must be a value expression: a TRAILING declaration leaves the block
     // valueless (`(do (def x 5))` has nothing to yield).
-    if db.ast.head_name(last) == Some("def") {
+    if matches!(
+        db.ast.head_name(last),
+        Some("def") | Some("type") | Some("effect")
+    ) {
         return Resolved::Poison(Reject::coded(
             Code::Malformed,
             "a `do` block must end in a value form, not a declaration",
