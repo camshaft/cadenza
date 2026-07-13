@@ -10735,6 +10735,34 @@ mod stage1 {
     }
 
     #[test]
+    fn a_closure_captures_another_closure_and_composes() {
+        // A HIGHER-ORDER capture: `twice = (fn (y) (inc (inc y)))` closes over `inc` (itself a closure)
+        // and applies it twice; `(twice 5)` = inc(inc(5)) = 7. A function value captured by another
+        // closure folds at each application.
+        assert_eq!(
+            run_main(
+                "(let ((inc (fn ((: x Int64)) (+ x 1)))) \
+                       (let ((twice (fn ((: y Int64)) (inc (inc y))))) (twice 5)))"
+            ),
+            7
+        );
+        // A closure's argument is another closure's RESULT: `((fn (x) (+ x k)) ((fn (y) (* y 2)) 3))`
+        // with k=10 → (+ 6 10) = 16. Composing two closure applications.
+        assert_eq!(
+            run_main("(let ((k 10)) ((fn ((: x Int64)) (+ x k)) ((fn ((: y Int64)) (* y 2)) 3)))"),
+            16
+        );
+        // A closure that itself references an enclosing closure through a further nesting.
+        assert_eq!(
+            run_main(
+                "(let ((a 1)) (let ((f (fn ((: x Int64)) (+ x a)))) \
+                       (let ((g (fn ((: y Int64)) (f (+ y 1))))) (g 5))))"
+            ),
+            7
+        );
+    }
+
+    #[test]
     fn a_runtime_selected_function_applies_via_case_of_case() {
         use wasmtime::component::Val;
         // `((if c f g) x)` with a RUNTIME condition — the function is chosen at run time. The

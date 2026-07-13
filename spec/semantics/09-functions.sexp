@@ -105,6 +105,28 @@
   (input  (let ((a 2) (b 3)) ((fn ((: x Int64)) (+ (* x a) b)) 5)))
   (output (: 13 Int64)))
 
+; A closure that CAPTURES ANOTHER CLOSURE and applies it — a higher-order capture. `twice` closes over
+; `inc` (itself a closure) and applies it twice; `(twice 5)` = inc(inc(5)) = 7. core-semantics.md §A
+; Function Is A First-Class Value: a function value can be captured like any other. Both closures fold —
+; the captured `inc` inlines at each application inside `twice`'s body.
+
+(case "a closure captures another closure and applies it"
+  (doc    "`inc = (fn (x) (+ x 1))`; `twice = (fn (y) (inc (inc y)))` captures `inc` and applies it twice;
+           `(twice 5)` = inc(inc(5)) = 7. A closure captured by another closure is applied correctly —
+           the captured function value folds at each use.")
+  (input  (let ((inc (fn ((: x Int64)) (+ x 1))))
+            (let ((twice (fn ((: y Int64)) (inc (inc y)))))
+              (twice 5))))
+  (output (: 7 Int64)))
+
+(case "a closure argument is another closure's result"
+  (doc    "The argument to one closure is the result of applying another: `((fn (x) (+ x k)) ((fn (y)
+           (* y 2)) 3))` with k = 10 → (fn x)(6) = 16. Composing two closure applications — the inner
+           `(* 3 2) = 6` feeds the outer `(+ 6 10) = 16` — both fold.")
+  (input  (let ((k 10))
+            ((fn ((: x Int64)) (+ x k)) ((fn ((: y Int64)) (* y 2)) 3))))
+  (output (: 16 Int64)))
+
 (case "a function is passed as an argument (higher-order)"
   (doc    "Witnesses core-semantics.md §A Function Is A First-Class Value: apply-twice takes a function
            f and a value v and applies f to the result of applying f to v.")
