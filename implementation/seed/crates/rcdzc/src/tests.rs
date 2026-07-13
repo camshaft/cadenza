@@ -4484,6 +4484,74 @@ mod runtime_ops {
         // The partial mask still masks correctly (parity where it is NOT elided).
         assert_eq!(run::<u8>("(: x UInt8)", "(& x 15)", &[Val::U8(200)]), 8); // 200 & 15 = 8
     }
+
+    #[test]
+    fn a_mask_covering_a_shifted_values_range_is_elided() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(>>ᵤ x:UInt8 4)` yields a value in [0, 15], so `& 15` (covers all 4 bits) is redundant → elided.
+        let elided = lir("(: x UInt8)", "(& (>> x 4) 15)");
+        assert!(
+            !elided
+                .iter()
+                .any(|i| matches!(i, Lir::I32And | Lir::I64And)),
+            "the mask covering the shifted range is elided; got {elided:?}"
+        );
+        // A mask that does NOT cover the shifted range (`& 7` vs a [0,15] value) is KEPT.
+        let kept = lir("(: x UInt8)", "(& (>> x 4) 7)");
+        assert!(
+            kept.iter().any(|i| matches!(i, Lir::I32And | Lir::I64And)),
+            "a mask narrower than the shifted range is kept; got {kept:?}"
+        );
+        // A SIGNED right shift (`>>ₛ`) sign-extends, so the high bits are NOT provably zero — the mask
+        // must be KEPT even when it covers the same low bits.
+        let signed = lir("(: x Int8)", "(& (>> x 4) 15)");
+        assert!(
+            signed
+                .iter()
+                .any(|i| matches!(i, Lir::I32And | Lir::I64And)),
+            "a signed arithmetic shift keeps the mask; got {signed:?}"
+        );
+
+        // VALUE PARITY — elided and kept must both compute correctly.
+        assert_eq!(
+            run::<u8>("(: x UInt8)", "(& (>> x 4) 15)", &[Val::U8(200)]),
+            12
+        ); // 200>>4=12
+        assert_eq!(
+            run::<u8>("(: x UInt8)", "(& (>> x 4) 15)", &[Val::U8(255)]),
+            15
+        );
+        assert_eq!(
+            run::<u8>("(: x UInt8)", "(& (>> x 4) 7)", &[Val::U8(255)]),
+            7
+        ); // 15 & 7 = 7
+    }
 }
 
 // ── runtime functions + recursion (ANF step 2 / B1): a recursive call is a real wasm call ─────────
@@ -6560,6 +6628,90 @@ mod match_engine {
             "30",
             "runtime bytes-splice: body byte spliced after the header"
         );
+        // RUNTIME BIT-FIELD packing: `(bits (UInt8.wrap n) 4) (bits 5 4)` packs the low nibble of `n` into
+        // the HIGH nibble and constant 5 into the low nibble of one byte (MSB-first). n=10 → 0xA5 = 165.
+        let nibble = "(module m (def (main (: n Int64)) (match ((. Bytes at) (bin (bits (UInt8.wrap n) 4) (bits 5 4)) 0) ((Some b) b) ((None _) -1))) (export main))";
+        assert_eq!(
+            val(nibble, &["10"]),
+            "165",
+            "runtime bit-field: (n<<4)|5, n=10"
+        );
+        assert_eq!(
+            val(nibble, &["0"]),
+            "5",
+            "runtime bit-field: low nibble only, n=0"
+        );
+        assert_eq!(
+            val(nibble, &["15"]),
+            "245",
+            "runtime bit-field: (15<<4)|5 = 0xF5"
+        );
+        // A runtime bit-field over its k-bit range TRAPS (a 4-bit field given 16 has no 4-bit encoding).
+        assert!(
+            matches!(
+                run(
+                    "(module m (def (main (: n Int64)) ((. Bytes len) (bin (bits (UInt8.wrap n) 4) (bits 5 4)))) (export main))",
+                    &["16"]
+                ),
+                cdz_run::Outcome::Trap(_)
+            ),
+            "a runtime 4-bit field of 16 must trap, not truncate"
+        );
+        // A bit-field run spanning TWO bytes: three fields 8+4+4 = 16 bits = 2 bytes. `(bits n 8)(bits 2
+        // 4)(bits 3 4)` → byte0 = n, byte1 = (2<<4)|3 = 0x23 = 35. n=200 → len 2, byte0=200, byte1=35.
+        let two = "(module m (def (main (: n Int64)) ";
+        assert_eq!(
+            val(
+                &format!(
+                    "{two} ((. Bytes len) (bin (bits (UInt8.wrap n) 8) (bits 2 4) (bits 3 4)))) (export main))"
+                ),
+                &["200"]
+            ),
+            "2",
+            "runtime bit-field run: two bytes"
+        );
+        assert_eq!(
+            val(
+                &format!(
+                    "{two} (match ((. Bytes at) (bin (bits (UInt8.wrap n) 8) (bits 2 4) (bits 3 4)) 0) ((Some b) b) ((None _) -1))) (export main))"
+                ),
+                &["200"]
+            ),
+            "200",
+            "runtime bit-field run: byte0 = the 8-bit field"
+        );
+        assert_eq!(
+            val(
+                &format!(
+                    "{two} (match ((. Bytes at) (bin (bits (UInt8.wrap n) 8) (bits 2 4) (bits 3 4)) 1) ((Some b) b) ((None _) -1))) (export main))"
+                ),
+                &["200"]
+            ),
+            "35",
+            "runtime bit-field run: byte1 = (2<<4)|3"
+        );
+        // A bit-field run COMPOSED with an int segment: `(bits n 4)(bits 1 4)(u8 42)` → byte0=(n<<4)|1, byte1=42.
+        let mixed = "(module m (def (main (: n Int64)) ";
+        assert_eq!(
+            val(
+                &format!(
+                    "{mixed} (match ((. Bytes at) (bin (bits (UInt8.wrap n) 4) (bits 1 4) (u8 42)) 1) ((Some b) b) ((None _) -1))) (export main))"
+                ),
+                &["3"]
+            ),
+            "42",
+            "runtime bit-field run then an int segment: the int byte follows"
+        );
+        assert_eq!(
+            val(
+                &format!(
+                    "{mixed} (match ((. Bytes at) (bin (bits (UInt8.wrap n) 4) (bits 1 4) (u8 42)) 0) ((Some b) b) ((None _) -1))) (export main))"
+                ),
+                &["3"]
+            ),
+            "49",
+            "runtime bit-field run then an int segment: (3<<4)|1 = 0x31 = 49"
+        );
     }
 
     #[test]
@@ -7327,6 +7479,46 @@ mod match_engine {
                 "float equality fold: {prog}"
             );
         }
+    }
+
+    #[test]
+    fn nan_equality_follows_the_canonical_byte_form() {
+        // 03-equality NaN cluster (`core-semantics.md` §Floating-Point Equality Follows The Canonical Byte
+        // Form): `Float64.nan` is the canonical NaN VALUE (a module constant field, like `Int64.max`),
+        // resolving to `Core::ConstFloatNan`. Every NaN shares one canonical byte form, so `(= nan nan)`
+        // is TRUE (NOT wasm f64.eq, which says nan≠nan), and `nan` is UNEQUAL to any finite float. The
+        // rule recurses through compounds (tuple/list/sum) via `const_compound_eq`. Consumed by an `if`
+        // so `main` returns 1/0 — a Bool result.
+        for (prog, want) in [
+            ("(= Float64.nan Float64.nan)", 1),
+            ("(= Float64.nan 1.0)", 0),
+            ("(= 1.0 Float64.nan)", 0),
+            ("(= (tuple Float64.nan) (tuple Float64.nan))", 1),
+            ("(= (tuple Float64.nan) (tuple 1.0))", 0),
+            ("(= (Some Float64.nan) (Some Float64.nan))", 1),
+        ] {
+            let src = format!("(module m (def (main) (if {prog} 1 0)) (export main))");
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "nan equality fold: {prog}"
+            );
+        }
+    }
+
+    #[test]
+    fn nan_crosses_the_boundary_as_a_canonical_f64_nan() {
+        // `Float64.nan` returned as the program result emits an `f64.const` of the canonical NaN bits;
+        // the export returns f64 and the boundary lifts it. Read back BY BITS: it IS a NaN (f64::NAN).
+        let got = run_returns::<f64>(
+            &component("(module m (def (main) Float64.nan) (export main))"),
+            "main",
+        );
+        assert!(
+            got.is_nan(),
+            "Float64.nan crosses as an f64 NaN (got bits {:#x})",
+            got.to_bits()
+        );
     }
 
     #[test]
@@ -8539,6 +8731,40 @@ mod match_engine {
                 ty.render_name()
             );
         }
+    }
+
+    #[test]
+    fn a_quantity_erases_to_its_inner_numeric_value() {
+        // L1-1b: `Qty.value (Qty.of 5.0 metre)` recovers the erased inner `5.0` — a quantity is CHECKED
+        // THEN ERASED, so `Qty.of`/`Qty.value` are runtime no-ops and the compiled program is plain
+        // Float64 (byte-identical to the bare `5.0`). Compiles + runs to the recovered value.
+        let src = "(do (def (main) ((. Qty value) ((. Qty of) 5.0 ((. Unit base) #\"metre\")))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a quantity erases and its value is recoverable"),
+                "main"
+            ),
+            5.0
+        );
+    }
+
+    #[test]
+    fn a_quantity_over_a_wrong_inner_numeric_type_is_rejected_not_miscompiled() {
+        // L1-1b: the unit layer sits OVER the numeric core and does not relax it — adding an Int64
+        // quantity to a Float64 quantity (SAME dimension `metre`, DIFFERENT inner type) must be REFUSED,
+        // never miscompiled to a running value (the honest decline-don't-miscompile signal). It rejects
+        // via the inner-type conflict; the code is CDZ0203 today and ALIGNS to the numeric no-promotion
+        // CDZ0301 when the operator unit rules land (L1-2 — the `+`/`-`/comparison dimensional check that
+        // reads the operands' units and dispatches the numeric mismatch as CDZ0301). Either way the
+        // ill-typed program is a compile-time REJECTION, not a run.
+        let src = "(do (def (main) (+ ((. Qty of) 2 ((. Unit base) #\"metre\")) \
+                   ((. Qty of) 3.0 ((. Unit base) #\"metre\")))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "an Int64 quantity + a Float64 quantity must be REJECTED (a numeric mismatch under a unit), not compiled"
+        );
     }
 
     #[test]
@@ -11604,6 +11830,44 @@ mod stage1 {
     }
 
     #[test]
+    fn sum_shape_descriptor_closes_recursion_with_a_ref() {
+        // The compiler's shape descriptor for a RECURSIVE sum `(type IL (Cons (Tuple Int64 IL)) Nil)` is
+        // a TABLE with a self-`Ref` (the `Cons` payload tuple's second element points back at the sum),
+        // so the descriptor is FINITE. This must be BYTE-IDENTICAL to the descriptor the runtime's
+        // `value_encode_form_matches_the_codec` test hard-codes (the compiler/runtime contract). We build
+        // it from the solved `Ty::Sum` and assert the bytes.
+        let src = "(module m (type IL (Cons (Tuple Int64 IL)) Nil) (def (main) Nil) (export main))";
+        let mut db =
+            crate::db::Db::load(crate::codec::decode(&crate::codec::encode(&parse(src))).unwrap());
+        let body = db
+            .defs
+            .iter()
+            .find(|d| d.name == "main")
+            .unwrap()
+            .body
+            .unwrap();
+        let ty = crate::infer::type_of(&mut db, body);
+        let desc = crate::lower::sum_shape_descriptor(&mut db, &ty).expect("descriptor");
+        // The value walk must terminate + close the recursion: decode the table, confirm some entry is a
+        // `Ref` (tag 11) — the recursion-closing back-edge — and that the descriptor is non-trivial.
+        assert!(
+            desc.len() > 8,
+            "a recursive-sum descriptor is more than a trivial table"
+        );
+        assert!(
+            desc.contains(&11u8),
+            "the recursive payload closes with a Ref (tag 11)"
+        );
+        // The descriptor round-trips through a bounded decode (no infinite expansion): count the table
+        // entries via the leading LEB and confirm it is small + finite (the IL sum has a handful).
+        let table_len = desc[0] as usize; // small table → single LEB byte
+        assert!(
+            (1..=16).contains(&table_len),
+            "IntList's shape table is small + finite, got {table_len}"
+        );
+    }
+
+    #[test]
     fn a_nullary_function_call_invokes_it() {
         // `(def (g) 7)` is a NULLARY function; `(g)` — a zero-argument application — invokes it and
         // yields 7. A nullary def resolves its name to its body value (a bare `g` IS 7), so the call
@@ -12110,6 +12374,52 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "an abortive perform in a short-circuit right operand must decline, not miscompile"
+        );
+    }
+
+    #[test]
+    fn an_abortive_perform_in_a_tail_if_branch_under_a_let_folds_per_branch() {
+        // E4 branch-tail fold, the `let`-body case: a `let`'s VALUE is its BODY's value, so a `let` body is
+        // in the same tail position as the `let`. An abortive perform in the tail of an `if` branch inside a
+        // tail-position `let` body folds per-branch exactly like a bare `if`. `(let ((k 5)) (if true
+        // (Bail.bail 7) k))` → 7 (abort); the `false`-branch sibling would yield `k`=5 (survives). The FOLD
+        // already threaded the let body correctly; this pins that the guard's `let` arm carries tail-ness
+        // into the body (a generic descent would have marked it non-tail and wrongly DECLINED).
+        let aborts = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (let ((k 5)) (if true (Bail.bail 7) k)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(aborts)))
+                    .expect("a let-body tail-if-branch abort compiles"),
+                "main"
+            ),
+            7
+        );
+        let survives = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (let ((k 5)) (if false (Bail.bail 7) k)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(survives)))
+                    .expect("the non-aborting let-body branch survives"),
+                "main"
+            ),
+            5
+        );
+    }
+
+    #[test]
+    fn an_abortive_perform_in_a_conditional_let_init_declines() {
+        // E4 soundness guard, the `let`-init case: a `let` binding's INIT is a strict operand (NON-tail — its
+        // value feeds the binder), so an abortive perform in an init UNDER A CONDITIONAL cannot be realized
+        // by the per-branch fold (the branch value must become `k`, not abandon the whole handle). `(let ((k
+        // (if true (Bail.bail 7) 0))) (+ 1 k))` must DECLINE — the guard's `let` arm descends each init at
+        // `tail=false`, so the abort is flagged (`under_cond && !tail`). Contrast an UNCONDITIONAL init abort
+        // (`(let ((k (Bail.bail 7))) …)`) which is the sound E4-a collapse and still folds.
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 99 ((Bail.bail (n) s n)) (let ((k (if true (Bail.bail 7) 0))) (+ 1 k)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "an abortive perform in a conditional let-init must decline, not miscompile"
         );
     }
 

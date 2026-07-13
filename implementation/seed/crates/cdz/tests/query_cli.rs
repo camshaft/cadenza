@@ -1199,6 +1199,47 @@ fn check_json_on_a_clean_program_emits_nothing_and_exits_zero() {
 }
 
 #[test]
+fn check_verify_fixes_upgrades_a_confirmed_heuristic_fix_to_verified() {
+    // `--verify-fixes` applies each proposed fix + re-checks: a did-you-mean whose candidate actually
+    // clears the fault is UPGRADED heuristic → verified (`spec/capabilities/diagnostics.md` §A Confirmed
+    // Fix Is Marked Verified). Without the flag it prints `help (heuristic):`; with it, plain `help:`.
+    let dir = scratch_dir("check_verify");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(module m (def (compute x) x) (def (main) (computee 1)) (export main))\n",
+    )
+    .unwrap();
+    // Baseline: heuristic.
+    let (_, base, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(
+        base.contains("help (heuristic): replace with `compute`"),
+        "heuristic by default: {base}"
+    );
+    // Verified: the `computee`→`compute` edit recompiles clean, so the marker drops.
+    let (ok, stdout, _) = run(&["check", "--verify-fixes", f.to_str().unwrap()], "");
+    assert!(!ok, "the fault is still an error until actually applied");
+    assert!(
+        stdout.contains("help: replace with `compute`"),
+        "a confirmed fix loses the heuristic marker: {stdout}"
+    );
+    assert!(
+        !stdout.contains("help (heuristic)"),
+        "no heuristic marker on a verified fix: {stdout}"
+    );
+    // And the JSON flag flips to verified:true.
+    let (_, js, _) = run(
+        &["check", "--verify-fixes", "--json", f.to_str().unwrap()],
+        "",
+    );
+    assert!(
+        js.contains("\"verified\":true"),
+        "JSON reports the upgrade: {js}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_on_a_clean_program_prints_nothing_and_exits_zero() {
     let dir = scratch_dir("check_ok");
     let f = dir.join("prog.sexp");

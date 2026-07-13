@@ -378,6 +378,13 @@ struct CheckArgs {
     /// text-parsing the human `file:line:col` output. Exit code is unchanged (non-zero iff any error).
     #[arg(long)]
     json: bool,
+    /// VERIFY each proposed fix by applying it to the source and re-checking: a heuristic fix that
+    /// actually clears its diagnostic (with no parse error and no new same-code error) is UPGRADED to
+    /// `verified` in the output — so an agent can apply it blind (`spec/capabilities/diagnostics.md` §A
+    /// Confirmed Fix Is Marked Verified). Off by default (it recompiles once per fix); the compiler's own
+    /// rule-verified fixes (e.g. the `_`-prefix silence) are always `verified` regardless.
+    #[arg(long)]
+    verify_fixes: bool,
 }
 
 #[derive(clap::Args)]
@@ -522,6 +529,93 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Apply a structural fix to `source` text, returning the edited text — the byte-level realization of
+/// an [`rcdzc::DiagnosticFix`] the `check --verify-fixes` harness recompiles. `kind` selects the
+/// operation over the `[from, to)` byte range (the fix's target-node span, mapped by the caller).
+/// `"replace"` swaps the range for `repl`; `"insert"` inserts `repl` (rendered child forms) just before
+/// `to` (the end of the target list, before its closing paren); `"wrap"` replaces the range with `repl`
+/// in which the ellipsis placeholder ([`rcdzc::WRAP_HOLE`]) stands for the ORIGINAL range text (`(Some
+/// …)` → `(Some <original>)`). `None` if the range is out of bounds or not on a char boundary
+/// (defensive — never panics).
+fn apply_fix_to_source(
+    source: &str,
+    kind: &str,
+    from: usize,
+    to: usize,
+    repl: &str,
+) -> Option<String> {
+    if from > to
+        || to > source.len()
+        || !source.is_char_boundary(from)
+        || !source.is_char_boundary(to)
+    {
+        return None;
+    }
+    let mut out = String::with_capacity(source.len() + repl.len());
+    out.push_str(&source[..from]);
+    match kind {
+        "insert" => {
+            // Append the new child form(s) at the end of the target list, before its closing `)`. The
+            // target range is the whole list; splice `repl` in just before the final byte (the paren).
+            let inner_end = source[..to].rfind(')').unwrap_or(to);
+            out.clear();
+            out.push_str(&source[..inner_end]);
+            out.push(' ');
+            out.push_str(repl);
+            out.push_str(&source[inner_end..]);
+        }
+        "wrap" => {
+            let original = &source[from..to];
+            out.push_str(&repl.replace(rcdzc::WRAP_HOLE, original));
+            out.push_str(&source[to..]);
+        }
+        _ => {
+            // "replace" (and any unknown kind, treated as replace): swap the range for `repl`.
+            out.push_str(repl);
+            out.push_str(&source[to..]);
+        }
+    }
+    Some(out)
+}
+
+/// Whether an error diagnostic with code `code` is ABSENT from `text` when parsed as `is_ml` (else
+/// s-expr) — the "did the fix clear the fault?" predicate for `check --verify-fixes`. Re-parses the
+/// edited text and re-runs the `Diagnostics` query; a parse failure or an unresolved AST reads as "not
+/// cleared" (returns `false`), so a fix is confirmed ONLY when the program parses AND the same-code
+/// error is gone. Conservative: it does not require the WHOLE program to be clean (an unrelated
+/// pre-existing error may remain), only that THIS diagnostic's code no longer appears.
+fn fix_clears_code(text: &str, is_ml: bool, code: &str) -> bool {
+    let arenas = if is_ml {
+        let parsed = cadenza_syntax::parser::read_ml(text);
+        if !parsed.errors.is_empty() {
+            return false; // the edit broke the parse — not a clean fix
+        }
+        parsed.arenas
+    } else {
+        match cadenza_syntax::sexpr::read(text) {
+            Ok(a) => a,
+            Err(_) => match cadenza_syntax::sexpr::read_all(text) {
+                Ok(a) => a,
+                Err(_) => return false,
+            },
+        }
+    };
+    let out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics),
+    );
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
+        return false; // the AST failed to compile at the entry — treat as not cleared
+    };
+    // The wire is one fault per line: `severity<TAB>code<TAB>…`. The fix clears the fault iff NO line is
+    // an error with this same code.
+    let text_out = String::from_utf8_lossy(bytes);
+    !text_out.lines().any(|line| {
+        let mut cols = line.splitn(3, '\t');
+        cols.next() == Some("error") && cols.next() == Some(code)
+    })
+}
+
 /// `cdz check FILE` — report every well-formedness fault, "diagnostics as you type". Drives the
 /// compiler's `Query::Diagnostics` (the fault set, NOT gated on export/emit), maps each fault's node id
 /// to `file:line:col` via the span table, and prints `file:line:col: severity [CODE]: message`. Exits
@@ -579,6 +673,25 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         };
         any_error |= severity == "error";
 
+        // `--verify-fixes`: UPGRADE a heuristic fix to verified when applying it actually clears this
+        // diagnostic. The compiler marks a fix verified only when a RULE proves it (D3's `_`-prefix);
+        // a wrap/coercion/did-you-mean is heuristic there because the compiler does not recompile. Here
+        // — where we hold BOTH the source text and the compiler — we CAN: splice the fix in, re-check,
+        // and confirm the same-code error is gone (`spec/capabilities/diagnostics.md` §A Confirmed Fix
+        // Is Marked Verified). Only heuristic fixes with a real target span are candidates.
+        let verified_flag = if fix_verified == "verified" {
+            true
+        } else if args.verify_fixes && fix_node != "-" && code != "-" {
+            span_of(fix_node)
+                .and_then(|(_, _, from, to)| {
+                    apply_fix_to_source(&source, fix_kind, from, to, fix_repl)
+                })
+                .map(|edited| fix_clears_code(&edited, is_ml_source(&args.file), code))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
         if args.json {
             // The machine-readable shape: one JSON object per diagnostic, its structured fix nested. An
             // agent reads `fix.kind` + `fix.from`/`fix.to` + `fix.replacement` and applies the edit
@@ -601,14 +714,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
                 let mut fix = json::Object::new();
                 fix.string("kind", fix_kind); // "replace" | "insert" | "wrap"
                 fix.string("replacement", fix_repl);
-                fix.raw(
-                    "verified",
-                    if fix_verified == "verified" {
-                        "true"
-                    } else {
-                        "false"
-                    },
-                );
+                fix.raw("verified", if verified_flag { "true" } else { "false" });
                 if let Some((_, _, from, to)) = span_of(fix_node) {
                     fix.raw("from", &from.to_string());
                     fix.raw("to", &to.to_string());
@@ -630,7 +736,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         // rendered form(s) into the node (e.g. the missing match arms). The applicability marker rides
         // along so a consumer branches (`verified` = apply blind, else confirm intent).
         if fix_node != "-" {
-            let marker = if fix_verified == "verified" {
+            let marker = if verified_flag {
                 "" // machine-applicable — no caveat
             } else {
                 " (heuristic)"
@@ -849,6 +955,13 @@ fn load_program(file: &str) -> Result<(String, cadenza_syntax::Arenas), String> 
     Ok((source, arenas))
 }
 
+/// Whether a program file is the ML surface (`.cdz`/`.ml`) vs s-expressions (`.sexp`/`.sexpr`) — the
+/// one place the surface is inferred from the extension, shared by `load_program_spanned` and the
+/// `check --verify-fixes` re-parse (which must re-read the edited text in the SAME surface).
+fn is_ml_source(file: &str) -> bool {
+    file.ends_with(".cdz") || file.ends_with(".ml")
+}
+
 /// Read + parse a program file into its arenas AND span table. Format inferred from the extension
 /// (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr). The parse is the WHOLE-program form (`read_all_*`),
 /// matching how the gate normalizes a corpus program to an export shape.
@@ -863,7 +976,7 @@ fn load_program_spanned(
     String,
 > {
     let source = std::fs::read_to_string(file).map_err(|e| format!("reading {file}: {e}"))?;
-    let is_ml = file.ends_with(".cdz") || file.ends_with(".ml");
+    let is_ml = is_ml_source(file);
     if is_ml {
         let parsed = cadenza_syntax::parser::read_ml(&source);
         for e in &parsed.errors {

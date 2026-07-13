@@ -100,6 +100,32 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // directly (`resolve::decode_ty`), and this record only carries the operation fields.
     names.insert("String".to_string(), string_module(ast));
 
+    // ---- Units of measure (the optional, compile-time-only dimensional-analysis layer) ----
+    // `Unit` — the ground type `Ty::Unit` (registered above with `(meta t) = Unit`) EXTENDED with the
+    // unit-BUILDER fields `one` (the dimensionless group identity) and `base` (a base dimension named by
+    // a symbol), reached by member access `(. Unit one)` / `(. Unit base)`. ⚠ `Unit` is BOTH a type (the
+    // `unit` value's type) AND the units module — a record carries both a `(meta t)` and member fields
+    // (exactly as `Bytes`/`String` do), so the two roles coexist and using `Unit` as a type (`(-> Unit
+    // Int64)`) still reduces to `Ty::Unit`. This REPLACES the plain ground-type record inserted above
+    // (adding the fields), it does NOT change `Unit`'s type role. A unit is a compile-time VALUE reduced
+    // away by `eval` (it indexes `Ty::Qty` and never reaches the backend). `Unit.*`/`Unit./`/`Unit.^` are
+    // NOT fields here — the reader leaves them as bare names (`^`/`*`/`/` aren't alphabetic, so `(Unit.*
+    // a b)` does not desugar to member access), so they are registered as top-level names below.
+    names.insert("Unit".to_string(), unit_module(ast));
+    // The unit group OPERATORS as top-level names (the reader keeps `Unit.*`/`Unit./`/`Unit.^` as bare
+    // atoms). Each is an operator-shaped record whose `(meta apply)` is the builder prim; they take units
+    // and build a unit, reduced by `eval`. No `(meta t)` scheme (a unit is not typed by HM — it is a
+    // compile-time value, like a type-constructor argument).
+    names.insert("Unit.*".to_string(), unit_op_ctor(ast, "unit-mul"));
+    names.insert("Unit./".to_string(), unit_op_ctor(ast, "unit-div"));
+    names.insert("Unit.^".to_string(), unit_op_ctor(ast, "unit-pow"));
+
+    // `Qty` — the module of QUANTITY operations: `of` (attach a unit to a numeric value) and `value`
+    // (recover the numeric value, discarding the unit). Reached by member access `(. Qty of)` / `(. Qty
+    // value)`. A `(Qty T u)` is checked then ERASED before emission (units-of-measure.md §Dimensions Are
+    // Checked Then Erased), so `Qty.of`/`Qty.value` erase to their value argument's lowering.
+    names.insert("Qty".to_string(), qty_module(ast));
+
     // `Char` — the module of char OPERATIONS (`to-int`/`from-int`), a NULLARY type like `String`. Its
     // `(meta t)` is the ground `Ty::Char`, so bare `Char` in type position IS the type; the operation
     // fields project via member access `(. Char to-int)`.
@@ -542,6 +568,60 @@ fn char_module(ast: &mut Arenas) -> StructId {
     let from_int_op = list_op_record(ast, "char-from-int", from_int_ty);
     let from_int_key = push_atom(ast, Leaf::Name("from-int".to_string()));
     children.push(push_list(ast, vec![from_int_key, from_int_op]));
+    push_list(ast, children)
+}
+
+/// The `Unit` module record — the ground type `Ty::Unit` (via `(meta t) = (intrinsic Unit)`, so bare
+/// `Unit` in TYPE position IS `Ty::Unit`, e.g. `(-> Unit Int64)`) EXTENDED with the unit-BUILDER fields
+/// `one` and `base`, reached by member access `(. Unit one)` / `(. Unit base)`. ⚠ `Unit` plays TWO roles
+/// — the `unit` value's TYPE and the units module — which coexist because a record carries both a `(meta
+/// t)` and member fields (exactly as `Bytes`/`String` do; the `Bytes` module proved a `(meta t)` and
+/// member access coexist). `Unit.one` is the dimensionless unit (the group identity); `(Unit.base
+/// #"metre")` names a base dimension. Each field is a builder record whose `(meta apply)` is the builder
+/// prim; a unit is a compile-time value reduced by `eval`. `Unit.*`/`Unit./`/`Unit.^` are registered as
+/// TOP-LEVEL names, not fields (the reader keeps them bare — `^`/`*`/`/` aren't alphabetic).
+fn unit_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    // `(meta t) = Unit` — the ground type-value, so `Unit` in type position stays `Ty::Unit` (the
+    // effect-op `(-> Unit Int64)` and every other `Unit`-as-type use keep resolving). This is what makes
+    // the module a superset of the plain ground-type record it replaces (it ADDS fields, keeps the type).
+    let ty_val = intrinsic_node(ast, "Unit");
+    let t_field = meta_field(ast, "t", ty_val);
+    let mut children = vec![head, t_field];
+    // `one` — the dimensionless unit (applying it, or using it bare, yields the group identity).
+    let one_field = push_atom(ast, Leaf::Name("one".to_string()));
+    let one_op = unit_op_ctor(ast, "unit-one");
+    children.push(push_list(ast, vec![one_field, one_op]));
+    // `base` — a base dimension named by a symbol: `(Unit.base #"metre")`.
+    let base_field = push_atom(ast, Leaf::Name("base".to_string()));
+    let base_op = unit_op_ctor(ast, "unit-base");
+    children.push(push_list(ast, vec![base_field, base_op]));
+    push_list(ast, children)
+}
+
+/// A UNIT-builder record `(record ((meta apply) (intrinsic PRIM)))` — `Unit.one`/`Unit.base`/`Unit.*`/…
+/// A unit is a compile-time value the evaluator BUILDS (reduced by `eval`), so a unit builder carries
+/// ONLY a `(meta apply)` builder prim — no `(meta t)` scheme (a unit is not an HM-typed runtime value,
+/// like a type constructor is not). The same shape as [`ctor_record`], named distinctly for clarity.
+fn unit_op_ctor(ast: &mut Arenas, prim: &str) -> StructId {
+    ctor_record(ast, prim)
+}
+
+/// The `Qty` module record — `of` (attach a unit) and `value` (recover the numeric, discard the unit),
+/// reached by member access. Each field is a record whose `(meta apply)` is the quantity prim; their
+/// RESULT type is unit-dependent (`Qty.of`'s result unit is the VALUE of its 2nd argument), so it is
+/// computed in `infer::apply_type`'s dedicated arms rather than by a static `(meta t)` scheme — hence no
+/// `(meta t)` here (like the compound value constructors `tuple`/`record`/`list`, whose type is their
+/// arguments' shape, not a fixed scheme).
+fn qty_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let mut children = vec![head];
+    let of_field = push_atom(ast, Leaf::Name("of".to_string()));
+    let of_op = ctor_record(ast, "qty-of");
+    children.push(push_list(ast, vec![of_field, of_op]));
+    let value_field = push_atom(ast, Leaf::Name("value".to_string()));
+    let value_op = ctor_record(ast, "qty-value");
+    children.push(push_list(ast, vec![value_field, value_op]));
     push_list(ast, children)
 }
 
@@ -1062,6 +1142,13 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
     // width-generic in its SOURCE, this module's width as TARGET. The `(meta apply)` is `float-of`.
     let of_ty = float_of_type(ast, width);
     let of_op = list_op_record(ast, "float-of", of_ty);
+    // `nan` — the canonical NOT-A-NUMBER value of THIS float width, a CONSTANT field (like `Int64.max`),
+    // reached by member access `(. Float64 nan)`. Its value is the `float-nan` intrinsic directly
+    // (`Prim::FloatNan` → `Core::ConstFloatNan`); NOT a literal, since `Decimal` holds only finite values.
+    // Every NaN shares one canonical byte form, so `(= Float64.nan Float64.nan)` is true (core-semantics.md
+    // #Floating-Point Equality Follows The Canonical Byte Form). The field is a bare intrinsic node (a
+    // VALUE), not an operator record — projecting it yields the NaN value, applying nothing.
+    let nan_val = intrinsic_node(ast, "float-nan");
     let fields = vec![
         meta_field(ast, "t", ty_expr),
         {
@@ -1071,6 +1158,10 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
         {
             let k = push_atom(ast, Leaf::Name("of".to_string()));
             push_list(ast, vec![k, of_op])
+        },
+        {
+            let k = push_atom(ast, Leaf::Name("nan".to_string()));
+            push_list(ast, vec![k, nan_val])
         },
     ];
     let mut children = vec![head];

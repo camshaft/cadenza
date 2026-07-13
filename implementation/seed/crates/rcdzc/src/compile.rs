@@ -655,6 +655,11 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect_reached_poisons(db, s.value, out);
             }
         }
+        Core::BinBitsBuild { fields } => {
+            for f in fields {
+                collect_reached_poisons(db, f.value, out);
+            }
+        }
         Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
             collect_reached_poisons(db, bytes, out)
         }
@@ -755,6 +760,7 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Core::ConstStr(_)
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
+        | Core::ConstFloatNan
         | Core::Unit => {}
     }
 }

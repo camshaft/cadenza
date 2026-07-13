@@ -68,6 +68,11 @@ export function replEval(buffer: string, expr: string, from: Surface): Promise<C
   return client().replEval(buffer, expr, from);
 }
 
+/// The names of every top-level definition the buffer declares — for the REPL's autocomplete.
+export function definedNames(buffer: string, from: Surface): Promise<string[]> {
+  return client().definedNames(buffer, from);
+}
+
 export function runtimeHash(): Promise<string> {
   return client().runtimeHash();
 }

@@ -98,6 +98,13 @@ pub fn emit(
                 // nominal NAME); a nominal-over-scalar has a scalar boundary valtype and is handled by the
                 // scalar path below (where `export_result_valtype` strips the tag), so both cross faithfully.
                 | crate::ty::Ty::Nominal { .. }
+                // A QUANTITY export renders its FULL value form `(: (Qty.of <v> <unit>) (Qty T u))` so the
+                // dimensional type is OBSERVABLE (units-of-measure.md — the corpus records the quantity, not
+                // the bare erased number). Its inner value erases to a scalar, so `comp_valtype_of(Qty)`
+                // would send it down the scalar path (losing the unit); routing it through the resource
+                // escape here bakes the quantity's constant value form (the unit lives only in these baked
+                // bytes — the emitted numeric is byte-identical, the type layer is compile-time-only).
+                | crate::ty::Ty::Qty { .. }
         )
     {
         let body = def_body(db, e.def)?;

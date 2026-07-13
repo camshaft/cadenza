@@ -53,6 +53,18 @@ pub struct BinSeg {
     pub value: StructId,
 }
 
+/// One bit-field of a runtime [`Core::BinBitsBuild`] — a `(bits v k)` segment: pack the low `k` bits of
+/// the runtime value `value` (an UNSIGNED `k`-bit field; a value outside `0..2^k` traps at run time, the
+/// companion of the constant CDZ0304). `k` is a compile-time constant (read at resolve); the whole
+/// bit-field RUN is byte-aligned (CDZ0220 checked it), so a `Core::BinBitsBuild` emits a whole number of
+/// bytes. `k` ≤ 56 for a runtime field (keeps the MSB-first u64 pack accumulator from overflowing between
+/// byte flushes — a wider runtime bit-field declines at `lower`; the constant path still handles it).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct BinBitsField {
+    pub k: u32,
+    pub value: StructId,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PathStep {
     /// Descend into a sum variant's PAYLOAD — `sum-payload(handle)`. (A single-payload variant; a
@@ -187,6 +199,13 @@ pub enum Core {
     /// ARITHMETIC and crossing the boundary as a float value are later increments (a float value at the
     /// boundary / an arithmetic operand still declines — no f64 machine path yet).
     ConstFloat(crate::ast::Decimal),
+    /// The canonical NOT-A-NUMBER Float constant (`nan`) — a `Ty::Float` value distinct from any
+    /// `ConstFloat` (`Decimal` holds only finite values, so NaN cannot be a `ConstFloat`). Under the
+    /// canonical-byte-form equality every NaN is equal to every NaN and unequal to every finite float
+    /// (`core-semantics.md` §Floating-Point Equality Follows The Canonical Byte Form). Its bit pattern is
+    /// `f64::NAN.to_bits()` — the one canonical quiet NaN. Folds in `=`; does not yet cross the boundary
+    /// (no written value form) — the escape/emit paths decline, like a runtime float.
+    ConstFloatNan,
     /// The unit value.
     Unit,
     /// A record value — a fixed set of named fields, each field's value referenced by its AST
@@ -282,6 +301,14 @@ pub enum Core {
     /// bytes big-endian (`le` reversed). The segments are the LEAN [`BinSeg`] form (width/signedness/
     /// endianness + the value occurrence), so `Core` does not depend on the resolver's `Segment`.
     BinBuild { segs: Vec<BinSeg> },
+    /// A RUN of `(bits v k)` bit-field segments with at least one RUNTIME value, packed MSB-first into a
+    /// `Bytes` on the rope heap at run time. The run is byte-aligned (CDZ0220 guaranteed `sum(k) % 8 == 0`),
+    /// so it produces `sum(k) / 8` bytes. Each field's value range-checks against its `k`-bit width (trap
+    /// "binary value does not fit segment" if `< 0` or `>= 2^k` — the companion of the constant CDZ0304),
+    /// then its low `k` bits shift into a u64 accumulator that flushes whole bytes from the top as they
+    /// close. Emitted by `lower` when a `bits`-only maximal run has a runtime value; a run mixing bits with
+    /// int/bytes segments concatenates the pieces (`Core::BytesConcat`), like the int-run splitter.
+    BinBitsBuild { fields: Vec<BinBitsField> },
     /// Read a fixed-width INTEGER segment out of a runtime `Bytes` scrutinee at a STATIC byte offset — the
     /// value a `bin`-pattern binder decodes when matching a runtime scrutinee (`(match b ((bin (u16 n)) n)
     /// …)`). Emits `w` `bytes-get`s from `bytes` at `byte_offset..+width`, assembles them (big-endian, `le`
