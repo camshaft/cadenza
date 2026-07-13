@@ -11433,6 +11433,23 @@ mod stage1 {
     }
 
     #[test]
+    fn a_conditional_abortive_perform_declines_rather_than_miscompiles() {
+        // E4 soundness guard: an abortive perform inside an `if` BRANCH fires on only ONE control path,
+        // so the E4-a unconditional short-circuit (which collapses the WHOLE handle body to the arm value)
+        // would be UNSOUND — `(if (< x 5) (Bail.bail 7) 0)` must yield 0 when `x >= 5`, not 7. A runtime
+        // condition can't fold, so the perform stays genuinely conditional. `reduce_handle` DECLINES it
+        // (a real `block`/`br` control node for a conditional abort is a later increment) rather than
+        // miscompile. Regression guard for a live-on-spec miscompile E4-a's guard missed.
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main (: x Int64)) \
+                     (handle 99 ((Bail.bail (n) s n)) (if (< x 5) (Bail.bail 7) 0))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a conditional abortive perform must decline, not miscompile the other branch"
+        );
+    }
+
+    #[test]
     fn nested_intra_program_handlers_compose_inside_out() {
         // E3-nested: two nested `handle`s compose — the fold reduces the INNER handle first (discharging
         // its effect), leaving the OUTER effect's performs for the outer fold. `(A.a)` resumes 22 (inner),

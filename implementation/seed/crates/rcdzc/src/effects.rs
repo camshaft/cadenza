@@ -844,17 +844,75 @@ pub fn reduce_handle(
     let state_ty = state_ty_of_arms(db, init, arms);
     let slot = StateSlot { decl, state_ty };
     let ctx = HandlerCtx::new(db, map, vec![slot]);
+    // ABORTIVE (E4) SOUNDNESS GUARD: the abortive short-circuit (below) makes the WHOLE handle body
+    // collapse to the arm value when an abortive perform fires. That is sound ONLY when the abort is
+    // UNCONDITIONAL — reached on every control path. An abortive perform inside a CONDITIONAL position
+    // (an `if`/`match` branch, a short-circuit connective operand) fires on ONLY one path, so collapsing
+    // the whole handle would wrongly abort the OTHER path too (`(if c (Bail.bail 7) 0)` must yield 0 when
+    // `c` is false, not 7). The `block`/`br` control node that realizes a conditional abort is a later
+    // increment — decline cleanly here rather than miscompile.
+    if !ctx.abortive.is_empty() && body_has_conditional_abortive_perform(db, body, &ctx, false) {
+        return None;
+    }
     // Thread the INIT state through the body in evaluation order. The handle's value is the body's
     // value (the accumulated state is observable only through the operations), so we return the
     // rewritten body; the final threaded state is discarded (the body never reads it directly).
     let (rewritten, _final_states) = thread(db, body, vec![init], &ctx)?;
     // ABORTIVE (E4): if an abortive perform fired during threading, the handle's value is that arm's
     // value — the surrounding computation was abandoned, so the threaded body is dead. Return the abort
-    // value directly. (Unconditional strict abort only; a conditional abort declined at the perform.)
+    // value directly. (Unconditional strict abort only; a conditional abort was declined above.)
     if let Some(abort) = ctx.abort_value.get() {
         return Some(abort);
     }
     Some(rewritten)
+}
+
+/// Whether `node` contains an abortive perform (of an op in `ctx.abortive`) reached inside a CONDITIONAL
+/// position — an `if`/`match` branch or a short-circuit connective (`and`/`or`) operand. Such a perform
+/// fires on only one control path, so the abortive short-circuit (which collapses the whole handle body)
+/// would be unsound — `reduce_handle` declines it. `guarded` tracks whether the current position is under
+/// a conditional; the walk sets it for branches/operands and reports an abortive perform found while
+/// `guarded`. (A cross-function abortive callee is a separate later increment; this checks the body.)
+fn body_has_conditional_abortive_perform(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+    guarded: bool,
+) -> bool {
+    // An abortive perform HERE, under a guard, is the unsound shape (fires on only one control path).
+    // (An unconditional abortive perform — `guarded == false` — is the sound E4-a case, not flagged.)
+    if guarded
+        && let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some(id) = is_perform(db, head, ctx)
+        && ctx.abortive.contains(&id)
+    {
+        return true;
+    }
+    // An `if`: the CONDITION is unconditional; the two BRANCHES are guarded.
+    if let Resolved::If { cond, then_, else_ } = resolved_of(db, node) {
+        return body_has_conditional_abortive_perform(db, cond, ctx, guarded)
+            || body_has_conditional_abortive_perform(db, then_, ctx, true)
+            || body_has_conditional_abortive_perform(db, else_, ctx, true);
+    }
+    // A `match`: the SCRUTINEE is unconditional; every ARM BODY is guarded. (A short-circuit `and`/`or`
+    // has its RIGHT operand guarded; it is a plain `Apply` head `and`/`or`, handled by the generic
+    // descent below marking children guarded — but to be precise, treat any `and`/`or` right operand as
+    // guarded via the head check.)
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            // A short-circuit connective `(and lhs rhs)`/`(or lhs rhs)` guards its RIGHT operand.
+            let head_name = children
+                .first()
+                .and_then(|&c| db.ast.as_name(c).map(str::to_string));
+            let is_short_circuit = matches!(head_name.as_deref(), Some("and") | Some("or"));
+            children.iter().enumerate().any(|(i, &c)| {
+                // For a short-circuit connective, operand index >= 2 (the right operand) is guarded.
+                let child_guarded = guarded || (is_short_circuit && i >= 2);
+                body_has_conditional_abortive_perform(db, c, ctx, child_guarded)
+            })
+        }
+        Struct::Atom(_) => false,
+    }
 }
 
 /// The state type for a handler whose arms are `arms` seeded with `init` — the init seed's type JOINED
