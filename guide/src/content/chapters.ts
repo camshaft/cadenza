@@ -182,7 +182,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Units of measure",
     blurb: "Carry a unit with a value; mix dimensions and it won't compile.",
     section: "What makes Cadenza different",
-    exercises: 2,
+    exercises: 3,
     Component: lazy(() => import("./chapters/Units.tsx")),
   },
   {
