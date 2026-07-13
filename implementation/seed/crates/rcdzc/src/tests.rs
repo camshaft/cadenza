@@ -6628,6 +6628,90 @@ mod match_engine {
             "30",
             "runtime bytes-splice: body byte spliced after the header"
         );
+        // RUNTIME BIT-FIELD packing: `(bits (UInt8.wrap n) 4) (bits 5 4)` packs the low nibble of `n` into
+        // the HIGH nibble and constant 5 into the low nibble of one byte (MSB-first). n=10 → 0xA5 = 165.
+        let nibble = "(module m (def (main (: n Int64)) (match ((. Bytes at) (bin (bits (UInt8.wrap n) 4) (bits 5 4)) 0) ((Some b) b) ((None _) -1))) (export main))";
+        assert_eq!(
+            val(nibble, &["10"]),
+            "165",
+            "runtime bit-field: (n<<4)|5, n=10"
+        );
+        assert_eq!(
+            val(nibble, &["0"]),
+            "5",
+            "runtime bit-field: low nibble only, n=0"
+        );
+        assert_eq!(
+            val(nibble, &["15"]),
+            "245",
+            "runtime bit-field: (15<<4)|5 = 0xF5"
+        );
+        // A runtime bit-field over its k-bit range TRAPS (a 4-bit field given 16 has no 4-bit encoding).
+        assert!(
+            matches!(
+                run(
+                    "(module m (def (main (: n Int64)) ((. Bytes len) (bin (bits (UInt8.wrap n) 4) (bits 5 4)))) (export main))",
+                    &["16"]
+                ),
+                cdz_run::Outcome::Trap(_)
+            ),
+            "a runtime 4-bit field of 16 must trap, not truncate"
+        );
+        // A bit-field run spanning TWO bytes: three fields 8+4+4 = 16 bits = 2 bytes. `(bits n 8)(bits 2
+        // 4)(bits 3 4)` → byte0 = n, byte1 = (2<<4)|3 = 0x23 = 35. n=200 → len 2, byte0=200, byte1=35.
+        let two = "(module m (def (main (: n Int64)) ";
+        assert_eq!(
+            val(
+                &format!(
+                    "{two} ((. Bytes len) (bin (bits (UInt8.wrap n) 8) (bits 2 4) (bits 3 4)))) (export main))"
+                ),
+                &["200"]
+            ),
+            "2",
+            "runtime bit-field run: two bytes"
+        );
+        assert_eq!(
+            val(
+                &format!(
+                    "{two} (match ((. Bytes at) (bin (bits (UInt8.wrap n) 8) (bits 2 4) (bits 3 4)) 0) ((Some b) b) ((None _) -1))) (export main))"
+                ),
+                &["200"]
+            ),
+            "200",
+            "runtime bit-field run: byte0 = the 8-bit field"
+        );
+        assert_eq!(
+            val(
+                &format!(
+                    "{two} (match ((. Bytes at) (bin (bits (UInt8.wrap n) 8) (bits 2 4) (bits 3 4)) 1) ((Some b) b) ((None _) -1))) (export main))"
+                ),
+                &["200"]
+            ),
+            "35",
+            "runtime bit-field run: byte1 = (2<<4)|3"
+        );
+        // A bit-field run COMPOSED with an int segment: `(bits n 4)(bits 1 4)(u8 42)` → byte0=(n<<4)|1, byte1=42.
+        let mixed = "(module m (def (main (: n Int64)) ";
+        assert_eq!(
+            val(
+                &format!(
+                    "{mixed} (match ((. Bytes at) (bin (bits (UInt8.wrap n) 4) (bits 1 4) (u8 42)) 1) ((Some b) b) ((None _) -1))) (export main))"
+                ),
+                &["3"]
+            ),
+            "42",
+            "runtime bit-field run then an int segment: the int byte follows"
+        );
+        assert_eq!(
+            val(
+                &format!(
+                    "{mixed} (match ((. Bytes at) (bin (bits (UInt8.wrap n) 4) (bits 1 4) (u8 42)) 0) ((Some b) b) ((None _) -1))) (export main))"
+                ),
+                &["3"]
+            ),
+            "49",
+            "runtime bit-field run then an int segment: (3<<4)|1 = 0x31 = 49"
+        );
     }
 
     #[test]

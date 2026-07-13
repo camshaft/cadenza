@@ -1,5 +1,6 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	Ok carrying a Some keeps both variant tags
+pass	Qty.value recovers the underlying numeric value, discarding the unit
 pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	String.scalar-len of a string selected by a runtime if
@@ -16,6 +17,9 @@ pass	a CBOR skip steps over a tagged item to the value it wraps
 pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
+pass	a NaN nested in a list compares equal under the canonical byte form
+pass	a NaN nested in a sum payload compares equal under the canonical byte form
+pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
@@ -141,6 +145,7 @@ pass	a dependent-size segment that overruns the remaining bytes falls through
 pass	a destructuring let over a runtime value binds its parts
 pass	a different function argument through the same recursive higher-order function
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
+pass	a dimensionless quantity carries the group identity Unit.one
 pass	a division whose divisor folds to zero still traps
 pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
@@ -255,6 +260,8 @@ pass	a literal nested in a tuple let-binder is refutable and rejected
 pass	a literal segment before a binder dispatches then reads the payload
 pass	a literal segment matches a magic-number header by equality
 pass	a magic header and a length-prefixed chunk parse together
+pass	a map can be a key, compared by its value
+pass	a map can hold a map as a value
 pass	a map entry with no value expression is rejected, not a crash
 pass	a map literal with keys of two different types is a type error
 pass	a map mixing integer and float values is a type error
@@ -382,6 +389,8 @@ pass	a program that makes a host call has that call in its observable behavior
 pass	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
+pass	a quantity is constructed from a numeric value and a unit
+pass	a quantity's erased value is the identical numeric value the bare literal has
 pass	a radix literal with a bad digit is a malformed literal, not an unbound name
 pass	a radix literal with an empty body is a malformed literal, not an unbound name
 pass	a recognized string escape denotes its one scalar value
@@ -433,6 +442,8 @@ pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bin match binds the tail after a fixed header via a final rest segment
 pass	a runtime bin match dispatches on a literal tag across arms
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
+pass	a runtime bit-field packs a runtime value into a nibble
+pass	a runtime bit-field run spans two bytes and composes with an int segment
 pass	a runtime bitwise AND masks bits
 pass	a runtime bitwise OR combines bits
 pass	a runtime bitwise XOR toggles bits
@@ -730,6 +741,7 @@ pass	comparing records whose field sets differ in size is a type error
 pass	comparing records with different field-name sets is a type error
 pass	comparing sums with disjoint variant sets is a type error
 pass	comparing tuples of different lengths is a type error
+pass	comparing two quantities of the same dimension yields a Bool
 pass	comparing two same-shape nominal sum types is a type error, not false
 pass	concatenating an empty byte sequence on the left is the identity
 pass	concatenating an empty byte sequence on the right is the identity
@@ -773,6 +785,7 @@ pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
 pass	encoding a decoded string round-trips to the same bytes
 pass	equality applied to one operand is rejected, not a crash
+pass	every not-a-number value is equal to every not-a-number value
 pass	expect makes a checked-arithmetic result trap on overflow
 pass	expect unwraps the ok case of a runtime result
 pass	expect unwraps the present case of a runtime optional
@@ -1002,6 +1015,7 @@ pass	two dependent-size segments each bind the count a preceding segment named
 pass	two different variants of the SAME sum compare unequal
 pass	two differing runtime Ok values of a multi-parameter sum compare unequal by a heap walk
 pass	two differing runtime sum values compare unequal by a heap walk
+pass	two distinct map-keys are distinct entries
 pass	two distinct names bound to the same value key the same map entry
 pass	two effects each declaring a same-named operation do not collide
 pass	two empty byte sequences are equal
@@ -1040,12 +1054,8 @@ pass	wrapping multiplication wraps rather than trapping
 todo	Ast.decode converts bytes to an AST sum type value
 todo	Ast.decode decodes bytes that arrive as a function argument
 todo	Ast.encode and Ast.decode round-trip
-todo	Qty.value recovers the underlying numeric value, discarding the unit
 todo	Type is a first-class value
 todo	a BigInt operation does not silently promote a fixed-width operand
-todo	a NaN nested in a list compares equal under the canonical byte form
-todo	a NaN nested in a sum payload compares equal under the canonical byte form
-todo	a NaN nested in a tuple compares equal under the canonical byte form
 todo	a UInt32 addition that overflows the 32-bit width traps
 todo	a boolean connective with a non-boolean operand is a type error
 todo	a bottom-up fold matches a tuple of its recursive results with constructor patterns
@@ -1059,7 +1069,6 @@ todo	a default-integer pragma fixes a type but adds no conversion — no-promoti
 todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a default-integer pragma naming a non-integer type is rejected
 todo	a delegated capability is not itself an export field
-todo	a dimensionless quantity carries the group identity Unit.one
 todo	a diverging expression unifies with an integer position
 todo	a factorial that overflows the integer type traps through the recursion
 todo	a final unquote-splice binds the remaining elements as a list
@@ -1092,9 +1101,7 @@ todo	a peephole rewrite rule reads in the shape of the code it rewrites
 todo	a plain quote does not evaluate a quasiquote's unquote nested inside it
 todo	a plain record compared to a nominal record of the same shape is a type error
 todo	a projected tuple element IS observed, so its trap occurs (the anchor)
-todo	a quantity is constructed from a numeric value and a unit
 todo	a quantity over an exact rational magnitude divides exactly and derives its dimension
-todo	a quantity's erased value is the identical numeric value the bare literal has
 todo	a quote pattern binds an unquoted operand of a compound form
 todo	a quote pattern is equivalent to the Ast.* constructor pattern
 todo	a quote pattern matches a fixed arity
@@ -1164,7 +1171,6 @@ todo	an unusual-width value that overflows its computed range traps
 todo	annotating a quantity at a dimension the expression does not derive is an error
 todo	comparing quantities of incompatible dimension is a compile-time error
 todo	comparing same-shape nominal types is a type error
-todo	comparing two quantities of the same dimension yields a Bool
 todo	comparing two units of one dimension converts before comparing
 todo	concatenating tuples preserves each element's type
 todo	concatenating two tuples appends their elements
@@ -1185,7 +1191,6 @@ todo	encoding and decoding a constructor-built compound AST round-trips
 todo	equality across incompatible dimensions is a compile-time error
 todo	eval is optional for macros and interactive use
 todo	eval on malformed AST traps
-todo	every not-a-number value is equal to every not-a-number value
 todo	exact rational arithmetic is exact and normalized
 todo	exact rational division is total and exact for a nonzero divisor
 todo	expect on an overflowing checked add traps

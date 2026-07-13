@@ -281,6 +281,10 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::BinBuild { segs } => segs
             .iter()
             .any(|s| binding_escapes(db, s.value, binder, false)),
+        // A runtime bit-field run consumes each field's scalar value (packed into the built bytes).
+        Core::BinBitsBuild { fields } => fields
+            .iter()
+            .any(|f| binding_escapes(db, f.value, binder, false)),
         // A `BinIntRead` reads (borrows) its bytes operand to decode a segment — a binding used as the
         // scrutinee flows in; treat like a projection operand (does not consume-escape).
         Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
@@ -687,6 +691,14 @@ pub fn collect_used_ops(
             out.insert(OP_BYTES_SET);
             for s in &segs {
                 collect_used_ops(db, s.value, out);
+            }
+        }
+        // A runtime bit-field run allocs the buffer + writes each packed byte with `bytes-set`.
+        Core::BinBitsBuild { fields } => {
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+            for f in &fields {
+                collect_used_ops(db, f.value, out);
             }
         }
         // A `BinIntRead` reads its segment bytes with `bytes-get`.
@@ -2455,6 +2467,92 @@ fn emit(
                 }
                 offset += w;
             }
+            Ok(()) // leaves [buf] — the bytes handle
+        }
+        // A RUN of `(bits v k)` bit-fields with a runtime value, packed MSB-first into a fresh `Bytes`. The
+        // run is byte-aligned (CDZ0220), so the total byte count + every flush position + the bit-cursor are
+        // STATIC (all `k` are compile-time constants) — only the field values are runtime. `acc` (an i64
+        // slot) accumulates the open bits MSB-first, flushing whole bytes from its top as they close, exactly
+        // like the constant packer in `lower_bin_build`. The byte buffer is THREADED ON THE STACK like
+        // `BinBuild`; each field range-checks (`0 <= v < 2^k`, else trap "binary value does not fit segment").
+        Core::BinBitsBuild { fields } => {
+            let total_bits: u32 = fields.iter().map(|f| f.k).sum();
+            let total_bytes = total_bits / 8; // byte-aligned (CDZ0220) — exact
+            let val_slot = base;
+            let acc_slot = base + 1;
+            if base + 2 > *high {
+                *high = base + 2;
+            }
+            scratch_ty.insert(val_slot, ValType::I64);
+            scratch_ty.insert(acc_slot, ValType::I64);
+            out.push(Lir::ConstI32(total_bytes as i32)); // [total]
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [buf]
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::LocalSet(acc_slot)); // acc := 0  → [buf]
+            let mut nbits: u32 = 0; // open bits since the last byte boundary (STATIC)
+            let mut out_pos: u32 = 0; // running byte position in the buffer (STATIC)
+            for f in &fields {
+                let k = f.k; // 1..=56 (guarded at lower)
+                // Materialize the field value in the i64 slot (a narrow int extends by its own signedness).
+                emit(db, f.value, slots, base + 2, high, scratch_ty, layout, out)?; // [buf, val:i32|i64]
+                if let Some(m) = is_narrow_int(db, f.value) {
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
+                }
+                out.push(Lir::LocalSet(val_slot)); // val := value:i64  → [buf]
+                // RANGE CHECK: a k-bit UNSIGNED field, so `0 <= val < 2^k` (k ≤ 56 → 2^k is a positive i64).
+                out.push(Lir::LocalGet(val_slot));
+                out.push(Lir::ConstI64(0));
+                out.push(Lir::I64LtS); // val < 0
+                out.push(Lir::LocalGet(val_slot));
+                out.push(Lir::ConstI64(1i64 << k));
+                out.push(Lir::I64GeS); // val >= 2^k
+                out.push(Lir::I32Or);
+                out.push(Lir::IfUnreachableEnd); // → trap "binary value does not fit segment"  → [buf]
+                // acc = (acc << k) | (val & ((1<<k)-1))
+                out.push(Lir::LocalGet(acc_slot));
+                out.push(Lir::ConstI64(k as i64));
+                out.push(Lir::I64Shl); // acc << k
+                out.push(Lir::LocalGet(val_slot));
+                out.push(Lir::ConstI64((1i64 << k) - 1));
+                out.push(Lir::I64And); // val & mask
+                out.push(Lir::I64Or);
+                out.push(Lir::LocalSet(acc_slot)); // → [buf]
+                nbits += k;
+                // Flush every whole byte from the TOP of the accumulator (MSB-first), masking the flushed
+                // high bits off `acc` after each byte (identical to the constant packer).
+                while nbits >= 8 {
+                    let shift = nbits - 8;
+                    out.push(Lir::ConstI32(out_pos as i32)); // [buf, pos]
+                    out.push(Lir::LocalGet(acc_slot));
+                    if shift > 0 {
+                        out.push(Lir::ConstI64(shift as i64));
+                        out.push(Lir::I64ShrU); // acc >> shift
+                    }
+                    out.push(Lir::I32WrapI64);
+                    out.push(Lir::ConstI32(0xff));
+                    out.push(Lir::I32And); // [buf, pos, byte:i32]
+                    out.push(Lir::CallImport(OP_BYTES_SET)); // → [buf]
+                    out_pos += 1;
+                    nbits -= 8;
+                    // acc &= (1<<nbits)-1 — drop the just-flushed high bits (nbits==0 → acc := 0).
+                    if nbits == 0 {
+                        out.push(Lir::ConstI64(0));
+                    } else {
+                        out.push(Lir::LocalGet(acc_slot));
+                        out.push(Lir::ConstI64((1i64 << nbits) - 1));
+                        out.push(Lir::I64And);
+                    }
+                    out.push(Lir::LocalSet(acc_slot)); // → [buf]
+                }
+            }
+            debug_assert_eq!(
+                nbits, 0,
+                "a runtime bit-field run must be byte-aligned (CDZ0220)"
+            );
             Ok(()) // leaves [buf] — the bytes handle
         }
         // Read a fixed-width int segment out of a runtime `Bytes` scrutinee (a `bin`-pattern binder). The

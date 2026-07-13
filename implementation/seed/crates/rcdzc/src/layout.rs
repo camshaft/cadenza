@@ -469,6 +469,11 @@ fn collect_closure_codes(db: &mut Db, id: StructId, out: &mut std::collections::
                 collect_closure_codes(db, s.value, out);
             }
         }
+        Core::BinBitsBuild { fields } => {
+            for f in fields {
+                collect_closure_codes(db, f.value, out);
+            }
+        }
         Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
             collect_closure_codes(db, bytes, out)
         }
@@ -632,6 +637,11 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         crate::core::Core::BinBuild { segs } => {
             for s in segs {
                 collect_call_callees(db, s.value, out);
+            }
+        }
+        crate::core::Core::BinBitsBuild { fields } => {
+            for f in fields {
+                collect_call_callees(db, f.value, out);
             }
         }
         crate::core::Core::BinIntRead { bytes, .. }
