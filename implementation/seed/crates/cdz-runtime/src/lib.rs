@@ -7039,6 +7039,55 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak");
     }
 
+    /// value-encode of EMPTY collections — the zero-element assembler edge (`SetOf`/`MapOf`/`List` with
+    /// 0 children, `list_head_tail` with an empty tail, the `checked_sub(0)` in the assemblers). An empty
+    /// collection returned to the host is common; a zero-element bug (underflow, dropped head, wrong form)
+    /// would be a silent miscompile. Empty set → `((. Set of) (list))`, empty map → `(map)`, empty list
+    /// → `(list)`. Verified byte-identical to the recursive oracle + the concrete forms.
+    #[test]
+    fn value_encode_empty_collections() {
+        reset();
+        let before = live_nodes();
+
+        // Helper: encode `v` under descriptor `d`, assert iterative==recursive oracle, return the doc.
+        let check = |v: Handle, d: &[u8]| -> Vec<u8> {
+            let doc = op_value_encode_form(v, d).expect("encode empty collection");
+            let descriptor = decode_descriptor(d).expect("descriptor");
+            let mut b = DocBuilder::default();
+            let root = encode_value_recursive(&descriptor, &mut b, v, descriptor.root, 0).expect("recursive");
+            assert_eq!(doc, b.finish(root), "iterative and recursive empty-collection encode must agree");
+            doc
+        };
+
+        // Empty SET → `((. Set of) (list))`. desc: [0]=Int, [1]=Set(→0), root=1.
+        let es = op_set_empty();
+        let sd: &[u8] = &[0x02, 0x00, 0x0c, 0x00, 0x01];
+        let sdoc = check(es, sd);
+        // Names in order: `list` (inner, emitted eagerly), then `.`,`Set`,`of` (the head, post-order). No ints.
+        assert!(sdoc.windows(4).any(|w| w == b"list"), "empty set has a `list` head");
+        assert!(sdoc.windows(3).any(|w| w == b"Set"), "empty set has the `Set` head");
+        op_drop(es);
+
+        // Empty MAP → `(map)`. desc: [0]=Int, [1]=Int, [2]=Map(→0,→1), root=2.
+        let em = op_map_empty();
+        let md: &[u8] = &[0x03, 0x00, 0x00, 0x0d, 0x00, 0x01, 0x02];
+        let mdoc = check(em, md);
+        // A `(map)` with no entries: exactly one leaf (the `map` name), one atom, one list-of-1 struct.
+        assert_eq!(mdoc[8], 1, "empty map document has ONE leaf (the `map` name)");
+        assert!(mdoc.windows(3).any(|w| w == b"map"), "empty map renders the bare `map` head");
+        op_drop(em);
+
+        // Empty LIST → `(list)`. desc: [0]=Int, [1]=List(→0), root=1.
+        let el = op_vec_empty();
+        let ld: &[u8] = &[0x02, 0x00, 0x07, 0x00, 0x01];
+        let ldoc = check(el, ld);
+        assert_eq!(ldoc[8], 1, "empty list document has ONE leaf (the `list` name)");
+        assert!(ldoc.windows(4).any(|w| w == b"list"), "empty list renders the bare `list` head");
+        op_drop(el);
+
+        assert_eq!(live_nodes(), before, "no leak: every empty collection dropped");
+    }
+
     /// `value-encode` renders a `Shape::Framed` (descriptor tag 15) as the `(: value (head arg…))`
     /// parametric-type frame — the shape a RUNTIME `List` result escapes as `(: (list …) (List <elem>))`
     /// (landed @72d5d80a). That production walk arm had NO dedicated value-encode test (only the
