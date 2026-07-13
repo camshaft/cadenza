@@ -138,6 +138,8 @@ pass	a closure returning a constant String crosses as its UTF-8 bytes
 pass	a closure returning a nominal-over-Bool erases to bool at the boundary
 pass	a closure returning a nominal-over-scalar crosses as the underlying scalar
 pass	a closure returning a runtime String (concat) crosses as its bytes
+pass	a closure returning an empty Bytes crosses as the empty list
+pass	a closure returning an empty String crosses as the empty list
 pass	a closure taking a nominal-over-scalar argument receives the underlying scalar
 pass	a closure that performs a delegated effect cannot cross the host boundary
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF

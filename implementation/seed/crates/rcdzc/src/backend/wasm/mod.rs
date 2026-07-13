@@ -1530,6 +1530,21 @@ fn emit_multi_closure_resource(
         .iter()
         .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
         .collect::<Result<_, _>>()?;
+    // A byte-rope (`Bytes`/`String`) closure result crosses as `list<u8>` on the SINGLE-export path
+    // (`emit_closure_resource`), but the multi-export shared-`call` does not yet emit the memory/realloc
+    // list-`call` for N makes — decline SPECIFICALLY (not the generic scalar-only message) so the gap is
+    // clear. A single closure export returning `Bytes`/`String` works today; several sharing one `call` is
+    // a later slice (a `multi_closure_bytes_resource_core_module` + list-lifting envelope).
+    if matches!(
+        ret_ty.strip_nominal(),
+        crate::ty::Ty::Bytes | crate::ty::Ty::String
+    ) {
+        return Err(Reject::decline(
+            "a byte-rope (Bytes/String) closure result crosses on the single-export path, but a \
+             MULTI-EXPORT set sharing one `call` does not yet emit the list-returning `call` — export the \
+             closure alone, or await the multi-export compound-result slice",
+        ));
+    }
     let result_byte =
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
