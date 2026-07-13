@@ -455,6 +455,19 @@ pub const NOT_APPLYABLE_DECLINE: &str = "value is not applyable";
 /// makes the [`NOT_APPLYABLE_DECLINE`] redundant, without pinning the whole (type-name-bearing) text.
 pub const NOT_A_FUNCTION_PREFIX: &str = "cannot apply a value of type";
 
+/// The message the evaluator (`eval::apply_lambda`) returns, and `lower` turns into an UNCODED decline,
+/// when a function is applied to MORE arguments than its arity. When the over-application is provable,
+/// `infer` reports the authoritative CDZ0203 `OVER_APPLICATION_PREFIX` reject at the same node; this
+/// decline then shadows it as a second `error:`. Shared as a const so `compile::dedup_faults` drops it
+/// whenever that reject is present — one primary "no" for one over-application.
+pub const OVER_APPLICATION_DECLINE: &str = "applied more arguments than the function accepts";
+
+/// A stable SUBSTRING unique to the coded CDZ0203 over-application reject (`applied N arguments to a
+/// function of arity M — …`) — chosen NOT to match the [`OVER_APPLICATION_DECLINE`] (which also begins
+/// "applied "). `dedup_faults` matches this to recognize the reject that makes the decline redundant,
+/// without pinning the count-bearing text.
+pub const OVER_APPLICATION_MARKER: &str = "arguments to a function of arity";
+
 /// The shared "did you mean?" machinery — the ONE nearest-name search every suggestion draws on
 /// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). A producer that
 /// rejected an unknown name (an unbound reference, an absent record field, a mistyped variant) hands

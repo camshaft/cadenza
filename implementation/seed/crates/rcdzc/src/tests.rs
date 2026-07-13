@@ -6957,6 +6957,42 @@ mod match_engine {
     }
 
     #[test]
+    fn over_applying_a_function_reports_one_error_not_a_shadowing_decline() {
+        // Over-application (`(f 1 2)` for a 1-param `f`) must be ONE primary `error:` — the coded CDZ0203
+        // `applied 2 arguments to a function of arity 1 …` — NOT that reject PLUS the evaluator's uncoded
+        // "applied more arguments than the function accepts" decline for the same node. `dedup_faults`
+        // drops the weaker decline when the coded over-application reject is present.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (f (: x Int64)) x) (def (main) (f 1 2)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "over-application = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0203"));
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message == crate::diag::OVER_APPLICATION_DECLINE),
+            "the 'applied more arguments' decline must not accompany the coded reject"
+        );
+    }
+
+    #[test]
     fn applying_an_applyable_head_is_not_flagged_as_a_non_function() {
         // The guard must NOT over-reject: a head that is applyable via a `(meta apply)` PRIMITIVE (the
         // `tuple`/`record`/`list` compound-value alias, a type ctor) has no type SCHEME but IS applyable,

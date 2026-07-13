@@ -544,6 +544,12 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
     let has_not_a_function_reject = faults
         .iter()
         .any(|r| r.code.is_some() && r.message.starts_with(crate::diag::NOT_A_FUNCTION_PREFIX));
+    // Likewise: the evaluator's uncoded "applied more arguments than the function accepts" DECLINE is
+    // redundant when `infer` proved the over-application (the coded CDZ0203 `applied N arguments to a
+    // function of arity M …` reject). Drop the weaker decline so over-application is ONE primary error.
+    let has_over_application_reject = faults
+        .iter()
+        .any(|r| r.code.is_some() && r.message.contains(crate::diag::OVER_APPLICATION_MARKER));
     // The SAME fault reported once ANCHORED (a node stamped by the reached-poison walk) and once
     // UNANCHORED (the resolve-level poison surfaced with no `at`) — e.g. `(record (a 1) (a 2))`'s
     // duplicate-field CDZ0201 — has two DIFFERENT dedup keys below (one by node, one by message), so
@@ -569,6 +575,12 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
             if has_not_a_function_reject
                 && r.is_decline()
                 && r.message == crate::diag::NOT_APPLYABLE_DECLINE
+            {
+                return false;
+            }
+            if has_over_application_reject
+                && r.is_decline()
+                && r.message == crate::diag::OVER_APPLICATION_DECLINE
             {
                 return false;
             }
