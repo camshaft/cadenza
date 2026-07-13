@@ -3473,6 +3473,30 @@ fn emit(
             });
             Ok(())
         }
+        // FLOAT-WIDTH conversion (`Float N.of`): emit the float operand, then demote/promote by the
+        // SOURCE (operand) and TARGET (this node) widths — `f32.demote_f64` (64→32), `f64.promote_f32`
+        // (32→64), or NOTHING (same width = identity). Handled before the integer-target arm below.
+        Core::Convert {
+            op: Prim::FloatOf,
+            operand,
+        } => {
+            let src_w = match type_of(db, operand) {
+                Ty::Float(ft) => ft.ground_width(),
+                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
+            };
+            let dst_w = match type_of(db, id) {
+                Ty::Float(ft) => ft.ground_width(),
+                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
+            };
+            emit(db, operand, slots, base, high, scratch_ty, layout, out)?;
+            match (src_w, dst_w) {
+                (64, 32) => out.push(Lir::F32DemoteF64),
+                (32, 64) => out.push(Lir::F64PromoteF32),
+                // same width — the conversion is the identity, no opcode.
+                _ => {}
+            }
+            Ok(())
+        }
         Core::Convert { op, operand } => {
             let src = Machine::of(int_ty_of(db, operand));
             let dst = Machine::of(int_ty_of(db, id));
@@ -3965,11 +3989,16 @@ enum HandleOwnership {
 /// owned/borrowed result cannot be dropped uniformly, so it declines). Anything else declines.
 fn value_eq_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, Reject> {
     match core_of(db, id) {
-        // Constructors and calls produce a fresh owned reference (ownership transfers out).
+        // Constructors and calls produce a fresh owned reference (ownership transfers out). A map
+        // construction/update (`map-empty`+inserts, `map-insert`, `map-remove`) returns a fresh owned
+        // map handle exactly like a list/tuple constructor — the `value-eq` emit drops it after the compare.
         Core::SumNew { .. }
         | Core::Tuple { .. }
         | Core::Record { .. }
         | Core::ListNew { .. }
+        | Core::MapNew { .. }
+        | Core::MapInsert { .. }
+        | Core::MapRemove { .. }
         | Core::Call { .. } => Ok(HandleOwnership::Owned),
         // A reference to a parameter or a kept `let`-binding — the owner elsewhere reclaims it.
         Core::Param { .. } | Core::LocalRef { .. } => Ok(HandleOwnership::Borrowed),
@@ -5350,6 +5379,22 @@ fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {
                 index: iy,
             },
         ) => ix == iy && core_eq(db, px, py),
+        // A sum-variant payload read: equal iff the SAME path off an equal (runtime) scrutinee — the
+        // pattern-binder analogue of `Proj`. `sum-payload`/`get-*` BORROW the handle and are pure (no rc
+        // change, no effect), so two reads of the same payload yield the same value; sharing them lets the
+        // arith-CSE compute `(Some x)`'s `x` ONCE for `(+ x x)` exactly as it already does for a repeated
+        // tuple/record field `(+ (. r x) (. r x))`. `path` is a small `Vec<PathStep>` (each `Copy`), so
+        // `==` is a cheap element compare.
+        (
+            Core::SumPayload {
+                scrutinee: sx,
+                path: px,
+            },
+            Core::SumPayload {
+                scrutinee: sy,
+                path: py,
+            },
+        ) => px == py && core_eq(db, sx, sy),
         _ => false,
     }
 }
@@ -7294,6 +7339,34 @@ mod tests {
             f.code.iter().filter(|i| **i == Lir::I64Add).count(),
             1,
             "one add over the shared product"
+        );
+    }
+
+    #[test]
+    fn a_repeated_sum_payload_read_is_shared_by_cse() {
+        // (match o ((Some x) (+ x x)) ((None) 0)) — the binder `x` resolves to a `Core::SumPayload` at
+        // EACH occurrence, so `(+ x x)` names two DISTINCT SumPayload nodes. `core_eq` now recognizes
+        // them as equal (same scrutinee + path), so the arith-CSE reads the payload ONCE
+        // (`sum-payload ; get-int` a single time) into a slot and shares it for both `+` operands —
+        // exactly as a repeated tuple/record field `(+ (. r x) (. r x))` already was. The match is kept
+        // runtime by making `f` recursive on a fresh `(None)`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: o (Option Int64)) (: acc Int64)) \
+               (match o ((Some x) (f (None) (+ acc (+ x x)))) ((None) acc))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert_eq!(
+            f.code
+                .iter()
+                .filter(|i| matches!(i, Lir::CallImport(op) if *op == OP_SUM_PAYLOAD))
+                .count(),
+            1,
+            "the payload `x` is read exactly once and shared across `(+ x x)`, got: {:?}",
+            f.code
         );
     }
 

@@ -75,6 +75,13 @@ pub fn emit(
                 | crate::ty::Ty::Record(_)
                 | crate::ty::Ty::Sum { .. }
                 | crate::ty::Ty::List(_)
+                // A MAP export crosses via the resource escape like any other heap value — its CONSTANT
+                // bytes (the sorted canonical `(map (k v) …)` value form) baked into the resource module.
+                // A constant `Map.insert` chain / `(map …)` literal folds to a `Core::MapNew` whose
+                // `const_value_ast` renders sorted; a genuinely RUNTIME map has no constant form →
+                // `constant_value_form` returns None → falls through to the decline below (the looping
+                // map-escape walker, like a list's, is a later increment).
+                | crate::ty::Ty::Map(_, _)
                 | crate::ty::Ty::Bytes
                 // A bare `String` export has no scalar boundary valtype (a string is a heap value, not an
                 // i32/i64/f64), so it crosses via the resource escape like any other heap value — its
@@ -615,6 +622,8 @@ pub fn emit_dwarf(
                 | crate::ty::Ty::Record(_)
                 | crate::ty::Ty::Sum { .. }
                 | crate::ty::Ty::List(_)
+                // A map export takes the resource-escape core too, so the sidecar-DWARF path declines it.
+                | crate::ty::Ty::Map(_, _)
                 | crate::ty::Ty::Bytes
                 // A bare `String` export also takes the resource-escape core (its constant bytes baked),
                 // so the sidecar-DWARF path declines it here alongside the other compounds.

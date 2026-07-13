@@ -47,11 +47,16 @@ pub enum Severity {
 /// re-deriving the repair from the message prose.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct DiagnosticFix {
-    /// A one-line human label for the edit (`replace with `foo``).
+    /// A one-line human label for the edit (`replace with `foo``, `add the missing match arms`).
     pub label: String,
-    /// The AST node index (`StructId.0`) the edit targets — the node whose surface spelling is replaced.
+    /// How to apply the edit at `node`: `Replace` swaps the node's surface spelling for `replacement`;
+    /// `InsertInto` appends `replacement` (rendered child forms) as new children of the list node.
+    pub kind: FixKind,
+    /// The AST node index (`StructId.0`) the edit targets — the node replaced, or the list appended into.
     pub node: u32,
-    /// The surface spelling to put in its place (the suggested name / wrapped form).
+    /// The edit's surface payload: for `Replace`, the spelling to put in `node`'s place; for
+    /// `InsertInto`, the child form(s) to append (a space-joined list of complete `(…)` s-expressions,
+    /// each directly splice-able before the target list's closing paren).
     pub replacement: String,
     /// `true` iff the compiler PROVED the fix correct (machine-applicable); `false` for a heuristic an
     /// agent should confirm before applying (`spec/capabilities/diagnostics.md` §An Unconfirmed Fix
@@ -59,15 +64,31 @@ pub struct DiagnosticFix {
     pub verified: bool,
 }
 
+/// How a [`DiagnosticFix`] applies its `replacement` at its `node` — the ABI projection of a
+/// [`crate::diag::Edit`]'s shape, so a consumer performs a REPLACE or an INSERT without re-deriving it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FixKind {
+    /// Replace the target node's surface spelling with `replacement`.
+    Replace,
+    /// Append `replacement` (rendered child forms) at the end of the target list node's children.
+    InsertInto,
+}
+
 impl DiagnosticFix {
     /// The ABI projection of a compiler-internal [`crate::diag::Fix`] — lower its structural edit to a
-    /// node index + replacement spelling and its applicability to the `verified` flag.
+    /// `(kind, node, replacement)` triple and its applicability to the `verified` flag.
     pub fn from_fix(fix: &crate::diag::Fix) -> DiagnosticFix {
-        let (node, replacement) = match &fix.edit {
-            crate::diag::Edit::ReplaceNode { at, replacement } => (at.0, replacement.clone()),
+        let (kind, node, replacement) = match &fix.edit {
+            crate::diag::Edit::ReplaceNode { at, replacement } => {
+                (FixKind::Replace, at.0, replacement.clone())
+            }
+            crate::diag::Edit::InsertArms { at, arms } => {
+                (FixKind::InsertInto, at.0, arms.join(" "))
+            }
         };
         DiagnosticFix {
             label: fix.label.clone(),
+            kind,
             node,
             replacement,
             verified: matches!(fix.applicability, crate::diag::Applicability::Verified),

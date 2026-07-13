@@ -1028,10 +1028,32 @@ fn thread_bounded(
             }
             subst.insert(arm.state, cur[slot]);
             let arm_body = crate::eval::beta_reduce(db, arm.body, &subst);
-            // The arm body must be a TAIL `(resume value next-state)` — the value becomes the perform's
-            // result; the next-state threads forward IN THIS SLOT. Anything else (no resume / non-tail)
-            // declines.
-            let (value, next_state) = tail_resume(db, arm_body)?;
+            // The arm body must reduce to a TAIL `(resume value next-state)` — the value becomes the
+            // perform's result; the next-state threads forward IN THIS SLOT. Two shapes:
+            //   * a bare `(resume v s)` — the value is `v`.
+            //   * a `(do stmt… (resume v s))` — an INTERPOSING/FORWARDING arm that runs side-effecting
+            //     STATEMENTS (a perform of ANOTHER effect — an outer handler's, or a host op — recorded
+            //     before forwarding) then resumes. The statements must RUN, so the perform's result is a
+            //     `(do stmt… v)`: the statements sequenced (folded later under their own enclosing
+            //     handler / emitted as host calls), then the resume value. This is what lets an inner
+            //     handler INTERPOSE on a delegated effect — count it via an outer effect, then forward.
+            let (value, next_state) = match tail_resume(db, arm_body) {
+                Some(vs) => vs,
+                None => {
+                    // A `(do stmt… (resume v s))` arm body: peel the trailing resume, keep the stmts.
+                    let items = db.ast.as_form(arm_body, "do")?.to_vec();
+                    let (&last, stmts) = items.split_last()?;
+                    let (v, s) = tail_resume(db, last)?;
+                    // Rebuild `(do stmt… v)` — the statements run for effect, then `v` is the value. A
+                    // pure-statement `do` would have no reason to wrap the resume, so the statements here
+                    // carry the interposing side effects that must survive.
+                    let do_head = db.push_name("do");
+                    let mut children = vec![do_head];
+                    children.extend_from_slice(stmts);
+                    children.push(v);
+                    (db.push_list(children), s)
+                }
+            };
             cur[slot] = next_state;
             Some((value, cur))
         }

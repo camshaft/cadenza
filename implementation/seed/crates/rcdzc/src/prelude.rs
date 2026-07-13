@@ -100,6 +100,11 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // directly (`resolve::decode_ty`), and this record only carries the operation fields.
     names.insert("String".to_string(), string_module(ast));
 
+    // `Char` — the module of char OPERATIONS (`to-int`/`from-int`), a NULLARY type like `String`. Its
+    // `(meta t)` is the ground `Ty::Char`, so bare `Char` in type position IS the type; the operation
+    // fields project via member access `(. Char to-int)`.
+    names.insert("Char".to_string(), char_module(ast));
+
     // The binary INTEGER operators — records whose META channel carries their type (`(meta t)`, a
     // compile-time type-lambda) and their reduction (`(meta apply)`, the intrinsic). `(+ a b)` is the
     // application of the value `+` resolves to — the SAME mechanism every application uses, dispatched
@@ -464,6 +469,57 @@ fn string_module(ast: &mut Arenas) -> StructId {
     let from_bytes_key = push_atom(ast, Leaf::Name("from-bytes".to_string()));
     children.push(push_list(ast, vec![from_bytes_key, from_bytes_op]));
     push_list(ast, children)
+}
+
+/// The `Char` module record — a record with one field per char OPERATION (`to-int`/`from-int`), reached
+/// by member access `(. Char to-int)`. A NULLARY type like `String`: its `(meta t)` is the ground
+/// `Ty::Char` (`(intrinsic "Char")`), so bare `Char` in type position IS the type, while the operation
+/// fields still project. `to-int : Char → Int64` (total); `from-int : Int64 → (Option Char)` (fallible —
+/// `None` for a surrogate / out-of-range integer). Both FOLD on a constant operand.
+fn char_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let ty_val = intrinsic_node(ast, "Char");
+    let t_field = meta_field(ast, "t", ty_val);
+    let mut children = vec![head, t_field];
+    // `to-int : Char → Int64` — the total scalar-value read.
+    let to_int_ty = char_to_int_type(ast);
+    let to_int_op = list_op_record(ast, "char-to-int", to_int_ty);
+    let to_int_key = push_atom(ast, Leaf::Name("to-int".to_string()));
+    children.push(push_list(ast, vec![to_int_key, to_int_op]));
+    // `from-int : Int64 → (Option Char)` — the fallible integer→char conversion.
+    let from_int_ty = char_from_int_type(ast);
+    let from_int_op = list_op_record(ast, "char-from-int", from_int_ty);
+    let from_int_key = push_atom(ast, Leaf::Name("from-int".to_string()));
+    children.push(push_list(ast, vec![from_int_key, from_int_op]));
+    push_list(ast, children)
+}
+
+/// The type `(fn () (-> Char Int64))` for `Char.to-int` — the total scalar-value read. A ZERO-PARAM `fn`
+/// wrapper (monomorphic, but needed so `scheme_of` reads a SCHEME not a bare type-value — see
+/// [`string_to_int64_type`]). The `Char` param is `(intrinsic "Char")` (→ `Ty::Char`).
+fn char_to_int_type(ast: &mut Arenas) -> StructId {
+    let char_ty = intrinsic_node(ast, "Char");
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let body = arrow_type(ast, char_ty, int64); // (-> Char Int64)
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type `(fn () (-> Int64 (Option Char)))` for `Char.from-int` — the fallible integer→char
+/// conversion. A ZERO-PARAM `fn` wrapper. The result `(Option Char)` — `Option` an ordinary prelude
+/// name applied to the `(intrinsic "Char")` type node, reducing to `Ty::Sum{Option, [Char]}`.
+fn char_from_int_type(ast: &mut Arenas) -> StructId {
+    let option_char = {
+        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let char_ty = intrinsic_node(ast, "Char");
+        push_list(ast, vec![option, char_ty])
+    };
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let body = arrow_type(ast, int64, option_char); // (-> Int64 (Option Char))
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
 }
 
 /// The type `(fn () (-> String Bytes))` for `String.to-bytes` — the UTF-8 encoding. A zero-param `fn`
@@ -931,15 +987,56 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
     // reduce the whole op record to a `Ty::Type`), the same wrapper `String.at`/`scalar-len` use.
     let of_int_ty = float_of_int_type(ast, width);
     let of_int = list_op_record(ast, "float-of-int", of_int_ty);
-    let fields = vec![meta_field(ast, "t", ty_expr), {
-        let k = push_atom(ast, Leaf::Name("of-int".to_string()));
-        push_list(ast, vec![k, of_int])
-    }];
+    // `of` — the TOTAL float-WIDTH conversion `∀a. (Float a) → (Float width)` (promote/demote/identity),
+    // width-generic in its SOURCE, this module's width as TARGET. The `(meta apply)` is `float-of`.
+    let of_ty = float_of_type(ast, width);
+    let of_op = list_op_record(ast, "float-of", of_ty);
+    let fields = vec![
+        meta_field(ast, "t", ty_expr),
+        {
+            let k = push_atom(ast, Leaf::Name("of-int".to_string()));
+            push_list(ast, vec![k, of_int])
+        },
+        {
+            let k = push_atom(ast, Leaf::Name("of".to_string()));
+            push_list(ast, vec![k, of_op])
+        },
+    ];
     let mut children = vec![head];
     for f in fields {
         children.push(f);
     }
     push_list(ast, children)
+}
+
+/// The type-lambda `(fn (a) (-> (Float a) (Float width)))` for a float module's `of` — the float-WIDTH
+/// conversion, GENERIC over the source float width `a`, this module's `width` as the target. A real
+/// type-lambda (`(fn (a) …)`, one quantified variable), unlike `of-int`'s zero-param wrapper: the source
+/// `(Float a)` reduces via the `Float` constructor to a fresh float-width variable, so `infer` reads the
+/// scheme `∀a. (Float a) → (Float width)` — a Float32 OR a Float64 (or a deferred literal) unifies as the
+/// source, the result is always this module's concrete width.
+fn float_of_type(ast: &mut Arenas, width: u32) -> StructId {
+    let float_a = {
+        let ctor = push_atom(ast, Leaf::Name("Float".to_string()));
+        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        push_list(ast, vec![ctor, a])
+    };
+    let float_target = {
+        let ctor = push_atom(ast, Leaf::Name("Float".to_string()));
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(width as i64),
+                radix: Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, w])
+    };
+    let body = arrow_type(ast, float_a, float_target);
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let params = push_list(ast, vec![a_param]);
+    push_list(ast, vec![fn_head, params, body])
 }
 
 /// The type `(fn () (-> Int64 (Float width)))` for a float module's `of-int` — a ZERO-PARAMETER
