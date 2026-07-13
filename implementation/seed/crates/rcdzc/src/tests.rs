@@ -2734,6 +2734,31 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_narrow_binary_op_with_a_constant_left_operand_emits_valid_wasm() {
+        // ⚠ INVALID WASM regression: a narrow binary op whose LEFT operand is a bare integer literal and
+        // whose right is a narrow-typed variable mis-emitted the literal at its i64 default beside the i32
+        // variable ("expected i64, found i32"). ROOT: `unify_width`/`unify_sign` BOUND the operator's
+        // shared width/sign VARIABLE to the deferred LEFT literal first, freezing it, so the RIGHT
+        // variable's `Fixed(8)`/unsigned meeting the now-`Deferred` var was a no-op → the result ground to
+        // the i64 default. Fixed by leaving a var meeting `Deferred` UNBOUND, so the concrete operand
+        // (whichever side) binds it — operand order no longer changes the result width/sign. The
+        // COMPARISON path (result Bool, operands not linked via a result var) additionally reconciles at
+        // emit (`operand_int_ty`, position-independent). All hold for `n : UInt8`:
+        assert_eq!(run::<u8>("(: n UInt8)", "(+ 1 n)", &[Val::U8(5)]), 6); // was invalid wasm
+        assert_eq!(run::<u8>("(: n UInt8)", "(* 2 n)", &[Val::U8(3)]), 6);
+        assert_eq!(run::<u8>("(: n UInt8)", "(& 15 n)", &[Val::U8(9)]), 9);
+        assert_eq!(run::<u8>("(: n UInt8)", "(<< 1 n)", &[Val::U8(3)]), 8);
+        assert_eq!(run::<i64>("(: n UInt8)", "(if (< 1 n) 1 0)", &[Val::U8(5)]), 1);
+        // The const-RIGHT mirror (always worked) and a both-var form still compute the same.
+        assert_eq!(run::<u8>("(: n UInt8)", "(+ n 1)", &[Val::U8(5)]), 6);
+        assert_eq!(run::<u8>("(: a UInt8) (: b UInt8)", "(+ a b)", &[Val::U8(100), Val::U8(50)]), 150);
+        // A wide left-const is unaffected (i64 result was always correct).
+        assert_eq!(run::<i64>("(: n Int64)", "(+ 1 n)", &[Val::S64(41)]), 42);
+        // (A genuine width conflict — UInt8 + Int64 — still rejects CDZ0301; the corpus guards that, and
+        // the deferred-var change only affects a var meeting a DEFERRED width, never two Fixed widths.)
+    }
+
+    #[test]
     fn runtime_narrow_unsigned_addition_and_subtraction() {
         // UInt8: 200+55=255 fits, 200+56=256 traps (range-check to [0,255]); 0-1 traps below zero.
         assert_eq!(
@@ -13388,3 +13413,4 @@ mod debug_info {
         );
     }
 }
+

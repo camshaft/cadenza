@@ -1202,6 +1202,49 @@
   (input  (+ UInt32.max (: 1 UInt32)))
   (trap   "integer overflow"))
 
+; --- A narrow binary op's operand widths reconcile regardless of operand ORDER --------------
+; A narrow-width binary op (its width fixed by a narrow-typed variable operand) must emit BOTH operands
+; at the narrow (i32) representation — including a bare integer LITERAL operand, whichever side it is on.
+; `(+ 1 n)` and `(+ n 1)` with `n : UInt8` are the same well-typed program and must both compile+run;
+; the operator's shared width/sign is a unification VARIABLE that a concrete operand binds, so a deferred
+; literal on EITHER side reconciles to the variable operand's width. (Binding that shared variable to the
+; deferred literal FIRST — when the literal was the LEFT operand — froze it, so the narrow variable's
+; width was ignored and the literal emitted as an i64 constant beside the i32 variable → INVALID WASM
+; "expected i64, found i32". The const-RIGHT form always worked; these pin operand-order independence
+; across arithmetic, bitwise, shift, AND comparison, at the narrow widths the self-hosting compiler uses.)
+
+(case "a narrow addition reconciles a constant LEFT operand to the variable's width"
+  (doc    "`(+ 1 n)` with `n : UInt8` adds a bare literal (LEFT) to a narrow variable (RIGHT); the result
+           is UInt8. With n = 5 it is 6. Both operands emit at the narrow i32 representation — the literal
+           is reconciled to `n`'s width regardless of its (left) position, exactly as the const-RIGHT
+           `(+ n 1)` form is. Was INVALID WASM (the left literal emitted as an i64 constant beside the i32
+           variable). Pins operand-width reconciliation is position-independent.")
+  (needs  numeric-model)
+  (input  (do (def (main (: n UInt8)) (+ 1 n)) (export main)))
+  (call   main (: 5 UInt8))
+  (output (: 6 UInt8)))
+
+(case "a narrow multiplication reconciles a constant LEFT operand to the variable's width"
+  (doc    "The multiplication companion: `(* 2 n)` with `n : UInt8`, n = 3, is 6. Confirms the const-LEFT
+           reconciliation is not addition-specific — every narrow binary op narrows a bare literal
+           operand to the op's width on either side. Was invalid wasm.")
+  (needs  numeric-model)
+  (input  (do (def (main (: n UInt8)) (* 2 n)) (export main)))
+  (call   main (: 3 UInt8))
+  (output (: 6 UInt8)))
+
+(case "a narrow comparison reconciles a constant LEFT operand to the variable's width"
+  (doc    "The bug hit every narrow binary op, comparisons included. `(< 1 n)` with `n : UInt8`, n = 5, is
+           true. Both operands of the comparison emit at the i32 representation; the bare literal LEFT
+           operand is reconciled to `n`'s width (a comparison's result is Bool, so its operand widths are
+           reconciled at emit, not through a shared result type). Was invalid wasm; the const-RIGHT `(< n
+           1)` always worked. Pins the reconciliation covers comparisons (and by the same rule `- & | ^ <<
+           >> =`).")
+  (needs  numeric-model)
+  (input  (do (def (main (: n UInt8)) (if (< 1 n) 1 0)) (export main)))
+  (call   main (: 5 UInt8))
+  (output (: 1 Int64)))
+
 ; --- The named widths are ALIASES for the width-indexed constructors ------------------------
 ; `Int8/16/32/64` and `UInt8/16/32/64` are ordinary aliases for `(Int 8)`…`(UInt 64)`, not distinct
 ; primitives (options/numeric-model/ #Integers are width-indexed). The alias and its expansion name the

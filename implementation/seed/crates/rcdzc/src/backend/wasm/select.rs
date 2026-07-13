@@ -5342,14 +5342,25 @@ fn compare_op(op: Prim, it: IntTy) -> Lir {
 fn operand_int_ty(db: &mut Db, lhs: StructId, rhs: StructId) -> IntTy {
     // A boolean operand is an i32; represent that as a signed ≤32-bit width so `compare_op` picks i32.
     let bool_as_i32 = IntTy::fixed(true, 32);
-    match type_of(db, lhs) {
-        Ty::Int(it) => it,
-        Ty::Bool => bool_as_i32,
-        _ => match type_of(db, rhs) {
-            Ty::Int(it) => it,
-            Ty::Bool => bool_as_i32,
-            _ => IntTy::i64(),
-        },
+    let lt = type_of(db, lhs);
+    let rt = type_of(db, rhs);
+    // Both operands share ONE machine width. Prefer whichever carries a CONCRETELY-fixed integer width
+    // (a narrow-typed variable `n : UInt8` pins the pair to i32) over a still-DEFERRED bare literal (whose
+    // width defaults to i64). POSITION-INDEPENDENT: `(< 1 n)` and `(< n 1)` both pick `n`'s width. Reading
+    // `lhs` first unconditionally emitted a deferred LEFT literal at its i64 default beside the i32
+    // variable → a mismatched operand pair → INVALID WASM ("expected i64, found i32"). This is the emit-
+    // side companion of the `unify_width`/`unify_sign` inference fix (which links an ARITH op's operands
+    // through its shared result-width var); a COMPARISON's result is `Bool`, so its operand widths are not
+    // carried on a result var and must be reconciled HERE from the operands' own types. A grounded literal
+    // is then narrowed by `emit_operand` at the shared width, whichever side it is on.
+    let concrete = |t: &Ty| matches!(t, Ty::Int(it) if matches!(it.width, crate::ty::Width::Fixed(_)));
+    match (&lt, &rt) {
+        (Ty::Int(it), _) if concrete(&lt) => *it,
+        (_, Ty::Int(it)) if concrete(&rt) => *it,
+        (Ty::Int(it), _) => *it,
+        (_, Ty::Int(it)) => *it,
+        (Ty::Bool, _) | (_, Ty::Bool) => bool_as_i32,
+        _ => IntTy::i64(),
     }
 }
 

@@ -198,6 +198,11 @@ fn unify_sign(subst: &mut Subst, sa: Sign, sb: Sign, a: &Ty, b: &Ty) -> Result<(
     let sb = resolve_sign(subst, sb);
     match (sa, sb) {
         (Sign::Var(v), Sign::Var(w)) if v == w => Ok(()),
+        // A sign variable meeting a DEFERRED literal sign stays UNBOUND (mirrors `unify_width`): binding
+        // it to `Deferred` would freeze the var and ignore a later concrete sign, so `(+ 1 n)` with `n :
+        // UInt8` (unsigned) would wrongly ground the shared sign to the signed default. Leaving it open
+        // lets `n`'s `Fixed(false)` bind it — operand order no longer changes the result's signedness.
+        (Sign::Var(_), Sign::Deferred) | (Sign::Deferred, Sign::Var(_)) => Ok(()),
         (Sign::Var(v), other) | (other, Sign::Var(v)) => {
             trace!(target: "rcdzc::unify", var = v, solved = ?other, "bind sign variable");
             subst.signs.insert(v, other);
@@ -229,6 +234,14 @@ fn unify_width(subst: &mut Subst, a: Width, b: Width) -> Result<(), Reject> {
     let b = resolve_width(subst, b);
     match (a, b) {
         (Width::Var(v), Width::Var(w)) if v == w => Ok(()),
+        // A width variable meeting a DEFERRED literal width stays UNBOUND — `Deferred` is "unconstrained,"
+        // not a solution, so binding the var to it would freeze the var and IGNORE a later concrete width.
+        // `(+ 1 n)` with `n : UInt8` instantiates `+`'s param to `Var(w)`; unifying the deferred `1` first
+        // must NOT set `w = Deferred` (then `n`'s `Fixed(8)` meeting the now-`Deferred` `w` is a no-op and
+        // the result grounds to the i64 default — the const-LEFT-operand invalid-wasm bug). Leaving `w`
+        // open lets `n`'s `Fixed(8)` bind it, so `(+ 1 n)` solves UInt8 exactly as `(+ n 1)` does —
+        // operand order no longer changes the result width.
+        (Width::Var(_), Width::Deferred) | (Width::Deferred, Width::Var(_)) => Ok(()),
         (Width::Var(v), other) | (other, Width::Var(v)) => {
             trace!(target: "rcdzc::unify", var = v, solved = ?other, "bind width variable");
             subst.widths.insert(v, other);

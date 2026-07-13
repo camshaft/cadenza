@@ -213,7 +213,10 @@ pass	a named higher-order function receives a lambda argument
 pass	a named multi-argument function applies in explicit curried form
 pass	a named multi-argument function applies to all its arguments at once
 pass	a named width alias and its width-indexed expansion name the same type
+pass	a narrow addition reconciles a constant LEFT operand to the variable's width
+pass	a narrow comparison reconciles a constant LEFT operand to the variable's width
 pass	a narrow match binder used in arithmetic with the scrutinee
+pass	a narrow multiplication reconciles a constant LEFT operand to the variable's width
 pass	a narrow value in the else branch opposite a bare literal computes at the narrow width
 pass	a narrow-width accumulator that never changes threads through the recursion
 pass	a narrow-width parameter compared to a bare literal computes at the parameter width
@@ -409,6 +412,7 @@ pass	a tuple payload returned through a helper from a built-in Option must not t
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
 pass	a two-arm Bool match selects its second (false) arm
+pass	a two-arm match does not evaluate the unselected arm's trapping body
 pass	a two-payload sum escapes its second variant with a bare name
 pass	a type annotation consistent with the value is transparent
 pass	a type-value in integer-width position is rejected
