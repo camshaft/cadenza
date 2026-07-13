@@ -528,48 +528,60 @@ fn nearest_name_suggestion(db: &Db, id: StructId, name: &str) -> Option<String> 
     if name.chars().count() < 2 {
         return None;
     }
-    // CONTEXT-AWARE candidate pool: if this name is the OPERAND of a member projection `(. name key)` —
-    // e.g. a `handle`'s effect (rewritten to `(. E op)` arms), or `(. Int64 max)` — then only a name that
-    // SUPPORTS member access could be meant: an effect, a type, or a prelude module. Suggesting a bare
-    // value def, a lexical binder, or a VARIANT CONSTRUCTOR there would violate the one-shot rule — the
-    // suggested spelling wouldn't resolve the fault, it would just move it to a different error (a variant
-    // has no members, so `(. Log op)` → "record has no field `op`"). This is exactly the `handle Logg …`
-    // case where `Log` (a nearby variant) is a WORSE suggestion than `Logr` (the actual effect). Restrict
-    // the pool to member-accessible names so the nearest one is a name the fix would actually work on.
-    let member_operand = matches!(db.parent_of(id), Some(p)
+    // CONTEXT-AWARE candidate pool: the syntactic POSITION of the typo constrains which names could have
+    // been meant, so the suggestion is one the fix would actually resolve (the one-shot rule), not merely
+    // the lexically-nearest name of any kind. Three positions:
+    //   • MEMBER OPERAND `(. name key)` — a `handle`'s effect (rewritten to `(. E op)` arms), `(. Int64
+    //     max)`: only a member-accessible name (effect, type, prelude module) fits. A value/binder/variant
+    //     ctor would move the fault (`(. Log op)` → "record has no field `op`") — the `handle Logg` case
+    //     where variant `Log` was a worse pick than effect `Logr`.
+    //   • TYPE EXPRESSION `(: expr name)` — a value or parameter annotation: only a TYPE name fits. A value
+    //     def / binder / variant ctor would fail the annotation check ("requires a type, found a non-type")
+    //     — the `(: p flg)` → `flag` (a value) case.
+    //   • VALUE — everywhere else: every kind is a candidate (the original unrestricted pool).
+    let parent = db.parent_of(id);
+    let member_operand = matches!(parent, Some(p)
         if db.ast.as_form(p, ".").map(|t| t.first().copied()) == Some(Some(id)));
+    // The type slot of a `(: expr TYPE)` form — TYPE is `tail[1]` (`as_form` drops the head).
+    let type_expr = matches!(parent, Some(p)
+        if db.ast.as_form(p, ":").and_then(|t| t.get(1).copied()) == Some(id));
+    // Positions that admit only NON-VALUE names drop the value tiers (lexical binders, value defs) — a
+    // member operand and a type expression are each such a position.
+    let non_value_position = member_operand || type_expr;
     let mut candidates: Vec<String> = Vec::new();
-    if !member_operand {
+    if !non_value_position {
         // Tier 1 — lexical scope: every binder visible where the reference sits (params, `let` bindings,
-        // pattern binders), gathered by the shared scope walk. (A member operand can't be a local value.)
+        // pattern binders). Only meaningful in value position — a type/member position takes no local.
         for (n, _occ) in visible_bindings(db, id) {
             candidates.push(n);
         }
-        // Tier 2 — this module's top-level value definitions. (Not member-accessible either.)
+        // Tier 2 — this module's top-level value definitions (value position only).
         for d in &db.defs {
             candidates.push(d.name.clone());
         }
     }
-    // Tier 3 — `(type …)` names (member-accessible: `Int64.max`) + their variant CONSTRUCTORS (which are
-    // NOT member-accessible, so excluded for a member operand) — and `(effect …)` names (member-accessible:
-    // `E.op`). These are the declarations `resolve_name` consults before the prelude.
+    // Tier 3 — `(type …)` names (a type name fits BOTH a member operand `Int64.max` AND a type expr `(: x
+    // Int64)`) + their variant CONSTRUCTORS (a value, so kept ONLY in value position) — and `(effect …)`
+    // names (member-accessible, so a member-operand candidate; NOT a type, so excluded from a type expr).
     for t in &db.type_decls {
         candidates.push(t.name.clone());
-        if !member_operand {
+        if !non_value_position {
             for v in &t.variants {
                 candidates.push(v.name.clone());
             }
         }
     }
-    for e in &db.effect_decls {
-        candidates.push(e.name.clone());
+    if !type_expr {
+        for e in &db.effect_decls {
+            candidates.push(e.name.clone());
+        }
     }
-    // Tier 4 — the prelude's built-in names. For a MEMBER OPERAND, drop the prelude's VARIANT
-    // CONSTRUCTORS (`None`/`Some`/`Ok`/`Err`): a variant has no members, so suggesting `Nope`→`None` in
-    // `(. Nope op)` position would fail the one-shot rule (`(. None op)` → "record has no field `op`").
-    // A variant name is one that some sum declares; collect that set and skip it. (A prelude MODULE like
-    // `Bytes`/`Float64` — member-accessible — is not a variant name, so it stays.)
-    let variant_names: std::collections::HashSet<&str> = if member_operand {
+    // Tier 4 — the prelude's built-in names. In a NON-VALUE position drop the prelude's VARIANT
+    // CONSTRUCTORS (`None`/`Some`/`Ok`/`Err`): a variant is a value, member-inaccessible AND not a type, so
+    // suggesting `Nope`→`None` in `(. Nope op)` / `(: x Nope)` position would fail the one-shot rule. A
+    // variant name is one some sum declares; collect that set and skip it. (A prelude MODULE/TYPE like
+    // `Bytes`/`Int64` — the valid target in both non-value positions — is not a variant name, so it stays.)
+    let variant_names: std::collections::HashSet<&str> = if non_value_position {
         db.type_decls
             .iter()
             .flat_map(|t| t.variants.iter().map(|v| v.name.as_str()))
@@ -578,7 +590,7 @@ fn nearest_name_suggestion(db: &Db, id: StructId, name: &str) -> Option<String> 
         std::collections::HashSet::new()
     };
     for key in db.prelude.keys() {
-        if member_operand && variant_names.contains(key.as_str()) {
+        if non_value_position && variant_names.contains(key.as_str()) {
             continue;
         }
         candidates.push(key.clone());
