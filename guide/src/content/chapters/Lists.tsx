@@ -24,20 +24,12 @@ export default function Lists() {
       <Runnable source={`(List.len (List.push (list 1 2) 3))`} />
       <Runnable source={`(List.len (List.concat (list 1 2) (list 3 4 5)))`} />
 
-      <Why tenet="Immutable, persistent values">
-        Notice that <C>List.push</C> doesn't change the list you gave it — it returns a <em>new</em>
-        one. Every value in Cadenza is immutable; an "update" always produces a fresh value. This isn't
-        only for tidiness: because values can never form a cycle, the runtime can reclaim memory by
-        simple reference counting — no garbage collector needed. And whether a list is stored as a
-        flat array or a fancy tree is the runtime's business, not yours: it's one type, many possible
-        representations.
-      </Why>
-
       <H2>Reaching in safely</H2>
       <P>
         <C>List.at</C> gets the element at an index. But what if the index is out of range? Rather than
         crash, <C>List.at</C> returns an <C>Option</C> — <C>(Some x)</C> when the element exists,{" "}
-        <C>(None unit)</C> when it doesn't — which you take apart with <C>match</C>. Here index 1 exists:
+        <C>(None unit)</C> when it doesn't — which you take apart with <C>match</C>. Here index 1 exists,
+        so you get its value, <C>20</C>:
       </P>
       <Runnable
         source={`(def (main)
@@ -58,8 +50,43 @@ export default function Lists() {
         is visible right where it happens, not hidden inside every accessor.
       </Why>
 
+      <H2>Updating a slot — without touching the original</H2>
+      <P>
+        <C>List.update</C> takes a list, an index, and a new value, and hands back a list with that one
+        slot changed. The word "update" is doing something specific here: it does <em>not</em> reach into
+        your list and overwrite a slot — nothing in Cadenza does that. It builds a <em>new</em> list. The
+        old one is still exactly what it was. This snippet proves it — bind a list, make a bumped version,
+        then read the original back:
+      </P>
+      <Runnable
+        source={`(let ((original (list 10 20 30))
+      (bumped   (List.update original 1 99)))
+  (match (List.at original 1)
+    ((Some x) x)
+    ((None _) 0)))`}
+      />
+      <P>
+        The answer is <C>20</C>, not <C>99</C>: <C>original</C> never changed. The <C>99</C> lives only in{" "}
+        <C>bumped</C>. Swap <C>original</C> for <C>bumped</C> in the <C>List.at</C> line and Run again —
+        now you'll see <C>99</C>. Two lists, sharing most of their structure under the hood, each with its
+        own value.
+      </P>
+
+      <Why tenet="Immutable, persistent values">
+        Every value in Cadenza is immutable; an "update" always produces a fresh value and leaves every
+        existing reference untouched. That's not just tidiness — it's what makes the whole system tractable.
+        Because values can never form a cycle, the runtime reclaims memory by simple reference counting, no
+        garbage collector needed. Because a list you handed to a function can't change underneath you,
+        there's a whole class of aliasing bug that simply cannot happen. And whether a list is stored as a
+        flat array or a balanced tree is the runtime's business, not yours: one type, many representations,
+        sharing structure between versions so <C>update</C> doesn't copy the whole thing.
+      </Why>
+
       <H2>Lists through functions</H2>
-      <P>A function can take a list and compute over it. Here <C>count</C> just reports its length:</P>
+      <P>
+        A function can take a list and compute over it — the element type rides along, so <C>count</C>{" "}
+        works on a list of any element type:
+      </P>
       <Runnable
         source={`(def (count xs) (List.len xs))
 (def (main) (count (list 10 20 30 40)))`}
@@ -68,11 +95,48 @@ export default function Lists() {
       <H2>Your turn</H2>
       <Exercise
         id="lists:1"
-        prompt={<>Concatenate the two lists, then report the total length — it should be <C>5</C>.</>}
-        starter={`(List.len (List.concat (list 1 2) ?))`}
-        solution={`(List.len (List.concat (list 1 2) (list 3 4 5)))`}
-        expected="5"
-        hint={<>The second argument to <C>List.concat</C> is another <C>(list …)</C> with three elements.</>}
+        prompt={
+          <>
+            Use <C>List.update</C> to change index <C>0</C> of <C>(list 5 6 7)</C> to <C>50</C>, then read
+            that slot back with <C>List.at</C>. The answer is <C>50</C>.
+          </>
+        }
+        starter={`(match (List.at (List.update (list 5 6 7) 0 ?) 0)
+  ((Some x) x)
+  ((None _) 0))`}
+        solution={`(match (List.at (List.update (list 5 6 7) 0 50) 0)
+  ((Some x) x)
+  ((None _) 0))`}
+        expected="50"
+        hint={
+          <>
+            <C>List.update</C> takes the list, the index (<C>0</C>), and the new value (<C>50</C>) — in that
+            order. Then <C>List.at … 0</C> reads the slot you just set.
+          </>
+        }
+      />
+
+      <Exercise
+        id="lists:2"
+        prompt={
+          <>
+            Join <C>(list 1 2)</C> and <C>(list 3 4 5)</C>, then pull out the element at index <C>3</C> with{" "}
+            <C>List.at</C>. Counting from zero, that's the <C>4</C>.
+          </>
+        }
+        starter={`(match (List.at (List.concat (list 1 2) (list 3 4 5)) ?)
+  ((Some x) x)
+  ((None _) 0))`}
+        solution={`(match (List.at (List.concat (list 1 2) (list 3 4 5)) 3)
+  ((Some x) x)
+  ((None _) 0))`}
+        expected="4"
+        hint={
+          <>
+            The joined list is <C>1 2 3 4 5</C>. Index <C>0</C> is the <C>1</C>, so index <C>3</C> is the{" "}
+            <C>4</C>.
+          </>
+        }
       />
     </article>
   );
