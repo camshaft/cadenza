@@ -844,14 +844,14 @@ pub fn reduce_handle(
     let state_ty = state_ty_of_arms(db, init, arms);
     let slot = StateSlot { decl, state_ty };
     let ctx = HandlerCtx::new(db, map, vec![slot]);
-    // ABORTIVE (E4) SOUNDNESS GUARD: the abortive short-circuit (below) makes the WHOLE handle body
-    // collapse to the arm value when an abortive perform fires. That is sound ONLY when the abort is
-    // UNCONDITIONAL — reached on every control path. An abortive perform inside a CONDITIONAL position
-    // (an `if`/`match` branch, a short-circuit connective operand) fires on ONLY one path, so collapsing
-    // the whole handle would wrongly abort the OTHER path too (`(if c (Bail.bail 7) 0)` must yield 0 when
-    // `c` is false, not 7). The `block`/`br` control node that realizes a conditional abort is a later
-    // increment — decline cleanly here rather than miscompile.
-    if !ctx.abortive.is_empty() && body_has_conditional_abortive_perform(db, body, &ctx, false) {
+    // ABORTIVE (E4) SOUNDNESS GUARD. Two sound abort shapes are realized below: (1) an UNCONDITIONAL abort
+    // collapses the whole handle to the arm value; (2) an abort in the TAIL of a tail-position `if` branch
+    // folds per-branch (the branch-local abort restores the cell so the other branch survives — see
+    // `thread_branch_local_abort`). An abort at any OTHER conditional position (a NON-tail branch like
+    // `(+ 1 (if c (Bail.bail 7) 0))`, or a condition) fires on one path but cannot be expressed by either
+    // collapse or per-branch fold — it needs a real `block`/`br` control node (a later increment). Decline
+    // that cleanly rather than miscompile. The body root is tail position and not under a conditional.
+    if !ctx.abortive.is_empty() && body_has_unsound_abortive_perform(db, body, &ctx, true, false) {
         return None;
     }
     // Thread the INIT state through the body in evaluation order. The handle's value is the body's
@@ -867,48 +867,61 @@ pub fn reduce_handle(
     Some(rewritten)
 }
 
-/// Whether `node` contains an abortive perform (of an op in `ctx.abortive`) reached inside a CONDITIONAL
-/// position — an `if`/`match` branch or a short-circuit connective (`and`/`or`) operand. Such a perform
-/// fires on only one control path, so the abortive short-circuit (which collapses the whole handle body)
-/// would be unsound — `reduce_handle` declines it. `guarded` tracks whether the current position is under
-/// a conditional; the walk sets it for branches/operands and reports an abortive perform found while
-/// `guarded`. (A cross-function abortive callee is a separate later increment; this checks the body.)
-fn body_has_conditional_abortive_perform(
+/// Whether `node` contains an abortive perform (of an op in `ctx.abortive`) the fold CANNOT realize
+/// soundly. Two SOUND shapes: (1) an UNCONDITIONAL abort not under any conditional (`(+ 1 (Bail.bail 7))`
+/// — E4-a collapses the whole handle to the arm value); (2) an abort in the TAIL of an `if` branch whose
+/// `if` is itself in TAIL position (`(if c (Bail.bail 7) x)` folds per-branch to `(if c 7 x)`). UNSOUND
+/// (flagged → `reduce_handle` declines): an abort under a conditional at a NON-tail position — either a
+/// non-tail branch (`(+ 1 (if c (Bail.bail 7) 0))`, the abort must escape the `+`) or a conditional's
+/// CONDITION — because collapsing / per-branch-folding both give the wrong value there. That case needs a
+/// real `block`/`br` control node (a later increment). `tail` = value flows directly to the handle value;
+/// `under_cond` = we have descended into a conditional branch. Flag = an abort reached at
+/// `under_cond && !tail`.
+fn body_has_unsound_abortive_perform(
     db: &mut Db,
     node: StructId,
     ctx: &HandlerCtx,
-    guarded: bool,
+    tail: bool,
+    under_cond: bool,
 ) -> bool {
-    // An abortive perform HERE, under a guard, is the unsound shape (fires on only one control path).
-    // (An unconditional abortive perform — `guarded == false` — is the sound E4-a case, not flagged.)
-    if guarded
+    // An abort reached under a conditional at a non-tail position is the unsound shape.
+    if under_cond
+        && !tail
         && let Resolved::Apply { head, .. } = resolved_of(db, node)
         && let Some(id) = is_perform(db, head, ctx)
         && ctx.abortive.contains(&id)
     {
         return true;
     }
-    // An `if`: the CONDITION is unconditional; the two BRANCHES are guarded.
+    // An `if`: the CONDITION is a NON-tail, NON-branch strict operand (its abort would be the unconditional
+    // E4-a case IF the `if` is unconditional — but an abort in a condition is itself odd; treat it as
+    // under_cond=false, tail=false — a plain strict operand). Each BRANCH is a conditional position:
+    // `under_cond=true`, and `tail` carries the `if`'s own tail-ness (a tail `if` → tail branches, folded
+    // per-branch; a non-tail `if` → non-tail branches, flagged).
     if let Resolved::If { cond, then_, else_ } = resolved_of(db, node) {
-        return body_has_conditional_abortive_perform(db, cond, ctx, guarded)
-            || body_has_conditional_abortive_perform(db, then_, ctx, true)
-            || body_has_conditional_abortive_perform(db, else_, ctx, true);
+        return body_has_unsound_abortive_perform(db, cond, ctx, false, under_cond)
+            || body_has_unsound_abortive_perform(db, then_, ctx, tail, true)
+            || body_has_unsound_abortive_perform(db, else_, ctx, tail, true);
     }
-    // A `match`: the SCRUTINEE is unconditional; every ARM BODY is guarded. (A short-circuit `and`/`or`
-    // has its RIGHT operand guarded; it is a plain `Apply` head `and`/`or`, handled by the generic
-    // descent below marking children guarded — but to be precise, treat any `and`/`or` right operand as
-    // guarded via the head check.)
+    // Generic descent: a strict OPERAND is NON-tail (its value feeds an enclosing op), so lower `tail` for
+    // children while carrying `under_cond`. This keeps `(+ 1 (Bail 7))` sound (the abort is `!under_cond`,
+    // never flagged) while `(if c (+ 1 (Bail 7)) 0)` flags it (`under_cond && !tail`). Descend children at
+    // `tail=false` (a child is a strict operand of `node`, not the handle's value). A short-circuit
+    // connective `(and lhs rhs)` / `(or lhs rhs)` evaluates its RIGHT operand only conditionally (on `lhs`)
+    // — but the threading path folds `and`/`or` as a STRICT `Apply` (both operands, no per-branch capture
+    // like `if`), so an abort in the right operand there would wrongly collapse the whole handle. Mark that
+    // operand `under_cond` so its abort is flagged and declined (a short-circuit conditional abort needs
+    // the `if`-style per-branch fold, which `and`/`or` do not get in this increment).
     match db.ast.get(node).clone() {
         Struct::List(children) => {
-            // A short-circuit connective `(and lhs rhs)`/`(or lhs rhs)` guards its RIGHT operand.
             let head_name = children
                 .first()
                 .and_then(|&c| db.ast.as_name(c).map(str::to_string));
             let is_short_circuit = matches!(head_name.as_deref(), Some("and") | Some("or"));
             children.iter().enumerate().any(|(i, &c)| {
-                // For a short-circuit connective, operand index >= 2 (the right operand) is guarded.
-                let child_guarded = guarded || (is_short_circuit && i >= 2);
-                body_has_conditional_abortive_perform(db, c, ctx, child_guarded)
+                // The right operand (index >= 2) of a short-circuit connective is conditional.
+                let child_cond = under_cond || (is_short_circuit && i >= 2);
+                body_has_unsound_abortive_perform(db, c, ctx, false, child_cond)
             })
         }
         Struct::Atom(_) => false,
@@ -1054,6 +1067,35 @@ fn thread(
     thread_bounded(db, node, states, ctx, 0)
 }
 
+/// Thread an `if` BRANCH, capturing an abortive perform as LOCAL to the branch (E4): if threading the
+/// branch set the whole-handle `abort_value` cell, the branch's value is that arm value and the cell is
+/// CLEARED (so the abort does not collapse the OTHER branch or the whole handle — a branch-tail abort
+/// just yields the arm value for that branch, since the enclosing `if` is the handle body's value).
+/// Returns the branch's rewritten value (the abort value if it aborted, else the threaded rewrite). The
+/// branch's out-state is discarded (nothing after an `if` in the tail-fold shape reads it).
+fn thread_branch_local_abort(
+    db: &mut Db,
+    branch: StructId,
+    states: Vec<StructId>,
+    ctx: &HandlerCtx,
+    inline_depth: u32,
+) -> Option<StructId> {
+    let before = ctx.abort_value.get();
+    let (rbranch, _) = thread_bounded(db, branch, states, ctx, inline_depth)?;
+    let after = ctx.abort_value.get();
+    // A NEW abort fired while threading THIS branch → it is local to the branch: use the abort value as
+    // the branch's rewrite and restore the cell to its prior state (so a sibling branch / the handle is
+    // not collapsed). If no new abort fired, keep the ordinary threaded rewrite.
+    if after != before
+        && let Some(abort) = after
+    {
+        ctx.abort_value.set(before);
+        Some(abort)
+    } else {
+        Some(rbranch)
+    }
+}
+
 /// Bound on cross-function INLINE depth during threading. A handled body that inlines callees deeper
 /// than this DECLINES rather than unrolling without end (`reference-compiler.md` §An Unbounded Handler
 /// Context Declines) — the safe backstop against a RECURSIVE effectful callee slipping past the
@@ -1118,12 +1160,13 @@ fn thread_bounded(
             subst.insert(arm.state, cur[slot]);
             let arm_body = crate::eval::beta_reduce(db, arm.body, &subst);
             // ABORTIVE arm (E4): the arm never resumes, so performing it ABANDONS the surrounding
-            // computation — the arm body value becomes the WHOLE handle's value. Record it in the ctx's
-            // abort cell (interior-mutable) and return it as this node's value; the enclosing strict
-            // context is dead, and `reduce_handle` returns the abort value instead of the threaded body.
-            // Sound for the UNCONDITIONAL strict case (the perform is reached before its enclosing op
-            // completes); the abort node is not in an `if`/`match` branch (the fold declines a perform in
-            // a branch, so a conditional abort never reaches here). State does not thread (abandoned).
+            // computation — the arm body value becomes the handle's value. Record it in the ctx's abort
+            // cell (interior-mutable) and return it as this node's value; the enclosing strict context is
+            // dead. Two callers read the cell: `reduce_handle` (an UNCONDITIONAL abort collapses the whole
+            // handle to this value) and `thread_branch_local_abort` (a TAIL abort in an `if` branch is
+            // local — it uses this value for the branch and restores the cell). An UNSOUND conditional
+            // abort (non-tail branch, condition) was declined by `body_has_unsound_abortive_perform` in
+            // `reduce_handle` before threading, so it never reaches here. State does not thread (abandoned).
             if ctx.abortive.contains(&(decl, idx)) {
                 let copied = copy_pure(db, arm_body);
                 ctx.abort_value.set(Some(copied));
@@ -1251,8 +1294,16 @@ fn thread_bounded(
         // reads state). This is what threads countdown's `(if (= (tick) 0) 0 (+ 1 (loop)))`.
         Resolved::If { cond, then_, else_ } => {
             let (rcond, cur) = thread_bounded(db, cond, states, ctx, inline_depth)?;
-            let (rthen, _) = thread_bounded(db, then_, cur.clone(), ctx, inline_depth)?;
-            let (relse, _) = thread_bounded(db, else_, cur.clone(), ctx, inline_depth)?;
+            // Each BRANCH is threaded under the post-condition state. An ABORTIVE perform in a branch's
+            // TAIL is LOCAL to that branch: the branch's value is the arm value (the abort discards up to
+            // the handle, but the `if` IS the handle body's value, so per-branch the abort just yields the
+            // arm value). Capture it per-branch — thread the branch, and if it set the whole-handle abort
+            // cell, take that value as the branch's rewrite and CLEAR the cell so the OTHER branch (and the
+            // handle) are not collapsed. (Sound when the `if` is in the handle's tail position — a NON-tail
+            // conditional abort is declined by `body_has_unsound_abortive_perform` in `reduce_handle`
+            // before threading, so an `if` reached here is safe to fold per-branch.)
+            let rthen = thread_branch_local_abort(db, then_, cur.clone(), ctx, inline_depth)?;
+            let relse = thread_branch_local_abort(db, else_, cur.clone(), ctx, inline_depth)?;
             let if_head = db.push_atom(Leaf::Name("if".to_string()));
             Some((db.push_list(vec![if_head, rcond, rthen, relse]), cur))
         }

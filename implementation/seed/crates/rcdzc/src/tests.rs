@@ -2800,6 +2800,98 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_self_comparison_of_a_scalar_folds_to_a_constant() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let no_cmp = |c: &[Lir]| {
+            !c.iter().any(|i| {
+                matches!(
+                    i,
+                    Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS | Lir::I64Eq | Lir::I64Ne
+                )
+            })
+        };
+        // `x < x` / `x > x` → false; `x <= x` / `x >= x` / `x = x` → true — no runtime compare emitted.
+        // (`(let ((y x)) …)` copy-propagates so both operands are the same `x`.)
+        for (op, want) in [
+            ("<", false),
+            (">", false),
+            ("<=", true),
+            (">=", true),
+            ("=", true),
+        ] {
+            let c = lir("(: x Int64)", &format!("(let ((y x)) ({op} y y))"));
+            assert!(
+                c.contains(&Lir::ConstI32(want as i32)) && no_cmp(&c),
+                "(x {op} x) folds to {want} with no compare; got {c:?}"
+            );
+        }
+        // DISTINCT operands do NOT fold — a real compare stays.
+        let distinct = lir("(: a Int64) (: b Int64)", "(< a b)");
+        assert!(
+            distinct.iter().any(|i| matches!(i, Lir::I64LtS)),
+            "(< a b) keeps the compare; got {distinct:?}"
+        );
+        // A TRAPPING operand is NOT discarded — `(< (/ a b) (/ a b))` keeps the div so b==0 still traps.
+        let trapping = lir("(: a Int64) (: b Int64)", "(< (/ a b) (/ a b))");
+        assert!(
+            trapping.iter().any(|i| matches!(i, Lir::I64DivS)),
+            "a trapping self-comparison keeps its operand's div; got {trapping:?}"
+        );
+
+        // VALUE PARITY.
+        assert!(!run::<bool>(
+            "(: x Int64)",
+            "(let ((y x)) (< y y))",
+            &[Val::S64(7)]
+        ));
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(let ((y x)) (<= y y))",
+            &[Val::S64(7)]
+        ));
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(let ((y x)) (= y y))",
+            &[Val::S64(-3)]
+        ));
+        // The trapping form still traps on b==0, and computes false otherwise.
+        assert!(traps(
+            "(: a Int64) (: b Int64)",
+            "(< (/ a b) (/ a b))",
+            &[Val::S64(1), Val::S64(0)]
+        ));
+        assert!(!run::<bool>(
+            "(: a Int64) (: b Int64)",
+            "(< (/ a b) (/ a b))",
+            &[Val::S64(10), Val::S64(2)]
+        ));
+    }
+
+    #[test]
     fn a_comparison_against_a_narrow_types_own_bound_is_simplified() {
         use crate::backend::wasm::lir::Lir;
         use crate::backend::wasm::select::select_function;
@@ -5184,6 +5276,76 @@ mod match_engine {
     }
 
     #[test]
+    fn a_constant_argument_is_range_checked_against_a_narrow_parameter_width() {
+        // A CONSTANT argument passed to a NARROW-typed parameter must be range-checked against the
+        // parameter's declared width, exactly as a direct `(: 200 Int8)` is — β-reduction now carries the
+        // parameter's annotation onto the substituted argument (`(: arg T)`), so an out-of-range constant
+        // is rejected CDZ0302 instead of being spliced raw and run to a value the type cannot hold. The
+        // hole was `apply_lambda_uncached` keying substitution on the param NAME occurrence, which sees
+        // THROUGH the `(: name T)` binder and discarded the annotation.
+        // Out of range (200 > Int8.max 127) — a `def` call.
+        assert_eq!(
+            reject_code("(module m (def (f (: a Int8)) a) (def (main) (f 200)) (export main))")
+                .as_deref(),
+            Some("CDZ0302")
+        );
+        // A negative constant to an unsigned parameter — a sign UInt8 cannot hold at all.
+        assert_eq!(
+            reject_code("(module m (def (f (: a UInt8)) a) (def (main) (f -1)) (export main))")
+                .as_deref(),
+            Some("CDZ0302")
+        );
+        // An inline `fn` lambda shares the substitution path.
+        assert_eq!(
+            reject_code("(module m (def (main) ((fn ((: a Int8)) a) 200)) (export main))")
+                .as_deref(),
+            Some("CDZ0302")
+        );
+        // Arithmetic on an in-range constant arg that OVERFLOWS the width folds and is proven CDZ0302.
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: a Int8)) (+ a a)) (def (main) (f 100)) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0302")
+        );
+        // The annotated LET BINDER path range-checks its bound value the same way.
+        assert_eq!(
+            reject_code("(module m (def (main) (let (((: a Int8) 200)) a)) (export main))")
+                .as_deref(),
+            Some("CDZ0302")
+        );
+        // A COMPUTED out-of-range value under a binder annotation folds and is caught too.
+        assert_eq!(
+            reject_code("(module m (def (main) (let (((: a Int8) (+ 100 100))) a)) (export main))")
+                .as_deref(),
+            Some("CDZ0302")
+        );
+        // IN-RANGE constants are NOT over-rejected: `(f 127)` (boundary) and an in-range-fitting op
+        // `(+ a 10)` = 110 both compile. A `(: a Bool) 5` still faults CDZ0203 (a genuine type clash,
+        // not a width fault). And a bare (un-annotated) parameter is unaffected.
+        assert_eq!(
+            reject_code("(module m (def (f (: a Int8)) a) (def (main) (f 127)) (export main))"),
+            None
+        );
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: a Int8)) (+ a 10)) (def (main) (f 100)) (export main))"
+            ),
+            None
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (let (((: a Bool) 5)) a)) (export main))")
+                .as_deref(),
+            Some("CDZ0203")
+        );
+        assert_eq!(
+            reject_code("(module m (def (f a) (+ a 1)) (def (main) (f 41)) (export main))"),
+            None
+        );
+    }
+
+    #[test]
     fn a_binary_operator_with_no_operands_is_rejected_cdz0201() {
         // 07-type-system "a bare equality/arithmetic keyword is rejected, not a crash": a binary operator
         // applied to ZERO operands — `(=)` / `(+)` — is a MALFORMED application (the operator demands its
@@ -6434,6 +6596,86 @@ mod match_engine {
             run(m2, &["9", "42"]),
             "-1",
             "runtime multi-arm: no tag → catch-all"
+        );
+    }
+
+    #[test]
+    fn a_runtime_bin_match_binds_a_final_rest_bytes_segment_under_wasmtime() {
+        // A `(bin …)` PATTERN ending in a FINAL UNSIZED `(bytes rest)` over a RUNTIME scrutinee: a fixed
+        // int prefix (a header) then a variable-length tail. The length probe uses `bytes-len >= prefix`
+        // (not `==`), the prefix binders read via `BinIntRead`, and the tail binds via `BinRestRead` —
+        // `bytes-slice(scrutinee, prefix, len - prefix)`. We measure the tail's length so `main` returns a
+        // scalar, proving the slice covers exactly the bytes after the header.
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping runtime bin rest match run");
+            return;
+        };
+        let run = |src: &str, args: &[&str]| -> String {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: args.iter().map(|s| s.to_string()).collect(),
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&component(src), &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => s,
+                cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+            }
+        };
+        // A 1-byte tag then a rest. Build `(bin (u8 5) (bytes payload))` from a runtime `payload` bytes; the
+        // arm binds the tail and returns its length. Payload = the 3-byte `(list 1 2 3)` → rest length 3.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) \
+                   (let ((payload (Bytes.of (list 1 2 3)))) \
+                     (match (bin (u8 n) (bytes payload)) \
+                       ((bin (u8 t) (bytes rest)) (Bytes.len rest)) \
+                       (_ -9)))) (export main))",
+                &["5"]
+            ),
+            "3",
+            "runtime final-rest match: tail length"
+        );
+        // The rest is EMPTY when the scrutinee is exactly the header (len == prefix): `bytes-len >= 1`
+        // still holds, and the tail slice is `[1, 0)` → an empty Bytes → length 0.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) \
+                   (let ((payload (Bytes.of (list)))) \
+                     (match (bin (u8 n) (bytes payload)) \
+                       ((bin (u8 t) (bytes rest)) (Bytes.len rest)) \
+                       (_ -9)))) (export main))",
+                &["7"]
+            ),
+            "0",
+            "runtime final-rest match: empty tail"
+        );
+        // A 2-byte header (u16 tag) then a rest: the tail starts at offset 2. Payload of 5 bytes → 5.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) \
+                   (let ((payload (Bytes.of (list 9 8 7 6 5)))) \
+                     (match (bin (u16 n) (bytes payload)) \
+                       ((bin (u16 t) (bytes rest)) (Bytes.len rest)) \
+                       (_ -9)))) (export main))",
+                &["300"]
+            ),
+            "5",
+            "runtime final-rest match: 2-byte header, 5-byte tail"
+        );
+        // A length TOO SHORT for even the fixed prefix (built 1 byte, prefix wants 2) → the catch-all,
+        // NOT an out-of-range slice: the `>=` probe fails.
+        assert_eq!(
+            run(
+                "(module m (def (main (: n Int64)) \
+                   (match (bin (u8 n)) \
+                     ((bin (u16 t) (bytes rest)) (Bytes.len rest)) \
+                     (_ -9))) (export main))",
+                &["5"]
+            ),
+            "-9",
+            "runtime final-rest match: too short for prefix → catch-all"
         );
     }
 
@@ -8781,6 +9023,26 @@ mod diagnostics {
             "wraps the integer operand in Float64.of-int"
         );
         assert!(!fix.verified, "a coercion is a heuristic (intent guess)");
+    }
+
+    #[test]
+    fn a_narrower_int_operand_to_a_float_operator_nests_the_int64_widening() {
+        // `of-int : Int64 → Float` — it takes EXACTLY Int64. For a NARROWER operand (`x : Int32`) a bare
+        // `(Float64.of-int x)` would ITSELF fail (Int32 ≠ Int64), so the fix must first widen:
+        // `(Float64.of-int (Int64.of x))`. This is the correctness fix for the D7 gap — a suggested fix
+        // must resolve the fault in ONE shot, not cascade to the next mismatch.
+        let d = first_error("(module m (def (f (: x Int32)) (+. x 2.0)) (export f))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!(
+                "(Float64.of-int (Int64.of {}))",
+                crate::abi::WRAP_HOLE
+            ))
+            .as_deref(),
+            "a narrower int nests the Int64 widening: {}",
+            d.message
+        );
     }
 
     #[test]
@@ -11709,19 +11971,66 @@ mod stage1 {
     }
 
     #[test]
-    fn a_conditional_abortive_perform_declines_rather_than_miscompiles() {
-        // E4 soundness guard: an abortive perform inside an `if` BRANCH fires on only ONE control path,
-        // so the E4-a unconditional short-circuit (which collapses the WHOLE handle body to the arm value)
-        // would be UNSOUND — `(if (< x 5) (Bail.bail 7) 0)` must yield 0 when `x >= 5`, not 7. A runtime
-        // condition can't fold, so the perform stays genuinely conditional. `reduce_handle` DECLINES it
-        // (a real `block`/`br` control node for a conditional abort is a later increment) rather than
-        // miscompile. Regression guard for a live-on-spec miscompile E4-a's guard missed.
+    fn an_abortive_perform_in_a_tail_if_branch_folds_per_branch() {
+        // E4 branch-tail fold: an abortive perform in the TAIL of a tail-position `if` branch is LOCAL to
+        // that branch — the `if` IS the handle body's value, so per-branch the abort just yields the arm
+        // value for that branch and the sibling branch survives. `(if true (Bail.bail 7) 99)` folds to
+        // `(if true 7 99)` → 7; `(if false (Bail.bail 7) 99)` → 99. A constant condition here keeps the
+        // test to the fold (a runtime param in a handle body is a separate, not-yet-supported case); the
+        // guard is STRUCTURAL — it does not rely on the constant folding away.
+        let aborts = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (if true (Bail.bail 7) 99))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(aborts)))
+                    .expect("a tail-if-branch abort compiles"),
+                "main"
+            ),
+            7
+        );
+        let survives = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (if false (Bail.bail 7) 99))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(survives)))
+                    .expect("the non-aborting branch survives"),
+                "main"
+            ),
+            99
+        );
+    }
+
+    #[test]
+    fn a_non_tail_conditional_abortive_perform_declines_rather_than_miscompiles() {
+        // E4 soundness guard: an abortive perform under a NON-tail conditional cannot be realized by either
+        // sound shape — the unconditional collapse (whole handle → arm value) would abort the other path
+        // too, and the per-branch fold needs the `if` to BE the handle value. `(+ 1 (if true (Bail.bail 7)
+        // 0))` would have to abort OUT of the enclosing `+ 1`, which needs a real `block`/`br` control node
+        // (a later increment). `body_has_unsound_abortive_perform` flags it (`under_cond && !tail`) and
+        // `reduce_handle` DECLINES rather than miscompile. The guard is STRUCTURAL — a constant condition
+        // does not let the abort slip past as an unconditional one. Regression guard for the E4-a miscompile.
         let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main (: x Int64)) \
-                     (handle 99 ((Bail.bail (n) s n)) (if (< x 5) (Bail.bail 7) 0))) (export main))";
+                   (def (main) (handle 99 ((Bail.bail (n) s n)) (+ 1 (if true (Bail.bail 7) 0)))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a conditional abortive perform must decline, not miscompile the other branch"
+            "a non-tail conditional abortive perform must decline, not miscompile"
+        );
+    }
+
+    #[test]
+    fn an_abortive_perform_in_a_short_circuit_operand_declines() {
+        // E4 soundness guard, the short-circuit variant: `(or true (Bail.bail 7))` evaluates its right
+        // operand only when `true` is false — a CONDITIONAL abort. Unlike an `if`, the threading path folds
+        // `and`/`or` as a STRICT `Apply` (both operands, no per-branch abort capture), so an abort in the
+        // right operand would set the abort cell and collapse the whole handle — the wrong value. The guard
+        // marks a short-circuit right operand `under_cond`, so the abort is flagged and `reduce_handle`
+        // DECLINES (a short-circuit conditional abort needs the `if`-style per-branch fold, a later step).
+        // `Bail.bail` returns `Bool` here so it can sit in an `or`.
+        let src = "(do (effect Bail (op bail (-> Int64 Bool))) \
+                   (def (main) (handle false ((Bail.bail (n) s n)) (or true (Bail.bail 7)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "an abortive perform in a short-circuit right operand must decline, not miscompile"
         );
     }
 
@@ -18447,5 +18756,334 @@ mod debug_info {
                 .any(|w| w == b".debug_info"),
             "a plain runtime-Bytes component must carry no DWARF"
         );
+    }
+}
+
+// ── C-HOST-1: a Cadenza CLOSURE exported to the host as a component-model RESOURCE with a `call` method ──
+//
+// The FIRST end-to-end proof of the closures-across-the-host-boundary feature
+// (`DESIGN-closure-host-resource-rcdzc.md`). This is the ORACLE: a `ComponentBuilder`-built reference
+// that RUNS under wasmtime, proving a guest-exported resource whose `call` method dispatches through the
+// guest's own funcref table (`call_indirect`) is accepted and returns the right value. The compiler then
+// hand-emits byte-identical against this shape (C-HOST-1 emit-path increment).
+//
+// Scope of THIS oracle: a NO-CAPTURE closure `(fn (x) (+ x 1))`, standalone (no value-heap runtime
+// composed) — the closure "cell" is modelled directly as the funcref-table SLOT (an i32), which isolates
+// the NEW component-model wiring (a resource with a callable method + an internal funcref table +
+// resource.new/resource.rep) from the heap-runtime composition. A capturing closure (a real heap cell)
+// arrives in C-HOST-2, reusing this envelope + the composed runtime.
+#[cfg(test)]
+mod closure_host_resource {
+    /// A standalone core module that exports a closure resource's `make` + `call` primitives, plus the
+    /// lifted closure body, wired through a funcref table. No heap-runtime import — the "closure cell" IS
+    /// the table slot (an i32), so `make` registers that slot as the resource rep and `call` dispatches
+    /// `call_indirect` on it directly. Imports only `resource-new`/`resource-rep` (threaded by the
+    /// envelope). Exports: `make : () -> i32` (rep = the table slot), `call : (i32 rep, i64 x) -> i64`.
+    ///
+    ///  * lifted closure `lifted(x: i64) -> i64` = `x + 1` (the body of `(fn (x) (+ x 1))`). It takes NO
+    ///    env param here (no captures in C-HOST-1); the real compiler prepends an env cell, added in
+    ///    C-HOST-2.
+    ///  * `make()` → `resource.new(0)`: table slot 0 is the closure's code, so the rep IS 0. (A capturing
+    ///    closure's rep will be a heap cell handle instead.)
+    ///  * `call(self_handle, x)` → `resource.rep(self_handle)` recovers the rep (the table slot); push
+    ///    `x`, then `call_indirect` the recovered slot against the lifted functype.
+    fn closure_call_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+
+        // Types: 0 = resource-new/resource-rep (i32)->i32; 1 = lifted (i64)->i64 (the call_indirect
+        // functype); 2 = make ()->i32; 3 = call (i32,i64)->i64.
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types.ty().function(vec![ValType::I64], vec![ValType::I64]); // 1 (lifted / indirect)
+        types.ty().function(vec![], vec![ValType::I32]); // 2 make
+        types
+            .ty()
+            .function(vec![ValType::I32, ValType::I64], vec![ValType::I64]); // 3 call
+        m.section(&types);
+
+        // Imports: resource-new (func 0), resource-rep (func 1) from "heap".
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew = 0u32;
+        let f_rrep = 1u32;
+
+        // Defined funcs: lifted = 2 (type 1), make = 3 (type 2), call = 4 (type 3).
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // lifted
+        funcs.function(2); // make
+        funcs.function(3); // call
+        m.section(&funcs);
+        let f_lifted = 2u32;
+        let f_make = 3u32;
+        let f_call = 4u32;
+
+        // One funcref table of size 1, slot 0 = the lifted closure.
+        let mut tables = TableSection::new();
+        tables.table(TableType {
+            element_type: RefType::FUNCREF,
+            minimum: 1,
+            maximum: Some(1),
+            table64: false,
+            shared: false,
+        });
+        m.section(&tables);
+
+        let mut exports = ExportSection::new();
+        exports.export("make", ExportKind::Func, f_make);
+        exports.export("call", ExportKind::Func, f_call);
+        m.section(&exports);
+
+        // Active element segment: table 0, offset 0, [lifted].
+        let mut elems = ElementSection::new();
+        elems.active(
+            Some(0),
+            &ConstExpr::i32_const(0),
+            Elements::Functions(std::borrow::Cow::Borrowed(&[f_lifted])),
+        );
+        m.section(&elems);
+
+        let mut code = CodeSection::new();
+        // lifted(x) = x + 1
+        let mut lifted = Function::new(vec![]);
+        lifted.instruction(&Instruction::LocalGet(0));
+        lifted.instruction(&Instruction::I64Const(1));
+        lifted.instruction(&Instruction::I64Add);
+        lifted.instruction(&Instruction::End);
+        code.function(&lifted);
+        // make() = resource.new(0)  — rep is the table slot (0) of the closure's code
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(0));
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+        code.function(&make);
+        // call(self, x) = call_indirect[type 1](x, table_slot = resource.rep(self))
+        let mut call = Function::new(vec![]);
+        call.instruction(&Instruction::LocalGet(1)); // x (the closure arg)
+        call.instruction(&Instruction::LocalGet(0)); // self handle
+        call.instruction(&Instruction::Call(f_rrep)); // → the rep (table slot)
+        call.instruction(&Instruction::CallIndirect {
+            type_index: 1,
+            table_index: 0,
+        });
+        call.instruction(&Instruction::End);
+        code.function(&call);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The inner re-export component that publishes the closure resource WITH its `call` method — the
+    /// closure analog of `inner_reexport_component` (which re-exports `make`/`encode`). It imports the
+    /// resource abstractly (`SubResource`) plus `make : () -> own<t>` and `call : (self: own<t>, i64) ->
+    /// i64`, then re-exports the resource type DIRECTLY (publishing its identity — no `SubResource`
+    /// ascription, which would mint a distinct resource) and the two funcs ASCRIBED against the exported
+    /// identity. The outer component instantiates this with the real rep-carrying resource + lifted funcs.
+    fn inner_reexport_component() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        ); // type 0
+        // make : () -> own<0>
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty)); // func 0
+        // call : (self: own<0>, x: s64) -> s64
+        let (own_imp2, od2) = c.type_defined();
+        od2.own(imp_t);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_imp2)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_fn = c.import("import-func-call", ComponentTypeRef::Func(call_ty)); // func 1
+        // RE-EXPORT the resource type directly (publish `imp_t`'s identity under `t`).
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        // make ascribed against the exported identity.
+        let (own_exp, od3) = c.type_defined();
+        od3.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        // call ascribed against the exported identity.
+        let (own_exp2, od4) = c.type_defined();
+        od4.own(exp_t);
+        let (call_exp_ty, mut cf2) = c.type_function();
+        cf2.params([
+            ("self", ComponentValType::Type(own_exp2)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        c.export(
+            "call",
+            ComponentExportKind::Func,
+            call_fn,
+            Some(ComponentTypeRef::Func(call_exp_ty)),
+        );
+        c
+    }
+
+    /// The outer oracle component: wraps `closure_call_core` in a resource with `make` + `call`, published
+    /// as `cadenza:closure/exports`. Standalone (no heap runtime) — a `heap` core-instance exports only
+    /// `resource-new`/`resource-rep`, which the core imports. `call` is lifted against `own<t>` for now
+    /// (own/no-drop; the `borrow<t>` migration is C-HOST-5, shared with the value-escape's `encode`).
+    fn oracle_closure_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        // dtor module (imports nothing) → instantiate first → the resource type has a real dtor core-func.
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+        // heap core-instance exporting the two resource intrinsics; instantiate the program core.
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew_core),
+            ("resource-rep", ExportKind::Func, rrep_core),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let call_core = c.core_alias_export(prog_inst, "call", ExportKind::Func);
+        // lift make : () -> own<t>
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        // lift call : (self: own<t>, x: s64) -> s64
+        let (own_t2, odef2) = c.type_defined();
+        odef2.own(res_ty);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_t2)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_comp = c.lift_func(call_core, call_ty, []);
+        // inner re-export → cadenza:closure/exports.
+        let inner_idx = c.component(inner_reexport_component());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-call", ComponentExportKind::Func, call_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// A minimal dtor core module: `t-dtor : (i32 rep) -> ()`, empty body (own/no-drop C-HOST-1 — the rep
+    /// is a table slot, nothing to release). Imports nothing → instantiates first. The `borrow<t>` +
+    /// real-drop dtor is C-HOST-5.
+    fn dtor_stub_module() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![]);
+        m.section(&types);
+        let mut funcs = FunctionSection::new();
+        funcs.function(0);
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("t-dtor", ExportKind::Func, 0);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut f = Function::new(vec![]);
+        f.instruction(&Instruction::End);
+        code.function(&f);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// C-HOST-1 END-TO-END: the closure-resource oracle RUNS under wasmtime. Build the component, call
+    /// `make()` to get the closure resource handle, then `call(handle, 5)` — which dispatches
+    /// `(fn (x) (+ x 1))` through the guest's funcref table via `call_indirect` — and expect 6. This is
+    /// the proof that a Cadenza closure can cross to the host as a resource the host invokes.
+    #[test]
+    fn a_closure_crosses_as_a_resource_the_host_calls() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_closure_component(&closure_call_core());
+        // Validate structurally first (localize any byte/index error before wasmtime).
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("closure-resource component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make export");
+        let call_idx = instance
+            .get_export_index(&mut store, Some(&iface), "call")
+            .expect("call export");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let call = instance.get_func(&mut store, call_idx).expect("call func");
+
+        // make() → the closure resource handle.
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle).expect("make call");
+        make.post_return(&mut store).expect("make post_return");
+        assert!(
+            matches!(handle[0], Val::Resource(_)),
+            "make must return a resource, got {:?}",
+            handle[0]
+        );
+
+        // call(handle, 5) → 6  (the closure (fn (x) (+ x 1)) dispatched via the guest's call_indirect).
+        // NOTE: `call` takes `own<t>`, so it CONSUMES the handle — the resource is single-use per handle
+        // in C-HOST-1 (own/no-drop). The host `make`s a fresh handle for each invocation. Making `call`
+        // take `borrow<t>` (so one handle serves repeated calls, the natural callback shape) is C-HOST-5,
+        // shared with the value-escape's `encode` borrow migration.
+        let mut out = [Val::Bool(false)];
+        call.call(&mut store, &[handle[0].clone(), Val::S64(5)], &mut out)
+            .expect("call(handle, 5)");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(out[0], Val::S64(6), "closure (+ x 1) applied to 5 = 6");
+
+        // A SECOND handle from a fresh `make`, called with a different arg — proves the resource+dispatch
+        // is reusable across handles (each `own` handle is one-shot). Same closure code, applied to 41.
+        let mut handle2 = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle2).expect("make 2");
+        make.post_return(&mut store).expect("make 2 post_return");
+        let mut out2 = [Val::Bool(false)];
+        call.call(&mut store, &[handle2[0].clone(), Val::S64(41)], &mut out2)
+            .expect("call(handle2, 41)");
+        call.post_return(&mut store).expect("call post_return 2");
+        assert_eq!(out2[0], Val::S64(42), "same closure applied to 41 = 42");
+        // Both `own` handles were consumed by `call`; a borrow-based repeated-call handle is C-HOST-5.
     }
 }

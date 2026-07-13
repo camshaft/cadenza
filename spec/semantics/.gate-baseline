@@ -111,6 +111,7 @@ pass	a conditionally-selected nullary variant is returned as a runtime sum resul
 pass	a conditionally-selected variant is returned as a runtime sum result
 pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a consistent annotation type-checks against the inferred type
+pass	a constant argument out of a narrow parameter's range is rejected, not laundered
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant left shift of 1 by 63 overflows and is rejected
 pass	a constant tuple is returned as a program result
@@ -291,6 +292,7 @@ pass	a multi-payload variant destructures its payloads positionally
 pass	a multi-segment bin concatenates mixed-width signed and unsigned segments in order
 pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
+pass	a name bound to a string keys a map by its value, not the literal name
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
 pass	a named capturing closure applied directly folds through its capture
@@ -306,12 +308,14 @@ pass	a narrow comparison reconciles a constant LEFT operand to the variable's wi
 pass	a narrow match binder used in arithmetic with the scrutinee
 pass	a narrow multiplication reconciles a constant LEFT operand to the variable's width
 pass	a narrow value in the else branch opposite a bare literal computes at the narrow width
+pass	a narrow-body arithmetic on an in-range constant arg overflows the parameter width
 pass	a narrow-width accumulator that never changes threads through the recursion
 pass	a narrow-width parameter compared to a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes inside a helper function
 pass	a narrow-width two-parameter recursion compiles to valid wasm and computes
 pass	a nearer handler on the call chain shadows an outer one
+pass	a negative constant argument to an unsigned parameter is rejected, not laundered
 pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a negative integer width is rejected
@@ -422,6 +426,7 @@ pass	a right shift by the bit width or more traps rather than masking
 pass	a run's result is a deterministic function of a host call's recorded response
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime arithmetic right shift preserves the sign
+pass	a runtime bin match binds the tail after a fixed header via a final rest segment
 pass	a runtime bin match dispatches on a literal tag across arms
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
 pass	a runtime bitwise AND masks bits
@@ -435,6 +440,7 @@ pass	a runtime conditional selects its then-branch when the runtime condition ho
 pass	a runtime conjunction still shields a comparison right operand whose subexpression traps
 pass	a runtime division by zero traps
 pass	a runtime division truncates toward zero
+pass	a runtime final rest segment binds the empty tail when the scrutinee is only the header
 pass	a runtime fixed-width segment is emitted big-endian and read back by index
 pass	a runtime float addition emits the machine add
 pass	a runtime float division rounds under the fixed mode
@@ -598,11 +604,13 @@ pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
+pass	an abortive perform in the tail of an if branch abandons only that branch
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an annotated destructuring let binder
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
 pass	an annotated let binder constrains the value's type
+pass	an annotated let binder range-checks its narrow-width bound value
 pass	an annotated let binder that contradicts the value is rejected
 pass	an annotated value takes a narrower integer width
 pass	an annotation that contradicts the value is rejected
@@ -622,6 +630,7 @@ pass	an element pattern matches a list by its length and elements
 pass	an element read across a concatenation boundary is the right value
 pass	an empty binary form is the empty byte sequence
 pass	an empty byte-string literal is the empty byte sequence
+pass	an empty map is unequal to a non-empty map, not a type error
 pass	an empty scrutinee matches an empty bin pattern
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
@@ -639,6 +648,7 @@ pass	an if with a narrow branch and a bare-literal branch computes at the narrow
 pass	an imported helper reaches its own file's private definition when inlined
 pass	an imported name resolves to a sibling file's exported definition
 pass	an in-bounds slice yields Some of the bytes at that range
+pass	an in-range constant argument to a narrow parameter computes at the parameter width
 pass	an inner binding shadows an outer one only within its scope
 pass	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
 pass	an integer if condition is a type error, not a running conditional
@@ -752,6 +762,7 @@ pass	demoting a Float64 to Float32 rounds to the nearest binary32
 pass	disjunction is false exactly when both operands are false
 pass	disjunction shields a trapping right operand when the left is true
 pass	distinct large floats are not equal
+pass	distinct names bound to the same string key the same map entry
 pass	division by zero traps
 pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
@@ -803,6 +814,7 @@ pass	less-than-or-equal
 pass	less-than-or-equal of an integer and a float is rejected
 pass	lists are equal by elements in order
 pass	looking up an absent key yields None
+pass	map equality is independent of insertion order
 pass	match on a Result returned by a fallible function
 pass	match on a function-returned sum takes the other variant at runtime
 pass	match on a sum value returned by a function selects the runtime variant
@@ -994,6 +1006,8 @@ pass	two functions defined by mutual recursion compute a result
 pass	two host calls consume their responses in order
 pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
+pass	two maps of different sizes are unequal, not a type error
+pass	two maps with different keys are unequal, not a type error
 pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
@@ -1065,7 +1079,6 @@ todo	a module value definition registers a reachable export field
 todo	a module's delegated capability is reachable as metadata, not as an export
 todo	a multi-argument call node is evaluated by iterating its payload arg list
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
-todo	a name bound to a string keys a map by its value, not the literal name
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested unquote pattern matches a sub-AST by shape
 todo	a nominal record compared to a plain record of the same shape is a type error
@@ -1131,7 +1144,6 @@ todo	an arbitrary-precision integer multiplication does not overflow
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 todo	an association list is searched by key with a tuple-carrying Option match
-todo	an empty map is unequal to a non-empty map, not a type error
 todo	an empty quote is rejected, not a crash
 todo	an explicit annotation overrides the default-integer pragma
 todo	an export and a like-named metadata key do not collide
@@ -1159,7 +1171,6 @@ todo	converting a unit to another unit of the same dimension is an exact rationa
 todo	decoding bytes that are not a canonical AST yields the error case, not a trap
 todo	decoding canonical bytes followed by a trailing byte yields the error case
 todo	dimensional equality is decided by canonical exponent map, not written form
-todo	distinct names bound to the same string key the same map entry
 todo	dividing quantities divides their dimensions
 todo	dropping an absent field from a record is rejected
 todo	dropping fields from a record leaves the remaining fields
@@ -1179,7 +1190,6 @@ todo	extending a record with an already-present field is rejected
 todo	inserting a present element is a no-op value
 todo	inserting an element yields a set containing it
 todo	interning the same string twice yields equal symbols
-todo	map equality is independent of insertion order
 todo	membership of a present element is true
 todo	membership of an absent element in the empty set is false
 todo	membership of an absent element is false, not a trap
@@ -1233,8 +1243,6 @@ todo	the number of elements counts distinct elements
 todo	the reader literal reads to Symbol.of
 todo	the underlying numeric type obeys the numeric core — no silent promotion under a unit
 todo	the union contains the elements of either set
-todo	two maps of different sizes are unequal, not a type error
-todo	two maps with different keys are unequal, not a type error
 todo	two rationals denoting the same number are equal regardless of how they were written
 todo	two sets of different sizes are unequal, not a type error
 todo	two sets with different elements are unequal, not a type error

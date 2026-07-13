@@ -2040,6 +2040,55 @@
   (call   main (: 100 UInt8))
   (output (: 101 UInt8)))
 
+; A CONSTANT ARGUMENT passed to a NARROW-typed parameter must be RANGE-CHECKED against the parameter's
+; declared width, exactly as a direct annotation `(: 200 Int8)` is (→ CDZ0302). β-reduction substitutes
+; the argument for the parameter, and the parameter's annotation `(: a T)` constrains what its argument
+; may be — so an out-of-range constant is rejected, not laundered into a narrow type and run to a value
+; the type cannot hold. This is enforced by carrying the annotation onto the substituted argument
+; (`(: arg T)`), so the same fit-check fires on `def`, `fn`, curried, and let-binder substitution alike.
+; (An IN-range constant round-trips unchanged; a RUNTIME argument keeps its own already-checked type.)
+
+(case "a constant argument out of a narrow parameter's range is rejected, not laundered"
+  (doc    "`(def (f (: a Int8)) a)` returns its Int8 parameter; `(f 200)` passes 200, OUT of Int8's
+           -128..127 range. The parameter annotation constrains the argument exactly as a direct
+           `(: 200 Int8)` does — CDZ0302. Without the check the constant is β-reduced into the body with
+           its annotation discarded and the program runs to 200, a value no Int8 can hold (the boundary is
+           sharp: `(f 127)` gives 127, `(f 128)` would wrongly give 128).")
+  (input  (do (def (f (: a Int8)) a) (def (main) (f 200)) (export main)))
+  (error  CDZ0302))
+
+(case "a negative constant argument to an unsigned parameter is rejected, not laundered"
+  (doc    "`(def (f (: a UInt8)) a)` with `(f -1)`: a UInt8 has no negative representation (0..255), so a
+           direct `(: -1 UInt8)` rejects CDZ0302 and the parameter path must too. The unsigned case is the
+           sharpest witness — not a wrap-around near a boundary but a sign the type does not have.")
+  (input  (do (def (f (: a UInt8)) a) (def (main) (f -1)) (export main)))
+  (error  CDZ0302))
+
+(case "a narrow-body arithmetic on an in-range constant arg overflows the parameter width"
+  (doc    "`(def (f (: a Int8)) (+ a a))` with `(f 100)`: 100 IS in Int8 range, but `(+ a a)` = 200
+           OVERFLOWS Int8 (max 127). The argument carries the Int8 annotation into the body, so the
+           addition is a homogeneous Int8 op whose CONSTANT operands fold and the compiler proves the
+           overflow at compile time — CDZ0302, exactly as `(+ (: 100 Int8) (: 100 Int8))` does. Pins that
+           the width constraint is not dropped by inlining: the wide 200 is never kept as the result.")
+  (input  (do (def (f (: a Int8)) (+ a a)) (def (main) (f 100)) (export main)))
+  (error  CDZ0302))
+
+(case "an in-range constant argument to a narrow parameter computes at the parameter width"
+  (doc    "The complement — the check does NOT over-reject. `(def (f (: a Int8)) (+ a 10))` with `(f 100)`
+           = 110, which fits Int8, so it computes normally at the Int8 width. Pins that carrying the
+           annotation onto the argument range-checks WITHOUT breaking a legitimate in-range call.")
+  (input  (do (def (f (: a Int8)) (+ a 10)) (def (main) (f 100)) (export main)))
+  (output (: 110 Int8)))
+
+(case "an annotated let binder range-checks its narrow-width bound value"
+  (doc    "`(let (((: a Int8) 200)) a)` — the annotated let binder `(: a Int8)` constrains the bound
+           value's TYPE (a `(let (((: a Bool) 5)) …)` correctly rejects CDZ0203) AND range-checks the
+           narrow-width value: 200 is out of Int8's -128..127 range, so — exactly as the value annotation
+           `(let ((a (: 200 Int8))) a)` gives CDZ0302 — the binder-annotation form does too. A binder
+           annotation applies its type's fit-check to the bound value, like a value annotation.")
+  (input  (do (def (main) (let (((: a Int8) 200)) a)) (export main)))
+  (error  CDZ0302))
+
 ; A `match` over a NARROW-width scrutinee whose arms include both a bare-literal arm and a binder (or a
 ; narrow value) arm must reconcile the arm widths: every arm produces the match's RESULT type, so a
 ; bare-literal arm (which defaults to Int64 on its own) takes the result's narrow width — otherwise a

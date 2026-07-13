@@ -175,6 +175,24 @@
                 (+ 1 (Bail.bail 7)))) (export main)))
   (output (: 7 Int64)))
 
+(case "an abortive perform in the tail of an if branch abandons only that branch"
+  (doc    "Refines the abortive class for a CONDITIONAL early-exit. `Bail.bail` is abortive (its arm never
+           resumes). The handle body is `(if true (Bail.bail 7) 99)` — the `if` IS the handle's value, so an
+           abort in a branch's TAIL is LOCAL to that branch: the true branch aborts, yielding the arm value
+           7; the false branch, had it run, would yield 99 (its sibling survives — the abort does not
+           collapse the whole handle). This is the 'bail on one path, fall through on the other' shape a
+           validation routine takes. Contrast a NON-tail conditional abort (`(+ 1 (if c (Bail.bail 7) 0))`),
+           where the abort must escape the enclosing `+` — that needs a control block the perform `br`s out
+           of and is not yet reducible. Here the branch tail is the handle value, so the fold is per-branch:
+           `(if true 7 99)` → 7 (`DESIGN-effects-rcdzc.md` §4.2).")
+  (needs  effects)
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle 0 ((Bail.bail (n) s n))
+                (if true (Bail.bail 7) 99))) (export main)))
+  (output (: 7 Int64)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the
