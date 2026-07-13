@@ -379,7 +379,30 @@ fn emit_grounded(
     if let Core::ConstInt(v) = core_of(db, id) {
         return emit_const_int_at(it, &v);
     }
-    emit(db, id, env, ctx)
+    let rendered = emit(db, id, env, ctx)?;
+    // WIDTH NORMALIZATION for a CONTROL-FLOW / non-literal operand. A bare literal is grounded above; but
+    // an operand that is an `if`/`match` (or any node) whose BRANCHES are bare deferred-width literals is
+    // solved at its OWN type — which defaults to Int64 — while the enclosing op wants the NARROW width
+    // `it`. Emitting it unchanged renders an `i64` sub-expression where an `iN` is required (`(if … {
+    // 100i64 } …).checked_add(100i8)` → rustc E0308). Reconcile HERE, at the consuming site, by wrapping
+    // the operand down to the op's width with an `as <target>` cast — the native mirror of the wasm
+    // backend's `i32.wrap_i64` narrow-value normalization. SOUND: a genuine fixed-width disagreement is a
+    // type FAULT (CDZ0203) that aborts before emit, so a wider-than-`it` operand reaching here is a
+    // deferred literal defaulted to Int64 whose low bits ARE its value; the cast truncates to `it` exactly
+    // as the wasm wrap does, and the enclosing op's own overflow check then traps a true overflow (`(: (+
+    // (if … 100 0) 100) Int8)` n=3 → 100+100=200 overflows Int8 → panics, matching wasm's trap). Only cast
+    // when the operand's OWN solved integer type DIFFERS from `it` (same width → emit unchanged, no
+    // redundant `as`); a non-integer operand emits unchanged.
+    if let Ty::Int(op_it) = type_of(db, id)
+        && (op_it.ground_signed(), op_it.ground_width()) != (it.ground_signed(), it.ground_width())
+        && let Some(target) = types::rust_type(&Ty::Int(it))
+    {
+        // Parenthesize the rendered operand before the `as` so the cast binds to the WHOLE expression
+        // regardless of its shape (an `if`/`match`/block would otherwise let `as` bind only to the last
+        // sub-expression). `unused_parens` is allowed in the emitted header, so redundant parens are fine.
+        return Ok(format!("(({rendered}) as {target})"));
+    }
+    Ok(rendered)
 }
 
 /// Render the node at `id` in TAIL position inside a self-loop (`ctx.self_loop` is `Some`) — the result

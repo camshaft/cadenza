@@ -543,3 +543,35 @@
            incompatible with `{metre:1}`.")
   (input  (+ (Qty.of 1.0 (Unit.of #"mbps")) (Qty.of 1.0 (Unit.of #"metre"))))
   (error  CDZ0501))
+
+; ============================================================================================
+; USER family declarations — `(Unit.define #"name" base-unit num den)` declares a new family unit as an
+; existing unit scaled by an exact machine-int ratio, so a program declares its OWN units, not only the
+; built-in vocabulary (units-of-measure.md #A Dimension Groups Interconvertible Units; #A Named Unit's
+; Conversion Is Unique). The declared name then resolves through `Unit.of` and converts like any family
+; unit. A name declared with a conversion conflicting with the built-in table or an earlier declaration
+; is CDZ0502 — a unit's name→conversion must be a well-defined function.
+
+(case "a program declares its own family unit and converts with it"
+  (doc    "`(Unit.define #\"furlong\" (Unit.of #\"foot\") 660 1)` declares a furlong as 660 feet; then
+           `(Unit.in metre (Qty.of 1.0 furlong))` = 660 * 381/1250 = 201.168 m. Pins that a user-declared
+           unit joins the family of its base's dimension and converts by the composed scale — the layer
+           fixes the mechanism, a program supplies its own vocabulary.")
+  (needs  units-of-measure)
+  (input  (do
+            (Unit.define #"furlong" (Unit.of #"foot") 660 1)
+            (def (main) (Qty.value (Unit.in (Unit.of #"metre") (Qty.of 1.0 (Unit.of #"furlong")))))
+            (export main)))
+  (output (: 201.168 Float64)))
+
+(case "declaring a unit with a conversion conflicting with a built-in is an error"
+  (doc    "`(Unit.define #\"foot\" (Unit.of #\"metre\") 2 1)` redeclares the built-in `foot` (381/1250 m)
+           as 2 m — a conflicting conversion — so it is CDZ0502 (units-of-measure.md #A Named Unit's
+           Conversion Is Unique): a unit's name must resolve to ONE conversion. A redeclaration that
+           AGREED with the built-in would be admissible; a disagreement is rejected.")
+  (needs  units-of-measure)
+  (input  (do
+            (Unit.define #"foot" (Unit.of #"metre") 2 1)
+            (def (main) 0)
+            (export main)))
+  (error  CDZ0502))

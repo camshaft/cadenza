@@ -796,6 +796,11 @@ fn unit_module(ast: &mut Arenas) -> StructId {
     let in_field = push_atom(ast, Leaf::Name("in".to_string()));
     let in_op = unit_op_ctor(ast, "unit-in");
     children.push(push_list(ast, vec![in_field, in_op]));
+    // `define` — DECLARE a family unit: `(Unit.define #"furlong" (Unit.of #"foot") 660 1)`. As a value it
+    // reduces to the defined unit (`base` scaled by num/den); its registration is a load-time scan.
+    let define_field = push_atom(ast, Leaf::Name("define".to_string()));
+    let define_op = unit_op_ctor(ast, "unit-define");
+    children.push(push_list(ast, vec![define_field, define_op]));
     push_list(ast, children)
 }
 

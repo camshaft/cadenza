@@ -438,6 +438,13 @@ pub enum Prim {
     /// Units). Builds `Unit.base(dim).scaled(num, den)`. Scales are machine-int metadata (foot 381/1250,
     /// mile 201168/125 - all small), so a family unit auto-converts over Float/Int with NO bignum.
     UnitOf,
+    /// `Unit.define` — DECLARE a family unit: `(Unit.define #"furlong" (Unit.of #"foot") 660 1)` names
+    /// `furlong` as 660 feet. As a VALUE it reduces to the defined unit itself (`base` scaled by
+    /// `num/den`), so it can be bound or used inline; its DECLARATION effect (registering the name so
+    /// `(Unit.of #"furlong")` resolves) is captured by a load-time scan (`db::scan_unit_defines`). A
+    /// redeclaration conflicting with the built-in table or another declaration is CDZ0502
+    /// (`units-of-measure.md` §A Named Unit's Conversion Is Unique). The user family-declaration surface.
+    UnitDefine,
     /// `Unit.in` — EXPLICIT conversion of a quantity to a chosen unit: `(Unit.in metre (Qty.of 3.0 km))`
     /// = `(Qty Float64 metre)` with value 3000 (`units-of-measure.md` #A Unit Conversion Is The
     /// Arithmetic The Source Denotes; the way a program pins a specific result unit rather than the
@@ -584,6 +591,7 @@ impl Prim {
             "unit-pow" => Some(Prim::UnitPow),
             "unit-prefix" => Some(Prim::UnitPrefix),
             "unit-of" => Some(Prim::UnitOf),
+            "unit-define" => Some(Prim::UnitDefine),
             "unit-in" => Some(Prim::UnitIn),
             "qty-of" => Some(Prim::QtyOf),
             "qty-value" => Some(Prim::QtyValue),

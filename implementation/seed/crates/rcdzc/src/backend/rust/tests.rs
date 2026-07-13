@@ -110,6 +110,46 @@ fn rustc_roundtrip_narrow_literal_operand_computes_and_traps() {
 }
 
 #[test]
+fn a_narrow_op_with_a_control_flow_operand_wraps_it_down_to_the_op_width() {
+    // REGRESSION (the rust-backend cross-backend miscompile): a narrow-annotated op whose operand is a
+    // DEFERRED-WIDTH control-flow expression (`if`/`match` of bare literals, inferred Int64) emitted an
+    // i64 sub-expression into a narrow op (`(if … { 100i64 } …).checked_add(100i8)` → rustc E0308). The
+    // operand must be WRAPPED DOWN to the op's width with an `as iN` cast, mirroring the wasm backend's
+    // i64→iN normalization.
+    let rs = compile_rust(
+        "(module m (def (go (: n Int8)) (: (+ (if (< n 5) 100 0) 100) Int8)) (export go))",
+    );
+    // The whole `if` sub-expression is wrapped down to i8 — `}) as i8)` closes the if-block then casts
+    // it, so the narrow `+` adds an i8 (its other operand `100` grounds to `100u8 as i8`).
+    assert!(
+        rs.contains("}) as i8)") && rs.contains("checked_add((100u8 as i8))"),
+        "the if-operand must be wrapped down to i8 before the i8 add:\n{rs}"
+    );
+    // End-to-end through rustc: n=9 selects the else 0, 0+100=100 fits Int8 → 100 (compiles + runs, was
+    // E0308). The overflow direction (n=3 → 200 → panic) is exercised by the wasm gate + the corpus.
+    if let Some(out) = rustc_run(&rs, "go(9)") {
+        assert_eq!(
+            out, "100",
+            "in-range narrow if-operand computes; was a compile error"
+        );
+    }
+    // A `match`-operand takes the same wrap-down (the match block closes then casts to i8).
+    let m = compile_rust(
+        "(module m (def (go (: n Int8)) (: (+ (match n (0 5) (_ 1)) 2) Int8)) (export go))",
+    );
+    assert!(m.contains("}) as i8)"), "match-operand wrapped to i8:\n{m}");
+    // An UNANNOTATED op is genuinely Int64 (deferred branches) — it must NOT wrap the `if` down: the op
+    // adds an i64 and the if-block is NOT followed by an `as i8` cast (the `(5u8 as i8)` in the condition
+    // is unrelated — it grounds the comparison literal to `n`'s width).
+    let wide =
+        compile_rust("(module m (def (go (: n Int8)) (+ (if (< n 5) 100 0) 100)) (export go))");
+    assert!(
+        wide.contains("checked_add((100u64 as i64))") && !wide.contains("}) as i8)"),
+        "an unannotated Int64 op must not wrap its if-operand down:\n{wide}"
+    );
+}
+
+#[test]
 fn modulo_emits_a_zero_divisor_guard_not_checked_rem() {
     // A `%` traps ONLY on a zero divisor — NOT on `MIN % -1` (which is a defined 0; modulo forms no
     // quotient, so it has no overflow — numeric-model §Modulo by -1 is always zero). Rust's `checked_rem`

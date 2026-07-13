@@ -1874,6 +1874,30 @@
   (call   main)
   (output (: 5 Int64)))
 
+(case "a variant pattern over a scalar scrutinee is a type error"
+  (doc    "The scalar mirror of the cross-type rejects above: a variant pattern demands a SUM to dispatch
+           on, so `(match 5 ((C.Red) 1) ((C.Green) 0))` — a variant pattern over an `Int64` scrutinee — is
+           a type confusion (an Int64 has no variants). It MUST reject CDZ0203, the same code a cross-sum
+           pattern gets, rather than DECLINE ('a match pattern that is not a scalar literal or `_`') — a
+           decline would grade a genuine type error as a mere unsupported form. The check fires whenever the
+           scrutinee's type is a definite non-sum; an undetermined scrutinee still declines cleanly.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C Red Green)
+            (def (main) (match 5 ((C.Red) 1) ((C.Green) 0))) (export main)))
+  (error  CDZ0203))
+
+(case "a variant pattern over a Bool scrutinee is a type error"
+  (doc    "The same rule over a different scalar: matching a `Bool` scrutinee against variant patterns is a
+           type error (CDZ0203), not a decline. A Bool is matched by the literals `true`/`false` or a
+           binder, never by a sum's constructor. Pins that the scrutinee-vs-pattern-type check is over ANY
+           definite non-sum scalar, not just Int64.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C Red Green)
+            (def (main) (match true ((C.Red) 1) ((C.Green) 0))) (export main)))
+  (error  CDZ0203))
+
 ; --- A constructor pattern NESTED INSIDE A TUPLE ELEMENT of a payload --------------------------
 ; The nested-payload cases above bind a constructor DIRECTLY under a constructor (`(W.Wrap (N.L v))`).
 ; A distinct shape a compiler / proof kernel hits is a constructor pattern nested inside a TUPLE

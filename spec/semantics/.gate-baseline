@@ -226,6 +226,7 @@ pass	a generic sum with TWO type parameters instantiates each independently
 pass	a generic sum with a type parameter inside a record payload constructs and projects
 pass	a generic sum with a type parameter inside a tuple payload constructs and destructures
 pass	a generic unwrap helper consumes a fallible Bytes.at result
+pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact value
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
 pass	a guard over a variant pattern gates on the payload
 pass	a guard sees the names its pattern binds and arms are tried in order
@@ -335,6 +336,7 @@ pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a member access with no field operand is rejected, not a crash
 pass	a module declaration binds its name in the enclosing scope
+pass	a module function calls a sibling export by name
 pass	a module value definition registers a reachable export field
 pass	a module with two definitions of the same name is rejected
 pass	a multi-argument closure among distinct-signature exports
@@ -444,6 +446,7 @@ pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
 pass	a prefixed unit combines with its base by converting to the reference (Float)
 pass	a produced closure is handed back into a consumer export (the round trip)
+pass	a program declares its own family unit and converts with it
 pass	a program that delegates no effect is pure and never suspends
 pass	a program that makes a host call has that call in its observable behavior
 pass	a program uses a response-returning delegated host function's return value
@@ -696,6 +699,8 @@ pass	a value-eq guard on a SUM-match arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
 pass	a variant carrying a RECORD payload constructs and matches
 pass	a variant carrying a record payload escapes to the host
+pass	a variant pattern over a Bool scrutinee is a type error
+pass	a variant pattern over a scalar scrutinee is a type error
 pass	a variant with a wrong-type payload as a direct match scrutinee is a type error
 pass	a well-formed annotation still checks and accepts a matching type (the control)
 pass	a wildcard in a nested pattern position ignores that element
@@ -882,6 +887,7 @@ pass	converting a float to its own width is the identity
 pass	converting a scalar-valued integer to a char yields Some
 pass	converting a surrogate code point to a char yields None
 pass	converting an out-of-range integer to a char yields None
+pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
 pass	decoding a surrogate code point encoded as UTF-8 yields none
 pass	decoding an overlong UTF-8 encoding yields none
@@ -1237,7 +1243,6 @@ todo	a literal subterm in a quote pattern matches by equality
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a match on an uninhabited scrutinee is exhaustive with zero arms
-todo	a module function calls a sibling export by name
 todo	a module function is recursive
 todo	a module's delegated capability is reachable as metadata, not as an export
 todo	a multi-argument call node is evaluated by iterating its payload arg list

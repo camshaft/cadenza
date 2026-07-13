@@ -11367,6 +11367,44 @@ mod match_engine {
     }
 
     #[test]
+    fn a_program_declares_and_converts_its_own_family_unit() {
+        // F2-6: `(Unit.define #"furlong" (Unit.of #"foot") 660 1)` declares a user family unit = 660 feet;
+        // `(Unit.of #"furlong")` then resolves it and converts: 1 furlong = 660 * 381/1250 = 201.168 m.
+        // The user family-declaration surface, RUNS.
+        let src = "(do \
+                   ((. Unit define) #\"furlong\" ((. Unit of) #\"foot\") 660 1) \
+                   (def (main) ((. Qty value) ((. Unit in) ((. Unit of) #\"metre\") \
+                     ((. Qty of) 1.0 ((. Unit of) #\"furlong\"))))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<f64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a user-declared furlong compiles and runs"),
+                "main"
+            ),
+            201.168
+        );
+    }
+
+    #[test]
+    fn redeclaring_a_builtin_unit_with_a_conflicting_conversion_is_cdz0502() {
+        // F2-6: `(Unit.define #"foot" (Unit.of #"metre") 2 1)` redeclares the built-in `foot` (381/1250 m)
+        // as 2 m — a conflicting conversion → CDZ0502 (units-of-measure.md §A Named Unit's Conversion Is
+        // Unique). CDZ0502 is now REACHABLE by a program (was previously only a reserved code). An
+        // AGREEING redeclaration would be admissible.
+        let src = "(do ((. Unit define) #\"foot\" ((. Unit of) #\"metre\") 2 1) \
+                   (def (main) 0) (export main))";
+        assert_eq!(
+            compile_component(&crate::codec::encode(&parse(src)))
+                .err()
+                .and_then(|d| d.code.as_deref().map(str::to_string))
+                .as_deref(),
+            Some("CDZ0502"),
+            "a conflicting unit redeclaration must reject CDZ0502"
+        );
+    }
+
+    #[test]
     fn unit_in_converts_a_quantity_to_a_chosen_unit_exactly_over_int() {
         // F2-3: `(Unit.in kilometre (Qty.of 2000 metre))` explicitly converts 2000 m to km: 2000/1000 =
         // 2 km, exact integer arithmetic (the source→target scale ratio divides). Unit.in pins the RESULT
@@ -24861,6 +24899,30 @@ mod closure_host_resource {
         assert!(
             err.message.contains("PRODUCER") && err.code.is_none(),
             "expected the no-producer decline, got: {:?} / {}",
+            err.code,
+            err.message
+        );
+    }
+
+    /// A closure TRANSFORMER export — one that both RECEIVES a closure (a param) and RETURNS one (its
+    /// result), e.g. `(def (twice (: g (-> Int64 Int64))) (fn (x) (g (g x))))` — is out of scope: the host
+    /// would hand a closure in and get one out of the same call. It declines CLEANLY, naming the export and
+    /// the shape, rather than the confusing internal "a producer parameter has no scalar representation"
+    /// (the round-trip `make`-forwarding site would otherwise choke on the closure param). Pins the honest
+    /// feature-decline (a companion producer keeps the program on the round-trip path so this is the arm hit).
+    #[test]
+    fn a_closure_transformer_export_declines_naming_the_shape() {
+        use crate::testkit::parse;
+        let src = "(do (def (mk) (fn ((: x Int64)) (+ x 1))) \
+                   (def (twice (: g (-> Int64 Int64))) (fn ((: x Int64)) (g (g x)))) \
+                   (export mk) (export twice))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a closure transformer (closure param AND closure result) must DECLINE");
+        assert!(
+            err.message.contains("closure transformer")
+                && err.message.contains("twice")
+                && err.code.is_none(),
+            "expected the closure-transformer decline naming `twice`, got: {:?} / {}",
             err.code,
             err.message
         );
