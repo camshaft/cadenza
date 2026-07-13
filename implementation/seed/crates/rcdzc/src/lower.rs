@@ -5708,13 +5708,9 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         // runtime value that reaches a compound equality — `Ty::Type`/`Ty::Any`/`Ty::Fn` never cross `=`).
         // A `Char` has no runtime machine rep yet (its equality folds at compile time). `Bytes` can be a
         // non-canonical rope (see the `String` note above), so it declines until `bytes-compact`-on-compare.
-        Ty::List(_)
-        | Ty::Bytes
-        | Ty::Char
-        | Ty::Float(_)
-        | Ty::Fn(_, _)
-        | Ty::Type
-        | Ty::Any => false,
+        Ty::List(_) | Ty::Bytes | Ty::Char | Ty::Float(_) | Ty::Fn(_, _) | Ty::Type | Ty::Any => {
+            false
+        }
     }
 }
 
@@ -7383,6 +7379,24 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
         // node's solved type there, the same `type_of(id)` used here).
         _ => {
             if is_scalar(db, args[0]) {
+                // WRAP COMPOSITION: `T.wrap(U.wrap(x))` where this outer target width `N` is ≤ the inner
+                // wrap's target width `M` — the inner wrap keeps the low `M` bits, and the outer keeps the
+                // low `N ≤ M`, which are UNCHANGED by the inner wrap. So the inner wrap is redundant:
+                // `Int8.wrap(Int16.wrap x)` = `Int8.wrap x`. Reach past the inner Convert to ITS operand,
+                // eliding one mask-and-reinterpret. Verified `wrap∘wrap == outer wrap` for N ≤ M, any
+                // signedness. (`N > M` is NOT redundant — the inner narrowing already discarded bits the
+                // wider outer wrap cannot recover, so it stays.)
+                if matches!(op, Prim::Wrap)
+                    && let Core::Convert {
+                        op: Prim::Wrap,
+                        operand: inner,
+                    } = core_of(db, args[0])
+                    && let crate::ty::Ty::Int(inner_ty) = crate::infer::type_of(db, args[0])
+                    && inner_ty.ground_width() >= width
+                {
+                    trace!(target: "rcdzc::fold", node = id.0, outer = width, inner = inner_ty.ground_width(), "wrap∘wrap: inner wrap subsumed by the narrower/equal outer");
+                    return Core::Convert { op, operand: inner };
+                }
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), signed, width, "conversion stays runtime (scalar operand)");
                 Core::Convert {
                     op,

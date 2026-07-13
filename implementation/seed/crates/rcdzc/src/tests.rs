@@ -1302,6 +1302,59 @@ fn a_wrap_whose_source_fits_the_target_is_the_identity() {
     assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::U8(100)]), 100);
 }
 
+/// `T.wrap(U.wrap x)` where the outer width N ≤ the inner width M — the inner wrap is redundant (the
+/// outer keeps only the low N ≤ M bits, unchanged by the inner). The inner Convert is elided; VALUE
+/// parity is preserved (the composed wrap gives the same low bits as the single outer wrap).
+#[test]
+fn a_narrowing_wrap_of_a_wider_wrap_elides_the_inner_wrap() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // Int32 → Int16 → Int8 (8 ≤ 16): folds to Int8.wrap x. 70000 & 0xFF = 112 (both paths agree).
+    let src = "(module m (def (f (: x Int32)) ((. Int8 wrap) ((. Int16 wrap) x))) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::S32(70000)]), 112);
+    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::S32(300)]), 44); // 300 → low 8 bits = 44
+    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::S32(-1)]), -1);
+    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::S32(127)]), 127);
+    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::S32(128)]), -128);
+
+    // Lir: exactly ONE sign-extend sequence (a single pair of shl/shr_s) — the inner wrap is gone.
+    {
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let full = "(module m (def (f (: x Int32)) ((. Int8 wrap) ((. Int16 wrap) x))) (def (main) 0) (export main))";
+        let mut db = crate::db::Db::load(parse(full));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("f");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let bb = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (bb, crate::infer::type_of(&mut db, bb))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = select_function(&mut db, body, &ps, &layout)
+            .expect("select")
+            .code;
+        // Two shifts (shl + shr_s) = ONE wrap; four = two wraps. The fold leaves exactly one wrap.
+        let shifts = code
+            .iter()
+            .filter(|i| matches!(i, Lir::I32Shl | Lir::I32ShrS))
+            .count();
+        assert_eq!(
+            shifts, 2,
+            "one sign-extend pair, inner wrap elided; got {code:?}"
+        );
+    }
+}
+
 /// A reference buried under many NON-binding forms still resolves to its outer binder — the
 /// correctness guard for the lexical-scope SKIP index (`Db::scope_skip`) that hops over the non-binding
 /// spine (record/`if`/application) instead of visiting every enclosing form. A wrong skip pointer (or
