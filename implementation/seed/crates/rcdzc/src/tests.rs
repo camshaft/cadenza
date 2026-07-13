@@ -16416,15 +16416,19 @@ mod stage1 {
     fn an_unproductive_nullary_recursion_declines_not_crashes() {
         // `(def (f) (f))` — a NULLARY self-call with no base case. A nullary def resolves its name to a
         // `Ref` at its body, so the head/record-reduction helpers (`lambda_of`, `reduce_to_record_id`)
-        // would re-enter the same body and overflow the native stack. It must DECLINE (a recursive
-        // function it cannot specialize), never abort. Regression for the compile-time-recursion crash.
+        // would re-enter the same body and overflow the native stack. It must DECLINE at the recursion
+        // bound, never abort — and carry the reserved ROBUSTNESS code CDZ0999 ("declined, not crashed",
+        // 09-functions "an unproductive self-recursion is declined, not a compiler crash"), the coded
+        // upgrade from the former codeless decline. Regression for the compile-time-recursion crash.
         let src = "(module m (def (f) (f)) (def (main) (f)) (export main))";
-        let msg = compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("nullary self-recursion must decline")
-            .message;
-        assert!(
-            msg.contains("recursive") || msg.contains("runtime") || msg.contains("deeply"),
-            "got: {msg}"
+        let reject = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("nullary self-recursion must decline");
+        assert_eq!(
+            reject.code.as_deref(),
+            Some("CDZ0999"),
+            "got: {} / {:?}",
+            reject.message,
+            reject.code
         );
     }
 

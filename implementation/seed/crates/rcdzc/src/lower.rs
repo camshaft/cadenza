@@ -774,9 +774,19 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 if let Some(body) = crate::eval::lambda_body_of_nullary(db, head)
                     && crate::eval::is_recursive(db, body)
                 {
-                    trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: recursive nullary call → decline");
-                    return Core::Poison(Reject::decline(
-                        "a recursive function needs runtime specialization (not yet built)",
+                    // A NULLARY self-recursion has no parameter to vary, so it can never reduce to a value
+                    // (following it re-enters the same body without end) AND has no runtime-function form to
+                    // specialize — a genuinely UNPRODUCTIVE recursion, not a not-yet-built gap. This is the
+                    // robustness case (`self-hosting-and-bootstrap.md` §An Unsupported Construct Is Declined,
+                    // Not Miscompiled): the compiler stops at the recursion bound and declines with the
+                    // reserved CDZ0999 code — "declined, not crashed" — rather than aborting on a native
+                    // stack overflow. A PARAMETERIZED recursive call is DIFFERENT (it runtime-specializes,
+                    // or declines codeless if that isn't built yet — a plain Todo); only the unproductive
+                    // nullary shape is coded here.
+                    trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: unproductive nullary recursion → CDZ0999");
+                    return Core::Poison(Reject::coded(
+                        Code::RecursionBound,
+                        "an unproductive self-recursion cannot be reduced to a value (declined at the recursion bound)",
                     ));
                 }
                 trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: zero-argument application is its head value");
