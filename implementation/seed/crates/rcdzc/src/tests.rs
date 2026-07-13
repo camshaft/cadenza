@@ -16550,6 +16550,32 @@ mod stage1 {
     }
 
     #[test]
+    fn an_integer_width_above_the_64_bit_ceiling_is_rejected_cdz0302() {
+        // 06-numeric-model "an integer width above the 64-bit ceiling is rejected" / "a wide fixed-size
+        // integer width is reserved": `(UInt 65)`/`(UInt 128)` name widths one (or more) past the 1..=64
+        // register-width ceiling — a fixed-size integer wider than 64 bits is RESERVED to the opt-in
+        // big-integer layer, not the width-indexed constructor (options/numeric-model/ #Widths above 64
+        // are reserved). The `IntCtor`/`UIntCtor` reduction now clamps a resolved width outside 1..=64 to
+        // the sentinel width 0 (the integer analogue of the `FloatCtor` admitted-SET gate), so the
+        // annotation is REJECTED at compile time (CDZ0302) rather than building `Ty::Int(Fixed(65))` and
+        // carrying a "no machine representation" decline to emit. Pins the upper boundary of the width
+        // constraint — a compile-time reject, not a parse error and not a run.
+        for body in [
+            "(: 5 (UInt 65))",
+            "(: 5 (UInt 128))",
+            "(: 5 (Int 65))",
+            "(: 5 (Int 200))",
+        ] {
+            assert!(
+                expect_decline(body).contains("does not fit"),
+                "an over-ceiling width must be rejected CDZ0302: {body}"
+            );
+        }
+        // The boundary itself (64) is still valid — `(UInt 64)` builds and 5 fits (crosses as u64).
+        assert_eq!(run_main_as::<u64>("(: 5 (UInt 64))"), 5);
+    }
+
+    #[test]
     fn a_runtime_integer_width_is_rejected_not_dropped() {
         // A `(UInt n)`/`(Int n)` whose width is a RUNTIME value (a function parameter) puts a runtime
         // value in a type-determining position, which the type system forbids: an integer type MUST be
