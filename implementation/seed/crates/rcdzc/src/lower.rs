@@ -4565,6 +4565,7 @@ enum ShapeNode {
     Named(String, u32),
     Ref(u32),
     Set(u32),
+    Map(u32, u32),
 }
 
 /// Builds the shape table, memoizing each `Ty::Sum` by its declaration occurrence so a recursive
@@ -4624,6 +4625,20 @@ impl ShapeTableBuilder {
             {
                 let e = self.shape_of(db, elem)?;
                 self.push(ShapeNode::Set(e))
+            }
+            // A MAP renders `(map (k1 v1) …)` with entries in CANONICAL KEY order. The runtime sorts by
+            // the KEY's scalar value (matching `const_key_order`), so admit a map only over a SCALAR key
+            // (Int/Bool/Unit/String); the VALUE may be any encodable shape (the walk recurses on it). A
+            // nested-compound key has no canonical scalar order → decline, as the const map escape does.
+            Ty::Map(key, val)
+                if matches!(
+                    key.strip_nominal(),
+                    Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String
+                ) =>
+            {
+                let k = self.shape_of(db, key)?;
+                let v = self.shape_of(db, val)?;
+                self.push(ShapeNode::Map(k, v))
             }
             Ty::Record(fields) => {
                 let mut out = Vec::with_capacity(fields.len());
@@ -4755,6 +4770,11 @@ impl ShapeTableBuilder {
                 ShapeNode::Set(i) => {
                     d.push(12); // matches the runtime `decode_shape` tag 12 = Set
                     leb(&mut d, *i as u64);
+                }
+                ShapeNode::Map(k, v) => {
+                    d.push(13); // matches the runtime `decode_shape` tag 13 = Map
+                    leb(&mut d, *k as u64);
+                    leb(&mut d, *v as u64);
                 }
             }
         }

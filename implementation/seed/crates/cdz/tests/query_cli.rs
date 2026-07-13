@@ -1424,6 +1424,40 @@ fn a_redundant_match_arm_carries_a_delete_fix_that_fix_all_applies() {
 }
 
 #[test]
+fn a_duplicate_export_carries_a_delete_fix_that_fix_all_applies() {
+    // A duplicate-name fault (CDZ0201), surfaced end-to-end: `(export a) (export a)` reports the fault AND
+    // carries a `delete` fix on the redundant clause. `--json` emits the deletion; `fix --all` removes it
+    // and the repaired file recompiles clean.
+    let dir = scratch_dir("dup_export");
+    let f = dir.join("prog.sexp");
+    std::fs::write(&f, "(module m (def (a) 1) (export a) (export a))\n").unwrap();
+    let (ok, stdout, _) = run(&["check", "--json", f.to_str().unwrap()], "");
+    assert!(!ok, "the duplicate export is an error");
+    let line = stdout
+        .lines()
+        .find(|l| l.contains("\"code\":\"CDZ0201\""))
+        .expect("the duplicate is emitted as JSON");
+    assert!(
+        line.contains("\"kind\":\"delete\"") && line.contains("\"edits\":[{"),
+        "CDZ0201 carries a structural delete patch: {line}"
+    );
+    let patched = apply_json_edits(&std::fs::read_to_string(&f).unwrap(), line);
+    assert_eq!(
+        patched.matches("(export a)").count(),
+        1,
+        "applying the patch leaves exactly one export: {patched}"
+    );
+    let (ok2, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok2, "fix succeeds: {stderr}");
+    let (ok3, out3, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(
+        ok3 && out3.trim().is_empty(),
+        "the repaired file is clean: {out3}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_mistyped_sum_argument_carries_a_wrap_fix_that_fix_all_applies() {
     // The rustc-flagship "try wrapping in `Some`" repair, surfaced end-to-end at a CALL SITE: passing `5`
     // to a `(: o (Option Int64))` parameter reports CDZ0203 AND carries a `wrap` fix → `(Some 5)`. `--json`
@@ -1456,6 +1490,43 @@ fn a_mistyped_sum_argument_carries_a_wrap_fix_that_fix_all_applies() {
         repaired.contains("(f (Some 5))"),
         "the file was repaired: {repaired}"
     );
+    let (ok3, out3, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(
+        ok3 && out3.trim().is_empty(),
+        "the repaired file is clean: {out3}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_string_where_bytes_expected_carries_a_to_bytes_fix_that_fix_all_applies() {
+    // A total-conversion coercion, surfaced end-to-end: `(f "hi")` for a `(: b Bytes)` parameter reports
+    // CDZ0203 AND carries a `wrap` fix → `(String.to-bytes "hi")`. `--json` emits the wrap as two inserts;
+    // `fix --all` applies it and the repaired file recompiles clean.
+    let dir = scratch_dir("to_bytes");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(module m (def (f (: b Bytes)) b) (def (main) (f \"hi\")) (export main))\n",
+    )
+    .unwrap();
+    let (ok, stdout, _) = run(&["check", "--json", f.to_str().unwrap()], "");
+    assert!(!ok, "the String/Bytes mismatch is an error");
+    let line = stdout
+        .lines()
+        .find(|l| l.contains("\"code\":\"CDZ0203\""))
+        .expect("the mismatch is emitted as JSON");
+    assert!(
+        line.contains("\"kind\":\"wrap\"") && line.contains("String") && line.contains("to-bytes"),
+        "CDZ0203 carries a String.to-bytes wrap patch: {line}"
+    );
+    let patched = apply_json_edits(&std::fs::read_to_string(&f).unwrap(), line);
+    assert!(
+        patched.contains("to-bytes") && patched.contains("\"hi\""),
+        "applying the patch wraps the string in the encode: {patched}"
+    );
+    let (ok2, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok2, "fix succeeds: {stderr}");
     let (ok3, out3, _) = run(&["check", f.to_str().unwrap()], "");
     assert!(
         ok3 && out3.trim().is_empty(),

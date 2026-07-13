@@ -2621,6 +2621,80 @@ fn multiply_by_power_of_two_runs_and_traps_like_the_multiply() {
     );
 }
 
+/// STRENGTH REDUCTION reaches a NESTED `* 2^k`: `(* (* x 2) 4)` — the inner `(* x 2)`, an OPERAND of the
+/// outer multiply, must strength-reduce to `x << 1` exactly as a top-level `* 2^k` does. Before, the
+/// nested-operand emit path (`emit_operand_into`) routed a `Mul` straight to the checked-multiply recipe,
+/// emitting a full `mul` + `div_s` overflow round-trip the shift avoids. Pins the reduction at the Lir
+/// level (no `mul`/`div_s` in the nested chain, two `shl`) AND value + overflow-trap parity.
+#[test]
+fn a_nested_multiply_by_a_power_of_two_also_strength_reduces() {
+    use crate::backend::wasm::lir::Lir;
+    use crate::db::Db;
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let lir = |params: &str, body: &str| -> Vec<Lir> {
+        let ast = parse(&format!(
+            "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+        ));
+        let mut db = Db::load(ast);
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("def f");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+            .expect("select")
+            .code
+    };
+    // `(* (* x 2) 4)` — the inner `* 2` (an operand) strength-reduces: NO `mul`/`div_s`, TWO `shl`.
+    let code = lir("(: x Int64)", "(: (* (: (* x 2) Int64) 4) Int64)");
+    assert!(
+        !code.iter().any(|i| matches!(i, Lir::I64Mul | Lir::I64DivS)),
+        "the nested `* 2` must strength-reduce (no mul/div_s), got: {code:?}"
+    );
+    assert_eq!(
+        code.iter().filter(|i| matches!(i, Lir::I64Shl)).count(),
+        2,
+        "both multiplies become shifts, got: {code:?}"
+    );
+
+    // VALUE PARITY: (* (* x 2) 4) = x*8.
+    let src = "(module m (def (f (: x Int64)) (* (: (* x 2) Int64) 4)) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S64(5)]), 40);
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S64(-3)]), -24);
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S64(0)]), 0);
+    // OVERFLOW-TRAP PARITY: 2^61 * 8 = 2^64 overflows Int64 — the nested shift chain must still trap.
+    assert!(
+        call_traps(&b, "f", &[Val::S64(1i64 << 61)]),
+        "a nested `* 2^k` chain must trap on overflow like the multiply"
+    );
+    // NARROW: Int8 (* (* x 2) 4) = x*8. 15*8=120 fits; 20*8=160 overflows Int8 → trap (outer); 100*2=200
+    // overflows Int8 already → trap (inner). Both must fire.
+    let s8 = "(module m (def (f (: x Int8)) (* (: (* x 2) Int8) 4)) (export f))";
+    let b8 = compile_component(&crate::codec::encode(&parse(s8))).expect("compile");
+    assert_eq!(run_returns_with::<i8>(&b8, "f", &[Val::S8(15)]), 120);
+    assert!(
+        call_traps(&b8, "f", &[Val::S8(20)]),
+        "outer Int8 overflow (160) traps"
+    );
+    assert!(
+        call_traps(&b8, "f", &[Val::S8(100)]),
+        "inner Int8 overflow (200) traps"
+    );
+}
+
 /// An exported comparison `(def (lt (: a Int64) (: b Int64)) (< a b))` runs to a boolean over runtime
 /// args — the signed machine comparison at the boundary.
 #[test]
@@ -9375,6 +9449,41 @@ mod match_engine {
     }
 
     #[test]
+    fn a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix() {
+        // A `String` supplied where `Bytes` is required — `(Bytes.len "hi")`, or `(f "hi")` for a
+        // `(: b Bytes)` parameter — has a TOTAL prelude conversion: wrap in `(String.to-bytes …)` (the
+        // UTF-8 encode). The text-model twin of the numeric `of-int`/`.of` coercion wraps.
+        for src in [
+            // operator argument position (scheme-unify path)
+            "(module m (def (f) (Bytes.len \"hi\")) (export f))",
+            // user-def call-site position (annotated-param path)
+            "(module m (def (f (: b Bytes)) b) (def (main) (f \"hi\")) (export main))",
+        ] {
+            let d = reject_full(src).expect("the String/Bytes mismatch must reject");
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            let fix = d.fix.expect("a to-bytes conversion fix is carried");
+            assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+            assert_eq!(
+                fix.replacement,
+                format!("(String.to-bytes {})", crate::abi::WRAP_HOLE),
+                "wraps the string in the UTF-8 encode: {src}"
+            );
+            assert!(!fix.verified, "a conversion wrap is a heuristic");
+        }
+        // The REVERSE (`Bytes` where `String` is expected) is FALLIBLE (`from-bytes : Bytes → Option
+        // String`) — no one-shot wrap that type-checks, so NO fix is offered (honest, not a cascade).
+        let rev = reject_full(
+            "(module m (def (f (: s String)) s) (def (main (: b Bytes)) (f b)) (export main))",
+        )
+        .expect("reject");
+        assert!(
+            rev.fix.is_none(),
+            "no one-shot fix for the fallible Bytes→String decode: {:?}",
+            rev.fix
+        );
+    }
+
+    #[test]
     fn a_bare_literal_past_int64_is_malformed_not_out_of_range() {
         // 01-literals "an out-of-range integer literal is a malformed literal": a BARE unannotated literal
         // that overflows the default signed `Int64` — `9223372036854775808` (Int64.max+1),
@@ -15298,6 +15407,42 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_duplicate_record_field_carries_a_delete_the_duplicate_fix() {
+        // A record naming a field twice (CDZ0201) now carries the mechanical repair: DELETE the redundant
+        // `(key value)` entry — the SECOND occurrence, since the first already binds the name. Read a field
+        // so the record is reached (a bare record value declines for the heap first).
+        let d = first_error("(module m (def (f) (. (record (a 1) (a 2) (b 3)) b)) (export f))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("more than once"),
+            "names the fault: {}",
+            d.message
+        );
+        let fix = d.fix.expect("a delete-the-duplicate fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+        assert!(
+            !fix.verified,
+            "removing vs renaming is the author's call → heuristic"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_export_carries_a_delete_the_duplicate_fix() {
+        // Exporting a name twice (CDZ0201) now carries a DELETE fix on the redundant later `(export …)`
+        // clause — the earlier one already makes the name public, so removing the duplicate is the direct
+        // resolution (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
+        let d = first_error("(module m (def (a) 1) (export a) (export a))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("exported more than once"),
+            "names the fault: {}",
+            d.message
+        );
+        let fix = d.fix.expect("a delete-the-duplicate-export fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+    }
+
+    #[test]
     fn an_integer_operand_to_a_float_operator_offers_an_of_int_coercion_fix() {
         // The numeric-mismatch fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
         // A Fix): `(+. x 2.0)` with `x : Int64` is CDZ0301 (no silent promotion), but the repair is the
@@ -16785,6 +16930,27 @@ mod stage1 {
         assert!(
             cdz_run::required_runtime(&bytes).expect("valid").is_some(),
             "the set-bearing recursive-sum escape imports the runtime"
+        );
+    }
+
+    #[test]
+    fn a_recursive_sum_carrying_a_map_renders_via_the_value_encode_walker() {
+        // A recursive sum carrying a MAP (a `MapList` — a tree of maps, nested config/JSON) now COMPILES
+        // its value-encode escape. `shape_of` emits `ShapeNode::Map` (descriptor tag 13) for a
+        // SCALAR-KEY map (the value may be any encodable shape), and the runtime `value-encode` iterates
+        // the CHAMP + SORTS entries into canonical KEY order, rendering `(map (k v)…)` (guarded byte-exact
+        // + canonical-order in cdz-runtime's `value_encode_renders_a_map_in_canonical_key_order`). A
+        // non-scalar-KEY map still declines.
+        use crate::testkit::parse;
+        let src = "(module m (type MapList (Cons (Tuple (Map String Int64) MapList)) Nil) \
+                     (def (build (: n Int64)) (if (< n 1) (MapList.Nil ()) \
+                        (MapList.Cons (tuple (map (\"k\" n)) (build (- n 1)))))) \
+                     (def (main) (build 2)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a recursive sum carrying a Map compiles via the value-encode walker");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "the map-bearing recursive-sum escape imports the runtime"
         );
     }
 

@@ -544,12 +544,20 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         .map(|e| (e.name.clone(), e.occ))
         .collect();
     for (name, occ) in dup_exports {
+        // `occ` is a REDUNDANT `(export NAME)` clause (a later one — the first occurrence is not in
+        // `dup_exports`). Exporting a name is idempotent in intent: the earlier clause already makes it
+        // public, so the direct repair is to DELETE this duplicate clause. Verified-clean by `--verify-fixes`
+        // (removing a duplicate export cannot change the public surface — the name stays exported once).
         faults.push(
             Reject::coded(
                 Code::Malformed,
                 format!("`{name}` is exported more than once (a module has a fixed set of names)"),
             )
-            .at(occ),
+            .at(occ)
+            .with_fix(crate::diag::Fix::delete_heuristic(
+                occ,
+                format!("remove the duplicate export of `{name}`"),
+            )),
         );
     }
     // DUPLICATE VARIANT. A sum type `(type T (A …) (A …))` declares its variant NAMES as a fixed SET

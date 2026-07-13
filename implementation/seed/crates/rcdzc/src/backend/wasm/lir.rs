@@ -73,7 +73,14 @@ pub enum Lir {
     /// bytes, NOT LEB128). A `Float32` constant emits this.
     F32ConstBits(u32),
     /// Float ARITHMETIC — the machine op a runtime `+.`/`-.`/`*.`/`/.` selects, at the operand width
-    /// (f64/f32). IEEE, never trapping (no overflow guard, unlike the integer arith).
+    /// (f64/f32). IEEE, never trapping (no overflow guard, unlike the integer arith). Each is a single
+    /// primitive wasm op (`f64.add`, …) under wasm's ONE fixed round-to-nearest-even mode — never a fused
+    /// multiply-add or a contracted op, so the result is the separately-rounded value every conforming
+    /// runtime computes.
+    //= spec/contracts/determinism-and-fuel.md#floating-point-emission-is-determinism-constrained
+    //# The compiler MUST emit floating-point operations under a single fixed rounding mode.
+    //= spec/contracts/determinism-and-fuel.md#floating-point-emission-is-determinism-constrained
+    //# The compiler MUST NOT emit a fused or contracted floating-point operation whose result varies from the separately-rounded operations across conforming runtimes.
     F64Add,
     F64Sub,
     F64Mul,
