@@ -124,6 +124,13 @@ impl Diagnostic {
             fix: None,
         }
     }
+
+    /// Attach a proposed structural fix — the fluent form a producer uses when, alongside the
+    /// diagnostic, it can name the repair (`Diagnostic::warning(..).with_fix(Fix::replace_verified(..))`).
+    pub fn with_fix(mut self, fix: &crate::diag::Fix) -> Diagnostic {
+        self.fix = Some(DiagnosticFix::from_fix(fix));
+        self
+    }
 }
 
 /// The output of a compilation: the produced artifacts and the always-live diagnostics channel.

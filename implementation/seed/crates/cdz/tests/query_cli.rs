@@ -1303,3 +1303,23 @@ fn check_warns_on_an_unused_binding_and_underscore_silences_it() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn check_prints_a_verified_help_line_for_an_unused_binding() {
+    // The unused-binding warning now carries a VERIFIED (machine-applicable) fix — the `help:` line is
+    // printed WITHOUT the `(heuristic)` marker a guessed fix gets, so an agent branches on applicability.
+    let dir = scratch_dir("check_verified_fix");
+    let f = dir.join("prog.sexp");
+    std::fs::write(&f, "(module m (def (f p q) (+ p 1)) (export f))\n").unwrap();
+    let (ok, stdout, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(ok, "a warning does not fail the build");
+    assert!(
+        stdout.contains("help: replace with `_q`"),
+        "a verified fix prints a plain help line: {stdout}"
+    );
+    assert!(
+        !stdout.contains("help (heuristic)"),
+        "a verified fix is NOT marked heuristic: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

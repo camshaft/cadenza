@@ -191,6 +191,27 @@ impl Fix {
             applicability: Applicability::Heuristic,
         }
     }
+
+    /// A VERIFIED node-replacement fix — one the producer knows is behaviour-preserving and clears the
+    /// diagnostic by construction, so an agent applies it WITHOUT review (`spec/capabilities/
+    /// diagnostics.md` §A Confirmed Fix Is Marked Verified). `label` states the concrete action (e.g.
+    /// "prefix with `_`"). Use ONLY when the edit's correctness follows from a rule, not a guess — the
+    /// caller vouches for it (there is no free lunch: an UNPROVEN edit must stay
+    /// [`replace_heuristic`]).
+    pub fn replace_verified(
+        at: crate::ast::StructId,
+        replacement: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Fix {
+        Fix {
+            label: label.into(),
+            edit: Edit::ReplaceNode {
+                at,
+                replacement: replacement.into(),
+            },
+            applicability: Applicability::Verified,
+        }
+    }
 }
 
 /// A produced "no": either a coded rejection or an uncoded decline, each carrying a human message and

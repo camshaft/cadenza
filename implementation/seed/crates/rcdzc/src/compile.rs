@@ -1051,14 +1051,27 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
         if !db.is_user_node(b.name_occ) {
             continue;
         }
-        out.push(Diagnostic::warning(
-            Code::UnusedBinding,
-            format!(
-                "unused {}: `{}` is never used (prefix with `_` to silence)",
-                b.kind, b.name
-            ),
-            Some(b.name_occ),
-        ));
+        // The silencing rule is spec-defined and behaviour-preserving — a `_`-prefixed name is the SAME
+        // binder, just marked intentionally-unused, and the CDZ0306 check itself suppresses it — so the
+        // "prefix with `_`" edit is a VERIFIED fix an agent applies without review (the first
+        // machine-applicable fix; `spec/capabilities/diagnostics.md` §A Confirmed Fix Is Marked
+        // Verified). It renames the binder's NAME occurrence to `_<name>`.
+        let fix = crate::diag::Fix::replace_verified(
+            b.name_occ,
+            format!("_{}", b.name),
+            "prefix with `_` to mark intentionally unused",
+        );
+        out.push(
+            Diagnostic::warning(
+                Code::UnusedBinding,
+                format!(
+                    "unused {}: `{}` is never used (prefix with `_` to silence)",
+                    b.kind, b.name
+                ),
+                Some(b.name_occ),
+            )
+            .with_fix(&fix),
+        );
     }
     out
 }
