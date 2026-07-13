@@ -530,6 +530,55 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         };
         faults.push(Reject::coded(Code::Unbound, msg).at(occ));
     }
+    // AN EXPORT WHOSE RESULT IS A NON-REPRESENTABLE CLOSURE — e.g. an entrypoint returning a PARTIAL
+    // APPLICATION `(f 1)` for a two-parameter `f`, whose residual parameter type inference never fixed
+    // (`Any`) — cannot cross the component boundary. The backend rejects it deep in closure-resource
+    // emit (an uncoded decline `cdz check`'s Diagnostics query never runs), so `check` used to accept it
+    // while `compile` failed. Detect it here from the export's SOLVED result type (a `Ty::Fn` whose
+    // parameter or result has no `abi_val_type`) so BOTH surfaces report it, coded CDZ0201 (ill-formed:
+    // the public surface is not boundary-representable), anchored at the export clause. A REPRESENTABLE
+    // closure export (`(-> Int64 Int64)` — the C-HOST feature) is fine and NOT flagged.
+    // An UNCONSTRAINED (`Any`) parameter/result in an exported closure's type — inference never fixed
+    // it, the partial-application / unannotated-closure case. This is the genuinely-unrepresentable
+    // signal, NARROWER than "not host-ABI-representable": the closure boundary supports every aliased
+    // scalar width (Float32, Int8/16/…), which `abi_val_type` (the host-CALL table) does NOT model, so
+    // keying on `abi_val_type` would over-reject a REPRESENTABLE closure export (the C-HOST feature). A
+    // concrete-but-unrepresentable component is the backend's own decline, not this well-formedness fault.
+    fn arrow_has_unconstrained(ty: &crate::ty::Ty) -> bool {
+        match ty {
+            crate::ty::Ty::Fn(p, r) => {
+                matches!(p.as_ref(), crate::ty::Ty::Any) || arrow_has_unconstrained(r)
+            }
+            _ => false,
+        }
+    }
+    // Collect (body, name, occ) FIRST (immutable borrow), then read each body's type with `&mut db`.
+    let export_results: Vec<(StructId, String, StructId)> = db
+        .exports
+        .iter()
+        .filter_map(|e| {
+            let body = e.def.and_then(|d| db.defs[d].body)?;
+            Some((body, e.name.clone(), e.occ))
+        })
+        .collect();
+    for (body, name, occ) in export_results {
+        let ty = crate::infer::type_of(db, body);
+        if arrow_has_unconstrained(&ty) {
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "export `{name}` returns a closure that cannot cross the component boundary: its \
+                         type `{}` has a parameter inference never fixed to a concrete scalar (a partial \
+                         application like `(f 1)` for a two-parameter `f`, or an unannotated closure \
+                         parameter) — a closure crosses only with concrete aliased-width scalar arguments",
+                        ty.render_name()
+                    ),
+                )
+                .at(occ),
+            );
+        }
+    }
     // SANITIZE ORIGINS BEFORE DEDUP. A fault anchored at a SYNTHESIZED/non-user node has its origin
     // stripped to `None` (the front-end span table only covers user nodes). This must run BEFORE
     // `dedup_faults` so the SAME fault reported once at a user node and once at a synthesized node — e.g.

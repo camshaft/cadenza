@@ -24414,14 +24414,16 @@ mod closure_host_resource {
         // not the misleading "a closure argument of type Any has no scalar representation" (which reads
         // as if a real type is unsupported). Internal partial application still WORKS (a separate test);
         // only escaping one as the export result declines.
+        // M15 moved the detection into `collect_faults` (so `cdz check` reports it too, not only
+        // `compile`), coded CDZ0201, explaining the partial-application cause.
         let src = "(do (def (f x y) (+ x y)) (def (main) (f 1)) (export main))";
         let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
             .expect_err("a partial application escaping as the export result must decline");
+        assert_eq!(err.code.as_deref(), Some("CDZ0201"), "got: {}", err.message);
         assert!(
-            err.message.contains("unconstrained")
-                && err.message.contains("partial application")
-                && !err.message.contains("of type Any"),
-            "expected the partial-application explanation, not the raw `type Any` phrasing, got: {}",
+            err.message.contains("partial application")
+                && err.message.contains("cannot cross the component boundary"),
+            "expected the partial-application explanation, got: {}",
             err.message
         );
     }
