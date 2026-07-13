@@ -574,6 +574,7 @@ pass	a sum-type value is deconstructed by an exhaustive match
 pass	a tag-length-value record round-trips through construct then match
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a tail-recursive function returning a tuple is tuple-valued
+pass	a tautology comparison still folds when its operand cannot trap
 pass	a three-argument closure exported to the host is called with all three
 pass	a three-element runtime tuple is returned as a result
 pass	a three-parameter closure is applied at full arity through a recursive HOF
@@ -1186,6 +1187,8 @@ todo	a symbol converts back to its content string
 todo	a symbol is constructed from a string
 todo	a symbol's identity is its content, not how the content was derived
 todo	a tail-recursive string accumulator builds a runtime string and its length is measured
+todo	a tautology comparison against a masked value's derived range still traps on the operand
+todo	a tautology comparison against the type minimum still traps on a div-by-zero operand
 todo	a transformation over the built-in Ast composes across a function call
 todo	a truncating conversion to an unusual width keeps that width's low bits
 todo	a utf8 bin segment binds a decoded string when the bytes are well-formed

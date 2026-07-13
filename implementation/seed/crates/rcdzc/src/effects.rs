@@ -91,22 +91,39 @@ pub fn synthesize(ast: &mut Arenas, decls: &mut [EffectDecl]) {
 pub fn desugar_handles(ast: &mut Arenas) {
     // Collect the rewrites first (an immutable scan), then apply — appends during apply must not
     // perturb the ids we scanned.
-    let mut plans: Vec<(StructId, Vec<StructId>)> = Vec::new();
+    let mut plans: Vec<HandlePlan> = Vec::new();
     for id in (0..ast.structure.len() as u32).map(StructId) {
-        if let Some(children) = canonical_handle_rewrite(ast, id) {
-            plans.push((id, children));
+        if let Some(plan) = plan_canonical_handle(ast, id) {
+            plans.push(plan);
         }
     }
-    for (id, children) in plans {
-        ast.structure[id.0 as usize] = Struct::List(children);
+    for plan in plans {
+        apply_handle_plan(ast, plan);
     }
 }
 
-/// If `id` is a CANONICAL `(handle E seed (arm…) body)` — five children, the second a NAME (the effect)
-/// — compute its rewritten INTERNAL children `[handle, seed, arms', body]` with the effect dropped and
-/// each arm's bare op rewritten to `(. E op)`. Returns `None` for any other shape (already-internal,
-/// malformed, or not a handle), which is left untouched. Appends the projection nodes to `ast`.
-fn canonical_handle_rewrite(ast: &mut Arenas, id: StructId) -> Option<Vec<StructId>> {
+/// A recognized canonical `(handle E seed (arm…) body)` and the in-place rewrite it needs. Applying it
+/// (a) rewrites each arm's bare op `op` to the projection `(. E op)` IN PLACE (the arm keeps its own
+/// `StructId`, so its source span survives) and (b) drops the effect child from the handle head (the
+/// handle node keeps its `StructId` too). Preserving those ids matters: the CDZ0405 "add the missing
+/// arm" fix anchors an insert on the ARMS-LIST node's source span, which only exists if the desugar did
+/// not synthesize a fresh spanless arms list (`spec/capabilities/diagnostics.md` §A Rejection Carries A
+/// Structural Fix).
+struct HandlePlan {
+    /// The `(handle …)` form occurrence — its children shrink from five to four (effect dropped).
+    handle: StructId,
+    /// The effect NAME each arm's op is projected on.
+    effect_name: String,
+    /// Each arm occurrence and its current bare-op child — the op is swapped for a `(. E op)` projection
+    /// built at apply time, leaving the arm's params/state/body (and the arm's own id/span) untouched.
+    arms: Vec<StructId>,
+}
+
+/// If `id` is a CANONICAL `(handle E seed (arm…) body)` — five children, the second a bare effect NAME,
+/// every arm a 4-part `(bare-op (params…) state body)` — return the [`HandlePlan`] to rewrite it in
+/// place. `None` for any other shape (already-internal 4-child handle, an arm already projected, or a
+/// malformed handle), which is left untouched so a hand-authored internal-shape program still compiles.
+fn plan_canonical_handle(ast: &Arenas, id: StructId) -> Option<HandlePlan> {
     let Struct::List(items) = ast.get(id) else {
         return None;
     };
@@ -115,21 +132,15 @@ fn canonical_handle_rewrite(ast: &mut Arenas, id: StructId) -> Option<Vec<Struct
     if items.len() != 5 || ast.as_name(items[0]) != Some("handle") {
         return None;
     }
-    let effect_occ = items[1];
     // The head's second child MUST be a bare effect NAME for this to be the canonical (promoted) shape.
-    // A five-child handle whose second child is not a name is not the canonical form — leave it.
-    let effect_name = ast.as_name(effect_occ)?.to_string();
-    let seed = items[2];
+    let effect_name = ast.as_name(items[1])?.to_string();
     let arms_occ = items[3];
-    let body = items[4];
     let Struct::List(arm_nodes) = ast.get(arms_occ) else {
         return None;
     };
-    let arm_nodes = arm_nodes.clone();
-    // Confirm EVERY arm is `(bare-op (params…) state arm-body)` — a 4-part list whose op is a bare NAME
-    // (not an already-projected `(. E op)`). If any arm is not this shape, this is not the canonical form
-    // (or it is already internal), so leave the whole handle untouched.
-    for &arm in &arm_nodes {
+    // Confirm EVERY arm is `(bare-op (params…) state body)` — a 4-part list whose op is a bare NAME (not
+    // an already-projected `(. E op)`). If any arm is not this shape, this is not the canonical form.
+    for &arm in arm_nodes {
         let Struct::List(parts) = ast.get(arm) else {
             return None;
         };
@@ -137,27 +148,42 @@ fn canonical_handle_rewrite(ast: &mut Arenas, id: StructId) -> Option<Vec<Struct
             return None;
         }
     }
-    // Rewrite each arm `(op (params…) state arm-body)` -> `((. E op) (params…) state arm-body)`.
-    let mut new_arms = Vec::with_capacity(arm_nodes.len());
-    for arm in arm_nodes {
+    Some(HandlePlan {
+        handle: id,
+        effect_name,
+        arms: arm_nodes.clone(),
+    })
+}
+
+/// Apply a [`HandlePlan`]: swap each arm's bare op for a `(. E op)` projection IN PLACE and drop the
+/// effect from the handle head. Both the arm nodes and the handle node keep their `StructId`s (and thus
+/// their source spans); only the projection nodes are freshly appended.
+fn apply_handle_plan(ast: &mut Arenas, plan: HandlePlan) {
+    for arm in plan.arms {
+        // The arm's current bare op (its first child) — replace it with `(. E op)`. `E` is a FRESH name
+        // occurrence per arm so the parent walk anchors each projection independently; `op` is REUSED
+        // (its own occurrence carries the arm's op-name span).
         let Struct::List(parts) = ast.get(arm) else {
-            return None; // malformed arm — leave the whole handle untouched
+            continue;
         };
-        if parts.len() != 4 {
-            return None;
-        }
-        let parts = parts.clone();
-        // The bare op name -> the projection `(. E op)`. `E` is a FRESH name occurrence per arm so the
-        // parent walk anchors each projection independently.
+        let op = parts[0];
+        let rest: Vec<StructId> = parts[1..].to_vec();
         let dot = push_atom(ast, Leaf::Name(".".to_string()));
-        let eff = push_atom(ast, Leaf::Name(effect_name.clone()));
-        let proj = push_list(ast, vec![dot, eff, parts[0]]);
-        let new_arm = push_list(ast, vec![proj, parts[1], parts[2], parts[3]]);
-        new_arms.push(new_arm);
+        let eff = push_atom(ast, Leaf::Name(plan.effect_name.clone()));
+        let proj = push_list(ast, vec![dot, eff, op]);
+        let mut new_children = vec![proj];
+        new_children.extend(rest);
+        ast.structure[arm.0 as usize] = Struct::List(new_children);
     }
-    let head = push_atom(ast, Leaf::Name("handle".to_string()));
-    let new_arms_occ = push_list(ast, new_arms);
-    Some(vec![head, seed, new_arms_occ, body])
+    // Drop the effect (index 1) from the handle head: [handle, effect, seed, arms, body] -> [handle,
+    // seed, arms, body]. The handle keeps its id/span.
+    if let Struct::List(items) = ast.get(plan.handle) {
+        let mut kept = items.clone();
+        if kept.len() == 5 {
+            kept.remove(1);
+            ast.structure[plan.handle.0 as usize] = Struct::List(kept);
+        }
+    }
 }
 
 /// The occurrence of the operation field named `op_name` inside a synthesized effect `record` — so a
@@ -610,7 +636,7 @@ pub fn nearest_declared_op(db: &mut Db, op: StructId) -> Option<(StructId, Strin
 /// The effect is read from the FIRST well-formed arm (every arm of a well-formed handle names the same
 /// effect — a cross-effect arm is CDZ0403, checked independently). A duplicate operation among the arms
 /// still counts once; a repeated op does not make the handler more exhaustive.
-pub fn handler_missing_operations(db: &mut Db, arms: &[HandleArm]) -> Vec<String> {
+pub fn handler_missing_operations(db: &mut Db, arms: &[HandleArm]) -> Vec<MissingOp> {
     // The effect discharged: the declaring effect of the first arm whose op resolves to an effect op.
     let decl = arms
         .iter()
@@ -626,44 +652,54 @@ pub fn handler_missing_operations(db: &mut Db, arms: &[HandleArm]) -> Vec<String
             _ => None,
         })
         .collect();
-    // The effect's full operation set, minus what the arms bind, in declaration order.
-    match db.effect_decl_by_occ(decl) {
-        Some(eff) => eff
-            .ops
-            .iter()
-            .map(|o| o.name.clone())
-            .filter(|name| !bound.contains(name))
-            .collect(),
-        None => Vec::new(),
-    }
+    // The effect's full operation set, minus what the arms bind, in declaration order. Each carries its
+    // arm ARITY (how many parameter binders its arm takes, elided-unit excluded) so a fix can render a
+    // correctly-shaped template arm.
+    let Some(eff) = db.effect_decl_by_occ(decl) else {
+        return Vec::new();
+    };
+    let pending: Vec<(String, Option<StructId>)> = eff
+        .ops
+        .iter()
+        .filter(|o| !bound.contains(&o.name))
+        .map(|o| (o.name.clone(), o.ty))
+        .collect();
+    pending
+        .into_iter()
+        .map(|(name, ty)| MissingOp {
+            arity: ty.map(|t| op_arm_arity(db, t)).unwrap_or(0),
+            name,
+        })
+        .collect()
 }
 
-/// For a non-exhaustive handler (one `handler_missing_operations` flagged), the effect's NAME plus a
-/// rendered handle-arm SKELETON for each missing operation — the "add the missing arms" fix
-/// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix), the effect analogue of
-/// the non-exhaustive-sum add-arms fix (D4). Each skeleton is `((E.op (v) s (resume v s)))` — the arm
-/// shape a handle needs (op projection, one param binder `v`, state binder `s`, a tail-resume body); the
-/// body is a placeholder the author fills (hence Heuristic). Effect ops take exactly one parameter in the
-/// shipping surface, so a single `v` binder is always right. `None` if the effect can't be determined.
-pub fn handler_missing_arm_skeletons(db: &mut Db, arms: &[HandleArm]) -> Option<Vec<String>> {
-    let decl = arms
-        .iter()
-        .find_map(|a| crate::eval::effect_op_of(db, a.op).map(|(d, _)| d))?;
-    let missing = handler_missing_operations(db, arms);
-    if missing.is_empty() {
-        return None;
+/// An operation an exhaustive handler must bind but does not — its name and the arm ARITY (parameter
+/// count) a well-formed arm for it takes, so a fix can render `(op (p0 …) s (resume unit s))` with the
+/// right number of parameter binders.
+pub struct MissingOp {
+    pub name: String,
+    pub arity: usize,
+}
+
+/// The number of PARAMETER binders a handler arm for an operation of declared type `ty` takes — the arm
+/// ARITY. `ty` is the operation's arrow `(-> P… R)`. A `(-> Unit R)` or a nullary-elided `(-> R)` takes
+/// ZERO parameters (the unit is elided, matching a nullary perform `(E.op)` and the corpus arm
+/// `(op () s …)`); otherwise the arity is the number of parameter positions before the result.
+fn op_arm_arity(db: &Db, ty: StructId) -> usize {
+    let Some(tail) = db.ast.as_form(ty, "->") else {
+        return 0;
+    };
+    // The arrow is `(-> P0 … Pn R)` (flat): the last child is the result, the rest are parameters.
+    let params = if tail.len() <= 1 {
+        &[][..]
+    } else {
+        &tail[..tail.len() - 1]
+    };
+    // A single `Unit` parameter is the elided-unit nullary convention → zero arm binders.
+    if params.len() == 1 && db.ast.as_name(params[0]) == Some("Unit") {
+        return 0;
     }
-    let _ = db.effect_decl_by_occ(decl)?; // confirm the effect resolves
-    // A CANONICAL handle arm is `(op (params…) state body)` with a BARE op name (the `(handle E seed
-    // (arm…) body)` shape the author writes — `E` is named once on the handle, the arm op is bare;
-    // `effects::canonical_handle_rewrite` projects it to `(. E op)`). So the skeleton to add is a bare-op
-    // arm with one param binder `v`, the state binder `s`, and a tail-resume placeholder body.
-    Some(
-        missing
-            .iter()
-            .map(|op| format!("({op} (v) s (resume v s))"))
-            .collect(),
-    )
+    params.len()
 }
 
 /// The effect-declaration occurrence the value at `id` denotes, if it resolves to an EFFECT record — its

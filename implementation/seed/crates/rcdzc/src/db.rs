@@ -1174,6 +1174,22 @@ impl Db {
         None
     }
 
+    /// The variant-CONSTRUCTOR occurrence for a SAME-NAME NEWTYPE — a declaration `(type UserId (UserId
+    /// …))` whose SINGLE variant's name IS the type name. `Some(ctor)` only for that exact shape; `None`
+    /// for a multi-variant sum, or one whose variant name differs from the type name. This is what lets
+    /// the ONE name `UserId` mean the CONSTRUCTOR in application/pattern-HEAD position (`(UserId 42)`,
+    /// `(UserId n)`) while `type_decl_by_name` keeps it the TYPE everywhere else (`(: x UserId)`): the
+    /// resolver picks between them by POSITION (the head-position dispatch `head_ctor` already uses for
+    /// `list`/`tuple`), never by a name special-case. Cadenza's one namespace makes the two meanings
+    /// collide otherwise (the type decl shadows the bare variant, so the ctor is unreachable by name).
+    pub fn same_name_newtype_ctor(&self, name: &str) -> Option<StructId> {
+        let decl = self
+            .type_decls
+            .iter()
+            .find(|t| t.name == name && t.variants.len() == 1 && t.variants[0].name == name)?;
+        decl.variants[0].ctor
+    }
+
     /// The `(index, TypeDecl)` of the sum whose DECLARATION OCCURRENCE is `occ` — the reverse of the
     /// nominal identity a `Ty::Sum { decl }` carries. Used by the escape renderer to recover a sum's
     /// variant names + payload types from its type-value. `None` if `occ` names no declaration.

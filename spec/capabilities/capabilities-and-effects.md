@@ -126,6 +126,18 @@ Performing an operation MUST add its declaring effect to the effect row of the f
 
 A handler arm that names an operation the arm's effect does not declare MUST be rejected at compile time, so that a handler discharges only operations that exist and the declaration remains the closed set of an effect's operations.
 
+### A Handler Discharges Exactly One Effect
+
+A handler MUST discharge exactly one effect — every arm of a single handler names an operation of the same declaring effect — so that a handler installs one effect's context and the effect a handler discharges is unambiguous, mirroring that an operation is reached through its declaring effect.
+
+Discharging several effects over one sub-computation MUST be expressed by nesting a handler per effect, so that each handler in the nest discharges its own single effect and no handler mixes the operations of two effects, keeping the discharged effect a property of the handler rather than an open collection its arms enumerate.
+
+### A Handler Discharges Its Effect
+
+A handler MUST bind every operation its effect declares, so that installing a handler for an effect discharges the whole of that effect's closed operation set — the effect analogue of a match covering every variant of its scrutinee's sum — and no operation of the effect a handler claims to discharge is left without a discharger under that handler.
+
+A handler that omits an operation its effect declares MUST be rejected at compile time, so that a partially-handled effect is a compile-time error rather than an operation that silently escapes the handler that appears to discharge it, and the rejection SHOULD identify the omitted operations so the gap is mechanically repairable.
+
 ## An Effect Is Routed By A Handler Or By Host Delegation
 
 ### Host-Binding Is A Routing Decision Made At The Entrypoint

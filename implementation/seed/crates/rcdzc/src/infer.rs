@@ -1573,6 +1573,67 @@ fn callee_def_index_for_infer(db: &mut Db, head: StructId) -> Option<usize> {
     db.def_index_by_body(body)
 }
 
+/// The CDZ0405 non-exhaustive-HANDLER rejection, enriched with an "add the missing arm" fix (the effect
+/// analogue of `non_exhaustive_sum_reject`'s missing-match-arm fix — `spec/capabilities/diagnostics.md`
+/// §A Diagnostic Carries A Route To A Fix, realizing `capabilities-and-effects.md` §A Handler Discharges
+/// Its Effect's "SHOULD identify the omitted operations"). Names the omitted operations and appends a
+/// TEMPLATE arm per omission to the handler's arms LIST — each `(op (_p0 …) s (resume unit s))` in the
+/// canonical bare-op surface, with the op's arm arity of `_`-prefixed parameter binders (so it does not
+/// itself warn unused), the state binder `s`, and a stateless `(resume unit s)` body the author fills
+/// in. Heuristic: the arms are shaped right but their bodies are the author's to write. `handle_id` is
+/// the `(handle seed (arms…) body)` form (internal shape after desugar); the fix anchors on its arms
+/// LIST (child index 2), whose source span the in-place desugar preserved. Falls back to the plain
+/// reject (no fix) if that arms node is absent.
+fn non_exhaustive_handler_reject(
+    db: &Db,
+    handle_id: StructId,
+    missing: &[crate::effects::MissingOp],
+) -> Reject {
+    // One template arm per missing op: `(op (_p0 …) s (resume unit s))`. A nullary op → empty params;
+    // an N-ary op → N `_`-prefixed binders (so an unfilled placeholder does not itself warn unused). The
+    // state binder is `s` and the body a `(resume unit s)` placeholder the author fills in.
+    let arms: Vec<String> = missing
+        .iter()
+        .map(|m| {
+            let binders: Vec<String> = (0..m.arity).map(|i| format!("_p{i}")).collect();
+            format!("({} ({}) s (resume unit s))", m.name, binders.join(" "))
+        })
+        .collect();
+    // The message NAMES the omitted operations AND spells the arm(s) to add inline — the guidance is
+    // legible even without applying the structural fix (rustc "patterns `X` and `Y` not covered" style).
+    let names: Vec<String> = missing.iter().map(|m| format!("`{}`", m.name)).collect();
+    let message = format!(
+        "this handler does not discharge every operation its effect declares: operation{} {} not \
+         handled — a handle must discharge its effect's whole operation set; add {}",
+        if missing.len() == 1 { "" } else { "s" },
+        join_and_names(&names),
+        arms.join(" "),
+    );
+    // The arms LIST is the handle form's 3rd child (internal shape `[handle, seed, arms, body]`). The
+    // in-place desugar preserved its source span, so a structural `InsertArms` fix can splice the arms in
+    // (unlike the fresh synthesized arms-list a rewrite-returning desugar would leave span-less).
+    let arms_node = match db.ast.get(handle_id) {
+        crate::ast::Struct::List(items) if items.len() == 4 => Some(items[2]),
+        _ => None,
+    };
+    match arms_node {
+        Some(arms_list) => Reject::coded(Code::HandlerNotExhaustive, message)
+            .with_fix(Fix::insert_arms_heuristic(arms_list, arms)),
+        None => Reject::coded(Code::HandlerNotExhaustive, message),
+    }
+}
+
+/// Join names as `a`, `a and b`, or `a, b, and c` — the English list the "not handled" message reads
+/// naturally with (matching the sibling `join_and` in `lower.rs`).
+fn join_and_names(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [a] => a.clone(),
+        [a, b] => format!("{a} and {b}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
+}
+
 /// Check a handler arm's resume VALUE against the operation's declared RESULT type — the resume-value
 /// companion of the perform-argument check. The value in `(resume value state)` is returned to the
 /// perform site, so it must have the op's result type (`capabilities-and-effects.md` §Performing An
@@ -3170,41 +3231,21 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 check_resume_result_type(db, arm, out);
                 collect(db, arm.body, out);
             }
-            // A HANDLER MUST DISCHARGE ITS EFFECT'S WHOLE OPERATION SET (CDZ0405). A `handle E` names one
+            // A HANDLER MUST DISCHARGE ITS EFFECT'S WHOLE OPERATION SET (CDZ0405,
+            // `capabilities-and-effects.md` §A Handler Discharges Its Effect). A `handle E` names one
             // effect whose operations are a closed set, so — like a match over a sum — it must bind EVERY
             // operation; a handler missing one leaves that operation of the effect it claims to discharge
             // without a home. Only checked when NO arm named an undeclared operation (a CDZ0403 arm makes
-            // the discharged effect ambiguous, so its own fault is the one to report). Anchored at the
-            // handled body (the handle form's own occurrence).
+            // the discharged effect ambiguous, so its own fault is the one to report). Names the omitted
+            // operations AND carries an "add the missing arm" fix — a template arm per omission appended
+            // to the arms LIST (the sibling of `non_exhaustive_sum_reject`'s missing-match-arm fix).
             let has_undeclared = arms
                 .iter()
                 .any(|arm| crate::effects::arm_op_names_undeclared_operation(db, arm.op));
             if !has_undeclared {
                 let missing = crate::effects::handler_missing_operations(db, &arms);
                 if !missing.is_empty() {
-                    let list = missing.join(", ");
-                    // Name the missing ops AND spell the arm(s) to add — the "add the missing arms"
-                    // guidance for a non-exhaustive handler (the effect analogue of a non-exhaustive
-                    // match; `spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
-                    // ⚠ A STRUCTURAL InsertArms fix is NOT attached: the handle's arms-list is a
-                    // SYNTHESIZED node (the canonical `(handle E seed arms body)` is desugared in place to
-                    // the internal form with a fresh arms-list — `effects::canonical_handle_rewrite`), so
-                    // it carries no source span for a consumer to splice at. The concrete arm text goes in
-                    // the message instead, so an agent still gets the exact fix to add.
-                    let add = crate::effects::handler_missing_arm_skeletons(db, &arms)
-                        .map(|arms| format!(" — add {}", arms.join(" ")))
-                        .unwrap_or_default();
-                    out.push(
-                        Reject::coded(
-                            Code::HandlerNotExhaustive,
-                            format!(
-                                "this handler does not bind every operation its effect declares \
-                                 (missing: {list}) — a handle must discharge its effect's whole \
-                                 operation set{add}"
-                            ),
-                        )
-                        .at(body),
-                    );
+                    out.push(non_exhaustive_handler_reject(db, id, &missing));
                 }
             }
             collect(db, body, out);
