@@ -1209,6 +1209,19 @@ fn cdz_render_at(
         }
         return format!("match &{path} {{ {} }}", arms.join(", "));
     }
+    // A FLOAT (`Float32`/`Float64`) renders via cdz-run's canonical `display_float`, NOT Rust's `{}`:
+    // a whole float is `N.0` (Rust's `{}` prints `42`, the corpus wants `42.0`), `-0.0` and `NaN` are
+    // named. Inline the exact `display_float` logic (widening a Float32 to f64 first) so the Rust-gate
+    // render matches the value form the wasm gate + cdz-run produce.
+    if ty == "Float64" || ty == "Float32" {
+        return format!(
+            "{{ let __f = ({path}) as f64; \
+             if __f == 0.0 && __f.is_sign_negative() {{ \"-0.0\".to_string() }} \
+             else if __f.is_nan() {{ \"NaN\".to_string() }} \
+             else if __f.fract() == 0.0 && __f.is_finite() {{ format!(\"{{:.0}}.0\", __f) }} \
+             else {{ format!(\"{{}}\", __f) }} }}"
+        );
+    }
     // A scalar: Display it.
     format!("format!(\"{{}}\", {path})")
 }
