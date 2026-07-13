@@ -77,6 +77,13 @@ pub enum Code {
     /// be exactly the effects that escape, no more and no fewer, so a granted-but-unexercised capability
     /// is rejected rather than carried.
     LatentAuthority,
+    /// An ILL-FORMED binary form `(bin …)` — a compile-time well-formedness defect decidable from the
+    /// segment list alone (`options/binary-syntax/`): bit-fields whose widths do not close a whole byte
+    /// (the whole `bin` must be byte-aligned), a non-final unsized `(bytes …)` segment, or a `bits` width
+    /// that is not a compile-time constant. The binary analogue of a non-exhaustive match — a static
+    /// structural rejection, not a runtime surprise (a value that does not fit its segment traps at run
+    /// time instead, "binary value does not fit segment"). The CDZ02xx types-and-patterns band.
+    IllFormedBinary,
 }
 
 impl Code {
@@ -97,6 +104,7 @@ impl Code {
             Code::EffectNoHome => "CDZ0401",
             Code::HandlerUndeclaredOp => "CDZ0403",
             Code::LatentAuthority => "CDZ0404",
+            Code::IllFormedBinary => "CDZ0220",
         }
     }
 }

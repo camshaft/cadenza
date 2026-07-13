@@ -80,10 +80,11 @@ const ENV_TYPE_PARAM: &str = "__CdzE";
 pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject> {
     let mut out = String::new();
     out.push_str(PREAMBLE);
-    // In async/gas mode, the emitted module carries the `CdzEnv` trait the host implements — the fuel
-    // meter + cooperative-yield point every emitted function awaits at entry.
+    // In async/gas mode the emitted functions thread the `CdzEnv` gas/yield capability. That trait lives
+    // in the SHARED `cdz-rt` crate (not re-declared per module), so an application implements it ONCE and
+    // every emitted module interoperates over the same type — bring it into scope with a `use`.
     if mode.is_async() {
-        out.push_str(CDZ_ENV_TRAIT);
+        out.push_str(CDZ_RT_IMPORTS);
     }
     // Every sum type the program declares becomes a Rust `enum` (emitted before the functions that
     // construct/match/return it). A declaration with no native form (a recursive sum, an unrepresentable
@@ -106,18 +107,12 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
     Ok(out.into_bytes())
 }
 
-/// The gas/yield interface the async-mode module declares and the host implements. `consume` is `async`
-/// so a host can `.await` a cooperative yield inside it (return control to the executor after metering);
-/// it returns `impl Future` (RPITIT) rather than `async fn` in the trait so the emitted source is
-/// lint-clean and needs no `async_trait` dependency. An implementation typically panics (or the future
-/// never resolves) when fuel is exhausted — an emitted function awaits `consume(1)` at entry, so a
-/// runaway computation is bounded at the granularity of a call.
-const CDZ_ENV_TRAIT: &str = "\
-/// The gas/yield interface: the host meters fuel in `consume` and MAY await a cooperative yield there.
-pub trait CdzEnv {
-    fn consume(&mut self, gas: u64) -> impl core::future::Future<Output = ()>;
-}
-";
+/// The `use` an async-mode module emits to bring the shared runtime traits into scope. The `CdzEnv`
+/// gas/yield capability now lives in the `cdz-rt` crate (a single shared definition), NOT re-declared in
+/// each module — so an application implements it ONCE for `RcRuntime`/its own env type and every emitted
+/// module uses that same trait (two modules interoperate). A downstream build depends on `cdz-rt`; the
+/// corpus gate links it via `--extern cdz_rt=<rlib>`.
+const CDZ_RT_IMPORTS: &str = "use cdz_rt::CdzEnv;\n";
 
 /// The file preamble — a header comment marking the source as generated, and the lint allowances a
 /// mechanically-emitted file needs (its names come verbatim from the source program, so they will not

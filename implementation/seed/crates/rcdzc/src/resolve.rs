@@ -198,6 +198,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some(h @ ("and" | "or")) => resolve_connective(db, id, h == "and"),
                 Some("not") => resolve_not(db, id),
                 Some("match") => resolve_match(db, id),
+                Some("bin") => resolve_bin(db, id),
                 Some("handle") => resolve_handle(db, id),
                 Some("resume") => resolve_resume(db, id),
                 Some("host") => resolve_host(db, id),
@@ -1232,6 +1233,127 @@ fn resolve_match(db: &Db, id: StructId) -> Resolved {
         return Resolved::Poison(Reject::coded(Code::Malformed, "match has no arms"));
     }
     Resolved::Match { scrutinee, arms }
+}
+
+/// Resolve `(bin <segment>…)` — the dual-direction binary form. Each segment is written like a
+/// constructor `(<kind> <slot> <modifier>…)`: an integer `(uNN v)`/`(iNN v)` (big-endian, `le` modifier
+/// for little-endian), a bit-field `(bits v k)` (k a compile-time constant), or a byte splice/bind
+/// `(bytes b [n])`. The kind/width/sign/endian are decided HERE from the head name (a fixed, closed set —
+/// like the grammar heads); the `slot` value stays an AST occurrence (a constant to encode when building,
+/// a binder/literal probe when matching — the direction is decided downstream). An unrecognized segment
+/// head or a malformed segment is a `Poison`. `(bin)` (no segments) is the empty byte sequence.
+fn resolve_bin(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, "bin").unwrap_or(&[]);
+    let mut segs = Vec::with_capacity(tail.len());
+    for &seg in tail {
+        // Each segment is a list `(<kind> <slot> [modifier]…)`.
+        let Struct::List(parts) = db.ast.get(seg) else {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                "a bin segment must be (<kind> <slot> [modifier])",
+            ));
+        };
+        let Some(kind_name) = parts.first().and_then(|&h| db.ast.as_name(h)) else {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                "a bin segment needs a kind head (uNN/iNN/bits/bytes)",
+            ));
+        };
+        // A fixed-width integer segment: `(uNN v [le])` / `(iNN v [le])`. Width in BYTES from the name.
+        let int_kind = match kind_name {
+            "u8" => Some((1u8, false)),
+            "u16" => Some((2, false)),
+            "u32" => Some((4, false)),
+            "u64" => Some((8, false)),
+            "i8" => Some((1, true)),
+            "i16" => Some((2, true)),
+            "i32" => Some((4, true)),
+            "i64" => Some((8, true)),
+            _ => None,
+        };
+        if let Some((width, signed)) = int_kind {
+            if parts.len() < 2 {
+                return Resolved::Poison(Reject::coded(
+                    Code::Malformed,
+                    "an integer bin segment needs a value: (uNN v [le])",
+                ));
+            }
+            let slot = parts[1];
+            // The only modifier on an int segment is `le` (little-endian). Anything else is malformed.
+            let mut little_endian = false;
+            for &m in &parts[2..] {
+                match db.ast.as_name(m) {
+                    Some("le") => little_endian = true,
+                    _ => {
+                        return Resolved::Poison(Reject::coded(
+                            Code::Malformed,
+                            "the only integer bin-segment modifier is `le`",
+                        ));
+                    }
+                }
+            }
+            segs.push(crate::resolved::Segment {
+                kind: crate::resolved::SegKind::Int { width, signed },
+                slot,
+                little_endian,
+            });
+            continue;
+        }
+        // A bit-field `(bits v k)` — `k` a compile-time constant width (read as a literal here; a
+        // non-constant width is CDZ0220, checked at infer where the evaluator is available).
+        if kind_name == "bits" {
+            if parts.len() != 3 {
+                return Resolved::Poison(Reject::coded(
+                    Code::Malformed,
+                    "a bit-field bin segment is (bits v k)",
+                ));
+            }
+            let slot = parts[1];
+            // `k` must be an integer literal (a constant width). A non-literal is left to infer's CDZ0220.
+            let k = match db.ast.get(parts[2]) {
+                Struct::Atom(l) => match db.ast.leaf(*l) {
+                    Leaf::Int { value, .. } => value.to_i64().filter(|n| *n >= 0).map(|n| n as u32),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let Some(k) = k else {
+                return Resolved::Poison(Reject::coded(
+                    Code::IllFormedBinary,
+                    "a bit-field width must be a compile-time constant natural",
+                ));
+            };
+            segs.push(crate::resolved::Segment {
+                kind: crate::resolved::SegKind::Bits { k },
+                slot,
+                little_endian: false,
+            });
+            continue;
+        }
+        // A byte-sequence segment `(bytes b [n])` — splice all of `b` (build) / bind rest-or-exactly-n
+        // (match). `n` (the dependent size) stays an occurrence, resolved downstream.
+        if kind_name == "bytes" {
+            if parts.len() < 2 || parts.len() > 3 {
+                return Resolved::Poison(Reject::coded(
+                    Code::Malformed,
+                    "a bytes bin segment is (bytes b) or (bytes b n)",
+                ));
+            }
+            let slot = parts[1];
+            let size = parts.get(2).copied();
+            segs.push(crate::resolved::Segment {
+                kind: crate::resolved::SegKind::Bytes { size },
+                slot,
+                little_endian: false,
+            });
+            continue;
+        }
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            "an unrecognized bin segment kind (expected uNN/iNN/bits/bytes)",
+        ));
+    }
+    Resolved::Bin { segs }
 }
 
 /// Resolve `(handle INIT (ARM…) BODY)` into its resolved form. Each arm is `(op-proj (params…) state

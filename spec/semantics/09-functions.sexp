@@ -355,8 +355,7 @@
 ; Single-Arity says a multi-param `(fn (a b) …)` is curried sugar; when the whole function is applied to
 ; all its arguments at once through a recursive HOF, it lifts to one `(env, a, b) → result` function and
 ; applies via a single indirect call (no intermediate closure). `ap2 (fn (a b) (+ a b)) n` sums
-; `(g i i)` for i = n…1, i.e. `2·(n + … + 1) = n·(n+1)`. (A PARTIAL application of a runtime multi-param
-; closure — runtime currying — still declines: it would need to build the intermediate closure.)
+; `(g i i)` for i = n…1, i.e. `2·(n + … + 1) = n·(n+1)`.
 
 (case "a two-parameter closure is applied at full arity through a recursive HOF"
   (doc    "`ap2` applies its two-argument function `g` to `(g i i)` at each recursion level and sums the
@@ -370,6 +369,29 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 12 Int64)))
+
+; CURRIED-SYNTAX application of a runtime multi-param closure. `core-semantics.md` §Functions Are
+; Single-Arity: `(fn (a b) …)` is single-arity curried sugar, so `((g n) 1)` — apply `g` to `n`, then
+; apply THAT to `1` — is the SAME full-arity application as `(g n 1)`, only written with nested parens.
+; When `g` is a RUNTIME fn value (a recursive HOF's parameter), the two-paren spine must flatten to one
+; `call_indirect` on `g` with both arguments — NOT decline as an unbuilt intermediate closure. This is
+; "runtime currying reaches full arity": the application SPINE is peeled and its arguments gathered
+; left-to-right, so a curried call site behaves identically to the flat one. (A partial that never
+; reaches full arity would still need a heap partial-closure cell; here every use completes the arity.)
+
+(case "a curried-syntax application of a runtime closure flattens to one full-arity indirect call"
+  (doc    "`((g n) 1)` where `g` is the recursive `ap`'s runtime two-parameter fn parameter — the curried
+           spelling of `(g n 1)`. The nested application spine flattens so `g` is applied to both `n` and
+           `1` in ONE indirect call; with `g = (fn (a b) (+ a b))` and n=3 the sum is (3+1)+(2+1)+(1+1) =
+           9. Pins that a curried call site of a runtime closure reaches full arity via one call_indirect,
+           identical to the flat form — it does not decline as an unbuilt intermediate closure.")
+  (input  (do
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64))
+              (if (= n 0) 0 (+ ((g n) 1) (ap g (- n 1)))))
+            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 9 Int64)))
 
 ; core-semantics.md §A Function Is A First-Class Value: a function can be "stored in a data structure."
 ; A tuple and a list are data structures exactly as a record is, so a function stored in a tuple

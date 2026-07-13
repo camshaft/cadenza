@@ -741,6 +741,15 @@ fn walk_for_dead_traps(
                 discarded(db, *e, out, seen);
             }
         }
+        // A `(bin …)` construction — each segment value (and dependent size) is a value-flowing position.
+        Resolved::Bin { segs } => {
+            for s in segs.iter() {
+                discarded(db, s.slot, out, seen);
+                if let crate::resolved::SegKind::Bytes { size: Some(n) } = &s.kind {
+                    discarded(db, *n, out, seen);
+                }
+            }
+        }
         Resolved::Record { fields } => {
             for v in fields.values().copied().collect::<Vec<_>>() {
                 discarded(db, v, out, seen);

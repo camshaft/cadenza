@@ -784,6 +784,15 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
                 collect_callees(db, e, out);
             }
         }
+        // A `(bin …)` runs each segment's value slot (and dependent size) when this body runs.
+        Resolved::Bin { segs } => {
+            for s in segs.iter() {
+                collect_callees(db, s.slot, out);
+                if let crate::resolved::SegKind::Bytes { size: Some(n) } = &s.kind {
+                    collect_callees(db, *n, out);
+                }
+            }
+        }
         Resolved::Proj { operand, .. } => collect_callees(db, operand, out),
         // An annotation is transparent — a call inside `(: (f x) T)` is a real edge of this body.
         Resolved::Annot { expr, .. } => collect_callees(db, expr, out),

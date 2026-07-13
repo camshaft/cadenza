@@ -4125,6 +4125,39 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bare_literal_past_int64_is_malformed_not_out_of_range() {
+        // 01-literals "an out-of-range integer literal is a malformed literal": a BARE unannotated literal
+        // that overflows the default signed `Int64` — `9223372036854775808` (Int64.max+1),
+        // `0xFFFFFFFFFFFFFFFF` (fits unsigned-64, but a bare literal is signed) — is a MALFORMED literal
+        // (CDZ0201), a well-formedness boundary, NOT unbound (CDZ0101) and NOT out-of-range-for-a-width
+        // (CDZ0302, which is for an EXPLICIT annotation).
+        assert_eq!(
+            reject_code("(module m (def (main) 9223372036854775808) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) 0xFFFFFFFFFFFFFFFF) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+        // Int64.max EXACTLY fits — no rejection (it compiles).
+        assert_eq!(
+            reject_code("(module m (def (main) 9223372036854775807) (export main))"),
+            None
+        );
+        // An EXPLICIT over-width annotation stays CDZ0302 (out of range for a CHOSEN width), NOT CDZ0201;
+        // and a valid `UInt64.max` annotated literal is accepted (the annotation grounds the width, so the
+        // bare-literal check does not misfire on it).
+        assert_eq!(
+            reject_code("(module m (def (main) (: 256 (Int 8))) (export main))").as_deref(),
+            Some("CDZ0302")
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (: 18446744073709551615 (UInt 64))) (export main))"),
+            None
+        );
+    }
+
+    #[test]
     fn a_binary_operator_with_no_operands_is_rejected_cdz0201() {
         // 07-type-system "a bare equality/arithmetic keyword is rejected, not a crash": a binary operator
         // applied to ZERO operands — `(=)` / `(+)` — is a MALFORMED application (the operator demands its
@@ -4749,6 +4782,90 @@ mod match_engine {
                 want,
                 "byte-string literal is a constant Bytes: {body}"
             );
+        }
+    }
+
+    #[test]
+    fn a_constant_bin_construction_folds_to_its_encoded_bytes() {
+        // `(bin <int-seg>…)` in expression position builds a Bytes; a constant folds to the exact bytes
+        // (big-endian default, `le` reversed, signed two's-complement). Each equality rides the constant-
+        // Bytes equality fold, returning a scalar 1/0 so `main` needs no bytes escape.
+        for (body, want) in [
+            // u16 258 = 0x0102 big-endian → [1,2]
+            (
+                "(module m (def (main) (if (= (bin (u16 258)) (Bytes.of (list 1 2))) 1 0)) (export main))",
+                1,
+            ),
+            // le reverses → [2,1]
+            (
+                "(module m (def (main) (if (= (bin (u16 258 le)) (Bytes.of (list 2 1))) 1 0)) (export main))",
+                1,
+            ),
+            // u32 magic → 4 big-endian bytes
+            (
+                "(module m (def (main) (if (= (bin (u32 0x89504E47)) (Bytes.of (list 137 80 78 71))) 1 0)) (export main))",
+                1,
+            ),
+            // signed i8 -1 → 0xFF (two's complement), NOT a trap
+            (
+                "(module m (def (main) (if (= (bin (i8 -1)) (Bytes.of (list 255))) 1 0)) (export main))",
+                1,
+            ),
+            // u64 258 → 8 big-endian bytes
+            (
+                "(module m (def (main) (if (= (bin (u64 258)) (Bytes.of (list 0 0 0 0 0 0 1 2))) 1 0)) (export main))",
+                1,
+            ),
+            // empty (bin) → empty bytes; length of a fixed-width construction = sum of widths
+            (
+                "(module m (def (main) (if (= (bin) (Bytes.of (list))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (Bytes.len (bin (u32 0)))) (export main))",
+                4,
+            ),
+            // a wrong expected value → false (the encoding really produces those bytes)
+            (
+                "(module m (def (main) (if (= (bin (u16 258)) (Bytes.of (list 2 1))) 1 0)) (export main))",
+                0,
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "constant bin construction folds: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bin_value_out_of_range_for_its_segment_is_a_provable_trap() {
+        // A constant segment value that does not fit its width has no encoding → the build fails
+        // (CDZ0304, the compile-provable companion of the runtime "binary value does not fit segment"
+        // trap), rather than truncating. `(u8 256)` needs 9 bits; `(u8 -1)` is negative into unsigned.
+        for src in [
+            "(module m (def (main) (Bytes.len (bin (u8 256)))) (export main))",
+            "(module m (def (main) (Bytes.len (bin (u8 -1)))) (export main))",
+        ] {
+            assert_eq!(reject_code(src).as_deref(), Some("CDZ0304"), "src: {src}");
+        }
+    }
+
+    #[test]
+    fn an_ill_formed_bin_form_is_rejected_cdz0220() {
+        // Well-formedness is a compile-time check decidable from the segment list: bit-fields must close
+        // to whole bytes, a non-final unsized `(bytes …)` is ill-formed, and a bits width must be a const.
+        for src in [
+            // bit-fields sum to 4 bits — not byte-aligned
+            "(module m (def (main) (bin (bits 1 1) (bits 0 3))) (export main))",
+            // an unsized bytes segment that is not the final segment
+            "(module m (def (main) (bin (bytes (Bytes.of (list 1))) (u8 2))) (export main))",
+        ] {
+            assert_eq!(reject_code(src).as_deref(), Some("CDZ0220"), "src: {src}");
         }
     }
 
@@ -11211,6 +11328,34 @@ mod stage1 {
     }
 
     #[test]
+    fn a_curried_application_spine_flattens_to_a_full_arity_indirect_call() {
+        // RUNTIME CURRYING reaching full arity. `((g n) 1)` is `(fn (a b) …)` single-arity curried sugar
+        // applied with nested parens — the SAME full-arity application as `(g n 1)`. When `g` is a
+        // recursive HOF's runtime parameter it cannot β-reduce; the nested `Apply` spine must FLATTEN so
+        // `g` applies to both `n` and `1` in ONE `call_indirect` (not decline as an unbuilt intermediate
+        // closure). `ap g n = sum(i=n..1) (i+1)`; with `g = (+)`, n=3 → (3+1)+(2+1)+(1+1) = 9.
+        let src = "(module m \
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) \
+              (if (= n 0) 0 (+ ((g n) 1) (ap g (- n 1))))) \
+            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "9"); // (3+1)+(2+1)+(1+1)
+        assert_eq!(run_closure(src, 1).unwrap(), "2"); // (1+1)
+        assert_eq!(run_closure(src, 5).unwrap(), "20"); // sum(i=1..5)(i+1) = 15+5
+        // A DIFFERENT lifted lambda through the same curried recursive HOF — `g = (*)` — proving the
+        // flattened spine's `call_indirect` carries the right code (the table slot selects the applied
+        // function): `ap g n = sum(i=n..1) (i*1) = sum(i=n..1) i`; n=4 → 4+3+2+1 = 10.
+        let src2 = "(module m \
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) \
+              (if (= n 0) 0 (+ ((g n) 1) (ap g (- n 1))))) \
+            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (* a b)) n)) (export main))";
+        assert_eq!(run_closure(src2, 4).unwrap(), "10"); // 4+3+2+1
+    }
+
+    #[test]
     fn a_foldable_captured_closure_does_not_emit_a_dead_lift() {
         // A constant closure that CAPTURES but folds away entirely — `((let ((y 3)) (fn (x) (+ x y))) 4)`
         // reduces to 7 at compile time via the reduce-through fold, so no runtime closure survives. The
@@ -14542,6 +14687,59 @@ mod debug_info {
         assert!(
             lines.contains(&3) && lines.contains(&4) && lines.contains(&5),
             "expected rows for lines 3/4/5, got {lines:?}\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn a_kept_scalar_let_binding_gets_a_variable_die() {
+        // D3 locals: a `let` binding whose runtime value is used more than once is KEPT as a named slot
+        // (`Core::Let`); a scalar one earns a `DW_TAG_variable` DIE with a type and a wasm-local location,
+        // so a debugger can `print` the local. The binder key is the initializer occurrence, so the name
+        // is recovered from its `(name init)` pair (`db.let_binding_name`) — this test guards that path.
+        use std::io::Write;
+        use std::process::Command;
+        // `x` is used twice, so it survives A-normalization as a kept `Core::Let` binding.
+        let src = "(module m (def (f (: a Int64)) (let ((x (+ a 1))) (+ x x))) (export f))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        let dwarf = out.artifact("dwarf").expect("dwarf").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-letloc-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-info")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        assert!(
+            !stdout.to_lowercase().contains("error:"),
+            "dwarfdump error:\n{stdout}"
+        );
+        // The kept binding `x` is a variable (not a formal parameter), with a wasm-local location.
+        assert!(
+            stdout.contains("DW_TAG_variable"),
+            "no variable DIE for the kept let binding:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("\"x\""),
+            "the local `x` is unnamed:\n{stdout}"
+        );
+        // `x` sits ABOVE the single param slot 0 — a variable at a non-zero local slot.
+        assert!(
+            stdout.contains("DW_OP_WASM_location 0x0 0x1"),
+            "the kept local must live at local slot 1:\n{stdout}"
         );
     }
 

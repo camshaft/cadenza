@@ -73,6 +73,8 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Bool(_) => Ty::Bool,
         Resolved::Str(_) => Ty::String,
         Resolved::Bytes(_) => Ty::Bytes,
+        // A `(bin …)` in value position CONSTRUCTS a byte sequence → `Ty::Bytes`.
+        Resolved::Bin { .. } => Ty::Bytes,
         Resolved::Float(_) => Ty::Float,
         Resolved::Unit => Ty::Unit,
         // A name IS its bound value's type — follow the ref (a lazy `type_of` on the value occurrence).
@@ -1636,6 +1638,55 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect(db, e, out);
             }
         }
+        // A `(bin …)` construction: check STATIC well-formedness (CDZ0220 — decidable from the segment
+        // list alone), then descend into each segment's value slot for its own faults. Well-formedness:
+        // the running bit-cursor from `bits` segments must close to a whole byte before any byte-aligned
+        // segment (int/bytes) and at the end (`binary-syntax`: the whole `bin` is byte-aligned); an
+        // unsized `(bytes b)` (no dependent size) is only legal as the FINAL segment. A non-const `bits`
+        // width already became a CDZ0220 `Poison` at resolve.
+        Resolved::Bin { segs } => {
+            let mut bit_cursor: u32 = 0; // open bits since the last byte boundary
+            for (i, seg) in segs.iter().enumerate() {
+                match &seg.kind {
+                    crate::resolved::SegKind::Bits { k } => bit_cursor += k,
+                    crate::resolved::SegKind::Int { .. } => {
+                        if !bit_cursor.is_multiple_of(8) {
+                            out.push(Reject::coded(
+                                Code::IllFormedBinary,
+                                "a bin integer segment must start on a byte boundary (preceding bit-fields do not close a byte)",
+                            ));
+                        }
+                    }
+                    crate::resolved::SegKind::Bytes { size } => {
+                        if !bit_cursor.is_multiple_of(8) {
+                            out.push(Reject::coded(
+                                Code::IllFormedBinary,
+                                "a bin bytes segment must start on a byte boundary (preceding bit-fields do not close a byte)",
+                            ));
+                        }
+                        // An UNSIZED bytes segment (splice-all / bind-rest) is legal only as the last
+                        // segment — a non-final unsized bytes has no defined boundary.
+                        if size.is_none() && i + 1 != segs.len() {
+                            out.push(Reject::coded(
+                                Code::IllFormedBinary,
+                                "a non-final bin bytes segment must have an explicit size (bytes b n)",
+                            ));
+                        }
+                    }
+                }
+                collect(db, seg.slot, out);
+                if let crate::resolved::SegKind::Bytes { size: Some(n) } = &seg.kind {
+                    collect(db, *n, out);
+                }
+            }
+            // The whole form must be byte-aligned: any open bits at the end are ill-formed.
+            if !bit_cursor.is_multiple_of(8) {
+                out.push(Reject::coded(
+                    Code::IllFormedBinary,
+                    "a bin form's bit-fields must close to a whole number of bytes",
+                ));
+            }
+        }
         // Descend into the new binding/aggregate forms for their own faults.
         Resolved::Let { bindings, body } => {
             for (_, value) in bindings {
@@ -1853,11 +1904,38 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // A ref's target-node fault is reported when that node is collected on its own. A bare
         // intrinsic value and the atomic leaves have no sub-faults. A `SumPayload` (a variant binder's
         // payload read) has no sub-fault of its own — the scrutinee's faults surface at the match.
+        // A bare integer literal whose width DEFAULTED (nothing annotated/inferred it, so it grounds to
+        // the default signed `Int64`) but whose VALUE does not fit signed-64 is a MALFORMED literal
+        // (CDZ0201) — `9223372036854775808` (Int64.max+1), `0xFFFFFFFFFFFFFFFF` (fits UNSIGNED-64 but a
+        // bare literal is signed): a number with no width to blame, not a name and not an out-of-range-
+        // for-a-chosen-width (which stays CDZ0302, checked at the annotation in the `Annot` arm). 01-
+        // literals "an out-of-range integer literal is a malformed literal, not an unbound name".
+        Resolved::Int(v) => {
+            // A literal that is the direct operand of an annotation `(: LIT T)` is checked against `T`
+            // by the `Annot` arm (CDZ0302 on an over-width annotated literal); its own deferred type
+            // here would misfire. So skip an annotated literal — only a literal with NO width in sight
+            // (defaulted to `Int64`) is judged malformed here.
+            let annotated = db
+                .parent_of(id)
+                .and_then(|p| db.ast.as_form(p, ":"))
+                .and_then(|t| t.first().copied())
+                == Some(id);
+            if !annotated
+                && let Ty::Int(it) = type_of(db, id)
+                && !it.width_is_fixed()
+                && !v.fits_width(true, crate::ty::DEFAULT_INT_WIDTH)
+            {
+                trace!(target: "rcdzc::infer", node = id.0, "fault: integer literal exceeds the default Int64 (malformed, CDZ0201)");
+                out.push(Reject::coded(
+                    Code::Malformed,
+                    "integer literal is out of range for Int64",
+                ));
+            }
+        }
         Resolved::Prim(_)
         | Resolved::Ref { .. }
         | Resolved::SumPayload { .. }
         | Resolved::Param { .. }
-        | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
         | Resolved::Bytes(_)

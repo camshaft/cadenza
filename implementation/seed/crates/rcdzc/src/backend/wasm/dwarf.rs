@@ -44,6 +44,7 @@ mod dw {
     pub const TAG_COMPILE_UNIT: u64 = 0x11;
     pub const TAG_SUBPROGRAM: u64 = 0x2e;
     pub const TAG_FORMAL_PARAMETER: u64 = 0x05;
+    pub const TAG_VARIABLE: u64 = 0x34;
     pub const TAG_BASE_TYPE: u64 = 0x24;
     // Attributes.
     pub const AT_NAME: u64 = 0x03;
@@ -89,6 +90,7 @@ mod dw {
     pub const ABBREV_SUBPROGRAM_KIDS: u64 = 3; // subprogram WITH children (has scalar locals)
     pub const ABBREV_FORMAL_PARAMETER: u64 = 4;
     pub const ABBREV_BASE_TYPE: u64 = 5;
+    pub const ABBREV_VARIABLE: u64 = 6; // a `let`-binding local (a DW_TAG_variable, not a parameter)
 }
 
 /// A string table (`.debug_str`) built incrementally: `intern(s)` returns the byte offset of `s`,
@@ -124,13 +126,16 @@ pub struct DwarfFunc {
     pub rows: Vec<(u32, u32)>,
 }
 
-/// A named scalar local to describe (D3): its source name, wasm local slot, and base type. Emits a
-/// `DW_TAG_formal_parameter` (params) / `DW_TAG_variable` DIE with a `DW_OP_WASM_location` pointing at
-/// the local slot and a `DW_AT_type` referencing the matching `DW_TAG_base_type`.
+/// A named scalar local to describe (D3): its source name, wasm local slot, base type, and whether it
+/// is a function PARAMETER (`DW_TAG_formal_parameter`) or a `let`-binding local (`DW_TAG_variable`).
+/// Either emits a `DW_OP_WASM_location` pointing at the local slot + a `DW_AT_type` referencing the
+/// matching `DW_TAG_base_type` — the tag is the only difference, so a debugger shows args and locals
+/// distinctly.
 pub struct DwarfVar {
     pub name: String,
     pub slot: u32,
     pub base: BaseType,
+    pub is_param: bool,
 }
 
 /// A scalar base type — the (encoding, byte size) a `DW_TAG_base_type` describes. Distinct values are
@@ -401,6 +406,19 @@ fn build_abbrev() -> Vec<u8> {
             (dw::AT_BYTE_SIZE, dw::FORM_DATA1),
         ],
     );
+    // 6: variable — a `let`-binding local. SAME attributes as a formal_parameter (name/type/location);
+    // only the tag differs, so a debugger lists it as a local, not an argument.
+    entry(
+        &mut b,
+        dw::ABBREV_VARIABLE,
+        dw::TAG_VARIABLE,
+        dw::CHILDREN_NO,
+        &[
+            (dw::AT_NAME, dw::FORM_STRP),
+            (dw::AT_TYPE, dw::FORM_REF4),
+            (dw::AT_LOCATION, dw::FORM_EXPRLOC),
+        ],
+    );
     // End of the abbreviation table.
     uleb128(0, &mut b);
     b
@@ -469,9 +487,17 @@ fn build_info(
         uleb128(f.line.max(1) as u64, &mut die); // DW_AT_decl_line (udata)
         die.extend_from_slice(&f.low_pc.to_le_bytes()); // DW_AT_low_pc (addr)
         die.extend_from_slice(&f.high_pc.saturating_sub(f.low_pc).to_le_bytes()); // DW_AT_high_pc (data4)
-        // A formal_parameter DIE (abbrev 4) per scalar var.
+        // A formal_parameter (a param) / variable (a `let`-binding local) DIE per scalar var — the tag
+        // differs so a debugger shows args and locals distinctly; the attributes are identical.
         for (vi, v) in f.vars.iter().enumerate() {
-            uleb128(dw::ABBREV_FORMAL_PARAMETER, &mut die);
+            uleb128(
+                if v.is_param {
+                    dw::ABBREV_FORMAL_PARAMETER
+                } else {
+                    dw::ABBREV_VARIABLE
+                },
+                &mut die,
+            );
             die.extend_from_slice(&var_name_off[&(fi, vi)].to_le_bytes()); // DW_AT_name (strp)
             let ty_off = base_die_off[&v.base];
             die.extend_from_slice(&ty_off.to_le_bytes()); // DW_AT_type (ref4 → the base type DIE)
