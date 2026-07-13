@@ -188,13 +188,36 @@ pub fn emit(
         ));
     }
 
-    // MULTI-EXPORT closures (not yet built): more than one export where at least one RESULT is a closure.
-    // The single-export closure escape above (`[e]`) does not fire, so such a program would otherwise fall
-    // through to the scalar multi-export path and decline with a confusing GENERIC message ("type `(-> A B)`
-    // has no component boundary representation"). DECLINE here instead with a message that names the
-    // feature: a multi-export closure envelope publishes N `make` functions (one per closure export) — same
-    // -signature exports sharing one resource type + `call`, distinct signatures minting distinct resource
-    // types — a distinct structural increment. Reject-don't-miscompile: a clean, honest Todo.
+    // MULTI-EXPORT closures: more than one export, and EVERY export's result is a closure of the SAME
+    // signature. They cross together as one resource type with N `make-<name>` functions sharing one
+    // `call` (`emit_multi_closure_resource`; the `multi_export_closures_share_one_call` oracle proved the
+    // shape). A mix of DISTINCT closure signatures (needing N resource types) or a closure alongside a
+    // non-closure export is a later slice — declined below with a message naming what is unsupported.
+    if layout.exports.len() > 1
+        && layout
+            .exports
+            .iter()
+            .all(|e| matches!(e.result, crate::ty::Ty::Fn(_, _)))
+    {
+        // All closure exports must share ONE signature (the shared `call`'s functype). Compare each
+        // export's result type to the first; a mismatch → decline (distinct-signature multi-export is the
+        // N-resource-type slice, not yet built).
+        let first = &layout.exports[0].result;
+        if layout.exports.iter().all(|e| &e.result == first) {
+            let defs: Vec<usize> = layout.exports.iter().map(|e| e.def).collect();
+            let result = first.clone();
+            return emit_multi_closure_resource(db, layout, &defs, &result, spans);
+        }
+        return Err(Reject::decline(
+            "a program exporting closures of DIFFERENT signatures is not yet supported — it needs one \
+             resource type per signature (this increment handles several exports that share ONE closure \
+             signature); DESIGN-closure-host-resource-rcdzc.md, multi-export closures",
+        ));
+    }
+    // A closure export ALONGSIDE a non-closure export (a mixed multi-export) is also not yet supported —
+    // the closure needs the resource envelope while the scalar export needs the plain boundary; composing
+    // the two envelopes is a later increment. Decline naming the feature (else the scalar path emits a
+    // confusing generic "type `(-> A B)` has no component boundary representation").
     if layout.exports.len() > 1
         && layout
             .exports
@@ -202,10 +225,9 @@ pub fn emit(
             .any(|e| matches!(e.result, crate::ty::Ty::Fn(_, _)))
     {
         return Err(Reject::decline(
-            "a program that exports MORE THAN ONE closure (or a closure alongside another export) is not \
-             yet supported — it needs a multi-export closure envelope publishing one `make` per closure \
-             export (same-signature exports sharing a resource type, distinct signatures minting distinct \
-             resource types); DESIGN-closure-host-resource-rcdzc.md, multi-export closures",
+            "a program that exports a closure ALONGSIDE a non-closure export is not yet supported — the \
+             closure needs the resource envelope and the other export the plain boundary; composing them \
+             is a later increment (DESIGN-closure-host-resource-rcdzc.md, multi-export closures)",
         ));
     }
 
@@ -1227,6 +1249,199 @@ fn emit_closure_resource(
         &imports,
         &import_name,
         &make_param_bytes,
+        &arg_bytes,
+        result_byte,
+    ))
+}
+
+/// Emit the MULTI-EXPORT closure-resource component: several exports whose results are all closures of the
+/// SAME signature `(-> A… R)` cross together as one resource type with N `make-<name>` functions sharing
+/// ONE `call` (`DESIGN-closure-host-resource-rcdzc.md`, multi-export). Each export's body builds its own
+/// closure cell (occupying its own funcref-table slot); its `make` calls that body + `resource.new`s the
+/// handle. The shared `call` recovers the code slot from the rep at call time, so it dispatches whichever
+/// closure a handle names (proven by the `multi_export_closures_share_one_call` oracle). Distinct
+/// signatures (N resource types) are a later slice — declined by the caller.
+fn emit_multi_closure_resource(
+    db: &mut Db,
+    layout: &Layout,
+    export_defs: &[usize],
+    result: &crate::ty::Ty,
+    _spans: Option<&crate::spans::SpanData>,
+) -> Result<Vec<u8>, Reject> {
+    use crate::backend::wasm::lir::valtype_of;
+    // Flatten the shared closure signature → arg types + result. All exports share it (the caller checked).
+    let mut arg_tys: Vec<crate::ty::Ty> = Vec::new();
+    let mut cur = result.clone();
+    while let crate::ty::Ty::Fn(dom, rng) = cur {
+        arg_tys.push((*dom).clone());
+        cur = *rng;
+    }
+    let ret_ty = cur;
+    // Reject a closure escaping an effect (same rule as the single-export path): scan the lifted bodies.
+    {
+        let mut escaping = Vec::new();
+        for l in &layout.lifted {
+            host::collect_host_imports(db, l.body, &mut escaping);
+        }
+        if let Some(h) = escaping.first() {
+            return Err(Reject::coded(
+                crate::diag::Code::ClosureEscapesEffect,
+                format!(
+                    "a closure that performs an effect ({}.{}) cannot cross the host boundary — the \
+                     closure's handler context does not travel with it, so the effect would have no home \
+                     when the host invokes it (closures escaping effects are not supported)",
+                    h.effect, h.op
+                ),
+            ));
+        }
+    }
+    let arg_bytes: Vec<u8> = arg_tys
+        .iter()
+        .map(|t| {
+            host::abi_val_type(t).map(|a| a.comp_byte()).ok_or_else(|| {
+                Reject::decline(format!(
+                    "a closure argument of type {} has no scalar host-boundary representation",
+                    t.render_name()
+                ))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    let result_byte = host::abi_val_type(&ret_ty)
+        .map(|a| a.comp_byte())
+        .ok_or_else(|| {
+            Reject::decline(format!(
+                "a closure result of type {} has no scalar host-boundary representation",
+                ret_ty.render_name()
+            ))
+        })?;
+    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
+        .iter()
+        .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
+        .collect::<Result<_, _>>()?;
+    let ret_vt = valtype_of(&ret_ty)
+        .ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
+
+    // Per export: its params (each `make` forwards them) as core valtypes + boundary bytes. Collected
+    // BEFORE `resource_escape_build` moves the layout (params live on the pre-build `layout.exports`).
+    struct MakeSpec {
+        def: usize,
+        name: String,
+        param_vts: Vec<crate::backend::wasm::lir::ValType>,
+        param_bytes: Vec<u8>,
+    }
+    let mut make_specs: Vec<MakeSpec> = Vec::new();
+    for &def in export_defs {
+        let export = layout
+            .exports
+            .iter()
+            .find(|e| e.def == def)
+            .ok_or_else(|| Reject::decline("a closure export is not in the layout"))?;
+        let param_vts: Vec<_> = export
+            .params
+            .iter()
+            .map(|(_, t)| {
+                valtype_of(t)
+                    .ok_or_else(|| Reject::decline("closure export param has no machine valtype"))
+            })
+            .collect::<Result<_, _>>()?;
+        let param_bytes: Vec<u8> = export
+            .params
+            .iter()
+            .map(|(_, t)| {
+                host::abi_val_type(t).map(|a| a.comp_byte()).ok_or_else(|| {
+                    Reject::decline(format!(
+                        "a closure-export parameter of type {} has no scalar host-boundary representation",
+                        t.render_name()
+                    ))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        make_specs.push(MakeSpec {
+            def,
+            name: format!("make-{}", export.name),
+            param_vts,
+            param_bytes,
+        });
+    }
+
+    // Lifted-body ops (a capturing closure's env reads appear only in the lifted bodies).
+    let lifted_bodies: Vec<crate::ast::StructId> = layout
+        .lifted
+        .iter()
+        .enumerate()
+        .filter(|(code, _)| layout.lifted_reached.get(*code).copied().unwrap_or(true))
+        .map(|(_, l)| l.body)
+        .collect();
+    let mut lifted_ops: std::collections::BTreeSet<&'static str> =
+        std::collections::BTreeSet::new();
+    for &body in &lifted_bodies {
+        select::collect_used_ops(db, body, &mut lifted_ops);
+    }
+    let (imports, mut funcs, layout) = resource_escape_build(db, layout, |used| {
+        used.insert("arr-get");
+        used.insert("get-int");
+        used.insert("drop");
+        used.extend(lifted_ops.iter().copied());
+    })?;
+    if layout.lifted.is_empty() {
+        return Err(Reject::decline(
+            "a multi-export closure program produced no lifted lambda",
+        ));
+    }
+    // APPEND the lifted closure bodies after the order defs (trailing funcs, env-prepended params).
+    for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
+        let env_key = db.push_name("$closure-env");
+        let mut params = vec![(env_key, crate::ty::Ty::Bytes)];
+        params.extend(lifted.params.iter().cloned());
+        if layout.lifted_reached.get(code).copied().unwrap_or(true) {
+            funcs.push(select_function_of(db, lifted.body, &params, &layout, None)?);
+        } else {
+            funcs.push(select::stub_function(&params, &lifted.ret_ty));
+        }
+    }
+    // The shared call's `call_indirect` functype: slot 0's lifted type index. All exports share the
+    // signature, so every lifted lambda has the same functype shape → one shared type index suffices.
+    let lifted_type_idx = layout.lifted_type_index(0, layout.import_base);
+
+    // Build the serializer's make specs (resolve each export body's core func index post-build).
+    let ser_makes: Vec<serialize::ClosureMake> = make_specs
+        .iter()
+        .map(|m| {
+            let export_abs = layout
+                .abs(m.def)
+                .ok_or_else(|| Reject::decline("a closure export is not in the emission order"))?;
+            Ok(serialize::ClosureMake {
+                export_name: m.name.clone(),
+                export_abs,
+                param_vts: m.param_vts.clone(),
+            })
+        })
+        .collect::<Result<_, Reject>>()?;
+    let main_core = serialize::multi_closure_resource_core_module(
+        &funcs,
+        &imports,
+        &ser_makes,
+        &arg_vts,
+        ret_vt,
+        lifted_type_idx,
+        &layout,
+    )
+    .map_err(Reject::decline)?;
+    let dtor_core = serialize::resource_dtor_module_with_drop();
+    let import_name = runtime_import_name();
+    let abi_makes: Vec<envelope::ClosureMakeAbi> = make_specs
+        .iter()
+        .map(|m| envelope::ClosureMakeAbi {
+            name: m.name.clone(),
+            make_param_bytes: m.param_bytes.clone(),
+        })
+        .collect();
+    Ok(envelope::assemble_multi_closure_resource(
+        &main_core,
+        &dtor_core,
+        &imports,
+        &import_name,
+        &abi_makes,
         &arg_bytes,
         result_byte,
     ))

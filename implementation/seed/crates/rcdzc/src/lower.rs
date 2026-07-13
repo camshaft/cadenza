@@ -6143,11 +6143,37 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
             Core::Poison(Reject::coded(
                 Code::ConstTrap,
                 format!(
-                    "constant {} has no defined value (overflow, divide-by-zero, or out-of-range shift)",
-                    intrinsic_name(op)
+                    "constant {} traps: {}",
+                    intrinsic_name(op),
+                    const_trap_cause(op, y),
                 ),
             ))
         }
+    }
+}
+
+/// The SPECIFIC cause of a provable constant-integer trap (CDZ0304) for op `op` with right operand `y`
+/// — the compiler proved the trap, so it knows which of the three defined causes fired and names THAT
+/// ("divide by zero" / "overflows Int64" / "shift count N out of range 0..64") rather than listing all
+/// three. The evaluation is over the Stage-default `i64`, so overflow is against `Int64`; a later width
+/// stage would name the solved width. Only called when the fold returned `None` (a genuine trap), so a
+/// default arm is a defensive fallback, not a reachable case. (The left operand doesn't disambiguate a
+/// cause — every trap is decided by the op and the divisor/shift-count `y`.)
+fn const_trap_cause(op: Prim, y: i64) -> String {
+    match op {
+        Prim::Div | Prim::Rem if y == 0 => "divide by zero".to_string(),
+        // The only non-zero-divisor `Div` trap is `Int64.min / -1` (the quotient overflows Int64).
+        Prim::Div => "the quotient overflows Int64 (Int64.min / -1)".to_string(),
+        Prim::Add | Prim::Sub | Prim::Mul => "the result overflows Int64".to_string(),
+        Prim::Shl | Prim::Shr => {
+            if !(0..64).contains(&y) {
+                format!("shift count {y} is out of range 0..64")
+            } else {
+                // An in-range Shl whose exact result overflows the width.
+                "the shifted result overflows Int64".to_string()
+            }
+        }
+        _ => "the operation has no defined value on these operands".to_string(),
     }
 }
 
@@ -6267,10 +6293,23 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant integer comparison");
                 Core::ConstBool(r)
             }
-            // An operand beyond the fold's machine range — decline (a wider fold arrives with widths).
-            _ => Core::Poison(Reject::decline(
-                "comparison of an integer beyond the machine width is not yet folded",
-            )),
+            // An operand exceeds `i64` range — an UNSIGNED value at/above `2^63` (`UInt64.max = 2^64-1`
+            // does not fit `i64`). Compare by the TRUE numeric value at 128-bit precision: `to_i128`
+            // reads the exact value (any ≤128-bit operand, unsigned or signed), and comparing the true
+            // values is correct for BOTH signednesses — an unsigned value is non-negative, a signed one
+            // carries its sign, so a naive i64-bit-pattern compare (where `UInt64.max` looks like `-1`)
+            // is avoided. This folds `(< (: 0 UInt64) (. UInt64 max))` → true (numeric-model.md §Unsigned
+            // Comparison Orders By Magnitude). A value wider than 128 bits (a BigInt) still declines.
+            _ => match (a.to_i128(), b.to_i128()) {
+                (Some(x), Some(y)) => {
+                    let r = compare_ord(op, x.cmp(&y));
+                    trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant integer comparison (i128, wide unsigned)");
+                    Core::ConstBool(r)
+                }
+                _ => Core::Poison(Reject::decline(
+                    "comparison of an integer beyond the machine width is not yet folded",
+                )),
+            },
         },
         (Core::ConstBool(a), Core::ConstBool(b)) => {
             let r = compare_ord(op, a.cmp(&b));

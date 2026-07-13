@@ -321,6 +321,7 @@ pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a member access with no field operand is rejected, not a crash
 pass	a module with two definitions of the same name is rejected
+pass	a multi-export set of parameterized capturing closures is driven per export
 pass	a multi-field record with one param-named key survives the call
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
 pass	a multi-payload destructure binds the head and recurses on the tail
@@ -553,6 +554,7 @@ pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a scalar element is projected from a let-bound runtime tuple
+pass	a second same-signature closure export shares the one call method
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
 pass	a self-tail call passing a heap-match argument compiles to valid wasm
 pass	a sequencing block discards a pure compound intermediate
@@ -960,6 +962,7 @@ pass	nested patterns deconstruct recursively
 pass	nested patterns with literals
 pass	nullary constructor patterns are uniform with unary
 pass	one generic sum instantiated at two different types in one program
+pass	one of several same-signature closure exports is made and called by the host
 pass	ordering a string against an integer is a type error regardless of operand order
 pass	ordering an integer against a boolean is a type error
 pass	ordering an integer against a float is rejected, not silently promoted
@@ -1138,6 +1141,7 @@ pass	two variants of the same sum compare unequal regardless of operand order
 pass	under-applying a unary constructor is a type error, not a fabricated unit payload
 pass	unit and the empty tuple are the same value
 pass	unit is the empty tuple
+pass	unsigned comparison orders by magnitude, not by signed interpretation
 pass	updating a list index replaces that element, leaving others
 pass	updating a list slot with an element of a different type is a type error
 pass	wrapping addition of in-range operands is ordinary addition
@@ -1310,7 +1314,6 @@ todo	unquote outside quasiquote is a syntax error
 todo	unquote with more than one operand inside a quasiquote is malformed
 todo	unquote-splicing splices list elements into parent
 todo	unsigned 8-bit addition that overflows its width traps
-todo	unsigned comparison orders by magnitude, not by signed interpretation
 todo	unsigned subtraction below zero traps rather than wrapping
 todo	updating a record field changes its type to the new value's
 todo	updating a record field replaces its value
