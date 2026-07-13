@@ -24710,6 +24710,30 @@ mod closure_host_resource {
         );
     }
 
+    /// A closure TRANSFORMER export — one that both RECEIVES a closure (a param) and RETURNS one (its
+    /// result), e.g. `(def (twice (: g (-> Int64 Int64))) (fn (x) (g (g x))))` — is out of scope: the host
+    /// would hand a closure in and get one out of the same call. It declines CLEANLY, naming the export and
+    /// the shape, rather than the confusing internal "a producer parameter has no scalar representation"
+    /// (the round-trip `make`-forwarding site would otherwise choke on the closure param). Pins the honest
+    /// feature-decline (a companion producer keeps the program on the round-trip path so this is the arm hit).
+    #[test]
+    fn a_closure_transformer_export_declines_naming_the_shape() {
+        use crate::testkit::parse;
+        let src = "(do (def (mk) (fn ((: x Int64)) (+ x 1))) \
+                   (def (twice (: g (-> Int64 Int64))) (fn ((: x Int64)) (g (g x)))) \
+                   (export mk) (export twice))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a closure transformer (closure param AND closure result) must DECLINE");
+        assert!(
+            err.message.contains("closure transformer")
+                && err.message.contains("twice")
+                && err.code.is_none(),
+            "expected the closure-transformer decline naming `twice`, got: {:?} / {}",
+            err.code,
+            err.message
+        );
+    }
+
     /// The closure `call` boundary crosses every aliased-width SCALAR, but a COMPOUND arg/result (a tuple,
     /// record, list, …) must still DECLINE — `comp_valtype_of` returns a u32 byte for a `Tuple` (the opaque
     /// handle it is threaded as between in-program functions), but that handle is meaningless across the

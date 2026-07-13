@@ -1706,6 +1706,25 @@ fn emit_roundtrip_resource(
         .iter()
         .filter(|e| e.params.iter().any(|(_, t)| matches!(t, crate::ty::Ty::Fn(_, _))))
         .collect();
+    // An export that is BOTH a producer (closure RESULT) and a consumer (closure PARAM) — a closure
+    // TRANSFORMER `(-> (-> A B) … (-> C D))`, e.g. `(def (twice (: g …)) (fn (x) (g (g x))))` — is out of
+    // scope: the host would hand a closure IN and get one OUT of the same call, which needs the param to
+    // cross as `own<t>` AND the result as `own<t>` in one boundary func (the producer path forwards its
+    // params to `make`, which cannot take a closure param). Decline cleanly NAMING the shape, rather than
+    // letting it fall through to the confusing internal "a producer parameter has no scalar representation"
+    // (the `make`-forwarding site chokes on the closure param).
+    if let Some(t) = layout.exports.iter().find(|e| {
+        matches!(e.result, crate::ty::Ty::Fn(_, _))
+            && e.params.iter().any(|(_, p)| matches!(p, crate::ty::Ty::Fn(_, _)))
+    }) {
+        return Err(Reject::decline(format!(
+            "the export `{}` both RECEIVES a closure (a parameter) and RETURNS one (its result) — a \
+             closure transformer. That is not yet supported: the host would pass a closure in and get one \
+             out of the same call, which needs the closure to cross as `own<t>` in both directions of one \
+             boundary function (DESIGN-closure-host-resource-rcdzc.md, closure transformers)",
+            t.name
+        )));
+    }
     let sig = producers
         .first()
         .map(|p| p.result.clone())
