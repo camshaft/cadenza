@@ -4399,6 +4399,88 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_conditional_operands_range_is_the_union_of_its_branches() {
+        // `value_range` of a `Core::If`/`Core::Match` is the UNION of its branch ranges, so a
+        // bool-materialized `(if c 1 0)` is [0,1] and `(if c 10 20)` is [10,20]. That lets a downstream
+        // checked op shed a dead overflow guard: `(* bool C)` ∈ [0,C] and `(+ (if c 10 20) 5)` ∈ [15,25]
+        // cannot overflow their (wide) type. ⚠ Soundness rests on using the OP's authoritative width for
+        // the fit-check, NOT a deferred operand's default: a genuinely-narrow op whose branches overflow
+        // (`(: (+ (if (< n 5) 100 0) 100) Int8)` → up to 200) MUST keep its guard.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let guards = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::IfUnreachableEnd)).count();
+        // A bool-materialized `(if c 1 0)` is [0,1] → `* 5` ∈ [0,5], `+ 5` ∈ [5,6] — NO guard (Int64).
+        assert_eq!(
+            guards(&lir("(: a Int64) (: b Int64)", "(* (if (< a b) 1 0) 5)")),
+            0,
+            "bool*5 in [0,5] sheds its guard"
+        );
+        assert_eq!(
+            guards(&lir("(: a Int64) (: b Int64)", "(+ (if (< a b) 1 0) 5)")),
+            0,
+            "bool+5 sheds its guard"
+        );
+        // A small-constant conditional `(if c 10 20)` is [10,20] → `+ 5` ∈ [15,25] — NO guard.
+        assert_eq!(
+            guards(&lir("(: c Bool) (: x Int64)", "(+ (if c 10 20) 5)")),
+            0,
+            "[10,20]+5 sheds its guard"
+        );
+        // A NARROW conditional whose product fits: `(: (* (if c 3 4) 5) Int8)` ∈ [15,20] ⊆ Int8 — NO guard.
+        assert_eq!(
+            guards(&lir("(: c Bool)", "(: (* (if c 3 4) 5) Int8)")),
+            0,
+            "[15,20] fits Int8 — no guard"
+        );
+        // SOUNDNESS — a conditional branch is UNBOUNDED (`x`): the guard is KEPT.
+        assert!(
+            guards(&lir("(: c Bool) (: x Int64)", "(* (if c x 4) 5)")) > 0,
+            "an unbounded branch keeps the guard"
+        );
+        // SOUNDNESS — a genuinely-NARROW op whose branch-union overflows the narrow type KEEPS its guard.
+        assert!(
+            guards(&lir("(: n Int8)", "(: (+ (if (< n 5) 100 0) 100) Int8)")) > 0,
+            "Int8 (+ [0,100] 100) can reach 200 > 127 — guard kept"
+        );
+
+        // VALUE + TRAP parity.
+        assert_eq!(run::<i64>("(: a Int64) (: b Int64)", "(* (if (< a b) 1 0) 5)", &[Val::S64(1), Val::S64(2)]), 5);
+        assert_eq!(run::<i64>("(: a Int64) (: b Int64)", "(* (if (< a b) 1 0) 5)", &[Val::S64(5), Val::S64(2)]), 0);
+        assert_eq!(run::<i8>("(: c Bool)", "(: (* (if c 3 4) 5) Int8)", &[Val::Bool(true)]), 15);
+        assert_eq!(run::<i8>("(: c Bool)", "(: (* (if c 3 4) 5) Int8)", &[Val::Bool(false)]), 20);
+        // The narrow overflow still traps (n=3 → 100+100=200 > 127), in-range computes (n=9 → 0+100=100).
+        assert!(traps("(: n Int8)", "(: (+ (if (< n 5) 100 0) 100) Int8)", &[Val::S8(3)]));
+        assert_eq!(run::<i8>("(: n Int8)", "(: (+ (if (< n 5) 100 0) 100) Int8)", &[Val::S8(9)]), 100);
+        // The unbounded conditional still traps on real overflow.
+        assert!(traps("(: c Bool) (: x Int64)", "(* (if c x 4) 5)", &[Val::Bool(true), Val::S64(i64::MAX)]));
+    }
+
+    #[test]
     fn a_branch_condition_refines_a_variables_range_and_elides_a_dead_guard() {
         // FLOW-SENSITIVE RANGE REFINEMENT: inside `(if (> n 0) …)` the then-branch KNOWS `n ≥ 1`, so
         // `(- n 1)` cannot underflow — its overflow guard is DEAD and dropped. The refinement is a sound

@@ -6950,6 +6950,41 @@ fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
     {
         return Some(r);
     }
+    // A CONDITIONAL's range is the UNION of its branches' ranges — the value IS one branch's value, so it
+    // lies within `[min(lo), max(hi)]`. This bounds a bool-materialized `(if c 1 0)` to `[0,1]`, so a
+    // downstream `(* bool C)` / `(+ bool C)` sheds its overflow guard (`bool*C ∈ [0,C]` can't overflow),
+    // and any small-constant conditional (`(if c 10 20)` → [10,20]) bounds its consumer. Both branches
+    // must have a known range (an unbounded branch makes the union unbounded → `None`). A `None` upper on
+    // EITHER branch makes the union's upper `None` (unbounded above). Match arms union the same way.
+    let branch_union = |db: &mut Db, branches: &[StructId]| -> Option<(i64, Option<i64>)> {
+        let mut lo = i64::MAX;
+        let mut hi: Option<i64> = Some(i64::MIN);
+        for &b in branches {
+            let (blo, bhi) = value_range(db, b)?;
+            lo = lo.min(blo);
+            hi = match (hi, bhi) {
+                (Some(h), Some(bh)) => Some(h.max(bh)),
+                _ => None, // an unbounded-above branch makes the union unbounded above
+            };
+        }
+        Some((lo, hi))
+    };
+    match core_of(db, id) {
+        Core::If { then_, else_, .. } => {
+            if let Some(r) = branch_union(db, &[then_, else_]) {
+                return Some(r);
+            }
+        }
+        Core::Match { arms, .. } => {
+            let bodies: Vec<StructId> = arms.iter().map(|a| a.body).collect();
+            if !bodies.is_empty()
+                && let Some(r) = branch_union(db, &bodies)
+            {
+                return Some(r);
+            }
+        }
+        _ => {}
+    }
     // Else the declared integer type's bounds. `min` must be i64-representable (it always is: signed MIN
     // and unsigned 0 both fit); `max` may be absent (unsigned-64).
     match crate::infer::type_of(db, id) {
@@ -7066,14 +7101,21 @@ fn closed_range(db: &mut Db, id: StructId) -> Option<(i64, i64)> {
 /// the min/max of the four corner products. A `None` operand range → `false` (unknown, keep the guard).
 /// Verified sound by exhaustive endpoint check. Lets a masked/narrowed operand (`(+ (& x 15) (& y 15))`,
 /// sum ≤ 30) shed its guard.
-pub(crate) fn arith_provably_in_range(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> bool {
-    let id_ty = crate::infer::type_of(db, lhs); // both operands share the op's width (binary-op unify)
-    let crate::ty::Ty::Int(it) = id_ty else {
-        return false;
-    };
-    // The result type's inclusive bounds (both must be i64-representable — an unsigned-64 result has no
-    // i64 max, so we cannot prove a fit against it here).
-    let (Some(tmin), Some(tmax)) = (match resolved_int_bounds(it) {
+pub(crate) fn arith_provably_in_range(
+    db: &mut Db,
+    op: Prim,
+    lhs: StructId,
+    rhs: StructId,
+    result: crate::ty::IntTy,
+) -> bool {
+    // The RESULT type's inclusive bounds come from `result` — the op's AUTHORITATIVE machine width/sign
+    // (the caller's `Machine`, derived from the ARITH NODE's solved type), NOT from an operand's node
+    // type. ⚠ An operand's node type can be misleading: a bare-literal-branch `if` (`(if c 1 0)`) or a
+    // bare literal is still DEFERRED, and its default (Int64) is WIDER than the op when the true width
+    // comes from CONTEXT — `(: (+ (if (< n 5) 100 0) 100) Int8)` is an Int8 op even though both operands'
+    // nodes are deferred, and `(- 0 n)` at Int8 is Int8 though the `0` is deferred. Using the op's real
+    // width is the only sound choice. (An unsigned-64 result has no i64 max → cannot prove a fit here.)
+    let (Some(tmin), Some(tmax)) = (match resolved_int_bounds(result) {
         Some(b) => b,
         None => return false,
     }) else {
