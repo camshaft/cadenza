@@ -1425,6 +1425,49 @@ fn ml_fix_renders_a_wrap_in_ml_syntax_and_applies_it() {
 }
 
 #[test]
+fn ml_drops_a_non_renderable_insert_fix_but_keeps_the_message() {
+    // An `insert` fix (a handle/match arm) renders s-expr arm syntax that can't be byte-spliced into an
+    // ML file (arm syntax only exists in-context). On ML the structured fix is DROPPED — but the message
+    // still names the arm to add (guidance). A CDZ0405 non-exhaustive handler exercises this.
+    let dir = scratch_dir("ml_insert");
+    let f = dir.join("prog.cdz");
+    std::fs::write(
+        &f,
+        "effect Diag {\n  emit : Int64 -> Unit\n  collect : Unit -> List(Int64)\n};\n\n\
+         def main() =\n  handle Diag([]) with\n    | emit(code, s) => resume(unit, List.push(s, code))\n  in\n  Diag.emit(1)\n",
+    )
+    .unwrap();
+    let (_, stdout, _) = run(&["check", "--json", f.to_str().unwrap()], "");
+    let line = stdout.lines().find(|l| l.contains("CDZ0405")).unwrap_or("");
+    assert!(!line.is_empty(), "CDZ0405 is reported: {stdout}");
+    // No structured fix on ML (the s-expr arm can't be spliced), but the message names the arm.
+    assert!(
+        !line.contains("\"fix\":"),
+        "no structured insert fix on ML: {line}"
+    );
+    assert!(
+        line.contains("collect"),
+        "the message still names the missing op / arm: {line}"
+    );
+    // s-expr (a `.sexp` file) DOES keep the structured insert fix — the surface it renders for.
+    let sf = dir.join("prog.sexp");
+    std::fs::write(
+        &sf,
+        "(do (effect Diag (op emit (-> Int64 Unit)) (op collect (-> Unit (List Int64)))) \
+         (def (main) (handle Diag (list) ((emit (code) s (resume unit (List.push s code)))) \
+         (do (Diag.emit 1) 0))) (export main))\n",
+    )
+    .unwrap();
+    let (_, sjson, _) = run(&["check", "--json", sf.to_str().unwrap()], "");
+    let sline = sjson.lines().find(|l| l.contains("CDZ0405")).unwrap_or("");
+    assert!(
+        sline.contains("\"kind\":\"insert\""),
+        "s-expr keeps the structured insert fix: {sline}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_on_a_clean_program_prints_nothing_and_exits_zero() {
     let dir = scratch_dir("check_ok");
     let f = dir.join("prog.sexp");
