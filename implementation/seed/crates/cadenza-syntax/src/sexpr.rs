@@ -555,7 +555,11 @@ impl<'a, 'b> Reader<'a, 'b> {
             return Ok(self.mk_atom_leaf(Leaf::BadEscape(c), Span::new(start, self.pos)));
         }
         let s = String::from_utf8(bytes).map_err(|_| ReadError("non-utf8 string".into()))?;
-        // NFC-normalize string contents (the value form normalizes text).
+        // NFC-normalize string contents (the value form normalizes text) — so a string's identity is its
+        // NORMALIZED contents: two literals with different byte spellings of the same text normalize to
+        // one value and are therefore equal.
+        //= spec/capabilities/collections-and-text.md#string-equality-follows-normalized-contents
+        //# Two strings MUST be equal exactly when their normalized contents are identical, under the text normalization the hashing-and-encoding choice pins.
         let s: String = s.chars().nfc().collect();
         // The string atom spans the opening quote through the closing quote (now consumed).
         Ok(self.mk_atom_leaf(Leaf::Str(s), Span::new(start, self.pos)))
