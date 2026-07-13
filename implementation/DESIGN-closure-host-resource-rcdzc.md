@@ -555,13 +555,26 @@ the component type. The new work:
   slot-typing MISCOMPILE: two `(g x)` closure applications across two `bin` segments aliased one wasm local at
   two widths (i32 cell vs i64 arith stash) → invalid module; each segment's value emit now floats above the
   high-water mark (the disjoint-slot discipline `emit_checked_arith` already uses). +7 corpus.
+- **✅ DISTINCT-SIG ROUND-TRIP byte-rope-result consumer COMPLETE `@60e14737` — the byte-rope story is now
+  CLOSED.** Closures of DIFFERENT signatures each cross as their own resource type, and a round-trip CONSUMER
+  of one signature can RETURN a `Bytes`/`String` — crossing as `(own<t_g>, args…) -> list<u8>` (shared memory +
+  `cabi_realloc`, lifted with Memory/Realloc). This was the LAST byte-rope gap: the compound `call`/consumer
+  now works across EVERY closure shape (single/multi/mixed/distinct-sig/round-trip/distinct-sig-round-trip). A
+  byte-rope consumer coexists with a scalar consumer of ANOTHER signature, and two byte-rope consumers of
+  different signatures coexist. Pieces mirror the single-sig round-trip byte-rope work, per-group: (1)
+  `serialize::distinct_sig_roundtrip_core_module` — any byte-rope consumer adds a shared memory +
+  `cabi_realloc`; the byte-rope consumer wrapper copies the body's returned handle out as `list<u8>`. (2)
+  `envelope::assemble_distinct_sig_roundtrip_resource_mixed` — alias the shared memory/realloc, lift each
+  byte-rope consumer with Memory/Realloc against `(…) -> list<u8>` (own<t> + list<u8> + functype = 3 comp
+  types). (3) `resource_inner_component_distinct_sig_rt` converted to a RUNNING type counter (byte-rope
+  consumer = 3 types). (4) `emit_distinct_sig_roundtrip_resource` per-consumer `ret_is_bytes`. `cdz-run`
+  unchanged. +4 corpus (byte-rope + scalar consumer of another sig; two byte-rope consumers of different sigs).
 - **REMAINING (all optional, none blocking):** a tuple/list/record closure RESULT (needs the escape's
   `encode` walker + value-form framing instead of the raw byte copy — the render would then be the typed
-  `(: … T)` form, not a bare byte list); a byte-rope result on the DISTINCT-sig ROUND-TRIP path (distinct
-  closure signatures + a byte-rope consumer — its per-group round-trip envelope not yet extended, only the
-  single-resource round-trip is); a compound closure ARG (host→guest decode — harder); a compound-RESULT
-  plain export alongside a closure; a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the
-  wasmtime-blocked `borrow<t>` repeated-call handle. Everything else DONE.
+  `(: … T)` form, not a bare byte list); a compound closure ARG (host→guest decode — harder); a
+  compound-RESULT plain export alongside a closure; a closure TRANSFORMER (`own<t>` both directions — cleanly
+  declined); the wasmtime-blocked `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`)
+  result surface is DONE across all shapes.** Everything else DONE.
 
 ## Risks / open questions
 
