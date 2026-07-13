@@ -55,6 +55,7 @@ mod dw {
     pub const AT_STMT_LIST: u64 = 0x10;
     pub const AT_COMP_DIR: u64 = 0x1b;
     pub const AT_PRODUCER: u64 = 0x25;
+    pub const AT_LANGUAGE: u64 = 0x13;
     pub const AT_DECL_FILE: u64 = 0x3a;
     pub const AT_DECL_LINE: u64 = 0x3b;
     pub const AT_LOCATION: u64 = 0x02;
@@ -64,12 +65,19 @@ mod dw {
     // Forms.
     pub const FORM_ADDR: u64 = 0x01;
     pub const FORM_DATA4: u64 = 0x06;
+    pub const FORM_DATA2: u64 = 0x05;
     pub const FORM_DATA1: u64 = 0x0b;
     pub const FORM_STRP: u64 = 0x0e; // offset into .debug_str
     pub const FORM_SEC_OFFSET: u64 = 0x17;
     pub const FORM_UDATA: u64 = 0x0f;
     pub const FORM_REF4: u64 = 0x13; // 4-byte offset into .debug_info (a DIE reference)
     pub const FORM_EXPRLOC: u64 = 0x18; // a uleb-length-prefixed DWARF expression
+    // Source language (`DW_AT_language`). Cadenza has no assigned DWARF language code, so we declare
+    // `DW_LANG_C` (0x0002) — the conventional "generic compiled scalar language" a debugger recognizes:
+    // it selects a C-like expression evaluator + integer/bool value formatting, which matches Cadenza's
+    // scalar surface (the only values DWARF describes; compounds are opaque handles, §3). A CU with NO
+    // language reads as "<not loaded>" in lldb, which then declines to format values.
+    pub const LANG_C: u16 = 0x0002;
     // Base-type encodings (`DW_ATE_*`).
     pub const ATE_BOOLEAN: u8 = 0x02;
     pub const ATE_SIGNED: u8 = 0x05;
@@ -359,6 +367,7 @@ fn build_abbrev() -> Vec<u8> {
             (dw::AT_PRODUCER, dw::FORM_STRP),
             (dw::AT_NAME, dw::FORM_STRP),
             (dw::AT_COMP_DIR, dw::FORM_STRP),
+            (dw::AT_LANGUAGE, dw::FORM_DATA2),
             (dw::AT_LOW_PC, dw::FORM_ADDR),
             (dw::AT_HIGH_PC, dw::FORM_DATA4),
             (dw::AT_STMT_LIST, dw::FORM_SEC_OFFSET),
@@ -461,6 +470,7 @@ fn build_info(
     die.extend_from_slice(&producer_off.to_le_bytes()); // DW_AT_producer (strp)
     die.extend_from_slice(&name_off.to_le_bytes()); // DW_AT_name (strp)
     die.extend_from_slice(&comp_dir_off.to_le_bytes()); // DW_AT_comp_dir (strp)
+    die.extend_from_slice(&dw::LANG_C.to_le_bytes()); // DW_AT_language (data2) — DW_LANG_C
     die.extend_from_slice(&cu_low.to_le_bytes()); // DW_AT_low_pc (addr, 4 bytes)
     die.extend_from_slice(&cu_high.saturating_sub(cu_low).to_le_bytes()); // DW_AT_high_pc (data4 = size)
     die.extend_from_slice(&0u32.to_le_bytes()); // DW_AT_stmt_list (sec_offset → .debug_line start)
