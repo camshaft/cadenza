@@ -2239,6 +2239,29 @@ fn total_conversion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, 
     }
 }
 
+/// The `(prefix, suffix, verb)` of the CHECKED integer conversion `(<Expected>.of …)` when an integer of
+/// one width is supplied where a DIFFERENT integer width is `expected` — the numeric-model coercion wrap
+/// (`06-numeric-model.sexp` — `(+ 2 (Int64.of 1))`). Shared by every site the same int-width mismatch
+/// surfaces: an operator/ctor argument, a value/param `(: … T)` annotation, and an annotated let-binder.
+/// GATED to an ALIASED expected width ({8,16,32,64}) — only those render to a BOUND type name, so
+/// `(<Expected>.of …)` resolves; a non-aliased `(Int 48)` would suggest an unbound `Int48.of`, worse than
+/// no fix. The wrap text is a member-access spelling the resolver handles generically, not a hard-coded
+/// name. Heuristic: `.of` is CHECKED (traps out of range), and which operand to convert is the author's
+/// intent. `None` unless both types are integers and the expected width is aliased.
+fn int_coercion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, String)> {
+    if let (Ty::Int(exp), Ty::Int(_)) = (expected, actual)
+        && crate::ty::ALIASED_INT_WIDTHS.contains(&exp.ground_width())
+    {
+        let n = expected.render_name();
+        return Some((
+            format!("({n}.of "),
+            ")".to_string(),
+            format!("convert to {n} with `{n}.of` (checked)"),
+        ));
+    }
+    None
+}
+
 /// The UNDERLYING structural type of the nominal NEWTYPE declared at `decl`, or `None` if `decl` is not
 /// an erasable newtype (so it stays an ordinary boxed `Ty::Sum`). A newtype is a SINGLE-variant sum
 /// whose runtime box is erased — the realization of `type-system.md §Nominal Is An Orthogonal Modifier`
@@ -3439,27 +3462,12 @@ fn check_application(
                             )
                         };
                         out.push(reject.with_fix(Fix::wrap_heuristic(arg, prefix, suffix, verb)));
-                    } else if let (Ty::Int(expected), Ty::Int(_)) = (&sparam, &sat)
-                        && crate::ty::ALIASED_INT_WIDTHS.contains(&expected.ground_width())
-                    {
+                    } else if let Some((prefix, suffix, verb)) = int_coercion_wrap(&sparam, &sat) {
                         // Two INTEGER types of different width/sign (`(+ a b)` with `a:Int32`, `b:Int64`)
                         // — CDZ0301, no silent promotion. The repair is the corpus-blessed CHECKED
-                        // conversion `(<TargetInt>.of operand)` (`06-numeric-model.sexp` — `(+ 2
-                        // (Int64.of 1))`), converting the mis-typed operand to the EXPECTED type. The
-                        // target's name is the expected int type's `render_name()` (`Int64`/`UInt8`/…),
-                        // derived not hard-coded. GATED to an ALIASED width ({8,16,32,64}): only those are
-                        // BOUND names — a non-aliased `Int48` renders to a name nothing binds, so
-                        // suggesting `(Int48.of …)` would itself be unbound (worse than no fix), so a
-                        // non-aliased target gets the plain reject. Heuristic: `.of` is CHECKED (traps out
-                        // of range), and which operand to convert is a guess (convert THIS operand to the
-                        // other's type).
-                        let int_name = sparam.render_name();
-                        out.push(reject.with_fix(Fix::wrap_heuristic(
-                            arg,
-                            format!("({int_name}.of "),
-                            ")",
-                            format!("convert to {int_name} with `{int_name}.of` (checked)"),
-                        )));
+                        // conversion `(<TargetInt>.of operand)` converting the mis-typed operand to the
+                        // EXPECTED type (`int_coercion_wrap` gates the aliased-width / bound-name logic).
+                        out.push(reject.with_fix(Fix::wrap_heuristic(arg, prefix, suffix, verb)));
                     } else if let (Ty::Int(expected), Ty::Float(_)) = (&sparam, &sat)
                         && let crate::ast::Struct::Atom(lid) = db.ast.get(arg)
                         && let crate::ast::Leaf::Float(dec) = db.ast.leaf(*lid).clone()
@@ -4268,7 +4276,22 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // `SumPayload` reading the element out of `value`; this only ensures the binding is
                 // well-formed so an ill-formed one faults instead of silently miscompiling.)
                 let value_ty = type_of(db, value);
-                if let Err(r) = crate::lower::check_binding_pattern(db, lhs, &value_ty) {
+                if let Err(mut r) = crate::lower::check_binding_pattern(db, lhs, &value_ty) {
+                    // An ANNOTATED let-binder whose annotation is a different integer width than the init
+                    // value — `(let (((: x Int64) n)) …)` with `n : Int8` — is the let-binding analogue of
+                    // the value/param annotation mismatch (D33) and the argument mismatch: it has the same
+                    // one-shot repair, wrapping the INIT VALUE in the annotation type's checked `(<T>.of …)`.
+                    // Attach it HERE (where the init `value` node is in hand — `check_binding_pattern`
+                    // recurses over patterns without it), keyed on the binder's annotation type.
+                    if r.code == Some(Code::TypeMismatch)
+                        && let Some(ann) = db.ast.as_form(lhs, ":")
+                        && ann.len() == 2
+                        && let Some(annot_ty) = crate::eval::typeval_of(db, ann[1])
+                        && let Some((prefix, suffix, verb)) =
+                            int_coercion_wrap(&annot_ty, &value_ty)
+                    {
+                        r = r.with_fix(Fix::wrap_heuristic(value, prefix, suffix, verb));
+                    }
                     out.push(r);
                 }
                 // An ANNOTATED binder `((: name T) value)` constrains the bound value's TYPE — and, when
@@ -4596,14 +4619,14 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                     format!("wrap in `({ctor} …)`"),
                                     format!(" — wrap the value in `{ctor}`"),
                                 ))
-                            } else if let (Ty::Int(annot_int), Ty::Int(_)) = (&annot_ty, &expr_ty)
-                                && crate::ty::ALIASED_INT_WIDTHS.contains(&annot_int.ground_width())
+                            } else if let Some((prefix, suffix, verb)) =
+                                int_coercion_wrap(&annot_ty, &expr_ty)
                             {
                                 let n = annot_ty.render_name();
                                 Some((
-                                    format!("({n}.of "),
-                                    ")".to_string(),
-                                    format!("convert to {n} with `{n}.of` (checked)"),
+                                    prefix,
+                                    suffix,
+                                    verb,
                                     format!(" — convert with `({n}.of …)`"),
                                 ))
                             } else {
