@@ -1036,6 +1036,34 @@
   (call   main)
   (output (: 4096 Int64)))
 
+; The FAULT WALK over a nested call chain must be LINEAR too, not just the reduction. `type_errors`
+; checks each call at its site AND collects the reduced body — and it separately descended each raw
+; ARGUMENT for its own faults. On a chain `(f (f … (f 0)))` (where each argument IS the next call) that
+; per-level argument descent RE-WALKED the whole remaining chain, and — because a resource-limit-clipped
+; walk is not cached — restarted from scratch at every enclosing level, so REACHING the answer was O(N³)
+; (a depth-30 chain folded in ms, but a deeper one took seconds→minutes just to decline). The redundant
+; descent is dropped for a lambda head whose parameter the body USES (its argument is already in the
+; reduced body); only a DEAD argument the body ignores is still descended (its faults are not otherwise
+; seen). This case folds a chain at the deepest value-producing depth (just under the inliner's reduce
+; limit), exercising the now-linear fault walk near the boundary; a deeper chain is a clean resource-limit
+; DECLINE, reached in linear time rather than a hang.
+
+(case "a deeper nested call chain still folds in linear time near the inliner limit"
+  (doc    "A depth-30 chain of the incrementing `f` — near the inliner's reduce limit, the deepest that
+           still folds to a value: 0, then +1 thirty times = 30. The reduction was already memoized and
+           linear, but the FAULT WALK re-descended each raw argument, which on a call chain re-walked the
+           remaining chain per level — cubic to reach the answer. Dropping that redundant descent for a
+           used parameter, whose argument is already in the reduced body, makes the whole compile linear.
+           Pins the fold at a depth the cubic fault walk handled only slowly; a deeper chain declines
+           cleanly at a resource limit rather than hanging.")
+  (input  (do
+            (def (f n) (+ n 1))
+            (def (main)
+              (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f (f 0)))))))))))))))))))))))))))))))
+            (export main)))
+  (call   main)
+  (output (: 30 Int64)))
+
 ; --- A recursive Bool-returning function used as a condition, in BOTH branch orders --------------
 ; A recursive predicate — "all elements from i satisfy P" — is a byte/element loop whose recursive
 ; self-call sits in one branch of an inner `if` and a Bool literal in the other: `(if guard (recurse …)
