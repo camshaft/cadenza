@@ -1599,10 +1599,7 @@ impl ComposedRuntime {
     /// and invokes the guest's `call` method (which dispatches the closure via the guest's own
     /// `call_indirect`). `own<t>` consumes the handle per call, so each `closure_make_call` mints a fresh
     /// handle (C-HOST-1 own/no-drop; the `borrow<t>` repeated-call form is C-HOST-5).
-    fn closure_make_call(
-        &mut self,
-        args: &[wasmtime::component::Val],
-    ) -> wasmtime::component::Val {
+    fn closure_make_call(&mut self, args: &[wasmtime::component::Val]) -> wasmtime::component::Val {
         use wasmtime::component::Val;
         let iface = self
             .program
@@ -1616,15 +1613,23 @@ impl ComposedRuntime {
             .program
             .get_export_index(&mut self.store, Some(&iface), "call")
             .expect("closure `call` exported");
-        let make = self.program.get_func(&mut self.store, make_idx).expect("make func");
-        let call = self.program.get_func(&mut self.store, call_idx).expect("call func");
+        let make = self
+            .program
+            .get_func(&mut self.store, make_idx)
+            .expect("make func");
+        let call = self
+            .program
+            .get_func(&mut self.store, call_idx)
+            .expect("call func");
         let mut handle = [Val::Bool(false)];
-        make.call(&mut self.store, &[], &mut handle).expect("make call");
+        make.call(&mut self.store, &[], &mut handle)
+            .expect("make call");
         make.post_return(&mut self.store).expect("make post_return");
         let mut call_args = vec![handle[0].clone()];
         call_args.extend_from_slice(args);
         let mut out = [Val::Bool(false)];
-        call.call(&mut self.store, &call_args, &mut out).expect("call");
+        call.call(&mut self.store, &call_args, &mut out)
+            .expect("call");
         call.post_return(&mut self.store).expect("call post_return");
         out[0].clone()
     }
@@ -12206,6 +12211,27 @@ mod stage1 {
     }
 
     #[test]
+    fn an_undeclared_handler_op_close_to_a_declared_one_suggests_it() {
+        // The effect-op "did you mean?" (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route
+        // To A Fix): a handler arm names `emitt`, a typo of the effect's declared `emit` → CDZ0403 names
+        // the near op AND carries a replace fix on the op KEY.
+        let src = "(do (effect Log (op emit (-> Int64 Unit))) \
+                   (def (main) (handle unit (((. Log emitt) (v) s (resume unit s))) ((. Log emit) 5))) \
+                   (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("undeclared op must reject");
+        assert_eq!(err.code.as_deref(), Some("CDZ0403"), "got: {}", err.message);
+        assert!(
+            err.message.contains("did you mean `emit`?"),
+            "names the near op: {}",
+            err.message
+        );
+        let fix = err.fix.expect("a fix is carried");
+        assert_eq!(fix.replacement, "emit");
+        assert!(!fix.verified, "a nearest-name guess is heuristic");
+    }
+
+    #[test]
     fn a_delegation_of_an_unreached_effect_is_cdz0404() {
         // E2a: a `host` delegation naming an effect the body never reaches is latent authority — CDZ0404
         // (`capabilities-and-effects.md` §Host Delegation Is An Entrypoint's Prerogative). `main`
@@ -19621,7 +19647,8 @@ mod closure_host_resource {
         // `order` is just the ONE export def; the lifted closure is appended to `funcs` AFTER the order
         // defs (as the production path does), so its abs index + type index are `import_base +
         // order.len() + slot`. `funcs = [export_body, lifted_body]` matches this layout.
-        let layout = Layout::with_lifted(vec![export], vec![0], import_base, vec![lifted], vec![true]);
+        let layout =
+            Layout::with_lifted(vec![export], vec![0], import_base, vec![lifted], vec![true]);
 
         // The export body is at emission position 0 → absolute core-func index `import_base + 0`.
         let export_abs = import_base;
@@ -19642,7 +19669,8 @@ mod closure_host_resource {
         // The emitted CORE MODULE must be structurally valid wasm (funcref table + call_indirect + the
         // resource-intrinsic imports all well-formed). This is the compiler-side byte proof; the runnable
         // end-to-end path (below) wires the WHOLE pipeline through the composed runtime.
-        let mut validator = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&core)
             .expect("closure-resource core module validates");

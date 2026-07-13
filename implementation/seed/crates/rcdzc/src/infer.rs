@@ -2792,13 +2792,28 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // member projection would otherwise emit. When it fires, skip the generic `collect` of the
                 // op (which would add the CDZ0201 duplicate).
                 if crate::effects::arm_op_names_undeclared_operation(db, arm.op) {
-                    out.push(
-                        Reject::coded(
-                            Code::HandlerUndeclaredOp,
-                            "this handler arm names an operation its effect does not declare",
-                        )
-                        .at(arm.op),
-                    );
+                    // Name the nearest DECLARED operation of the effect + carry a replace fix on the
+                    // mistyped op key (the effect-op analogue of the absent-field "did you mean?").
+                    match crate::effects::nearest_declared_op(db, arm.op) {
+                        Some((key_occ, candidate)) => out.push(
+                            Reject::coded(
+                                Code::HandlerUndeclaredOp,
+                                format!(
+                                    "this handler arm names an operation its effect does not declare \
+                                     — did you mean `{candidate}`?"
+                                ),
+                            )
+                            .at(arm.op)
+                            .with_fix(Fix::replace_heuristic(key_occ, candidate)),
+                        ),
+                        None => out.push(
+                            Reject::coded(
+                                Code::HandlerUndeclaredOp,
+                                "this handler arm names an operation its effect does not declare",
+                            )
+                            .at(arm.op),
+                        ),
+                    }
                 } else {
                     collect(db, arm.op, out);
                 }

@@ -487,6 +487,30 @@ pub fn arm_op_names_undeclared_operation(db: &mut Db, op: StructId) -> bool {
     }
 }
 
+/// For an undeclared handler-arm op `(. E k)` (one `arm_op_names_undeclared_operation` flagged), the
+/// nearest DECLARED operation name of the effect `E` to the mistyped `k` — the "did you mean?"
+/// suggestion (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix), the effect-op
+/// analogue of the absent-field suggestion. Draws candidates from the effect's own declared op set (via
+/// the shared `diag::suggest::nearest`), so the suggestion is always a real operation of that effect.
+/// Returns `(key-occurrence, nearest-op-name)` — the occurrence is the node a replace fix rewrites.
+/// `None` if `op` is not `(. E k)` on an effect, or no declared op is close enough to `k`.
+pub fn nearest_declared_op(db: &mut Db, op: StructId) -> Option<(StructId, String)> {
+    let Resolved::Member { operand, key } = resolved_of(db, op) else {
+        return None;
+    };
+    let decl = effect_decl_of_value(db, operand)?;
+    let names: Vec<String> = db
+        .effect_decl_by_occ(crate::ast::StructId(decl))?
+        .ops
+        .iter()
+        .map(|o| o.name.clone())
+        .collect();
+    let candidate = crate::diag::suggest::nearest(&key.name, &names)?;
+    // The key occurrence is the second child of the `(. operand key)` form — the node the fix rewrites.
+    let key_occ = db.ast.as_form(op, ".").and_then(|t| t.get(1).copied())?;
+    Some((key_occ, candidate))
+}
+
 /// The effect-declaration occurrence the value at `id` denotes, if it resolves to an EFFECT record — its
 /// `(meta t)` is an `(effect NAME <decl>)` node. `None` for any value that is not an effect record.
 fn effect_decl_of_value(db: &mut Db, id: StructId) -> Option<u32> {
