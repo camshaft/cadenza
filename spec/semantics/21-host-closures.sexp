@@ -775,3 +775,74 @@
               (export makeAdder) (export makeScaler)))
   (call   makeScaler (: 3 Int64) (: 4 Int64))
   (output (: 12 Int64)))
+
+; A CLOSURE EXPORT ALONGSIDE A NON-CLOSURE (PLAIN) EXPORT — a MIXED multi-export. The closure(s) cross via
+; the resource envelope (`make-<name>` + a shared `call`, under `cadenza:closure/exports`); each plain export
+; is aliased off the SAME program instance and published as an ORDINARY top-level component func. Both live
+; in ONE component: the host reaches the plain export as a bare func, the closure through `make`/`call`. The
+; `oracle_mixed_component` byte anchor proved the resource-instance + top-level-func coexistence. Scope: the
+; closure exports share ONE signature; each plain export has an aliased-scalar param/result (a compound plain
+; result is a later widening). `cdz-run` routes `(call <plain>)` to the bare func and `(call <closure>)` to
+; make/call — a plain export whose name resolves to a top-level func stays on the plain path.
+
+(case "a closure export alongside a plain scalar export — the plain export runs"
+  (doc    "`inc : () -> (-> Int64 Int64)` (a closure factory) is exported ALONGSIDE `two : () -> Int64` (a
+           plain scalar). `(call two)` reaches the ORDINARY top-level `two` func → 2, unaffected by the
+           closure interface riding alongside it. Pins that a plain export coexists with a closure export and
+           the host drives it directly.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (two) 2)
+              (export inc) (export two)))
+  (call   two)
+  (output (: 2 Int64)))
+
+(case "a closure export alongside a plain scalar export — the closure runs"
+  (doc    "The SAME mixed program, now calling the CLOSURE export `inc`: the host `make`s a handle then
+           `call(handle, 5)` = 6, dispatched through the guest's `call_indirect`. Pins that the closure
+           interface still works when a plain export shares the component (both envelopes composed).")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (two) 2)
+              (export inc) (export two)))
+  (call   inc (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "a parameterized plain export alongside a closure export applies its argument"
+  (doc    "`adder : (Int64) -> (-> Int64 Int64)` (a capturing closure factory) alongside `dbl : (Int64) ->
+           Int64` (a plain function that doubles). `(call dbl 21)` reaches the top-level `dbl` → 42 — a plain
+           export with a PARAMETER rides alongside the closure make/call. Pins the non-nullary plain export.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (dbl (: n Int64)) (* n 2))
+              (export adder) (export dbl)))
+  (call   dbl (: 21 Int64))
+  (output (: 42 Int64)))
+
+(case "a parameterized plain export alongside a closure export — the closure captures and applies"
+  (doc    "The SAME program, calling the capturing closure `adder`: `make(10)` builds a closure over k=10,
+           then `call(handle, 5)` = 15. Confirms the capturing-closure make/call path is intact alongside a
+           parameterized plain export.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (dbl (: n Int64)) (* n 2))
+              (export adder) (export dbl)))
+  (call   adder (: 10 Int64) (: 5 Int64))
+  (output (: 15 Int64)))
+
+(case "two same-signature closures alongside a plain export all coexist"
+  (doc    "TWO same-signature closure exports (`inc`, `triple`) share ONE resource type + `call`, riding
+           alongside a plain `answer : () -> 42`. `(call triple 5)` = 15 (the `* x 3` closure), proving the
+           multi-closure shared-`call` dispatch is unaffected by the plain export in the same component.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (triple) (fn ((: x Int64)) (* x 3)))
+              (def (answer) 42)
+              (export inc) (export triple) (export answer)))
+  (call   triple (: 5 Int64))
+  (output (: 15 Int64)))
+
+(case "two same-signature closures alongside a plain export — the plain export runs"
+  (doc    "The SAME three-export program, calling the plain `answer` → 42. Pins that the plain export is
+           reachable when TWO closures share the resource interface beside it.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (triple) (fn ((: x Int64)) (* x 3)))
+              (def (answer) 42)
+              (export inc) (export triple) (export answer)))
+  (call   answer)
+  (output (: 42 Int64)))

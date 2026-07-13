@@ -26189,6 +26189,225 @@ mod closure_host_resource {
         );
     }
 
+    /// MIXED-EXPORT oracle core (the byte anchor for "a closure ALONGSIDE a non-closure export"): ONE
+    /// closure export `adder : () -> (-> Int64 Int64)` (slot 0 = `(fn (x) (+ x 1))`, `make`/`call`) PLUS a
+    /// PLAIN scalar export `two : () -> i64` (returns 2). Both live in the SAME core module (one program
+    /// instance): the module exports `make`, `call`, AND `two`. The outer component publishes the closure
+    /// `make`/`call` under the `cadenza:closure/exports` instance AND `two` as an ORDINARY top-level
+    /// component func — proving the resource envelope and the plain boundary compose in one component.
+    fn mixed_closure_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+
+        // Types: 0 = resource-new/rep (i32)->i32; 1 = lifted (i64)->i64; 2 = make ()->i32;
+        // 3 = call (i32,i64)->i64; 4 = two ()->i64.
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types.ty().function(vec![ValType::I64], vec![ValType::I64]); // 1 (lifted / indirect)
+        types.ty().function(vec![], vec![ValType::I32]); // 2 make
+        types
+            .ty()
+            .function(vec![ValType::I32, ValType::I64], vec![ValType::I64]); // 3 call
+        types.ty().function(vec![], vec![ValType::I64]); // 4 two
+        m.section(&types);
+
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew = 0u32;
+        let f_rrep = 1u32;
+
+        // Defined funcs: lifted = 2, make = 3, call = 4, two = 5.
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // lifted
+        funcs.function(2); // make
+        funcs.function(3); // call
+        funcs.function(4); // two
+        m.section(&funcs);
+        let f_lifted = 2u32;
+        let f_make = 3u32;
+        let f_call = 4u32;
+        let f_two = 5u32;
+
+        let mut tables = TableSection::new();
+        tables.table(TableType {
+            element_type: RefType::FUNCREF,
+            minimum: 1,
+            maximum: Some(1),
+            table64: false,
+            shared: false,
+        });
+        m.section(&tables);
+
+        let mut exports = ExportSection::new();
+        exports.export("make", ExportKind::Func, f_make);
+        exports.export("call", ExportKind::Func, f_call);
+        exports.export("two", ExportKind::Func, f_two);
+        m.section(&exports);
+
+        let mut elems = ElementSection::new();
+        elems.active(
+            Some(0),
+            &ConstExpr::i32_const(0),
+            Elements::Functions(std::borrow::Cow::Borrowed(&[f_lifted])),
+        );
+        m.section(&elems);
+
+        let mut code = CodeSection::new();
+        // lifted(x) = x + 1
+        let mut lifted = Function::new(vec![]);
+        lifted.instruction(&Instruction::LocalGet(0));
+        lifted.instruction(&Instruction::I64Const(1));
+        lifted.instruction(&Instruction::I64Add);
+        lifted.instruction(&Instruction::End);
+        code.function(&lifted);
+        // make() = resource.new(0)
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(0));
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+        code.function(&make);
+        // call(self, x) = call_indirect[type 1](x, resource.rep(self))
+        let mut call = Function::new(vec![]);
+        call.instruction(&Instruction::LocalGet(1));
+        call.instruction(&Instruction::LocalGet(0));
+        call.instruction(&Instruction::Call(f_rrep));
+        call.instruction(&Instruction::CallIndirect {
+            type_index: 1,
+            table_index: 0,
+        });
+        call.instruction(&Instruction::End);
+        code.function(&call);
+        // two() = 2
+        let mut two = Function::new(vec![]);
+        two.instruction(&Instruction::I64Const(2));
+        two.instruction(&Instruction::End);
+        code.function(&two);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The outer MIXED-EXPORT oracle: wraps `mixed_closure_core` so the closure `make`/`call` publish under
+    /// `cadenza:closure/exports` while the plain `two` publishes as an ORDINARY top-level component func
+    /// `two : () -> s64`. Standalone (no heap runtime — the cell IS the table slot). The byte anchor for the
+    /// compiler emitting a closure export alongside a non-closure export.
+    fn oracle_mixed_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew_core),
+            ("resource-rep", ExportKind::Func, rrep_core),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let call_core = c.core_alias_export(prog_inst, "call", ExportKind::Func);
+        let two_core = c.core_alias_export(prog_inst, "two", ExportKind::Func);
+        // lift make : () -> own<t>
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        // lift call : (self: own<t>, x: s64) -> s64
+        let (own_t2, odef2) = c.type_defined();
+        odef2.own(res_ty);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_t2)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_comp = c.lift_func(call_core, call_ty, []);
+        // lift two : () -> s64  (a PLAIN top-level export, no resource envelope).
+        let (two_ty, mut tf) = c.type_function();
+        tf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let two_comp = c.lift_func(two_core, two_ty, []);
+        // inner re-export → cadenza:closure/exports.
+        let inner_idx = c.component(inner_reexport_component());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-call", ComponentExportKind::Func, call_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        // The plain scalar export, published DIRECTLY at the top level.
+        c.export("two", ComponentExportKind::Func, two_comp, None);
+        c.finish()
+    }
+
+    /// MIXED-EXPORT END-TO-END ORACLE: a program that exports a closure resource (`make`/`call`) ALONGSIDE
+    /// a plain scalar export (`two : () -> 2`) validates + runs. Proves the closure interface instance and
+    /// an ordinary top-level func coexist in one component — the byte anchor licensing the compiler's
+    /// mixed-export envelope (the hand-emitted production path is the next increment).
+    #[test]
+    fn a_closure_export_and_a_plain_export_coexist_and_the_host_drives_both() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_mixed_component(&mixed_closure_core());
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("mixed-export component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+
+        // The plain `two` is a TOP-LEVEL func export (not inside the closure interface).
+        let two_idx = instance
+            .get_export_index(&mut store, None, "two")
+            .expect("two export");
+        let two = instance.get_func(&mut store, two_idx).expect("two func");
+        let mut out = [Val::Bool(false)];
+        two.call(&mut store, &[], &mut out).expect("two()");
+        two.post_return(&mut store).expect("post_return");
+        assert_eq!(out[0], Val::S64(2), "the plain export two() = 2");
+
+        // The closure interface still works alongside it.
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make");
+        let call_idx = instance
+            .get_export_index(&mut store, Some(&iface), "call")
+            .expect("call");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let call = instance.get_func(&mut store, call_idx).expect("call func");
+        let mut h = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut h).expect("make");
+        make.post_return(&mut store).expect("post_return");
+        let mut cout = [Val::Bool(false)];
+        call.call(&mut store, &[h[0].clone(), Val::S64(5)], &mut cout)
+            .expect("call");
+        call.post_return(&mut store).expect("post_return");
+        assert_eq!(cout[0], Val::S64(6), "the closure (+ x 1) applied to 5 = 6");
+    }
+
     /// DISTINCT-SIGNATURE oracle core (the byte anchor for the N-resource-type multi-export): TWO closures
     /// of DIFFERENT signatures — `inc : (-> Int64 Int64)` (slot 0) and `isz : (-> Int64 Bool)` (slot 1) —
     /// each with its OWN `make` + `call` (distinct call functypes: `(i32,i64)->i64` vs `(i32,i64)->i32`).
@@ -27080,6 +27299,7 @@ mod closure_host_resource {
             &funcs,
             &imports,
             &makes,
+            &[],
             &[ValType::I64],
             ValType::I64,
             lifted_type_idx,
@@ -28005,11 +28225,12 @@ mod closure_host_resource {
         );
     }
 
-    /// MULTI-EXPORT closures now COMPILE for BOTH the same-signature (one resource type, shared `call`) and
-    /// the DISTINCT-signature (N resource types, per-group `call-g<n>`) shapes. The only REMAINING
-    /// multi-export shape that declines is a closure exported ALONGSIDE a non-closure export (composing the
-    /// resource envelope with the plain scalar boundary is a later increment). Pins the two working cases +
-    /// the honest Todo.
+    /// MULTI-EXPORT closures now COMPILE for the same-signature (one resource type, shared `call`), the
+    /// DISTINCT-signature (N resource types, per-group `call-g<n>`), AND the MIXED shape (a same-signature
+    /// closure ALONGSIDE a plain non-closure export — the closure via the resource envelope, the plain export
+    /// as an ordinary top-level func). The only REMAINING declining shape is DISTINCT closure signatures
+    /// alongside a plain export (the distinct-sig envelope has no plain-export slot). Pins the three working
+    /// cases + the honest Todo.
     #[test]
     fn multi_export_closures_compile_same_or_distinct_signature_else_decline() {
         use crate::testkit::parse;
@@ -28025,14 +28246,23 @@ mod closure_host_resource {
         crate::compile::compile_component(&crate::codec::encode(&parse(diff)))
             .expect("distinct-signature closure exports compile (distinct-sig path)");
 
-        // A closure ALONGSIDE a non-closure export → still declines naming the slice.
+        // A same-signature closure ALONGSIDE a non-closure export → now COMPILES (the mixed envelope: the
+        // closure crosses via make/call, the plain export as an ordinary top-level func).
         let mixed = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
                      (def (two) 2) (export inc) (export two))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(mixed)))
-            .expect_err("a closure alongside a non-closure export must DECLINE");
+        crate::compile::compile_component(&crate::codec::encode(&parse(mixed)))
+            .expect("a same-signature closure alongside a plain export compiles (mixed-export path)");
+
+        // DISTINCT closure signatures ALONGSIDE a non-closure export → still declines (the distinct-sig
+        // resource envelope has no plain-export slot; that composition is a later widening).
+        let mixed_distinct = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
+                              (def (isz) (fn ((: x Int64)) (= x 0))) \
+                              (def (two) 2) (export inc) (export isz) (export two))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(mixed_distinct)))
+            .expect_err("distinct-signature closures alongside a plain export must DECLINE");
         assert!(
-            err.message.contains("ALONGSIDE a non-closure") && err.code.is_none(),
-            "expected the closure-plus-scalar multi-export decline, got: {:?} / {}",
+            err.message.contains("DISTINCT signatures ALONGSIDE") && err.code.is_none(),
+            "expected the distinct-sig-plus-plain decline, got: {:?} / {}",
             err.code,
             err.message
         );

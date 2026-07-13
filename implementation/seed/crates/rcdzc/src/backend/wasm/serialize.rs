@@ -1229,6 +1229,18 @@ pub struct ClosureMake {
     pub param_vts: Vec<ValType>,
 }
 
+/// One PLAIN (non-closure) export riding alongside the closure exports in the SAME program core module
+/// (the "closure ALONGSIDE a non-closure export" shape). Its body is already among `funcs` (every reachable
+/// def is selected), so the core module needs no new functype or code for it — only an EXPORT entry naming
+/// its core-func index, so the outer envelope can alias + lift it as an ORDINARY top-level component func.
+#[derive(Clone)]
+pub struct PlainExport {
+    /// The core-module export name (the envelope aliases the program instance by this) = the source name.
+    pub export_name: String,
+    /// The core function index of this export's body (already defined in `funcs`).
+    pub body_abs: u32,
+}
+
 /// Single-export closure-resource core module — the N=1 case of [`multi_closure_resource_core_module`],
 /// preserved for the single-closure-export path (`emit_closure_resource`) and its serializer unit test.
 #[allow(clippy::too_many_arguments)]
@@ -1250,6 +1262,7 @@ pub fn closure_resource_core_module(
             export_abs,
             param_vts: make_param_vts.to_vec(),
         }],
+        &[],
         arg_vts,
         ret_vt,
         lifted_type_idx,
@@ -1270,6 +1283,7 @@ pub fn multi_closure_resource_core_module(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
     makes: &[ClosureMake],
+    plain: &[PlainExport],
     arg_vts: &[ValType],
     ret_vt: ValType,
     lifted_type_idx: u32,
@@ -1399,7 +1413,19 @@ pub fn multi_closure_resource_core_module(
             ));
         }
         items.extend_from_slice(&export("call", wasm_abi::EXPORT_KIND_FUNC, call_abs));
-        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(nmk + 1, &items))
+        // PLAIN (non-closure) exports ride along: their bodies are already defined funcs, so just name each
+        // by its core-func index (the envelope aliases + lifts them as ordinary top-level component funcs).
+        for p in plain {
+            items.extend_from_slice(&export(
+                &p.export_name,
+                wasm_abi::EXPORT_KIND_FUNC,
+                p.body_abs,
+            ));
+        }
+        section(
+            wasm_abi::CORE_SEC_EXPORT,
+            &wasm_vec(nmk + 1 + plain.len(), &items),
+        )
     };
 
     // ── Code section ── defined bodies, then the N makes, then call.

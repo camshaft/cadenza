@@ -111,6 +111,8 @@ pass	a closure capturing two values is made and called by the host
 pass	a closure carried in a USER-declared sum's payload is extracted and applied
 pass	a closure carried in a sum payload is extracted by a match and applied
 pass	a closure driving control flow off a captured boolean
+pass	a closure export alongside a plain scalar export — the closure runs
+pass	a closure export alongside a plain scalar export — the plain export runs
 pass	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
@@ -452,6 +454,8 @@ pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
 pass	a parameterized export returning a capturing closure is made and called by the host
 pass	a parameterized export returning a multi-argument capturing closure
+pass	a parameterized plain export alongside a closure export applies its argument
+pass	a parameterized plain export alongside a closure export — the closure captures and applies
 pass	a partial constructor bound in a let completes when applied
 pass	a partial constructor passed to a higher-order function completes the variant
 pass	a partially-applied function escapes as a value and runs through a recursive HOF
@@ -1261,6 +1265,8 @@ pass	two runtime strings compare equal by their contents
 pass	two runtime sum values compare equal by a heap walk
 pass	two runtime sums with the same payload but different variants compare unequal by a heap walk
 pass	two runtime tuples compare equal by a heap walk
+pass	two same-signature closures alongside a plain export all coexist
+pass	two same-signature closures alongside a plain export — the plain export runs
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
 pass	two structural values of the same shape are equal

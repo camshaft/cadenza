@@ -1476,6 +1476,22 @@ pub struct ClosureMakeAbi {
     pub make_param_bytes: Vec<u8>,
 }
 
+/// One PLAIN (non-closure) export riding alongside the closure exports (the "closure ALONGSIDE a
+/// non-closure export" shape). Its body lives in the SAME program core module under `core_name`; the
+/// envelope aliases it off the program instance, lifts it as an ORDINARY top-level component func, and
+/// exports it under `name` (kebab-normalized). First cut: a SCALAR (component-primitive) result — a
+/// compound `list<u8>` result would need the memory/realloc lift shape, a later widening.
+pub struct PlainExportAbi {
+    /// The public component export name (kebab-normalized at emit).
+    pub name: String,
+    /// The core-module export name the program instance exposes the body under (the source name).
+    pub core_name: String,
+    /// The export's parameter component-valtype bytes, in order (empty for a nullary export).
+    pub param_bytes: Vec<u8>,
+    /// The export's result component-primitive byte (scalar only this increment).
+    pub result_byte: u8,
+}
+
 /// Assemble a MULTI-EXPORT closure-resource component: N `make-<name>` functions sharing ONE `call`,
 /// published together under `cadenza:closure/exports`. The single-export [`assemble_closure_resource`] is
 /// the N=1 case; this generalizes the make-related sections (alias, lift, functype, inner-component
@@ -1497,8 +1513,41 @@ pub fn assemble_multi_closure_resource(
     arg_bytes: &[u8],
     result_byte: u8,
 ) -> Vec<u8> {
+    assemble_mixed_closure_resource(
+        main_core,
+        dtor_core,
+        imports,
+        import_name,
+        makes,
+        arg_bytes,
+        result_byte,
+        &[],
+    )
+}
+
+/// The MIXED shape: N same-signature closure exports (`makes` + one shared `call`) PLUS P PLAIN
+/// (non-closure) exports (`plain`) in ONE component. Generalizes [`assemble_multi_closure_resource`]
+/// (P=0). The closure `make`/`call` publish under `cadenza:closure/exports`; each plain export is aliased
+/// off the SAME program instance, lifted as an ORDINARY top-level component func, and exported directly —
+/// the `oracle_mixed_component` byte anchor proved the resource-instance + top-level-func coexistence.
+///
+/// Index deltas over the P=0 case: the plain bodies are aliased AFTER `call` (core funcs k+3+nmk+1..),
+/// lifted AFTER the `call` lift (comp funcs k+nmk+1..), their functypes laid AFTER the call functype
+/// (comp types 2+2*nmk+2 ..); each is exported at the TOP level (not inside the closure interface).
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_mixed_closure_resource(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    makes: &[ClosureMakeAbi],
+    arg_bytes: &[u8],
+    result_byte: u8,
+    plain: &[PlainExportAbi],
+) -> Vec<u8> {
     let k = imports.len();
     let nmk = makes.len();
+    let np = plain.len();
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
 
@@ -1598,17 +1647,23 @@ pub fn assemble_multi_closure_resource(
         &wasm_vec(1, &core_instantiate_item(1, &[(HEAP_MODULE, 2)])),
     ));
     // sec 6: alias each `make-<name>` + `call` off the program instance (core instance 3) → core funcs
-    // k+3..k+3+N (makes) then k+3+N (call).
+    // k+3..k+3+N (makes) then k+3+N (call), then each PLAIN export's body → core funcs k+3+N+1..
     out.extend_from_slice(&{
         let mut items = Vec::new();
         for mk in makes {
             items.extend_from_slice(&core_alias_item(3, &mk.name));
         }
         items.extend_from_slice(&core_alias_item(3, CALL_CORE_EXPORT));
-        section(sec::ALIAS, &wasm_vec(nmk + 1, &items))
+        for p in plain {
+            items.extend_from_slice(&core_alias_item(3, &p.core_name));
+        }
+        section(sec::ALIAS, &wasm_vec(nmk + 1 + np, &items))
     });
     // sec 7: per make, `own<t>` + `make` functype `(export-params…) -> own<t>`; then `own<t>` + `call`
-    // functype `(self: own<t>, args…) -> R`. Resource is comp type 1.
+    // functype `(self: own<t>, args…) -> R`; then one PLAIN functype per plain export (a scalar
+    // `(params…) -> R`, NO own<t> wrapper — a plain export carries no resource handle). Resource is comp
+    // type 1; make own/functype at 2+2i / 3+2i; call own/functype at 2+2*nmk / 3+2*nmk; plain functype j at
+    // 4+2*nmk+j.
     out.extend_from_slice(&{
         let mut items = Vec::new();
         for (i, mk) in makes.iter().enumerate() {
@@ -1623,10 +1678,15 @@ pub fn assemble_multi_closure_resource(
         items.extend_from_slice(&own_item(1));
         let call_own_ty = (2 + 2 * nmk) as u32;
         items.extend_from_slice(&closure_call_functype(call_own_ty, arg_bytes, result_byte));
-        section(sec::COMPONENT_TYPE, &wasm_vec(2 * (nmk + 1), &items))
+        // each plain export's functype (scalar result, inline primitive byte).
+        for p in plain {
+            items.extend_from_slice(&params_result_functype(&p.param_bytes, &[p.result_byte]));
+        }
+        section(sec::COMPONENT_TYPE, &wasm_vec(2 * (nmk + 1) + np, &items))
     });
     // sec 8: lift each make (core func k+3+i) against its functype (type 3+2i) → comp func k+i; then lift
-    // `call` (core func k+3+N) against the call functype (type 3+2N) → comp func k+N.
+    // `call` (core func k+3+N) against the call functype (type 3+2N) → comp func k+N; then lift each PLAIN
+    // export (core func k+3+N+1+j) against its functype (type 4+2N+j) → comp func k+N+1+j.
     out.extend_from_slice(&{
         let mut items = Vec::new();
         for i in 0..nmk {
@@ -1637,7 +1697,12 @@ pub fn assemble_multi_closure_resource(
         let call_core_fn = (k + 3 + nmk) as u32;
         let call_functype = (3 + 2 * nmk) as u32;
         items.extend_from_slice(&canon_lift_item(call_core_fn, call_functype));
-        section(sec::CANON, &wasm_vec(nmk + 1, &items))
+        for j in 0..np {
+            let core_fn = (k + 3 + nmk + 1 + j) as u32;
+            let functype = (4 + 2 * nmk + j) as u32;
+            items.extend_from_slice(&canon_lift_item(core_fn, functype));
+        }
+        section(sec::CANON, &wasm_vec(nmk + 1 + np, &items))
     });
     // sec 4/5/11: nested re-export component; instantiate it (resource type 1 + comp funcs k..k+N makes,
     // k+N call) → component instance 1; export as the closure interface.
@@ -1653,10 +1718,16 @@ pub fn assemble_multi_closure_resource(
             &component_instantiate_multi_call_item(1, k as u32, nmk, makes),
         ),
     ));
-    out.extend_from_slice(&section(
-        sec::COMPONENT_EXPORT,
-        &wasm_vec(1, &export_instance_item(CLOSURE_INTERFACE, 1)),
-    ));
+    // sec 11: export the closure interface instance, then each PLAIN export as an ORDINARY top-level
+    // component func (comp func k+nmk+1+j), under its kebab-normalized name.
+    out.extend_from_slice(&{
+        let mut items = export_instance_item(CLOSURE_INTERFACE, 1);
+        for (j, p) in plain.iter().enumerate() {
+            let comp_fn = (k + nmk + 1 + j) as u32;
+            items.extend_from_slice(&comp_export_item(&p.name, comp_fn));
+        }
+        section(sec::COMPONENT_EXPORT, &wasm_vec(1 + np, &items))
+    });
     out
 }
 
