@@ -22557,6 +22557,7 @@ mod closure_host_resource {
             OPS.arr_get,
             OPS.arr_set,
             OPS.box_int,
+            OPS.drop,
             OPS.get_int,
         ];
         // Defined func 0 = the export body `main : () -> own<closure>` — its RESULT is the closure type,
@@ -22666,6 +22667,7 @@ mod closure_host_resource {
             OPS.arr_get,
             OPS.arr_set,
             OPS.box_int,
+            OPS.drop,
             OPS.get_int,
         ];
         let fn_ty = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone()));
@@ -22790,6 +22792,7 @@ mod closure_host_resource {
             OPS.arr_get,
             OPS.arr_set,
             OPS.box_int,
+            OPS.drop,
             OPS.get_int,
         ];
         let fn_ty = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone()));
@@ -22950,6 +22953,43 @@ mod closure_host_resource {
         assert_eq!(rt.closure_make_call(&[], &[Val::S64(41)]), Val::S64(42));
     }
 
+    /// C-HOST-5 (the leak fix): a closure `make`+`call` round-trip leaves NO live heap cell. `make` builds
+    /// the closure cell (`arr-alloc`), `call` takes `own<t>` (the canonical ABI transfers ownership INTO
+    /// `call`), dispatches the closure, then RELEASES the cell — `heap.drop(rep)` after the `call_indirect`
+    /// returns (the lifted body has finished reading its captures from the env). This mirrors the value-heap
+    /// escape's own-owns-and-drops fix ([[rcdzc-r1-resource-encode-linking-findings]]): `resource.rep` on a
+    /// BORROWED self traps in wasmtime 37, so `call` keeps `own<t>` and drops the rep itself rather than
+    /// relying on a `borrow<t>` + host-drop dtor. A CAPTURING closure (`adder(10)`) is the real test — its
+    /// cell holds the captured `k`, so the drop must reclaim a genuinely live node. `#[ignore]` — needs the
+    /// debug-counters runtime in the store (`cargo xtask build`).
+    #[test]
+    #[ignore]
+    fn a_closure_call_leaves_no_live_objects() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_debug_runtime_wasm() else {
+            eprintln!("[C-HOST-5] debug-counters runtime not in the store; skipping closure leak probe");
+            return;
+        };
+        // A capturing closure: make(10) allocates a cell holding k=10; call(5) dispatches (+ x k) = 15 and
+        // must release the cell. After the round-trip, live-objects must be 0.
+        let src = "(module m (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        assert_eq!(
+            rt.closure_make_call(&[Val::S64(10)], &[Val::S64(5)]),
+            Val::S64(15),
+            "adder(10) then call(5) = 15"
+        );
+        assert_eq!(
+            rt.live_objects(),
+            0,
+            "closure leak: the closure cell is still live after make+call (expected 0 — `call` owns the \
+             own<t> handle and must drop the cell after dispatch)"
+        );
+    }
+
     /// C-HOST-2: a PARAMETERIZED export returning a CAPTURING closure. `(def (adder (: k Int64)) (fn (x)
     /// (+ x k)))` crosses as `adder : (s64) -> own<closure>`; the host calls `make(10)` (which runs the
     /// export body, closing over k=10 into the cell), then `call(handle, 5)` → 15. This proves (a) the
@@ -23061,6 +23101,41 @@ mod closure_host_resource {
         assert_eq!(
             rt.closure_produce_consume("make-adder", &[Val::S64(100)], "apply-it", &[Val::S64(7)]),
             Val::S64(107)
+        );
+    }
+
+    /// C-HOST-5 (round-trip leak fix): a produce→consume round trip leaves NO live heap cell. The producer
+    /// mints the closure cell (`make-adder` → `resource.new`); the consumer takes it back as `own<t>`,
+    /// applies it, then the consumer wrapper RELEASES the cell (`heap.drop(rep)` after the body returns).
+    /// The `twice-plus` consumer applies the closure TWICE (`(+ (g x) (g x))`) — the drop must come AFTER
+    /// the body, once, not per application. After the round trip `live-objects` is 0. `#[ignore]` — needs
+    /// the debug-counters runtime (`cargo xtask build`).
+    #[test]
+    #[ignore]
+    fn a_round_trip_leaves_no_live_objects() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_debug_runtime_wasm() else {
+            eprintln!("[C-HOST-5] debug-counters runtime not in the store; skipping round-trip leak probe");
+            return;
+        };
+        let src = "(do (def (make-adder (: k Int64)) (fn ((: x Int64)) (+ x k))) \
+                   (def (twice-plus (: g (-> Int64 Int64)) (: x Int64)) (+ (g x) (g x))) \
+                   (export make-adder) (export twice-plus))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // make-adder(1) → a closure (+ x 1); twice-plus(handle, 5) = (5+1) + (5+1) = 12.
+        assert_eq!(
+            rt.closure_produce_consume("make-adder", &[Val::S64(1)], "twice-plus", &[Val::S64(5)]),
+            Val::S64(12),
+            "make-adder(1) then twice-plus(_, 5) = 12"
+        );
+        assert_eq!(
+            rt.live_objects(),
+            0,
+            "round-trip leak: the handed-back closure cell is still live after the consumer (expected 0 — \
+             the consumer owns the own<t> handle and must drop the cell after the body returns)"
         );
     }
 
