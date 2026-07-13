@@ -695,36 +695,14 @@ fn thread_bounded(
             Some((last.unwrap(), cur))
         }
         // A CROSS-FUNCTION perform: `(f args…)` where `f` is a NON-RECURSIVE function whose body reaches
-        // an operation this handler discharges (`DESIGN-effects-rcdzc.md` §3, the new inline trigger). The
-        // handler must be present in the callee, so INLINE `f` into the handled region — β-reduce the call
-        // (substitute args for params) and thread state through the reduced body, exactly as if the
-        // callee's body were written inline. This is what makes `(handle … (gen))` work when `gen`
-        // performs the discharged op. A RECURSIVE such callee cannot be inlined (E3 specializes it); it
-        // is not caught here (the reachability check excludes a recursive callee), so it declines below.
-        Resolved::Apply { head, args } if call_reaches_discharged_effect(db, head, ctx) => {
-            // Thread state through the arguments FIRST (they evaluate before the call, in order), then
-            // inline the callee and thread its (reduced) body.
-            let mut cur = state;
-            let mut rargs = Vec::with_capacity(args.len());
-            for &a in args.iter() {
-                let (ra, next) = thread_bounded(db, a, cur, ctx, inline_depth)?;
-                rargs.push(ra);
-                cur = next;
-            }
-            // A PARAMETERIZED callee β-reduces (substitute args for params); a NULLARY def `(gen)` has no
-            // lambda wrapper — its name resolves straight to its body, so `apply_lambda` yields nothing
-            // and we thread the body directly.
-            let reduced = match crate::eval::apply_lambda(db, head, &rargs).ok().flatten() {
-                Some(r) => r,
-                None => crate::eval::lambda_body_of_nullary(db, head)?,
-            };
-            thread_bounded(db, reduced, cur, ctx, inline_depth + 1)
-        }
         // A RECURSIVE effectful call `(f args…)` — `f` recurses AND reaches a discharged op, so it cannot
-        // be inlined (E1c-3's trigger excludes it). SPECIALIZE it: emit `f#ctx` once per handler context
+        // be inlined (it would not terminate). SPECIALIZE it: emit `f#ctx` once per handler context
         // (`DESIGN-effects-rcdzc.md` §4.3), threading this context's state as a trailing parameter, and
-        // emit a call `(f#ctx args… <current-state>)`. Only the SINGLE-STATE, single-arg-state fast path
-        // is built (countdown/range-sum); anything else declines below.
+        // emit a call `(f#ctx args… <current-state>)`. Checked BEFORE the cross-function inline arm below,
+        // because a β-reduced copy of `f`'s body is NOT self-referential (its self-call names the original
+        // `f`), so `is_recursive` on the copy reads false — if the inline arm ran first it would unroll
+        // the recursion one level per inline (bounded only by the depth backstop). Catching recursion
+        // here first routes `f` to specialization, never to the unbounded inline.
         Resolved::Apply { head, args }
             if ctx.single_state.is_some() && recursive_call_reaches_discharged(db, &head, ctx) =>
         {
@@ -748,6 +726,31 @@ fn thread_bounded(
             // The call's VALUE is the specialized fn's result; the state after it is not observed (the
             // corpus never reads post-recursion state — the single-return shape).
             Some((db.push_list(call), cur))
+        }
+        // A CROSS-FUNCTION perform: `(f args…)` where `f` is a NON-RECURSIVE function whose body reaches
+        // an operation this handler discharges (`DESIGN-effects-rcdzc.md` §3, the new inline trigger). The
+        // handler must be present in the callee, so INLINE `f` into the handled region — β-reduce the call
+        // (substitute args for params) and thread state through the reduced body, exactly as if the
+        // callee's body were written inline. This is what makes `(handle … (gen))` work when `gen`
+        // performs the discharged op. A RECURSIVE such callee is caught by the specialization arm ABOVE.
+        Resolved::Apply { head, args } if call_reaches_discharged_effect(db, head, ctx) => {
+            // Thread state through the arguments FIRST (they evaluate before the call, in order), then
+            // inline the callee and thread its (reduced) body.
+            let mut cur = state;
+            let mut rargs = Vec::with_capacity(args.len());
+            for &a in args.iter() {
+                let (ra, next) = thread_bounded(db, a, cur, ctx, inline_depth)?;
+                rargs.push(ra);
+                cur = next;
+            }
+            // A PARAMETERIZED callee β-reduces (substitute args for params); a NULLARY def `(gen)` has no
+            // lambda wrapper — its name resolves straight to its body, so `apply_lambda` yields nothing
+            // and we thread the body directly.
+            let reduced = match crate::eval::apply_lambda(db, head, &rargs).ok().flatten() {
+                Some(r) => r,
+                None => crate::eval::lambda_body_of_nullary(db, head)?,
+            };
+            thread_bounded(db, reduced, cur, ctx, inline_depth + 1)
         }
         // An `(if cond then else)` — the condition is evaluated (thread state through it), then BOTH
         // branches see the post-condition state (only one runs, but each is rewritten under the same
@@ -912,7 +915,9 @@ fn recursive_call_reaches_discharged(db: &mut Db, head: &StructId, ctx: &Handler
     let Some(body) = db.defs[callee_def].body else {
         return false;
     };
-    crate::eval::is_recursive(db, body) && body_reaches_discharged(db, body, ctx, 0)
+    let rec = crate::eval::is_recursive(db, body);
+    let reaches = body_reaches_discharged(db, body, ctx, 0);
+    rec && reaches
 }
 
 /// The `db.defs` index the application head `head` names — following a `Ref` to a lambda/def body. `None`
@@ -947,11 +952,18 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         return Some(db.defs[idx].name.clone());
     }
 
-    // The single-state fast path handles a NULLARY recursive def (countdown `loop`, range-sum
-    // `sum-down`): no original params, just the threaded state. A parameterized recursive effectful def
-    // is a later increment.
-    if !db.defs[callee_def].params.is_empty() {
-        return None;
+    // The original parameters. A NULLARY def (countdown `loop`, range-sum `sum-down`) has none; a
+    // PARAMETERIZED def (`walk n`) carries its param name occurrences, threaded through unchanged (the
+    // self-call passes its own args). Each is copied fresh into the specialized signature so the threaded
+    // body's references to it re-resolve against the new def's scope. Only BARE-name params are handled
+    // (an annotated `(: n T)` original param is a later increment); a non-bare param declines.
+    let orig_params = db.defs[callee_def].params.clone();
+    let mut orig_param_names: Vec<String> = Vec::with_capacity(orig_params.len());
+    for &p in &orig_params {
+        match db.ast.as_name(p) {
+            Some(n) => orig_param_names.push(n.to_string()),
+            None => return None,
+        }
     }
 
     // The specialized NAME — unique per (def, context). The `#` makes it unspellable in source (no user
@@ -959,24 +971,30 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     let base = db.defs[callee_def].name.clone();
     let spec_name = format!("{base}#eff{}", db.defs.len());
 
-    // Build the specialized def as a REAL AST form `(def (spec (: s <state-ty-typeval>)) <body>)`, so its
-    // state parameter resolves as a param (via `is_param_occurrence`, which walks to a `def` form) and
-    // types by its annotation. The state param is an ANNOTATED binder `(: s T)`.
+    // Build the specialized def as a REAL AST form `(def (spec orig-params… (: s T)) <body>)`, so its
+    // parameters resolve (via `is_param_occurrence`, which walks to a `def` form) and the state param
+    // types by its annotation. Original params are BARE name atoms (copied fresh); the state param is an
+    // ANNOTATED binder `(: s T)`, LAST in the signature (the self-call appends state last).
+    let spec_name_atom = db.push_atom(Leaf::Name(spec_name.clone()));
+    let mut sig_children = vec![spec_name_atom];
+    for n in &orig_param_names {
+        sig_children.push(db.push_atom(Leaf::Name(n.clone())));
+    }
     let state_name = db.push_atom(Leaf::Name(format!("{spec_name}$s")));
     let state_type_expr = crate::eval::encode_typeval(db, &state_ty);
     let colon = db.push_atom(Leaf::Name(":".to_string()));
     let state_param = db.push_list(vec![colon, state_name, state_type_expr]);
-    let spec_name_atom = db.push_atom(Leaf::Name(spec_name.clone()));
-    let sig = db.push_list(vec![spec_name_atom, state_param]);
+    sig_children.push(state_param);
+    let sig = db.push_list(sig_children.clone());
+    let spec_params: Vec<StructId> = sig_children[1..].to_vec();
 
     // RESERVE the def NOW (with the sig, body filled later) + MEMOIZE — so the recursive self-call inside
-    // the body re-enters `specialize_recursive`, hits the memo, and names THIS `spec_name`. `db.defs`
-    // params carry the SIGNATURE PARAM occurrence (the `(: s T)` node), as a normal scanned def does.
+    // the body re-enters `specialize_recursive`, hits the memo, and names THIS `spec_name`.
     let spec_index = db.defs.len();
     db.push_specialized_def(Def {
         name: spec_name.clone(),
         sig_occ: sig,
-        params: vec![state_param],
+        params: spec_params.clone(),
         body: None,
     });
     db.effect_specializations.insert(memo_key, spec_index);
@@ -989,16 +1007,15 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     let state_ref = db.push_atom(Leaf::Name(format!("{spec_name}$s")));
     let (spec_body, _out) = thread(db, orig_body, state_ref, ctx)?;
 
-    // Wrap in a REAL `(def (spec (: s T)) spec_body)` arena node so the parent index links
-    // param → sig → def: `is_param_occurrence` walks that chain to classify `s` as a param, and
-    // `binder_in` Case 4 resolves a body reference to `s` against the def signature. Without this the
-    // synthesized param would not resolve. The def head + form are pushed here (after threading, since
-    // the body must exist); the `db.defs` entry's `body` points at `spec_body` (the def-form node is for
+    // Wrap in a REAL `(def (spec params… (: s T)) spec_body)` arena node so the parent index links
+    // param → sig → def: `is_param_occurrence` walks that chain to classify each param, and `binder_in`
+    // Case 4 resolves a body reference against the def signature. Without this the synthesized params
+    // would not resolve. The `db.defs` entry's `body` points at `spec_body` (the def-form node is for
     // scope/param resolution, not the emitted body — emission reads `db.defs[i].body`).
     let def_head = db.push_atom(Leaf::Name("def".to_string()));
     let _def_form = db.push_list(vec![def_head, sig, spec_body]);
 
-    db.fill_specialized_def(spec_index, vec![state_param], spec_body);
+    db.fill_specialized_def(spec_index, spec_params, spec_body);
     Some(spec_name)
 }
 
@@ -1058,6 +1075,17 @@ fn subtree_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
     // A `resume` reached here (outside an arm's tail rewrite) is treated as effectful so it is not
     // silently copied as pure.
     if matches!(resolved_of(db, node), Resolved::Resume { .. }) {
+        return true;
+    }
+    // A CALL whose callee REACHES a discharged operation — cross-function (inlined) OR recursive
+    // (specialized). Its performs are behind the call, not syntactic here, so without this a `(walk 3)`
+    // whose `walk` performs the effect would be copied as "pure" and never threaded — leaving the perform
+    // unhandled. Following the callee is what makes the fold thread INTO such a call (the inline /
+    // specialization arms then handle it). This mirrors the two Apply arms' guards.
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && (call_reaches_discharged_effect(db, head, ctx)
+            || recursive_call_reaches_discharged(db, &head, ctx))
+    {
         return true;
     }
     match db.ast.get(node).clone() {
