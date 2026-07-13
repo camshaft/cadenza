@@ -5,6 +5,9 @@ pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
+pass	Unit.in converts a quantity to a chosen larger unit (Float)
+pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
+pass	Unit.in to a unit of a different dimension is a compile-time error
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
