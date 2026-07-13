@@ -33,6 +33,20 @@ use tracing::trace;
 /// Compile a set of kinded input artifacts to the requested targets. The `ast` input is decoded into
 /// a `Db`; each target's backend fills its artifact from the shared columns. Targets default to
 /// `[Wasm]` at the CLI, not here — this entry emits exactly what it is asked for.
+///
+/// A program compiles on the CORE guarantees alone — static typing (`collect_faults`), determinism, and
+/// capability-safety (the no-home effect check) — with NO verification layer as a precondition; the seed
+/// realizes no contract/refinement/proof layer, so engaging one is not something a program can (or must)
+/// opt into here.
+///
+//= constitution.md#viii-verification-is-progressive-and-meaning-preserving
+//# A program MUST be compilable when only the core guarantees — static typing, determinism, and capability-safety — are satisfied.
+///
+//= spec/capabilities/verification-layers.md#a-program-compiles-without-any-layer
+//# A program MUST compile when only the core guarantees — static typing, determinism, and capability-safety — are satisfied.
+///
+//= spec/capabilities/verification-layers.md#a-program-compiles-without-any-layer
+//# Engaging a verification layer MUST be something a program opts into, not a precondition of compiling.
 pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     trace!(target: "rcdzc::compile", inputs = inputs.len(), targets = targets.len(), "compile requested");
     // Select the `ast` input artifact(s) and decode them into ONE arena. A single `ast` (the common
