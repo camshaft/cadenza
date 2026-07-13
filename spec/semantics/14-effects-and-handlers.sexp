@@ -368,6 +368,22 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip))) (+ x x)))) (export main)))
   (output (: 21 Int64)))
 
+(case "a handler arm that resumes NON-tail folds a perform in an if branch by handler distribution"
+  (doc    "A perform in an `if` BRANCH (a CONDITIONALLY-run position) folds when the CONDITION is pure, by
+           HANDLER DISTRIBUTION — a commuting conversion: `(handle E s arms (if c t e))` is equivalent to
+           `(if c (handle E s arms t) (handle E s arms e))`. The condition runs exactly once (it is pure, so
+           it advances no handler state), and each branch becomes a smaller handle body the pure one-hole
+           fold already serves — only the taken branch runs, seeing the seed state. Here `(if (< 3 5) (+ 1
+           (Amb.flip)) 0)` distributes: the true branch `(handle … (+ 1 (Amb.flip)))` has `C = (+ 1 [])`, so
+           `(resume 10 s)` = `C[10]` = 11 and the arm `(+ 1 (resume 10 s))` = `(+ 1 11)` = 12; the false
+           branch is a pure body. `(< 3 5)` is true → 12. A perform in the CONDITION itself (not a pure
+           condition) still declines — distributing it would need the frame machinery.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (+ 1 (Amb.flip)) 0))) (export main)))
+  (output (: 12 Int64)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the

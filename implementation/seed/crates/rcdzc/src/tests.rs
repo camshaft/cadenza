@@ -21860,6 +21860,37 @@ mod stage1 {
     }
 
     #[test]
+    fn a_runtime_conditioned_if_branch_perform_distributes_per_branch() {
+        // The distribution handles a RUNTIME condition (a genuine PHI, not const-folded): a handle body
+        // conditioned on main's PARAMETER `x`. `(if (< x 5) (+ 1 (Amb.flip)) (* 2 (Amb.flip)))` distributes
+        // to `(if (< x 5) (handle … (+ 1 (Amb.flip))) (handle … (* 2 (Amb.flip))))`; each sub-handle folds.
+        // x=3 → then `C=(+ 1 □)`, arm `(+ 1 (+ 1 10))` = 12; x=9 → else `C=(* 2 □)`, arm `(+ 1 (* 2 10))` =
+        // 21. Pins that the condition is evaluated once at runtime and only the taken branch's fold runs.
+        use wasmtime::component::Val;
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main (: x Int64)) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< x 5) (+ 1 (Amb.flip)) (* 2 (Amb.flip))))) (export main))";
+        let c = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a runtime-conditioned branch perform distributes");
+        assert_eq!(run_returns_with::<i64>(&c, "main", &[Val::S64(3)]), 12);
+        assert_eq!(run_returns_with::<i64>(&c, "main", &[Val::S64(9)]), 21);
+    }
+
+    #[test]
+    fn a_perform_in_the_condition_and_a_branch_declines_the_distribution() {
+        // ADVERSARIAL: distribution requires a STRONGLY-PURE condition (it runs once, before either branch).
+        // `(if (< (Amb.flip) 5) (+ 1 (Amb.flip)) 0)` performs in BOTH the condition and a branch — a
+        // two-hole shape distribution must not touch (a performing condition would need its own frame). It
+        // declines cleanly (the pure-one-hole fold also declines: the condition hole makes the branch
+        // perform a SECOND hole). Never a mis-fold.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 5) (+ 1 (Amb.flip)) 0))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a perform in the condition AND a branch must decline (distribution needs a pure condition)"
+        );
+    }
+
+    #[test]
     fn two_performs_across_a_let_decline_the_pure_one_hole_fold() {
         // ADVERSARIAL: a hole in a let INIT and another in the BODY is a TWO-hole context — `pure_hole_seq`
         // over the init values + body finds a second hole → Impure → decline (needs sequential threading /
@@ -21965,17 +21996,46 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_tail_resume_in_an_if_branch_declines() {
-        // The E5 BOUNDARY (still): a non-tail resume whose perform sits in an `if` BRANCH —
-        // `(if c (+ 1 (Amb.flip)) 0)` — has a NON-UNIFORM continuation (the perform runs only on the taken
-        // branch, and its continuation differs by branch), so `pure_hole` returns Impure and the fold
-        // declines rather than mis-fold. Realizing it needs the captured-continuation machinery
-        // (defunctionalized frames), a later increment. Contrast the condition-hole case above, which folds.
+    fn a_non_tail_resume_in_an_if_branch_folds_by_handler_distribution() {
+        // A non-tail resume whose perform sits in an `if` BRANCH under a PURE condition folds by HANDLER
+        // DISTRIBUTION (a commuting conversion): `(handle E s arms (if c t e))` ≡ `(if c (handle E s arms t)
+        // (handle E s arms e))`. The condition runs once (pure, advances no state); each branch is a smaller
+        // handle body the pure one-hole fold serves. `(if (< 3 5) (+ 1 (Amb.flip)) 0)` distributes so the
+        // TRUE branch is `(handle … (+ 1 (Amb.flip)))` → C=(+ 1 □), arm `(+ 1 (resume 10 s))` → `(+ 1 (+ 1
+        // 10))` = 12; the FALSE branch `(handle … 0)` is a pure body → 0. c true → 12. (No frame machinery.)
         let src = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (+ 1 (Amb.flip)) 0))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a non-tail resume in an if branch must decline (needs E5 frame capture)"
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a non-tail resume in an if branch folds by handler distribution"),
+                "main"
+            ),
+            12
+        );
+        // The FALSE branch taken (c false), and the PERFORM in the else branch: `(if (< 5 3) 0 (+ 1
+        // (Amb.flip)))` → false → the else sub-handle `(+ 1 (+ 1 10))` = 12.
+        let else_src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 5 3) 0 (+ 1 (Amb.flip))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(else_src)))
+                    .expect("a perform in the else branch distributes too"),
+                "main"
+            ),
+            12
+        );
+        // BOTH branches perform: `(if (< 3 5) (+ 1 (Amb.flip)) (* 2 (Amb.flip)))` → true → then sub-handle
+        // `(+ 1 (+ 1 10))` = 12 (the else sub-handle folds too — `(+ 1 (* 2 10))` = 21 — but is dead).
+        let both = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (+ 1 (Amb.flip)) (* 2 (Amb.flip))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(both)))
+                    .expect("both branches perform — each distributes"),
+                "main"
+            ),
+            12
         );
     }
 
