@@ -1095,10 +1095,29 @@ fn closure_boundary_reject(role: &str, ty: &crate::ty::Ty) -> Reject {
         ))
     } else {
         Reject::decline(format!(
-            "a closure {role} of type {} has no scalar host-boundary representation (only aliased \
-             widths cross the closure `call` boundary yet)",
+            "a closure {role} of type {} has no scalar host-boundary representation (only aliased-width \
+             scalars — every s8/u8/…/s64/u64 int, bool, f32/f64 — cross the closure `call` boundary)",
             ty.render_name()
         ))
+    }
+}
+
+/// The COMPONENT-model boundary byte a closure arg/result/param crosses under — every ALIASED-WIDTH
+/// SCALAR the ordinary export boundary supports (each of s8/u8/s16/u16/s32/u32/s64/u64, bool, f32/f64).
+/// Wider than the runtime-op ABI table's `abi_val_type` (which models only u32/s64/bool/f64 for the
+/// value-heap ops), because a closure's `call` boundary is a plain component functype — it needs only the
+/// component primitive byte + the core valtype (from `valtype_of`), neither tied to the runtime-op set.
+///
+/// ⚠ Restricted to genuine SCALARS: `comp_valtype_of` ALSO returns a byte for a `Tuple` (the u32 HANDLE it
+/// is threaded as BETWEEN in-program functions) and for a `Nominal`-over-compound, but those are opaque
+/// runtime handles, NOT values the host can construct or read across the `call` boundary — a closure with a
+/// COMPOUND arg/result must decline (that widening is a separate later increment). So this accepts only
+/// Int/Bool/Float (peeling a nominal to its underlying scalar first); everything else is `None`.
+fn closure_boundary_byte(ty: &crate::ty::Ty) -> Option<u8> {
+    use crate::ty::Ty;
+    match ty.strip_nominal() {
+        Ty::Int(_) | Ty::Bool | Ty::Float(_) => crate::backend::wasm::lir::comp_valtype_of(ty),
+        _ => None,
     }
 }
 
@@ -1155,15 +1174,10 @@ fn emit_closure_resource(
     // Boundary bytes (component valtypes) for the `call` method's args + result — aliased scalar widths.
     let arg_bytes: Vec<u8> = arg_tys
         .iter()
-        .map(|t| {
-            host::abi_val_type(t)
-                .map(|a| a.comp_byte())
-                .ok_or_else(|| closure_boundary_reject("argument", t))
-        })
+        .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
         .collect::<Result<_, _>>()?;
-    let result_byte = host::abi_val_type(&ret_ty)
-        .map(|a| a.comp_byte())
-        .ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
+    let result_byte =
+        closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
     // Core valtypes for the `call` method's args + result (used to build the core `call` signature +
     // the `call_indirect` lifted functype shape).
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
@@ -1191,9 +1205,7 @@ fn emit_closure_resource(
     let make_param_bytes: Vec<u8> = export_params
         .iter()
         .map(|(_, t)| {
-            host::abi_val_type(t)
-                .map(|a| a.comp_byte())
-                .ok_or_else(|| closure_boundary_reject("parameter", t))
+            closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
         })
         .collect::<Result<_, _>>()?;
 
@@ -1311,15 +1323,10 @@ fn emit_multi_closure_resource(
     }
     let arg_bytes: Vec<u8> = arg_tys
         .iter()
-        .map(|t| {
-            host::abi_val_type(t)
-                .map(|a| a.comp_byte())
-                .ok_or_else(|| closure_boundary_reject("argument", t))
-        })
+        .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
         .collect::<Result<_, _>>()?;
-    let result_byte = host::abi_val_type(&ret_ty)
-        .map(|a| a.comp_byte())
-        .ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
+    let result_byte =
+        closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
         .iter()
         .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
@@ -1354,9 +1361,7 @@ fn emit_multi_closure_resource(
             .params
             .iter()
             .map(|(_, t)| {
-                host::abi_val_type(t)
-                    .map(|a| a.comp_byte())
-                    .ok_or_else(|| closure_boundary_reject("parameter", t))
+                closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
             })
             .collect::<Result<_, _>>()?;
         make_specs.push(MakeSpec {
@@ -1550,7 +1555,7 @@ fn emit_roundtrip_resource(
     let arg_bytes: Vec<u8> = arg_tys
         .iter()
         .map(|t| {
-            host::abi_val_type(t).map(|a| a.comp_byte()).ok_or_else(|| {
+            closure_boundary_byte(t).ok_or_else(|| {
                 Reject::decline(format!(
                     "a closure argument of type {} has no scalar host-boundary representation",
                     t.render_name()
@@ -1558,14 +1563,12 @@ fn emit_roundtrip_resource(
             })
         })
         .collect::<Result<_, _>>()?;
-    let result_byte = host::abi_val_type(&ret_ty)
-        .map(|a| a.comp_byte())
-        .ok_or_else(|| {
-            Reject::decline(format!(
-                "a closure result of type {} has no scalar host-boundary representation",
-                ret_ty.render_name()
-            ))
-        })?;
+    let result_byte = closure_boundary_byte(&ret_ty).ok_or_else(|| {
+        Reject::decline(format!(
+            "a closure result of type {} has no scalar host-boundary representation",
+            ret_ty.render_name()
+        ))
+    })?;
 
     // Per-PRODUCER: its make spec (name `make-<export>`, param vts + bytes forwarded). Per-CONSUMER: its
     // consume spec (name = the export name, params classified Closure/Scalar, result vt + boundary shape).
@@ -1597,7 +1600,7 @@ fn emit_roundtrip_resource(
             .params
             .iter()
             .map(|(_, t)| {
-                host::abi_val_type(t).map(|a| a.comp_byte()).ok_or_else(|| {
+                closure_boundary_byte(t).ok_or_else(|| {
                     Reject::decline(format!(
                         "a producer parameter of type {} has no scalar host-boundary representation",
                         t.render_name()
