@@ -3647,6 +3647,68 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_equality_against_a_value_outside_its_range_folds_to_a_constant() {
+        // `v == c` is DECIDABLE from `v`'s provable range: FALSE when `c` lies outside `[min, max]`, TRUE
+        // when the range pins `v` to `{c}`. `(= (& x 15) 100)` → false (`x & 15 ∈ [0,15]`, 100 above); the
+        // whole `and ; const ; eq` collapses to one `const 0`. Extends the range-vs-constant comparison
+        // fold (previously ordering-only) to `=`. Discards `v`, so a TRAPPING operand keeps its runtime
+        // compare (mirrors the ordering fold's `is_trap_free` guard).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let eqs = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64Eq | Lir::I32Eq | Lir::I64Eqz | Lir::I32Eqz))
+                .count()
+        };
+        let ands = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64And | Lir::I32And)).count();
+        // `(= (& x 15) 100)` — masked value ∈ [0,15], `100` outside → folds to a constant: no eq, no and.
+        let outside = lir("(: x Int64)", "(= (: (& x 15) Int64) 100)");
+        assert_eq!(eqs(&outside), 0, "outside-range equality drops the eq");
+        assert_eq!(ands(&outside), 0, "outside-range equality drops the mask too (whole expr constant)");
+        // A NEGATIVE constant below the nonneg range folds the same way (`x & 15 ∈ [0,15]`, `-1` below).
+        assert_eq!(eqs(&lir("(: x Int64)", "(= (: (& x 15) Int64) -1)")), 0, "below-range → const");
+        // An IN-RANGE constant is NOT decidable — the compare stays.
+        assert!(eqs(&lir("(: x Int64)", "(= (: (& x 15) Int64) 8)")) >= 1, "in-range equality stays runtime");
+
+        // VALUE PARITY: outside-range folds to false; in-range computes the real answer.
+        assert_eq!(run::<i64>("(: x Int64)", "(if (= (: (& x 15) Int64) 100) 1 0)", &[Val::S64(200)]), 0);
+        assert_eq!(run::<i64>("(: x Int64)", "(if (= (: (& x 15) Int64) 8) 1 0)", &[Val::S64(200)]), 1); // 200&15=8
+        assert_eq!(run::<i64>("(: x Int64)", "(if (= (: (& x 15) Int64) 8) 1 0)", &[Val::S64(199)]), 0); // 199&15=7
+
+        // TRAP PRESERVATION: `(% (/ 100 z) 3) ∈ [-2,2]`, `== 5` is unsatisfiable, but the operand divides
+        // by zero — the fold must NOT discard that trap.
+        assert!(
+            traps("(: z Int64)", "(= (: (% (: (/ 100 z) Int64) 3) Int64) 5)", &[Val::S64(0)]),
+            "an unsatisfiable equality must still trap on a div-by-zero operand"
+        );
+    }
+
+    #[test]
     fn if_with_one_zero_branches_materializes_the_boolean() {
         // `(if c 1 0)` is the condition coerced to the result's integer width — `(if c 0 1)` its
         // negation — with NO `select` and NO branch. The emitted shape is checked in select.rs's Lir

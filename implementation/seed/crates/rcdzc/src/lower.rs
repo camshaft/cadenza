@@ -7076,9 +7076,6 @@ fn fold_comparison_at_type_bound(
     lhs: StructId,
     rhs: StructId,
 ) -> Option<Core> {
-    if matches!(op, Prim::Eq) {
-        return None;
-    }
     let const_val = |db: &mut Db, id: StructId| match core_of(db, id) {
         Core::ConstInt(v) => v.to_i64(),
         _ => None,
@@ -7093,6 +7090,23 @@ fn fold_comparison_at_type_bound(
         } else {
             return None;
         };
+    // EQUALITY against a value with a known range is DECIDABLE when `c` lies OUTSIDE `[min, max]` (no
+    // value in the range equals `c` → `false`) or the range pins `v` to the single point `{c}` (`v` can
+    // only be `c` → `true`). `=` is symmetric, so `v_on_left` is immaterial. This subsumes the classic
+    // `(= (& x 15) 100)` → false (`x & 15 ∈ [0,15]`, `100` above). Discards `v`, so — like the ordering
+    // rules below — only fires when `v` is TRAP-FREE (a trapping operand must keep its runtime compare so
+    // the trap survives). The single-point `true` case rarely fires at lower time (a `[c,c]` range comes
+    // from a `ConstInt`, already folded), but is sound and DOES fire via the refinement sibling
+    // (`refined_comparison_const`, a match arm pinning the scrutinee to `{c}`).
+    if matches!(op, Prim::Eq) {
+        let outside = c < min || max.is_some_and(|m| c > m);
+        let pinned = min == c && max == Some(c);
+        if (outside || pinned) && is_trap_free(db, v) {
+            trace!(target: "rcdzc::fold", node = v.0, c, min, ?max, result = pinned, "range-vs-constant equality is decidable — folds to a constant");
+            return Some(Core::ConstBool(pinned));
+        }
+        return None;
+    }
     // Normalize to the `(cmp v c)` sense — the LEFT-const forms are the mirror (`c < v` ≡ `v > c`).
     let cmp = match (op, v_on_left) {
         (Prim::Lt, true) | (Prim::Gt, false) => Prim::Lt,
@@ -7169,9 +7183,6 @@ pub(crate) fn refined_comparison_const(
     lhs: StructId,
     rhs: StructId,
 ) -> Option<bool> {
-    if matches!(op, Prim::Eq) {
-        return None;
-    }
     let const_val = |db: &mut Db, id: StructId| match core_of(db, id) {
         Core::ConstInt(v) => v.to_i64(),
         _ => None,
@@ -7199,6 +7210,23 @@ pub(crate) fn refined_comparison_const(
     // Discarding `v` must not drop a trap (a refined `Param`/`LocalRef` is trap-free, so this holds).
     if !is_trap_free(db, v) {
         return None;
+    }
+    // EQUALITY against the refined range: DECIDABLE when `c` lies OUTSIDE `[min, max]` (→ false) or the
+    // range PINS `v` to `{c}` (→ true). The pin case is the payoff a match arm's exact-value refinement
+    // enables — `refined_frame_for_match_arm` sets the scrutinee to `[c, c]`, so a redundant `(= n 5)`
+    // inside the `(5 …)` arm folds to `true`; the outside case folds a re-test the enclosing branch's
+    // interval already excludes (`(if (> n 10) (= n 3) …)` → `false`). `=` is symmetric — `v_on_left` is
+    // immaterial. Sibling of the ordering rules below.
+    if matches!(op, Prim::Eq) {
+        let outside = c < min || max.is_some_and(|m| c > m);
+        let pinned = min == c && max == Some(c);
+        return if outside {
+            Some(false)
+        } else if pinned {
+            Some(true)
+        } else {
+            None
+        };
     }
     // Normalize to `(cmp v c)`.
     let cmp = match (op, v_on_left) {
