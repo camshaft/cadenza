@@ -20,7 +20,7 @@ use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::doc::Doc;
 use crate::lexer::Lexer;
 use crate::literal;
-use crate::token::{self, Kind, PREC_MEMBER, infix_glyph, infix_prec};
+use crate::token::{self, Kind, PREC_ARROW, PREC_MEMBER, infix_glyph, infix_prec};
 
 /// Indentation per box level (spaces). A layout choice, not a contract.
 const INDENT: isize = 2;
@@ -254,6 +254,10 @@ impl<'a> Printer<'a> {
         let args = &items[1..];
 
         if let Some(head) = head {
+            // ---- function type `(-> A B)` -> `A -> B` (right-associative) ----
+            if head == "->" && args.len() == 2 {
+                return self.arrow(args[0], args[1], parent_prec);
+            }
             // ---- infix binary operator ----
             if let Some(prec) = infix_prec(&head)
                 && args.len() == 2
@@ -464,6 +468,54 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
+    /// The function type `(-> A B)` -> `A -> B`. RIGHT-associative: a chain `(-> A (-> B C))` prints as
+    /// `A -> B -> C` by descending the RIGHT spine (the inverse of `infix`, which descends the left).
+    /// The left operand of each arrow binds one tighter (`PREC_ARROW + 1`) so a nested arrow THERE
+    /// parenthesizes (`(A -> B) -> C`), while the right operand stays at `PREC_ARROW` so the natural
+    /// right nesting prints without parens. The whole type parenthesizes when the surrounding context
+    /// binds tighter than the arrow (e.g. an arrow type used as an application argument).
+    fn arrow(&mut self, l: StructId, r: StructId, parent_prec: u8) {
+        let paren = PREC_ARROW < parent_prec;
+        // Collect the flat right spine: `A -> B -> C` is operands `[A, B, C]`.
+        let mut operands = vec![l];
+        let mut right = r;
+        loop {
+            if let Struct::List(items) = self.a.get(right)
+                && items.len() == 3
+                && self.head_name(items[0]).as_deref() == Some("->")
+            {
+                operands.push(items[1]);
+                right = items[2];
+                continue;
+            }
+            break;
+        }
+        operands.push(right);
+
+        self.doc.ibox(INDENT);
+        if paren {
+            self.doc.word("(");
+        }
+        for (i, &operand) in operands.iter().enumerate() {
+            if i > 0 {
+                self.doc.space(); // break BEFORE the arrow
+                self.doc.word("-> ");
+            }
+            // Every operand but the last is a left operand of an arrow: bind one tighter so a nested
+            // arrow there parenthesizes. The last is the final result, printed at the arrow's own prec.
+            let operand_prec = if i + 1 < operands.len() {
+                PREC_ARROW + 1
+            } else {
+                PREC_ARROW
+            };
+            self.expr(operand, operand_prec);
+        }
+        if paren {
+            self.doc.word(")");
+        }
+        self.doc.end();
+    }
+
     /// `let n = e, … in body` — the binding(s), `in`, then the body on the next line. `in`
     /// self-delimits the `let`, so a `let` chain reads as flat `let x = e in` lines then the body.
     /// A `let` in a value position (`parent_prec > 0`) parenthesizes.
@@ -559,9 +611,37 @@ impl<'a> Printer<'a> {
         self.doc.end();
     }
 
-    /// `fn(p, …) => body`.
+    /// A function BODY that is a top-level type ascription `(: inner R)` denotes a RETURN TYPE: it is
+    /// the shape `def f(x) -> R = inner` and `fn(x) -> R => inner` desugar to. Returns `(inner, R)` so
+    /// the printer can put the `-> R` back in signature position (round-tripping the surface form),
+    /// leaving `inner` as the printed body. Any other body has no return type.
+    fn return_type(&self, body: StructId) -> Option<(StructId, StructId)> {
+        let t = self.a.as_form(body, ":")?;
+        if t.len() == 2 {
+            Some((t[0], t[1]))
+        } else {
+            None
+        }
+    }
+
+    /// The return-type arrow `-> R` in signature position (before `=`/`=>`), when the body carries one.
+    fn print_return_type(&mut self, ret_ty: Option<StructId>) {
+        if let Some(ty) = ret_ty {
+            self.doc.word(" -> ");
+            // Bind one tighter than the arrow so a function-typed return still reads as one arrow chain
+            // (`-> Int64 -> Int64` is the curried result), not a parenthesized inner arrow.
+            self.expr(ty, PREC_ARROW);
+        }
+    }
+
+    /// `fn(p, …) => body`, or `fn(p, …) -> R => inner` when the body is a return-type ascription.
     fn print_fn(&mut self, args: &[StructId], parent_prec: u8) {
         let paren = parent_prec > 0;
+        // A body that is a top-level ascription is a return type — hoist it to signature position.
+        let (body, ret_ty) = match self.return_type(args[1]) {
+            Some((inner, ty)) => (inner, Some(ty)),
+            None => (args[1], None),
+        };
         self.doc.cbox(0);
         if paren {
             self.doc.word("(");
@@ -576,10 +656,12 @@ impl<'a> Printer<'a> {
                 self.print_param(p);
             }
         }
-        self.doc.word(") =>");
+        self.doc.word(")");
+        self.print_return_type(ret_ty);
+        self.doc.word(" =>");
         // A block-like body hugs the `=>` (breaks internally); a plain body drops to an indented
         // line if it overflows — same discipline as a def's `=` body.
-        self.body_after_eq(args[1]);
+        self.body_after_eq(body);
         if paren {
             self.doc.word(")");
         }
@@ -592,7 +674,13 @@ impl<'a> Printer<'a> {
     fn print_def(&mut self, args: &[StructId]) {
         let signature = args[0];
         let docs = &args[1..args.len() - 1];
-        let body = args[args.len() - 1];
+        let raw_body = args[args.len() - 1];
+        // A body that is a top-level ascription is a RETURN TYPE — hoist it to signature position as
+        // `-> R`, leaving `inner` as the printed body (`def f(x) -> R = inner`).
+        let (body, ret_ty) = match self.return_type(raw_body) {
+            Some((inner, ty)) => (inner, Some(ty)),
+            None => (raw_body, None),
+        };
         // Offset 0: a hugged block body (match/let/…) carries its own indentation relative to its
         // own start column, so the def box must not add another level on top. A plain-expression
         // body that overflows is indented explicitly by `body_after_eq`.
@@ -610,7 +698,9 @@ impl<'a> Printer<'a> {
                 }
                 self.print_param(p);
             }
-            self.doc.word(") =");
+            self.doc.word(")");
+            self.print_return_type(ret_ty);
+            self.doc.word(" =");
         }
         self.body_after_eq(body);
         self.doc.end();
@@ -1529,6 +1619,55 @@ mod tests {
         // the underlying AST is the binder-position annotation `(: a Int64)`
         let a = sexpr::read("(def (f (: a Int64)) a)").unwrap();
         assert_eq!(print(&a, 80), "def f(a: Int64) = a");
+    }
+
+    #[test]
+    fn function_type_arrow() {
+        // `(-> A B)` prints as the ML infix `A -> B` and round-trips (the inverse of the reader).
+        assert_eq!(
+            print(&sexpr::read("(-> Int64 Bool)").unwrap(), 80),
+            "Int64 -> Bool"
+        );
+        // RIGHT-associative: `A -> B -> C` is `(-> A (-> B C))`, printed without inner parens.
+        let a = sexpr::read("(-> Int64 (-> Int64 Bool))").unwrap();
+        assert_eq!(print(&a, 80), "Int64 -> Int64 -> Bool");
+        // A left-nested arrow (a function-typed ARGUMENT) parenthesizes: `(A -> B) -> C`.
+        let a = sexpr::read("(-> (-> Int64 Int64) Bool)").unwrap();
+        assert_eq!(print(&a, 80), "(Int64 -> Int64) -> Bool");
+        // An arrow type in a parameter annotation round-trips.
+        assert_eq!(
+            assert_roundtrip("def apply(g: Int64 -> Bool, n: Int64) = g(n)", 80),
+            "def apply(g: Int64 -> Bool, n: Int64) = g(n)"
+        );
+    }
+
+    #[test]
+    fn return_type_annotation() {
+        // A def return type `-> R` desugars to a body ascription `(: body R)` and prints back in
+        // signature position. It round-trips and the underlying AST is the ascription form.
+        assert_eq!(
+            assert_roundtrip("def add(x: Int64, y: Int64) -> Int64 = x + y", 80),
+            "def add(x: Int64, y: Int64) -> Int64 = x + y"
+        );
+        let a = parser::read_ml("def add(x: Int64) -> Int64 = x + 1");
+        assert_eq!(
+            sexpr::print(&a.arenas),
+            "(def (add (: x Int64)) (: (+ x 1) Int64))"
+        );
+        // A lambda return type behaves the same way.
+        assert_eq!(
+            assert_roundtrip("fn(x: Int64) -> Int64 => x * 2", 80),
+            "fn(x: Int64) -> Int64 => x * 2"
+        );
+        // A return type that IS a function type (curried) reads as one arrow chain.
+        assert_eq!(
+            assert_roundtrip("def mk(k: Int64) -> Int64 -> Int64 = fn(x) => x + k", 80),
+            "def mk(k: Int64) -> Int64 -> Int64 = fn(x) => x + k"
+        );
+        // A body written as a bare value ascription `(: e R)` canonicalizes to the return-type form —
+        // one AST, printed in the cleaner spelling.
+        let a = sexpr::read("(def (main) (: (f x) Int64))").unwrap();
+        assert_eq!(print(&a, 80), "def main() -> Int64 = f(x)");
     }
 
     #[test]

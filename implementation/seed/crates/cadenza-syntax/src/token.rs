@@ -88,8 +88,9 @@ impl Kind {
     /// no op name.
     pub fn op_str(self) -> Option<&'static str> {
         Some(match self {
-            Kind::EqEq => "=",  // equality: surface `==`, arena head `=`
-            Kind::Colon => ":", // type ascription: `e : T` -> `(: e T)`
+            Kind::EqEq => "=",   // equality: surface `==`, arena head `=`
+            Kind::Colon => ":",  // type ascription: `e : T` -> `(: e T)`
+            Kind::Arrow => "->", // function type: `A -> B` -> `(-> A B)` (right-associative)
             Kind::Lt => "<",
             Kind::Gt => ">",
             Kind::Le => "<=",
@@ -176,38 +177,53 @@ pub fn is_reserved(text: &str) -> bool {
 }
 
 /// Member access and application bind tightest.
-pub const PREC_MEMBER: u8 = 11;
+pub const PREC_MEMBER: u8 = 12;
 
 /// Type ascription `e : T` binds loosest of all — looser than every arithmetic/logical operator — so
 /// `2 + 2 : Int64` groups as `(: (+ 2 2) Int64)`: the ascription wraps the whole expression.
 pub const PREC_ASCRIPTION: u8 = 1;
 
-/// The pipeline operator `|>` binds looser than every binary operator EXCEPT ascription, so
-/// `total + tax |> round` groups as `(|> (+ total tax) round)` — the whole left expression is the
-/// value threaded into the right — matching the F#/Elm/OCaml convention. Left-associative like every
-/// operator, so `a |> f |> g` is `(|> (|> a f) g)` — a left-to-right pipeline.
-pub const PREC_PIPELINE: u8 = 2;
+/// The function-type arrow `A -> B` -> `(-> A B)`. The loosest TYPE constructor, just above ascription,
+/// so an ascribed/annotated type captures the whole arrow (`e : A -> B` is `(: e (-> A B))`, and a
+/// return type `-> A -> B` is the curried arrow). It is the one RIGHT-associative operator (see
+/// [`is_right_assoc`]): `A -> B -> C` groups as `A -> (B -> C)`, the standard curried reading.
+pub const PREC_ARROW: u8 = 2;
+
+/// The pipeline operator `|>` binds looser than every binary operator EXCEPT ascription and the type
+/// arrow, so `total + tax |> round` groups as `(|> (+ total tax) round)` — the whole left expression is
+/// the value threaded into the right — matching the F#/Elm/OCaml convention. Left-associative like
+/// every operator, so `a |> f |> g` is `(|> (|> a f) g)` — a left-to-right pipeline.
+pub const PREC_PIPELINE: u8 = 3;
+
+/// True for the one RIGHT-associative infix operator, the type arrow `->`: `A -> B -> C` groups as
+/// `A -> (B -> C)`. Every other operator is left-associative. The parser recurses at `prec` (not
+/// `prec + 1`) for a right-associative operator, and the printer descends the RIGHT spine.
+pub fn is_right_assoc(op: &str) -> bool {
+    op == "->"
+}
 
 /// The precedence (binding power) of a binary operator NAME (the ARENA head — `=` is equality here,
-/// spelled `==` on the surface; `:` is ascription), or `None` if it is not infix. The single source
-/// of truth shared by the parser (Pratt `min_prec`) and printer (minimal-paren `prec`/`prec+1`
-/// split). All operators are left-associative.
+/// spelled `==` on the surface; `:` is ascription, `->` the type arrow), or `None` if it is not infix.
+/// The single source of truth shared by the parser (Pratt `min_prec`) and printer (minimal-paren
+/// `prec`/`prec+1` split). All operators are left-associative EXCEPT the type arrow (see
+/// [`is_right_assoc`]).
 ///
-/// Ordering (low→high): `: < |> < or < and < (== < > <= >=) < (| ^) < & < (<< >>) < (+ -) < (* / %) <
-/// member/app`. Ascription is loosest; the pipeline sits just above it; equality (`==`, arena head
-/// `=`) sits with the comparisons.
+/// Ordering (low→high): `: < -> < |> < or < and < (== < > <= >=) < (| ^) < & < (<< >>) < (+ -) < (* / %)
+/// < member/app`. Ascription is loosest; the type arrow sits just above it; the pipeline just above
+/// that; equality (`==`, arena head `=`) sits with the comparisons.
 pub fn infix_prec(op: &str) -> Option<u8> {
     Some(match op {
         ":" => PREC_ASCRIPTION, // 1 — loosest
-        "|>" => PREC_PIPELINE,  // 2 — looser than every operator but ascription
-        "or" => 3,
-        "and" => 4,
-        "=" | "<" | ">" | "<=" | ">=" => 5, // `=` = equality (surface `==`)
-        "|" | "^" => 6,
-        "&" => 7,
-        "<<" | ">>" => 8,
-        "+" | "-" | "+%" | "-%" => 9,
-        "*" | "/" | "%" | "*%" => 10,
+        "->" => PREC_ARROW,     // 2 — the loosest type constructor
+        "|>" => PREC_PIPELINE,  // 3 — looser than every operator but ascription and `->`
+        "or" => 4,
+        "and" => 5,
+        "=" | "<" | ">" | "<=" | ">=" => 6, // `=` = equality (surface `==`)
+        "|" | "^" => 7,
+        "&" => 8,
+        "<<" | ">>" => 9,
+        "+" | "-" | "+%" | "-%" => 10,
+        "*" | "/" | "%" | "*%" => 11,
         _ => return None,
     })
 }
@@ -223,6 +239,7 @@ mod tests {
         for k in [
             Kind::EqEq,
             Kind::Colon,
+            Kind::Arrow,
             Kind::Lt,
             Kind::Gt,
             Kind::Le,
@@ -256,9 +273,15 @@ mod tests {
     #[test]
     fn precedence_orders_as_documented() {
         // Ascription is loosest of all.
-        assert!(infix_prec(":") < infix_prec("|>"));
+        assert!(infix_prec(":") < infix_prec("->"));
         assert_eq!(infix_prec(":"), Some(PREC_ASCRIPTION));
-        // The pipeline sits just above ascription — looser than every other operator.
+        // The type arrow sits just above ascription — the loosest type constructor — and is the one
+        // right-associative operator.
+        assert_eq!(infix_prec("->"), Some(PREC_ARROW));
+        assert!(infix_prec("->") < infix_prec("|>"));
+        assert!(is_right_assoc("->"));
+        assert!(!is_right_assoc("+"));
+        // The pipeline sits just above the type arrow — looser than every non-type operator.
         assert_eq!(infix_prec("|>"), Some(PREC_PIPELINE));
         assert!(infix_prec("|>") < infix_prec("or"));
         assert!(infix_prec("or") < infix_prec("and"));
@@ -279,5 +302,6 @@ mod tests {
         // every other operator glyph is identity.
         assert_eq!(infix_glyph("+"), "+");
         assert_eq!(infix_glyph(":"), ":");
+        assert_eq!(infix_glyph("->"), "->");
     }
 }
