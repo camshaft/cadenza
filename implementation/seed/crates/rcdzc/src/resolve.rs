@@ -56,6 +56,12 @@ const GRAMMAR: &[&str] = &[
     "let",
     "if",
     "match",
+    // `quote` is a NON-STRICT form — it SUPPRESSES evaluation of its operand (yielding the operand's AST
+    // rather than its value), control flow like `if`/`match`, NOT a strict prelude record (which would
+    // evaluate the operand). Kept here so a `(quote …)` is an expression the resolver dispatches
+    // structurally. This increment only rejects the DEGENERATE zero-operand `(quote)` (malformed,
+    // CDZ0201); real quotation (building an `Ast` value) is the metaprogramming vertical.
+    "quote",
     // `and`/`or`/`not` are SHORT-CIRCUITING boolean connectives — CONTROL FLOW (like `if`), not strict
     // value operators, so they are grammar, NOT prelude records (a strict `(meta apply)` record would
     // evaluate both operands, breaking the shield core-semantics.md §Boolean Connectives Short-Circuit
@@ -255,6 +261,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some(h @ ("and" | "or")) => resolve_connective(db, id, h == "and"),
                 Some("not") => resolve_not(db, id),
                 Some("match") => resolve_match(db, id),
+                Some("quote") => resolve_quote(db, id),
                 Some("bin") => resolve_bin(db, id),
                 Some("|>") => resolve_pipeline(db, id),
                 Some("handle") => resolve_handle(db, id),
@@ -1754,6 +1761,25 @@ fn resolve_not(db: &Db, id: StructId) -> Resolved {
         ));
     }
     Resolved::Not { operand: tail[0] }
+}
+
+/// Resolve `(quote FORM)` — the non-strict quotation form. `quote` requires EXACTLY ONE operand: the form
+/// it denotes. This increment handles only the DEGENERATE arity check — a zero-operand `(quote)` has
+/// nothing to quote, so it is MALFORMED (CDZ0201, 07-type-system "an empty quote is rejected, not a
+/// crash"): the compiler rejects it rather than panicking reaching for the absent quoted node. A
+/// well-formed `(quote FORM)` (one operand) DECLINES — building the `Ast` value it denotes is the
+/// metaprogramming vertical (12-metaprogramming), not yet realized — so it is a Todo, never a miscompile.
+fn resolve_quote(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, "quote").unwrap_or(&[]);
+    if tail.len() != 1 {
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            "quote takes exactly one operand — the form it denotes",
+        ));
+    }
+    Resolved::Poison(Reject::decline(
+        "quote produces an AST value (not yet built)",
+    ))
 }
 
 /// Resolve `(match SCRUTINEE (PATTERN BODY)…)` into its resolved form. The scrutinee and each arm's
