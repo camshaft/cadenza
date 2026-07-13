@@ -1720,6 +1720,28 @@
             (export main)))
   (output (: 3 Int64)))
 
+(case "an unannotated generic recursive tree consumer whose result is independent of the payload infers"
+  (doc    "The boundary of the recursive-sum-parameter inference: a generic branching tree consumed by an
+           UNANNOTATED recursive function INFERS when its result does NOT depend on the generic payload
+           type. `(type Tree (Leaf a) (Node (Tuple (Tree a) (Tree a))))` with `(def (cnt t) (match t
+           ((Tree.Leaf _) 1) ((Tree.Node (tuple l r)) (+ (cnt l) (cnt r)))))` — the `Leaf` arm IGNORES the
+           payload and returns a bare Int64, so `cnt`'s result is Int64 regardless of `a`; the parameter's
+           `a` never needs solving, and the branching-recursion shape is inferred from the patterns.
+           `cnt` of a two-leaf node is 2. Pins that a generic recursive sum need not be annotated when the
+           consumer is parametric in the payload — the annotation is required only when the result TYPE
+           depends on the payload (the `(sm t)` fold above, where the `Leaf` arm returns `n : a`, which is
+           the deferred polymorphic-recursion increment).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Tree (Leaf a) (Node (Tuple (Tree a) (Tree a))))
+            (def (cnt t)
+              (match t
+                ((Tree.Leaf _) 1)
+                ((Tree.Node (tuple l r)) (+ (cnt l) (cnt r)))))
+            (def (main) (cnt (Tree.Node (tuple (Tree.Leaf 3) (Tree.Leaf 4)))))
+            (export main)))
+  (output (: 2 Int64)))
+
 (case "a recursively-built linked list renders its full runtime spine"
   (doc    "The RENDER counterpart of the runtime-fold cases: a list whose spine is built by a
            self-recursive function (so its length is decided at run time) is returned as the program's

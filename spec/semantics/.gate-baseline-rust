@@ -901,6 +901,7 @@ todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimensio
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a default-integer pragma naming a non-integer type is rejected
+pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
 todo	a delegated capability is not itself an export field
 todo	a delegated effect performed inside an intra-program handler
 todo	a different function argument through the same recursive higher-order function

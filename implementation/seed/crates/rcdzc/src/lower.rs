@@ -4554,6 +4554,7 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
 enum ShapeNode {
     Int,
     Bool,
+    Float,
     Str,
     Bytes,
     Unit,
@@ -4588,6 +4589,11 @@ impl ShapeTableBuilder {
         Some(match ty {
             Ty::Int(_) => self.push(ShapeNode::Int),
             Ty::Bool => self.push(ShapeNode::Bool),
+            // A FLOAT64 payload is renderable (`box_op_ty`/`get_op_ty` box it via `box-float`/`get-float`,
+            // and the runtime `value-encode` renders a KIND_FLOAT decimal leaf). A FLOAT32 payload still
+            // declines at the box layer (an f32-slot needs a promote/demote coercion), so it falls through
+            // to the `_ => None` decline below — its recursive-sum escape is a later slice.
+            Ty::Float(ft) if ft.ground_width() == 64 => self.push(ShapeNode::Float),
             Ty::String => self.push(ShapeNode::Str),
             Ty::Bytes => self.push(ShapeNode::Bytes),
             Ty::Unit => self.push(ShapeNode::Unit),
@@ -4692,7 +4698,8 @@ impl ShapeTableBuilder {
             match node {
                 ShapeNode::Int => d.push(0),
                 ShapeNode::Bool => d.push(1),
-                ShapeNode::Str => d.push(3), // matches the runtime `decode_shape` tag 3 = Str
+                ShapeNode::Float => d.push(2), // matches the runtime `decode_shape` tag 2 = Float
+                ShapeNode::Str => d.push(3),   // matches the runtime `decode_shape` tag 3 = Str
                 ShapeNode::Bytes => d.push(4), // matches the runtime `decode_shape` tag 4 = Bytes
                 ShapeNode::Unit => d.push(5),
                 ShapeNode::Tuple(idxs) => {
@@ -6547,6 +6554,30 @@ fn is_full_mask_for(db: &mut Db, val: StructId, mask_core: &Core) -> bool {
     };
     let low = (1i64 << bits) - 1; // 2^bits - 1, all bits the value can possibly set
     (m & low) == low
+}
+
+/// For a `BitAnd` at emit time, whether the constant mask on ONE side covers the WHOLE provable range of
+/// the value on the other side — so `v & M == v` and the `&` is redundant. Returns the VALUE operand to
+/// emit alone (`Some(v)`), or `None` when neither side is such a redundant mask. This is the EMIT-TIME
+/// sibling of the `is_full_mask_for` lower fold: identical soundness (a nonneg `v ∈ [0, 2^B)` whose bits
+/// `M` all covers), but it consults `value_range` HERE — where the flow-refinement stack is populated — so
+/// it fires on a refined value the lower fold could not see (`(if (and (>= x 0) (< x 256)) (& x 255) …)`:
+/// under the branch `x ∈ [0,255]`, `x & 255 == x`). Both operand orders are tried. The `&` is TOTAL, so
+/// eliding it drops no trap; returning the value operand preserves its own evaluation (and any trap in it).
+pub(crate) fn redundant_and_mask_value(
+    db: &mut Db,
+    lhs: StructId,
+    rhs: StructId,
+) -> Option<StructId> {
+    let rc = core_of(db, rhs);
+    if is_full_mask_for(db, lhs, &rc) {
+        return Some(lhs); // `(& v M)` with M covering v's range → v
+    }
+    let lc = core_of(db, lhs);
+    if is_full_mask_for(db, rhs, &lc) {
+        return Some(rhs); // `(& M v)` → v
+    }
+    None
 }
 
 /// Whether the dividend `val` is provably in `[0, divisor − 1]` for a positive `divisor` — so a truncating

@@ -136,6 +136,8 @@ const OP_BOX_INT: &str = "box-int";
 const OP_GET_INT: &str = "get-int";
 const OP_BOX_BOOL: &str = "box-bool";
 const OP_GET_BOOL: &str = "get-bool";
+const OP_BOX_FLOAT: &str = "box-float";
+const OP_GET_FLOAT: &str = "get-float";
 /// `sum-new(disc, payload) -> handle` — build a sum value from its discriminant and a single payload
 /// handle (`value-heap-runtime.md` §Sum). The payload is: an empty array for a nullary variant, the
 /// boxed value for a one-payload variant, or a tuple handle for a multi-payload variant.
@@ -498,6 +500,12 @@ fn box_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
     match ty {
         Ty::Int(_) => Ok(Some(OP_BOX_INT)),
         Ty::Bool => Ok(Some(OP_BOX_BOOL)),
+        // A FLOAT64 element boxes with `box-float`: its machine slot is an `f64` (`valtype_of` → F64),
+        // which IS `box-float`'s argument, so NO coercion is needed (the shared `emit_box_i32_to_i64_extend`
+        // before the box op is a no-op for a non-int/non-enum-disc value). A FLOAT32 slot is an `f32`, which
+        // would need an `f64.promote_f32` before `box-float` and an `f32.demote_f64` after `get-float` at
+        // every box/unbox emit site — a separate width-coercion slice — so it DECLINES here for now.
+        Ty::Float(ft) if ft.ground_width() == 64 => Ok(Some(OP_BOX_FLOAT)),
         // A nested compound — a tuple/record, a SUM (its `sum-new` handle), a LIST (`vec-*` handle), a
         // MAP (its CHAMP `map-*` handle), a BYTES sequence (`bytes-*` handle), or a STRING (a UTF-8
         // byte-leaf handle) — is already a u32 handle, so it is `arr-set` into the parent array (or used
@@ -551,6 +559,9 @@ fn get_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
     match ty {
         Ty::Int(_) => Ok(Some(OP_GET_INT)),
         Ty::Bool => Ok(Some(OP_GET_BOOL)),
+        // A FLOAT64 element reads back with `get-float` (returns an `f64`, the value's machine slot) — the
+        // dual of `box_op_ty`'s Float64 arm, coercion-free. FLOAT32 declines (see there).
+        Ty::Float(ft) if ft.ground_width() == 64 => Ok(Some(OP_GET_FLOAT)),
         // A nested compound / SUM / LIST / MAP / BYTES / STRING handle `arr-get` (or `sum-payload`) yields
         // is used as-is — no unbox. A CLOSURE (`Ty::Fn`) is a u32 cell handle too — a captured fn-typed
         // value (`Core::Captured` of a closure) reads back the handle directly, ready for a `call_indirect`.
@@ -4106,6 +4117,17 @@ fn emit(
                 }
                 Prim::BitAnd | Prim::BitOr | Prim::BitXor => {
                     let ot = IntTy::fixed(m.signed, m.width);
+                    // REDUNDANT-MASK ELISION (flow-sensitive): `(& v M)` where the constant `M` covers `v`'s
+                    // whole provable range is just `v` — emit the value alone, drop the mask. This is the
+                    // emit-time sibling of the `is_full_mask_for` lower fold; it fires where `lower` cannot,
+                    // on a value the branch REFINEMENT bounds (`(if (and (>= x 0) (< x 256)) (& x 255) …)` →
+                    // `x & 255 == x` under `x ∈ [0,255]`). `&` is total (no trap dropped) and the value
+                    // operand is emitted so its own evaluation/traps stay.
+                    if op == Prim::BitAnd
+                        && let Some(v) = crate::lower::redundant_and_mask_value(db, lhs, rhs)
+                    {
+                        return emit_operand(db, v, ot, slots, base, high, scratch_ty, layout, out);
+                    }
                     emit_operand(db, lhs, ot, slots, base, high, scratch_ty, layout, out)?;
                     emit_operand(db, rhs, ot, slots, base, high, scratch_ty, layout, out)?;
                     out.push(m.bitwise(op));
