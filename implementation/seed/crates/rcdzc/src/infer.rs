@@ -483,6 +483,42 @@ fn additive_op_noun(prim: Option<crate::resolved::Prim>) -> &'static str {
     }
 }
 
+/// `""` for exactly one, `"s"` otherwise — the plural suffix for a count in a diagnostic.
+fn plural_s(n: u32) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+/// "N open bit(s)" — the count of bit-field bits accumulated since the last byte boundary, for a
+/// CDZ0220 byte-alignment message.
+fn open_bits_phrase(bits: u32) -> String {
+    let open = bits % 8;
+    format!("{open} open bit{}", plural_s(open))
+}
+
+/// The actionable "add N more bit(s) to reach K byte(s)" hint for a CDZ0220 byte-alignment fault — how
+/// far the running bit-cursor is from the next byte boundary, and the byte count once closed. `bits` is
+/// the total accumulated bit-field width; only called when it is NOT a whole number of bytes. When there
+/// is a lower byte boundary above zero (`bits >= 8`), the alternative "drop M bits" is offered too; a
+/// sub-byte total (`bits < 8`) omits it (dropping would reach zero bytes — not useful advice).
+fn bits_to_byte_boundary_hint(bits: u32) -> String {
+    let pad = (8 - (bits % 8)) % 8;
+    let bytes = bits.div_ceil(8);
+    let over = bits % 8;
+    let add = format!(
+        "add {pad} more bit{} to reach {bytes} byte{}",
+        plural_s(pad),
+        plural_s(bytes)
+    );
+    if bits >= 8 {
+        format!(
+            "{add} (or drop {over} bit{} to the previous boundary)",
+            plural_s(over)
+        )
+    } else {
+        add
+    }
+}
+
 /// The declared type of an annotated parameter whose NAME occurrence is `binder`, if any. A parameter
 /// is annotated when its name sits in a `(: name T)` binder (the name's parent is that form); the type
 /// is `T` reduced to a `Ty` by the evaluator (`typeval_of`). `None` for a bare (unannotated) parameter
@@ -3121,7 +3157,12 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         if !bit_cursor.is_multiple_of(8) {
                             out.push(Reject::coded(
                                 Code::IllFormedBinary,
-                                "a bin integer segment must start on a byte boundary (preceding bit-fields do not close a byte)",
+                                format!(
+                                    "a bin integer segment must start on a byte boundary, but {} of \
+                                     bit-fields precede it — {}",
+                                    open_bits_phrase(bit_cursor),
+                                    bits_to_byte_boundary_hint(bit_cursor),
+                                ),
                             ));
                         }
                     }
@@ -3129,7 +3170,12 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         if !bit_cursor.is_multiple_of(8) {
                             out.push(Reject::coded(
                                 Code::IllFormedBinary,
-                                "a bin bytes segment must start on a byte boundary (preceding bit-fields do not close a byte)",
+                                format!(
+                                    "a bin bytes segment must start on a byte boundary, but {} of \
+                                     bit-fields precede it — {}",
+                                    open_bits_phrase(bit_cursor),
+                                    bits_to_byte_boundary_hint(bit_cursor),
+                                ),
                             ));
                         }
                         // An UNSIZED bytes segment (splice-all / bind-rest) is legal only as the last
@@ -3151,7 +3197,12 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             if !bit_cursor.is_multiple_of(8) {
                 out.push(Reject::coded(
                     Code::IllFormedBinary,
-                    "a bin form's bit-fields must close to a whole number of bytes",
+                    format!(
+                        "a bin form's bit-fields must close to a whole number of bytes, but they total \
+                         {bit_cursor} bit{} — {}",
+                        plural_s(bit_cursor),
+                        bits_to_byte_boundary_hint(bit_cursor),
+                    ),
                 ));
             }
         }

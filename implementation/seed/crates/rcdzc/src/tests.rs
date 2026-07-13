@@ -6173,6 +6173,27 @@ mod match_engine {
     }
 
     #[test]
+    fn an_empty_quote_is_cdz0201_not_an_unbound_name() {
+        // 07-type-system "an empty quote is rejected, not a crash": `(quote)` with no operand is
+        // MALFORMED — quote requires exactly one operand, the form it denotes. It rejects CDZ0201 (a
+        // well-formedness defect), NOT the CDZ0101 unbound-name error a non-grammar `quote` head produced,
+        // and never panics reaching for the absent quoted node. `quote` is a grammar head now, so this is
+        // an arity check; a well-formed `(quote FORM)` still DECLINES (real quotation is the
+        // metaprogramming vertical), a Todo — a codeless decline, verified below.
+        assert_eq!(
+            reject_code("(module m (def (main) (quote)) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+        // A one-operand `(quote FORM)` is well-formed but not yet built → a codeless DECLINE (not CDZ0201,
+        // and no longer the CDZ0101 unbound-name error).
+        assert_eq!(
+            reject_code("(module m (def (main) (quote 5)) (export main))"),
+            None,
+            "a well-formed (quote FORM) declines (a Todo), it is not a coded rejection"
+        );
+    }
+
+    #[test]
     fn a_list_homogeneity_violation_is_cdz0201_by_shape() {
         // 05-compound-types §A List Is An Ordered Homogeneous Sequence — the same taxonomy line the numeric
         // operators and `if`-branches draw. A homogeneity violation between two DISTINCT NUMERIC types, or
@@ -7156,6 +7177,18 @@ mod match_engine {
         ] {
             assert_eq!(reject_code(src).as_deref(), Some("CDZ0220"), "src: {src}");
         }
+        // The byte-alignment message names the CONCRETE bit total and how far it is from a byte boundary
+        // (rustc-gold "add N more bits to reach K bytes"), not just the rule. `(bits 1 1) (bits 0 3)` = 4
+        // bits → 4 short of 1 byte.
+        let d = reject_full("(module m (def (main) (bin (bits 1 1) (bits 0 3))) (export main))")
+            .expect("a 4-bit bin is ill-formed");
+        assert_eq!(d.code.as_deref(), Some("CDZ0220"), "got: {}", d.message);
+        assert!(
+            d.message.contains("total 4 bits")
+                && d.message.contains("add 4 more bits to reach 1 byte"),
+            "names the bit total + the padding to the next byte: {}",
+            d.message
+        );
     }
 
     #[test]
@@ -13774,6 +13807,24 @@ mod stage1 {
                 "main"
             ),
             99
+        );
+    }
+
+    #[test]
+    fn a_non_tail_recursive_abort_declines_rather_than_miscompiles() {
+        // E4 abortive + non-tail recursion soundness guard (a MISCOMPILE regression). `walk` recurses in a
+        // NON-tail position — `(+ 1 (walk (- n 1)))` — and bails at the base. An abort ABANDONS the pending
+        // `+ 1` frames on the recursion stack, so the result should be the arm value 99. But a specialized
+        // `walk#ctx` returns 99 as an ORDINARY value, which flows back up through each caller's `+ 1` →
+        // 99+1+1+1 = 102, a MISCOMPILE. `specialize_recursive` declines when an abortive handler meets a
+        // callee with a non-tail self-call (`recursive_self_calls_all_tail` false) — it needs the
+        // non-local-exit convention (a later vertical). Contrast the TAIL case, which folds to 99.
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (walk (: n Int64)) (if (= n 0) (Bail.bail 99) (+ 1 (walk (- n 1))))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (walk 3))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a non-tail recursive abort must decline, not miscompile to 102"
         );
     }
 
