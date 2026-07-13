@@ -349,7 +349,7 @@ fn rustc_roundtrip_async_self_loop_deep_is_bounded() {
     );
     let driver = r#"
 struct GateEnv;
-impl prog::CdzEnv for GateEnv { async fn consume(&mut self, _g: u64) {} }
+impl cdz_rt::CdzEnv for GateEnv { async fn consume(&mut self, _g: u64) {} }
 fn block_on<F: core::future::Future>(mut f: F) -> F::Output {
     use core::task::*;
     fn n(_: *const ()) {} fn c(_: *const ()) -> RawWaker { r() }
@@ -448,13 +448,21 @@ fn rustc_run_driver(module: &str, driver: &str) -> Option<String> {
     // attrs stay valid at the mod head, then append the driver (which owns `fn main`).
     let full = format!("mod prog {{\n{module}\n}}\n{driver}");
     std::fs::write(&src_path, full).expect("write rust source");
-    let status = Command::new("rustc")
-        .args(["-O", "--edition", "2021"])
+    // An emitted ASYNC module `use`s `cdz_rt::CdzEnv` from the shared `cdz-rt` crate; link its rlib (a
+    // dev-dependency, so `cargo test` built it into the target dir). `cdz_rt_link()` finds the rlib +
+    // its `-L` search dir; if absent (rlib not built), skip the extern — a sync module needs no crate.
+    let mut cmd = Command::new("rustc");
+    cmd.args(["-O", "--edition", "2021"])
         .arg(&src_path)
         .arg("-o")
-        .arg(&bin_path)
-        .output()
-        .expect("run rustc");
+        .arg(&bin_path);
+    if let Some((dep_dir, rlib)) = cdz_rt_link() {
+        cmd.arg("-L")
+            .arg(format!("dependency={}", dep_dir.display()))
+            .arg("--extern")
+            .arg(format!("cdz_rt={}", rlib.display()));
+    }
+    let status = cmd.output().expect("run rustc");
     assert!(
         status.status.success(),
         "emitted async Rust did not compile:\n{}\n--- source ---\n{module}",
@@ -467,6 +475,32 @@ fn rustc_run_driver(module: &str, driver: &str) -> Option<String> {
         String::from_utf8_lossy(&run.stderr)
     );
     Some(String::from_utf8_lossy(&run.stdout).trim().to_string())
+}
+
+/// Locate the built `cdz-rt` rlib (a dev-dependency, so present when `cargo test` runs) and the `-L`
+/// search directory `rustc` needs, as `(dep_dir, rlib_path)`. The test binary lives in
+/// `target/<profile>/deps/`, and cargo writes dependency rlibs (with a metadata-hash suffix) into that
+/// same `deps/` dir — so search there for `libcdz_rt-*.rlib`. `None` if not found (then the async
+/// round-trip skips the extern; a sync module never needs the crate). A hashed name means picking the
+/// newest match, which the current build produced.
+fn cdz_rt_link() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let exe = std::env::current_exe().ok()?;
+    let deps = exe.parent()?.to_path_buf(); // …/target/<profile>/deps
+    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    for entry in std::fs::read_dir(&deps).ok()? {
+        let path = entry.ok()?.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.starts_with("libcdz_rt") && name.ends_with(".rlib") {
+            let mtime = path
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            if best.as_ref().is_none_or(|(t, _)| mtime >= *t) {
+                best = Some((mtime, path));
+            }
+        }
+    }
+    best.map(|(_, rlib)| (deps, rlib))
 }
 
 #[test]
@@ -669,6 +703,26 @@ fn a_recursive_sum_declines_the_whole_function() {
 }
 
 #[test]
+fn a_recursive_sum_constructed_as_a_discarded_intermediate_declines() {
+    // REGRESSION: a recursive sum's enum declines (needs Box), and the SIGNATURE guard catches a param/
+    // result of that type — but the fold can INLINE a helper that constructs the sum as a discarded
+    // intermediate (`mk` returns `(tuple (NLit 5) 9)`, `main` reads `.1` = the Int64 and drops the sum).
+    // `main`'s result is `Int64` (passes the signature guard), but its body still names `Node::NLit`,
+    // which was never declared → `cannot find type Node`. `sum_variant_path` must decline that construct.
+    let err = try_compile_rust(
+        "(module m (type Node (NLit Int64) (NAdd (Tuple Node Node))) \
+           (def (mk) (tuple (NLit 5) 9)) \
+           (def (main) (let ((l (mk))) (. l 1))) (export main))",
+    )
+    .expect_err("constructing a recursive sum, even as a discarded intermediate, must decline");
+    assert!(
+        err.iter()
+            .any(|d| d.contains("no emitted Rust enum") || d.contains("recursive")),
+        "decline reason should cite the unrepresentable sum: {err:?}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_user_sum_constructs_and_matches() {
     // area(Circle 5) = 25, area(Rect 4 3) = 12 — construction + match run through rustc and match the
     // wasm oracle. The driver constructs a variant and calls the export.
@@ -728,8 +782,13 @@ fn async_mode_emits_env_threaded_gas_metered_fns() {
     let rs = compile_rust_async(
         "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (let ((r (sum-to (+ n -1)))) (+ n r)))) (export sum-to))",
     );
-    // The gas/yield trait is declared once in the module.
-    assert!(rs.contains("pub trait CdzEnv"), "trait:\n{rs}");
+    // The gas/yield trait now lives in the SHARED `cdz-rt` crate (NOT re-declared per module); the
+    // module brings it into scope with a `use`, so an application implements `CdzEnv` once for all.
+    assert!(rs.contains("use cdz_rt::CdzEnv;"), "cdz_rt import:\n{rs}");
+    assert!(
+        !rs.contains("pub trait CdzEnv"),
+        "must NOT re-declare the trait:\n{rs}"
+    );
     // The fn is async, takes `env: &mut __CdzE`, and charges gas at entry. The env type param is the
     // reserved `__CdzE` (not a bare `E`) so it cannot collide with a user sum's Rust type name.
     assert!(
@@ -761,7 +820,7 @@ fn async_env_type_param_does_not_collide_with_a_user_sum_named_e() {
     // It compiles (the enum `E` and the env param no longer collide).
     let driver = r#"
 struct M;
-impl prog::CdzEnv for M { async fn consume(&mut self, _: u64) {} }
+impl cdz_rt::CdzEnv for M { async fn consume(&mut self, _: u64) {} }
 fn block_on<F: core::future::Future>(mut f: F) -> F::Output {
     use core::task::*;
     fn n(_: *const ()) {} fn c(_: *const ()) -> RawWaker { r() }
@@ -789,7 +848,7 @@ fn rustc_roundtrip_async_gas_metered() {
     // A driver: a Meter env (counts gas, panics past budget) + a minimal block_on executor.
     let driver = r#"
 struct Meter { spent: u64, budget: u64 }
-impl prog::CdzEnv for Meter {
+impl cdz_rt::CdzEnv for Meter {
     async fn consume(&mut self, g: u64) { self.spent += g; if self.spent > self.budget { panic!("oom") } }
 }
 fn block_on<F: core::future::Future>(mut f: F) -> F::Output {

@@ -376,6 +376,7 @@ fn dwarf_funcs_for(
                     name: lv.name.clone(),
                     slot: lv.slot,
                     base,
+                    is_param: lv.is_param,
                 })
             })
             .collect();

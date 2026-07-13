@@ -1098,10 +1098,21 @@ fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
 /// so they match the emitted `enum` declaration. Declines if the node is not a sum or the disc is out of
 /// range (a compiler bug — a `SumNew` always carries a sum type + an in-range disc).
 fn sum_variant_path(db: &mut Db, id: StructId, disc: u32) -> Result<String, Reject> {
-    let decl_occ = match type_of(db, id) {
+    let ty = type_of(db, id);
+    let decl_occ = match ty {
         Ty::Sum { decl, .. } => decl,
         _ => return Err(Reject::decline("sum construction node is not a sum type")),
     };
+    // The sum's enum must have EMITTED — a recursive/unrepresentable sum has no Rust type, so naming
+    // `<Enum>::<Variant>` here would reference an undeclared type. This catches a construct/match of such
+    // a sum ANYWHERE IN A BODY (not just a signature): the fold can inline a helper that builds a
+    // non-representable sum as a discarded intermediate (`(. (tuple (NLit 5) 9) 1)` keeps only the Int64,
+    // but still constructs `Node::NLit`), which the signature-level `sum_representable` guard cannot see.
+    if !super::enums::sum_representable(db, &ty) {
+        return Err(Reject::decline(
+            "a construct/match of a sum with no emitted Rust enum (recursive/unrepresentable)",
+        ));
+    }
     let decl = db
         .type_decl_by_occ(decl_occ)
         .ok_or_else(|| Reject::decline("sum declaration not found"))?;

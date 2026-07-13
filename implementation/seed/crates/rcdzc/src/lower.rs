@@ -120,6 +120,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 .collect();
             Core::BytesOf { elems }
         }
+        // A `(bin …)` construction in value position → the assembled byte sequence. On all-constant
+        // segments it FOLDS to a `Core::BytesOf` of the emitted bytes (bakes at escape, compares/slices as
+        // a constant — the same shape `b"…"`/`String.to-bytes` build); a runtime segment value takes the
+        // runtime path (BN4). See `lower_bin_build`.
+        Resolved::Bin { segs } => lower_bin_build(db, id, &segs),
         // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
         // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where
@@ -509,21 +514,25 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // (constructors build, prims fold, defs β-reduce/inline) and must NOT be diverted here — so
             // this is gated on the head being a bare parameter, not merely on its type being `Ty::Fn`.
             // A multi-arg application `(g a b)` is a FULL-arity call of a multi-param closure (all args
-            // pushed to one `call_indirect`); a PARTIAL application (fewer args than the closure's arity)
-            // is runtime currying — it must build an intermediate closure, which is not yet supported, so
-            // it declines at select (the `call_indirect` type won't match). Checked before the lambda path.
-            if head_is_runtime_fn_value(db, head)
-                && matches!(crate::infer::type_of(db, head), crate::ty::Ty::Fn(_, _))
-            {
-                if args.is_empty() {
+            // pushed to one `call_indirect`). CURRIED SYNTAX — `((g n) 1)` — is the SAME full-arity call
+            // written with nested parens: the head `(g n)` is ITSELF an application of the runtime fn `g`,
+            // so the whole spine is `g` applied to `[n, 1]`. `runtime_fn_spine` peels the nested `Apply`
+            // heads and gathers every argument left-to-right, reaching the ONE runtime fn value at the
+            // bottom; the accumulated args go to a single `call_indirect` (`closure_type_index` peels
+            // `args.len()` arrows off the closure's curried type to match the lifted lambda). A genuine
+            // PARTIAL application — a spine that stops SHORT of full arity, e.g. `(g n)` bound and returned
+            // — still declines at select (no lifted lambda's arity matches the short arg list), since it
+            // would need to build an intermediate closure. Checked before the lambda-reduction path.
+            if let Some((fn_head, all_args)) = runtime_fn_spine(db, id) {
+                if all_args.is_empty() {
                     return Core::Poison(Reject::decline(
                         "a runtime closure applied to no arguments",
                     ));
                 }
-                trace!(target: "rcdzc::lower", node = id.0, head = head.0, n_args = args.len(), "apply: runtime closure application → Core::CallClosure");
+                trace!(target: "rcdzc::lower", node = id.0, head = fn_head.0, n_args = all_args.len(), "apply: runtime closure application (spine-flattened) → Core::CallClosure");
                 return Core::CallClosure {
-                    closure: head,
-                    args: args.to_vec(),
+                    closure: fn_head,
+                    args: all_args,
                 };
             }
             // A LAMBDA head β-reduces (substitute args for params) and the reduced body lowers — this
@@ -2144,6 +2153,36 @@ fn head_is_runtime_fn_value(db: &mut Db, id: StructId) -> bool {
     }
 }
 
+/// Peel a CURRIED APPLICATION SPINE `(((f a) b) c)` into its ultimate RUNTIME FUNCTION-VALUE head and
+/// the full left-to-right argument list `[a, b, c]`. The curried surface `((g n) 1)` is the SAME
+/// full-arity application as `(g n 1)` — each nested `Apply` head contributes its own arguments, and the
+/// bottom head is the one runtime fn value they all apply to. Returns `Some((f, args))` iff that bottom
+/// head is a runtime function value (a fn-typed param / heap-held closure — `head_is_runtime_fn_value`)
+/// of arrow type; `None` if the head is anything else (a lambda that β-reduces, a constructor, a prim, a
+/// def), so those keep their own lowering paths. The accumulated args feed ONE `call_indirect`; if their
+/// count doesn't match a lifted lambda's arity (a genuine partial or over-application) it declines at
+/// select rather than fabricating an intermediate closure.
+fn runtime_fn_spine(db: &mut Db, id: StructId) -> Option<(StructId, Vec<StructId>)> {
+    match resolved_of(db, id) {
+        Resolved::Apply { head, args } => {
+            // A nested application head — recurse and PREPEND the deeper spine's args (they bind to the
+            // function's leading parameters), then this level's args.
+            if let Some((fn_head, mut spine_args)) = runtime_fn_spine(db, head) {
+                spine_args.extend_from_slice(&args);
+                return Some((fn_head, spine_args));
+            }
+            // Bottom of the spine: the head is a direct runtime fn value applied to this level's args.
+            if head_is_runtime_fn_value(db, head)
+                && matches!(crate::infer::type_of(db, head), crate::ty::Ty::Fn(_, _))
+            {
+                return Some((head, args.to_vec()));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Lower a `(fn (param…) body)` that survives as a RUNTIME value — LAMBDA-LIFT it to a standalone
 /// function and produce a `Core::Closure` naming its funcref-table slot + capture set. Single-parameter
 /// only (the curried surface reduces multi-param application via partial application upstream). The
@@ -2449,6 +2488,11 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         Resolved::Tuple { elems } | Resolved::List { elems } => {
             elems.iter().any(|&e| ref_escapes_whole(db, e, init))
         }
+        // A `(bin …)` construction uses each segment's value slot (and dependent size) as a whole value.
+        Resolved::Bin { segs } => segs.iter().any(|s| {
+            ref_escapes_whole(db, s.slot, init)
+                || matches!(&s.kind, crate::resolved::SegKind::Bytes { size: Some(n) } if ref_escapes_whole(db, *n, init))
+        }),
         Resolved::Annot { expr, .. } => ref_escapes_whole(db, expr, init),
         Resolved::Apply { head, args } => {
             ref_escapes_whole(db, head, init)
@@ -3228,6 +3272,16 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
             n
         }
         Resolved::Member { operand, .. } => uses_in(db, operand, init),
+        Resolved::Bin { segs } => {
+            let mut n = 0;
+            for s in segs.iter() {
+                n += uses_in(db, s.slot, init);
+                if let crate::resolved::SegKind::Bytes { size: Some(sz) } = &s.kind {
+                    n += uses_in(db, *sz, init);
+                }
+            }
+            n
+        }
         Resolved::Tuple { elems } | Resolved::List { elems } => {
             let mut n = 0;
             for &e in elems.iter() {
@@ -4682,6 +4736,79 @@ fn lower_bytes_slice(
         disc_some,
         disc_none,
     }
+}
+
+/// Lower `(bin <segment>…)` in EXPRESSION position — construct a `Bytes`. BN1 realizes the FIXED-WIDTH
+/// INTEGER segments (`uNN`/`iNN`, big-endian, `le` modifier): a CONSTANT segment value folds to its `w`
+/// encoded bytes (big-endian MSB-first, reversed for `le`; signed values as two's-complement), assembled
+/// across all segments into a single `Core::BytesOf` of synthesized `UInt8` `Leaf::Int` elems — so a
+/// constant `(bin …)` bakes/compares/slices exactly like `(Bytes.of (list …))`, no runtime op. A value
+/// OUT OF RANGE for its segment (`(u8 256)`, `(u8 -1)`) is a compile-provable trap (CDZ0304 — the
+/// build-fail companion of the runtime "binary value does not fit segment" trap). `(bin)` (no segments)
+/// is the empty byte sequence. A `bits`/`bytes` segment, or a RUNTIME (non-constant) integer value, is
+/// not folded here yet — declines cleanly (BN2 bit-fields, BN4 dependent-bytes + the runtime path).
+fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment]) -> Core {
+    use crate::resolved::SegKind;
+    let mut raw: Vec<u8> = Vec::new();
+    for seg in segs {
+        match &seg.kind {
+            SegKind::Int { width, signed } => {
+                let w = *width as u32;
+                let bits = w * 8;
+                match core_of(db, seg.slot) {
+                    Core::Poison(r) => return Core::Poison(r),
+                    Core::ConstInt(v) => {
+                        // Range: the value must fit the segment's (signed, bits) width — else a provable
+                        // trap (never truncate). `(u8 256)`/`(u8 -1)` fail here.
+                        if !v.fits_width(*signed, bits) {
+                            return Core::Poison(Reject::coded(
+                                Code::ConstTrap,
+                                "binary value does not fit segment",
+                            ));
+                        }
+                        // The low `w` bytes of the value's two's-complement representation, big-endian
+                        // (MSB first). `to_i64_bits` gives the 64-bit two's-complement pattern; for a
+                        // signed negative this already has the right high bits within `w` (checked to fit).
+                        let word = v.to_i64_bits() as u64;
+                        let mut be: Vec<u8> = (0..w)
+                            .rev()
+                            .map(|i| ((word >> (i * 8)) & 0xff) as u8)
+                            .collect();
+                        if seg.little_endian {
+                            be.reverse();
+                        }
+                        raw.extend(be);
+                    }
+                    // A runtime integer value — the runtime construction path (BN4). Decline for now.
+                    _ => {
+                        return Core::Poison(Reject::decline(
+                            "a bin segment with a runtime value is not yet built (constant segments only)",
+                        ));
+                    }
+                }
+            }
+            // Bit-fields (BN2) and bytes splices (BN4) are not folded yet.
+            SegKind::Bits { .. } => {
+                return Core::Poison(Reject::decline("a bin bit-field segment is not yet built"));
+            }
+            SegKind::Bytes { .. } => {
+                return Core::Poison(Reject::decline("a bin bytes segment is not yet built"));
+            }
+        }
+    }
+    // Assemble the emitted bytes into a constant `Core::BytesOf` (synthesized UInt8 element leaves), the
+    // same shape `b"…"`/`String.to-bytes` produce — so it rides the constant-Bytes fold/escape/equality.
+    trace!(target: "rcdzc::lower", node = id.0, len = raw.len(), "bin construction folds to a constant Bytes");
+    let elems: Vec<StructId> = raw
+        .iter()
+        .map(|&b| {
+            db.push_atom(crate::ast::Leaf::Int {
+                value: IntValue::from_i64(b as i64),
+                radix: crate::ast::Radix::Dec,
+            })
+        })
+        .collect();
+    Core::BytesOf { elems }
 }
 
 fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {

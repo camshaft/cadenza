@@ -117,6 +117,16 @@ impl IntTy {
             Width::Deferred | Width::Var(_) => DEFAULT_INT_WIDTH,
         }
     }
+
+    /// Whether this integer's width was FIXED by inference (an annotation `(Int 8)` / an operator
+    /// signature), rather than DEFAULTED (a bare literal whose width nothing constrained, so it grounds
+    /// to the default `Int64`). Distinguishes a literal that overflows a CHOSEN width (`(: 256 (Int 8))`
+    /// — an out-of-range error, CDZ0302) from one that overflows the DEFAULT `Int64` with no width in
+    /// sight (`9223372036854775808` — a malformed literal, CDZ0201): only a defaulted width has "no
+    /// annotation to blame".
+    pub fn width_is_fixed(self) -> bool {
+        matches!(self.width, Width::Fixed(_))
+    }
 }
 
 /// A solved type — the closed variant set inference determines and every pass below reads.

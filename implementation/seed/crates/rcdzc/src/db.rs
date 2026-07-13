@@ -769,6 +769,25 @@ impl Db {
         *self.parent.get(id.0 as usize).unwrap_or(&None)
     }
 
+    /// The source NAME of a `let` binding whose value is the occurrence `init`. A `let` binding is a
+    /// two-element pair `(name init)` in the bindings list, and a kept `Core::Let` binding is keyed by
+    /// its `init` occurrence (see `lower_let`) — so the name is `init`'s FIRST sibling. Reached in O(1)
+    /// via `parent_of` (the enclosing pair) + its first child; used by the DWARF backend to give a kept
+    /// scalar `let` local a `DW_TAG_variable` DIE. Returns `None` when `init` is not a pair's value.
+    pub fn let_binding_name(&self, init: StructId) -> Option<&str> {
+        let pair = self.parent_of(init)?;
+        let Struct::List(kv) = self.ast.get(pair) else {
+            return None;
+        };
+        // Must be a genuine `(name init)` pair with `init` in the value slot — not, say, a call whose
+        // head happens to be a name and `init` an argument.
+        if kv.len() == 2 && kv[1] == init {
+            self.ast.as_name(kv[0])
+        } else {
+            None
+        }
+    }
+
     /// Whether `id` is `ancestor` or lexically WITHIN its subtree — walk `id`'s parent chain and see if
     /// `ancestor` is on it. Used by the closure-capture check to tell a reference to the lambda's OWN
     /// scope (its param, a nested `let`) from a reference OUTSIDE it (a captured free variable). O(depth)
