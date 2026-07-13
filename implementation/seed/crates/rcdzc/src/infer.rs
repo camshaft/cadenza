@@ -4012,6 +4012,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // member projection would otherwise emit. When it fires, skip the generic `collect` of the
                 // op (which would add the CDZ0201 duplicate).
                 if crate::effects::arm_op_names_undeclared_operation(db, arm.op) {
+                    // Anchor at the op-KEY occurrence, NOT `arm.op`: the desugar synthesizes the arm's op
+                    // projection `(. E k)` (spanless), so `.at(arm.op)` maps to no source and the error
+                    // loses its `file:line:col`; the key child carries the arm's op-name span. Fall back
+                    // to the projection only if the key child is somehow absent.
+                    let anchor = crate::effects::arm_op_key_occ(db, arm.op).unwrap_or(arm.op);
                     // Name the nearest DECLARED operation of the effect + carry a replace fix on the
                     // mistyped op key (the effect-op analogue of the absent-field "did you mean?").
                     match crate::effects::nearest_declared_op(db, arm.op) {
@@ -4023,7 +4028,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                      — did you mean `{candidate}`?"
                                 ),
                             )
-                            .at(arm.op)
+                            .at(key_occ)
                             .with_fix(Fix::replace_heuristic(key_occ, candidate)),
                         ),
                         None => out.push(
@@ -4031,7 +4036,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 Code::HandlerUndeclaredOp,
                                 "this handler arm names an operation its effect does not declare",
                             )
-                            .at(arm.op),
+                            .at(anchor),
                         ),
                     }
                 } else {

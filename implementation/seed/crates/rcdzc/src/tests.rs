@@ -16853,6 +16853,28 @@ mod stage1 {
     }
 
     #[test]
+    fn an_undeclared_handler_op_anchors_to_a_user_node() {
+        // CDZ0403's anchor must be a real USER node so the error carries `file:line:col`. The desugar
+        // synthesizes the arm's op projection `(. E k)` (spanless), so anchoring there once lost the
+        // location; it now anchors at the op-KEY occurrence (which keeps the arm's op-name span).
+        let src = "(do (effect Choose (op pick (-> Unit Int64))) \
+                   (def (main) (handle Choose unit ((guess () s (resume 5 s))) ((. Choose pick)))) \
+                   (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let d = crate::diagnostics(&mut db)
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0403"))
+            .expect("a CDZ0403 diagnostic");
+        let node = d
+            .node
+            .expect("CDZ0403 must carry a node, not be unanchored");
+        assert!(
+            db.is_user_node(crate::ast::StructId(node)),
+            "node {node} must be a user node (the op key), not the synthesized projection"
+        );
+    }
+
+    #[test]
     fn an_undeclared_handler_op_close_to_a_declared_one_suggests_it() {
         // The effect-op "did you mean?" (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route
         // To A Fix): a handler arm names `emitt`, a typo of the effect's declared `emit` → CDZ0403 names

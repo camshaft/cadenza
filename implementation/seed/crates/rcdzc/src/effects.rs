@@ -615,6 +615,15 @@ pub fn arm_op_names_undeclared_operation(db: &mut Db, op: StructId) -> bool {
     }
 }
 
+/// The KEY occurrence of a handler-arm op projection `(. E k)` — the `k` child, which carries the arm's
+/// op-NAME source span (the desugar REUSES the surface op-name occurrence for `k`, `apply_handle_plan`).
+/// The projection `(. E k)` itself is a node the desugar freshly SYNTHESIZES (spanless), so a diagnostic
+/// anchored to the projection maps to no source text; anchoring to this key occ instead gives the arm's
+/// op a real `file:line:col`. `None` if `op` is not a `(. …)` form with a key child.
+pub fn arm_op_key_occ(db: &Db, op: StructId) -> Option<StructId> {
+    db.ast.as_form(op, ".").and_then(|t| t.get(1).copied())
+}
+
 /// For an undeclared handler-arm op `(. E k)` (one `arm_op_names_undeclared_operation` flagged), the
 /// nearest DECLARED operation name of the effect `E` to the mistyped `k` — the "did you mean?"
 /// suggestion (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix), the effect-op
