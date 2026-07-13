@@ -71,7 +71,9 @@ impl<'a> Lexer<'a> {
             '[' => Kind::LBracket,
             ']' => Kind::RBracket,
             // `#\…` is a char literal (one Unicode scalar); `#"…"` is a symbol literal (an interned name
-            // value, reusing string lexing); a bare `#` is the map/raw-list sigil.
+            // value, reusing string lexing); `#name` is the UNQUOTED symbol sugar (the quotes are only
+            // needed when the content is not a bare identifier); `#{`/`#[`/bare `#` is the map/raw-list
+            // sigil (`{`/`[` are not ident-starts, so the sugar never swallows them).
             '#' if self.peek() == Some('\\') => return Some(self.char_lit(a)),
             '#' if self.peek() == Some('"') => {
                 let quote = self.bump().unwrap(); // the opening `"`
@@ -83,6 +85,18 @@ impl<'a> Lexer<'a> {
                         Kind::Error // unterminated
                     },
                     span: a.span.merge(str_tok.span),
+                });
+            }
+            // `#name` — the unquoted symbol sugar. The `#` glued to an identifier-start char lexes as
+            // one `SymLit` spanning `#` through the identifier; the identifier body follows the same
+            // kebab-case rule as a bare `Ident` (so `#map-insert` is one symbol). `unescape_sym_token`
+            // decodes both `#"…"` and this bare form to the same `Leaf::Sym`.
+            '#' if self.peek().is_some_and(is_ident_start) => {
+                let first = self.bump().unwrap(); // the identifier's first char
+                let ident = self.ident(first);
+                return Some(Token {
+                    kind: Kind::SymLit,
+                    span: a.span.merge(ident.span),
                 });
             }
             '#' => Kind::Hash,
@@ -664,6 +678,25 @@ mod tests {
         );
         assert_eq!(kinds(",x"), vec![Kind::Comma, Kind::Ident]);
         assert_eq!(kinds(",@xs"), vec![Kind::UnquoteSplice, Kind::Ident]);
+    }
+
+    #[test]
+    fn hash_sigils_and_symbol_sugar() {
+        // `#"…"` is a quoted symbol; `#name` is the unquoted symbol sugar (one `SymLit` spanning
+        // `#` through the identifier, kebab included). `#{`/`#[`/bare `#` stay the sigil (`{`/`[`
+        // are not ident-starts); a `#` before a non-ident (`#1`, `#+`) is a bare `Hash`.
+        assert_eq!(spanned_text("#\"metre\""), vec![("#\"metre\"", Kind::SymLit)]);
+        assert_eq!(spanned_text("#metre"), vec![("#metre", Kind::SymLit)]);
+        assert_eq!(spanned_text("#map-insert"), vec![("#map-insert", Kind::SymLit)]);
+        assert_eq!(spanned_text("#{"), vec![("#", Kind::Hash), ("{", Kind::LBrace)]);
+        assert_eq!(
+            spanned_text("#[]"),
+            vec![("#", Kind::Hash), ("[", Kind::LBracket), ("]", Kind::RBracket)]
+        );
+        assert_eq!(spanned_text("#1"), vec![("#", Kind::Hash), ("1", Kind::Int)]);
+        assert_eq!(spanned_text("#+"), vec![("#", Kind::Hash), ("+", Kind::Plus)]);
+        // The sugar does NOT cross whitespace — `# x` is a bare `Hash` then the ident.
+        assert_eq!(spanned_text("# x"), vec![("#", Kind::Hash), ("x", Kind::Ident)]);
     }
 
     #[test]

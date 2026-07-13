@@ -277,13 +277,23 @@ pub fn unescape_string_token(token: &str) -> Leaf {
     }
 }
 
-/// Unescape a symbol-literal TOKEN (`#"…"`, the `#` + quotes included, as the lexer spans it) into a
-/// [`Leaf::Sym`] — the interned-name value form. Reuses the STRING escape set and NFC normalization
-/// ([`unescape_string`]), so a symbol's content is lexed exactly as a string body; only the leaf kind
-/// and the `#"` prefix differ. An unrecognized escape keeps the raw char (a symbol names arbitrary
-/// content — the closed-escape-set contract is a string concern), so this never yields a `BadEscape`.
-/// Returns an empty `Sym` if the token is not `#"…"`-shaped.
+/// Unescape a symbol-literal TOKEN into a [`Leaf::Sym`] — the interned-name value form. Two surface
+/// spellings both reach here: the QUOTED `#"…"` (the `#` + quotes included, as the lexer spans it) and
+/// the UNQUOTED `#name` sugar (a `#` glued to a bare identifier — the quotes are only needed when the
+/// content is not an identifier). The quoted form reuses the STRING escape set and NFC normalization
+/// ([`unescape_string`]), so its content is lexed exactly as a string body; only the leaf kind and the
+/// `#"` prefix differ. An unrecognized escape keeps the raw char (a symbol names arbitrary content —
+/// the closed-escape-set contract is a string concern), so this never yields a `BadEscape`. The
+/// unquoted form's body is an identifier (no escapes), so it is just NFC-normalized. Returns an empty
+/// `Sym` if the token is neither `#"…"`- nor `#name`-shaped.
 pub fn unescape_sym_token(token: &str) -> Leaf {
+    // `#name` (no quote after the `#`) is the unquoted sugar — the body is a bare identifier, so there
+    // are no escapes to process; NFC-normalize it to match the quoted form's normalized-content identity.
+    if let Some(body) = token.strip_prefix('#')
+        && !body.starts_with('"')
+    {
+        return Leaf::Sym(body.nfc().collect());
+    }
     let inner = token
         .strip_prefix("#\"")
         .and_then(|s| s.strip_suffix('"'))
