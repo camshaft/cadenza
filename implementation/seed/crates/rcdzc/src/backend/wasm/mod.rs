@@ -126,6 +126,15 @@ pub fn emit(
             if let Some(sum_tpl) = crate::lower::sum_form_template(db, &e.result) {
                 return emit_runtime_sum_resource(db, layout, e.def, &sum_tpl, spans);
             }
+            // A RECURSIVE sum (a self-referential payload — a linked list, a tree) has no fixed
+            // per-variant template (`sum_form_template` returned `None`), so its `encode()` walks the heap
+            // spine to a runtime-determined depth. Build the SHAPE DESCRIPTOR and route through the
+            // runtime `value-encode` op: the encode body bakes the descriptor as a heap Bytes, calls
+            // `value-encode(rep, desc)` to get the value-form document, and copies it out
+            // (`DESIGN-recursive-sum-escape-walker.md`, approach C).
+            if let Some(desc) = crate::lower::sum_shape_descriptor(db, &e.result) {
+                return emit_recursive_sum_resource(db, layout, e.def, &desc, spans);
+            }
         } else if matches!(e.result, crate::ty::Ty::Bytes) {
             // A RUNTIME `Bytes` result (a `concat`/recursion-built sequence — not a compile-time constant)
             // crosses through the resource shape, but its value form is VARIABLE-length: `encode()` LOOPS,
@@ -1252,6 +1261,83 @@ fn emit_runtime_sum_resource(
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat resource path — the user bodies lead the code section, so the D2/D3
     // sections attribute correctly; the synthesized sum walker funcs have no `src_body` and get no row.
+    append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
+    let dtor_core = serialize::resource_dtor_module_with_drop();
+    let import_name = runtime_import_name();
+    Ok(envelope::assemble_runtime_resource(
+        &main_core,
+        &dtor_core,
+        &imports,
+        &import_name,
+    ))
+}
+
+/// Emit the runtime-import + resource escape component for a single nullary export returning a RUNTIME
+/// RECURSIVE sum (a linked list, a tree — a self-referential payload, so no fixed per-variant template).
+/// Its `encode()` (`encode_recursive_sum_walk_body`) bakes the compiler-built shape `descriptor` as a
+/// heap `Bytes`, calls the runtime `value-encode(rep, desc)` to render the value-form document, and
+/// copies it out — the runtime owns the recursion + document assembly
+/// (`DESIGN-recursive-sum-escape-walker.md`). The walker's ops (`value-encode`, `bytes-alloc`/`-set`
+/// to build the descriptor, `bytes-len`/`-get` to copy the doc out, `drop` for the releases) appear only
+/// in the synthesized encode body, so they are added here.
+fn emit_recursive_sum_resource(
+    db: &mut Db,
+    layout: &Layout,
+    export_def: usize,
+    descriptor: &[u8],
+    spans: Option<&crate::spans::SpanData>,
+) -> Result<Vec<u8>, Reject> {
+    let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        select::collect_used_ops(db, body, &mut used);
+    }
+    // The recursive-sum walker's ops: render via `value-encode`, build the descriptor Bytes
+    // (`bytes-alloc`/`bytes-set`), copy the document out (`bytes-len`/`bytes-get`), release the handles.
+    for op in [
+        "value-encode",
+        "bytes-alloc",
+        "bytes-set",
+        "bytes-len",
+        "bytes-get",
+        "drop",
+    ] {
+        used.insert(op);
+    }
+    let imports: Vec<&runtime_abi::RtOp> = used
+        .iter()
+        .map(|name| {
+            runtime_abi::RUNTIME_OPS
+                .iter()
+                .find(|o| o.name == *name)
+                .ok_or_else(|| Reject::decline(format!("runtime op `{name}` not in the ABI table")))
+        })
+        .collect::<Result<_, _>>()?;
+
+    let k = imports.len() as u32;
+    let layout = layout.with_import_base(k + 2);
+    let layout = &layout;
+
+    let mut funcs: Vec<SelectedFunc> = Vec::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        let params = match layout.export_plan(def) {
+            Some(e) => e.params.clone(),
+            None => crate::layout::def_params(db, def),
+        };
+        funcs.push(select_function_of(db, body, &params, layout, Some(def))?);
+    }
+    let export_abs = layout.abs(export_def).ok_or_else(|| {
+        Reject::decline("the escaping recursive-sum export is not in the emission order")
+    })?;
+
+    let mut main_core = serialize::runtime_resource_core_module_form(
+        &funcs,
+        &imports,
+        export_abs,
+        serialize::EscapeForm::RecursiveSum(descriptor),
+    )
+    .map_err(Reject::decline)?;
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();

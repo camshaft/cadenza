@@ -10300,33 +10300,25 @@ mod stage1 {
     }
 
     #[test]
-    fn a_nullary_recursive_sum_return_declines_with_an_honest_reason() {
+    fn a_nullary_recursive_sum_return_renders_via_the_value_encode_walker() {
         // A NULLARY `main` returning a RECURSIVE sum built at runtime (`count 3` → an `IntList` whose
-        // spine length is decided at run time) declines: rendering an unbounded-depth recursive-sum value
-        // as the host result needs an `encode()` walker that LOOPS to a runtime-determined depth (the
-        // analogue of the runtime-`Bytes` looping walker), a later increment. The DECLINE is correct
-        // (folding such a value to a scalar works; only rendering it as the boundary result is deferred).
-        // REGRESSION: the message must NOT claim "this export takes a parameter" — `main` is NULLARY. The
-        // resource-escape path tried and its value-form template was `None` (a self-referential sum has no
-        // bounded static shape), falling through to the multi-export diagnosis, which previously
-        // misdiagnosed a nullary fall-through as parameterized. The honest reason names the missing walker.
+        // spine length is decided at run time) now COMPILES: its `encode()` bakes the shape descriptor and
+        // calls the runtime `value-encode` op to render the unbounded-depth value form
+        // (DESIGN-recursive-sum-escape-walker.md). Previously this declined "needs a value-form walker
+        // that loops to a runtime-determined depth". The escaping component IMPORTS the runtime (the
+        // walker calls `value-encode`/`bytes-*`); the end-to-end render is corpus-gated
+        // (05-compound-types "renders its full runtime spine"). Here we pin that it compiles + imports the
+        // runtime rather than declining.
         use crate::testkit::parse;
         let src = "(module m (type IntList (Cons (Tuple Int64 IntList)) Nil) \
                      (def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) \
                         (IntList.Cons (tuple n (count (- n 1)))))) \
                      (def (main) (count 3)) (export main))";
-        let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
-            "a nullary recursive-sum return declines (no looping value-form walker yet)",
-        );
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a nullary recursive-sum return compiles via the value-encode walker");
         assert!(
-            !err.message.contains("takes a parameter"),
-            "a NULLARY recursive-sum return must NOT be misdiagnosed as parameterized, got: {}",
-            err.message
-        );
-        assert!(
-            err.message.contains("runtime-determined depth") || err.message.contains("walker"),
-            "the decline names the missing looping value-form walker, got: {}",
-            err.message
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "the recursive-sum escape imports the runtime (its encode() calls value-encode)"
         );
     }
 
