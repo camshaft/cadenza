@@ -48,7 +48,8 @@ export const cadenzaLanguage = StreamLanguage.define<State>({
       return "string";
     }
 
-    // Char / symbol literals: #\a  #"sym"
+    // Char / symbol literals: #\a  #"sym"  #name (the unquoted symbol sugar, when the content is a
+    // bare identifier — otherwise the quoted form is used).
     if (stream.peek() === "#") {
       stream.next();
       if (stream.peek() === '"') {
@@ -60,6 +61,10 @@ export const cadenzaLanguage = StreamLanguage.define<State>({
         stream.next();
         stream.next();
         return "atom"; // char literal
+      }
+      // `#name` — the unquoted symbol sugar (kebab-case ident glued to the `#`).
+      if (stream.match(/^[A-Za-z_][A-Za-z0-9_-]*/)) {
+        return "atom"; // symbol literal
       }
       return "operator";
     }

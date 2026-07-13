@@ -2299,10 +2299,9 @@ fn resource_inner_component_multi_closure(
         });
         out.extend_from_slice(&section(
             sec::COMPONENT_IMPORT,
-            &wasm_vec(
-                1,
-                &import_func_item(&format!("import-func-{}", mk.name), ft_ty),
-            ),
+            // PRIVATE wiring name — indexed, not the user name (a user name may be non-kebab, e.g. `mkA`,
+            // which wasmtime rejects as an extern name). The instantiate item pairs by this same `f<i>`.
+            &wasm_vec(1, &import_func_item(&import_wire_name(i), ft_ty)),
         ));
     }
     // Shared call: `own<0>` (type 1+2N) + call functype (type 2+2N); import the func → func N.
@@ -2315,7 +2314,7 @@ fn resource_inner_component_multi_closure(
     });
     out.extend_from_slice(&section(
         sec::COMPONENT_IMPORT,
-        &wasm_vec(1, &import_func_item("import-func-call", call_ft_ty)),
+        &wasm_vec(1, &import_func_item(&import_wire_name(n), call_ft_ty)),
     ));
     // sec 11: RE-EXPORT the imported resource type 0 DIRECTLY as `t` → exported type R = 2N+3.
     let r = (2 * n + 3) as u32;
@@ -2393,10 +2392,7 @@ fn resource_inner_component_distinct_sig(groups: &[SigGroupAbi]) -> Vec<u8> {
             });
             out.extend_from_slice(&section(
                 sec::COMPONENT_IMPORT,
-                &wasm_vec(
-                    1,
-                    &import_func_item(&format!("import-func-{}", mk.name), ft_ty),
-                ),
+                &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
             ));
             f += 1;
         }
@@ -2414,10 +2410,7 @@ fn resource_inner_component_distinct_sig(groups: &[SigGroupAbi]) -> Vec<u8> {
         });
         out.extend_from_slice(&section(
             sec::COMPONENT_IMPORT,
-            &wasm_vec(
-                1,
-                &import_func_item(&format!("import-func-call-g{gi}"), ft_ty),
-            ),
+            &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
         ));
         f += 1;
     }
@@ -2491,15 +2484,20 @@ fn component_instantiate_distinct_sig_item(
         push(&format!("import-type-t{gi}"), 0x03, rty, &mut arg_items);
         n_args += 1;
     }
+    // `f` is the comp-func INDEX (the arg value); `wire` is the 0-based wire NAME index (`import-func-f<n>`,
+    // matching the inner component). They advance together but name/value are distinct.
     let mut f = first_fn;
-    for (gi, gr) in groups.iter().enumerate() {
-        for mk in &gr.makes {
-            push(&format!("import-func-{}", mk.name), 0x01, f, &mut arg_items);
+    let mut wire = 0usize;
+    for gr in groups.iter() {
+        for _ in &gr.makes {
+            push(&import_wire_name(wire), 0x01, f, &mut arg_items);
             f += 1;
+            wire += 1;
             n_args += 1;
         }
-        push(&format!("import-func-call-g{gi}"), 0x01, f, &mut arg_items);
+        push(&import_wire_name(wire), 0x01, f, &mut arg_items);
         f += 1;
+        wire += 1;
         n_args += 1;
     }
     item.extend_from_slice(&wasm_vec(n_args, &arg_items));
@@ -2541,14 +2539,12 @@ fn resource_inner_component_distinct_sig_rt(groups: &[RtSigGroupAbi]) -> Vec<u8>
             });
             out.extend_from_slice(&section(
                 sec::COMPONENT_IMPORT,
-                &wasm_vec(
-                    1,
-                    &import_func_item(&format!("import-func-{}", mk.name), ft_ty),
-                ),
+                &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
             ));
             f += 1;
         }
         for c in &gr.consumers {
+            let _ = c;
             let own_ty = (g + 2 * f) as u32;
             let ft_ty = (g + 2 * f + 1) as u32;
             out.extend_from_slice(&{
@@ -2558,10 +2554,7 @@ fn resource_inner_component_distinct_sig_rt(groups: &[RtSigGroupAbi]) -> Vec<u8>
             });
             out.extend_from_slice(&section(
                 sec::COMPONENT_IMPORT,
-                &wasm_vec(
-                    1,
-                    &import_func_item(&format!("import-func-{}", c.name), ft_ty),
-                ),
+                &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
             ));
             f += 1;
         }
@@ -2632,16 +2625,20 @@ fn component_instantiate_distinct_sig_rt_item(
         push(&format!("import-type-t{gi}"), 0x03, rty, &mut arg_items);
         n_args += 1;
     }
+    // `f` is the comp-func INDEX (arg value); `wire` is the 0-based wire NAME index matching the inner component.
     let mut f = first_fn;
+    let mut wire = 0usize;
     for gr in groups.iter() {
-        for mk in &gr.makes {
-            push(&format!("import-func-{}", mk.name), 0x01, f, &mut arg_items);
+        for _ in &gr.makes {
+            push(&import_wire_name(wire), 0x01, f, &mut arg_items);
             f += 1;
+            wire += 1;
             n_args += 1;
         }
-        for c in &gr.consumers {
-            push(&format!("import-func-{}", c.name), 0x01, f, &mut arg_items);
+        for _ in &gr.consumers {
+            push(&import_wire_name(wire), 0x01, f, &mut arg_items);
             f += 1;
+            wire += 1;
             n_args += 1;
         }
     }
@@ -2683,14 +2680,12 @@ fn resource_inner_component_roundtrip(
         });
         out.extend_from_slice(&section(
             sec::COMPONENT_IMPORT,
-            &wasm_vec(
-                1,
-                &import_func_item(&format!("import-func-{}", mk.name), ft_ty),
-            ),
+            &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
         ));
         f += 1;
     }
     for c in consumers {
+        let _ = c;
         let own_ty = (1 + 2 * f) as u32;
         let ft_ty = (2 + 2 * f) as u32;
         out.extend_from_slice(&{
@@ -2700,10 +2695,7 @@ fn resource_inner_component_roundtrip(
         });
         out.extend_from_slice(&section(
             sec::COMPONENT_IMPORT,
-            &wasm_vec(
-                1,
-                &import_func_item(&format!("import-func-{}", c.name), ft_ty),
-            ),
+            &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
         ));
         f += 1;
     }
@@ -2768,19 +2760,19 @@ fn component_instantiate_roundtrip_item(
         uleb128(idx as u64, out);
     };
     push("import-type-t", 0x03, res_ty, &mut arg_items);
-    let mut f = 0u32;
-    for mk in makes {
+    let mut f = 0u32; // 0-based wire index; comp func = first_fn + f, name = import-func-f<f>
+    for _ in makes {
         push(
-            &format!("import-func-{}", mk.name),
+            &import_wire_name(f as usize),
             0x01,
             first_fn + f,
             &mut arg_items,
         );
         f += 1;
     }
-    for c in consumers {
+    for _ in consumers {
         push(
-            &format!("import-func-{}", c.name),
+            &import_wire_name(f as usize),
             0x01,
             first_fn + f,
             &mut arg_items,
@@ -3108,6 +3100,16 @@ fn import_subresource_item(name: &str) -> Vec<u8> {
     item
 }
 
+/// The PRIVATE wiring name for the `f`-th function an inner re-export component imports from the outer
+/// envelope. Indexed (`import-func-f0`, `f1`, …) rather than the user export name, because a user name may
+/// not be valid kebab-case (e.g. `mkA` — wasmtime rejects a non-kebab extern name at parse time), whereas
+/// this internal name is always kebab. The instantiate item pairs its args by this same `f<i>` sequence,
+/// so the wiring stays consistent. The HOST-facing EXPORT names still use the user names (component export
+/// extern names are unrestricted); only these internal imports are indexed.
+fn import_wire_name(f: usize) -> String {
+    format!("import-func-f{f}")
+}
+
 /// A sec-10 component-import item for a FUNC: `<extern-name> 01 <type-idx>` — `0x01` =
 /// ComponentTypeRef::Func, then the functype index.
 fn import_func_item(name: &str, type_idx: u32) -> Vec<u8> {
@@ -3135,6 +3137,13 @@ fn export_type_direct_item(name: &str, type_idx: u32) -> Vec<u8> {
 /// ComponentTypeRef::Func (`0x01`) + the functype index. The ascription re-types the imported func
 /// against the EXPORTED resource identity.
 fn export_func_ascribed_item(name: &str, func_idx: u32, type_idx: u32) -> Vec<u8> {
+    // This is a PUBLIC component-boundary export name — it MUST be kebab-case (wasmtime rejects a
+    // non-kebab extern name). A closure export named from source (`make-<src>`, a consumer's own name)
+    // may carry uppercase/underscore (`mkA`, `my_func`); normalize it the same way `comp_export_item`
+    // does for a bare scalar export. Already-kebab names (`make`, `call`, `call-g0`, `make-adder`) are
+    // the identity, so the byte layout of every existing corpus case is unchanged. The runner resolves
+    // a source-derived name through the SAME `kebab_extern_name` rule, so both sides agree.
+    let name = crate::backend::wasm::kebab_extern_name(name);
     let mut item = vec![0x00];
     item.extend_from_slice(&uleb_bytes(name.len() as u64));
     item.extend_from_slice(name.as_bytes());
@@ -3211,17 +3220,18 @@ fn component_instantiate_multi_call_item(
         out.push(sort);
         uleb128(idx as u64, out);
     };
+    let _ = makes;
     push("import-type-t", 0x03, res_ty, &mut arg_items);
-    for (i, mk) in makes.iter().enumerate() {
+    for i in 0..nmk {
         push(
-            &format!("import-func-{}", mk.name),
+            &import_wire_name(i),
             0x01,
             first_make_fn + i as u32,
             &mut arg_items,
         );
     }
     push(
-        "import-func-call",
+        &import_wire_name(nmk),
         0x01,
         first_make_fn + nmk as u32,
         &mut arg_items,

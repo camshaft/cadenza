@@ -175,11 +175,14 @@
 ; ============================================================================================
 ; `#"<text>"` is reader sugar for `(Symbol.of "<text>")`: a `#` immediately before a string literal
 ; reads to a Symbol node, reusing String's existing lexing (including its escape rules), so the sugar
-; introduces no new escape or token grammar. It is the string FORM (`#"…"`), not a bare-token form
-; (`#foo`) — so it interns arbitrary content, including a qualified name with a dot — and it does not
-; use the `'` sigil, which is the natural shorthand for `quote` in this homoiconic language
-; (12-metaprogramming). The canonical tree carries only `(Symbol.of …)`, as it carries `(. a b)` for
-; the display sugar `a.b`.
+; introduces no new escape or token grammar. The CANONICAL literal is the string FORM (`#"…"`) — it
+; interns arbitrary content, including a qualified name with a dot — and it does not use the `'` sigil,
+; which is the natural shorthand for `quote` in this homoiconic language (12-metaprogramming). The ML
+; SURFACE additionally accepts the bare-token spelling `#name` as a convenience when the content is a
+; plain identifier (`#map-insert` == `#"map-insert"`); it is purely a surface projection — the quotes
+; are required there whenever the content is not an identifier (a space, a leading digit, a dot), and
+; the s-expr surface and the canonical tree carry only `#"…"` / `(Symbol.of …)`, as the tree carries
+; `(. a b)` for the display sugar `a.b`.
 
 (case "the reader literal reads to Symbol.of"
   (doc    "`#\"map-insert\"` reads to `(Symbol.of \"map-insert\")`, so the two denote one Symbol value
@@ -190,9 +193,10 @@
 
 (case "a reader literal carries a qualified name with a dot"
   (doc    "`#\"List.at\"` interns the string \"List.at\" — a qualified name whose dot the bare-token
-           form could not carry unambiguously (it would read as member access) — so
-           `(= #\"List.at\" (Symbol.of \"List.at\"))` is true. Pins that the string-form literal
-           interns arbitrary content, the reason it is `#\"…\"` rather than `#foo`.")
+           form (`#name`, the ML surface's identifier-only convenience) could not carry unambiguously
+           (it would read as member access) — so `(= #\"List.at\" (Symbol.of \"List.at\"))` is true.
+           Pins that the string-form literal interns arbitrary content, the reason the canonical form
+           is `#\"…\"` and the bare `#name` sugar is confined to plain identifiers.")
   (input  (= #"List.at" (Symbol.of "List.at")))
   (output (: true Bool)))
 

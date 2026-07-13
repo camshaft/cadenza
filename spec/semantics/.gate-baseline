@@ -79,6 +79,8 @@ pass	a byte sequence is constructed from a list of integers in range
 pass	a byte sequence written as a literal renders back to the same literal
 pass	a byte-string literal equals the explicit byte sequence it desugars to
 pass	a byte-string literal with escapes equals its explicit byte sequence
+pass	a camelCase round-trip resolves through kebab boundary-name normalization
+pass	a camelCase same-signature multi-export normalizes each make-<name>
 pass	a capturing 32-bit-integer closure crosses and is called
 pass	a capturing closure export tracks both the captured value and the call argument
 pass	a capturing closure is applied through a recursive higher-order function
@@ -347,6 +349,8 @@ pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argum
 pass	a member access with no field operand is rejected, not a crash
 pass	a module declaration binds its name in the enclosing scope
 pass	a module function calls a sibling export by name
+pass	a module may nest three deep
+pass	a module nested in a module projects as a nested record field
 pass	a module value definition registers a reachable export field
 pass	a module with two definitions of the same name is rejected
 pass	a multi-argument closure among distinct-signature exports
@@ -409,6 +413,7 @@ pass	a nested element kind mismatch in equality is a type error
 pass	a nested if on the same condition collapses the inner test to the known branch
 pass	a nested literal pattern of the wrong type is a type error
 pass	a nested match on a runtime scrutinee
+pass	a nested module's function export is applied through the projection chain
 pass	a nested option value annotated with the wrong inner payload type is rejected
 pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
@@ -469,6 +474,7 @@ pass	a radix literal with a bad digit is a malformed literal, not an unbound nam
 pass	a radix literal with an empty body is a malformed literal, not an unbound name
 pass	a rate derived by division mixes with a named rate unit of the same dimension
 pass	a reader literal carries a qualified name with a dot
+pass	a recognized pragma with a malformed argument list is rejected
 pass	a recognized string escape denotes its one scalar value
 pass	a record annotated with the wrong field type is rejected
 pass	a record field VALUE still reads the parameter it names after the call
@@ -821,6 +827,7 @@ pass	an option value annotated with the wrong payload type is rejected
 pass	an ordering operator with a single operand is rejected, not a crash
 pass	an out-of-range float literal is a malformed literal, not a non-finite value
 pass	an out-of-range integer literal is a malformed literal, not an unbound name
+pass	an outer definition references a sibling nested module by bare name
 pass	an un-projected tuple element is not evaluated, so its trap does not occur
 pass	an un-read record field is not evaluated, so its trap does not occur
 pass	an unannotated closure in a Some payload is typed from the Option's element arrow
@@ -843,6 +850,7 @@ pass	an underscore-prefixed token is an identifier, not an integer
 pass	an unimported sibling definition is not in scope
 pass	an unproductive self-recursion is declined, not a compiler crash
 pass	an unquote of an expression with an unbound name is rejected, not quoted
+pass	an unrecognized pragma key is rejected rather than ignored
 pass	an unrecognized string escape is rejected
 pass	an unsigned LEB128 encoder emits a single byte below the continuation threshold
 pass	an unsigned LEB128 encoder emits the known-answer multibyte encoding
@@ -1304,7 +1312,6 @@ todo	a rational operation does not silently promote an integer operand
 todo	a rational with numerator and denominator both negative normalizes to positive
 todo	a rational's sign is normalized onto the numerator
 todo	a rational-magnitude quantity erases to its exact rational value
-todo	a recognized pragma with a malformed argument list is rejected
 todo	a recursive function that installs a fresh handler on each call grows its context without bound
 todo	a runtime division of the minimum integer by -1 overflows and traps
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
@@ -1332,7 +1339,6 @@ todo	an integer width above the 64-bit ceiling is rejected
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
 todo	an unquote nested inside a plain quote is a syntax error, not an active unquote
-todo	an unrecognized pragma key is rejected rather than ignored
 todo	an unusual-width value that overflows its computed range traps
 todo	comparing same-shape nominal types is a type error
 todo	comparing two units of one dimension converts before comparing
