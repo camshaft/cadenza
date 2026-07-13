@@ -318,6 +318,34 @@ Then Layer 2 adds:
   source denotes by naming two units (units-of-measure.md §A Unit Conversion Is The Arithmetic The
   Source Denotes).
 
+## §7.5 — The ML quantity-literal surface (`5 feet`)
+
+A concise ML surface for a quantity literal, implemented PURELY in `cadenza-syntax` (parser + printer);
+the arena, the s-expr corpus, and every downstream stage are unchanged. A numeric literal immediately
+followed by a bare unit name reads as a quantity construction:
+
+    5 feet          ==  (Qty.of 5   (Unit.of #"feet"))
+    5.0 metre       ==  (Qty.of 5.0 (Unit.of #"metre"))
+    5 feet / 1 second  ==  (/ (Qty.of 5 (Unit.of #"feet")) (Qty.of 1 (Unit.of #"second")))   ; a RATE
+
+- **Parse** (`parser::maybe_quantity_literal`, called from `prefix` right after a numeric atom). A
+  quantity literal binds TIGHTER than every infix operator because it is built in prefix position,
+  before the Pratt loop — so `5 feet / 1 second` divides two quantities (a rate), never `5 (feet / 1)`.
+  The unit is any single `Ident` that is neither a keyword (`in`/`then`/…) nor a word-op (`and`/`or`),
+  so `5 in`/`5 and mask` keep their meaning. This repurposes a previously-MEANINGLESS adjacency:
+  juxtaposing a number and a name has no other reading on the ML surface (application is `f(x)`, not
+  juxtaposition), so nothing real is displaced. Patterns are unaffected (`pattern_atom` is a separate
+  parser). A compound or scaled unit still uses the call form (`Qty.of(x, metre / second)`).
+- **Print** (`printer::quantity_literal`, checked before the name-head dispatch since the head is the
+  member-access LIST `(. Qty of)`). Renders `(Qty.of <numlit> (Unit.of #"name"))` back to `<num> name`
+  ONLY when: the numeric operand is a NON-NEGATIVE `Int`/`Float` literal (a negative or a variable would
+  not re-lex as number-then-name), and the unit name is bare-safe (`name_is_bare_safe` — re-lexes to one
+  `Ident`). Every other shape (a computed unit, `Unit.one`, a non-bare-safe name, `Unit.of` outside a
+  `Qty.of`, `Qty.of` of a non-literal) falls back to the round-tripping call form. IDEMPOTENT round-trip.
+- **Corpus coverage is automatic**: existing `.sexp` inputs of the form `(Qty.of <lit> (Unit.of #"…"))`
+  now render + re-parse through this surface, exercised by the `corpus_roundtrip` gate (e.g. the inch +
+  millimetre case renders `Qty.value(1.0 inch + 1.0 millimetre)`).
+
 ## §8 — Test / gate strategy
 
 - Each increment: `cargo xtask gate` (behavior), `cargo test -p rcdzc`, `cargo xtask check`. Bar = 0
