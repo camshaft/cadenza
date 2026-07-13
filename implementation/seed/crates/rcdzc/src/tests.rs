@@ -9336,6 +9336,41 @@ mod stage1 {
     }
 
     #[test]
+    fn a_runtime_value_eq_in_a_loop_condition_does_not_clash_scratch() {
+        // REGRESSION: a runtime `value-eq` (or any i32 heap-handle-producing op) in the CONDITION of a
+        // tail-recursive function compiled as a wasm LOOP must not reuse a scratch slot the sibling
+        // branch's i64 arithmetic uses. `find` compares `(N.I n)` against `(N.I 3)` each iteration and
+        // `(find (+ n 1))` iterates; before the fix the compare's i32 handle slot and the `(+ n 1)` i64
+        // slot were the SAME number (both allocated from `base`), forcing one wasm local to two types →
+        // `func failed to validate: expected i64, found i32`. The fix advances the branches' scratch
+        // floor past the condition's high-water. `find(0)` = 3.
+        use crate::testkit::parse;
+        let src = "(module m \
+                     (type N (I Int64) (J Int64)) \
+                     (def (mk (: n Int64)) (N.I n)) \
+                     (def (find (: n Int64)) (if (= (mk n) (mk 3)) n (find (+ n 1)))) \
+                     (export find))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("compile value-eq-in-loop-condition");
+        // Must be a valid module — the whole point of the regression (a bad module fails HERE at
+        // instantiation, before any run).
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed value-eq-in-loop run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("find".to_string()),
+            args: vec!["0".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run value-eq-in-loop") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "3", "find(0) searches up to n where N.I n = N.I 3"),
+            cdz_run::Outcome::Trap(t) => panic!("value-eq-in-loop run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_variant_carrying_a_bare_nullary_variant_type_checks() {
         // A value carrying a bare nullary variant with an UNCONSTRAINED payload — `(Some (None))`,
         // `(Ok (None))` — must type-check, not trip a spurious occurs-check. Each `apply_type` uses a

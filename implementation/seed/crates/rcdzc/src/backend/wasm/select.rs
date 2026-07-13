@@ -1247,6 +1247,13 @@ fn emit_tail(
                 return Ok(());
             }
             emit(db, cond, slots, base, high, scratch_ty, layout, out)?;
+            // The branches start scratch ABOVE the high-water the COND reached, NOT at `base` — see the
+            // non-tail `Core::If` arm for the full rationale: a cond that stashes an i32 HEAP HANDLE (a
+            // runtime `value-eq`/`MatchSum` on constructed sums) types a slot for the whole function, and
+            // a branch's i64 arith temp (`(if (= (mk n) (mk 3)) n (find (+ n 1)))`) reusing that slot
+            // number at a different width fails validation. A scalar cond leaves `*high == base`, so this
+            // is a no-op (byte-identical) for the common case.
+            let branch_base = *high;
             let block_ty = match &result {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(other) {
@@ -1278,9 +1285,9 @@ fn emit_tail(
                 if matches!(core_of(db, b), Core::ConstInt(_))
                     && let Ty::Int(rit) = &result
                 {
-                    emit_operand(db, b, *rit, slots, base, high, st, layout, out)
+                    emit_operand(db, b, *rit, slots, branch_base, high, st, layout, out)
                 } else {
-                    emit_tail(db, b, slots, base, high, st, layout, out, inner_tl)
+                    emit_tail(db, b, slots, branch_base, high, st, layout, out, inner_tl)
                 }
             };
             emit_tail_branch(db, then_, high, scratch_ty, out)?;
@@ -2282,6 +2289,15 @@ fn emit(
             // Selection order matches wasm's structured `if`: push the condition, open the block with
             // the RESULT type (read off the node's solved type), then the two arms.
             emit(db, cond, slots, base, high, scratch_ty, layout, out)?;
+            // The branches start their scratch ABOVE the high-water the COND reached, NOT at `base`. A
+            // cond may stash an i32 HEAP HANDLE in a scratch slot (a runtime `value-eq`/`MatchSum` on
+            // constructed sums) that stays TYPED for the whole function; a branch reusing that slot at a
+            // different width (an i64 arith temp — `(if (= (mk n) (mk 3)) n (find (+ n 1)))`) would force
+            // one wasm local to two types and fail validation (`expected i64, found i32`). Advancing to
+            // `*high` hands each branch fresh, never-typed slots — the same discipline `MatchSum`'s arms
+            // and `emit_call_args` already apply. (A scalar cond leaves `*high == base`, so this is a
+            // no-op for the common case and the emitted bytes are unchanged.)
+            let branch_base = *high;
             let block_ty = match &result {
                 Ty::Unit => BlockType::Empty,
                 other => match valtype_of(other) {
@@ -2299,11 +2315,11 @@ fn emit(
             // block. Ground a bare-`ConstInt` branch to the result's integer width via `emit_operand`,
             // exactly as an operator operand (`@1a4528f`) and a match arm (`@10f7bdb`) are grounded.
             emit_branch(
-                db, then_, &result, slots, base, high, scratch_ty, layout, out,
+                db, then_, &result, slots, branch_base, high, scratch_ty, layout, out,
             )?;
             out.push(Lir::Else);
             emit_branch(
-                db, else_, &result, slots, base, high, scratch_ty, layout, out,
+                db, else_, &result, slots, branch_base, high, scratch_ty, layout, out,
             )?;
             out.push(Lir::End);
             Ok(())

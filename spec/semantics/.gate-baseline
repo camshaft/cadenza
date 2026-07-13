@@ -321,6 +321,8 @@ pass	a runtime string equality selects a branch by comparing a parameter to a li
 pass	a runtime string slice out of range yields None
 pass	a runtime string slice with an empty in-range span is Some of the empty string
 pass	a runtime subtraction that overflows traps
+pass	a runtime sum equality drives a tail-recursive loop
+pass	a runtime sum match drives a tail-recursive loop
 pass	a runtime sum whose payload comes from recursion compares equal by a heap walk
 pass	a runtime sum whose payload comes from recursion compares unequal by a heap walk
 pass	a runtime sum whose payload is a runtime tuple nests across the boundary
