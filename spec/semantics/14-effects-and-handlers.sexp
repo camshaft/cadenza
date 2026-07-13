@@ -247,6 +247,22 @@
   (call   main (: 3 Int64))
   (output (: 7 Int64)))
 
+(case "an abortive perform in an if condition abandons the computation before branching"
+  (doc    "The abort sits in the `if` CONDITION — `(if (< (Bail.bail 7) 5) 1 2)` — which is evaluated
+           FIRST, before either branch is chosen. Because an abort ABANDONS the enclosing computation, the
+           `if` never branches: the whole handle yields the arm value 7, regardless of which branch the
+           condition would have selected. Contrast an abort in a branch TAIL (local to that branch): a
+           condition abort is unconditional (the condition always runs). Both the abort arm value and the
+           `if` result type are Int64 — the handle body types compatibly. Pins that the abortive fold's
+           type-consistency check compares by COMPATIBILITY (an undetermined `Int` agrees with `Int64`), not
+           structural equality (`DESIGN-effects-rcdzc.md` §4.2).")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle 0 ((Bail.bail (n) s n))
+                (if (< (Bail.bail 7) 5) 1 2))) (export main)))
+  (output (: 7 Int64)))
+
 (case "an abortive perform in a short-circuit connective's right operand abandons the computation"
   (doc    "A short-circuit connective is a conditional in disguise — `(and lhs rhs)` evaluates `rhs` only
            when `lhs` is true — so an abort in the right operand is a conditional abort, equivalent to
