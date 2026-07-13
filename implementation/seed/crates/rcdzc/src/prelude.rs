@@ -75,6 +75,11 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     names.insert("record".to_string(), ctor_record(ast, "record-new"));
     // `list` — the list-VALUE constructor alias (`(list 1 2 3)`), variadic + homogeneous → `Ty::List`.
     names.insert("list".to_string(), ctor_record(ast, "list-new"));
+    // `map` — the map-VALUE constructor alias (`(map (k v) …)`), whose `(meta apply)` = `Prim::MapNew`.
+    // A bare `(map …)` NAME head reduces via this alias (`reduce_ctor` rewrites it to the symbol-headed
+    // `("map" …)`, resolved by `resolve_map`), exactly as `list`/`record` do — so `map` is a shadowable
+    // prelude name, not a reserved grammar word (the string `"map"` head IS the unshadowable primitive).
+    names.insert("map".to_string(), ctor_record(ast, "map-new"));
     // `List` — BOTH the list-TYPE constructor (`(List Int64)` in type position → `(meta apply)=List`) AND
     // the module of list OPERATIONS (its `len`/… fields, reached by member access `(. List len)`). One
     // record carries both roles: applying it builds the type, projecting a field gives an operation.

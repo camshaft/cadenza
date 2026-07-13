@@ -599,6 +599,18 @@ pub enum Resolved {
     /// fixed-arity product with per-position types): a list's length is a runtime property and all
     /// elements share a type. Built on the persistent `vec-*` heap at run time.
     List { elems: std::sync::Arc<[StructId]> },
+    /// A MAP literal `(map (k v) …)` — a persistent association of keys to values. Each entry is a
+    /// `(key-occ, value-occ)` PAIR of ORDINARY VALUE occurrences — the key is NOT a compile-time label
+    /// (unlike a `Record` field, read by `read_key` into a `Symbol`): it is an expression resolved in
+    /// scope, so a bound name keys by its VALUE (`(let ((a 5)) (map (a 1)))` is the map at key 5), a
+    /// computed key `(+ 2 3)` is a runtime key, and an unbound key is the ordinary CDZ0101 scope error
+    /// (never coerced to a String). Both axes are HOMOGENEOUS — all keys unify to one type, all values
+    /// to one — so its type is `Ty::Map(key, value)`; two maps with different KEY SETS are the SAME type
+    /// (the keyset is runtime data, unlike a record's fixed field set). Built on the persistent CHAMP
+    /// `map-*` heap at run time; a later duplicate key overwrites (keys compared by value).
+    Map {
+        entries: std::sync::Arc<[(StructId, StructId)]>,
+    },
     /// A tuple PROJECTION `(. operand N)` — member access whose key is an INTEGER literal selects the
     /// element at position `index` (0-based). The integer key is what distinguishes a positional tuple
     /// access from a named record field access (`Member`); a name key on a tuple, or an integer key on a

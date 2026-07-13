@@ -847,6 +847,13 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
                 collect_callees(db, e, out);
             }
         }
+        // A map literal runs each entry's key AND value when this body runs.
+        Resolved::Map { entries } => {
+            for &(k, v) in entries.iter() {
+                collect_callees(db, k, out);
+                collect_callees(db, v, out);
+            }
+        }
         // A `(bin …)` runs each segment's value slot (and dependent size) when this body runs.
         Resolved::Bin { segs } => {
             for s in segs.iter() {
@@ -1573,6 +1580,29 @@ pub fn reduce_ctor(
                 Prim::ListNew => "list",
                 _ => "record",
             });
+            let mut children = vec![head];
+            children.extend_from_slice(args);
+            let built = db.push_list(children);
+            db.cache_build(key, built);
+            Ok(built)
+        }
+        // `map` NAME alias — rewrite `(map (k v) …)` to the symbol-headed `("map" (k v) …)`, resolved by
+        // `resolve_map`. The args are the ENTRY-PAIR nodes (each a `(key value)` list); pin each entry's
+        // resolution first (the same re-parent hazard the tuple/record arm guards — a runtime key/value
+        // like `(map (a 1))` with a bound `a` must keep its lexical scope through the re-parent). Mirrors
+        // the `TupleNew`/`RecordNew`/`ListNew` arm, build-once cached on the site.
+        Prim::MapNew => {
+            let key = crate::db::BuildKey {
+                prim,
+                args: vec![origin.0 as i64],
+            };
+            if let Some(cached) = db.cached_build(&key) {
+                return Ok(cached);
+            }
+            for &entry in args {
+                crate::resolve::resolve_subtree(db, entry);
+            }
+            let head = db.push_str("map");
             let mut children = vec![head];
             children.extend_from_slice(args);
             let built = db.push_list(children);

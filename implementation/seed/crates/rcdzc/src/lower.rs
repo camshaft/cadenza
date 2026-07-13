@@ -336,6 +336,32 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::List { elems } => Core::ListNew {
             elems: elems.to_vec(),
         },
+        // A map literal `(map (k v) …)` — a `Core::MapNew` the backend builds on the persistent CHAMP
+        // `map-*` heap (`map-empty` + a `map-insert` per entry, in source order). The key/value types come
+        // from the node's own solved `Ty::Map` (fully determined by unification — key/value homogeneity is
+        // enforced in `type_errors`). A poison key/value propagates. Keys are VALUE occurrences (the
+        // resolver stored them as such), so a computed key `(+ 2 3)` lowers its expression normally, and a
+        // bound name keys by its value — no per-entry const-folding here yet (M3 adds the constant-map fold
+        // for equality/render; the runtime build via `map-insert` is already order-canonical by CHAMP).
+        Resolved::Map { entries } => {
+            for &(k, v) in entries.iter() {
+                if let Core::Poison(r) = core_of(db, k) {
+                    return Core::Poison(r);
+                }
+                if let Core::Poison(r) = core_of(db, v) {
+                    return Core::Poison(r);
+                }
+            }
+            let (key_ty, val_ty) = match crate::infer::type_of(db, id) {
+                crate::ty::Ty::Map(k, v) => (*k, *v),
+                _ => (crate::ty::Ty::Any, crate::ty::Ty::Any),
+            };
+            Core::MapNew {
+                entries: entries.to_vec(),
+                key_ty,
+                val_ty,
+            }
+        }
         // A tuple PROJECTION `(. t N)`. FOLD when the operand reduces to a compile-time-visible tuple:
         // lower the element's core directly (no heap, like a record member fold). Otherwise the operand
         // is a RUNTIME tuple (a parameter, a kept `let` binding) — emit a `Core::Proj` the backend lowers
@@ -3091,6 +3117,10 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         Resolved::Tuple { elems } | Resolved::List { elems } => {
             elems.iter().any(|&e| ref_escapes_whole(db, e, init))
         }
+        // A map literal uses each entry's key AND value as a whole value (both consumed into the map).
+        Resolved::Map { entries } => entries
+            .iter()
+            .any(|&(k, v)| ref_escapes_whole(db, k, init) || ref_escapes_whole(db, v, init)),
         // A `(bin …)` construction uses each segment's value slot (and dependent size) as a whole value.
         Resolved::Bin { segs } => segs.iter().any(|s| {
             ref_escapes_whole(db, s.slot, init)
@@ -3911,6 +3941,13 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
             }
             n
         }
+        Resolved::Map { entries } => {
+            let mut n = 0;
+            for &(k, v) in entries.iter() {
+                n += uses_in(db, k, init) + uses_in(db, v, init);
+            }
+            n
+        }
         Resolved::Proj { operand, .. } => uses_in(db, operand, init),
         Resolved::Annot { expr, .. } => uses_in(db, expr, init),
         Resolved::Apply { head, args } => {
@@ -4689,7 +4726,7 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
 /// type, so same-typed records share keys — compare each). Scalar leaves compare by value. Two DIFFERENT
 /// compound KINDS (a tuple vs a sum) never fold here — the type checker rejects a cross-shape `=` before
 /// lowering, so a kind mismatch reaching here is a compiler bug → `None` (decline).
-fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option<bool> {
+pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option<bool> {
     match (core_of(db, a), core_of(db, b)) {
         (Core::ConstInt(x), Core::ConstInt(y)) => Some(x.eq_value(&y)),
         (Core::ConstBool(x), Core::ConstBool(y)) => Some(x == y),

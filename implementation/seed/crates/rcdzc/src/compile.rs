@@ -820,6 +820,13 @@ fn walk_for_dead_traps(
                 discarded(db, *e, out, seen);
             }
         }
+        // A map literal — each entry's key AND value is a value-flowing position (consumed into the map).
+        Resolved::Map { entries } => {
+            for &(k, v) in entries.iter() {
+                discarded(db, k, out, seen);
+                discarded(db, v, out, seen);
+            }
+        }
         // A `(bin …)` construction — each segment value (and dependent size) is a value-flowing position.
         Resolved::Bin { segs } => {
             for s in segs.iter() {

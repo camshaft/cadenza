@@ -229,6 +229,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some("record") => return resolve_record(db, id),
                 Some("tuple") => return resolve_tuple(db, id),
                 Some("list") => return resolve_list(db, id),
+                Some("map") => return resolve_map(db, id),
                 _ => {}
             }
             match db.ast.head_name(id) {
@@ -2283,6 +2284,32 @@ fn resolve_tuple(db: &Db, id: StructId) -> Resolved {
 fn resolve_list(db: &Db, id: StructId) -> Resolved {
     let elems: std::sync::Arc<[StructId]> = db.ast.as_ctor_form(id, "list").unwrap_or(&[]).into();
     Resolved::List { elems }
+}
+
+/// Resolve `(map (k v) …)` — a persistent key→value association literal. Each entry is a two-element
+/// `(key value)` list; UNLIKE a record, BOTH positions are ORDINARY VALUE occurrences (resolved on
+/// demand by the normal scope lookup, NOT read as a label via `read_key`) — that is what makes a map
+/// key a VALUE (`(let ((a 5)) (map (a 1)))` keys by 5, `(+ 2 3)` is a runtime key, an unbound key is
+/// the ordinary CDZ0101). A malformed entry (not a 2-element list — e.g. `(map ("a"))`, a key with no
+/// value) is a `Poison` (CDZ0201), never a panic reaching for the absent value. An empty `(map)` is a
+/// map with no entries. `infer`/`type_errors` enforce key/value homogeneity + duplicate-const-key.
+fn resolve_map(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_ctor_form(id, "map").unwrap_or(&[]);
+    let mut entries: Vec<(StructId, StructId)> = Vec::with_capacity(tail.len());
+    for &entry in tail {
+        match db.ast.get(entry) {
+            Struct::List(items) if items.len() == 2 => entries.push((items[0], items[1])),
+            _ => {
+                return Resolved::Poison(Reject::coded(
+                    Code::Malformed,
+                    "a map entry is a (key value) pair",
+                ));
+            }
+        }
+    }
+    Resolved::Map {
+        entries: entries.into(),
+    }
 }
 
 /// Resolve `(: expr ty_expr)` — a type annotation. Both children stay AST occurrences: `expr` is the
