@@ -1286,6 +1286,24 @@ fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId
     }
 }
 
+/// The result type of `(Qty.pow q n)`: q's inner numeric type carried over, with q's unit raised to the
+/// `n`th power (`Unit::pow`). `None` when arg0 is not a quantity or arg1 is not a compile-time `Int`
+/// literal (the caller then falls through). `#[inline(never)]` so it does NOT enlarge `apply_type`'s
+/// stack frame — that function is on the deep `type_of`↔`apply_type` recursion.
+#[inline(never)]
+fn qty_pow_type(db: &mut Db, args: &[StructId]) -> Option<Ty> {
+    if let Ty::Qty { inner, unit } = type_of(db, args[0])
+        && let Resolved::Int(v) = resolved_of(db, args[1])
+        && let Some(n) = v.to_i64()
+    {
+        return Some(Ty::Qty {
+            inner,
+            unit: unit.pow(n),
+        });
+    }
+    None
+}
+
 fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // CASE-OF-CASE (matches `lower`): a head that reduces to a runtime `if` — `((if c a b) args…)` —
     // types as the `if` of the two branch applications. Each branch's lambda applies (β-reduces) to a
@@ -1358,6 +1376,20 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             Ty::Qty { inner, .. } => *inner,
             _ => Ty::Any,
         };
+    }
+    // `Qty.pow q n` — the result unit is q's unit raised to the `n`th power (`Unit::pow`, composing
+    // exponents + scale exactly as `Unit.^`); the inner numeric type is unchanged. `n` is a compile-time
+    // Int literal read off arg1 (not an HM variable, like `Unit.^`'s power / `Qty.of`'s unit). A
+    // negative `n` is left to `check_application`/lower to reject; here we still shape the type (the unit
+    // map handles a negative power fine) so downstream sees a sane `Ty::Qty`. A non-quantity arg0 or a
+    // non-literal exponent falls through to the generic path (→ Any, faulted elsewhere). The body is a
+    // separate (never-inlined) helper so it keeps its `Ty::Qty` destructure (a `Box` + an inline `Unit`
+    // map) out of `apply_type`'s frame, which is on the deep `type_of`↔`apply_type` recursion.
+    if args.len() == 2
+        && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::QtyPow)
+        && let Some(ty) = qty_pow_type(db, args)
+    {
+        return ty;
     }
     // `Unit.in target q` — explicit conversion. The result is a quantity at the TARGET unit (read from
     // arg0 by `unit_of`), carrying q's inner numeric type: `(Unit.in metre (Qty.of 3.0 km))` :

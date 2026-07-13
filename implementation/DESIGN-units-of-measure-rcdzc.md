@@ -91,8 +91,11 @@ a design-from-scratch:
 
 ### Non-goals / deferred (Layer 1)
 - **Families, named units, prefixes, auto-conversion** — Layer 2 (needs Symbols + Rationals).
-- **`Qty.pow`** with a compile-time integer exponent — lands with Layer 1 if cheap, else Layer 2 (the
-  `(Unit.^ u n)` map op is trivial; the surface `Qty.pow` can wait).
+- **`Qty.pow`** with a compile-time integer exponent — ✅ LANDED (`Prim::QtyPow`). `(Qty.pow q n)` raises
+  the unit to the `n`th power (`Unit::pow`, composing exponents + scale like `Unit.^`) and erases the
+  magnitude to `n` repeated multiplies over the inner type (folds when constant; `n=0` is the
+  dimensionless `1`). A NEGATIVE exponent declines for now (needs a `1/xⁿ` reciprocal). `Qty.pow q 2`
+  derives the same dimension as `(* q q)` — the corpus pins the equality.
 - The base-dimension NAME in Layer 1: since Symbols don't exist yet, Layer 1 names a base dimension by
   a **string** carried in the `(Unit.base #"metre")` position. ⚠ The corpus WRITES `#"metre"` (a symbol
   literal). See §6 for how Layer 1 handles this without a full Symbol type.

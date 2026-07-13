@@ -469,6 +469,7 @@ pass	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
 pass	a quantity is constructed from a numeric value and a unit
+pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity's erased value is the identical numeric value the bare literal has
 pass	a radix literal with a bad digit is a malformed literal, not an unbound name
 pass	a radix literal with an empty body is a malformed literal, not an unbound name
@@ -604,6 +605,7 @@ pass	a runtime value is constructed into a fixed-width segment and its length re
 pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
+pass	a runtime-magnitude quantity raised to a power emits the repeated multiply
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
@@ -1083,6 +1085,7 @@ pass	projecting an if-of-tuples does not evaluate the untaken branch's unproject
 pass	promoting a Float32 to Float64 is exact
 pass	pushing an element of a different type onto a list is a type error
 pass	pushing an element onto a list appends it
+pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	reading a byte from a sequence built with a RUNTIME element widens it to the Option payload
 pass	reading a member from an if-of-records resolves each branch's field by its own sorted order
@@ -1180,6 +1183,8 @@ pass	the number of elements counts distinct elements
 pass	the other parity of a mutually-recursive pair
 pass	the pipeline operator splices the value as a call's first argument
 pass	the pipeline operator threads a value into a named function
+pass	the power form cubes an integer-magnitude quantity exactly
+pass	the power form derives the same dimension as repeated multiplication
 pass	the prelude binds Constructor values not pre-applied Sums
 pass	the program manifest is the union of its entrypoints' delegations
 pass	the reader literal reads to Symbol.of

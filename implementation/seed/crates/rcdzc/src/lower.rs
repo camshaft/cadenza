@@ -901,6 +901,14 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, "apply: Qty.value erases to its argument");
                     core_of(db, args[0])
                 }
+                // `Qty.pow q n` — raise the erased magnitude to the `n`th power (the unit is a
+                // compile-time concern handled by the solved type). Erases to `value * value * … ` (`n`
+                // factors) over the inner numeric type; `n = 0` is the dimensionless literal `1`. A
+                // negative exponent declines (needs a reciprocal). Folds when the magnitude is constant.
+                Some(Prim::QtyPow) if args.len() == 2 => {
+                    trace!(target: "rcdzc::lower", node = id.0, "apply: Qty.pow repeated multiply");
+                    lower_qty_pow(db, args[0], args[1])
+                }
                 // `Unit.in target q` — EXPLICIT conversion. Convert q's erased magnitude from its unit to
                 // the TARGET by `value * (q.scale / target.scale)` in the inner type T (a no-op when the
                 // units are already equal). Folds the constant case; a runtime operand declines.
@@ -5685,6 +5693,57 @@ fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
     }
 }
 
+/// Lower `(Qty.pow q n)` — raise q's erased magnitude to the `n`th power over the inner numeric type.
+/// The unit is a compile-time concern (the solved `Ty::Qty` already carries `unit^n`); at runtime this
+/// is just `value * value * … ` (`n` factors), synthesized as ordinary arithmetic over q's value
+/// occurrence and re-lowered (so the constant case FOLDS through the normal arith path and a runtime
+/// magnitude emits the multiplies). `n = 0` is the dimensionless `1` (the multiplicative identity in the
+/// inner type). A negative exponent declines — a reciprocal `1 / xⁿ` is a later increment.
+fn lower_qty_pow(db: &mut Db, q: StructId, exp: StructId) -> Core {
+    let inner_is_float = matches!(
+        crate::infer::type_of(db, q),
+        crate::ty::Ty::Qty { inner, .. } if matches!(*inner, crate::ty::Ty::Float(_))
+    );
+    let n = match crate::resolve::resolved_of(db, exp) {
+        crate::resolved::Resolved::Int(v) => match v.to_i64() {
+            Some(n) => n,
+            None => return Core::Poison(Reject::decline("Qty.pow exponent out of range")),
+        },
+        _ => {
+            return Core::Poison(Reject::decline(
+                "Qty.pow exponent is not a compile-time integer",
+            ));
+        }
+    };
+    if n < 0 {
+        return Core::Poison(Reject::decline(
+            "Qty.pow with a negative exponent (reciprocal not yet emitted)",
+        ));
+    }
+    // `n = 0` — the dimensionless identity `1` (`1.0` for a float inner).
+    if n == 0 {
+        let one = num_literal(db, 1, inner_is_float);
+        return core_of(db, one);
+    }
+    let value = match crate::eval::qty_value_occ(db, q) {
+        Some(v) => v,
+        None => {
+            return Core::Poison(Reject::decline(
+                "Qty.pow over a non-Qty.of magnitude (not yet emitted)",
+            ));
+        }
+    };
+    // Build `(* (* … value value) value)` — `n` copies of the value, left-nested — with the inner
+    // type's multiply (`*.` float / `*` int), then lower it through the ordinary arith path.
+    let mul = if inner_is_float { "*." } else { "*" };
+    let mut node = value;
+    for _ in 1..n {
+        let mul_head = db.push_name(mul);
+        node = db.push_list(vec![mul_head, node, value]);
+    }
+    core_of(db, node)
+}
+
 /// Apply `op` to two converted FLOAT reference values, producing the result core: `+`/`-` a
 /// `ConstFloat`, a comparison a `ConstBool`.
 fn fold_float_combine(op: Prim, l: f64, r: f64) -> Core {
@@ -6499,6 +6558,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::UnitIn
         | Prim::QtyOf
         | Prim::QtyValue
+        | Prim::QtyPow
         | Prim::QtyCtor
         // `trap` is the diverging primitive (lowered to `Core::Trap`), never an integer binary operation.
         | Prim::Trap => {
@@ -7328,7 +7388,11 @@ fn arith_range(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<(i
             };
             let d = c.to_i64().map(|c| c.unsigned_abs()).filter(|&d| d >= 1)?;
             let hi = (d - 1).min(i64::MAX as u64) as i64;
-            let lo = if value_provably_nonneg(db, lhs) { 0 } else { -hi };
+            let lo = if value_provably_nonneg(db, lhs) {
+                0
+            } else {
+                -hi
+            };
             Some((lo, Some(hi)))
         }
         // `+`/`-`/`*`: interval arithmetic over the operands' CLOSED ranges.
@@ -9875,6 +9939,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::UnitIn => "unit-in",
         Prim::QtyOf => "qty-of",
         Prim::QtyValue => "qty-value",
+        Prim::QtyPow => "qty-pow",
         Prim::QtyCtor => "Qty",
         Prim::SetCtor => "Set",
         Prim::SetOf => "set-of",

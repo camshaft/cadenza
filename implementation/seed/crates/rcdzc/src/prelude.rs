@@ -971,6 +971,12 @@ fn qty_module(ast: &mut Arenas) -> StructId {
     let value_field = push_atom(ast, Leaf::Name("value".to_string()));
     let value_op = ctor_record(ast, "qty-value");
     children.push(push_list(ast, vec![value_field, value_op]));
+    // `pow` — raise a quantity to a compile-time non-negative integer power, composing the unit like
+    // `Unit.^`: `(Qty.pow (Qty.of 3.0 metre) 2)` = `9.0 : (Qty Float64 metre²)`. The exponent is read
+    // off the second argument at type/lower time (not an HM variable), so `pow` is a plain field op.
+    let pow_field = push_atom(ast, Leaf::Name("pow".to_string()));
+    let pow_op = ctor_record(ast, "qty-pow");
+    children.push(push_list(ast, vec![pow_field, pow_op]));
     push_list(ast, children)
 }
 
