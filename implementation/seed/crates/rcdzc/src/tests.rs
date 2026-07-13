@@ -18918,7 +18918,8 @@ mod stage1 {
                         (match o ((Some (Red)) 10) ((Some (Green)) 20) ((Some (Blue)) 30) ((None) 0))) \
                      (def (main (: n Int64)) (get (mk n))) \
                      (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile nested enum");
+        let bytes =
+            compile_component(&crate::codec::encode(&parse(src))).expect("compile nested enum");
         // A boxed Option DOES import the runtime (it is a genuine heap sum carrying the enum payload).
         assert!(
             cdz_run::required_runtime(&bytes).expect("valid").is_some(),
@@ -22394,6 +22395,28 @@ mod r2_runtime_resource {
         );
     }
 
+    /// VM-1 byte gate: the hand-emitted `assemble_runtime_resource_with_len` (make + encode + a scalar
+    /// `len : borrow<t> -> u32`) is BYTE-IDENTICAL to the `ComponentBuilder` `oracle_tuple_methods`
+    /// reference. Both wrap the SAME `tuple_methods_core` (which exports `t-len` = arr-len) + the SAME
+    /// dtor + the same `methods_ops` set, so the diff isolates the ENVELOPE — licensing the hand-emitted
+    /// three-method envelope (the added `len` lift + inner-component re-export) with no external encoder.
+    #[test]
+    fn len_method_envelope_matches_component_builder_oracle() {
+        use crate::backend::wasm::envelope::assemble_runtime_resource_with_len;
+        let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
+        let tpl = runtime_value_form_template(&ty).expect("template");
+        let core = tuple_methods_core(&tpl, &[7, 9]);
+        let dtor = dtor_module();
+        let import_name = "cadenza:runtime/heap@0.0.0+deadbeef";
+        let ops: Vec<&RtOp> = methods_ops().to_vec();
+        let ours = assemble_runtime_resource_with_len(&core, &dtor, &ops, import_name);
+        let oracle = oracle_tuple_methods(&core, import_name);
+        assert_eq!(
+            ours, oracle,
+            "len-method envelope mismatch vs ComponentBuilder"
+        );
+    }
+
     /// The compiler's hand-emitted drop-dtor core module
     /// ([`crate::backend::wasm::serialize::resource_dtor_module_with_drop`]) is byte-identical to the
     /// oracle's `dtor_module` — so the envelope byte test above (which wraps the oracle's dtor bytes)
@@ -22448,7 +22471,9 @@ mod r2_runtime_resource {
         }
         let rnew_ty = import_type_idx.len() as u32;
         types.ty().function(vec![ValType::I32], vec![ValType::I32]); // resource-new (i32)->i32
-        let make_ty = rnew_ty + 1;
+        let rrep_ty = rnew_ty + 1;
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // resource-rep (i32)->i32
+        let make_ty = rrep_ty + 1;
         types.ty().function(vec![], vec![ValType::I32]);
         let unary_ty = make_ty + 1; // (i32)->i32 for both t-encode and t-len
         types.ty().function(vec![ValType::I32], vec![ValType::I32]);
@@ -22459,11 +22484,14 @@ mod r2_runtime_resource {
         );
         m.section(&types);
 
+        // Imports: the ops + resource-new + resource-rep (BOTH, matching the production core; the borrow
+        // methods never call resource-rep but it is imported for uniform index parity with value/sum cores).
         let mut imports = ImportSection::new();
         for (i, op) in ops.iter().enumerate() {
             imports.import("heap", op.name, EntityType::Function(import_type_idx[i]));
         }
         imports.import("heap", "resource-new", EntityType::Function(rnew_ty));
+        imports.import("heap", "resource-rep", EntityType::Function(rrep_ty));
         m.section(&imports);
         let idx_of = |name: &str| ops.iter().position(|o| o.name == name).unwrap() as u32;
         let f_arr_alloc = idx_of("arr-alloc");
@@ -22472,9 +22500,9 @@ mod r2_runtime_resource {
         let f_arr_set = idx_of("arr-set");
         let f_box_int = idx_of("box-int");
         let f_get_int = idx_of("get-int");
-        let f_rnew = ops.len() as u32;
+        let f_rnew = ops.len() as u32; // resource-new is import k
 
-        let make_fn = ops.len() as u32 + 1; // k ops + resource-new
+        let make_fn = ops.len() as u32 + 2; // k ops + resource-new + resource-rep
         let encode_fn = make_fn + 1;
         let len_fn = encode_fn + 1;
         let realloc_fn = len_fn + 1;
@@ -22627,19 +22655,27 @@ mod r2_runtime_resource {
         let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
         let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
         let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
         let mut heap_exports: Vec<(&str, ExportKind, u32)> = lowered
             .iter()
             .map(|(n, f)| (*n, ExportKind::Func, *f))
             .collect();
+        // Thread BOTH resource intrinsics — the production core module imports resource-new (for make) AND
+        // resource-rep (unused by the borrow methods, but present for index-parity with the value/sum
+        // resource cores, which the compiler emits uniformly). Matches `assemble_runtime_resource_with_len`.
         heap_exports.push(("resource-new", ExportKind::Func, rnew_core));
+        heap_exports.push(("resource-rep", ExportKind::Func, rrep_core));
         let heap_inst = c.core_instantiate_exports(heap_exports);
         let module_idx = c.core_module_raw(core);
         let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        // Alias ORDER fixes the component-level core-func indices — match the hand-emit
+        // `assemble_runtime_resource_with_len`: make (k+3), t-encode (k+4), memory (not a func),
+        // cabi_realloc (k+5), then t-len LAST (k+6). (memory is a Memory alias, not a func index.)
         let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
         let encode_core = c.core_alias_export(prog_inst, "t-encode", ExportKind::Func);
-        let len_core = c.core_alias_export(prog_inst, "t-len", ExportKind::Func);
         let mem = c.core_alias_export(prog_inst, "memory", ExportKind::Memory);
         let realloc = c.core_alias_export(prog_inst, "cabi_realloc", ExportKind::Func);
+        let len_core = c.core_alias_export(prog_inst, "t-len", ExportKind::Func);
         let (own_t, odef) = c.type_defined();
         odef.own(res_ty);
         let (make_ty, mut enc) = c.type_function();
