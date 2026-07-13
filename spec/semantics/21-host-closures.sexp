@@ -465,3 +465,56 @@
               (export inc) (export isz) (export dbl)))
   (call   dbl (: 7 Int64))
   (output (: 14 Int64)))
+
+; DISTINCT-SIGNATURE composed with MULTI-ARG and CAPTURE — the grouping-by-signature path (each signature
+; its own resource type) composes with the arity/capture machinery, no new compiler work. `add : (-> Int64
+; (-> Int64 Int64))` (two args) and `isz : (-> Int64 Bool)` are distinct signatures → two resource types;
+; `add`'s `call` takes both args. And two CAPTURING producers of distinct signatures (`adder`/`eq`) each
+; forward their captured param through their own resource.
+
+(case "a multi-argument closure among distinct-signature exports"
+  (doc    "`(def (add) (fn (a b) (+ a b)))` is `(-> Int64 (-> Int64 Int64))` (two-arg) and `(def (isz) (fn
+           (x) (= x 0)))` is `(-> Int64 Bool)` — distinct signatures, two resource types. Calling `add`
+           drives `make-add()` then its `call(3, 4)` = 7 — the two-arg `call` on its own resource, alongside
+           the distinct `isz`. Pins that multi-arg composes with distinct-signature grouping.")
+  (input  (do (def (add) (fn ((: a Int64) (: b Int64)) (+ a b)))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (export add) (export isz)))
+  (call   add (: 3 Int64) (: 4 Int64))
+  (output (: 7 Int64)))
+
+(case "distinct-signature capturing producers"
+  (doc    "`(def (adder (: k Int64)) (fn (x) (+ x k)))` → `(-> Int64 Int64)` and `(def (eq (: k Int64)) (fn
+           (x) (= x k)))` → `(-> Int64 Bool)` — distinct signatures, both CAPTURING their `k`. Calling `eq`
+           drives `make-eq(5)` (capturing k=5) then its `call(5)` = true. Pins that make-param capture rides
+           through the per-signature resource, distinct from `adder`'s.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (eq (: k Int64)) (fn ((: x Int64)) (= x k)))
+              (export adder) (export eq)))
+  (call   eq (: 5 Int64) (: 5 Int64))
+  (output (: true Bool)))
+
+; ROUND-TRIP composed with MULTI-ARG and a WIDENED width — the producer/consumer path is arity- and
+; width-agnostic (the consumer's `call_indirect` dispatches the guest lifted body over the ONE table).
+
+(case "a multi-argument closure round-trips through a consumer"
+  (doc    "`(def (mk) (fn (a b) (+ a b)))` produces a two-arg `(-> Int64 (-> Int64 Int64))` closure; `(def
+           (app (: g (-> Int64 (-> Int64 Int64))) (: a Int64) (: b Int64)) (g a b))` applies it with BOTH
+           args. The host `mk()` → a handle → `app(handle, 3, 4)` = 7. Pins that the round trip threads a
+           MULTI-ARG closure back (the consumer's dispatch pushes both args).")
+  (input  (do (def (mk) (fn ((: a Int64) (: b Int64)) (+ a b)))
+              (def (app (: g (-> Int64 (-> Int64 Int64))) (: a Int64) (: b Int64)) (g a b))
+              (export mk) (export app)))
+  (call   app (: 3 Int64) (: 4 Int64))
+  (output (: 7 Int64)))
+
+(case "a round-trip at a widened scalar width (UInt32)"
+  (doc    "The round trip at UInt32, not Int64: `(def (mk (: k UInt32)) (fn (x) (+ x k)))` produces a `(->
+           UInt32 UInt32)` closure; `(def (app (: g (-> UInt32 UInt32)) (: x UInt32)) (g x))` applies it.
+           `mk(100)` → a handle → `app(handle, 7)` = 107. Pins that the producer/consumer boundary crosses
+           a widened scalar width (own<t> + resource.rep dispatch is width-agnostic).")
+  (input  (do (def (mk (: k UInt32)) (fn ((: x UInt32)) (+ x k)))
+              (def (app (: g (-> UInt32 UInt32)) (: x UInt32)) (g x))
+              (export mk) (export app)))
+  (call   app (: 100 UInt32) (: 7 UInt32))
+  (output (: 107 UInt32)))
