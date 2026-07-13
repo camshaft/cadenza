@@ -3609,24 +3609,71 @@ fn lower_lambda_value(db: &mut Db, id: StructId, params: &[StructId], body: Stru
             "a closure captures a value with no runtime representation (not yet built)",
         ));
     }
+    // The lambda's EXPECTED arrow from its CONTEXT (a variant-payload position `(T.Susp (fn …))`, a
+    // built-in `Some`/`Ok` payload, or an annotation) — the "thread the use-site arrow back" the bottom-up
+    // `type_of` omits. `None` when the context declares no arrow (a HOF call site the call's own unify
+    // covers, or a genuinely unconstrained position). Its `Ty::Fn(P0, P1, … R)` gives per-parameter
+    // expected types and the result type to fall back on when body-solving leaves them `Any`.
+    let expected = crate::infer::expected_arrow_for_lambda(db, id);
+    // Peel the expected arrow into a per-parameter type list + the final result type: an N-param lambda's
+    // expected arrow is curried `P0 → P1 → … → R`. `expected_param_tys[i]` is param `i`'s expected type;
+    // `expected_ret` is `R` after peeling all N params.
+    let (expected_param_tys, expected_ret) = {
+        let mut ptys: Vec<crate::ty::Ty> = Vec::new();
+        let mut cur = expected.clone();
+        for _ in 0..param_occs.len() {
+            match cur {
+                Some(crate::ty::Ty::Fn(p, r)) => {
+                    ptys.push(*p);
+                    cur = Some(*r);
+                }
+                _ => {
+                    cur = None;
+                    break;
+                }
+            }
+        }
+        (ptys, cur)
+    };
     // Each parameter's solved machine type. A bare `(fn (x) …)` types `Any` at its own occurrence
     // (inference does not thread the use-site arrow back), so SOLVE it from the body's uses
-    // (`solve_lambda_param_ty`, the lambda analogue of the recursive-def A2 solve). A param the body does
-    // not constrain to a machine type declines below (no invented width). The RESULT type is the body's.
-    let ret_ty = crate::infer::type_of(db, body);
+    // (`solve_lambda_param_ty`, the lambda analogue of the recursive-def A2 solve), then fall back to the
+    // EXPECTED arrow's parameter type (its storage context). A param neither the body nor the context
+    // constrains to a machine type declines below (no invented width).
     let mut param_tys: Vec<(StructId, crate::ty::Ty)> = Vec::new();
-    for &p in &param_occs {
-        let pt = match crate::infer::type_of(db, p) {
+    for (i, &p) in param_occs.iter().enumerate() {
+        let mut pt = match crate::infer::type_of(db, p) {
             crate::ty::Ty::Any => crate::infer::solve_lambda_param_ty(db, p, body),
             t => t,
         };
+        if matches!(pt, crate::ty::Ty::Any)
+            && let Some(ep) = expected_param_tys.get(i)
+            && !matches!(ep, crate::ty::Ty::Any)
+        {
+            pt = ep.clone();
+        }
         if crate::backend::wasm::lir::valtype_of(&pt).is_none() {
             return Core::Poison(Reject::decline(
                 "a closure's parameter type has no machine representation",
             ));
         }
+        // RECORD the solved param type so the LIFTED BODY's own `type_of(p)` reads it — otherwise the
+        // body computes `p`'s type bottom-up as `Any` (it has no annotation and no def entry), and a use
+        // like `(C.A p)` that boxes `p` into a sum/tuple payload declines "element of type Any". `type_of`
+        // reads a `Param` from `db.param_types`, so seeding it here threads the closure's solved parameter
+        // type into the body. Insert only a DETERMINED type, and only if absent, so a genuinely-annotated
+        // or already-solved param is never overwritten.
+        if !matches!(pt, crate::ty::Ty::Any) {
+            db.param_types.entry(p).or_insert_with(|| pt.clone());
+        }
         param_tys.push((p, pt));
     }
+    // The RESULT type is the body's; if that is `Any` (a body that returns e.g. a sum whose payload
+    // depends on an as-yet-unpinned param), fall back to the expected arrow's result type.
+    let ret_ty = match crate::infer::type_of(db, body) {
+        crate::ty::Ty::Any => expected_ret.clone().unwrap_or(crate::ty::Ty::Any),
+        t => t,
+    };
     if crate::backend::wasm::lir::valtype_of(&ret_ty).is_none() {
         return Core::Poison(Reject::decline(
             "a closure's result type has no machine representation",

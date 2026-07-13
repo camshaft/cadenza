@@ -180,6 +180,73 @@
             (export main)))
   (output (: 10 Int64)))
 
+; --- An UNANNOTATED closure typed from its STORAGE CONTEXT's declared arrow -----------------------
+; The payload-closure cases above ANNOTATE the lambda's parameter (`(fn ((: n Int64)) …)`). But when a
+; closure is stored in a position whose type is DECLARED — a variant constructor's payload
+; `(-> Int64 C)`, a built-in `Some`/`Ok` payload — the parameter type need not be repeated: it is the
+; arrow's parameter, threaded from the storage site into the lambda. core-semantics.md §A Function Is A
+; First-Class Value + §Applying A Function Binds Its Parameter To Its Argument: a closure typed against
+; the function type its context requires. (`type_of` computes a lambda's type bottom-up, so a bare `(fn
+; (n) …)` whose body does not otherwise pin `n` stayed `Any` and declined "a closure's parameter type has
+; no machine representation" / "a tuple element of type Any"; the expected-arrow fallback closes that.)
+
+(case "an unannotated closure in a user variant payload is typed from the declared arrow"
+  (doc    "`(type T (Susp (-> Int64 C)))` declares a variant carrying a function `Int64 → C`. Storing
+           `(T.Susp (fn (n) (C.A n)))` — the lambda's parameter UNANNOTATED — types `n : Int64` from the
+           payload's declared arrow, not from a repeated annotation. Extracted by the match binder `f` and
+           applied to 7, its `C.A` result matches the `(C.A m)` arm → 7. Pins that a closure stored in a
+           declared-function-typed payload takes its parameter type from that declaration — the callback-
+           in-a-variant idiom without redundant annotations.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C (A Int64) B)
+            (type T (Susp (-> Int64 C)))
+            (def (main) (match (T.Susp (fn (n) (C.A n))) ((T.Susp f) (match (f 7) ((C.A m) m) ((C.B) 0)))))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "an unannotated closure in a Some payload is typed from the Option's element arrow"
+  (doc    "The built-in companion: `(Some (fn (n) (C.A n)))` carries an unannotated closure whose element
+           type the `Some` payload fixes to the function `Int64 → C`, so `n : Int64` without annotation.
+           Applied to 7 through the match binder → its `C.A` result yields 7. Pins the expected-arrow
+           threading works for a built-in Option payload exactly as for a user variant.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C (A Int64) B)
+            (def (main) (match (Some (fn (n) (C.A n))) ((Some f) (match (f 7) ((C.A m) m) ((C.B) 0))) ((None) 0)))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "an unannotated closure with an unused parameter in a payload takes the declared parameter type"
+  (doc    "The lambda's parameter is not used by its body — `(fn (n) (C.B))` ignores `n` — so the body
+           cannot constrain `n` at all; its type comes SOLELY from the payload's declared arrow `(-> Int64
+           C)`. Without the expected-arrow fallback this declined 'a closure's parameter type has no
+           machine representation' (nothing pinned `n`). Applied to 7, the body yields `C.B` → the `(C.B)`
+           arm → 0. Pins that the declared arrow types even a body-unconstrained parameter.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C (A Int64) B)
+            (type T (Susp (-> Int64 C)))
+            (def (main) (match (T.Susp (fn (n) (C.B))) ((T.Susp f) (match (f 7) ((C.A m) m) ((C.B) 0)))))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "a capturing unannotated closure in a payload is typed from the declared arrow"
+  (doc    "The capturing extension: `(mk k)` returns `(T.Susp (fn (n) (C.A (+ n k))))` — an unannotated
+           closure that CAPTURES the runtime parameter `k` AND takes its own parameter type from the
+           payload arrow `(-> Int64 C)`. Extracted and applied to 7 with k = 100 → `C.A (7 + 100)` → 107.
+           Pins that the storage-context parameter typing composes with capture — the closure retains its
+           environment through the variant payload and still types its parameter from the declaration.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C (A Int64) B)
+            (type T (Susp (-> Int64 C)))
+            (def (mk (: k Int64)) (T.Susp (fn (n) (C.A (+ n k)))))
+            (def (main (: k Int64)) (match (mk k) ((T.Susp f) (match (f 7) ((C.A m) m) ((C.B) 0)))))
+            (export main)))
+  (call   main (: 100 Int64))
+  (output (: 107 Int64)))
+
 (case "a closure capturing two enclosing bindings folds through nested arithmetic"
   (doc    "`(fn (x) (+ (* x a) b))` captures BOTH `a` and `b` from enclosing lets; applied to 5 with
            a = 2, b = 3 → (5·2)+3 = 13. Pins that MULTIPLE distinct captures from different enclosing
