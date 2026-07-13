@@ -10392,6 +10392,35 @@ mod stage1 {
     }
 
     #[test]
+    fn a_host_op_with_a_string_argument_compiles() {
+        // E2h-string: a host op `log.emit : String -> Unit` performed on a CONSTANT string. The string
+        // crosses the boundary as the component `string` (core `(ptr,len)`): the compiler bakes "ready"
+        // into a data segment, imports a shared memory, and the op's canon-lower carries the Memory option
+        // (the shared-memory 2-instance envelope shape). Compiles to a component importing
+        // `log: interface { emit: func(p0: string) }` (verified via the gate → unit + observed log.emit).
+        let src = "(do (effect log (op emit (-> String Unit))) \
+                   (def (main) (host (log) (log.emit \"ready\"))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a host op with a constant string argument must compile"
+        );
+    }
+
+    #[test]
+    fn a_dropped_host_call_in_a_non_final_do_statement_declines() {
+        // E2h: a `(do …)` block lowers to only its LAST form's value, so a host call in a NON-FINAL
+        // statement would be silently dropped. The compiler DECLINES rather than miscompile (drop the
+        // call's side effect). Multi-statement host sequencing is a later increment.
+        let src = "(do (effect log (op emit (-> String Unit))) \
+                   (def (main) (host (log) (do (log.emit \"first\") (log.emit \"second\")))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a dropped host call in a non-final do statement must decline, not miscompile"
+        );
+    }
+
+    #[test]
     fn a_recursive_fn_threads_two_nested_handlers_states_at_once() {
         // E3h-B: a recursive `loop` runs under TWO nested stateful handlers — `A` (countdown seeded 3,
         // `tick` threads `s-1`) governs recursion depth, `B` (accumulator seeded 0, `bump` threads `s+10`)

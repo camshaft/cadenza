@@ -510,8 +510,39 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         .collect();
     for body in export_bodies {
         crate::effects::check_no_home(db, body, &mut faults);
+        // DROPPED-HOST-CALL DECLINE (E2h): a `(do …)` block lowers to only its LAST form's value, so a
+        // host call in a NON-FINAL statement would be silently dropped (its side effect lost). Decline
+        // cleanly rather than miscompile — multi-statement host-call sequencing is a later increment.
+        // (Host calls only occur under an entrypoint delegation, so an export body covers them.)
+        decline_dropped_host_call(db, body, &mut faults);
     }
     dedup_faults(faults)
+}
+
+/// Report a DECLINE for a host call in a NON-FINAL `(do …)` statement — such a call would be dropped
+/// (the block lowers to its last form only), so emitting it would silently lose the side effect. A
+/// bounded structural walk: at each `do` node, any non-last form reaching a `Core::HostCall` declines.
+fn decline_dropped_host_call(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
+    if db.ast.head_name(id) == Some("do")
+        && let Some(forms) = db.ast.as_form(id, "do")
+    {
+        let forms: Vec<StructId> = forms.to_vec();
+        let last = forms.last().copied();
+        for &f in &forms {
+            if Some(f) != last && form_reaches_host_call(db, f) {
+                out.push(Reject::decline(
+                    "a host call in a non-final `do` statement would be dropped (multi-statement host \
+                     sequencing is not yet emitted)",
+                ));
+            }
+        }
+    }
+    // Descend into every child so a nested `do` (e.g. under a `host`/`handle`) is covered too.
+    if let crate::ast::Struct::List(children) = db.ast.get(id).clone() {
+        for c in children {
+            decline_dropped_host_call(db, c, out);
+        }
+    }
 }
 
 /// Collapse duplicate faults — the SAME issue reported by more than one collection pass. A fault is
@@ -539,6 +570,20 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
 /// Collect poisons reached UNCONDITIONALLY from `id`. Descends the core form into positions a value is
 /// unconditionally used (an `if` CONDITION), but NOT into a conditional's branches — a poison shielded
 /// by an untaken branch is not a build failure. Reads the core column on demand.
+/// Whether the core form at `id` reaches a `Core::HostCall` (directly or nested) — used to decline a
+/// dropped host call in a non-final `do` statement. A bounded structural walk over the core tree.
+fn form_reaches_host_call(db: &mut Db, id: StructId) -> bool {
+    if matches!(core_of(db, id), Core::HostCall { .. }) {
+        return true;
+    }
+    match db.ast.get(id).clone() {
+        crate::ast::Struct::List(children) => {
+            children.iter().any(|&c| form_reaches_host_call(db, c))
+        }
+        crate::ast::Struct::Atom(_) => false,
+    }
+}
+
 fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     // A `do` SEQUENCING block resolves to a `Ref` to its LAST form, so `core_of` follows only that. But
     // every INTERMEDIATE form is UNCONDITIONALLY evaluated (its value discarded), so a provable trap in

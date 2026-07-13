@@ -589,6 +589,193 @@ pub fn assemble_host(
 /// `"heap"` for the runtime shape). The program's core module imports each host op from `"host"`.
 const HOST_MODULE: &str = "host";
 
+/// The SHARED-MEMORY core module the string-arg host shape threads: a one-page memory EXPORTED as `mem`,
+/// nothing else. The program core module imports this memory (from module `"mem"`), and each string op's
+/// canon-LOWER binds it so the `(ptr,len)` a `string` lowers to is read out of the SAME memory the
+/// program's data segment wrote the string into. A separate module (not the program's own memory) breaks
+/// the lower↔instance circularity: the memory instance exists BEFORE the lower that references it, which
+/// exists before the program instance that imports it. Bytes: core magic + memory section (1 memory, min
+/// 1) + export section (`mem` = memory 0).
+fn shared_mem_module() -> Vec<u8> {
+    let mem_sec = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01])); // limits {min:1}
+    let export_sec = {
+        let mut item = uleb_bytes("mem".len() as u64);
+        item.extend_from_slice(b"mem");
+        item.push(wasm_abi::EXPORT_KIND_MEMORY);
+        uleb128(0, &mut item); // memory index 0
+        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(1, &item))
+    };
+    let mut out = Vec::new();
+    out.extend_from_slice(wasm_abi::CORE_MAGIC);
+    out.extend_from_slice(&mem_sec);
+    out.extend_from_slice(&export_sec);
+    out
+}
+
+/// The HOST-IMPORT + MEMORY shape (E2h-string): a program that delegates a single effect `iface` whose
+/// operations take a `string` parameter. Adds, over [`assemble_host`], a shared-memory core module + its
+/// instance + a memory alias, a Memory canon-option on each op's lower, and the program instance
+/// instantiated with BOTH `"host"` (the lowered ops) and `"mem"` (the shared memory). Follows the
+/// `ComponentBuilder` oracle's section order (verified byte-shape). SCOPE: host-only, single effect,
+/// scalar/unit result, `string` or scalar params.
+///
+/// Index spaces (`m = exports.len()`): core memory `0` (the mem alias); lowered ops → core funcs `0..h`;
+/// boundary core-aliases → core funcs `h..h+m`. Component: effect instance-type → type 0; imported effect
+/// instance → comp instance 0; op aliases → comp funcs `0..h`; boundary functypes → types `1..=m`; lifts →
+/// comp funcs `h..h+m`. Core instances: mem `0`, host-ops `1`, program `2`.
+pub fn assemble_host_mem(
+    core: &[u8],
+    exports: &[BoundaryExport],
+    iface: &str,
+    host_fns: &[HostFn],
+) -> Vec<u8> {
+    let h = host_fns.len();
+    let m = exports.len();
+
+    // sec 7: the effect's instance-type — component type 0 (same as the scalar shape).
+    let instance_type = {
+        let mut decls = Vec::new();
+        for (i, f) in host_fns.iter().enumerate() {
+            decls.push(0x01);
+            decls.extend_from_slice(&f.comp_functype);
+            decls.push(0x04);
+            decls.extend_from_slice(&extern_name(&f.op));
+            decls.push(0x01);
+            uleb128(i as u64, &mut decls);
+        }
+        let mut it = vec![0x42];
+        it.extend_from_slice(&wasm_vec(2 * h, &decls));
+        it
+    };
+    let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type));
+
+    // sec 10: import the effect interface as an instance of component type 0.
+    let import_sec = {
+        let mut item = extern_name(iface);
+        item.push(0x05);
+        uleb128(0, &mut item);
+        section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
+    };
+
+    // sec 6 (first): alias each op out of the imported effect instance (comp instance 0) → comp funcs.
+    let op_alias_sec = {
+        let mut items = Vec::new();
+        for f in host_fns {
+            items.extend_from_slice(&comp_alias_item(0, &f.op));
+        }
+        section(sec::ALIAS, &wasm_vec(h, &items))
+    };
+
+    // sec 1 (first): the SHARED-MEMORY core module (module 0).
+    let mem_module_sec = core_module_section(&shared_mem_module());
+    // sec 2 (first): instantiate the mem module (no args) → core instance 0.
+    let mem_instance_sec = section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(0, &[])),
+    );
+    // sec 6 (memory alias): alias `mem`.`mem` out of core instance 0 → core memory 0.
+    let mem_alias_sec = section(sec::ALIAS, &wasm_vec(1, &memory_alias_item(0, "mem")));
+
+    // sec 8 (first): canon-lower each aliased op with the MEMORY option (core memory 0) → core funcs.
+    let lower_sec = {
+        let mut items = Vec::new();
+        for i in 0..h {
+            items.extend_from_slice(&canon_lower_item_mem(i as u32, 0));
+        }
+        section(sec::CANON, &wasm_vec(h, &items))
+    };
+
+    // sec 1 (second): the embedded program core module (module 1).
+    let prog_module_sec = core_module_section(core);
+
+    // sec 2 (second): TWO core instances — (1) the lowered ops as `"host"`, (2) the program instantiated
+    // with `"host" = instance 1` AND `"mem" = instance 0`.
+    let prog_instance_sec = {
+        let mut items = Vec::new();
+        // instance 1: the lowered ops exported under their names.
+        let mut host = vec![0x01];
+        let mut host_exports = Vec::new();
+        for (i, f) in host_fns.iter().enumerate() {
+            host_exports.extend_from_slice(&uleb_bytes(f.op.len() as u64));
+            host_exports.extend_from_slice(f.op.as_bytes());
+            host_exports.push(0x00);
+            uleb128(i as u64, &mut host_exports);
+        }
+        host.extend_from_slice(&wasm_vec(h, &host_exports));
+        items.extend_from_slice(&host);
+        // instance 2: instantiate module 1 with `"host" = instance 1`, `"mem" = instance 0`.
+        let mut prog = vec![0x00];
+        uleb128(1, &mut prog); // module index 1 (the program)
+        let mut args = Vec::new();
+        // arg "host" = core instance 1
+        args.extend_from_slice(&uleb_bytes(HOST_MODULE.len() as u64));
+        args.extend_from_slice(HOST_MODULE.as_bytes());
+        args.push(0x12);
+        uleb128(1, &mut args);
+        // arg "mem" = core instance 0
+        args.extend_from_slice(&uleb_bytes("mem".len() as u64));
+        args.extend_from_slice(b"mem");
+        args.push(0x12);
+        uleb128(0, &mut args);
+        prog.extend_from_slice(&wasm_vec(2, &args));
+        items.extend_from_slice(&prog);
+        section(sec::CORE_INSTANCE, &wasm_vec(2, &items))
+    };
+
+    // sec 6 (boundary alias): alias each boundary func out of the PROGRAM instance (core instance 2).
+    let boundary_alias_sec = {
+        let mut items = Vec::new();
+        for e in exports {
+            items.extend_from_slice(&core_alias_item(2, &e.name));
+        }
+        section(sec::ALIAS, &wasm_vec(m, &items))
+    };
+
+    // sec 7 (second): one component functype per boundary export → comp types `1..=m`.
+    let boundary_type_sec = {
+        let mut items = Vec::new();
+        for e in exports {
+            items.extend_from_slice(&comp_functype(e, 0));
+        }
+        section(sec::COMPONENT_TYPE, &wasm_vec(m, &items))
+    };
+
+    // sec 8 (second): lift each boundary core func (`h+j`) using its component type (`1+j`).
+    let lift_sec = {
+        let mut items = Vec::new();
+        for j in 0..m {
+            items.extend_from_slice(&canon_lift_item((h + j) as u32, (1 + j) as u32));
+        }
+        section(sec::CANON, &wasm_vec(m, &items))
+    };
+
+    // sec 11: export each lifted component func under its boundary name.
+    let export_sec = {
+        let mut items = Vec::new();
+        for (j, e) in exports.iter().enumerate() {
+            items.extend_from_slice(&comp_export_item(&e.name, (h + j) as u32));
+        }
+        section(sec::COMPONENT_EXPORT, &wasm_vec(m, &items))
+    };
+
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+    out.extend_from_slice(&type_sec); // 7: effect instance-type
+    out.extend_from_slice(&import_sec); // 10: component import of the effect interface
+    out.extend_from_slice(&op_alias_sec); // 6: alias ops out of the import
+    out.extend_from_slice(&mem_module_sec); // 1: shared-memory module (module 0)
+    out.extend_from_slice(&mem_instance_sec); // 2: instantiate mem → core instance 0
+    out.extend_from_slice(&mem_alias_sec); // 6: alias mem.mem → core memory 0
+    out.extend_from_slice(&lower_sec); // 8: lower ops (with Memory option) → core funcs
+    out.extend_from_slice(&prog_module_sec); // 1: embedded program (module 1)
+    out.extend_from_slice(&prog_instance_sec); // 2: host-ops instance + program instance
+    out.extend_from_slice(&boundary_alias_sec); // 6: alias boundary funcs off the program
+    out.extend_from_slice(&boundary_type_sec); // 7: boundary functypes
+    out.extend_from_slice(&lift_sec); // 8: lift boundary funcs
+    out.extend_from_slice(&export_sec); // 11: export
+    out
+}
+
 /// The RESOURCE-ESCAPE shape — a compound leaves the component as a monomorphized component-model
 /// RESOURCE `t` (rep i32, with a dtor) whose `encode() -> list<u8>` returns the canonical binary value
 /// form, published inside the `cadenza:run/run` instance alongside `make : () -> own<t>`. This is the
@@ -1378,6 +1565,20 @@ fn canon_lower_item(comp_func: u32) -> Vec<u8> {
     let mut item = vec![0x01, 0x00];
     uleb128(comp_func as u64, &mut item);
     item.push(0x00); // canon options: none
+    item
+}
+
+/// A sec-8 canon-lower item WITH a MEMORY option: `01 00 <comp-func> 01 03 <mem-idx>` — lower a component
+/// func, then a one-option canon-options vec carrying `Memory(mem-idx)` (tag `0x03`). A host op with a
+/// STRING parameter needs the memory the `(ptr,len)` lowering reads the string from, so its lower binds
+/// the shared memory (the `0x03` Memory tag is the same component-model canon-opt encoding
+/// `canon_lift_list_item` uses, pinned by the byte-identity oracle).
+fn canon_lower_item_mem(comp_func: u32, mem_idx: u32) -> Vec<u8> {
+    let mut item = vec![0x01, 0x00];
+    uleb128(comp_func as u64, &mut item);
+    item.push(0x01); // canon options: count 1
+    item.push(0x03); // CanonicalOption::Memory
+    uleb128(mem_idx as u64, &mut item);
     item
 }
 

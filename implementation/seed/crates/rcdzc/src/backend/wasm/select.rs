@@ -3231,10 +3231,32 @@ fn emit(
                 Reject::decline("a host call's operation is not in the host-import set")
             })?;
             for &arg in &args {
-                if matches!(crate::infer::type_of(db, arg), Ty::Unit) {
-                    continue; // a unit argument carries no boundary value
+                let at = crate::infer::type_of(db, arg);
+                match at {
+                    // A unit argument carries no boundary value.
+                    Ty::Unit => continue,
+                    // A STRING argument crosses as `(ptr, len)` — its constant bytes were laid in the core
+                    // module's data segment at a known offset (`host_string_offset`), so push that ptr +
+                    // the byte length. Only a CONSTANT string is supported (a runtime byte-rope is a later
+                    // increment); a non-constant string arg declines.
+                    Ty::String => {
+                        let s = match core_of(db, arg) {
+                            Core::ConstStr(s) => s,
+                            _ => {
+                                return Err(Reject::decline(
+                                    "a host call with a non-constant string argument is not yet emitted",
+                                ));
+                            }
+                        };
+                        let offset = layout.host_string_offset(&s).ok_or_else(|| {
+                            Reject::decline("a host-arg string was not laid in the data segment")
+                        })?;
+                        out.push(Lir::ConstI32(offset as i32));
+                        out.push(Lir::ConstI32(s.len() as i32));
+                    }
+                    // A scalar argument emits its value directly.
+                    _ => emit(db, arg, slots, base, high, scratch_ty, layout, out)?,
                 }
-                emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
             }
             out.push(Lir::CallHostImport(index));
             Ok(())

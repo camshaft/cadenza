@@ -26,18 +26,28 @@ use crate::db::Db;
 use crate::lower::core_of;
 use crate::ty::Ty;
 
+/// One boundary parameter of a host operation: a SCALAR (crosses as its component primitive / one core
+/// slot) or a STRING (crosses as the component `string` / TWO core slots `(ptr, len)` read out of the
+/// program's linear memory by the canonical ABI). A `Unit` domain contributes NO parameter (elided).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum HostParam {
+    Scalar(AbiValType),
+    /// A `string` parameter — its component valtype is `string`; its core form is `(ptr: i32, len: i32)`.
+    Str,
+}
+
 /// One host-delegated operation the program performs — its declaring effect's NAME (the WIT interface),
-/// the operation's NAME (the func in it), and its scalar boundary signature. Two operations are the same
-/// import iff `(effect, op)` match; the SET is ordered (its position is the import's core-func index).
+/// the operation's NAME (the func in it), and its boundary signature. Two operations are the same import
+/// iff `(effect, op)` match; the SET is ordered (its position is the import's core-func index).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct HostImport {
     /// The declaring effect's name — the WIT interface the op is imported through.
     pub effect: String,
     /// The operation's name — the func exported by the interface.
     pub op: String,
-    /// The operation's boundary parameter types (scalar only in this increment). A `Unit` domain is
-    /// ELIDED (a nullary op `(-> Unit R)` performed as `(E.op)` takes no boundary parameter).
-    pub params: Vec<AbiValType>,
+    /// The operation's boundary parameters (scalar or string). A `Unit` domain is ELIDED (a nullary op
+    /// `(-> Unit R)` performed as `(E.op)` takes no boundary parameter).
+    pub params: Vec<HostParam>,
     /// The operation's boundary result type — `None` for a `Unit` result.
     pub result: Option<AbiValType>,
 }
@@ -77,17 +87,21 @@ pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>
             args,
             result,
         } => {
-            // The op's boundary signature — parameter types from the arg types, result from `result`. A
-            // `Unit` arg/result is elided (no boundary slot). A non-scalar arg/result yields `None`; such
-            // an op is still recorded (with whatever scalars map) but the envelope declines to lay a
-            // non-scalar signature — the decline surfaces at assembly, not here.
+            // The op's boundary signature — parameter kinds from the arg types, result from `result`. A
+            // `Unit` arg/result is elided (no boundary slot). A STRING arg is `HostParam::Str` (crosses as
+            // `string`, core `(ptr,len)`); a scalar arg maps its `AbiValType`. A parameter whose type is
+            // neither (a compound) makes the op undelegable — the envelope declines at assembly.
             let mut params = Vec::new();
             for &a in &args {
                 let at = crate::infer::type_of(db, a);
-                if !matches!(at, Ty::Unit)
-                    && let Some(v) = abi_val_type(&at)
-                {
-                    params.push(v);
+                match &at {
+                    Ty::Unit => {}
+                    Ty::String => params.push(HostParam::Str),
+                    _ => {
+                        if let Some(v) = abi_val_type(&at) {
+                            params.push(HostParam::Scalar(v));
+                        }
+                    }
                 }
             }
             let result_abi = if matches!(result, Ty::Unit) {
@@ -126,4 +140,14 @@ pub fn host_import_index(imports: &[HostImport], effect: &str, op: &str) -> Opti
     imports
         .iter()
         .position(|h| h.effect == effect && h.op == op)
+}
+
+/// Whether the host-import set has ANY string parameter — so the program's core module must EXPORT/IMPORT
+/// a linear memory (the `(ptr,len)` a `string` lowers to is read out of it) and the envelope must thread a
+/// shared-memory module + a Memory canon-option on each string op's lower. A scalar-only host set needs no
+/// memory (byte-identical to the E2h-2 scalar shape).
+pub fn set_needs_memory(imports: &[HostImport]) -> bool {
+    imports
+        .iter()
+        .any(|h| h.params.iter().any(|p| matches!(p, HostParam::Str)))
 }
