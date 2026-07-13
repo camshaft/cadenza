@@ -477,6 +477,14 @@ pub enum Prim {
     /// is a compile-time `Int` literal read off arg1 (not an HM variable), exactly as `Unit.^` reads its
     /// power and `Qty.of` reads its unit. A negative exponent DECLINES for now (needs a reciprocal).
     QtyPow,
+    /// `Qty.unit q` — extract a quantity's UNIT as a compile-time unit value (a `ty::Unit`): `(Qty.of new
+    /// (Qty.unit y))` builds a new quantity in `y`'s unit WITHOUT re-spelling it. Reduces (via `unit_of`,
+    /// which reads `q`'s solved `Ty::Qty` for its unit) exactly like `(Unit.base …)` does — it IS a unit
+    /// expression, flowing through the unit-reading path (`unit_of`/`typeval_of`), never a runtime value.
+    /// Compile-time-only (units erase), so `Qty.unit` is usable only in a UNIT position, like any unit
+    /// value. The value-level companion of `Type.of`: `Type.of` gives the whole type (for annotations);
+    /// `Qty.unit` gives just the unit (to construct another quantity of the same unit).
+    QtyUnit,
     /// `Qty : (Type, Unit) → Type` — the QUANTITY-TYPE constructor. `(Qty Float64 u)` in TYPE position
     /// builds the type-value `Ty::Qty { inner, unit }` (used in an annotation `(: e (Qty T u))`), reading
     /// the first argument as the inner numeric type and the second as a compile-time unit (`unit_of`).
@@ -630,6 +638,7 @@ impl Prim {
             "qty-of" => Some(Prim::QtyOf),
             "qty-value" => Some(Prim::QtyValue),
             "qty-pow" => Some(Prim::QtyPow),
+            "qty-unit" => Some(Prim::QtyUnit),
             "Qty" => Some(Prim::QtyCtor),
             "type-of" => Some(Prim::TypeOf),
             "type-eq" => Some(Prim::TypeEq),

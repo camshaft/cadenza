@@ -1,5 +1,7 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	Ok carrying a Some keeps both variant tags
+pass	Qty.unit recovers a derived unit
+pass	Qty.unit recovers a quantity's unit to build another quantity of the same unit
 pass	Qty.value recovers the underlying numeric value, discarding the unit
 pass	Result propagates errors without trapping
 pass	Result type for fallible operations
@@ -495,6 +497,7 @@ pass	a program that makes a host call has that call in its observable behavior
 pass	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
+pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
 pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity's erased value is the identical numeric value the bare literal has
