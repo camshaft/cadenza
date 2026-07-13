@@ -524,8 +524,26 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         .iter()
         .filter_map(|e| e.def.and_then(|d| db.defs[d].body))
         .collect();
-    for body in export_bodies {
+    for body in export_bodies.iter().copied() {
         crate::effects::check_no_home(db, body, &mut faults);
+    }
+    // EXPORTED-CLOSURE BODY TYPE-CHECK. An export whose body is a bare `(fn …)` crosses the host boundary
+    // as a closure — it is NEVER applied in-guest, so its body is never β-reduced, and `collect_node`'s
+    // `Resolved::Lambda` arm is a no-op (a called def's body is checked on β-reduction at its call site,
+    // so the arm deliberately does not descend). That leaves an EXPORTED closure's body UNCHECKED: an
+    // ill-typed body (`(fn ((: x Int64)) (: x Bool))`) escaped the type-checker and emitted an invalid
+    // component, where an ordinary def / an in-guest-applied `(fn …)` rejects CDZ0203. Run the same
+    // `type_errors` over the closure body here — its params are bound (a `(: x Int64)` param types as
+    // Int64), so an annotation/unification fault in the body surfaces exactly as it does for an ordinary
+    // definition. (SUBSUMES the narrow-arg-wide-result invalid-component case: `(fn ((: x Int8)) (: (+ x
+    // 100) Int64))`'s body is ill-typed — the `(+ x 100)` is Int8, not Int64 — so it rejects CDZ0203
+    // instead of emitting invalid wasm.) A non-lambda export body is already fully checked above.
+    for body in export_bodies {
+        if let crate::resolved::Resolved::Lambda { body: closure_body, .. } =
+            crate::resolve::resolved_of(db, body)
+        {
+            faults.extend(type_errors(db, closure_body));
+        }
     }
     // AN EXPORT NAMING NO DEFINITION is ill-formed — `(export nope)` with no `(def nope …)`. This is a
     // well-formedness fault (the public surface must name real definitions), so it belongs in

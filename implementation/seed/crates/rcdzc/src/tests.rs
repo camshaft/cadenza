@@ -7518,6 +7518,38 @@ mod match_engine {
         );
     }
 
+    #[test]
+    fn an_exported_closure_body_is_type_checked() {
+        // TYPE-SOUNDNESS HOLE: an EXPORTED closure `(def (a) (fn …))` crosses the host boundary and is
+        // never β-reduced, so its body escaped the type-checker (`collect_node`'s `Lambda` arm is a no-op)
+        // — an ill-typed body emitted an invalid component instead of rejecting. The closure-export path
+        // now runs `type_errors` over the body, so a body fault surfaces exactly as an ordinary def's does.
+        //   annotation mismatch: (: x Bool) over an Int64 value → CDZ0203.
+        assert_eq!(
+            reject_code("(module m (def (a) (fn ((: x Int64)) (: x Bool))) (export a))").as_deref(),
+            Some("CDZ0203"),
+            "an ill-typed exported-closure body must reject, not emit an invalid component"
+        );
+        // arithmetic type mismatch: Int64 + Bool → CDZ0203.
+        assert_eq!(
+            reject_code("(module m (def (a) (fn ((: x Int64)) (+ x true))) (export a))").as_deref(),
+            Some("CDZ0203"),
+        );
+        // SUBSUMES the narrow-arg-wide-result invalid-component case: the body `(+ x 100)` over Int8 is
+        // Int8, annotated Int64 — an ill-typed body → CDZ0203, no longer an invalid `i64/i32` component.
+        assert_eq!(
+            reject_code("(module m (def (a) (fn ((: x Int8)) (: (+ x 100) Int64))) (export a))")
+                .as_deref(),
+            Some("CDZ0203"),
+        );
+        // NO OVER-REJECTION: a WELL-TYPED exported closure still compiles clean (returns no rejection).
+        assert_eq!(
+            reject_code("(module m (def (a) (fn ((: x Int64)) (+ x 100))) (export a))"),
+            None,
+            "a well-typed exported closure must still compile"
+        );
+    }
+
     /// Run a program whose RESULT escapes to the host as a resource (no bare func export), returning its
     /// rendered value form, or `None` if the runtime wasm is absent.
     fn run_heap_value_escape(src: &str) -> Option<String> {
