@@ -1149,6 +1149,56 @@ fn check_prints_a_did_you_mean_help_line_for_a_misspelled_name() {
 }
 
 #[test]
+fn check_json_emits_a_machine_readable_diagnostic_with_a_structured_fix() {
+    // `--json` gives an agent the fix as DATA — code, message, byte range, and a nested `fix` object
+    // (kind + replacement + verified + byte range) it applies directly, not the human `help:` text.
+    let dir = scratch_dir("check_json");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(module m (def (compute x) x) (def (main) (computee 1)) (export main))\n",
+    )
+    .unwrap();
+    let (ok, stdout, _) = run(&["check", "--json", f.to_str().unwrap()], "");
+    assert!(!ok, "the unbound name is still an error (exit non-zero)");
+    // One JSON object, carrying the code, a byte range, and the structured replace fix.
+    let line = stdout.lines().next().unwrap_or("");
+    assert!(
+        line.starts_with('{') && line.ends_with('}'),
+        "a JSON object: {stdout}"
+    );
+    assert!(line.contains("\"code\":\"CDZ0101\""), "the code: {stdout}");
+    assert!(
+        line.contains("\"fix\":{") && line.contains("\"kind\":\"replace\""),
+        "a structured fix with a kind: {stdout}"
+    );
+    assert!(
+        line.contains("\"replacement\":\"compute\""),
+        "the replacement text: {stdout}"
+    );
+    assert!(
+        line.contains("\"verified\":false"),
+        "the applicability marker as a JSON bool: {stdout}"
+    );
+    assert!(
+        line.contains("\"from\":") && line.contains("\"to\":"),
+        "a byte range to apply the edit over: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_json_on_a_clean_program_emits_nothing_and_exits_zero() {
+    let dir = scratch_dir("check_json_clean");
+    let f = dir.join("prog.sexp");
+    std::fs::write(&f, "(module m (def (main) (: 42 Int64)) (export main))\n").unwrap();
+    let (ok, stdout, _) = run(&["check", "--json", f.to_str().unwrap()], "");
+    assert!(ok, "a clean program exits 0");
+    assert_eq!(stdout.trim(), "", "and emits no JSON: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_on_a_clean_program_prints_nothing_and_exits_zero() {
     let dir = scratch_dir("check_ok");
     let f = dir.join("prog.sexp");

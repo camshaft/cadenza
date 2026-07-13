@@ -373,6 +373,11 @@ struct UsesArgs {
 struct CheckArgs {
     /// The program file to check (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
+    /// Emit each diagnostic as a machine-readable JSON object (one per line), including its structured
+    /// fix — the shape an agent or an editor consumes to apply the repair directly, rather than
+    /// text-parsing the human `file:line:col` output. Exit code is unchanged (non-zero iff any error).
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -540,6 +545,18 @@ fn run_check(args: &CheckArgs) -> ExitCode {
     };
     let text = String::from_utf8_lossy(bytes);
     let mut any_error = false;
+    // A node id → its 1-based `(line, col)` start plus its `[from, to)` UTF-8 byte range, via the span
+    // table this process kept. `None` for an unanchored (`-`) or unmapped node.
+    let span_of = |node: &str| -> Option<(usize, usize, usize, usize)> {
+        let n = node.parse::<u32>().ok()?;
+        let span = spans.get(cadenza_syntax::StructId(n))?;
+        let (l, c) = cadenza_syntax::query::driver::line_col(&source, span.start);
+        Some((l, c, span.start, span.end))
+    };
+    let loc_label = |node: &str| match span_of(node) {
+        Some((l, c, _, _)) => format!("{}:{l}:{c}", args.file),
+        None => args.file.clone(),
+    };
     // Each line is `severity<TAB>code<TAB>node-id<TAB>fix-kind<TAB>fix-node<TAB>fix-replacement<TAB>
     // fix-verified<TAB>message` — the first seven columns split on the first seven tabs, message is the
     // free-text remainder. `code`/`node-id`/the four fix columns may be `-` (absent).
@@ -561,24 +578,53 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             _ => continue, // a malformed line (shouldn't happen) — skip rather than crash
         };
         any_error |= severity == "error";
-        // Map a node id to a source location; an unanchored fault (`-`) reports at the file.
-        let loc_of = |node: &str| match node
-            .parse::<u32>()
-            .ok()
-            .and_then(|n| spans.get(cadenza_syntax::StructId(n)))
-        {
-            Some(span) => {
-                let (l, c) = cadenza_syntax::query::driver::line_col(&source, span.start);
-                format!("{}:{l}:{c}", args.file)
+
+        if args.json {
+            // The machine-readable shape: one JSON object per diagnostic, its structured fix nested. An
+            // agent reads `fix.kind` + `fix.from`/`fix.to` + `fix.replacement` and applies the edit
+            // directly (span-mapped here, so it never re-derives positions). `verified` says whether to
+            // apply blind.
+            use cadenza_syntax::query::json;
+            let mut obj = json::Object::new();
+            obj.string("severity", severity);
+            if code != "-" {
+                obj.string("code", code);
             }
-            None => args.file.clone(),
-        };
+            obj.string("message", message);
+            if let Some((l, c, from, to)) = span_of(node) {
+                obj.raw("line", &l.to_string());
+                obj.raw("col", &c.to_string());
+                obj.raw("from", &from.to_string());
+                obj.raw("to", &to.to_string());
+            }
+            if fix_node != "-" {
+                let mut fix = json::Object::new();
+                fix.string("kind", fix_kind); // "replace" | "insert" | "wrap"
+                fix.string("replacement", fix_repl);
+                fix.raw(
+                    "verified",
+                    if fix_verified == "verified" {
+                        "true"
+                    } else {
+                        "false"
+                    },
+                );
+                if let Some((_, _, from, to)) = span_of(fix_node) {
+                    fix.raw("from", &from.to_string());
+                    fix.raw("to", &to.to_string());
+                }
+                obj.raw("fix", &fix.finish());
+            }
+            println!("{}", obj.finish());
+            continue;
+        }
+
         let code_part = if code == "-" {
             String::new()
         } else {
             format!(" [{code}]")
         };
-        println!("{}: {severity}{code_part}: {message}", loc_of(node));
+        println!("{}: {severity}{code_part}: {message}", loc_label(node));
         // A structural fix, if the diagnostic carries one — the rustc-style `help:` line an agent (or an
         // editor's quick-fix) applies directly. `replace` swaps the node's spelling; `insert` appends the
         // rendered form(s) into the node (e.g. the missing match arms). The applicability marker rides
@@ -594,7 +640,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
                 "wrap" => format!("wrap in `{fix_repl}`"),
                 _ => format!("replace with `{fix_repl}`"),
             };
-            println!("{}: help{marker}: {action}", loc_of(fix_node));
+            println!("{}: help{marker}: {action}", loc_label(fix_node));
         }
     }
     if any_error {

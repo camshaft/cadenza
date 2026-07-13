@@ -107,18 +107,38 @@ async function runComponent(job: RunJob): Promise<RunResult> {
     return { kind: "value-bytes", bytes: new Uint8Array(bytes) };
   }
 
-  // Scalar/unit result: a bare function export. Call the sole exported function.
-  const fn = findExportedFunction(root);
-  if (fn) return { kind: "scalar", value: String(fn()) };
+  // Scalar/unit result: a bare function export. Prefer a NULLARY entry (the runnable `main` shape) —
+  // Run produces a value with no input, so a nullary export is what it can invoke.
+  const fns = exportedFunctions(root);
+  const nullary = fns.find((f) => f.fn.length === 0);
+  if (nullary) return { kind: "scalar", value: String(nullary.fn()) };
+
+  // The only runnable export takes arguments (e.g. `export { inc }` where `inc(x: Int64)`). Calling it
+  // with no argument would lower `undefined` to an i64 and throw a cryptic "Cannot convert undefined to
+  // a BigInt". Explain instead: Run needs a zero-argument entry; a parameterized fn is called from the
+  // REPL or via a nullary `main` that applies it.
+  const param = fns[0];
+  if (param) {
+    const n = param.fn.length;
+    const args = n === 1 ? "an argument" : `${n} arguments`;
+    const call = `${param.name}(${Array.from({ length: n }, () => "…").join(", ")})`;
+    return {
+      kind: "error",
+      message:
+        `\`${param.name}\` takes ${args}, so Run can't produce a value on its own. ` +
+        `Call it in the REPL (e.g. \`${call}\`), or add \`def main() = ${param.name}(…)\` and export \`main\`.`,
+    };
+  }
 
   return { kind: "error", message: "component exported no runnable entry" };
 }
 
-function findExportedFunction(root: Record<string, unknown>): (() => unknown) | null {
-  for (const v of Object.values(root)) {
-    if (typeof v === "function") return v as () => unknown;
-  }
-  return null;
+/// The component's exported FUNCTIONS, each with its name and the JS function (whose `.length` is the
+/// declared parameter count). Used to pick a nullary entry to run, or to explain a parameterized one.
+function exportedFunctions(root: Record<string, unknown>): { name: string; fn: (...a: unknown[]) => unknown }[] {
+  return Object.entries(root)
+    .filter(([, v]) => typeof v === "function")
+    .map(([name, v]) => ({ name, fn: v as (...a: unknown[]) => unknown }));
 }
 
 self.onmessage = async (e: MessageEvent<RunJob>) => {

@@ -1302,6 +1302,59 @@ fn a_wrap_whose_source_fits_the_target_is_the_identity() {
     assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::U8(100)]), 100);
 }
 
+/// `T.wrap(U.wrap x)` where the outer width N ≤ the inner width M — the inner wrap is redundant (the
+/// outer keeps only the low N ≤ M bits, unchanged by the inner). The inner Convert is elided; VALUE
+/// parity is preserved (the composed wrap gives the same low bits as the single outer wrap).
+#[test]
+fn a_narrowing_wrap_of_a_wider_wrap_elides_the_inner_wrap() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // Int32 → Int16 → Int8 (8 ≤ 16): folds to Int8.wrap x. 70000 & 0xFF = 112 (both paths agree).
+    let src = "(module m (def (f (: x Int32)) ((. Int8 wrap) ((. Int16 wrap) x))) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::S32(70000)]), 112);
+    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::S32(300)]), 44); // 300 → low 8 bits = 44
+    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::S32(-1)]), -1);
+    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::S32(127)]), 127);
+    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::S32(128)]), -128);
+
+    // Lir: exactly ONE sign-extend sequence (a single pair of shl/shr_s) — the inner wrap is gone.
+    {
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let full = "(module m (def (f (: x Int32)) ((. Int8 wrap) ((. Int16 wrap) x))) (def (main) 0) (export main))";
+        let mut db = crate::db::Db::load(parse(full));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("f");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let bb = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (bb, crate::infer::type_of(&mut db, bb))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = select_function(&mut db, body, &ps, &layout)
+            .expect("select")
+            .code;
+        // Two shifts (shl + shr_s) = ONE wrap; four = two wraps. The fold leaves exactly one wrap.
+        let shifts = code
+            .iter()
+            .filter(|i| matches!(i, Lir::I32Shl | Lir::I32ShrS))
+            .count();
+        assert_eq!(
+            shifts, 2,
+            "one sign-extend pair, inner wrap elided; got {code:?}"
+        );
+    }
+}
+
 /// A reference buried under many NON-binding forms still resolves to its outer binder — the
 /// correctness guard for the lexical-scope SKIP index (`Db::scope_skip`) that hops over the non-binding
 /// spine (record/`if`/application) instead of visiting every enclosing form. A wrong skip pointer (or
@@ -11212,8 +11265,34 @@ mod stage1 {
             code("(let (((tuple x x) (tuple 1 2))) x)").as_deref(),
             Some("CDZ0102")
         );
-        // NO OVER-REJECTION: a well-formed destructuring binding compiles.
+        // Refutability is checked RECURSIVELY: a refutable sub-pattern NESTED in a tuple binding element
+        // is CDZ0210, exactly as the top-level one — the check does not stop at the top level. A literal
+        // element, a multi-variant constructor element, a deeply-nested literal, and a nested string
+        // literal all fault (the last was previously a codeless "malformed sum match pattern" decline).
+        assert_eq!(
+            code("(let (((tuple 0 b) (tuple 0 9))) b)").as_deref(),
+            Some("CDZ0210")
+        );
+        assert_eq!(
+            code("(let (((tuple (Some x) b) (tuple (Some 5) 9))) x)").as_deref(),
+            Some("CDZ0210")
+        );
+        assert_eq!(
+            code("(let (((tuple a (tuple 0 b)) (tuple 1 (tuple 0 3)))) (+ a b))").as_deref(),
+            Some("CDZ0210")
+        );
+        assert_eq!(
+            code("(let (((tuple \"hi\" b) (tuple \"hi\" 9))) b)").as_deref(),
+            Some("CDZ0210")
+        );
+        // NO OVER-REJECTION: a well-formed destructuring binding compiles — flat, and nested to any depth
+        // (every element irrefutable), and with a wildcard element.
         assert_eq!(code("(let (((tuple a b) (tuple 3 4))) (+ a b))"), None);
+        assert_eq!(
+            code("(let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c)))"),
+            None
+        );
+        assert_eq!(code("(let (((tuple a _) (tuple 3 9))) a)"), None);
     }
 
     #[test]
@@ -19085,5 +19164,118 @@ mod closure_host_resource {
         call.post_return(&mut store).expect("call post_return 2");
         assert_eq!(out2[0], Val::S64(42), "same closure applied to 41 = 42");
         // Both `own` handles were consumed by `call`; a borrow-based repeated-call handle is C-HOST-5.
+    }
+
+    /// C-HOST-1 (compiler serializer): `serialize::closure_resource_core_module` — the PRODUCTION core
+    /// module a closure-resource export emits — produces a structurally VALID core module. Unlike the
+    /// standalone oracle above (whose "cell" is the bare table slot), this is the real shape: the export
+    /// body builds a value-heap CELL (`arr-alloc`/`box-int`/`arr-set`), and `call` recovers it
+    /// (`resource.rep`) + reads the code slot (`arr-get`/`get-int`) + `call_indirect`s the lifted body. It
+    /// imports the heap ops + `resource-new`/`resource-rep`, and carries the funcref table from
+    /// `layout.lifted`. This pins the serializer's byte shape (validated by `wasmparser`) with real,
+    /// minimally-constructed `SelectedFunc`s — the runnable end-to-end path (wiring this core into the
+    /// production envelope + composing the runtime) is the next increment.
+    #[test]
+    fn closure_resource_core_module_is_structurally_valid() {
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        // The heap ops the core imports, in the SORTED order `collect_used_ops` (a BTreeSet) produces:
+        // arr-alloc, arr-get, arr-set, box-int, get-int. `call` uses arr-get/get-int; the export body's
+        // cell build uses arr-alloc/arr-set/box-int.
+        let imports = vec![
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.get_int,
+        ];
+        // Defined func 0 = the export body `main : () -> own<closure>` — its RESULT is the closure type,
+        // whose machine valtype is an i32 cell handle. Build a 1-slot cell holding box-int(0) (the
+        // closure's table slot 0, no captures), returning the cell handle. (Mirrors `Core::Closure`
+        // selection.) Uses arr-alloc/box-int/arr-set.
+        let fn_ty = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone()));
+        let export_body = SelectedFunc {
+            params: vec![],
+            ret: fn_ty.clone(), // a closure result → an i32 cell handle in the type section
+            code: vec![
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0),
+                Lir::ConstI64(0),
+                Lir::CallImport("box-int"),
+                Lir::CallImport("arr-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // Defined func 1 = the lifted closure `(env: i32, x: i64) -> i64` = x + 1.
+        let lifted_body = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: s64.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(1), Lir::I64Add],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let funcs = vec![export_body, lifted_body];
+
+        // Layout: one export (def 0), order [0, 1] (export then lifted-as-def), one lifted lambda in the
+        // table. The lifted lambda's `body`/`params` here are placeholder (StructId 0 / the arg types) —
+        // only its presence in `layout.lifted` matters for the table + `lifted_type_index`.
+        let export = ExportPlan {
+            name: "main".to_string(),
+            def: 0,
+            body: crate::ast::StructId(0),
+            params: vec![],
+            result: Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone())),
+        };
+        let lifted = LiftedLambda {
+            body: crate::ast::StructId(0),
+            params: vec![(crate::ast::StructId(0), s64.clone())],
+            ret_ty: s64.clone(),
+            captures: vec![],
+        };
+        let import_base = imports.len() as u32 + 2; // k ops + resource-new + resource-rep
+        // `order` is just the ONE export def; the lifted closure is appended to `funcs` AFTER the order
+        // defs (as the production path does), so its abs index + type index are `import_base +
+        // order.len() + slot`. `funcs = [export_body, lifted_body]` matches this layout.
+        let layout =
+            Layout::with_lifted(vec![export], vec![0], import_base, vec![lifted], vec![true]);
+
+        // The export body is at emission position 0 → absolute core-func index `import_base + 0`.
+        let export_abs = import_base;
+        // The lifted functype index (env i32, x i64) -> i64 in the core type section.
+        let lifted_type_idx = layout.lifted_type_index(0, import_base);
+
+        let core = crate::backend::wasm::serialize::closure_resource_core_module(
+            &funcs,
+            &imports,
+            export_abs,
+            &[ValType::I64],
+            ValType::I64,
+            lifted_type_idx,
+            &layout,
+        )
+        .expect("closure-resource core serializes");
+
+        // The emitted CORE MODULE must be structurally valid wasm (funcref table + call_indirect + the
+        // resource-intrinsic imports all well-formed). This is the compiler-side byte proof; wiring it into
+        // a runnable component (production envelope + composed runtime) is the next increment.
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&core)
+            .expect("closure-resource core module validates");
     }
 }

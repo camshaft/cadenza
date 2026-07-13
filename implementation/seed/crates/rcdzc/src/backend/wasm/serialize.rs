@@ -1123,6 +1123,227 @@ pub fn runtime_resource_core_module_form(
     Ok(core)
 }
 
+/// The CLOSURE-RESOURCE core module (C-HOST-1): a program whose export RESULT is a closure `(-> A… R)`
+/// crosses as a resource whose `call` method invokes the closure. Like `runtime_resource_core_module`
+/// but the resource method is `call` (not `encode`): it recovers the closure CELL rep, reads the code
+/// slot, and `call_indirect`s the lifted body with the caller's args.
+///
+///  * `make() -> i32` — `call <export>` (builds the closure cell → its handle) then `resource.new` to
+///    register it as the resource's rep and hand back the resource handle. Identical to the escape's
+///    `make`.
+///  * `call(self, args…) -> R` — `resource.rep(self)` recovers the cell rep; `arr-get(cell, 0)` +
+///    `get-int` + `i32.wrap_i64` reads the funcref-table slot; push the args (locals `1..1+arity`), push
+///    the cell as the env (local slot 0 of the lifted fn), then `call_indirect` the lifted functype over
+///    table 0. This is the boundary form of `Core::CallClosure`: the closure logic stays in the guest;
+///    the host only holds the rep and drives `call`.
+///
+/// The funcref TABLE + ELEMENT sections come from the selected export body's `layout.lifted` (the lifted
+/// closure occupies a table slot), emitted exactly as `core_module` does. `arg_vts`/`ret_vt` are the
+/// closure's CORE valtypes (from its `Ty::Fn`), `lifted_type_idx` the core type index of the lifted
+/// functype `(env, args…) -> R` (`layout.lifted_type_index(0, import_count)`).
+#[allow(clippy::too_many_arguments)]
+pub fn closure_resource_core_module(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    export_abs: u32,
+    arg_vts: &[ValType],
+    ret_vt: ValType,
+    lifted_type_idx: u32,
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    use crate::backend::wasm::wasm_abi::op;
+    let k = imports.len();
+    let n = funcs.len();
+    let vt_byte = |v: ValType| match v {
+        ValType::I32 => wasm_abi::CORE_I32,
+        ValType::I64 => wasm_abi::CORE_I64,
+        ValType::F32 => wasm_abi::CORE_F32,
+        ValType::F64 => wasm_abi::CORE_F64,
+    };
+
+    // ── Type section ── import functypes 0..k, resource-new/resource-rep (k, k+1), one functype per
+    // defined body, then make `()->i32` and call `(i32 self, args…)->R`.
+    let mut type_items = Vec::new();
+    for o in imports {
+        type_items.extend_from_slice(&import_functype(o));
+    }
+    let i32_to_i32 = {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        t
+    };
+    type_items.extend_from_slice(&i32_to_i32); // resource-new (index k)
+    type_items.extend_from_slice(&i32_to_i32); // resource-rep (index k+1)
+    let defined_type_base = k + 2;
+    for f in funcs {
+        type_items.extend_from_slice(&functype(f)?);
+    }
+    // make `()->i32`.
+    let make_type_idx = defined_type_base + n;
+    {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(0, &[]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    // call `(i32 self, args…) -> R`.
+    let call_type_idx = make_type_idx + 1;
+    {
+        let mut params = vec![wasm_abi::CORE_I32]; // self rep
+        params.extend(arg_vts.iter().map(|v| vt_byte(*v)));
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(params.len(), &params));
+        t.extend_from_slice(&wasm_vec(1, &[vt_byte(ret_vt)]));
+        type_items.extend_from_slice(&t);
+    }
+    let total_types = defined_type_base + n + 2;
+    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
+
+    // ── Import section ── k ops + resource-new + resource-rep, all from "heap".
+    let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut import_items = Vec::new();
+    for (i, o) in imports.iter().enumerate() {
+        import_items.extend_from_slice(&import_item(o.name, i as u32));
+        import_index.insert(o.name, i as u32);
+    }
+    import_items.extend_from_slice(&import_item("resource-new", k as u32));
+    import_items.extend_from_slice(&import_item("resource-rep", (k + 1) as u32));
+    let import_sec = section(2, &wasm_vec(k + 2, &import_items));
+    let f_rnew = k as u32;
+    let f_rrep = (k + 1) as u32;
+
+    // ── Function section ── defined bodies, then make + call.
+    let mut func_items = Vec::new();
+    for i in 0..n {
+        uleb128((defined_type_base + i) as u64, &mut func_items);
+    }
+    uleb128(make_type_idx as u64, &mut func_items);
+    uleb128(call_type_idx as u64, &mut func_items);
+    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n + 2, &func_items));
+    let make_abs = (defined_type_base + n) as u32;
+    let call_abs = make_abs + 1;
+
+    // ── Table + Element sections ── the funcref table holding the lifted closure(s), from `layout.lifted`
+    // (same shape `core_module` emits). REQUIRED here: `call` dispatches `call_indirect` over table 0.
+    let n_lifted = layout.lifted.len();
+    let (table_sec, elem_sec) = if n_lifted == 0 {
+        (Vec::new(), Vec::new())
+    } else {
+        let mut table_entry = vec![0x70u8, 0x01];
+        uleb128(n_lifted as u64, &mut table_entry);
+        uleb128(n_lifted as u64, &mut table_entry);
+        let table_sec = section(wasm_abi::CORE_SEC_TABLE, &wasm_vec(1, &table_entry));
+        let mut seg = Vec::new();
+        seg.push(0x00);
+        seg.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut seg);
+        seg.push(op::END);
+        let mut idxs = Vec::new();
+        for slot in 0..n_lifted {
+            uleb128(layout.lifted_abs(slot) as u64, &mut idxs);
+        }
+        seg.extend_from_slice(&wasm_vec(n_lifted, &idxs));
+        let elem_sec = section(wasm_abi::CORE_SEC_ELEMENT, &wasm_vec(1, &seg));
+        (table_sec, elem_sec)
+    };
+
+    // ── Export section ── make + call (no memory: a scalar-arg/result `call` needs no linear memory).
+    let export_sec = {
+        let export = |name: &str, kind: u8, idx: u32| {
+            let mut item = uleb_bytes(name.len() as u64);
+            item.extend_from_slice(name.as_bytes());
+            item.push(kind);
+            uleb128(idx as u64, &mut item);
+            item
+        };
+        let mut items = Vec::new();
+        items.extend_from_slice(&export("make", wasm_abi::EXPORT_KIND_FUNC, make_abs));
+        items.extend_from_slice(&export("call", wasm_abi::EXPORT_KIND_FUNC, call_abs));
+        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(2, &items))
+    };
+
+    // ── Code section ── defined bodies, then make + call.
+    let mut code_items = Vec::new();
+    for f in funcs {
+        code_items.extend_from_slice(&code_entry(f, &import_index));
+    }
+    // make: build the closure cell (`call export`) then `resource.new`.
+    {
+        let mut inner = uleb_bytes(0);
+        inner.push(op::CALL);
+        uleb128(export_abs as u64, &mut inner);
+        inner.push(op::CALL);
+        uleb128(f_rnew as u64, &mut inner);
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    // call(self, args…): recover the cell rep, materialize it into a local (read twice — as the env and
+    // for the code slot), push env + args, read the table slot, `call_indirect`.
+    {
+        // Locals beyond the params: one i32 for the cell rep. Params are: 0 = self, 1..1+arity = args.
+        let cell_local = (1 + arg_vts.len()) as u32;
+        let mut inner = Vec::new();
+        // one local group: 1 × i32.
+        inner.extend_from_slice(&wasm_vec(1, &{
+            let mut g = uleb_bytes(1);
+            g.push(wasm_abi::CORE_I32);
+            g
+        }));
+        // rep = resource.rep(self)
+        inner.push(op::LOCAL_GET);
+        uleb128(0, &mut inner);
+        inner.push(op::CALL);
+        uleb128(f_rrep as u64, &mut inner);
+        inner.push(op::LOCAL_SET);
+        uleb128(cell_local as u64, &mut inner);
+        // push env (the cell) then each arg, in order — the lifted fn is `(env, args…) -> R`.
+        inner.push(op::LOCAL_GET);
+        uleb128(cell_local as u64, &mut inner);
+        for a in 0..arg_vts.len() {
+            inner.push(op::LOCAL_GET);
+            uleb128((1 + a) as u64, &mut inner);
+        }
+        // indirection index: arr-get(cell, 0) → get-int → i32.wrap_i64.
+        inner.push(op::LOCAL_GET);
+        uleb128(cell_local as u64, &mut inner);
+        inner.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut inner);
+        inner.push(op::CALL);
+        uleb128(
+            *import_index.get("arr-get").expect("arr-get imported") as u64,
+            &mut inner,
+        );
+        inner.push(op::CALL);
+        uleb128(
+            *import_index.get("get-int").expect("get-int imported") as u64,
+            &mut inner,
+        );
+        inner.push(op::I32_WRAP_I64);
+        inner.push(op::CALL_INDIRECT);
+        uleb128(lifted_type_idx as u64, &mut inner);
+        uleb128(0, &mut inner); // table 0
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + 2, &code_items));
+
+    let mut core = Vec::new();
+    core.extend_from_slice(CORE_MAGIC);
+    core.extend_from_slice(&type_sec);
+    core.extend_from_slice(&import_sec);
+    core.extend_from_slice(&func_sec);
+    core.extend_from_slice(&table_sec);
+    core.extend_from_slice(&export_sec);
+    core.extend_from_slice(&elem_sec);
+    core.extend_from_slice(&code_sec);
+    Ok(core)
+}
+
 /// The `t-encode(handle) -> i32` code-section entry (the R2 walker). Locals: 0 = the resource-table
 /// handle param, 1 = the recovered i32 heap rep, 2 = i64 scratch. Recovers the rep via
 /// `resource.rep(handle)` (core func `f_rrep`), then for each template hole walks its `arr-get` path

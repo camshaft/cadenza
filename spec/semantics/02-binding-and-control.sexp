@@ -2047,6 +2047,46 @@
   (input  (do (def (main) (let ((0 5)) 42)) (export main)))
   (error  CDZ0210))
 
+; Refutability is checked RECURSIVELY, at every nesting depth — a refutable sub-pattern nested inside a
+; tuple binding position is rejected exactly as the top-level one is (core-semantics.md #A Binding Position
+; Accepts An Irrefutable Pattern: "a tuple pattern is irrefutable ONLY when every element is"). The
+; refutability check must not stop at the top level: a literal or multi-variant-constructor element makes
+; the whole binding refutable, so it is CDZ0210, not a silent no-op that drops the refutable sub-pattern.
+
+(case "a literal nested in a tuple let-binder is refutable and rejected"
+  (doc    "`(let (((tuple 0 b) (tuple 0 9))) b)` puts the literal `0` in the first element of a tuple
+           BINDING pattern. A literal is refutable, so a binding position rejects it (CDZ0210) exactly as the
+           top-level `(let ((0 5)) 42)` does — the check recurses into tuple sub-patterns. A compiler that
+           stopped at the top level ran it to 9, silently treating the literal element as a no-op.")
+  (input  (do (def (main) (let (((tuple 0 b) (tuple 0 9))) b)) (export main)))
+  (error  CDZ0210))
+
+(case "a literal nested in a tuple def-parameter is refutable and rejected"
+  (doc    "`(def (f (tuple 0 b)) b)` — a tuple-pattern parameter desugars to a `(let (((tuple 0 b) p)) …)`
+           binder, so the literal `0` in the first element is refutable and rejects CDZ0210. Calling
+           `(f (tuple 9 5))` with a first element that does NOT equal 0 must not run to 5 (no compile
+           rejection, no runtime trap) — the parameter's binding position enforces irrefutability like a
+           `let` binder.")
+  (input  (do (def (f (tuple 0 b)) b) (def (main) (f (tuple 9 5))) (export main)))
+  (error  CDZ0210))
+
+(case "a multi-variant constructor nested in a tuple let-binder is refutable and rejected"
+  (doc    "`(let (((tuple (Some x) b) (tuple (Some 5) 9))) x)` puts the multi-variant constructor pattern
+           `(Some x)` in a tuple binding element. A multi-variant ctor is refutable (the `None` variant is
+           uncovered) — the top-level `(let (((Some x) (Some 5))) x)` rejects CDZ0210, so the nested form
+           does too. The recursion classifies each element with the same rule the top-level binder uses.")
+  (input  (do (def (main) (let (((tuple (Some x) b) (tuple (Some 5) 9))) x)) (export main)))
+  (error  CDZ0210))
+
+(case "a deeply nested literal in a tuple let-binder is refutable and rejected"
+  (doc    "`(let (((tuple a (tuple 0 b)) (tuple 1 (tuple 0 3)))) (+ a b))` — the literal `0` is TWO tuple
+           levels deep, in the second element's own tuple pattern. Refutability recurses to any depth, so
+           the deep literal is CDZ0210 exactly as a top-level one is. Pins that the recursion does not stop
+           after one tuple level (contrast the irrefutable `(tuple a (tuple b c))` binder above, which
+           composes to any depth and RUNS).")
+  (input  (do (def (main) (let (((tuple a (tuple 0 b)) (tuple 1 (tuple 0 3)))) (+ a b))) (export main)))
+  (error  CDZ0210))
+
 (case "a wrong-arity tuple binding pattern is a shape error"
   (doc    "`(let (((tuple a b c) (tuple 1 2))) a)` — a three-element tuple pattern cannot match a
            two-element value: a static shape mismatch (CDZ0201, core-semantics.md #A Binding Position
