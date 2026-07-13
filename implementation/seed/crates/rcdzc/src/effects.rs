@@ -1824,6 +1824,17 @@ fn thread_bounded(
                     (db.push_list(children), s)
                 }
             };
+            // `value`/`next_state` are the resume node's own CHILDREN, so their `parent_of` still points at
+            // that (now-discarded) `resume` node — an orphan whose parent chain does NOT reach the threaded
+            // body's enclosing `(def …)`. If either carries a NAME reference (e.g. a state-threading arm's
+            // `(resume s (+ s 1))`, where the substituted state `s` is a reference to the specialization's
+            // `$s{k}` state param), splicing it elsewhere leaves that reference resolving against the dead
+            // resume node's scope → a spurious CDZ0101 leaking the internal `walk#eff2$s0` name. COPY them
+            // (a re-parenting structural copy) so each is detached from the dead resume and receives fresh
+            // parentage when spliced into the value/next-state position. (The `do`-wrapped `value` is
+            // already a fresh `push_list`; copying it again is a harmless re-parent.)
+            let value = copy_pure(db, value);
+            let next_state = copy_pure(db, next_state);
             cur[slot] = next_state;
             Some((value, cur))
         }

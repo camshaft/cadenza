@@ -13652,6 +13652,50 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_state_threading_handler_does_not_leak_the_internal_specialization_name() {
+        // A recursive effectful def under a STATE-THREADING handler whose arm resumes WITH THE STATE and
+        // threads a changed one — `(resume s (+ s 1))` — must compile without leaking the internal
+        // specialization state-param name (`walk#eff{n}$s{k}`) as a CDZ0101 unbound-name error. The
+        // specialization synthesizes a trailing `$s{k}` state param; the arm's resume VALUE (`s`,
+        // substituted with a reference to that param) was extracted straight off the discarded `resume`
+        // node, so its parent chain did not reach the synthesized def → the state-param reference resolved
+        // UNBOUND. Copying the extracted resume value/next-state re-parents them into the threaded body so
+        // the reference resolves. `walk 3` ticks state 0→1→2→3 but returns the base 0.
+        let src = "(do (effect Tick (op tick (-> Unit Int64))) \
+                   (def (walk (: n Int64)) (if (< n 1) 0 (do (Tick.tick) (walk (- n 1))))) \
+                   (def (main) (handle 0 ((Tick.tick (u) s (resume s (+ s 1)))) (walk 3))) \
+                   (export main))";
+        let r = compile_component(&crate::codec::encode(&parse(src)));
+        // Must COMPILE (not the CDZ0101 internal-name leak). If it declines for another reason it must
+        // still not surface a `$`-suffixed internal name.
+        match &r {
+            Ok(b) => assert_eq!(
+                run_returns::<i64>(b, "main"),
+                0,
+                "the state-threading recursive walk returns the base 0"
+            ),
+            Err(d) => panic!(
+                "must compile; got {:?} / {} (a `$`-suffixed internal name here is the leak bug)",
+                d.code, d.message
+            ),
+        }
+        // A BARE-name recursive parameter (no annotation) exhibits the same path — pin it too.
+        let bare = "(do (effect Tick (op tick (-> Unit Int64))) \
+                   (def (walk n) (if (< n 1) 0 (do (Tick.tick) (walk (- n 1))))) \
+                   (def (main) (handle 0 ((Tick.tick (u) s (resume s (+ s 1)))) (walk 3))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(bare))).expect(
+                    "a bare-param recursive state-threading walk compiles without a name leak"
+                ),
+                "main"
+            ),
+            0
+        );
+    }
+
+    #[test]
     fn a_recursive_fn_under_a_two_arm_single_effect_handler_specializes() {
         // E3-multi-arm: a handler with SEVERAL arms of ONE effect threads ONE logical state, so a
         // recursive fn under it specializes with a single trailing state param (each perform substitutes
