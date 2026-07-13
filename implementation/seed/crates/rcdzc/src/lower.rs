@@ -8344,10 +8344,15 @@ fn lower_sum_expect(db: &mut Db, id: StructId, sum: StructId) -> Core {
             return core_of(db, payloads[0]);
         }
         if disc != DISC_PRESENT {
-            // A provably-absent constant expect — a compile-time trap. Not folded this increment.
-            return Core::Poison(Reject::decline(
-                "expect on a constant absent variant (a provable trap) is not yet folded",
-            ));
+            // A provably-ABSENT constant expect (`Option.expect None`, `Result.expect (Err …)`) — requiring
+            // the value of a statically-known absent optional is a PROVABLE TRAP (core-semantics.md
+            // §Requiring The Value Of An Optional Traps On Absence). Fold to `Core::Trap` (an `unreachable`)
+            // — exactly what the runtime `Core::SumExpect` emits on its absent-disc branch, and the same
+            // provable-trap lowering `T.of` out-of-range and a proven-overflow `*` fold to. The trap carries
+            // no text (an `unreachable` has none), so a `(trap "m")` message-match still grades Todo — but
+            // the OUTCOME is now the correct divergence rather than a decline.
+            trace!(target: "rcdzc::fold", node = id.0, disc, "expect on a constant absent variant folds to a provable trap");
+            return Core::Trap;
         }
     }
     // A runtime sum — probe the discriminant at run time, unwrap the payload or trap.
