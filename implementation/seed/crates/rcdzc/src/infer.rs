@@ -1240,6 +1240,40 @@ fn is_definite_non_function(ty: &Ty) -> bool {
 }
 
 fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut Vec<Reject>) {
+    // A COMPARISON between a MAP and a RECORD is a type error — they are DISTINCT KINDS (a record's field
+    // set is fixed by its form; a map's key set is a runtime collection), so `(= (map …) (record …))` is
+    // CDZ0201, NOT the CDZ0203 that a same-kind SHAPE mismatch (two records with different fields) gets
+    // (type-system.md §Structural Values Are Comparable Only When Their Shapes Match — the cross-kind
+    // case; collections-and-text.md §A Map Associates Keys With Values). The generic scheme-unify below
+    // would report `unify::mismatch` = CDZ0203; catch the map/record kind clash FIRST for the right code.
+    // (Two maps of different key SETS do NOT reach here as a mismatch — they are the SAME `Map<K,V>` type,
+    // so this fires only on a genuine map-vs-record kind clash.)
+    if args.len() == 2
+        && matches!(
+            crate::eval::meta_apply_of(db, head),
+            Some(
+                crate::resolved::Prim::Eq
+                    | crate::resolved::Prim::Lt
+                    | crate::resolved::Prim::Gt
+                    | crate::resolved::Prim::Le
+                    | crate::resolved::Prim::Ge
+                    | crate::resolved::Prim::Compare
+            )
+        )
+    {
+        let (a, b) = (type_of(db, args[0]), type_of(db, args[1]));
+        if matches!(
+            (&a, &b),
+            (Ty::Map(_, _), Ty::Record(_)) | (Ty::Record(_), Ty::Map(_, _))
+        ) {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: comparing a map to a record — distinct kinds (CDZ0201)");
+            out.push(Reject::coded(
+                Code::Malformed,
+                "a map and a record are different types (their comparison is a type error)",
+            ));
+            return;
+        }
+    }
     // A LIST constructor (`list` alias) applied — its arguments are its ELEMENTS, and a list is
     // HOMOGENEOUS: every element must share one type (collections-and-text.md §A List Is A Homogeneous
     // Sequence). Unify each element's type against the first; a mismatch (`(list 1 true)`) is CDZ0203. The

@@ -4933,14 +4933,23 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
             seen.pop();
             ok
         }
+        // A MAP handle is CANONICAL by construction (the runtime CHAMP is order-independent — equal maps
+        // are byte-identical under `champ_eq`/`champ_hash`), so two runtime maps compare correctly by the
+        // `value-eq` structural walk — walkable iff its KEY and VALUE types are themselves walkable (their
+        // canonical forms are stable). This is what makes map equality independent of insertion order AND
+        // independent of const-fold-vs-runtime construction (both build the same canonical CHAMP handle),
+        // and makes two maps with different key SETS compare `false` (well-typed, same `Map<K,V>` type) —
+        // NOT a rejection. A key/value whose canonical form needs machinery not yet emitted (Bytes rope,
+        // String, a nested collection) makes the map decline, deferring to that increment.
+        Ty::Map(k, v) => {
+            let (k, v) = ((**k).clone(), (**v).clone());
+            ty_heap_walkable(db, &k, seen) && ty_heap_walkable(db, &v, seen)
+        }
         // A collection / text / char / float / function / type-value / unresolved leaf is NOT walkable
         // here (its canonical form needs machinery this increment does not emit, or it is not a runtime
         // value that reaches a compound equality — a `Ty::Type`/`Ty::Any`/`Ty::Fn` never crosses `=` at
         // run time). A `Char` has no runtime machine rep yet (its equality folds at compile time).
-        // NOTE: a `Ty::Map` handle IS canonical by construction (CHAMP), so map equality is wired directly
-        // (M3) via the top-level `=` → `value-eq` path, not through this compound-leaf walkability gate.
         Ty::List(_)
-        | Ty::Map(_, _)
         | Ty::Bytes
         | Ty::String
         | Ty::Char

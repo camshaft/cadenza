@@ -3946,11 +3946,16 @@ enum HandleOwnership {
 /// owned/borrowed result cannot be dropped uniformly, so it declines). Anything else declines.
 fn value_eq_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, Reject> {
     match core_of(db, id) {
-        // Constructors and calls produce a fresh owned reference (ownership transfers out).
+        // Constructors and calls produce a fresh owned reference (ownership transfers out). A map
+        // construction/update (`map-empty`+inserts, `map-insert`, `map-remove`) returns a fresh owned
+        // map handle exactly like a list/tuple constructor — the `value-eq` emit drops it after the compare.
         Core::SumNew { .. }
         | Core::Tuple { .. }
         | Core::Record { .. }
         | Core::ListNew { .. }
+        | Core::MapNew { .. }
+        | Core::MapInsert { .. }
+        | Core::MapRemove { .. }
         | Core::Call { .. } => Ok(HandleOwnership::Owned),
         // A reference to a parameter or a kept `let`-binding — the owner elsewhere reclaims it.
         Core::Param { .. } | Core::LocalRef { .. } => Ok(HandleOwnership::Borrowed),
