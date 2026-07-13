@@ -2273,20 +2273,32 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
             }
             db.push_list(items)
         }
-        // A nominal type-value: `(Nominal <name> <decl> <inner>)` — the declared name (for rendering),
-        // the declaration occurrence (the identity, an integer literal), and the encoded UNDERLYING type.
-        // Round-trips with `resolve::decode_ty`'s `"Nominal"` arm. Without this arm the catch-all below
-        // encoded a `Ty::Nominal` as `Unit`, so a ctor arrow `(-> Int64 UserId)` round-tripped through
-        // `reduce_ctor`'s `encode_typeval` to `(-> Int64 Unit)` — the newtype vanished.
-        Ty::Nominal { decl, name, inner } => {
+        // A nominal type-value: `(Nominal <name> <decl> (args…) <inner>)` — the declared name (render),
+        // the declaration occurrence (identity, an integer literal), the type ARGS (the instantiation, in
+        // an `(args …)` group — empty for a monomorphic/recursive nominal), and the encoded UNDERLYING
+        // type (the machine-rep hint). Round-trips with `resolve::decode_ty`'s `"Nominal"` arm. Without
+        // this arm the catch-all encoded a `Ty::Nominal` as `Unit`, so a ctor arrow `(-> Int64 UserId)`
+        // round-tripped to `(-> Int64 Unit)` — the newtype vanished.
+        Ty::Nominal {
+            decl,
+            name,
+            args,
+            inner,
+        } => {
             let head = db.push_name("Nominal");
             let nm = db.push_name(name);
             let d = db.push_atom(Leaf::Int {
                 value: IntValue::from_i64(decl.0 as i64),
                 radix: crate::ast::Radix::Dec,
             });
+            let args_head = db.push_name("args");
+            let mut args_items = vec![args_head];
+            for a in args {
+                args_items.push(encode_ty(db, a));
+            }
+            let args_node = db.push_list(args_items);
             let i = encode_ty(db, inner);
-            db.push_list(vec![head, nm, d, i])
+            db.push_list(vec![head, nm, d, args_node, i])
         }
         // A list type-value: `(List <elem>)` — the head then the element type. Round-trips with
         // `decode_ty`'s `"List"` arm.

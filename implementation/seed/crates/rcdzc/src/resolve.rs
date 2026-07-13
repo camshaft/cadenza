@@ -2137,7 +2137,10 @@ fn resolve_handle(db: &Db, id: StructId) -> Resolved {
     // A too-short internal tail is reported as incomplete rather than mis-enumerated (we cannot reliably
     // name WHICH part is missing); the shape carries the fix.
     const SHAPE: &str = HANDLE_SHAPE;
-    let tail = db.ast.as_form(id, crate::effects::HANDLE_INTERNAL).unwrap_or(&[]);
+    let tail = db
+        .ast
+        .as_form(id, crate::effects::HANDLE_INTERNAL)
+        .unwrap_or(&[]);
     let init = match tail.first() {
         Some(&s) => s,
         None => {
@@ -2436,10 +2439,10 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             // for the param vars); a non-erasable decl stays a boxed `Ty::Sum`.
             Some(db.normalize_sum(decl, name, args))
         }
-        // A nominal type-value: `(Nominal <name> <decl> <inner>)` — the dual of `eval::encode_ty`'s
-        // `Nominal` arm. Carries its own encoded `inner`, so it round-trips independently of
-        // `newtype_inner` (an already-built `Ty::Nominal` re-encoded, e.g. through `reduce_ctor`). Name +
-        // decl are the identity/render; `inner` is the underlying structural type.
+        // A nominal type-value: `(Nominal <name> <decl> (args…) <inner>)` — the dual of `eval::encode_ty`'s
+        // `Nominal` arm. Carries its own `decl + args` (identity) and encoded `inner` (machine-rep hint),
+        // so it round-trips independently of `newtype_inner` (an already-built `Ty::Nominal` re-encoded,
+        // e.g. through `reduce_ctor`).
         "Nominal" => {
             let tail = db.ast.as_form(node, "Nominal")?;
             let name = db.ast.as_name(*tail.first()?)?.to_string();
@@ -2452,10 +2455,16 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 },
                 _ => return None,
             };
-            let inner = decode_ty(db, *tail.get(2)?)?;
+            let args_tail = db.ast.as_form(*tail.get(2)?, "args")?;
+            let mut args = Vec::with_capacity(args_tail.len());
+            for &a in args_tail {
+                args.push(decode_ty(db, a)?);
+            }
+            let inner = decode_ty(db, *tail.get(3)?)?;
             Some(Ty::Nominal {
                 decl: StructId(decl),
                 name,
+                args,
                 inner: Box::new(inner),
             })
         }
