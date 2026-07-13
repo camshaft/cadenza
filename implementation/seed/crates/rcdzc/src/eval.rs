@@ -1230,6 +1230,20 @@ fn reduce_to_record_id(db: &mut Db, id: StructId) -> Option<StructId> {
                     _ => None,
                 };
             }
+            // A NEWTYPE constructor `(UserId.Mk rec)` is ERASED — the value IS its single payload (no box),
+            // so a field read `(. (UserId.Mk rec) x)` sees THROUGH the tag to the payload record. Reduce
+            // the sole payload argument. (Only the single-payload case reduces to a record; a multi-payload
+            // newtype's payload is a tuple, reached by tuple projection, not member access.) Gate on the
+            // CHEAP `variant_disc_of` (a `(meta variant)` field read) FIRST — a non-ctor head (an ordinary
+            // recursive call `(f)`) returns `None` here without the deep `scheme_of` reduction
+            // `variant_owner_decl` runs, so an unproductive recursion still declines rather than looping.
+            if args.len() == 1
+                && variant_disc_of(g, head).is_some()
+                && let Some(decl) = variant_owner_decl(g, head)
+                && g.newtype_inner.contains_key(&decl)
+            {
+                return reduce_to_record_id(g, args[0]);
+            }
             let prim = meta_apply_of(g, head)?;
             if prim.is_arith() {
                 return None;
@@ -1312,7 +1326,9 @@ pub fn record_field_names(db: &mut Db, operand: StructId) -> Vec<String> {
 /// read on such an operand lowers to a `Core::Proj` at this index, the same `arr-get` a tuple
 /// projection uses. The symmetric counterpart of a tuple projection falling through to a runtime read.
 pub fn runtime_member_index(db: &mut Db, operand: StructId, key: &Symbol) -> Option<usize> {
-    match crate::infer::type_of(db, operand) {
+    // A NOMINAL newtype over a record IS that record handle at run time (the tag is erased), so a field
+    // read on a runtime nominal operand indexes the inner record's sorted position — strip the tag.
+    match crate::infer::type_of(db, operand).strip_nominal() {
         crate::ty::Ty::Record(fields) => fields.keys().position(|k| k == key),
         _ => None,
     }

@@ -47,6 +47,7 @@ pass	a bits pattern segment reads sub-byte fields back into integers
 pass	a bool match missing the false arm is non-exhaustive
 pass	a bool match missing the true arm is non-exhaustive
 pass	a bool match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
+pass	a boolean connective with a non-boolean operand is a type error
 pass	a boolean function result bound by let is still a boolean
 pass	a boolean in integer-width position is rejected
 pass	a boolean is greater-than-or-equal to itself
@@ -92,6 +93,7 @@ pass	a closure carried in a sum payload is extracted by a match and applied
 pass	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
+pass	a closure returning a boolean is called by the host
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
 pass	a comparison-predicate function returns its boolean result
 pass	a compound element projected from a let-bound runtime tuple is matched
@@ -108,6 +110,7 @@ pass	a conditional whose condition folds to a constant still drops the untaken t
 pass	a conditional with a compound branch and a scalar branch is a type error even when the compound branch is dead
 pass	a conditional with a missing branch is rejected, not a crash
 pass	a conditional with an integer then-branch and a boolean else-branch is a type error
+pass	a conditional with integer and floating-point branches is a type error
 pass	a conditional with too many operands is rejected, not a crash
 pass	a conditional with two list branches of different length is well-typed
 pass	a conditional with two tuple branches of different arity is a type error
@@ -386,6 +389,7 @@ pass	a parameter annotation contradicting its use is rejected
 pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
 pass	a parameterized export returning a capturing closure is made and called by the host
+pass	a parameterized export returning a multi-argument capturing closure
 pass	a partially-applied function escapes as a value and runs through a recursive HOF
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
@@ -566,6 +570,7 @@ pass	a sum-type value is deconstructed by an exhaustive match
 pass	a tag-length-value record round-trips through construct then match
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a tail-recursive function returning a tuple is tuple-valued
+pass	a three-argument closure exported to the host is called with all three
 pass	a three-element runtime tuple is returned as a result
 pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a top-level sum value definition may reference a sum value defined later
@@ -595,6 +600,8 @@ pass	a tuple payload extracted through a helper return must not be rejected as a
 pass	a tuple payload returned through a helper from a built-in Option must not trap
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
+pass	a tuple-pattern parameter binds the halves of its pair argument
+pass	a two-argument closure exported to the host is called with both arguments
 pass	a two-arm Bool match selects its second (false) arm
 pass	a two-arm match does not evaluate the unselected arm's trapping body
 pass	a two-parameter closure is applied at full arity through a recursive HOF
@@ -645,6 +652,8 @@ pass	an annotated escaped None renders its canonical nullary-variant form (the c
 pass	an annotated let binder constrains the value's type
 pass	an annotated let binder range-checks its narrow-width bound value
 pass	an annotated let binder that contradicts the value is rejected
+pass	an annotated tuple-pattern parameter binds its pattern's names
+pass	an annotated tuple-pattern parameter still checks its annotation against the argument
 pass	an annotated value takes a narrower integer width
 pass	an annotation that contradicts the value is rejected
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
@@ -1086,13 +1095,11 @@ todo	Ast.encode and Ast.decode round-trip
 todo	Type is a first-class value
 todo	a BigInt operation does not silently promote a fixed-width operand
 todo	a UInt32 addition that overflows the 32-bit width traps
-todo	a boolean connective with a non-boolean operand is a type error
 todo	a bottom-up fold matches a tuple of its recursive results with constructor patterns
 todo	a built-in Ast constructor applied to a wrong-type payload is a type error
 todo	a checked conversion of a negative value into an unsigned type traps
 todo	a checked integer conversion that does not fit traps
 todo	a checked integer conversion that fits succeeds
-todo	a conditional with integer and floating-point branches is a type error
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type

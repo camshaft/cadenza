@@ -1328,6 +1328,30 @@ fn fix_applies_a_rule_verified_fix_without_all() {
 }
 
 #[test]
+fn fix_all_deletes_a_latent_authority_effect_and_recompiles_clean() {
+    // The `Edit::Delete` path end-to-end: a `host` delegates `log` but never performs it (CDZ0404); the
+    // delete fix removes `log` from the manifest (`(host (log) 42)` → `(host () 42)`) — cleanly (no
+    // stray space), and the repaired file re-checks clean.
+    let dir = scratch_dir("fix_delete");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(do (effect log (op emit (-> String Unit))) (def (main) (host (log) 42)) (export main))\n",
+    )
+    .unwrap();
+    let (ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok, "fix succeeds: {stderr}");
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("(host () 42)"),
+        "the unreached effect is deleted cleanly: {repaired}"
+    );
+    let (ok2, _, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(ok2, "repaired file has no errors: {repaired}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_on_a_clean_program_prints_nothing_and_exits_zero() {
     let dir = scratch_dir("check_ok");
     let f = dir.join("prog.sexp");

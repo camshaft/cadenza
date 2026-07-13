@@ -81,6 +81,9 @@ pub enum FixKind {
     /// node's ORIGINAL text goes — the consumer replaces the node's span with `replacement` with the
     /// hole substituted by the original text (`(Some …)` → `(Some <expr>)`).
     Wrap,
+    /// Delete the target node from its enclosing list (its span plus one adjacent separating space, so
+    /// the list stays well-formed). `replacement` is empty — the edit is fully described by the node.
+    Delete,
 }
 
 impl DiagnosticFix {
@@ -97,6 +100,7 @@ impl DiagnosticFix {
             crate::diag::Edit::Wrap { at, prefix, suffix } => {
                 (FixKind::Wrap, at.0, format!("{prefix}{WRAP_HOLE}{suffix}"))
             }
+            crate::diag::Edit::Delete { at } => (FixKind::Delete, at.0, String::new()),
         };
         DiagnosticFix {
             label: fix.label.clone(),

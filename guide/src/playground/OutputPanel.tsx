@@ -5,6 +5,7 @@ import { useState } from "react";
 import type { Diag, Surface } from "../compiler/client.ts";
 import { StatusIcon } from "../components/StatusIcon.tsx";
 import { ReplPanel, type ReplEntry } from "./ReplPanel.tsx";
+import { fixConfidence, fixIsApplicable } from "./applyFix.ts";
 
 export type RunView =
   | { kind: "idle" }
@@ -43,11 +44,13 @@ interface Props {
   onReplNames: () => Promise<string[]>;
   /** Jump the editor to a diagnostic's source range. */
   onJumpTo: (from: number, to: number) => void;
+  /** Apply a diagnostic's structural fix to the buffer. */
+  onApplyFix: (d: Diag) => void;
   /** Ask the page to compute a Compiled sub-view (WAT / Rust / Rust-async) on demand. */
   onNeedCompiledView: (view: CompiledView) => void;
 }
 
-export function OutputPanel({ run, diagnostics, ast, compiled, surface, onReplEval, onReplNames, onJumpTo, onNeedCompiledView }: Props) {
+export function OutputPanel({ run, diagnostics, ast, compiled, surface, onReplEval, onReplNames, onJumpTo, onApplyFix, onNeedCompiledView }: Props) {
   const [tab, setTab] = useState<Tab>("result");
   const errorCount = diagnostics.filter((d) => d.error).length;
 
@@ -90,7 +93,7 @@ export function OutputPanel({ run, diagnostics, ast, compiled, surface, onReplEv
       ) : (
         <div className="min-h-0 flex-1 overflow-auto p-3 font-mono text-[13px]">
           {tab === "result" && <ResultBody run={run} />}
-          {tab === "diagnostics" && <DiagnosticsBody diagnostics={diagnostics} onJumpTo={onJumpTo} />}
+          {tab === "diagnostics" && <DiagnosticsBody diagnostics={diagnostics} surface={surface} onJumpTo={onJumpTo} onApplyFix={onApplyFix} />}
           {tab === "ast" && (
             <pre className="whitespace-pre-wrap text-slate-400">{ast || "— run or edit to see the tree —"}</pre>
           )}
@@ -223,7 +226,17 @@ function SubTab({ active, onClick, children }: { active: boolean; onClick: () =>
   );
 }
 
-function DiagnosticsBody({ diagnostics, onJumpTo }: { diagnostics: Diag[]; onJumpTo: (f: number, t: number) => void }) {
+function DiagnosticsBody({
+  diagnostics,
+  surface,
+  onJumpTo,
+  onApplyFix,
+}: {
+  diagnostics: Diag[];
+  surface: Surface;
+  onJumpTo: (f: number, t: number) => void;
+  onApplyFix: (d: Diag) => void;
+}) {
   if (diagnostics.length === 0) return <span className="text-emerald-400">No problems — the program is well-formed.</span>;
   return (
     <ul className="space-y-1.5">
@@ -240,8 +253,32 @@ function DiagnosticsBody({ diagnostics, onJumpTo }: { diagnostics: Diag[]; onJum
             {d.code && <span className="font-semibold">{d.code} </span>}
             {d.message}
           </button>
+          {d.fix && fixIsApplicable(d.fix, surface) && (
+            <button
+              onClick={() => onApplyFix(d)}
+              title={d.fix.verified ? "Compiler-proven — safe to apply" : "A suggestion — confirm it matches your intent"}
+              className="ml-6 mt-0.5 inline-flex items-center gap-1 rounded border border-cadenza-600/40 bg-cadenza-600/10 px-2 py-0.5 text-[11px] text-cadenza-200 transition hover:bg-cadenza-600/20"
+            >
+              💡 {fixActionLabel(d)}
+              <span className="text-cadenza-400/70">· {fixConfidence(d.fix)}</span>
+            </button>
+          )}
         </li>
       ))}
     </ul>
   );
+}
+
+/// The concrete edit a fix performs, for the Apply button's label — derived from kind + payload since
+/// the compiler's prose label isn't carried over the wasm ABI.
+function fixActionLabel(d: Diag): string {
+  const fix = d.fix!;
+  switch (fix.kind) {
+    case "wrap":
+      return `Wrap in \`${fix.replacement}\``;
+    case "insert":
+      return "Add the missing arms";
+    default:
+      return `Replace with \`${fix.replacement}\``;
+  }
 }

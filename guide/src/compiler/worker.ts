@@ -36,6 +36,32 @@ export interface Diag {
   /** Source byte range [from, to) (UTF-8), resolved in Rust. 0,0 when unanchored. */
   from: number;
   to: number;
+  /**
+   * A proposed structural repair, or null when the compiler has no actionable suggestion. The fix
+   * edits the target byte range `[fix.from, fix.to)` (UTF-8, over the SAME compiled text as
+   * `from`/`to`) per `fix.kind` — see `DiagFix`.
+   */
+  fix: DiagFix | null;
+}
+
+/** A proposed structural repair carried by a diagnostic (`spec/capabilities/diagnostics.md`). */
+export interface DiagFix {
+  /**
+   * How to apply `replacement` at `[from, to)`:
+   *   - `"replace"` — replace the range with `replacement`;
+   *   - `"insert"`  — insert `replacement` (rendered child forms, e.g. missing match arms) just
+   *                   before `to` (the end of the target list, before its closing paren);
+   *   - `"wrap"`    — replace the range with `replacement`, in which the char `…` (U+2026) marks
+   *                   where the range's ORIGINAL text goes (`(Some …)` → `(Some <expr>)`).
+   */
+  kind: string;
+  /** The surface payload (the spelling / child forms / wrap template). */
+  replacement: string;
+  /** Target byte range [from, to) (UTF-8, over the compiled text). */
+  from: number;
+  to: number;
+  /** true = compiler-proven (machine-applicable); false = a heuristic the user should confirm. */
+  verified: boolean;
 }
 
 export interface CompileOutcome {
@@ -72,8 +98,23 @@ function toDiag(d: {
   node: number;
   from: number;
   to: number;
+  fix_kind: string;
+  fix_replacement: string;
+  fix_from: number;
+  fix_to: number;
+  fix_verified: boolean;
 }): Diag {
-  return { error: d.error, code: d.code, message: d.message, node: d.node, from: d.from, to: d.to };
+  // The wasm `Diagnostic` carries the fix flattened into `fix_*` columns (empty `fix_kind` = no fix).
+  const fix: DiagFix | null = d.fix_kind
+    ? {
+        kind: d.fix_kind,
+        replacement: d.fix_replacement,
+        from: d.fix_from,
+        to: d.fix_to,
+        verified: d.fix_verified,
+      }
+    : null;
+  return { error: d.error, code: d.code, message: d.message, node: d.node, from: d.from, to: d.to, fix };
 }
 
 const api = {

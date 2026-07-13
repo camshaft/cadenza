@@ -34,23 +34,41 @@ fn push_name(ast: &mut Arenas, name: &str) -> StructId {
     push_atom(ast, Leaf::Name(name.to_string()))
 }
 
-/// Whether a parameter occurrence is a destructuring PATTERN that this transform moves into a `let` — a
-/// COMPOUND (list) parameter that is NOT an annotation `(: name T)`. That is a tuple pattern (the one
-/// shape Increment A destructures), OR a constructor / record / list pattern (which the `let`-validation
-/// path then REJECTS as refutable / DECLINES as not-yet-supported — either way an honest coded outcome,
-/// not the confusing CDZ0101-unbound a non-rewritten compound param would give its binders).
+/// The inner PATTERN of a parameter that this transform destructures, and (if it is an annotated
+/// `(: <pattern> T)` parameter) the annotation type — else `None` for a bare name / `(: name T)` /
+/// `()`. A destructuring parameter is a COMPOUND (list) pattern: a tuple pattern (the shape Increment A
+/// destructures), or a constructor / record / list pattern (which the `let`-validation path then REJECTS
+/// as refutable / DECLINES as not-yet-supported — an honest coded outcome, not the confusing
+/// CDZ0101-unbound a non-rewritten compound param would give its binders).
 ///
-/// A bare-name parameter (`a`), an annotated binder (`(: a T)`), and the empty list are NOT destructured:
-/// a bare name is the trivial binder, an annotation is the parameter's type constraint (its inner name is
-/// the real binder), and `()` is the unit value.
-fn is_destructuring_param(ast: &Arenas, id: StructId) -> bool {
-    match ast.get(id) {
-        Struct::List(children) if !children.is_empty() => {
-            // An annotation `(: name T)` is a typed binder, not a destructure — leave it alone.
-            ast.as_form(id, ":").is_none()
-        }
-        _ => false, // a bare name atom / `()` — not a destructuring pattern
+/// An ANNOTATION `(: <inner> T)` is peeled: if its inner is itself a destructuring pattern
+/// (`(: (tuple a b) T)`), the parameter destructures the inner pattern AND carries the annotation `T` —
+/// returned as `Some((inner, Some(T)))`, so the rewrite keeps `T` on the fresh whole-value binder. A
+/// `(: name T)` (inner is a bare name — a typed binder) is NOT destructured (`None`): its inner name IS
+/// the real binder. A bare name / `()` is not a pattern (`None`).
+fn destructure_pattern(ast: &Arenas, id: StructId) -> Option<(StructId, Option<StructId>)> {
+    // An annotation `(: <inner> T)`: peel to the inner pattern. Destructure iff the inner is a compound
+    // pattern (a list); a `(: name T)` typed binder is left alone.
+    if let Some(tail) = ast.as_form(id, ":")
+        && tail.len() == 2
+    {
+        let inner = tail[0];
+        let ty = tail[1];
+        return match ast.get(inner) {
+            Struct::List(children) if !children.is_empty() => Some((inner, Some(ty))),
+            _ => None, // `(: name T)` — a typed binder, not a destructure
+        };
     }
+    // A bare compound `(tuple a b)` (no annotation) is a destructuring pattern with no type.
+    match ast.get(id) {
+        Struct::List(children) if !children.is_empty() => Some((id, None)),
+        _ => None, // a bare name atom / `()` — not a destructuring pattern
+    }
+}
+
+/// Whether a parameter occurrence is a destructuring PATTERN this transform moves into a `let`.
+fn is_destructuring_param(ast: &Arenas, id: StructId) -> bool {
+    destructure_pattern(ast, id).is_some()
 }
 
 /// Run destructuring-parameter lowering over the module's `defs`, mutating `ast` (appending the
@@ -87,12 +105,22 @@ fn apply(ast: &mut Arenas, defs: &mut [Def], def_ix: usize) {
     let mut new_params: Vec<StructId> = Vec::with_capacity(orig_params.len());
     let mut bindings: Vec<(StructId, StructId)> = Vec::new(); // (pattern-occ, fresh-name-init-occ)
     for (k, &param) in orig_params.iter().enumerate() {
-        if is_destructuring_param(ast, param) {
+        if let Some((pattern, annot_ty)) = destructure_pattern(ast, param) {
             let fresh = format!("p${k}");
-            let sig_name = push_name(ast, &fresh); // the parameter slot (a whole-value binder)
             let init_ref = push_name(ast, &fresh); // the `let` initializer (reads that parameter)
+            // The parameter slot is a fresh whole-value binder. If the original parameter carried a type
+            // annotation `(: <pattern> T)`, keep it on the fresh binder as `(: p$k T)` — so the argument
+            // is still checked against `T` (the annotation is not lost). Otherwise a bare `p$k` name.
+            let sig_name = if let Some(ty) = annot_ty {
+                let name = push_name(ast, &fresh);
+                let colon = push_name(ast, ":");
+                push_list(ast, vec![colon, name, ty])
+            } else {
+                push_name(ast, &fresh)
+            };
             new_params.push(sig_name);
-            bindings.push((param, init_ref));
+            // The destructuring `let` binds the INNER pattern (the tuple, un-annotated) to the fresh name.
+            bindings.push((pattern, init_ref));
         } else {
             new_params.push(param);
         }
