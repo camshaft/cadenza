@@ -1305,8 +1305,15 @@ fn load_program_spanned(
     let is_ml = is_ml_source(file);
     if is_ml {
         let parsed = cadenza_syntax::parser::read_ml(&source);
+        // Render each recovered parse error in the SAME `file:line:col: error: message` shape as the
+        // semantic diagnostics — not the raw `ParseError { span: Span { … }, message: "…" }` Debug dump,
+        // and not mislabeled a "warning" (a parse error leaves `<error>` placeholder nodes that will
+        // cascade into spurious downstream faults, so it is a genuine error the user must fix first). The
+        // parser RECOVERS (it never aborts), so several may print; the compile still proceeds over the
+        // recovered arena, exactly as before — only the wording changes.
         for e in &parsed.errors {
-            eprintln!("{PROG}: {file}: parse warning: {e:?}");
+            let (line, col) = cadenza_syntax::query::driver::line_col(&source, e.span.start);
+            eprintln!("{file}:{line}:{col}: error: {}", e.message);
         }
         // CANONICALIZE the ML arena + REMAP its span table to the canonical ids. The ML reader builds
         // nodes in a non-canonical order (it parses an infix operand before the operator head), so a raw
