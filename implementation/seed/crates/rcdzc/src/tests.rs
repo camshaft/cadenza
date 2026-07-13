@@ -13519,6 +13519,26 @@ mod stage1 {
     }
 
     #[test]
+    fn a_predicate_closure_returning_bool_drives_an_early_exit_hof() {
+        // A closure whose RESULT type is Bool. `(fn (x) (= x k))` is a `(-> Int64 Bool)` value threaded
+        // through the recursive `anyp` ("does any i in n..1 satisfy it?"), which short-circuits on the
+        // first `true`. The closure's boolean result crosses the `call_indirect` (the lifted signature
+        // returns an i32) and drives `anyp`'s `if`. With k=2 over 3,2,1 the predicate holds at x=2 → true →
+        // 100; a k absent from the range → false → 0.
+        let src = "(module m \
+            (def (anyp (: g (-> Int64 Bool)) (: n Int64)) \
+              (if (= n 0) false (if (g n) true (anyp g (- n 1))))) \
+            (def (main (: k Int64)) (if (anyp (fn ((: x Int64)) (= x k)) 3) 100 0)) (export main))";
+        let Some(r) = run_closure(src, 2) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "100"); // x=2 satisfies the predicate
+        assert_eq!(run_closure(src, 1).unwrap(), "100"); // x=1 satisfies at the last step
+        assert_eq!(run_closure(src, 5).unwrap(), "0"); // none of 3,2,1 equal 5
+    }
+
+    #[test]
     fn a_closure_that_captures_a_boolean_imports_the_ops_its_lifted_body_uses() {
         // A runtime op used ONLY inside a LIFTED closure body must still be imported. The used-op set that
         // fixes the module's import layout was walked over the top-level defs ONLY, NOT the lambda-lifted
