@@ -109,6 +109,54 @@ impl SpanData {
             None => end as u32 + 1,
         }
     }
+
+    /// A reusable LINE-START INDEX over `source` — the byte offset of each line's first char, ascending
+    /// (`[0]` = 0). Built ONCE in O(len); then [`line_at`]/[`col_at`] become a binary search + a bounded
+    /// per-line count via [`LineStarts::line_col`], instead of the O(byte_off) scan-from-start `line_at`
+    /// does. A CALLER that maps MANY offsets over one source — the `cdz compile` diagnostic report (one
+    /// per fault) and the DWARF line-table (one per emitted function) — builds this ONCE and reuses it,
+    /// turning what was O(sites × source_len) = O(N²) into O(len + sites·log). A one-shot caller can keep
+    /// using `line_at`/`col_at`. The `(line, col)` are byte-identical to `line_at`/`col_at` (byte columns).
+    ///
+    /// [`line_at`]: SpanData::line_at
+    /// [`col_at`]: SpanData::col_at
+    pub fn line_starts(&self) -> LineStarts {
+        let mut starts = vec![0u32];
+        for (i, &b) in self.source.as_bytes().iter().enumerate() {
+            if b == b'\n' {
+                starts.push(i as u32 + 1);
+            }
+        }
+        LineStarts {
+            starts,
+            len: self.source.len() as u32,
+        }
+    }
+}
+
+/// A prebuilt line-start index for one `SpanData`'s source — the sorted byte offsets of each line start
+/// (see [`SpanData::line_starts`]). Binary-searches a byte offset to a 1-based `(line, col)` in
+/// O(log lines), byte-identical to [`SpanData::line_at`]/[`SpanData::col_at`] (byte columns).
+pub struct LineStarts {
+    starts: Vec<u32>,
+    len: u32,
+}
+
+impl LineStarts {
+    /// The 1-based `(line, col)` of `byte_off` — the same pair `(line_at(byte_off), col_at(byte_off))`
+    /// returns, via binary search. A byte past the end clamps (like `line_at`/`col_at`).
+    pub fn line_col(&self, byte_off: u32) -> (u32, u32) {
+        if self.starts.len() == 1 && self.len == 0 {
+            return (1, 1); // empty source — matches line_at/col_at's line-1/col-1 fallback
+        }
+        let off = byte_off.min(self.len);
+        // The line is the last start `<= off`. `partition_point` counts starts `<= off`; `starts[0] == 0
+        // <= off` always, so the count (the 1-based line) is `>= 1`.
+        let line = self.starts.partition_point(|&s| s <= off) as u32;
+        let line_start = self.starts[line as usize - 1];
+        // Column = bytes since the line start + 1 (byte columns, exactly `col_at`).
+        (line, off - line_start + 1)
+    }
 }
 
 /// Decode a span side-table from its wire bytes. Total: a truncated or malformed table yields `None`
@@ -226,6 +274,28 @@ mod tests {
         // With no source text, everything is column 1 (the fallback).
         let empty = SpanData::default();
         assert_eq!(empty.col_at(42), 1);
+    }
+
+    #[test]
+    fn line_starts_index_matches_line_at_col_at_at_every_offset() {
+        // `LineStarts::line_col` (binary search, the batch path the `cdz compile` diagnostic report and
+        // the DWARF line-table use) must return EXACTLY `(line_at(off), col_at(off))` at every offset —
+        // the byte-identity the O(N²)→O(N) fix relies on. Cover an empty line, a trailing newline, a byte
+        // past the end, and the empty source (the line-1/col-1 fallback).
+        for src in ["aaa\nbbb\nccc", "", "\n\n\n", "no newline", "x\n"] {
+            let data = SpanData {
+                source: src.to_string(),
+                ..Default::default()
+            };
+            let idx = data.line_starts();
+            for off in 0..=src.len() as u32 + 3 {
+                assert_eq!(
+                    idx.line_col(off),
+                    (data.line_at(off), data.col_at(off)),
+                    "LineStarts disagrees with line_at/col_at at offset {off} of {src:?}"
+                );
+            }
+        }
     }
 
     #[test]
