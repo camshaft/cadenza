@@ -13541,6 +13541,35 @@ mod stage1 {
     }
 
     #[test]
+    fn a_definition_may_carry_a_leading_doc_ignored_for_the_value() {
+        // 11-modules "a value definition may carry a leading doc, like a function definition": a `(doc …)`
+        // form right after the name/signature documents the def and is NOT part of the value — a
+        // definition is "a value, function, type" (glossary), so the doc affordance is uniform across
+        // kinds. `strip_def_docs` removes it at load, so every def-body reader (`tail.get(1)`) sees the
+        // real body. (Before, the doc was mis-read AS the body → "unbound name doc".)
+        // VALUE def with a doc → the value, doc ignored.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def answer (doc \"the answer\") 42) (def (main) answer) (export main))",
+        )))
+        .expect("a value def may carry a leading doc");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
+        // FUNCTION def (with params) + a doc → the function computes, doc ignored. Pins the symmetry the
+        // spec requires (the doc cannot depend on which def kind).
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (dbl x) (doc \"doubles x\") (* x 2)) (def (main) (dbl 3)) (export main))",
+        )))
+        .expect("a function def may carry a leading doc");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 6);
+        // The compiler-table idiom the spec cites: a documented value def binding a record, projected by a
+        // sibling — `(def op (doc "opcode bytes") (record …))`.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def op (doc \"opcode bytes\") (record (add 1) (sub 2))) (def (main) (. op sub)) (export main))",
+        )))
+        .expect("a documented value def may bind a record");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 2);
+    }
+
+    #[test]
     fn a_do_local_declaration_scope_is_backward_only() {
         // Sequential scope: a form sees only the declarations BEFORE it. A FORWARD reference (`y`'s value
         // `(+ x 1)` references `x` declared AFTER it) is unbound — a declaration does not see later ones.
@@ -15980,7 +16009,7 @@ mod stage1 {
         // The handler is stateless (seed unit, thread s unchanged); the whole `handle` becomes plain
         // arithmetic, so `select` sees only ordinary `Core` (no effect node, no runtime handler search).
         let src = "(do (effect Choose (op pick (-> Unit Int64))) \
-                   (def (main) (handle unit (((. Choose pick) () s (resume 5 s))) \
+                   (def (main) (handle Choose unit ((pick () s (resume 5 s))) \
                    (+ ((. Choose pick)) 1))) (export main))";
         assert_eq!(
             run_returns::<i64>(
@@ -16134,6 +16163,54 @@ mod stage1 {
     }
 
     #[test]
+    fn a_noncanonical_handle_is_rejected_as_one_cdz0201() {
+        // The retired effect-name-less shape `(handle <seed> (arm…) body)` — no effect in the head, the
+        // arm op written dotted — is NOT the canonical handler form. `effects::desugar_handles` re-spells
+        // only the canonical 5-child form to the internal head, so this leftover stays headed `handle`
+        // and `resolve_noncanonical_handle` rejects it (CDZ0201, pointing at the canonical shape). The
+        // rejected handle never resolves AS a handler, so its perform would ALSO trip the entrypoint
+        // no-home check (CDZ0401) — a CONSEQUENCE, not an independent defect. `dedup_faults` drops that
+        // CDZ0401 so the author sees ONE primary "make it canonical" error, not a misdirecting "you have
+        // no handler" (they DO have one — it is just written in the old shape).
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (+ (Bail.bail 7) 100))) (export main))";
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "a non-canonical handle = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
+        assert!(
+            errors[0]
+                .message
+                .starts_with(crate::diag::HANDLE_NONCANONICAL_PREFIX),
+            "the primary error names the non-canonical handle: {:?}",
+            errors[0].message
+        );
+        // The consequent no-home CDZ0401 is suppressed — the author has a handler, just not canonical.
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0401")),
+            "the consequent CDZ0401 must not accompany the non-canonical reject"
+        );
+    }
+
+    #[test]
     fn a_handle_with_an_unbound_effect_name_reports_one_error_not_a_shadowing_decline() {
         // `handle Nope …` where `Nope` is not a declared effect: the unbound name is CDZ0101 (with a
         // did-you-mean fix), and the handle can't fold → the emit path would ALSO return the "not yet
@@ -16177,7 +16254,7 @@ mod stage1 {
         // `Choose` declares only `pick`; an arm `((. Choose guess) …)` names `guess` — undeclared. This
         // is CDZ0403, not the generic "record has no field" CDZ0201 the member projection alone gives.
         let src = "(do (effect Choose (op pick (-> Unit Int64))) \
-                   (def (main) (handle unit (((. Choose guess) () s (resume 5 s))) ((. Choose pick)))) \
+                   (def (main) (handle Choose unit ((guess () s (resume 5 s))) ((. Choose pick)))) \
                    (export main))";
         let err = compile_component(&crate::codec::encode(&parse(src)))
             .expect_err("a handler arm for an undeclared op must be rejected");
@@ -16195,7 +16272,7 @@ mod stage1 {
         // To A Fix): a handler arm names `emitt`, a typo of the effect's declared `emit` → CDZ0403 names
         // the near op AND carries a replace fix on the op KEY.
         let src = "(do (effect Log (op emit (-> Int64 Unit))) \
-                   (def (main) (handle unit (((. Log emitt) (v) s (resume unit s))) ((. Log emit) 5))) \
+                   (def (main) (handle Log unit ((emitt (v) s (resume unit s))) ((. Log emit) 5))) \
                    (export main))";
         let err = compile_component(&crate::codec::encode(&parse(src)))
             .expect_err("undeclared op must reject");
@@ -16295,7 +16372,7 @@ mod stage1 {
         // handle becomes plain arithmetic, so it runs to 2 (`capabilities-and-effects.md` §A Handler
         // Threads State Across The Operations It Discharges).
         let src = "(do (effect Fresh (op next (-> Unit Int64))) \
-                   (def (main) (handle 0 (((. Fresh next) (u) s (resume s (+ s 1)))) \
+                   (def (main) (handle Fresh 0 ((next (u) s (resume s (+ s 1)))) \
                    (do ((. Fresh next)) ((. Fresh next)) ((. Fresh next))))) (export main))";
         assert_eq!(
             run_returns::<i64>(
@@ -16314,7 +16391,7 @@ mod stage1 {
         // continuation into each branch. Here the then-branch reads 0 (threads 0->1); the continuation
         // `(Fresh.next)` reads 1. Before the fix the continuation ran against the pre-branch state (0).
         let if_src = "(do (effect Fresh (op next (-> Unit Int64))) \
-                   (def (main) (handle 0 (((. Fresh next) (u) s (resume s (+ s 1)))) \
+                   (def (main) (handle Fresh 0 ((next (u) s (resume s (+ s 1)))) \
                    (do (if true ((. Fresh next)) 99) ((. Fresh next))))) (export main))";
         assert_eq!(
             run_returns::<i64>(
@@ -16328,7 +16405,7 @@ mod stage1 {
         // The short-circuit connective is the same shape via its if-desugar, and its CONDITION performs
         // too: `(and (= (next) 0) (= (next) 1))` reads 0 then 1 (threads 0->2); the continuation reads 2.
         let and_src = "(do (effect Fresh (op next (-> Unit Int64))) \
-                   (def (main) (handle 0 (((. Fresh next) (u) s (resume s (+ s 1)))) \
+                   (def (main) (handle Fresh 0 ((next (u) s (resume s (+ s 1)))) \
                    (do (and (= ((. Fresh next)) 0) (= ((. Fresh next)) 1)) ((. Fresh next))))) (export main))";
         assert_eq!(
             run_returns::<i64>(
@@ -16351,7 +16428,7 @@ mod stage1 {
         // Dynamic In Extent — a function may perform an operation its caller discharges.)
         let src = "(do (effect Bump (op by (-> Int64 Int64))) \
                    (def (gen) ((. Bump by) 41)) \
-                   (def (main) (handle unit (((. Bump by) (n) s (resume (+ n 1) s))) (gen))) \
+                   (def (main) (handle Bump unit ((by (n) s (resume (+ n 1) s))) (gen))) \
                    (export main))";
         assert_eq!(
             run_returns::<i64>(
@@ -16372,7 +16449,7 @@ mod stage1 {
         // `(if (= s 0) 0 (+ 1 (loop#ctx (- s 1))))` — a single-return recursive fn, no multi-value.
         let src = "(do (effect Countdown (op tick (-> Unit Int64))) \
                    (def (loop) (if (= (Countdown.tick) 0) 0 (+ 1 (loop)))) \
-                   (def (main) (handle 3 ((Countdown.tick (u) s (resume s (- s 1)))) (loop))) \
+                   (def (main) (handle Countdown 3 ((tick (u) s (resume s (- s 1)))) (loop))) \
                    (export main))";
         assert_eq!(
             run_returns::<i64>(
@@ -16396,7 +16473,7 @@ mod stage1 {
         // the reference resolves. `walk 3` ticks state 0→1→2→3 but returns the base 0.
         let src = "(do (effect Tick (op tick (-> Unit Int64))) \
                    (def (walk (: n Int64)) (if (< n 1) 0 (do (Tick.tick) (walk (- n 1))))) \
-                   (def (main) (handle 0 ((Tick.tick (u) s (resume s (+ s 1)))) (walk 3))) \
+                   (def (main) (handle Tick 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) \
                    (export main))";
         let r = compile_component(&crate::codec::encode(&parse(src)));
         // Must COMPILE (not the CDZ0101 internal-name leak). If it declines for another reason it must
@@ -16415,7 +16492,7 @@ mod stage1 {
         // A BARE-name recursive parameter (no annotation) exhibits the same path — pin it too.
         let bare = "(do (effect Tick (op tick (-> Unit Int64))) \
                    (def (walk n) (if (< n 1) 0 (do (Tick.tick) (walk (- n 1))))) \
-                   (def (main) (handle 0 ((Tick.tick (u) s (resume s (+ s 1)))) (walk 3))) \
+                   (def (main) (handle Tick 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) \
                    (export main))";
         assert_eq!(
             run_returns::<i64>(
@@ -16438,7 +16515,7 @@ mod stage1 {
         // that the arm-count no longer gates specialization — only the single-EFFECT property does.)
         let src = "(do (effect St (op get (-> Unit Int64)) (op tick (-> Unit Int64))) \
                    (def (loop) (if (= (St.get) 0) 0 (+ (St.tick) (loop)))) \
-                   (def (main) (handle 3 ((St.get (u) s (resume s s)) (St.tick (u) s (resume 1 (- s 1)))) \
+                   (def (main) (handle St 3 ((get (u) s (resume s s)) (tick (u) s (resume 1 (- s 1)))) \
                      (loop))) (export main))";
         assert_eq!(
             run_returns::<i64>(
@@ -16484,8 +16561,8 @@ mod stage1 {
         // + do-intermediate perform + recursion-through-do all at once.
         let src = "(do (effect Diag (op emit (-> Int64 Unit)) (op collect (-> Unit (List Int64)))) \
                    (def (walk n) (if (< n 1) (Diag.collect unit) (do (Diag.emit n) (walk (- n 1))))) \
-                   (def (main) (handle (list 0) \
-                     ((Diag.emit (v) s (resume unit (List.push s v))) (Diag.collect (u) s (resume s s))) \
+                   (def (main) (handle Diag (list 0) \
+                     ((emit (v) s (resume unit (List.push s v))) (collect (u) s (resume s s))) \
                      (List.len (walk 3)))) (export main))";
         // COMPILES (the specialization + list-state threading succeed) — asserting compilation, not a run,
         // because a list-returning body needs the value-heap runtime composed from the store (the
@@ -16504,7 +16581,7 @@ mod stage1 {
         // and, when the perform fires in a strict position, records the arm value as the whole handle's
         // value (the surrounding computation is dead). This is the "bail" / typed early-exit class.
         let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle 0 ((Bail.bail (n) s n)) (+ 1 (Bail.bail 7)))) (export main))";
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (+ 1 (Bail.bail 7)))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(src)))
@@ -16524,7 +16601,7 @@ mod stage1 {
         // test to the fold (a runtime param in a handle body is a separate, not-yet-supported case); the
         // guard is STRUCTURAL — it does not rely on the constant folding away.
         let aborts = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle 0 ((Bail.bail (n) s n)) (if true (Bail.bail 7) 99))) (export main))";
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (if true (Bail.bail 7) 99))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(aborts)))
@@ -16534,7 +16611,7 @@ mod stage1 {
             7
         );
         let survives = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle 0 ((Bail.bail (n) s n)) (if false (Bail.bail 7) 99))) (export main))";
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (if false (Bail.bail 7) 99))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(survives)))
@@ -16555,7 +16632,7 @@ mod stage1 {
         // pure (duplicated harmlessly). True branch → 7 (abort discards `+ 1`); false branch → 0+1 = 1.
         // (Previously this DECLINED — the hoist is what makes it fold.)
         let t = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle 99 ((Bail.bail (n) s n)) (+ 1 (if true (Bail.bail 7) 0)))) (export main))";
+                   (def (main) (handle Bail 99 ((bail (n) s n)) (+ 1 (if true (Bail.bail 7) 0)))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(t)))
@@ -16565,7 +16642,7 @@ mod stage1 {
             7
         );
         let f = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle 99 ((Bail.bail (n) s n)) (+ 1 (if false (Bail.bail 7) 0)))) (export main))";
+                   (def (main) (handle Bail 99 ((bail (n) s n)) (+ 1 (if false (Bail.bail 7) 0)))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(f)))
@@ -16585,8 +16662,8 @@ mod stage1 {
         // it can be neither duplicated nor dropped. The hoist declines to lift, and the guard flags the
         // still-non-tail abort → `reduce_handle` DECLINES rather than miscompile. Regression guard.
         let src = "(do (effect Get (op get (-> Int64 Int64))) (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle 0 ((Bail.bail (n) s n)) \
-                     (handle 0 ((Get.get (n) s (resume 5 s))) (+ (Get.get 0) (if true (Bail.bail 7) 50))))) (export main))";
+                   (def (main) (handle Bail 0 ((bail (n) s n)) \
+                     (handle Get 0 ((get (n) s (resume 5 s))) (+ (Get.get 0) (if true (Bail.bail 7) 50))))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "an abort alongside an effectful sibling must decline, not miscompile"
@@ -16603,7 +16680,7 @@ mod stage1 {
         // Bool (`(< n 0)`), so the abort value is Bool — consistent with the connective's Bool branches.
         // `(and true (Bail.bail 7))`: lhs true → rhs runs → abort → `(< 7 0)` = false.
         let src = "(do (effect Bail (op bail (-> Int64 Bool))) \
-                   (def (main) (handle true ((Bail.bail (n) s (< n 0))) (and true (Bail.bail 7)))) (export main))";
+                   (def (main) (handle Bail true ((bail (n) s (< n 0))) (and true (Bail.bail 7)))) (export main))";
         assert!(
             !run_returns::<bool>(
                 &compile_component(&crate::codec::encode(&parse(src)))
@@ -16624,7 +16701,7 @@ mod stage1 {
         // `if` = invalid wasm). The checker misses this gap, so the fold declines. Regression guard for a
         // latent miscompile the branch-tail/hoist folds would otherwise have emitted.
         let src = "(do (effect Bail (op bail (-> Int64 Bool))) \
-                   (def (main (: x Int64)) (handle false ((Bail.bail (n) s n)) (if (< x 5) (Bail.bail 7) false))) (export main))";
+                   (def (main (: x Int64)) (handle Bail false ((bail (n) s n)) (if (< x 5) (Bail.bail 7) false))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "an abortive arm whose value type mismatches the op result must decline, not emit invalid wasm"
@@ -16640,7 +16717,7 @@ mod stage1 {
         // already threaded the let body correctly; this pins that the guard's `let` arm carries tail-ness
         // into the body (a generic descent would have marked it non-tail and wrongly DECLINED).
         let aborts = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle 0 ((Bail.bail (n) s n)) (let ((k 5)) (if true (Bail.bail 7) k)))) (export main))";
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (let ((k 5)) (if true (Bail.bail 7) k)))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(aborts)))
@@ -16650,7 +16727,7 @@ mod stage1 {
             7
         );
         let survives = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle 0 ((Bail.bail (n) s n)) (let ((k 5)) (if false (Bail.bail 7) k)))) (export main))";
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (let ((k 5)) (if false (Bail.bail 7) k)))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(survives)))
@@ -16670,7 +16747,7 @@ mod stage1 {
         // because the `if` condition and any PRECEDING bindings are pure (duplicated across the branches).
         // True branch → 7 (abort discards the let body); false branch → `1 + 0` = 1. (Previously DECLINED.)
         let t = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle 99 ((Bail.bail (n) s n)) (let ((k (if true (Bail.bail 7) 0))) (+ 1 k)))) (export main))";
+                   (def (main) (handle Bail 99 ((bail (n) s n)) (let ((k (if true (Bail.bail 7) 0))) (+ 1 k)))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(t)))
@@ -16680,7 +16757,7 @@ mod stage1 {
             7
         );
         let f = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle 99 ((Bail.bail (n) s n)) (let ((k (if false (Bail.bail 7) 0))) (+ 1 k)))) (export main))";
+                   (def (main) (handle Bail 99 ((bail (n) s n)) (let ((k (if false (Bail.bail 7) 0))) (+ 1 k)))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(f)))
@@ -16699,8 +16776,8 @@ mod stage1 {
         // it runs (threads state) before the abort and cannot be duplicated or dropped, so the hoist
         // declines to lift and the guard flags the still-conditional init → `reduce_handle` DECLINES.
         let src = "(do (effect Get (op get (-> Int64 Int64))) (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main (: x Int64)) (handle 0 ((Bail.bail (n) s n)) \
-                     (handle 0 ((Get.get (n) s (resume 5 s))) \
+                   (def (main (: x Int64)) (handle Bail 0 ((bail (n) s n)) \
+                     (handle Get 0 ((get (n) s (resume 5 s))) \
                        (let ((a (Get.get 0)) (k (if (< x 5) (Bail.bail 7) 0))) (+ a k))))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
@@ -16719,7 +16796,7 @@ mod stage1 {
         // non-local-exit convention (a later vertical). Contrast an UNCONDITIONAL cross-fn abort, which folds.
         let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
                    (def (check (: n Int64)) (if (< n 0) (Bail.bail 99) n)) \
-                   (def (main) (handle 0 ((Bail.bail (n) s n)) (+ 10 (check -1)))) (export main))";
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (+ 10 (check -1)))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "a non-tail cross-function conditional abort must decline, not miscompile to 109"
@@ -16735,7 +16812,7 @@ mod stage1 {
         // one above (the guard follows the callee and flags only an abort reached under a conditional).
         let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
                    (def (boom (: n Int64)) (Bail.bail n)) \
-                   (def (main) (handle 0 ((Bail.bail (n) s n)) (+ 10 (boom 99)))) (export main))";
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (+ 10 (boom 99)))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(src)))
@@ -16756,7 +16833,7 @@ mod stage1 {
         // for the abortive case; the same relaxation enables an annotated-param tail-resumptive recursion.
         let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
                    (def (walk (: n Int64)) (if (= n 0) (Bail.bail 99) (walk (- n 1)))) \
-                   (def (main) (handle 0 ((Bail.bail (n) s n)) (walk 3))) (export main))";
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (walk 3))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(src)))
@@ -16778,7 +16855,7 @@ mod stage1 {
         // non-local-exit convention (a later vertical). Contrast the TAIL case, which folds to 99.
         let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
                    (def (walk (: n Int64)) (if (= n 0) (Bail.bail 99) (+ 1 (walk (- n 1))))) \
-                   (def (main) (handle 0 ((Bail.bail (n) s n)) (walk 3))) (export main))";
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (walk 3))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "a non-tail recursive abort must decline, not miscompile to 102"
@@ -16796,13 +16873,13 @@ mod stage1 {
         // the hoist emitted an ill-typed `if` (invalid wasm). `reduce_handle` now declines when an abortive
         // arm's value type differs from the handle body's type. Both shapes must decline.
         let bare = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle 0 ((Bail.bail (n) s n)) (tuple 1 (Bail.bail 7)))) (export main))";
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (tuple 1 (Bail.bail 7)))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(bare))).is_err(),
             "a scalar abort in a tuple-typed body must decline"
         );
         let cond = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle 0 ((Bail.bail (n) s n)) (tuple 1 (if true (Bail.bail 7) 5)))) (export main))";
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (tuple 1 (if true (Bail.bail 7) 5)))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(cond))).is_err(),
             "a scalar abort in a conditional tuple operand must decline, not miscompile to (1,7)"
@@ -16818,7 +16895,7 @@ mod stage1 {
         // with `agrees_with` (an undetermined Int agrees with Int64) folds it correctly. Regression guard
         // for that false-positive decline — the abort-in-condition is a real "validate then bail" shape.
         let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle 0 ((Bail.bail (n) s n)) (if (< (Bail.bail 7) 5) 1 2))) (export main))";
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (if (< (Bail.bail 7) 5) 1 2))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(src)))
@@ -16836,7 +16913,7 @@ mod stage1 {
         // then the match dispatches on the resume value. Seed 0 → `Get.next` reads 0 → arm `0` → 100; seed 5
         // → 200 (wildcard). Before the `Match` thread arm this DECLINED (no arm → the whole handle refused).
         let zero = "(do (effect Get (op next (-> Unit Int64))) \
-                   (def (main) (handle 0 ((Get.next (u) s (resume s (+ s 1)))) (match (Get.next) (0 100) (_ 200)))) (export main))";
+                   (def (main) (handle Get 0 ((next (u) s (resume s (+ s 1)))) (match (Get.next) (0 100) (_ 200)))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(zero)))
@@ -16847,7 +16924,7 @@ mod stage1 {
         );
         // A perform in an ARM BODY threads the post-scrutinee state; an abort in an arm is branch-local.
         let arm_abort = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main (: x Int64)) (handle 0 ((Bail.bail (n) s n)) (match x (0 (Bail.bail 7)) (_ 42)))) (export main))";
+                   (def (main (: x Int64)) (handle Bail 0 ((bail (n) s n)) (match x (0 (Bail.bail 7)) (_ 42)))) (export main))";
         let comp = compile_component(&crate::codec::encode(&parse(arm_abort)))
             .expect("an abortive match arm folds per-arm");
         assert_eq!(
@@ -16866,11 +16943,11 @@ mod stage1 {
     fn an_e5_identity_continuation_non_tail_resume_folds() {
         // E5 identity-continuation slice: a NON-tail resume where the perform IS the whole handle body, so
         // its continuation is the IDENTITY (nothing runs after). `(resume v s)` = `v` in place, so the arm
-        // body with resume→value is the handle value — no frame capture needed. `(handle 0 ((Amb.flip (u)
+        // body with resume→value is the handle value — no frame capture needed. `(handle Amb 0 ((flip (u)
         // s (+ 1 (resume 10 s)))) (Amb.flip))` → `(+ 1 10)` = 11. Even a MULTI-shot arm folds here (each
         // `resume v` is `v`, no continuation to duplicate): `(+ (resume 1 s) (resume 2 s))` → 3.
         let single = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle 0 ((Amb.flip (u) s (+ 1 (resume 10 s)))) (Amb.flip))) (export main))";
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (Amb.flip))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(single)))
@@ -16880,7 +16957,7 @@ mod stage1 {
             11
         );
         let multi = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle 0 ((Amb.flip (u) s (+ (resume 1 s) (resume 2 s)))) (Amb.flip))) (export main))";
+                   (def (main) (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (Amb.flip))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(multi)))
@@ -16898,7 +16975,7 @@ mod stage1 {
         // the captured-continuation machinery (defunctionalized frames), a later increment; `reduce_handle`
         // declines rather than mis-fold. Contrast the identity-continuation case above, which folds.
         let src = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle 0 ((Amb.flip (u) s (+ 1 (resume 10 s)))) (+ 100 (Amb.flip)))) (export main))";
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 100 (Amb.flip)))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "a non-tail resume with a real continuation must decline (needs E5 frame capture)"
@@ -16912,7 +16989,7 @@ mod stage1 {
         //   `(not (= (Get.next) 0))` seed 0 → Get reads 0, `= 0` true, `not` → false → arm 2.
         //   `(. (tuple (Get.next) (Get.next)) 1)` seed 10 → second Get reads 11 → projects 11.
         let neg = "(do (effect Get (op next (-> Unit Int64))) \
-                   (def (main) (handle 0 ((Get.next (u) s (resume s (+ s 1)))) (if (not (= (Get.next) 0)) 1 2))) (export main))";
+                   (def (main) (handle Get 0 ((next (u) s (resume s (+ s 1)))) (if (not (= (Get.next) 0)) 1 2))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(neg))).expect("not threads"),
@@ -16921,7 +16998,7 @@ mod stage1 {
             2
         );
         let proj = "(do (effect Get (op next (-> Unit Int64))) \
-                   (def (main) (handle 10 ((Get.next (u) s (resume s (+ s 1)))) (. (tuple (Get.next) (Get.next)) 1))) (export main))";
+                   (def (main) (handle Get 10 ((next (u) s (resume s (+ s 1)))) (. (tuple (Get.next) (Get.next)) 1))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(proj)))
@@ -16940,7 +17017,7 @@ mod stage1 {
         // 99))` short-circuits on `true`, so the rhs `Get.next` does NOT advance state — the following
         // `(Get.next)` then reads 0 (not 1). Pins that the desugar preserves short-circuit evaluation.
         let src = "(do (effect Get (op next (-> Unit Int64))) \
-                   (def (main) (handle 0 ((Get.next (u) s (resume s (+ s 1)))) (if (or true (= (Get.next) 99)) (Get.next) 0))) (export main))";
+                   (def (main) (handle Get 0 ((next (u) s (resume s (+ s 1)))) (if (or true (= (Get.next) 99)) (Get.next) 0))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(src)))
@@ -16962,7 +17039,7 @@ mod stage1 {
         // reparent fix — before it, ANY handle body referencing a function parameter failed to compile.
         use wasmtime::component::Val;
         let src = "(do (effect Get (op get (-> Int64 Int64))) \
-                   (def (main (: x Int64)) (handle 0 ((Get.get (n) s (resume 5 s))) (+ x (Get.get 0)))) (export main))";
+                   (def (main (: x Int64)) (handle Get 0 ((get (n) s (resume 5 s))) (+ x (Get.get 0)))) (export main))";
         assert_eq!(
             run_returns_with::<i64>(
                 &compile_component(&crate::codec::encode(&parse(src)))
@@ -16982,7 +17059,7 @@ mod stage1 {
         // through). Exercises the reparent fix (free `x`) together with `thread_branch_local_abort`.
         use wasmtime::component::Val;
         let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main (: x Int64)) (handle 0 ((Bail.bail (n) s n)) (if (< x 5) (Bail.bail 7) x))) (export main))";
+                   (def (main (: x Int64)) (handle Bail 0 ((bail (n) s n)) (if (< x 5) (Bail.bail 7) x))) (export main))";
         let component = compile_component(&crate::codec::encode(&parse(src)))
             .expect("a runtime-conditioned branch-tail abort reading a parameter compiles");
         assert_eq!(
@@ -17004,8 +17081,8 @@ mod stage1 {
         // `(B.b)` resumes 20 (outer), so `(+ (A.a) (B.b))` = 42. The inner handle in the outer's body is
         // recursively `reduce_handle`d, then threaded under the outer context.
         let src = "(do (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64))) \
-                   (def (main) (handle 0 ((B.b (u) s (resume 20 s))) \
-                     (handle 0 ((A.a (u) s (resume 22 s))) (+ (A.a) (B.b))))) (export main))";
+                   (def (main) (handle B 0 ((b (u) s (resume 20 s))) \
+                     (handle A 0 ((a (u) s (resume 22 s))) (+ (A.a) (B.b))))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(src)))
@@ -17026,7 +17103,7 @@ mod stage1 {
         // compiles to a component importing `ask` (verified via the gate → 42 with `ask.ask=21`). The host
         // import is unbound in-process, so this asserts it COMPILES; the corpus gate runs the value.
         let src = "(do (effect ask (op ask (-> Unit Int64))) (effect Scale (op by (-> Int64 Int64))) \
-                   (def (main) (host (ask) (handle unit ((Scale.by (n) s (resume (* n 2) s))) \
+                   (def (main) (host (ask) (handle Scale unit ((by (n) s (resume (* n 2) s))) \
                      (Scale.by (ask.ask))))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
@@ -17134,8 +17211,8 @@ mod stage1 {
         // COMPILES; the corpus gate runs the value + host-call sequence.
         let src = "(do (effect ask (op ask (-> Unit Int64))) (effect Count (op tick (-> Unit Unit))) \
                    (def (main) (host (ask) \
-                     (handle unit ((Count.tick (u) s (resume unit s))) \
-                       (handle unit ((ask.ask () s (do (Count.tick) (resume (ask.ask) s)))) \
+                     (handle Count unit ((tick (u) s (resume unit s))) \
+                       (handle ask unit ((ask () s (do (Count.tick) (resume (ask.ask) s)))) \
                          (+ (ask.ask) (ask.ask)))))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
@@ -17154,8 +17231,8 @@ mod stage1 {
         // param (`DESIGN-effects-rcdzc.md` §4.3: "two nested handlers → two trailing params").
         let src = "(do (effect A (op tick (-> Unit Int64))) (effect B (op bump (-> Unit Int64))) \
                    (def (loop) (if (= (A.tick) 0) 0 (+ (B.bump) (loop)))) \
-                   (def (main) (handle 0 ((B.bump (u) s (resume s (+ s 10)))) \
-                     (handle 3 ((A.tick (u) s (resume s (- s 1)))) (loop)))) (export main))";
+                   (def (main) (handle B 0 ((bump (u) s (resume s (+ s 10)))) \
+                     (handle A 3 ((tick (u) s (resume s (- s 1)))) (loop)))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(src)))
@@ -17179,8 +17256,8 @@ mod stage1 {
         // still proves the fold TERMINATES.
         let src = "(do (effect Diag (op emit (-> Int64 Unit)) (op collect (-> Unit (List Int64)))) \
                    (def (walk n) (if (< n 1) (Diag.collect unit) (do (Diag.emit n) (walk (- n 1))))) \
-                   (def (main) (handle (list) \
-                     ((Diag.emit (v) s (resume unit (List.push s v))) (Diag.collect (u) s (resume s s))) \
+                   (def (main) (handle Diag (list) \
+                     ((emit (v) s (resume unit (List.push s v))) (collect (u) s (resume s s))) \
                      (List.len (walk 3)))) (export main))";
         // The state lives on the value heap (`List.push`/`List.len`), so this needs the store runtime the
         // in-process linker doesn't supply — assert it COMPILES (a well-formed component); the corpus gate
@@ -17199,7 +17276,7 @@ mod stage1 {
         // result-type companion of the perform-argument check). Without the check the fold would silently
         // substitute `true` as `(E.op 1)`'s value, a type-confusion miscompile.
         let src = "(do (effect E (op op (-> Int64 Int64))) \
-                   (def (main) (handle unit ((E.op (n) s (resume true s))) (E.op 1))) (export main))";
+                   (def (main) (handle E unit ((op (n) s (resume true s))) (E.op 1))) (export main))";
         let err = compile_component(&crate::codec::encode(&parse(src)))
             .expect_err("a wrong-type resume value must be rejected");
         assert_eq!(
@@ -18610,6 +18687,50 @@ mod stage1 {
         for (arg, want) in [(-1i64, 1i64), (0, 2), (5, 3)] {
             let got: i64 = run_returns_with(&bytes, "main", &[wasmtime::component::Val::S64(arg)]);
             assert_eq!(got, want, "classify(pick {arg})");
+        }
+    }
+
+    #[test]
+    fn an_all_nullary_enum_nested_in_a_boxed_sum_round_trips() {
+        // ⚠ INVALID WASM regression: an all-nullary enum (a bare i32 disc) NESTED inside a boxed sum
+        // (`(Option Color)`) mis-emitted both ends: (1) construction `box-int`ed the i32 disc WITHOUT the
+        // i64 extend (i32 → the i64 box-int → wasm rejects); (2) the match's disc read used `sum-disc` on
+        // the boxed-int handle instead of `get-int` + wrap, because `sum_single_payload_ty` returned the
+        // UNSUBSTITUTED payload var (`?0`) rather than `Color`. Fixed by (1) `emit_box_i32_to_i64_extend`
+        // (an enum-disc payload zero-extends like a narrow int) and (2) `sum_single_payload_ty` using
+        // `payload_ty_at_instantiation` (substitutes the sum's args → the payload resolves to `Color`).
+        // Build `Some(pick n)` then match the nested `Color`; round-trips all three variants.
+        use crate::testkit::parse;
+        let src = "(module m (type Color (Red) (Green) (Blue)) \
+                     (def (pick (: n Int64)) (if (< n 0) (Red) (if (= n 0) (Green) (Blue)))) \
+                     (def (mk (: n Int64)) (Some (pick n))) \
+                     (def (get (: o (Option Color))) \
+                        (match o ((Some (Red)) 10) ((Some (Green)) 20) ((Some (Blue)) 30) ((None) 0))) \
+                     (def (main (: n Int64)) (get (mk n))) \
+                     (export main))";
+        let bytes =
+            compile_component(&crate::codec::encode(&parse(src))).expect("compile nested enum");
+        // A boxed Option DOES import the runtime (it is a genuine heap sum carrying the enum payload).
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "a boxed (Option Color) imports the value-heap runtime"
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed nested-enum run");
+            return;
+        };
+        for (arg, want) in [("-1", "10"), ("0", "20"), ("5", "30")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "get(mk {arg})"),
+                cdz_run::Outcome::Trap(t) => panic!("nested-enum run trapped: {t}"),
+            }
         }
     }
 

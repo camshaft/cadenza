@@ -92,11 +92,11 @@
   (doc "Run the HM inference pass on Hir `h`, returning the finalized typed node — or a TypedError decline
         if a type error aborted it. Discharges the Fresh (counter), Subst (TVar→Ty map), and Fail
         (abortive) effects with one handler stack. Mirrors rcdzc `infer_module`'s supply+subst threading.")
-  (handle unit
-    ((Fail.type-error (p) s (Typed.TypedError 201)))          ; CDZ0201; abortive — no resume
-    (handle Map.empty
-      ((Subst.bind (vt) s (match vt ((tuple v t) (resume () (Map.insert s v t)))))
-       (Subst.find (v) s (resume (Map.lookup s v) s)))
-      (handle 0
-        ((Fresh.next (u) s (resume s (+ s 1))))
+  (handle Fail unit
+    ((type-error (p) s (Typed.TypedError 201)))               ; CDZ0201; abortive — no resume
+    (handle Subst Map.empty
+      ((bind (vt) s (match vt ((tuple v t) (resume () (Map.insert s v t)))))
+       (find (v) s (resume (Map.lookup s v) s)))
+      (handle Fresh 0
+        ((next (u) s (resume s (+ s 1))))
         (finalize (infer-expr h))))))

@@ -89,7 +89,10 @@ const GRAMMAR: &[&str] = &[
     // Effect control forms — `handle` installs an in-program handler, `host` delegates to the boundary,
     // `resume` hands a value back inside a handler arm. Control flow (like `if`/`match`), reduced away by
     // the compile-time evaluator, NOT prelude records — so they are grammar (`DESIGN-effects-rcdzc.md`).
+    // `handle` stays grammar so a leftover (non-canonical) one dispatches to its reject rather than
+    // reading as an unmodeled top-level form; `handle-internal` is the desugared node the resolver folds.
     "handle",
+    crate::effects::HANDLE_INTERNAL,
     "host",
     "resume",
 ];
@@ -262,7 +265,12 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some("quote") => resolve_quote(db, id),
                 Some("bin") => resolve_bin(db, id),
                 Some("|>") => resolve_pipeline(db, id),
-                Some("handle") => resolve_handle(db, id),
+                // The DESUGARED handle (`effects::desugar_handles` re-spells the canonical 5-child
+                // source form to this internal head). A node still headed `handle` here is a leftover
+                // the desugar did NOT rewrite — the old effect-name-less shape or a too-short handle —
+                // which `resolve_handle` rejects with the canonical shape.
+                Some(crate::effects::HANDLE_INTERNAL) => resolve_handle(db, id),
+                Some("handle") => resolve_noncanonical_handle(db, id),
                 Some("resume") => resolve_resume(db, id),
                 Some("host") => resolve_host(db, id),
                 Some("let") => resolve_let(db, id),
@@ -1111,9 +1119,9 @@ pub(crate) fn is_handle_arm(db: &Db, arm: StructId) -> bool {
     let Some(handle) = db.parent_of(arms_list) else {
         return false;
     };
-    // The handle is `(handle INIT ARMS BODY)`; ARMS is its 2nd tail element (index 1 of the tail).
+    // The (desugared) handle is `(handle-internal INIT ARMS BODY)`; ARMS is its 2nd tail element.
     db.ast
-        .as_form(handle, "handle")
+        .as_form(handle, crate::effects::HANDLE_INTERNAL)
         .and_then(|t| t.get(1).copied())
         == Some(arms_list)
 }
@@ -2072,23 +2080,42 @@ fn resolve_pipeline(db: &Db, id: StructId) -> Resolved {
     }
 }
 
-/// Resolve `(handle INIT (ARM…) BODY)` into its resolved form. Each arm is `(op-proj (params…) state
-/// body)` — the operation projection, a parenthesized parameter list, the state binder, and the arm
-/// body. Scope for the params/state binders is handled by the ordinary parent-walk (a reference in the
-/// arm body finds its binder), so here we only record the shape. A malformed arm or a missing
-/// init/body is a `Poison`.
+/// The full canonical handler SURFACE shape, shown in every malformed-handle message so a truncated or
+/// legacy form teaches the author every part it needs. Vocab is the surface's: the state the handler
+/// establishes is the "seed" (`capabilities-and-effects.md` §A Handler Discharges Its Effect / the
+/// corpus header), never the internal "init state".
+const HANDLE_SHAPE: &str =
+    "a handle is `(handle <effect> <seed> ((<op> (params…) <state> <body>)…) <body>)`";
+
+/// Reject a node still headed `handle` at resolve time. `effects::desugar_handles` re-spells every
+/// CANONICAL 5-child handle to the internal head, so a leftover `handle` is NOT canonical — it is
+/// either the retired effect-name-less shape `(handle <seed> (arm…) <body>)` (the effect must now be
+/// named in the head, and each arm's op written bare) or a too-short/malformed handle. One canonical
+/// way to write a handler; this is not it.
+fn resolve_noncanonical_handle(_db: &Db, _id: StructId) -> Resolved {
+    Resolved::Poison(Reject::coded(
+        Code::Malformed,
+        format!(
+            "{} — name the effect in the head and write each arm's operation bare. {HANDLE_SHAPE}",
+            crate::diag::HANDLE_NONCANONICAL_PREFIX
+        ),
+    ))
+}
+
+/// Resolve the internal `(handle-internal INIT (ARM…) BODY)` into its resolved form — the node
+/// `effects::desugar_handles` produces from a canonical `(handle E seed (bare-op-arm…) body)`. Each arm
+/// is `(op-proj (params…) state body)` — the operation projection, a parenthesized parameter list, the
+/// state binder, and the arm body. Scope for the params/state binders is handled by the ordinary
+/// parent-walk (a reference in the arm body finds its binder), so here we only record the shape. A
+/// malformed arm or a missing init/body is a `Poison`.
 fn resolve_handle(db: &Db, id: StructId) -> Resolved {
-    // Every malformed-handle message shows the FULL canonical SURFACE shape, so a truncated form teaches
-    // the author every part it needs. Vocab is the surface's: the state the handler establishes is the
-    // "seed" (`capabilities-and-effects.md` §A Handler Discharges Its Effect / the corpus header), never
-    // the internal "init state". A too-short tail reaches here UN-desugared (the effect-promotion rewrite
-    // fires only on the well-formed 5-child form), so its children are shifted by one versus the well-
-    // formed post-desugar tail — meaning we CANNOT reliably name WHICH part is missing (tail[0] might be
-    // the effect or the seed). So a too-short handle is reported as incomplete, not mis-enumerated; the
-    // shape carries the fix.
-    const SHAPE: &str =
-        "a handle is `(handle <effect> <seed> ((<op> (params…) <state> <body>)…) <body>)`";
-    let tail = db.ast.as_form(id, "handle").unwrap_or(&[]);
+    // A too-short internal tail is reported as incomplete rather than mis-enumerated (we cannot reliably
+    // name WHICH part is missing); the shape carries the fix.
+    const SHAPE: &str = HANDLE_SHAPE;
+    let tail = db
+        .ast
+        .as_form(id, crate::effects::HANDLE_INTERNAL)
+        .unwrap_or(&[]);
     let init = match tail.first() {
         Some(&s) => s,
         None => {

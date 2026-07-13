@@ -477,6 +477,15 @@ pub const OVER_APPLICATION_DECLINE: &str = "applied more arguments than the func
 /// without pinning the count-bearing text.
 pub const OVER_APPLICATION_MARKER: &str = "arguments to a function of arity";
 
+/// The stable PREFIX of the coded CDZ0201 "this handle is not in canonical form" reject — a source
+/// `handle` still headed `handle` after `effects::desugar_handles` (the retired effect-name-less shape,
+/// or a too-short handle). Shared as a const so `compile::dedup_faults` can recognize it and drop the
+/// CONSEQUENT CDZ0401 (`EffectNoHome`) the rejected handle's un-discharged perform triggers — the perform
+/// has no home ONLY because its handler was rejected, so one root cause yields ONE primary `error:` (the
+/// CDZ0201, which says how to fix the handle), not a coded reject shadowed by a "you have no handler" that
+/// misdirects (the author DID write a handler). Matched as a prefix so the shape-carrying tail can vary.
+pub const HANDLE_NONCANONICAL_PREFIX: &str = "this handle is not in canonical form";
+
 /// The message the emit path (`lower`) attaches to the UNCODED decline it returns when `reduce_handle`
 /// cannot fold a `handle` form. A MALFORMED handler — one whose arm names an operation its effect does
 /// not declare (CDZ0403), or that does not discharge every operation (CDZ0405) — cannot fold, so this
