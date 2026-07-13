@@ -18500,6 +18500,44 @@ mod stage1 {
     }
 
     #[test]
+    fn an_all_nullary_enum_program_imports_no_value_heap_runtime() {
+        // An all-nullary enum is a bare i32 discriminant (built with `i32.const`, matched with a
+        // `br_table`) — it touches the value heap NOT AT ALL. So a program whose only sum is such an enum
+        // must import NO runtime op: `collect_used_ops` must mirror `select`'s enum-disc fast path and NOT
+        // over-report `sum-new`/`sum-disc` (a dead import would force a needless `heap` linkage AND — since
+        // the import set fixes every `CallImport` index — a phantom import shifts them, risking a
+        // miscompile). Regression for that over-report; also a composed run confirms correctness.
+        use crate::testkit::parse;
+        let src = "(module m (type Color (Red) (Green) (Blue)) \
+                     (def (classify (: c Color)) (match c ((Red) 1) ((Green) 2) ((Blue) 3))) \
+                     (def (pick (: n Int64)) (if (< n 0) (Red) (if (= n 0) (Green) (Blue)))) \
+                     (def (main (: n Int64)) (classify (pick n))) \
+                     (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile enum");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            "an all-nullary enum is a bare i32 — no value-heap runtime import (no dead sum-new/sum-disc)"
+        );
+        // A boxed sum in the SAME shape (Option) STILL imports the runtime — the elision is enum-only.
+        let boxed = "(module m \
+                       (def (mk (: n Int64)) (if (< n 0) (None) (Some n))) \
+                       (def (get (: o (Option Int64))) (match o ((Some x) x) ((None) 0))) \
+                       (def (main (: n Int64)) (get (mk n))) \
+                       (export main))";
+        let bb = compile_component(&crate::codec::encode(&parse(boxed))).expect("compile boxed");
+        assert!(
+            cdz_run::required_runtime(&bb).expect("valid").is_some(),
+            "a genuinely-boxed sum still imports the value-heap runtime"
+        );
+        // The enum program runs correctly with no runtime composed in (a plain scalar function): n<0 → Red
+        // → 1, n==0 → Green → 2, n>0 → Blue → 3.
+        for (arg, want) in [(-1i64, 1i64), (0, 2), (5, 3)] {
+            let got: i64 = run_returns_with(&bytes, "main", &[wasmtime::component::Val::S64(arg)]);
+            assert_eq!(got, want, "classify(pick {arg})");
+        }
+    }
+
+    #[test]
     fn a_sum_match_disc_zero_probe_uses_eqz_and_dispatches() {
         // A sum match dispatches on `sum-disc(scrutinee) == disc`; when the tested discriminant is 0 —
         // the FIRST declared variant (`Some`), the common first-arm probe — that is `i32.eqz` (opcode

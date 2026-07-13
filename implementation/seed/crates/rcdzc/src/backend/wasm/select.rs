@@ -1058,6 +1058,12 @@ pub fn collect_used_ops(
         //  - single → `box-*` the one payload (a compound payload is already a handle, no box);
         //  - multi → a tuple handle (`arr-alloc` + per-payload `box-*`/`arr-set`).
         Core::SumNew { payloads, .. } => {
+            // An ENUM-DISC sum (all variants nullary) is built as a bare `i32.const disc` — NO `sum-new`,
+            // no payload op (mirrors `emit`'s `node_is_enum_disc` fast path). Over-reporting `sum-new`
+            // here declares a dead runtime import.
+            if node_is_enum_disc(db, id) {
+                return;
+            }
             out.insert(OP_SUM_NEW);
             match payloads.len() {
                 0 => {
@@ -1087,7 +1093,7 @@ pub fn collect_used_ops(
         // `collect_cont_ops` recurses switches/guards, inserting each switch's disc + walk ops.
         Core::MatchSum { scrutinee, root } => {
             collect_used_ops(db, scrutinee, out);
-            collect_cont_ops(db, &root, out);
+            collect_cont_ops(db, scrutinee, &root, out);
         }
         // A sum-payload read walks its `path` (`sum-payload`/`arr-get` per step) then unboxes the leaf
         // by THIS node's solved type (`get-*`).
@@ -1174,6 +1180,7 @@ pub fn collect_used_ops(
 /// so an op used only deep in the tree is still imported.
 fn collect_cont_ops(
     db: &mut Db,
+    scrutinee: StructId,
     cont: &crate::core::SumCont,
     out: &mut std::collections::BTreeSet<&'static str>,
 ) {
@@ -1183,7 +1190,7 @@ fn collect_cont_ops(
         crate::core::SumCont::Guarded { cond, body, els } => {
             collect_used_ops(db, *cond, out);
             collect_used_ops(db, *body, out);
-            collect_cont_ops(db, els, out);
+            collect_cont_ops(db, scrutinee, els, out);
         }
         // A literal test walks its `path` (sum-payload/arr-get) then reads the leaf scalar to compare it;
         // an Int probe reads `get-int`, a Bool probe `get-bool`. Then both continuations' ops.
@@ -1213,19 +1220,35 @@ fn collect_cont_ops(
                 }
                 crate::core::Probe::Wild => false,
             };
-            collect_cont_ops(db, then_, out);
-            collect_cont_ops(db, els, out);
+            collect_cont_ops(db, scrutinee, then_, out);
+            collect_cont_ops(db, scrutinee, els, out);
         }
         crate::core::SumCont::Switch { path, arms } => {
-            out.insert(OP_SUM_DISC);
+            // Mirror `push_discriminant` EXACTLY: the switched sub-value's discriminant is read via
+            // `sum-disc` for a BOXED sum, but an ENUM-DISC value needs none at the top level (it IS the
+            // raw i32) and `get-int` (+ `i32.wrap_i64`, a core op) at a NESTED position. Over-reporting
+            // `sum-disc` here — as the old unconditional insert did — declares a DEAD runtime import for a
+            // program whose only match is on an all-nullary enum (now a bare i32), forcing a needless
+            // `heap` linkage. Compute the sub-value's type at `path` and branch as the emit does.
+            let root = type_of(db, scrutinee);
+            let sub = ty_at_path(db, &root, path);
+            let sub_is_enum = ty_is_enum_disc(db, &sub);
             for step in path {
                 match step {
                     crate::core::PathStep::Payload => out.insert(OP_SUM_PAYLOAD),
                     crate::core::PathStep::Elem(_) => out.insert(OP_ARR_GET),
                 };
             }
+            if sub_is_enum {
+                // A NESTED enum-disc was boxed as an int → `get-int` recovers it (the wrap is a core op).
+                if !path.is_empty() {
+                    out.insert(OP_GET_INT);
+                }
+            } else {
+                out.insert(OP_SUM_DISC);
+            }
             for arm in arms {
-                collect_cont_ops(db, &arm.cont, out);
+                collect_cont_ops(db, scrutinee, &arm.cont, out);
             }
         }
     }
