@@ -1103,7 +1103,7 @@ todo	an empty quote is rejected, not a crash
 todo	an explicit annotation overrides the default-integer pragma
 todo	an export and a like-named metadata key do not collide
 todo	an integer width above the 64-bit ceiling is rejected
-todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
+pass	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
 todo	an operation on mismatched types is rejected at compile time

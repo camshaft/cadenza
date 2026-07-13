@@ -10790,6 +10790,27 @@ mod stage1 {
     }
 
     #[test]
+    fn an_intra_program_handler_interposes_on_a_delegated_effect_and_forwards() {
+        // E2h-interpose: the entrypoint delegates `ask` to the host, but an inner handler INTERCEPTS every
+        // `ask.ask`, records it via the intra-program `Count.tick`, and RE-PERFORMS `(ask.ask)` in tail
+        // position (forwarding). The arm body `(do (Count.tick) (resume (ask.ask) s))` is a
+        // do-wrapped resume — the perform arm peels the trailing resume, keeps the `Count.tick` statement
+        // (folded to the OUTER Count handler), and forwards the re-performed `ask.ask` to the host (a
+        // `Core::HostCall`, since no nearer handler discharges it). `(+ (ask.ask) (ask.ask))` with host
+        // responses 3,4 → 7 (2 observed ask.ask calls). The host is unbound in-process, so assert it
+        // COMPILES; the corpus gate runs the value + host-call sequence.
+        let src = "(do (effect ask (op ask (-> Unit Int64))) (effect Count (op tick (-> Unit Unit))) \
+                   (def (main) (host (ask) \
+                     (handle unit ((Count.tick (u) s (resume unit s))) \
+                       (handle unit ((ask.ask () s (do (Count.tick) (resume (ask.ask) s)))) \
+                         (+ (ask.ask) (ask.ask)))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "an interposing handler that forwards a delegated effect must compile"
+        );
+    }
+
+    #[test]
     fn a_recursive_fn_threads_two_nested_handlers_states_at_once() {
         // E3h-B: a recursive `loop` runs under TWO nested stateful handlers — `A` (countdown seeded 3,
         // `tick` threads `s-1`) governs recursion depth, `B` (accumulator seeded 0, `bump` threads `s+10`)
