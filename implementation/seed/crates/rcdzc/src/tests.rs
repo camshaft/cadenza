@@ -2683,6 +2683,81 @@ mod runtime_ops {
     }
 
     #[test]
+    fn unsigned_comparison_with_zero_is_simplified() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(< u 0)` unsigned → constant FALSE, no runtime compare.
+        let lt0 = lir("(: u UInt64)", "(< u 0)");
+        assert!(
+            lt0.contains(&Lir::ConstI32(0))
+                && !lt0.iter().any(|i| matches!(i, Lir::I64LtU | Lir::I32LtU)),
+            "unsigned (< u 0) folds to false, no lt_u; got {lt0:?}"
+        );
+        // `(>= u 0)` unsigned → constant TRUE.
+        let ge0 = lir("(: u UInt64)", "(>= u 0)");
+        assert!(
+            ge0.contains(&Lir::ConstI32(1))
+                && !ge0.iter().any(|i| matches!(i, Lir::I64GeU | Lir::I32GeU)),
+            "unsigned (>= u 0) folds to true, no ge_u; got {ge0:?}"
+        );
+        // `(<= u 0)` unsigned → `u == 0` → `eqz` (no le_u).
+        let le0 = lir("(: u UInt64)", "(<= u 0)");
+        assert!(
+            le0.contains(&Lir::I64Eqz) && !le0.iter().any(|i| matches!(i, Lir::I64LeU)),
+            "unsigned (<= u 0) folds to eqz; got {le0:?}"
+        );
+        // SIGNED must NOT fold — a signed value can be < 0, so `lt_s` stays.
+        let s = lir("(: x Int64)", "(< x 0)");
+        assert!(
+            s.iter().any(|i| matches!(i, Lir::I64LtS)),
+            "signed (< x 0) keeps lt_s (not folded); got {s:?}"
+        );
+
+        // VALUE PARITY over runtime unsigned inputs (the fold must agree with the true comparison).
+        assert!(!run::<bool>("(: u UInt64)", "(< u 0)", &[Val::U64(0)]));
+        assert!(!run::<bool>("(: u UInt64)", "(< u 0)", &[Val::U64(5)]));
+        assert!(!run::<bool>(
+            "(: u UInt64)",
+            "(< u 0)",
+            &[Val::U64(u64::MAX)]
+        ));
+        assert!(run::<bool>("(: u UInt64)", "(>= u 0)", &[Val::U64(0)]));
+        assert!(run::<bool>(
+            "(: u UInt64)",
+            "(>= u 0)",
+            &[Val::U64(u64::MAX)]
+        ));
+        assert!(run::<bool>("(: u UInt64)", "(<= u 0)", &[Val::U64(0)]));
+        assert!(!run::<bool>("(: u UInt64)", "(<= u 0)", &[Val::U64(1)]));
+        // The LEFT-const mirror computes identically.
+        assert!(run::<bool>("(: u UInt64)", "(<= 0 u)", &[Val::U64(9)]));
+        assert!(!run::<bool>("(: u UInt64)", "(> 0 u)", &[Val::U64(9)]));
+    }
+
+    #[test]
     fn if_with_one_zero_branches_materializes_the_boolean() {
         // `(if c 1 0)` is the condition coerced to the result's integer width — `(if c 0 1)` its
         // negation — with NO `select` and NO branch. The emitted shape is checked in select.rs's Lir

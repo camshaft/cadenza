@@ -4989,6 +4989,16 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 return Core::ConstBool(eq);
             }
             if is_scalar(db, args[0]) && is_scalar(db, args[1]) {
+                // UNSIGNED-vs-ZERO simplification: an UNSIGNED value `u` lives in `[0, MAX]`, so a `< 0`
+                // test is UNSATISFIABLE and a `>= 0` test is a TAUTOLOGY — both fold to a constant with no
+                // runtime compare. And `u <= 0` holds iff `u == 0`, so it rewrites to the `= 0` the
+                // backend already selects to `eqz` (one instruction). Symmetric with the constant on the
+                // LEFT (`0 > u`, `0 <= u`, `0 >= u`). `> 0` (= `u != 0`) is left as the native `gt_u` — no
+                // `Ne` prim exists and `gt_u` is already one instruction, so nothing is gained. Only fires
+                // when the RUNTIME operand's solved type is a definite UNSIGNED integer.
+                if let Some(folded) = fold_unsigned_vs_zero(db, op, args[0], args[1]) {
+                    return folded;
+                }
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "comparison stays runtime (scalar operands)");
                 Core::Compare {
                     op,
@@ -5018,6 +5028,65 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 ))
             }
         }
+    }
+}
+
+/// Simplify an ordering comparison of a DEFINITELY-UNSIGNED runtime scalar against the constant `0`,
+/// exploiting the unsigned domain `[0, MAX]`:
+///  - `u < 0` / `0 > u` → `false` (nothing is below 0);
+///  - `u >= 0` / `0 <= u` → `true` (everything is at least 0);
+///  - `u <= 0` / `0 >= u` → `u == 0` (a `Core::Compare Eq`, which the backend selects to `eqz`).
+///
+/// `u > 0` / `0 < u` (= `u != 0`) is deliberately NOT folded: there is no `Ne` prim and the native
+/// `gt_u`/`lt_u` is already one instruction, so a rewrite gains nothing. Returns `None` unless exactly one
+/// operand is the constant `0` and the OTHER's solved type is `Sign::Fixed(false)` (a resolved unsigned
+/// integer — a deferred/variable sign grounds to SIGNED, where `< 0` is genuinely reachable, so it must
+/// NOT fold). `Prim::Eq` is excluded (its `= 0` is already the `eqz` peephole and needs no help here).
+fn fold_unsigned_vs_zero(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<Core> {
+    if matches!(op, Prim::Eq) {
+        return None;
+    }
+    // Identify (runtime unsigned operand, whether it is the LEFT operand). The constant-0 side must be a
+    // literal `0`; the other side must have a resolved UNSIGNED type.
+    let is_zero = |db: &mut Db, id: StructId| matches!(core_of(db, id), Core::ConstInt(v) if v.to_i64() == Some(0));
+    let unsigned = |db: &mut Db, id: StructId| matches!(crate::infer::type_of(db, id), crate::ty::Ty::Int(it) if it.sign == crate::ty::Sign::Fixed(false));
+    // `u_on_left` records the operand order so `<`/`>` map to the right constant/rewrite.
+    let (u, u_on_left) = if is_zero(db, rhs) && unsigned(db, lhs) {
+        (lhs, true) // `(op u 0)`
+    } else if is_zero(db, lhs) && unsigned(db, rhs) {
+        (rhs, false) // `(op 0 u)`
+    } else {
+        return None;
+    };
+    // Normalize to the `(cmp u 0)` sense: the LEFT-const forms are the mirror (`0 < u` ≡ `u > 0`).
+    let cmp = match (op, u_on_left) {
+        (Prim::Lt, true) | (Prim::Gt, false) => Prim::Lt, // u < 0
+        (Prim::Ge, true) | (Prim::Le, false) => Prim::Ge, // u >= 0
+        (Prim::Le, true) | (Prim::Ge, false) => Prim::Le, // u <= 0
+        (Prim::Gt, true) | (Prim::Lt, false) => Prim::Gt, // u > 0 — not folded
+        _ => return None,
+    };
+    match cmp {
+        Prim::Lt => {
+            trace!(target: "rcdzc::fold", node = u.0, "unsigned `< 0` is always false");
+            Some(Core::ConstBool(false))
+        }
+        Prim::Ge => {
+            trace!(target: "rcdzc::fold", node = u.0, "unsigned `>= 0` is always true");
+            Some(Core::ConstBool(true))
+        }
+        Prim::Le => {
+            // `u <= 0` ⇔ `u == 0`. Emit `= u 0`; the backend's eq-zero peephole makes it `eqz`. Reuse the
+            // ORIGINAL zero-constant occurrence as the rhs so its width grounds to `u`'s type at selection.
+            let zero = if u_on_left { rhs } else { lhs };
+            trace!(target: "rcdzc::fold", node = u.0, "unsigned `<= 0` folds to `== 0`");
+            Some(Core::Compare {
+                op: Prim::Eq,
+                lhs: u,
+                rhs: zero,
+            })
+        }
+        _ => None, // `> 0` — left as the native compare.
     }
 }
 
