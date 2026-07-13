@@ -6857,6 +6857,37 @@ mod match_engine {
     }
 
     #[test]
+    fn a_duplicate_record_field_reports_one_error_not_two() {
+        // `(record (a 1) (a 2))`'s duplicate-field CDZ0201 was reported TWICE — once anchored at a user
+        // node, once at a synthesized node whose origin `sanitize_origin` stripped to unanchored. Running
+        // sanitize BEFORE `dedup_faults` lets the unanchored copy collapse against its anchored twin, so
+        // one duplicate field = ONE error.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) (record (a 1) (a 2))) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == crate::abi::Severity::Error && d.code.as_deref() == Some("CDZ0201")
+            })
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "one duplicate field = one CDZ0201, got: {:?}",
+            out.diagnostics
+        );
+    }
+
+    #[test]
     fn applying_an_applyable_head_is_not_flagged_as_a_non_function() {
         // The guard must NOT over-reject: a head that is applyable via a `(meta apply)` PRIMITIVE (the
         // `tuple`/`record`/`list` compound-value alias, a type ctor) has no type SCHEME but IS applyable,
