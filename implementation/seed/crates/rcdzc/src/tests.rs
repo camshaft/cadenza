@@ -7503,6 +7503,59 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_63_bit_wide_range_does_not_overflow_the_range_lattice() {
+        // ⚠ REGRESSION (compiler panic in a CHECKED build): the range lattice computed `(1i64 << bits) - 1`
+        // at several sites, but at `bits == 63` the shift `1i64 << 63` is `i64::MIN`, so `− 1` OVERFLOWS
+        // (a debug/`release-debug` panic; release silently wrapped to the correct i64::MAX). A `UInt64 >> 1`
+        // has range `[0, 2^63-1]` (bits = 64 − 1 = 63) — the `Shr` arm's type-width bound — so ANY program
+        // shaped `(>> x:UInt64 1)` crashed the compiler. Also reachable via `is_full_mask_for` (a value
+        // whose range reaches `2^63-1` → bits 63) and `resolved_int_bounds` (a `UInt63`). All three now
+        // special-case `bits/w == 63` → `i64::MAX`. This test COMPILES each shape; a panic fails the build.
+        use crate::db::Db;
+        let compiles = |params: &str, body: &str| {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            // The panic was inside selection's range queries — this call is what used to abort.
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select");
+        };
+        // `UInt64 >> 1` → range `[0, 2^63-1]`, bits = 63 (the `Shr` type-width arm). Used to panic.
+        compiles("(: x UInt64)", "(: (>= (>> x 1) 0) Bool)");
+        // The 63-bit range flowing into `is_full_mask_for` (mask covering `[0, 2^63-1]`).
+        compiles("(: x UInt64)", "(: (& (>> x 1) 9223372036854775807) UInt64)");
+
+        // VALUE PARITY at the boundary: `(>= (>> x 1) 0)` is a tautology (a logical shift of a nonneg is
+        // nonneg); `(>> x 1)` halves; the covering mask is a no-op.
+        assert_eq!(run::<u64>("(: x UInt64)", "(>> x 1)", &[Val::U64(100)]), 50);
+        assert_eq!(
+            run::<i64>("(: x UInt64)", "(if (>= (>> x 1) 0) 111 222)", &[Val::U64(100)]),
+            111
+        );
+        assert_eq!(
+            run::<u64>("(: x UInt64)", "(& (>> x 1) 9223372036854775807)", &[Val::U64(9223372036854775806)]),
+            4611686018427387903
+        );
+    }
+
+    #[test]
     fn a_logical_shift_dropping_all_significant_bits_folds_to_zero() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;

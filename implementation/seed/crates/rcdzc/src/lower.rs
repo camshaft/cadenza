@@ -6577,7 +6577,14 @@ fn is_full_mask_for(db: &mut Db, val: StructId, mask_core: &Core) -> bool {
     let Some(bits) = unsigned_value_bits(db, val) else {
         return false; // not a provably-nonnegative value with a known ≤63-bit range.
     };
-    let low = (1i64 << bits) - 1; // 2^bits - 1, all bits the value can possibly set
+    // `2^bits − 1` — all bits the value can possibly set. `bits` is `1..=63`; at `bits == 63` the shift
+    // `1i64 << 63` is `i64::MIN`, so `− 1` would OVERFLOW in a checked build (a latent panic) — that case
+    // is exactly `i64::MAX` (all 63 low bits, the whole nonneg i64 range), so special-case it.
+    let low = if bits >= 63 {
+        i64::MAX
+    } else {
+        (1i64 << bits) - 1
+    };
     (m & low) == low
 }
 
@@ -7381,7 +7388,11 @@ fn resolved_int_bounds(it: crate::ty::IntTy) -> Option<(Option<i64>, Option<i64>
     } else if w >= 64 {
         Some((Some(0), None)) // unsigned 64: min 0 folds; max 2^64-1 is not i64-representable → None
     } else {
-        Some((Some(0), Some((1i64 << w) - 1))) // w < 64: 2^w - 1 fits i64
+        // unsigned `w < 64`: max is `2^w − 1`, which fits i64. At `w == 63` the shift `1i64 << 63` is
+        // `i64::MIN`, so `− 1` would OVERFLOW in a checked build — `2^63 − 1` IS `i64::MAX`, so use it
+        // directly (a `UInt63`'s max); every `w ≤ 62` uses the shift.
+        let max = if w == 63 { i64::MAX } else { (1i64 << w) - 1 };
+        Some((Some(0), Some(max)))
     }
 }
 
@@ -7846,11 +7857,14 @@ fn arith_range(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<(i
                         return None;
                     };
                     let bits = (w as i64) - k;
-                    // `bits` in `1..=63` → `2^bits − 1` fits i64; `bits ≥ 64` (or ≤ 0) → not representable.
-                    if (1..=63).contains(&bits) {
-                        Some((0, Some((1i64 << bits) - 1)))
-                    } else {
-                        Some((0, None)) // still nonneg, but no finite i64 upper bound
+                    // `bits` in `1..=62` → `2^bits − 1` fits i64 and is computed by the shift. `bits == 63`
+                    // is exactly `2^63 − 1 = i64::MAX` (the shift `1i64 << 63` is `i64::MIN`, so `− 1` would
+                    // OVERFLOW in a checked build — a latent panic; handle it directly). `bits ≥ 64` or `≤ 0`
+                    // → not i64-representable, so nonneg but no finite upper bound.
+                    match bits {
+                        1..=62 => Some((0, Some((1i64 << bits) - 1))),
+                        63 => Some((0, Some(i64::MAX))),
+                        _ => Some((0, None)), // still nonneg, but no finite i64 upper bound
                     }
                 }
             }
