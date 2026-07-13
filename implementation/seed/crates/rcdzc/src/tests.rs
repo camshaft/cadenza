@@ -28634,6 +28634,7 @@ mod closure_host_resource {
             &imports,
             &makes,
             &consumers,
+            &[],
             lifted_type_idx,
             &layout,
         )
@@ -28949,7 +28950,11 @@ mod closure_host_resource {
             },
         ];
         let core = crate::backend::wasm::serialize::distinct_sig_roundtrip_core_module(
-            &funcs, &imports, &groups, &layout,
+            &funcs,
+            &imports,
+            &groups,
+            &[],
+            &layout,
         )
         .expect("distinct-sig round-trip core serializes");
         let mut validator =

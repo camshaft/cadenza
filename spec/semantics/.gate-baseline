@@ -194,6 +194,9 @@ pass	a destructuring let over a runtime value binds its parts
 pass	a different function argument through the same recursive higher-order function
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
 pass	a dimensionless quantity carries the group identity Unit.one
+pass	a distinct-signature round-trip alongside a plain export — the Int64->Bool side runs
+pass	a distinct-signature round-trip alongside a plain export — the Int64->Int64 side runs
+pass	a distinct-signature round-trip alongside a plain export — the plain export runs
 pass	a distinct-signature round-trip applies the Int64->Bool closure
 pass	a distinct-signature round-trip applies the Int64->Int64 closure
 pass	a distinct-signature round-trip's Bool closure on a nonzero input
@@ -555,6 +558,9 @@ pass	a returned runtime string with a multi-byte scalar renders the scalar verba
 pass	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
 pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
+pass	a round-trip alongside a parameterized plain export applies its argument
+pass	a round-trip alongside a plain export — the plain export runs
+pass	a round-trip alongside a plain export — the round-trip still works
 pass	a round-trip at a widened scalar width (UInt32)
 pass	a round-trip consumer applies the closure in a match wildcard arm
 pass	a round-trip consumer applies the closure only in the taken if-branch
