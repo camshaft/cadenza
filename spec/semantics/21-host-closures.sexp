@@ -518,3 +518,42 @@
               (export mk) (export app)))
   (call   app (: 100 UInt32) (: 7 UInt32))
   (output (: 107 UInt32)))
+
+; STRESS the multi-export paths at higher fan-out — THREE distinct signatures (three resource types, one
+; with a narrower width) and FOUR same-signature exports (one resource, four makes sharing the call) — plus
+; a consumer whose ONLY use of the handed-back closure is to apply it to an INTERNAL constant. Adversarial
+; witnesses that the grouping/sharing machinery holds past the two-export cases above.
+
+(case "three distinct closure signatures cross as three resource types"
+  (doc    "`p : (-> Int64 Int64)`, `q : (-> Int64 Bool)`, `r : (-> Int32 Int32)` — THREE distinct
+           signatures (note `r`'s narrower Int32 width) → three resource types. Calling `r` drives its
+           `make`+`call(5)` = 10. Pins that grouping-by-signature scales past two groups and mixes widths.")
+  (input  (do (def (p) (fn ((: x Int64)) (+ x 1)))
+              (def (q) (fn ((: x Int64)) (= x 0)))
+              (def (r) (fn ((: x Int32)) (* x 2)))
+              (export p) (export q) (export r)))
+  (call   r (: 5 Int32))
+  (output (: 10 Int32)))
+
+(case "four same-signature closure exports share one resource"
+  (doc    "`a`,`b`,`cc`,`dd` are all `(-> Int64 Int64)` → ONE resource type with four `make-<name>`s sharing
+           the one `call`. Calling `cc` drives `make-cc()` then the shared `call(10)` = 13. Pins that the
+           shared-call multi-export scales past two same-signature exports.")
+  (input  (do (def (a) (fn ((: x Int64)) (+ x 1)))
+              (def (b) (fn ((: x Int64)) (+ x 2)))
+              (def (cc) (fn ((: x Int64)) (+ x 3)))
+              (def (dd) (fn ((: x Int64)) (+ x 4)))
+              (export a) (export b) (export cc) (export dd)))
+  (call   cc (: 10 Int64))
+  (output (: 13 Int64)))
+
+(case "a consumer applies the handed-back closure to an internal constant"
+  (doc    "`(def (app (: g (-> Int64 Int64))) (g 99))` — the consumer takes ONLY a closure param and applies
+           it to a fixed 99 (no scalar param of its own). With `mk(1)` producing `(+ x 1)`, the host `mk(1)`
+           → a handle → `app(handle)` = (g 99) = 99 + 1 = 100. Pins a consumer whose sole boundary param is
+           the closure (the arg it applies is internal, not a boundary scalar).")
+  (input  (do (def (mk (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (app (: g (-> Int64 Int64))) (g 99))
+              (export mk) (export app)))
+  (call   app (: 1 Int64))
+  (output (: 100 Int64)))

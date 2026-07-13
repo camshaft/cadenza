@@ -145,6 +145,7 @@ pass	a constructor whose payload is a constructor keeps the outer variant tag
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
 pass	a consumer applies TWO handed-back closures
 pass	a consumer applies the handed-back closure inside a larger expression
+pass	a consumer applies the handed-back closure to an internal constant
 pass	a consumer returns a different type than the closure it applies
 pass	a consumer takes the handed-back closure as its SECOND parameter
 pass	a correctly-annotated function parameter is accepted
@@ -914,6 +915,7 @@ pass	float division that does not divide evenly rounds to nearest
 pass	float multiplication uses the float operator
 pass	float subtraction uses the float operator
 pass	floating-point uses the fixed rounding mode
+pass	four same-signature closure exports share one resource
 pass	functions are single-arity and curried
 pass	greater-than at the integer extremes is signed
 pass	greater-than comparison
@@ -1151,6 +1153,7 @@ pass	the value-yielding remove reports the value it dropped
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	the width-indexed and aliased float annotations of one value do not conflict
 pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly
+pass	three distinct closure signatures cross as three resource types
 pass	three distinct closure signatures cross as three resource types
 pass	true is greater than false
 pass	true is not less than false
