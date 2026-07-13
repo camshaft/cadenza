@@ -23,8 +23,10 @@ pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 holds a value above the signed 64-bit maximum
+pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare conditional keyword is rejected, not a crash
+pass	a bare equality keyword is rejected, not a crash
 pass	a bare nullary constructor is the nullary sum value
 pass	a binary integer literal
 pass	a binary literal with digit separators
@@ -61,6 +63,7 @@ pass	a closure argument is another closure's result
 pass	a closure captures another closure and applies it
 pass	a closure captures the binding in scope where it was created
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
+pass	a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF
 pass	a closure carried in a USER-declared sum's payload is extracted and applied
 pass	a closure carried in a sum payload is extracted by a match and applied
 pass	a closure factory's returned capturing closure is applied at the call site
@@ -192,6 +195,7 @@ pass	a let-bound variable derived from a runtime parameter passed as a call argu
 pass	a let-bound variable is in scope inside a boolean connective operand
 pass	a let-bound variable passed as a function-call argument resolves at the call site
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
+pass	a linear non-tail recursion over a non-associative operator preserves its exact result
 pass	a list annotated with the wrong element type is rejected
 pass	a list built by a runtime-length loop has that many elements
 pass	a list chosen by a runtime if is length-measured without emitting invalid wasm
@@ -429,6 +433,11 @@ pass	a sum-type value is deconstructed by an exhaustive match
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a tail-recursive function returning a tuple is tuple-valued
 pass	a three-element runtime tuple is returned as a result
+pass	a top-level sum value definition may reference a sum value defined later
+pass	a top-level value definition binds a name usable by the program's functions
+pass	a top-level value definition binds a record projected by the program's functions
+pass	a top-level value definition binds a sum value matched by the program's functions
+pass	a top-level value definition may reference a value defined later in the module
 pass	a trailing digit separator is a malformed literal, not the digits with it dropped
 pass	a transformation maps a syntax tree to a syntax tree and preserves meaning
 pass	a transformation observably rewrites the tree, not just its value
@@ -836,8 +845,6 @@ todo	a NaN nested in a list compares equal under the canonical byte form
 todo	a NaN nested in a sum payload compares equal under the canonical byte form
 todo	a NaN nested in a tuple compares equal under the canonical byte form
 todo	a UInt32 addition that overflows the 32-bit width traps
-todo	a bare arithmetic keyword is rejected, not a crash
-todo	a bare equality keyword is rejected, not a crash
 todo	a bin arm whose fixed-width segment overruns the input falls through
 todo	a bin pattern binds an integer read from a fixed-width segment
 todo	a bin pattern must consume the whole scrutinee or it does not match
@@ -970,8 +977,6 @@ todo	a symbol is constructed from a string
 todo	a symbol's identity is its content, not how the content was derived
 todo	a tag-length-value record round-trips through construct then match
 todo	a tail-recursive string accumulator builds a runtime string and its length is measured
-todo	a top-level value definition binds a name usable by the program's functions
-todo	a top-level value definition binds a record projected by the program's functions
 todo	a trailing bytes segment accepts the leftover the fixed segments leave
 todo	a transformation over the built-in Ast composes across a function call
 todo	a truncating conversion to an unusual width keeps that width's low bits

@@ -779,6 +779,23 @@
   (call   main (: 5 Int64))
   (output (: 3 Int64)))
 
+(case "accumulator introduction threads a transformed extra parameter through a multi-parameter recursion"
+  (doc    "Accumulator introduction generalizes to a MULTI-parameter linear recursion: an extra parameter
+           that is TRANSFORMED at each recursive step (not merely carried) must be threaded correctly by
+           the loop. `(f n m) = if n=0 then 0 else m + (f (n-1) (m*2))` sums a geometric sequence — each
+           step adds the current `m` and doubles it for the next: f(4,1) = 1 + 2 + 4 + 8 = 15 = m·(2^n − 1).
+           The transform must carry `m` through the accumulator loop applying the per-step `m*2` in the
+           right order; a rewrite that dropped the transformation (kept `m` constant) would compute n·m = 4,
+           and one that mis-ordered the doublings would differ. Pins that a per-step-transformed threaded
+           parameter is preserved by the multi-parameter accumulator loop, the multi-param extension of the
+           single-parameter accumulator cases.")
+  (input  (do
+            (def (f (: n Int64) (: m Int64)) (if (= n 0) 0 (+ m (f (- n 1) (* m 2)))))
+            (def (main (: n Int64) (: m Int64)) (f n m))
+            (export main)))
+  (call   main (: 4 Int64) (: 1 Int64))
+  (output (: 15 Int64)))
+
 ; --- Two functions may recurse through EACH OTHER (mutual recursion) ----------------------
 ; core-semantics.md §Recursion + §A Function Is A First-Class Value: recursion need not be
 ; self-recursion — two top-level defs may call each other, each in scope in the other's body (the same

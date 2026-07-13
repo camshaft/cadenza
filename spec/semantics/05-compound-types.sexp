@@ -688,6 +688,38 @@
   (input  (let ((s (Sign.Pos unit))) s))
   (output (: (Pos unit) Sign)))
 
+(case "a top-level value definition binds a sum value matched by the program's functions"
+  (doc    "The SUM companion of the scalar/record top-level value definitions (11-modules.sexp): a
+           `(def …)` with no signature binds a VALUE, and that value may be a user SUM. `(def chosen (C.G
+           unit))` binds a `C` variant at the module top level, and `(main)` matches it → 2. This is the
+           shape a Cadenza-authored compiler's top-level CONSTANT config/AST node takes — a variant bound
+           once and read by the functions (`(def default-mode (Mode.Fast unit))`), the sum analogue of a
+           top-level opcode record. Pins that a top-level value definition binding a sum is in scope for
+           every function and dispatches by its variant, exactly as a bound record projects.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C (R unit) (G unit) (B unit))
+            (def chosen (C.G unit))
+            (def (main) (match chosen ((C.R _) 1) ((C.G _) 2) ((C.B _) 3)))
+            (export main)))
+  (output (: 2 Int64)))
+
+(case "a top-level sum value definition may reference a sum value defined later"
+  (doc    "The sum companion of `a top-level value definition may reference a value defined later`
+           (11-modules.sexp): a module's value definitions form a mutually-visible scope, so a sum-valued
+           definition may transform a name bound by a LATER definition. `(def derived (match base …))`
+           reads `base`, defined AFTER it as `(def base (Some 10))`; the module resolves `base` regardless
+           of order, so `derived` = `(Some 20)` and `main` = 20. Pins that order-independent value
+           resolution holds when the referenced value — and the referencing one — are SUMS matched and
+           rebuilt (a compiler resolving names strictly top-to-bottom would report `base` unbound in
+           `derived`'s body), the forward visibility the AST-node tables of a self-hosted compiler rely on.")
+  (input  (do
+            (def derived (match base ((Some x) (Some (* x 2))) (None None)))
+            (def base (Some 10))
+            (def (main) (match derived ((Some v) v) (None 0)))
+            (export main)))
+  (output (: 20 Int64)))
+
 ; A compound value (tuple/record/sum) whose ELEMENT is a RUNTIME value — a function parameter, a
 ; call result — must be producible as a program RESULT, not only projectable. The value crosses the
 ; run boundary through the resource-with-display output ABI; a generation that does not yet render a
