@@ -4286,6 +4286,35 @@ mod match_engine {
     }
 
     #[test]
+    fn bytes_at_of_a_runtime_element_widens_the_byte_to_the_option_payload() {
+        // ⚠ INVALID WASM regression: `(Bytes.at (Bytes.of (list n)) 0)` with `n : UInt8` a RUNTIME element,
+        // read at a CONSTANT index, mis-emitted. The `Bytes.at` fold saw a `Core::BytesOf` + constant
+        // index and used the raw element occurrence as the `Some` payload — correct for a CONSTANT byte
+        // (its core folds through the width), but a runtime `UInt8` element is an i32 value placed into the
+        // i64 `Some(Int64)` payload UN-WIDENED → "expected i64, found i32". Fixed: fold to `Some` only for
+        // a CONSTANT element; a runtime element falls through to the runtime `Core::BytesAt`, which
+        // zero-extends the byte to the Int64 payload width. `n = 5` → the byte at 0 is 5.
+        let src = "(module m (def (main (: n UInt8)) \
+                     (match (Bytes.at (Bytes.of (list n)) 0) ((Some x) x) ((None _) -1))) (export main))";
+        let bytes = component(src);
+        wasmparser::validate(&bytes).expect("a runtime-element Bytes.at read must emit valid wasm");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping runtime-element bytes-at run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, "5", "the runtime-stored byte reads back as 5"),
+            cdz_run::Outcome::Trap(t) => panic!("runtime-element bytes-at run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn runtime_bytes_concat_slice_compact_under_wasmtime() {
         // The runtime `Core::BytesConcat`/`BytesSlice`/`BytesCompact` paths (not folds): each threads a
         // byte sequence through a fn PARAMETER so the op actually runs, and reads a SCALAR out (via
@@ -13826,3 +13855,4 @@ mod debug_info {
         );
     }
 }
+

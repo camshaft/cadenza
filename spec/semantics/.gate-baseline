@@ -661,6 +661,7 @@ pass	projecting an if-of-tuples does not evaluate the untaken branch's unproject
 pass	pushing an element of a different type onto a list is a type error
 pass	pushing an element onto a list appends it
 pass	reaching an effect neither handled nor delegated is rejected at compile time
+pass	reading a byte from a sequence built with a RUNTIME element widens it to the Option payload
 pass	reading a member from an if-of-records resolves each branch's field by its own sorted order
 pass	record equality is independent of the order fields are written
 pass	record fields render in canonical (key-sorted) order regardless of source order

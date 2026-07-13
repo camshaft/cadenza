@@ -4450,16 +4450,26 @@ fn lower_bytes_at(db: &mut Db, id: StructId, bytes: StructId, index: StructId) -
             "Bytes.at result is not the built-in Option sum",
         ));
     };
-    // FOLD a constant `Bytes.of` indexed by a constant integer.
+    // FOLD a `Bytes.of` indexed by a constant integer. An OUT-OF-BOUNDS constant index folds to `None`
+    // regardless of the elements (the length is statically known). An IN-BOUNDS index folds to `Some
+    // <byte>` ONLY when that element is a compile-time CONSTANT: the `Some` payload is an `Int64`, and a
+    // constant byte's core folds through that width, but a RUNTIME element occurrence is a `UInt8` (an i32
+    // value) that would sit in the i64 `Some(Int64)` payload UN-WIDENED → invalid wasm ("expected i64,
+    // found i32"). So a runtime-element in-bounds read falls through to the runtime `Core::BytesAt` below,
+    // which reads the byte and zero-extends it to the payload's i64 width. (`Bytes.at (Bytes.of (list 5))
+    // 0)` folds; `Bytes.at (Bytes.of (list n)) 0` with `n` runtime takes the runtime read.)
     if let (Core::BytesOf { elems }, Core::ConstInt(i)) = (core_of(db, bytes), core_of(db, index)) {
         match i.to_i64() {
             Some(n) if n >= 0 && (n as usize) < elems.len() => {
-                // The byte at `n` is a constant `Int64` element occurrence — its own core is the payload.
-                trace!(target: "rcdzc::fold", node = id.0, index = n, "Bytes.at folds to Some (in-bounds constant index)");
-                return Core::SumNew {
-                    disc: disc_some,
-                    payloads: vec![elems[n as usize]],
-                };
+                if matches!(core_of(db, elems[n as usize]), Core::ConstInt(_)) {
+                    trace!(target: "rcdzc::fold", node = id.0, index = n, "Bytes.at folds to Some (in-bounds constant index + constant element)");
+                    return Core::SumNew {
+                        disc: disc_some,
+                        payloads: vec![elems[n as usize]],
+                    };
+                }
+                // A runtime element at an in-bounds constant index — fall through to the runtime read
+                // (which widens the byte to the Int64 payload); the constant fold would not widen it.
             }
             _ => {
                 trace!(target: "rcdzc::fold", node = id.0, "Bytes.at folds to None (out-of-bounds constant index)");
@@ -4470,7 +4480,7 @@ fn lower_bytes_at(db: &mut Db, id: StructId, bytes: StructId, index: StructId) -
             }
         }
     }
-    // A runtime bytes or runtime index — emit the bounds-checked runtime read.
+    // A runtime bytes/element or runtime index — emit the bounds-checked runtime read.
     Core::BytesAt {
         bytes,
         index,
