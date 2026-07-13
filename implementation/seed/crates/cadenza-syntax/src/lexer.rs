@@ -73,6 +73,16 @@ impl<'a> Lexer<'a> {
             // `#\…` is a char literal (one Unicode scalar); a bare `#` is the map/raw-list sigil.
             '#' if self.peek() == Some('\\') => return Some(self.char_lit(a)),
             '#' => Kind::Hash,
+            // `..` is the rest/spread marker (one token); a lone `.` is member access. A float's
+            // fractional `.` is consumed inside `number` (it needs a digit after the `.`), so it never
+            // reaches here — `1..n` therefore lexes `1` `..` `n`, not `1.` `.n`.
+            '.' if self.peek() == Some('.') => {
+                let b = self.bump().unwrap();
+                return Some(Token {
+                    kind: Kind::DotDot,
+                    span: a.span.merge(b.span),
+                });
+            }
             '.' => Kind::Dot,
             ':' => Kind::Colon,
             ';' => Kind::Semi,
@@ -646,6 +656,29 @@ mod tests {
     #[test]
     fn dotted_member_is_separate_tokens() {
         assert_eq!(kinds("Sign.Neg"), vec![Kind::Ident, Kind::Dot, Kind::Ident]);
+    }
+
+    #[test]
+    fn dotdot_is_one_token_a_lone_dot_is_member() {
+        // `..` is the rest/spread marker (a single `DotDot`); a lone `.` is member access.
+        assert_eq!(kinds(".."), vec![Kind::DotDot]);
+        assert_eq!(kinds("."), vec![Kind::Dot]);
+        assert_eq!(
+            kinds("[x, .. rest]"),
+            vec![
+                Kind::LBracket,
+                Kind::Ident,
+                Kind::Comma,
+                Kind::DotDot,
+                Kind::Ident,
+                Kind::RBracket
+            ]
+        );
+        // A float's fractional `.` is consumed inside `number` (needs a digit after), so `1..n`
+        // lexes `1` `..` `n` — the range/rest reading — not `1.` `.n`.
+        assert_eq!(kinds("1..n"), vec![Kind::Int, Kind::DotDot, Kind::Ident]);
+        // `...` is `..` then `.` (greedy two-char), harmless — no collection uses it.
+        assert_eq!(kinds("..."), vec![Kind::DotDot, Kind::Dot]);
     }
 
     #[test]

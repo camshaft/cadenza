@@ -162,6 +162,15 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                     // `resolve_subtree`) never reports it as a spurious unbound name.
                     trace!(target: "rcdzc::resolve", node = id.0, %n, "name → list-pattern element binder (inert)");
                     Resolved::Unit
+                } else if is_map_pattern_binder_occurrence(db, id) {
+                    // A `(map (k v) … .. rest)` match-pattern VALUE binder (`v`) or REST binder (`rest`) IN
+                    // THE PATTERN position — a binding, not a value (a body reference resolves to a
+                    // `MapField` reading the scrutinee, `binder_in` Case M). Inert here (like a list-pattern
+                    // element binder), so walking the arm's pattern never reports it unbound. The KEY
+                    // position `k` is NOT caught here — it is an ordinary value expression (a literal / a
+                    // scoped name), so it resolves normally (the map-key-is-a-value rule, on the pattern side).
+                    trace!(target: "rcdzc::resolve", node = id.0, %n, "name → map-pattern binder (inert)");
+                    Resolved::Unit
                 } else {
                     resolve_name(db, id, &n)
                 }
@@ -816,6 +825,56 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             seg_index,
         });
     }
+    // Case M: `form` is a MATCH ARM `((map (k v) … .. rest) body)`, ascended from `body`, whose map
+    // pattern binds `name` — either a VALUE binder `v` at key `k` (a key-directed lookup) or the REST
+    // binder (the scrutinee minus the named keys). Resolves to a `MapField` (the map analogue of Case 6's
+    // `SumPayload` / Case B's `BinField`). Scoped to this arm.
+    if let Some((scrutinee, key, named)) = match_arm_map_binds(db, form, from, name) {
+        return Some(Resolved::MapField {
+            scrutinee,
+            key,
+            named: named.into(),
+        });
+    }
+    None
+}
+
+/// If `form` is a match ARM `(pattern body)` (ascended from its BODY) whose pattern is a `(map (k v) …
+/// .. rest)` map pattern binding `name`, return `(scrutinee, key, named)`: the enclosing match's
+/// scrutinee, `Some(key-occ)` when `name` is a VALUE binder at that key (else `None` for the REST
+/// binder), and `named` the keys the pattern names (removed to form the rest map). `None` otherwise.
+/// The map companion of [`match_arm_bin_binds`].
+fn match_arm_map_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, Option<StructId>, Vec<StructId>)> {
+    let Struct::List(pb) = db.ast.get(form) else {
+        return None;
+    };
+    if pb.len() != 2 || from != pb[1] {
+        return None; // not an arm, or the reference is not from the arm's body
+    }
+    let (entries, rest) = map_pattern_of(db, pb[0])?;
+    // `form`'s parent must be a `(match scrutinee arm…)` and `form` an arm (not the scrutinee).
+    let parent = db.parent_of(form)?;
+    let mtail = db.ast.as_form(parent, "match")?;
+    let scrutinee = *mtail.first()?;
+    if form == scrutinee {
+        return None;
+    }
+    let named: Vec<StructId> = entries.iter().map(|&(k, _)| k).collect();
+    // A VALUE binder: `name` is the value position of some entry → carry that entry's KEY.
+    for &(k, v) in &entries {
+        if db.ast.as_name(v).is_some_and(|nm| nm == name && nm != "_") {
+            return Some((scrutinee, Some(k), named));
+        }
+    }
+    // The REST binder: `name` is the rest occurrence → the scrutinee minus the named keys.
+    if rest.is_some_and(|r| db.ast.as_name(r).is_some_and(|nm| nm == name && nm != "_")) {
+        return Some((scrutinee, None, named));
+    }
     None
 }
 
@@ -1135,6 +1194,88 @@ fn is_list_pattern_element_occurrence(db: &Db, id: StructId) -> bool {
         Some(mtail) => mtail.first().copied() != Some(arm) && mtail.contains(&arm),
         None => false,
     }
+}
+
+/// The MAP PATTERN `(map (k v) … .. rest)` of the arm whose pattern is `pat`, as `(entries, rest)`:
+/// each entry a `(key-occ, value-binder-occ)` pair, `rest` the optional rest-binder occurrence (after
+/// `..`). `None` if `pat` is not a `(map …)` form or is malformed. Shared by the binder-occurrence
+/// classifier, Case M, and `lower_match_map` — the one place a map PATTERN's shape is read.
+/// A parsed map PATTERN: the `(key-occ, value-binder-occ)` entry pairs, plus the optional rest-binder
+/// occurrence (after `..`).
+pub(crate) type MapPattern = (Vec<(StructId, StructId)>, Option<StructId>);
+
+pub(crate) fn map_pattern_of(db: &Db, pat: StructId) -> Option<MapPattern> {
+    // A map pattern is a `(map …)` form — either the STRING-head primitive `("map" …)` or the NAME-head
+    // `(map …)` (the shadowable alias, how the corpus writes it) — its tail is entry pairs, optionally
+    // ending in `.. rest`. Accept both spellings (like the list matcher's `as_ctor_form.or_else(as_form)`).
+    let tail = db
+        .ast
+        .as_ctor_form(pat, "map")
+        .or_else(|| db.ast.as_form(pat, "map"))?;
+    // Split at a `..` marker: the entries before it, then exactly one rest binder after.
+    let (entries_tail, rest) = match tail.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
+        Some(i) => {
+            if i + 2 != tail.len() {
+                return None; // `..` must be followed by exactly one rest binder
+            }
+            (&tail[..i], Some(tail[i + 1]))
+        }
+        None => (tail, None),
+    };
+    let mut entries = Vec::with_capacity(entries_tail.len());
+    for &entry in entries_tail {
+        match db.ast.get(entry) {
+            Struct::List(items) if items.len() == 2 => entries.push((items[0], items[1])),
+            _ => return None,
+        }
+    }
+    Some((entries, rest))
+}
+
+/// Whether `id` is a BINDER occurrence of a map PATTERN — a VALUE binder (the `v` in a `(k v)` entry) or
+/// the REST binder (after `..`) of an arm's `(map …)` pattern. Such an occurrence names a binding, not a
+/// value, so it resolves INERT (a body reference resolves via Case M `map_pattern_binds`). The KEY
+/// position is NOT a binder — it is an ordinary value expression, so it is excluded here (resolves
+/// normally). Mirrors `is_list_pattern_element_occurrence`.
+fn is_map_pattern_binder_occurrence(db: &Db, id: StructId) -> bool {
+    // Ascend: a value binder's parent is the entry pair whose parent is the `(map …)` pattern; the rest
+    // binder's parent is the `(map …)` pattern directly. In both cases find the enclosing `(map …)` that
+    // is an arm's PATTERN.
+    let Some(parent) = db.parent_of(id) else {
+        return false;
+    };
+    // The candidate map-pattern node: either `parent` (rest binder, direct child of the map) or
+    // `grandparent` (value binder, inside a `(k v)` entry).
+    let map_pat_candidates = [Some(parent), db.parent_of(parent)];
+    for cand in map_pat_candidates.into_iter().flatten() {
+        let Some((entries, rest)) = map_pattern_of(db, cand) else {
+            continue;
+        };
+        // Is `cand` an arm's PATTERN (first element of a 2-element arm under a `(match …)`)?
+        let Some(arm) = db.parent_of(cand) else {
+            continue;
+        };
+        let Struct::List(pb) = db.ast.get(arm) else {
+            continue;
+        };
+        if pb.len() != 2 || pb[0] != cand {
+            continue;
+        }
+        let Some(matchf) = db.parent_of(arm) else {
+            continue;
+        };
+        let is_arm = matches!(db.ast.as_form(matchf, "match"),
+            Some(mtail) if mtail.first().copied() != Some(arm) && mtail.contains(&arm));
+        if !is_arm {
+            continue;
+        }
+        // `id` is a binder iff it is a VALUE position of some entry, or the REST binder. (A KEY position
+        // is NOT — it resolves as a value.)
+        if rest == Some(id) || entries.iter().any(|&(_, v)| v == id) {
+            return true;
+        }
+    }
+    false
 }
 
 /// If `form` is a match ARM `(pattern body)` (ascended from its BODY) whose pattern binds `name` at a

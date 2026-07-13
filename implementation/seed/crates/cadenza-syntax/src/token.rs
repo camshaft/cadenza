@@ -64,12 +64,13 @@ pub enum Kind {
     RBracket,
     Comma,         // arg/binding/arm separator, and the `,` unquote prefix
     Dot,           // `.`
-    Colon,         // `:`
-    Semi,          // `;` — the sequence separator (`a; b; c` -> `(do a b c)`)
-    FatArrow,      // `=>`
-    Arrow,         // `->`
-    Hash,          // `#`
-    Backtick,      // `` ` `` beginning a `` `{ … } `` quasiquote
+    DotDot, // `..` — the rest/spread marker in a collection literal or pattern (`[x, .. rest]`)
+    Colon,  // `:`
+    Semi,   // `;` — the sequence separator (`a; b; c` -> `(do a b c)`)
+    FatArrow, // `=>`
+    Arrow,  // `->`
+    Hash,   // `#`
+    Backtick, // `` ` `` beginning a `` `{ … } `` quasiquote
     UnquoteSplice, // `,@`
 
     Error,

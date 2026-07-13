@@ -541,6 +541,26 @@
   (call   main (: 3 Int64))
   (output (: 21 Int64)))
 
+; A PREDICATE closure — a runtime closure whose RESULT TYPE is Bool. `(fn (x) (= x k))` is a `(-> Int64
+; Bool)` value threaded through the recursive `anyp` ("does any i in n…1 satisfy the predicate?"), which
+; SHORT-CIRCUITS on the first `true`. The closure's result crosses the `call_indirect` boundary as a
+; boolean (an i32 the lifted signature returns), and drives `anyp`'s `if`. This complements the Int-result
+; closures above: a lifted closure may return a Bool, and an "exists" HOF consumes it with early exit.
+
+(case "a predicate closure returning Bool drives an early-exit recursive HOF"
+  (doc    "`(fn (x) (= x k))` is a `(-> Int64 Bool)` closure over `k`; `anyp` applies it down n…1 and
+           returns true on the first match (short-circuit). With k=2 over 3,2,1 the predicate holds at
+           x=2, so `anyp` is true and `main` yields 100; with a k absent from 3,2,1 it is false → 0. Pins
+           that a runtime closure whose RESULT is Bool applies via call_indirect and its boolean drives the
+           caller's branch.")
+  (input  (do
+            (def (anyp (: g (-> Int64 Bool)) (: n Int64))
+              (if (= n 0) false (if (g n) true (anyp g (- n 1)))))
+            (def (main (: k Int64)) (if (anyp (fn ((: x Int64)) (= x k)) 3) 100 0))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 100 Int64)))
+
 ; A closure that captures a BOOLEAN. The captured value's TYPE decides the runtime op that unboxes it
 ; from the env cell — an integer capture reads `get-int`, a boolean reads `get-bool`. That op is emitted
 ; ONLY inside the LIFTED closure body, never in a top-level def, so the module's import set (which is

@@ -275,6 +275,11 @@ pub enum Prim {
     /// index FOLDS to `(Some "<char>")` / `(None unit)` (`chars().nth(i)`); a runtime string declines
     /// (the byte-rope indexed read arrives later). The string companion of `List.at`.
     StrAt,
+    /// `String.scalar-at` — the fallible read of the CHAR at a scalar position (`String → Int64 →
+    /// (Option Char)`, the char-typed companion of `StrAt` which yields a one-scalar `Option String`).
+    /// A CONSTANT string + constant index FOLDS to `(Some #\c)` (the scalar via `chars().nth(i)`) / `(None
+    /// unit)` out of bounds; a runtime string declines. Addresses SCALAR values, not bytes.
+    StrScalarAt,
     /// `String.concat` — the TOTAL binary join `String → String → String` (the `(meta apply)` of the
     /// `concat` field of the `String` module). On two CONSTANT strings it FOLDS to their concatenation
     /// (`(String.concat "hello" " world")` → `"hello world"`); a runtime operand declines (the byte-rope
@@ -434,6 +439,7 @@ impl Prim {
             "bytes-slice" => Some(Prim::BytesSlice),
             "bytes-compact" => Some(Prim::BytesCompact),
             "str-at" => Some(Prim::StrAt),
+            "str-scalar-at" => Some(Prim::StrScalarAt),
             "str-concat" => Some(Prim::StrConcat),
             "str-slice" => Some(Prim::StrSlice),
             "str-to-bytes" => Some(Prim::StrToBytes),
@@ -637,6 +643,22 @@ pub enum Resolved {
     /// `map-*` heap at run time; a later duplicate key overwrites (keys compared by value).
     Map {
         entries: std::sync::Arc<[(StructId, StructId)]>,
+    },
+    /// The SUB-VALUE a MAP PATTERN's binder binds. A map pattern `(map (k p) … .. rest)` is a KEY-DIRECTED
+    /// lookup (ask-61, core-semantics.md §A Map Is Matched By Key-Directed Patterns): a VALUE binder `p` at
+    /// key `k` binds the value the map holds at `k` (a `Map.lookup`), and the REST binder binds the map
+    /// with the named keys removed (a `Map.remove` per named key). `scrutinee` is the match scrutinee; a
+    /// value binder carries `key = Some(k)` (its type is the map's VALUE type), the rest binder `key =
+    /// None` (its type is the map type) with `named` the keys removed. Over a CONSTANT `Core::MapNew`
+    /// scrutinee both fold at lowering (`lower_match_map`): a value binder to the entry's value, the rest
+    /// binder to a `Core::MapNew` minus the named keys. Scoped to its arm (resolve Case M), the map analogue
+    /// of `SumPayload`/`BinField`.
+    MapField {
+        scrutinee: StructId,
+        /// `Some(key)`: a VALUE binder at `key`. `None`: the REST binder (scrutinee minus `named`).
+        key: Option<StructId>,
+        /// The keys the pattern NAMES — removed to form the rest map. Empty for a value binder.
+        named: std::sync::Arc<[StructId]>,
     },
     /// A tuple PROJECTION `(. operand N)` — member access whose key is an INTEGER literal selects the
     /// element at position `index` (0-based). The integer key is what distinguishes a positional tuple

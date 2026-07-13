@@ -239,6 +239,152 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
     })
 }
 
+/// The synthesized entry a REPL evaluation is wrapped in. Must be KEBAB-CASE: it becomes a
+/// component-model export name, and the component model requires extern names in kebab case (an
+/// underscore/camel name fails jco transpile with "not a valid extern name"). The `cdz-` prefix +
+/// `-eval` make a collision with a reader's own definition very unlikely. The playground's REPL
+/// compiles the buffer's definitions plus this one nullary entry whose body is the expression the
+/// reader typed, then runs it through the SAME pipeline `compile()` + the run worker use — so a REPL
+/// result (scalar OR compound) renders exactly as a normal run would, in the reader's surface.
+const REPL_ENTRY: &str = "cdz-repl-eval";
+
+/// Evaluate an EXPRESSION against the reader's BUFFER of definitions — the playground's mini-REPL.
+/// Builds one runnable module (every top-level `def`/`type` the buffer declares, then a synthesized
+/// `(def (cdz-repl-eval) <expr>)` exported as the sole entry, the buffer's OWN exports dropped),
+/// compiles it, and returns the component + diagnostics exactly as [`compile`] does — so the caller
+/// runs the result through the SAME run worker, and a REPL result (scalar OR compound) renders like a
+/// normal run, in the reader's surface. The reader effectively calls any function their module defines,
+/// composing them freely, written in the syntax they're already using.
+///
+/// Both pieces are parsed at the AST level and re-emitted into one arena — NOT string-spliced — so a
+/// string literal containing parentheses (or any surface quirk) can't corrupt the assembly. A parse
+/// error in the buffer or the expression comes back as one codeless error [`Diagnostic`] (the caller
+/// shows it in the REPL). Compiled as plain `Target::Wasm` (no DWARF): a REPL call is run, not stepped.
+///
+/// Accepts a bare expression (`(dbl 21)`), and tolerates a buffer that is itself a bare expression
+/// rather than defs (nothing to call — the expression stands alone). The buffer may be wrapped in
+/// `(module …)` or be a bare sequence of top-level items.
+#[wasm_bindgen]
+pub fn repl_eval(buffer: &str, expr: &str, from: &str) -> Result<CompileResult, JsError> {
+    use cadenza_syntax::ast::{Arenas, Builder, Struct, StructId};
+
+    let from = parse_format(from)?;
+
+    // A parse failure in either piece → one codeless error diagnostic (uniform with `compile`).
+    let repl_parse_err = |msg: String| CompileResult {
+        component: None,
+        diagnostics: vec![Diagnostic {
+            error: true,
+            code: String::new(),
+            message: msg,
+            node: u32::MAX,
+            from: 0,
+            to: 0,
+            fix_replacement: String::new(),
+            fix_from: 0,
+            fix_to: 0,
+            fix_verified: false,
+            fix_insert: false,
+        }],
+    };
+
+    // Parse both pieces into their own arenas (surface-aware, spanless — the REPL module is freshly
+    // synthesized, so its spans aren't the buffer's and aren't needed for the run).
+    let buf_bytes = match parse_spanned(buffer, from) {
+        Ok((bytes, _)) => bytes,
+        Err(msg) => return Ok(repl_parse_err(msg)),
+    };
+    let buf_arenas = cadenza_syntax::codec::decode(&buf_bytes)
+        .ok_or_else(|| JsError::new("internal: buffer AST failed to decode"))?;
+    let expr_bytes = match parse_spanned(expr, from) {
+        Ok((bytes, _)) => bytes,
+        Err(msg) => return Ok(repl_parse_err(format!("in the expression: {msg}"))),
+    };
+    let expr_arenas = cadenza_syntax::codec::decode(&expr_bytes)
+        .ok_or_else(|| JsError::new("internal: REPL expression AST failed to decode"))?;
+
+    // Copy a subtree from `src` into `b`, preserving structure and leaf values. Leaves re-intern (dedup
+    // is fine — an atom occurrence is what carries identity), lists rebuild child-by-child.
+    fn copy_subtree(b: &mut Builder, src: &Arenas, id: StructId) -> StructId {
+        match src.get(id) {
+            Struct::Atom(leaf_id) => b.atom_leaf(src.leaf(*leaf_id).clone()),
+            Struct::List(kids) => {
+                let copied: Vec<StructId> = kids.iter().map(|&k| copy_subtree(b, src, k)).collect();
+                b.list(copied)
+            }
+        }
+    }
+
+    // The buffer's top-level items: the children of `(module NAME item…)`, or the whole thing if it's a
+    // bare top-level form. `is_export` skips a `(export …)` item; everything else (a def/type) is kept.
+    fn is_head(src: &Arenas, id: StructId, head: &str) -> bool {
+        matches!(src.get(id), Struct::List(kids) if kids.first().is_some_and(|&h| src.as_name(h) == Some(head)))
+    }
+    // Collect the buffer's kept top-level items (defs/types), unwrapping the module shell if present.
+    let buf_items: Vec<StructId> = match buf_arenas.get(buf_arenas.root) {
+        Struct::List(kids) if kids.first().is_some_and(|&h| buf_arenas.as_name(h) == Some("module")) => {
+            // Skip `module` head + the module name; keep the item forms except exports.
+            kids.iter()
+                .skip(2)
+                .copied()
+                .filter(|&it| !is_head(&buf_arenas, it, "export"))
+                .collect()
+        }
+        // A bare `(def …)` / `(type …)` buffer: keep it unless it's an export. A bare expression (not a
+        // def/type/export) has nothing to call, so it's dropped — the REPL expr stands alone.
+        _ => {
+            let root = buf_arenas.root;
+            if is_head(&buf_arenas, root, "def") || is_head(&buf_arenas, root, "type") {
+                vec![root]
+            } else {
+                Vec::new()
+            }
+        }
+    };
+
+    // Assemble the combined module into one fresh arena.
+    let mut b = Builder::new();
+    let module_head = b.name("module");
+    let module_name = b.name("m");
+    let mut module_kids = vec![module_head, module_name];
+    for it in buf_items {
+        module_kids.push(copy_subtree(&mut b, &buf_arenas, it));
+    }
+    // The synthesized entry: `(def (cdz-repl-eval) <expr>)`.
+    let entry_def_head = b.name("def");
+    let entry_name = b.name(REPL_ENTRY);
+    let entry_sig = b.list(vec![entry_name]); // `(cdz-repl-eval)` — a nullary signature
+    let entry_body = copy_subtree(&mut b, &expr_arenas, expr_arenas.root);
+    let entry_def = b.list(vec![entry_def_head, entry_sig, entry_body]);
+    module_kids.push(entry_def);
+    // `(export cdz-repl-eval)`.
+    let export_head = b.name("export");
+    let export_name = b.name(REPL_ENTRY);
+    let export_form = b.list(vec![export_head, export_name]);
+    module_kids.push(export_form);
+
+    let module = b.list(module_kids);
+    let arenas = b.finish(module);
+    let ast_bytes = cadenza_syntax::codec::encode(&arenas);
+
+    // Compile the synthesized module (plain Wasm — a REPL call is run, not stepped). Diagnostics from a
+    // type error in the expression (or the buffer) ride back so the REPL can show them; they anchor to
+    // the SYNTHESIZED module's nodes, so no span table is passed (the REPL surfaces the message text,
+    // not an editor squiggle).
+    let out = rcdzc::compile(
+        &[rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes)],
+        &[rcdzc::Target::Wasm],
+    );
+    let diagnostics = out.diagnostics.iter().map(|d| to_js_diag(d, None)).collect();
+    let component = out
+        .artifact(rcdzc::Target::Wasm.artifact_kind())
+        .map(|b| b.to_vec());
+    Ok(CompileResult {
+        component,
+        diagnostics,
+    })
+}
+
 /// Project a front-end `SpanTable` (+ the source text) into rcdzc's `spans::SpanData` wire form — the
 /// `(start, len)` byte range per `StructId`, a module path, and the source text (for DWARF line
 /// derivation). MIRRORS rcdzc's format at this driver boundary (the two crates share no code, so the

@@ -307,6 +307,29 @@ impl<'a> Parser<'a> {
         true
     }
 
+    /// If the cursor is at a `..` rest/spread marker, consume it, push the `..` marker plus the
+    /// following binder (parsed by `elem`) onto `items`, and return `true`; otherwise consume nothing
+    /// and return `false`. The arena stays FLAT — a `Leaf::Name("..")` sibling immediately followed by
+    /// the rest node — the SAME shape the s-expression surface writes and the list/map lowering scans
+    /// for (`(list p… .. rest)`, `(map (k p) .. rest)`). This is the one rest/spread marker shared by
+    /// every collection in both construction (`[1, 2, .. rest]`) and pattern (`[x, .. rest]`) position;
+    /// well-formedness (exactly one binder after `..`, `..` last) is left to the compiler, matching the
+    /// s-expr surface, which likewise accepts the flat form and rejects a malformed one at lowering.
+    fn rest_marker(
+        &mut self,
+        items: &mut Vec<StructId>,
+        elem: impl FnOnce(&mut Self) -> StructId,
+    ) -> bool {
+        if !self.at(Kind::DotDot) {
+            return false;
+        }
+        let dd_span = self.cur_span();
+        self.bump(); // `..`
+        items.push(self.name("..", dd_span));
+        items.push(elem(self));
+        true
+    }
+
     // ---- doc / comment attachment ----
 
     /// Drain and return the `//` COMMENT leads preceding the current grammar token, leaving any
@@ -1193,6 +1216,64 @@ impl<'a> Parser<'a> {
                 self.expect(Kind::RParen, "`)`");
                 first // grouping is transparent
             }
+            Kind::LBracket => {
+                // `[p, …]` / `[p, …, .. rest]` — a list pattern, the s-expr `(list p… .. rest)` twin.
+                // Head is the NAME `list` (like the tuple pattern's `tuple`), so the compiler's existing
+                // name-headed list-pattern lowering matches it; elements and the rest binder are
+                // sub-patterns, so a list pattern nests (`[(a, b), .. rest]`).
+                self.bump(); // '['
+                let head = self.name("list", span);
+                let mut items = vec![head];
+                if !self.at(Kind::RBracket) {
+                    loop {
+                        let before = self.pos;
+                        if !self.rest_marker(&mut items, |p| p.pattern()) {
+                            items.push(self.pattern());
+                        }
+                        if !self.sep_continue(Kind::RBracket) {
+                            break;
+                        }
+                        if self.pos == before {
+                            self.bump(); // pattern didn't consume — avoid a missing-`,` spin
+                        }
+                    }
+                }
+                self.expect(Kind::RBracket, "`]`");
+                let lspan = span.merge(self.prev_span());
+                self.list(items, lspan)
+            }
+            Kind::Hash if self.nth_kind(1) == Kind::LBrace => {
+                // `#{ k = p, … }` / `#{ k = p, …, .. rest }` — a map pattern, the s-expr `(map (k p) ..
+                // rest)` twin. Head is the NAME `map`; each entry is a `(key sub-pattern)` pair (the key
+                // is a value expression to look up, the value slot a sub-pattern), and an optional `..
+                // rest` binds the remaining map — the same key-directed shape the corpus authors.
+                self.bump(); // '#'
+                self.bump(); // '{'
+                let head = self.name("map", span);
+                let mut items = vec![head];
+                if !self.at(Kind::RBrace) {
+                    loop {
+                        let before = self.pos;
+                        if !self.rest_marker(&mut items, |p| p.pattern()) {
+                            let e_start = self.cur_span();
+                            let key = self.expr(0);
+                            self.expect(Kind::Eq, "`=`");
+                            let value = self.pattern();
+                            let e_span = e_start.merge(self.prev_span());
+                            items.push(self.list(vec![key, value], e_span));
+                        }
+                        if !self.sep_continue(Kind::RBrace) {
+                            break;
+                        }
+                        if self.pos == before {
+                            self.bump(); // no entry token consumed — avoid a missing-`,` spin
+                        }
+                    }
+                }
+                self.expect(Kind::RBrace, "`}`");
+                let mspan = span.merge(self.prev_span());
+                self.list(items, mspan)
+            }
             _ => {
                 self.error("expected a pattern");
                 // Skip the offending token to make progress, but leave a `=>`, `|`, closer, or other
@@ -1249,7 +1330,11 @@ impl<'a> Parser<'a> {
         if !self.at(Kind::RBracket) {
             loop {
                 let before = self.pos;
-                items.push(self.expr(0));
+                // `.. rest` spreads a tail list into the literal (`[1, 2, .. rest]`); an ordinary
+                // element otherwise. The marker is flat (`… ".." rest`), shared with the pattern form.
+                if !self.rest_marker(&mut items, |p| p.expr(0)) {
+                    items.push(self.expr(0));
+                }
                 if !self.sep_continue(Kind::RBracket) {
                     break;
                 }
@@ -1331,12 +1416,16 @@ impl<'a> Parser<'a> {
         if !self.at(Kind::RBrace) {
             loop {
                 let before = self.pos;
-                let e_start = self.cur_span();
-                let key = self.expr(0);
-                self.expect(Kind::Eq, "`=`");
-                let value = self.expr(0);
-                let e_span = e_start.merge(self.prev_span());
-                items.push(self.list(vec![key, value], e_span));
+                // `.. rest` spreads a tail map into the literal (`#{ 1 = v, .. rest }`); a `key = value`
+                // entry otherwise. The marker is flat (`… ".." rest`), the list analogue's twin.
+                if !self.rest_marker(&mut items, |p| p.expr(0)) {
+                    let e_start = self.cur_span();
+                    let key = self.expr(0);
+                    self.expect(Kind::Eq, "`=`");
+                    let value = self.expr(0);
+                    let e_span = e_start.merge(self.prev_span());
+                    items.push(self.list(vec![key, value], e_span));
+                }
                 if !self.sep_continue(Kind::RBrace) {
                     break;
                 }

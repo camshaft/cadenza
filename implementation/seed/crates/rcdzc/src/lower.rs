@@ -175,6 +175,15 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             segs,
             seg_index,
         } => decode_bin_field(db, scrutinee, &segs, seg_index),
+        // A MAP PATTERN binder reference — read FROM THE SCRUTINEE by key. Over a constant `Core::MapNew`
+        // scrutinee (the corpus shape): a VALUE binder (`key = Some k`) folds to the entry's value at `k`;
+        // the REST binder (`key = None`) folds to a `Core::MapNew` with the named keys removed. A runtime
+        // scrutinee declines (the runtime key-directed matcher is a later increment). See `lower_map_field`.
+        Resolved::MapField {
+            scrutinee,
+            key,
+            named,
+        } => lower_map_field(db, id, scrutinee, key, &named),
         // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
         // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where
@@ -973,6 +982,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // to `(Some "<char>")` in range / `None` out (by Unicode SCALAR position, not byte). A
                 // runtime string declines (the byte-rope read is a later increment).
                 Some(Prim::StrAt) if args.len() == 2 => lower_str_at(db, id, args[0], args[1]),
+                // `String.scalar-at` — the FALLIBLE read of the CHAR at a scalar position. FOLD a constant
+                // string + constant index to `(Some #\c)` in range / `(None unit)` out (by Unicode SCALAR
+                // position, not byte). The char-typed companion of `String.at`. A runtime string declines.
+                Some(Prim::StrScalarAt) if args.len() == 2 => {
+                    lower_str_scalar_at(db, id, args[0], args[1])
+                }
                 // `String.slice` — the FALLIBLE sub-range read by SCALAR offsets `[start, end)`. FOLD a
                 // constant string + constant bounds to `(Some "<substr>")` in range / `None` out (reversed,
                 // over-long, or negative). A runtime string declines (the byte-rope slice is a later
@@ -1211,6 +1226,19 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     // `(list x .. rest)` or a RUNTIME list scrutinee declines (later increments).
     if matches!(crate::infer::type_of(db, scrutinee), crate::ty::Ty::List(_)) {
         return lower_match_list(db, scrutinee, arms);
+    }
+    // A MAP scrutinee whose arms use `(map …)` key-directed patterns → the map matcher (ask-61). A map
+    // pattern `(map (k p) … .. rest)` matches when the map HAS key `k` (bound to a value matching `p`),
+    // binding `rest` to the remaining map — a QUERY, not a structural shape. This increment folds a
+    // CONSTANT `Core::MapNew` scrutinee (the corpus shape). A scalar-only match over a map (only bare-
+    // binder/`_` arms — no `(map …)` pattern) falls through to the scalar path (a whole-value binder).
+    if matches!(
+        crate::infer::type_of(db, scrutinee),
+        crate::ty::Ty::Map(_, _)
+    ) && arms.iter().any(|&(pat, _)| {
+        db.ast.head_ctor(pat) == Some("map") || db.ast.head_name(pat) == Some("map")
+    }) {
+        return lower_match_map(db, scrutinee, arms);
     }
     // Classify each arm into a probe + optional GUARD + body. An arm's pattern may be a GUARDED pattern
     // `(guard <inner-pat> <cond>)` — the inner pattern gives the probe, `<cond>` the guard (a boolean the
@@ -1504,6 +1532,74 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
     }
     Core::Poison(Reject::decline(
         "list match: no arm matched the constant list (unreachable — a catch-all was required)",
+    ))
+}
+
+/// Lower a match over a MAP scrutinee by KEY-DIRECTED patterns (ask-61, core-semantics.md §A Map Is
+/// Matched By Key-Directed Patterns). A `(map (k p) …)` arm matches when the map HAS every named key `k`
+/// (each bound to a value the body reads via a `MapField`); a bare binder / `_` is a catch-all. This
+/// increment folds a CONSTANT `Core::MapNew` scrutinee: a named key is present iff some entry's key is
+/// `const_compound_eq` to it, so the first arm whose keys are all present is selected and its body
+/// lowered (the body's `MapField` binders then fold — the value at each key, the rest map). A map's key
+/// set is UNBOUNDED, so a `(map …)` arm covers no shape — the match needs a catch-all (else CDZ0210).
+/// A runtime map scrutinee, or a key-sub-pattern that is not a bare binder, declines (later increments).
+fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // The constant scrutinee's entries (the corpus shape: an inline `Map.insert` chain / `(map …)`).
+    let entries = match core_of(db, scrutinee) {
+        Core::MapNew { entries, .. } => entries,
+        Core::Poison(r) => return Core::Poison(r),
+        _ => {
+            return Core::Poison(Reject::decline(
+                "matching a runtime map by key-directed patterns needs the runtime map matcher (constant maps only)",
+            ));
+        }
+    };
+    // A key is present in the constant map iff some entry's key compares equal to it (by value).
+    let key_present = |db: &mut Db, k: StructId, es: &[(StructId, StructId)]| -> bool {
+        es.iter()
+            .any(|&(ek, _)| const_compound_eq(db, ek, k) == Some(true))
+    };
+    // WELL-FORMEDNESS: a `(map …)` arm covers no shape (a map's key set is unbounded), so the arms must
+    // include a CATCH-ALL (a bare binder / `_`) or the match is non-exhaustive (CDZ0210).
+    let has_catch_all = arms.iter().any(|&(pat, _)| db.ast.as_name(pat).is_some());
+    if !has_catch_all {
+        return Core::Poison(Reject::coded(
+            Code::NonExhaustive,
+            "a map match must end in a catch-all (`_` or a whole-map binder) — a map's key set is unbounded",
+        ));
+    }
+    for &(pat, body) in arms {
+        // A bare binder / `_` is a catch-all — it always matches.
+        if db.ast.as_name(pat).is_some() {
+            return core_of(db, body);
+        }
+        // A `(map (k p) … .. rest)` pattern: matches iff EVERY named key is present in the constant map.
+        let Some((pat_entries, _rest)) = crate::resolve::map_pattern_of(db, pat) else {
+            return Core::Poison(Reject::decline(
+                "a map match arm that is not a `(map …)` pattern or a binder is not yet supported",
+            ));
+        };
+        // Each key sub-pattern must be a bare-binder value (`p`) — a nested value pattern is a later
+        // increment. The KEY itself is a value expression (a literal/scoped name), evaluated for presence.
+        if !pat_entries
+            .iter()
+            .all(|&(_, v)| db.ast.as_name(v).is_some())
+        {
+            return Core::Poison(Reject::decline(
+                "a map pattern value sub-pattern that is not a binder is not yet supported",
+            ));
+        }
+        let all_present = pat_entries
+            .iter()
+            .all(|&(k, _)| key_present(db, k, &entries));
+        if all_present {
+            // This arm matches — its body's `MapField` binders fold against the constant scrutinee.
+            return core_of(db, body);
+        }
+        // Else fall through to the next arm (the key-directed pattern is a genuine presence test).
+    }
+    Core::Poison(Reject::decline(
+        "map match: no arm matched the constant map (unreachable — a catch-all was required)",
     ))
 }
 
@@ -3373,6 +3469,7 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         // the whole value — like a projection operand, it is not a whole-value escape of `init`.
         Resolved::SumPayload { .. }
         | Resolved::BinField { .. }
+        | Resolved::MapField { .. }
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
@@ -4219,11 +4316,11 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
             }
             n
         }
-        // A `SumPayload`/`BinField` reads the scrutinee at run time (a payload / a decoded segment); if
-        // the scrutinee is `init`, that is a use of the binding.
-        Resolved::SumPayload { scrutinee, .. } | Resolved::BinField { scrutinee, .. } => {
-            usize::from(scrutinee == init) as u32
-        }
+        // A `SumPayload`/`BinField`/`MapField` reads the scrutinee at run time (a payload / a decoded
+        // segment / a keyed lookup); if the scrutinee is `init`, that is a use of the binding.
+        Resolved::SumPayload { scrutinee, .. }
+        | Resolved::BinField { scrutinee, .. }
+        | Resolved::MapField { scrutinee, .. } => usize::from(scrutinee == init) as u32,
         // Effect control forms: the binding may be referenced in a handler's init, any arm body, a
         // resumption's value/next-state, or the handled/delegated body — count each position.
         Resolved::Handle {
@@ -4728,6 +4825,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::StrScalarLen
         | Prim::StrByteLen
         | Prim::StrAt
+        | Prim::StrScalarAt
         | Prim::StrConcat
         | Prim::StrSlice
         | Prim::StrToBytes
@@ -4989,14 +5087,13 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 return Core::ConstBool(eq);
             }
             if is_scalar(db, args[0]) && is_scalar(db, args[1]) {
-                // UNSIGNED-vs-ZERO simplification: an UNSIGNED value `u` lives in `[0, MAX]`, so a `< 0`
-                // test is UNSATISFIABLE and a `>= 0` test is a TAUTOLOGY — both fold to a constant with no
-                // runtime compare. And `u <= 0` holds iff `u == 0`, so it rewrites to the `= 0` the
-                // backend already selects to `eqz` (one instruction). Symmetric with the constant on the
-                // LEFT (`0 > u`, `0 <= u`, `0 >= u`). `> 0` (= `u != 0`) is left as the native `gt_u` — no
-                // `Ne` prim exists and `gt_u` is already one instruction, so nothing is gained. Only fires
-                // when the RUNTIME operand's solved type is a definite UNSIGNED integer.
-                if let Some(folded) = fold_unsigned_vs_zero(db, op, args[0], args[1]) {
+                // TYPE-BOUND simplification: a comparison of a runtime integer against a constant AT its
+                // own type's min/max is (partly) decidable — `v < min`/`v > max` are unsatisfiable, `v >=
+                // min`/`v <= max` are tautologies, and `v <= min`/`v >= max` rewrite to `v == bound` (the
+                // backend selects `eqz` when the bound is 0). This subsumes the unsigned-vs-0 case (an
+                // unsigned type's `min` is 0) and adds signed narrow (`Int8`'s `[-128,127]`) and full-width
+                // bounds. Only fires when the runtime operand's type is fully resolved (Fixed sign+width).
+                if let Some(folded) = fold_comparison_at_type_bound(db, op, args[0], args[1]) {
                     return folded;
                 }
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "comparison stays runtime (scalar operands)");
@@ -5031,62 +5128,103 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     }
 }
 
-/// Simplify an ordering comparison of a DEFINITELY-UNSIGNED runtime scalar against the constant `0`,
-/// exploiting the unsigned domain `[0, MAX]`:
-///  - `u < 0` / `0 > u` → `false` (nothing is below 0);
-///  - `u >= 0` / `0 <= u` → `true` (everything is at least 0);
-///  - `u <= 0` / `0 >= u` → `u == 0` (a `Core::Compare Eq`, which the backend selects to `eqz`).
+/// The inclusive bounds a resolved integer type occupies, as `(min, max)` where each is `Some` only if it
+/// fits an `i64`. Returns `None` (skip the whole type) if the sign or width is not yet `Fixed` (a
+/// deferred/variable operand must NOT be folded — its bounds are a guess, and a deferred sign grounds to
+/// SIGNED where the range differs). Signed `N` holds `[-2^(N-1), 2^(N-1)-1]` (both fit i64 for `N <= 64`);
+/// unsigned `N` holds `[0, 2^N - 1]` — the min `0` always fits, but the max `2^64 - 1` at `N == 64` does
+/// NOT, so that bound is `None` (a comparison against it stays a runtime compare, out of i64 reach here).
+fn resolved_int_bounds(it: crate::ty::IntTy) -> Option<(Option<i64>, Option<i64>)> {
+    let crate::ty::Sign::Fixed(signed) = it.sign else {
+        return None;
+    };
+    let crate::ty::Width::Fixed(w) = it.width else {
+        return None;
+    };
+    if signed {
+        let half = 1i64 << (w - 1); // w <= 64, so 2^(w-1) <= 2^63 fits i64 (as `1<<63` = i64::MIN's magnitude)
+        Some((Some(half.wrapping_neg()), Some(half.wrapping_sub(1)))) // w=64: (i64::MIN, i64::MAX)
+    } else if w >= 64 {
+        Some((Some(0), None)) // unsigned 64: min 0 folds; max 2^64-1 is not i64-representable → None
+    } else {
+        Some((Some(0), Some((1i64 << w) - 1))) // w < 64: 2^w - 1 fits i64
+    }
+}
+
+/// Simplify an ordering comparison of a runtime scalar against a constant that sits at (or beyond) the
+/// operand's OWN type bound, exploiting the type's domain `[min, max]`:
+///  - `v < min` → `false`, `v >= min` → `true`, `v <= min` → `v == min`;
+///  - `v > max` → `false`, `v <= max` → `true`, `v >= max` → `v == max`.
 ///
-/// `u > 0` / `0 < u` (= `u != 0`) is deliberately NOT folded: there is no `Ne` prim and the native
-/// `gt_u`/`lt_u` is already one instruction, so a rewrite gains nothing. Returns `None` unless exactly one
-/// operand is the constant `0` and the OTHER's solved type is `Sign::Fixed(false)` (a resolved unsigned
-/// integer — a deferred/variable sign grounds to SIGNED, where `< 0` is genuinely reachable, so it must
-/// NOT fold). `Prim::Eq` is excluded (its `= 0` is already the `eqz` peephole and needs no help here).
-fn fold_unsigned_vs_zero(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<Core> {
+/// This subsumes the unsigned-vs-0 case (`min = 0` for an unsigned type) and adds signed narrow bounds
+/// (`Int8`'s `[-128,127]`) and full-width (`Int64`'s `[i64::MIN, i64::MAX]`). `v < max` / `v > min` are
+/// NOT decidable (the value can be anywhere in range) and are left as the native compare. The `v == bound`
+/// rewrite emits a `Core::Compare Eq`, which the backend selects to `eqz` when the bound is 0.
+///
+/// Returns `None` unless exactly one operand is a constant EQUAL to the other operand's resolved-type min
+/// or max (a `Sign::Fixed` + `Width::Fixed` integer — a deferred/variable type is not folded). `Prim::Eq`
+/// is excluded (equality against a bound is not a tautology and its `= 0` is already the `eqz` peephole).
+fn fold_comparison_at_type_bound(
+    db: &mut Db,
+    op: Prim,
+    lhs: StructId,
+    rhs: StructId,
+) -> Option<Core> {
     if matches!(op, Prim::Eq) {
         return None;
     }
-    // Identify (runtime unsigned operand, whether it is the LEFT operand). The constant-0 side must be a
-    // literal `0`; the other side must have a resolved UNSIGNED type.
-    let is_zero = |db: &mut Db, id: StructId| matches!(core_of(db, id), Core::ConstInt(v) if v.to_i64() == Some(0));
-    let unsigned = |db: &mut Db, id: StructId| matches!(crate::infer::type_of(db, id), crate::ty::Ty::Int(it) if it.sign == crate::ty::Sign::Fixed(false));
-    // `u_on_left` records the operand order so `<`/`>` map to the right constant/rewrite.
-    let (u, u_on_left) = if is_zero(db, rhs) && unsigned(db, lhs) {
-        (lhs, true) // `(op u 0)`
-    } else if is_zero(db, lhs) && unsigned(db, rhs) {
-        (rhs, false) // `(op 0 u)`
-    } else {
-        return None;
+    let const_val = |db: &mut Db, id: StructId| match core_of(db, id) {
+        Core::ConstInt(v) => v.to_i64(),
+        _ => None,
     };
-    // Normalize to the `(cmp u 0)` sense: the LEFT-const forms are the mirror (`0 < u` ≡ `u > 0`).
-    let cmp = match (op, u_on_left) {
-        (Prim::Lt, true) | (Prim::Gt, false) => Prim::Lt, // u < 0
-        (Prim::Ge, true) | (Prim::Le, false) => Prim::Ge, // u >= 0
-        (Prim::Le, true) | (Prim::Ge, false) => Prim::Le, // u <= 0
-        (Prim::Gt, true) | (Prim::Lt, false) => Prim::Gt, // u > 0 — not folded
+    let int_bounds = |db: &mut Db, id: StructId| match crate::infer::type_of(db, id) {
+        crate::ty::Ty::Int(it) => resolved_int_bounds(it),
+        _ => None,
+    };
+    // Identify (runtime operand `v`, its bounds, the constant `c`, whether `v` is on the LEFT). Exactly
+    // one side must be a constant and the OTHER a resolved integer. `min`/`max` are each `Option` — a
+    // bound that does not fit i64 (unsigned-64's max) is absent and never matches a constant.
+    let (v, (min, max), c, v_on_left) =
+        if let (Some(c), Some(b)) = (const_val(db, rhs), int_bounds(db, lhs)) {
+            (lhs, b, c, true) // `(op v c)`
+        } else if let (Some(c), Some(b)) = (const_val(db, lhs), int_bounds(db, rhs)) {
+            (rhs, b, c, false) // `(op c v)`
+        } else {
+            return None;
+        };
+    // Normalize to the `(cmp v c)` sense — the LEFT-const forms are the mirror (`c < v` ≡ `v > c`).
+    let cmp = match (op, v_on_left) {
+        (Prim::Lt, true) | (Prim::Gt, false) => Prim::Lt,
+        (Prim::Gt, true) | (Prim::Lt, false) => Prim::Gt,
+        (Prim::Le, true) | (Prim::Ge, false) => Prim::Le,
+        (Prim::Ge, true) | (Prim::Le, false) => Prim::Ge,
         _ => return None,
     };
+    // The constant occurrence to reuse as the rhs of a rewritten `v == c` (keeps its width grounding).
+    let c_occ = if v_on_left { rhs } else { lhs };
+    let const_bool = |r: bool, why: &str| {
+        trace!(target: "rcdzc::fold", node = v.0, why, "comparison at a type bound folds to a constant");
+        Some(Core::ConstBool(r))
+    };
+    let eq_bound = |why: &str| {
+        trace!(target: "rcdzc::fold", node = v.0, why, "comparison at a type bound folds to `== bound`");
+        Some(Core::Compare {
+            op: Prim::Eq,
+            lhs: v,
+            rhs: c_occ,
+        })
+    };
+    let at_min = min == Some(c);
+    let at_max = max == Some(c);
     match cmp {
-        Prim::Lt => {
-            trace!(target: "rcdzc::fold", node = u.0, "unsigned `< 0` is always false");
-            Some(Core::ConstBool(false))
-        }
-        Prim::Ge => {
-            trace!(target: "rcdzc::fold", node = u.0, "unsigned `>= 0` is always true");
-            Some(Core::ConstBool(true))
-        }
-        Prim::Le => {
-            // `u <= 0` ⇔ `u == 0`. Emit `= u 0`; the backend's eq-zero peephole makes it `eqz`. Reuse the
-            // ORIGINAL zero-constant occurrence as the rhs so its width grounds to `u`'s type at selection.
-            let zero = if u_on_left { rhs } else { lhs };
-            trace!(target: "rcdzc::fold", node = u.0, "unsigned `<= 0` folds to `== 0`");
-            Some(Core::Compare {
-                op: Prim::Eq,
-                lhs: u,
-                rhs: zero,
-            })
-        }
-        _ => None, // `> 0` — left as the native compare.
+        Prim::Lt if at_min => const_bool(false, "v < min"),
+        Prim::Ge if at_min => const_bool(true, "v >= min"),
+        Prim::Le if at_min => eq_bound("v <= min ⇔ v == min"),
+        Prim::Gt if at_max => const_bool(false, "v > max"),
+        Prim::Le if at_max => const_bool(true, "v <= max"),
+        Prim::Ge if at_max => eq_bound("v >= max ⇔ v == max"),
+        // `v < max` / `v > min` (and any constant strictly inside the range) — not decidable.
+        _ => None,
     }
 }
 
@@ -5473,6 +5611,61 @@ fn lower_map_insert(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
     }
 }
 
+/// Lower a MAP PATTERN binder reference — read from the (constant) scrutinee by key. `key = Some(k)` is
+/// a VALUE binder at key `k` → the entry's value core; `key = None` is the REST binder → a `Core::MapNew`
+/// with the `named` keys removed. Only a CONSTANT `Core::MapNew` scrutinee folds (the corpus shape: an
+/// inline `Map.insert` chain); a runtime scrutinee declines (the runtime key-directed matcher is a later
+/// increment). The arm was already SELECTED by `lower_match_map` (which ran the same key-presence probe),
+/// so a value binder's key IS present here; a defensive miss declines rather than miscompiling.
+fn lower_map_field(
+    db: &mut Db,
+    id: StructId,
+    scrutinee: StructId,
+    key: Option<StructId>,
+    named: &[StructId],
+) -> Core {
+    let Core::MapNew { entries, .. } = core_of(db, scrutinee) else {
+        return Core::Poison(Reject::decline(
+            "a map pattern over a runtime map scrutinee is not yet matched (constant map only)",
+        ));
+    };
+    match key {
+        // A VALUE binder — the value at key `k` (keys compared by value, `const_compound_eq`).
+        Some(k) => {
+            for (ek, ev) in entries.iter() {
+                if const_compound_eq(db, *ek, k) == Some(true) {
+                    return core_of(db, *ev);
+                }
+            }
+            Core::Poison(Reject::decline(
+                "a map pattern value binder's key is absent from the constant map (arm mis-selected)",
+            ))
+        }
+        // The REST binder — the map with every `named` key removed. Its key/value types come from this
+        // binder node's own solved `Ty::Map` (the scrutinee's map type). Build a fresh constant `MapNew`.
+        None => {
+            let (key_ty, val_ty) = match crate::infer::type_of(db, id) {
+                crate::ty::Ty::Map(k, v) => (*k, *v),
+                _ => (crate::ty::Ty::Any, crate::ty::Ty::Any),
+            };
+            let rest: Vec<(StructId, StructId)> = entries
+                .iter()
+                .filter(|(ek, _)| {
+                    !named
+                        .iter()
+                        .any(|&nk| const_compound_eq(db, *ek, nk) == Some(true))
+                })
+                .copied()
+                .collect();
+            Core::MapNew {
+                entries: rest,
+                key_ty,
+                val_ty,
+            }
+        }
+    }
+}
+
 /// Whether the node at `id` lowers to a compile-time CONSTANT value — a constant scalar/string/float/
 /// unit, or a constant compound (`SumNew`/`Tuple`/`Record`/`ListNew`/`MapNew`) all of whose parts are
 /// constant. Used to decide whether a `Map.insert` key can fold (a constant key merges into a constant
@@ -5645,6 +5838,59 @@ fn lower_str_at(db: &mut Db, id: StructId, string: StructId, index: StructId) ->
         // A runtime string or runtime index — the byte-rope indexed read is a later increment.
         _ => Core::Poison(Reject::decline(
             "String.at on a runtime string is not yet computed (constant strings only)",
+        )),
+    }
+}
+
+/// Lower `(String.scalar-at string index)` — the fallible read of the CHAR (single Unicode scalar) at a
+/// scalar position `String → Int64 → (Option Char)`. The char-typed companion of `String.at`: identical
+/// index logic (by Unicode SCALAR position, `chars().nth`, not byte), but the `Some` payload is a
+/// `Leaf::Char` (the scalar itself), so the result is `(Option Char)` — folds to `(Some #\c)` in range /
+/// `(None unit)` out (negative or at/beyond the scalar length). A runtime string declines; a poison
+/// operand propagates.
+fn lower_str_scalar_at(db: &mut Db, id: StructId, string: StructId, index: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, string) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, index) {
+        return Core::Poison(r);
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "String.scalar-at result is not the built-in Option sum",
+        ));
+    };
+    match (core_of(db, string), core_of(db, index)) {
+        (Core::ConstStr(s), Core::ConstInt(i)) => {
+            let scalar = i.to_i64().and_then(|n| {
+                if n >= 0 {
+                    s.chars().nth(n as usize)
+                } else {
+                    None
+                }
+            });
+            match scalar {
+                Some(c) => {
+                    // The scalar at that position — a fresh `Leaf::Char` node (`core_of` = `Core::ConstChar`),
+                    // the `Some` payload. Distinct from `String.at`, whose payload is a one-scalar `Leaf::Str`.
+                    trace!(target: "rcdzc::fold", node = id.0, "String.scalar-at folds to Some (in-bounds constant scalar index)");
+                    let payload = db.push_atom(crate::ast::Leaf::Char(c));
+                    Core::SumNew {
+                        disc: disc_some,
+                        payloads: vec![payload],
+                    }
+                }
+                None => {
+                    trace!(target: "rcdzc::fold", node = id.0, "String.scalar-at folds to None (out-of-range constant index)");
+                    Core::SumNew {
+                        disc: disc_none,
+                        payloads: Vec::new(),
+                    }
+                }
+            }
+        }
+        _ => Core::Poison(Reject::decline(
+            "String.scalar-at on a runtime string is not yet computed (constant strings only)",
         )),
     }
 }
@@ -6843,6 +7089,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::BytesSlice => "bytes-slice",
         Prim::BytesCompact => "bytes-compact",
         Prim::StrAt => "str-at",
+        Prim::StrScalarAt => "str-scalar-at",
         Prim::StrConcat => "str-concat",
         Prim::StrSlice => "str-slice",
         Prim::StrToBytes => "str-to-bytes",
