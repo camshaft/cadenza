@@ -4576,35 +4576,48 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
                         trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), expr_ty = %expr_ty.render_name(), "fault: annotation type mismatch (CDZ0203)");
-                        // "try wrapping the expression in `Some`": if the expected sum has a single-payload
-                        // variant whose payload IS the value's type, wrapping the value in that ctor makes
-                        // it type-check. Derived generically from the sum's declaration.
-                        let wrap = wrap_variant_for(db, &annot_ty, &expr_ty);
-                        let mut reject = match &wrap {
-                            Some(ctor) => Reject::coded(
-                                Code::TypeMismatch,
-                                format!(
-                                    "annotation type {} does not match value type {} — wrap the value in `{ctor}`",
-                                    annot_ty.render_name(),
-                                    expr_ty.render_name()
-                                ),
+                        // The annotation mismatch has a MECHANICAL REPAIR in two cases, each a wrap of the
+                        // value that makes it type-check in one shot (the annotation position mirrors the
+                        // argument position's coercion wraps):
+                        //  • the annotation is a SUM with a single-payload variant whose payload is the
+                        //    value's type — "wrap in `Some`" (`(: n Option)` for `n : Int64`), derived
+                        //    generically from the sum's declaration; and
+                        //  • both types are INTEGERS and the annotation is an aliased width — wrap in the
+                        //    annotation type's checked conversion `(<AnnotInt>.of value)` (`(: n Int64)` for
+                        //    `n : Int8`), the same `.of` coercion the arg-position mismatch offers.
+                        // Compute the wrap `(prefix, suffix, verb, msg_tail)` from whichever applies.
+                        let wrap: Option<(String, String, String, String)> =
+                            if let Some(ctor) = wrap_variant_for(db, &annot_ty, &expr_ty) {
+                                Some((
+                                    format!("({ctor} "),
+                                    ")".to_string(),
+                                    format!("wrap in `({ctor} …)`"),
+                                    format!(" — wrap the value in `{ctor}`"),
+                                ))
+                            } else if let (Ty::Int(annot_int), Ty::Int(_)) = (&annot_ty, &expr_ty)
+                                && crate::ty::ALIASED_INT_WIDTHS.contains(&annot_int.ground_width())
+                            {
+                                let n = annot_ty.render_name();
+                                Some((
+                                    format!("({n}.of "),
+                                    ")".to_string(),
+                                    format!("convert to {n} with `{n}.of` (checked)"),
+                                    format!(" — convert with `({n}.of …)`"),
+                                ))
+                            } else {
+                                None
+                            };
+                        let mut reject = Reject::coded(
+                            Code::TypeMismatch,
+                            format!(
+                                "annotation type {} does not match value type {}{}",
+                                annot_ty.render_name(),
+                                expr_ty.render_name(),
+                                wrap.as_ref().map(|w| w.3.as_str()).unwrap_or(""),
                             ),
-                            None => Reject::coded(
-                                Code::TypeMismatch,
-                                format!(
-                                    "annotation type {} does not match value type {}",
-                                    annot_ty.render_name(),
-                                    expr_ty.render_name()
-                                ),
-                            ),
-                        };
-                        if let Some(ctor) = wrap {
-                            reject = reject.with_fix(Fix::wrap_heuristic(
-                                expr,
-                                format!("({ctor} "),
-                                ")",
-                                format!("wrap in `({ctor} …)`"),
-                            ));
+                        );
+                        if let Some((prefix, suffix, verb, _)) = wrap {
+                            reject = reject.with_fix(Fix::wrap_heuristic(expr, prefix, suffix, verb));
                         }
                         out.push(reject);
                     }

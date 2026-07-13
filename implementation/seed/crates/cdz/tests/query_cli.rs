@@ -1499,6 +1499,42 @@ fn a_mistyped_sum_argument_carries_a_wrap_fix_that_fix_all_applies() {
 }
 
 #[test]
+fn an_int_annotation_mismatch_carries_an_of_conversion_fix_that_fix_all_applies() {
+    // The annotation-position numeric coercion, end-to-end: `(: n Int64)` for an `Int8` value reports
+    // CDZ0203 AND carries a `wrap` fix → `(Int64.of n)`. `fix --all` applies it and the file recompiles.
+    let dir = scratch_dir("annot_of");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(module m (def (f (: n Int8)) (: n Int64)) (export f))\n",
+    )
+    .unwrap();
+    let (ok, stdout, _) = run(&["check", "--json", f.to_str().unwrap()], "");
+    assert!(!ok, "the annotation mismatch is an error");
+    let line = stdout
+        .lines()
+        .find(|l| l.contains("\"code\":\"CDZ0203\""))
+        .expect("the mismatch is emitted as JSON");
+    assert!(
+        line.contains("\"kind\":\"wrap\"") && line.contains("Int64") && line.contains("of"),
+        "CDZ0203 carries an Int64.of wrap patch: {line}"
+    );
+    let patched = apply_json_edits(&std::fs::read_to_string(&f).unwrap(), line);
+    assert!(
+        patched.contains("of") && patched.contains("Int64"),
+        "applying the patch wraps the value in the conversion: {patched}"
+    );
+    let (ok2, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok2, "fix succeeds: {stderr}");
+    let (ok3, out3, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(
+        ok3 && out3.trim().is_empty(),
+        "the repaired file is clean: {out3}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_string_where_bytes_expected_carries_a_to_bytes_fix_that_fix_all_applies() {
     // A total-conversion coercion, surfaced end-to-end: `(f "hi")` for a `(: b Bytes)` parameter reports
     // CDZ0203 AND carries a `wrap` fix → `(String.to-bytes "hi")`. `--json` emits the wrap as two inserts;

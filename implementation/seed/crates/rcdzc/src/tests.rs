@@ -15384,6 +15384,38 @@ mod diagnostics {
     }
 
     #[test]
+    fn an_int_annotation_mismatch_offers_an_of_conversion_fix() {
+        // An `(: value T)` ANNOTATION whose value is a DIFFERENT integer width than T — `(: n Int64)` for
+        // `n : Int8` — is CDZ0203 (no silent promotion), repaired by wrapping the value in the annotation
+        // type's checked `.of` conversion: `(: (Int64.of n) Int64)`. This mirrors the ARGUMENT-position
+        // coercion at the ANNOTATION position (the D31/D29 lesson: cover the structurally-equivalent forms).
+        for (src, want) in [
+            (
+                "(module m (def (f (: n Int8)) (: n Int64)) (export f))",
+                "(Int64.of ",
+            ),
+            (
+                "(module m (def (f (: n Int64)) (: n Int8)) (export f))",
+                "(Int8.of ",
+            ),
+        ] {
+            let d = first_error(src);
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            let fix = d.fix.expect("an annotation coercion fix is carried");
+            assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+            assert!(
+                fix.replacement.starts_with(want),
+                "wraps the value in the annotation type's `.of`: {} (want {want})",
+                fix.replacement
+            );
+            assert!(!fix.verified, "`.of` is checked (can trap) → heuristic");
+        }
+        // NO coercion between unrelated types: a Bool value annotated Int64 has no `.of` repair.
+        let d = first_error("(module m (def (f (: b Bool)) (: b Int64)) (export f))");
+        assert!(d.fix.is_none(), "no coercion fix Bool→Int64: {:?}", d.fix);
+    }
+
+    #[test]
     fn the_same_fault_is_reported_once_even_when_two_passes_find_it() {
         // An unbound name in a REACHABLE position is found by BOTH the type-check walk and the
         // reached-poison walk — it must be reported ONCE (deduped by code+node), not twice.
