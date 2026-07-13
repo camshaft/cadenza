@@ -2414,7 +2414,6 @@ fn push_discriminant(
     let root = type_of(db, scrutinee);
     let sub = ty_at_path(db, &root, path);
     let sub_is_enum = ty_is_enum_disc(db, &sub);
-    eprintln!("PUSHDISC2: root={} path={:?} sub={} enum={}", root.render_name(), path, sub.render_name(), sub_is_enum);
     emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?;
     for step in path {
         match step {
