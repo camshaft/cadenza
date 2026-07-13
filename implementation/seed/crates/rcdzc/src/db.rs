@@ -1311,6 +1311,11 @@ impl Db {
             return crate::ty::Ty::Nominal {
                 decl,
                 name,
+                // `args` is the nominal's IDENTITY axis (like `Ty::Sum::args`) — `Box Int64` vs `Box
+                // Bool` differ here. `inner` is the derived machine-rep hint (the template with `args`
+                // substituted); it is never compared, so a recursive nominal's divergent inner is
+                // harmless. Both come from the same `args`, kept consistent.
+                args,
                 inner: Box::new(inner),
             };
         }

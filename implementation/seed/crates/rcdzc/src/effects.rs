@@ -124,6 +124,12 @@ struct HandlePlan {
     handle: StructId,
     /// The effect NAME each arm's op is projected on.
     effect_name: String,
+    /// The SOURCE effect-name occurrence (the handle head's `items[1]`). The FIRST arm's projection
+    /// reuses it (rather than a fresh minted atom) so the effect name keeps a source span — an UNBOUND
+    /// effect (`handle Nope …`) then anchors its CDZ0101 to the real `Nope` token instead of a spanless
+    /// synthesized atom. Remaining arms mint fresh atoms (each projection needs its own occurrence for
+    /// independent parent-walk anchoring).
+    effect_occ: StructId,
     /// Each arm occurrence and its current bare-op child — the op is swapped for a `(. E op)` projection
     /// built at apply time, leaving the arm's params/state/body (and the arm's own id/span) untouched.
     arms: Vec<StructId>,
@@ -161,6 +167,7 @@ fn plan_canonical_handle(ast: &Arenas, id: StructId) -> Option<HandlePlan> {
     Some(HandlePlan {
         handle: id,
         effect_name,
+        effect_occ: items[1],
         arms: arm_nodes.clone(),
     })
 }
@@ -169,17 +176,25 @@ fn plan_canonical_handle(ast: &Arenas, id: StructId) -> Option<HandlePlan> {
 /// effect from the handle head. Both the arm nodes and the handle node keep their `StructId`s (and thus
 /// their source spans); only the projection nodes are freshly appended.
 fn apply_handle_plan(ast: &mut Arenas, plan: HandlePlan) {
-    for arm in plan.arms {
-        // The arm's current bare op (its first child) — replace it with `(. E op)`. `E` is a FRESH name
-        // occurrence per arm so the parent walk anchors each projection independently; `op` is REUSED
-        // (its own occurrence carries the arm's op-name span).
+    for (i, arm) in plan.arms.iter().enumerate() {
+        let arm = *arm;
+        // The arm's current bare op (its first child) — replace it with `(. E op)`. `op` is REUSED (its
+        // own occurrence carries the arm's op-name span). For `E`: the FIRST arm REUSES the source
+        // effect-name occurrence (so an unbound effect keeps its span — a CDZ0101 anchors to the real
+        // token, M31), the REST mint a fresh atom each (a projection needs its own occurrence for
+        // independent parent-walk anchoring). The dropped head effect-name slot is otherwise orphaned, so
+        // re-parenting it here also keeps it reachable.
         let Struct::List(parts) = ast.get(arm) else {
             continue;
         };
         let op = parts[0];
         let rest: Vec<StructId> = parts[1..].to_vec();
         let dot = push_atom(ast, Leaf::Name(".".to_string()));
-        let eff = push_atom(ast, Leaf::Name(plan.effect_name.clone()));
+        let eff = if i == 0 {
+            plan.effect_occ
+        } else {
+            push_atom(ast, Leaf::Name(plan.effect_name.clone()))
+        };
         let proj = push_list(ast, vec![dot, eff, op]);
         let mut new_children = vec![proj];
         new_children.extend(rest);
@@ -613,6 +628,15 @@ pub fn arm_op_names_undeclared_operation(db: &mut Db, op: StructId) -> bool {
         Some(eff) => !eff.ops.iter().any(|o| o.name == key.name),
         None => false, // no such effect declaration (should not happen for a resolved effect record)
     }
+}
+
+/// The KEY occurrence of a handler-arm op projection `(. E k)` — the `k` child, which carries the arm's
+/// op-NAME source span (the desugar REUSES the surface op-name occurrence for `k`, `apply_handle_plan`).
+/// The projection `(. E k)` itself is a node the desugar freshly SYNTHESIZES (spanless), so a diagnostic
+/// anchored to the projection maps to no source text; anchoring to this key occ instead gives the arm's
+/// op a real `file:line:col`. `None` if `op` is not a `(. …)` form with a key child.
+pub fn arm_op_key_occ(db: &Db, op: StructId) -> Option<StructId> {
+    db.ast.as_form(op, ".").and_then(|t| t.get(1).copied())
 }
 
 /// For an undeclared handler-arm op `(. E k)` (one `arm_op_names_undeclared_operation` flagged), the

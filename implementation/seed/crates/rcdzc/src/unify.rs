@@ -85,11 +85,17 @@ impl Subst {
                 inner: Box::new(self.apply(inner)),
                 unit: unit.clone(),
             },
-            // A nominal substitutes into its underlying type (a generic `Box ?0` — the deferred
-            // instantiation); its `decl`/`name` identity is unchanged.
-            Ty::Nominal { decl, name, inner } => Ty::Nominal {
+            // A nominal substitutes into its type ARGS (a generic `Box ?0` — the deferred instantiation)
+            // AND its `inner` machine-rep hint, so a solved var flows into both; `decl`/`name` unchanged.
+            Ty::Nominal {
+                decl,
+                name,
+                args,
+                inner,
+            } => Ty::Nominal {
                 decl: *decl,
                 name: name.clone(),
+                args: args.iter().map(|t| self.apply(t)).collect(),
                 inner: Box::new(self.apply(inner)),
             },
             Ty::Bool
@@ -228,28 +234,30 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             }
             Ok(())
         }
-        // Two nominals unify iff they are the SAME declaration AND their underlying types unify — the
-        // nominal analogue of the sum rule. The `decl` is the opaque identity (distinct declarations
-        // conflict even with identical shape); `inner` carries the instantiation, so `Box Int64` and
-        // `Box Bool` conflict on their inner unify. A `Ty::Nominal` NEVER unifies with a bare `inner`
-        // (`(Nominal, Int)` falls to the `mismatch` below) — a nominal value cannot cross its own
-        // boundary as its underlying type (§Nominal Types Are Not Comparable Across Their Boundary).
+        // Two nominals unify iff they are the SAME declaration AND their type ARGS unify pairwise — the
+        // exact `Ty::Sum` rule. `decl` is the identity (distinct declarations conflict even with identical
+        // shape); `args` is the instantiation, so `Box Int64` and `Box Bool` conflict on their arg unify.
+        // NOT `inner` — a RECURSIVE nominal's inner diverges by derivation path (`Ty::Sum{decl}` back-edge
+        // vs `Ty::Nominal{decl}`), so unifying it would make `Lst` conflict with `Lst`; unifying `args`
+        // (empty for a monomorphic recursive newtype → decl-equality suffices) is the μ-type-safe rule. A
+        // `Ty::Nominal` NEVER unifies with a bare `inner` (`(Nominal, Int)` → the `mismatch` below), so a
+        // nominal value cannot cross its own boundary as its underlying type (§Nominal Types Are Not
+        // Comparable Across Their Boundary).
         (
             Ty::Nominal {
-                decl: da,
-                inner: ia,
-                ..
+                decl: da, args: aa, ..
             },
             Ty::Nominal {
-                decl: db,
-                inner: ib,
-                ..
+                decl: db, args: ab, ..
             },
         ) => {
-            if da != db {
+            if da != db || aa.len() != ab.len() {
                 return Err(mismatch(&a, &b));
             }
-            unify(subst, ia, ib)
+            for (x, y) in aa.iter().zip(ab.iter()) {
+                unify(subst, x, y)?;
+            }
+            Ok(())
         }
         // `String` is monomorphic — it unifies only with itself (no element/arg to recurse on).
         (Ty::String, Ty::String) => Ok(()),
@@ -401,7 +409,10 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         // sum has empty args, so no variable occurs in it (like the ground types).
         Ty::Sum { args, .. } => args.iter().any(|ft| occurs(subst, v, ft)),
         // A nominal's underlying type may hold the variable (a generic `Box ?0`).
-        Ty::Nominal { inner, .. } => occurs(subst, v, inner),
+        // A nominal's var occurs in its type ARGS (like `Ty::Sum`). NOT `inner` — a recursive nominal's
+        // inner holds a `Ty::Sum{decl}` back-edge; walking it is redundant and its own-decl cycle is not
+        // a variable occurrence. `args` is the axis a fresh instantiation var lives in.
+        Ty::Nominal { args, .. } => args.iter().any(|t| occurs(subst, v, t)),
         // A list's element type may hold the variable (`List ?0`).
         Ty::List(elem) => occurs(subst, v, elem),
         // A map's key or value type may hold the variable (`Map ?0 ?1` — the empty map).
@@ -607,11 +618,17 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
             inner: Box::new(rename(inner, m)),
             unit: unit.clone(),
         },
-        // A generic nominal scheme's underlying type may hold a bound variable (a `(fn (a) … (Box a))`
-        // ctor scheme) — rename it; `decl`/`name` identity is unchanged.
-        Ty::Nominal { decl, name, inner } => Ty::Nominal {
+        // A generic nominal scheme's ARGS (and its `inner` hint) may hold a bound variable (a `(fn (a) …
+        // (Box a))` ctor scheme) — rename both; `decl`/`name` identity is unchanged.
+        Ty::Nominal {
+            decl,
+            name,
+            args,
+            inner,
+        } => Ty::Nominal {
             decl: *decl,
             name: name.clone(),
+            args: args.iter().map(|t| rename(t, m)).collect(),
             inner: Box::new(rename(inner, m)),
         },
         Ty::Bool
@@ -725,9 +742,18 @@ fn freshen_free_go(
             inner: Box::new(freshen_free_go(inner, fresh, map, wmap, smap)),
             unit: unit.clone(),
         },
-        Ty::Nominal { decl, name, inner } => Ty::Nominal {
+        Ty::Nominal {
+            decl,
+            name,
+            args,
+            inner,
+        } => Ty::Nominal {
             decl: *decl,
             name: name.clone(),
+            args: args
+                .iter()
+                .map(|t| freshen_free_go(t, fresh, map, wmap, smap))
+                .collect(),
             inner: Box::new(freshen_free_go(inner, fresh, map, wmap, smap)),
         },
         Ty::Bool

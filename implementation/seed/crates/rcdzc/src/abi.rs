@@ -33,7 +33,15 @@ impl Artifact {
 }
 
 /// A diagnostic's severity. An error denies the artifact; a warning rides alongside a produced one —
-/// the distinction is per-diagnostic, not which arm of a union was taken.
+/// the distinction is per-diagnostic, not which arm of a union was taken. Severity is a SEPARATE field
+/// from the diagnostic's kind (reject/decline/trap): a consumer reads failure-ness from `severity`, not
+/// from whether the "no" was a rejection or a decline.
+///
+//= spec/capabilities/diagnostics.md#every-diagnostic-carries-a-severity
+//# Every diagnostic the compiler emits MUST carry a severity that distinguishes an error, which denies a produced component, from a non-error such as a warning, which may accompany a produced component, so that a consumer decides from the diagnostic itself whether the outcome it reports is a failure.
+///
+//= spec/capabilities/diagnostics.md#every-diagnostic-carries-a-severity
+//# The severity a diagnostic carries MUST be independent of the diagnostic's kind, so that whether an outcome is a failure is read from the severity rather than inferred from whether the outcome is a rejection, a decline, or a trap.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Severity {
     Error,
@@ -154,6 +162,11 @@ impl DiagnosticFix {
 
 /// A machine-readable diagnostic: severity + a stable code (or `None` for an uncoded decline) + a
 /// human message + the AST NODE INDEX it is about (for source mapping) + an optional structural fix.
+/// This STRUCT (not the human-formatted text a CLI prints) is the diagnostic's canonical form — a
+/// consumer branches on its fields rather than parsing prose:
+///
+//= spec/capabilities/diagnostics.md#diagnostics-are-machine-readable
+//# The compiler MUST expose its diagnostics in a machine-readable form rather than only as human-formatted text.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Diagnostic {
     pub severity: Severity,
@@ -164,7 +177,12 @@ pub struct Diagnostic {
     /// compiler emits only the node IDENTITY, never a source position — the consumer (which parsed the
     /// text and holds the span table keyed by this same index) maps it to a text region
     /// (`query-engine.md` §Provenance Is Recovered By Back-Reference). This keeps the compiler
-    /// span-free and its Cadenza port unburdened by source-position plumbing.
+    /// span-free and its Cadenza port unburdened by source-position plumbing. The node index IS the
+    /// diagnostic's span identifier — it names the exact construct the diagnostic concerns, which the
+    /// consumer resolves to a precise source region:
+    ///
+    //= spec/capabilities/diagnostics.md#every-diagnostic-has-a-precise-span
+    //# Every diagnostic the compiler emits MUST carry a source span identifying the construct it concerns.
     pub node: Option<u32>,
     /// A proposed structural repair, if the producer knew one — the "route to a fix" an agent applies
     /// directly. `None` when the compiler has no actionable suggestion.

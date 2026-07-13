@@ -17,7 +17,10 @@ are exactly the `Rational`-magnitude cases** — the one vertical the operator e
 - **Layer 2 — families, prefixes, conversion — over Int/Float.** `Unit.of #"inch"` (named family unit),
   `Unit.prefix kilo metre` (scaled unit), `Unit.in u q` (explicit conversion), SI decimal + IEC binary
   prefixes, automatic mixing conversion to the dimension's reference (const-folded when constant),
-  derived-dimension families (byte-per-second/mbps, hertz), and conflicting-registration `CDZ0502`.
+  derived-dimension families (byte-per-second/mbps, hertz), and unit-registration uniqueness `CDZ0502`
+  (BOTH halves pinned: a CONFLICTING redeclaration is rejected, and an AGREEING one — including an
+  equivalent unreduced ratio like 762/2500 == 381/1250, and a restated user declaration — is admitted,
+  the check comparing the NORMALIZED ratio not the literal num/den).
   Verified end-to-end: 3.0 km → 3000.0 m; 1 KiB + 1 kB = 2024 byte (Int64); 250000 byte/s + 1 mbps.
 - **ML quantity-literal surface** `5 feet` / `5 feet / 1 second` (§7.5, `@b246cc83`).
 
@@ -91,8 +94,13 @@ a design-from-scratch:
 
 ### Non-goals / deferred (Layer 1)
 - **Families, named units, prefixes, auto-conversion** — Layer 2 (needs Symbols + Rationals).
-- **`Qty.pow`** with a compile-time integer exponent — lands with Layer 1 if cheap, else Layer 2 (the
-  `(Unit.^ u n)` map op is trivial; the surface `Qty.pow` can wait).
+- **`Qty.pow`** with a compile-time integer exponent — ✅ LANDED (`Prim::QtyPow`), INCLUDING negative
+  exponents. `(Qty.pow q n)` raises the unit to the `n`th power (`Unit::pow`, composing exponents + scale
+  like `Unit.^`) and erases the magnitude to `|n|` repeated multiplies over the inner type; `n=0` is the
+  dimensionless `1`, and a NEGATIVE `n` is the reciprocal `1 / value^|n|` (an inverse unit like a
+  frequency `second⁻¹` — the division runs in the inner type, so Float divides and Int TRUNCATES). Folds
+  when constant, emits the arithmetic for a runtime magnitude. `Qty.pow q 2` derives the same dimension
+  as `(* q q)`, and `Qty.pow q -1` the same as `(/ (Qty.of 1 Unit.one) q)` — the corpus pins both.
 - The base-dimension NAME in Layer 1: since Symbols don't exist yet, Layer 1 names a base dimension by
   a **string** carried in the `(Unit.base #"metre")` position. ⚠ The corpus WRITES `#"metre"` (a symbol
   literal). See §6 for how Layer 1 handles this without a full Symbol type.

@@ -63,7 +63,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Comparison & ordering",
     blurb: "Comparisons, and the three-way shape of a total order.",
     section: "Fundamentals",
-    exercises: 1,
+    exercises: 2,
     Component: lazy(() => import("./chapters/Ordering.tsx")),
   },
   {
@@ -94,7 +94,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Lists",
     blurb: "Ordered, immutable sequences of values.",
     section: "Fundamentals",
-    exercises: 1,
+    exercises: 2,
     Component: lazy(() => import("./chapters/Lists.tsx")),
   },
   {
@@ -182,7 +182,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Units of measure",
     blurb: "Carry a unit with a value; mix dimensions and it won't compile.",
     section: "What makes Cadenza different",
-    exercises: 2,
+    exercises: 3,
     Component: lazy(() => import("./chapters/Units.tsx")),
   },
   {

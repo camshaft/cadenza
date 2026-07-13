@@ -150,6 +150,98 @@
   (output (: (Qty.of 3.0 Unit.one) (Qty Float64 Unit.one))))
 
 ; ============================================================================================
+; Powers — Qty.pow raises a quantity to a compile-time NON-NEGATIVE integer power, composing the
+; unit exactly as `Unit.^` does (the exponent map + scale are raised to that power) and the erased
+; magnitude by repeated multiply. `(Qty.pow q n)` is the surface companion of the `*`-derived power
+; (metre·metre = metre²): `(Qty.pow q 2)` and `(* q q)` derive the SAME dimension. The exponent is a
+; compile-time integer read off the second argument (not an HM variable), like `Unit.^`'s power.
+; ============================================================================================
+
+(case "raising a quantity to a compile-time power composes the unit and the magnitude"
+  (doc    "`(Qty.pow (Qty.of 3.0 metre) 2)` squares a length: the unit is raised to the 2nd power
+           (metre²) exactly as `Unit.^` composes it, and the erased Float64 magnitude is 3·3 = 9.0. The
+           surface companion of the `*`-derived area (units-of-measure.md #Dimensional Mismatch Is An
+           Error: the operation produces the dimension its rule defines), so `Qty.pow` and repeated
+           multiplication agree.")
+  (input  (Qty.pow (Qty.of 3.0 (Unit.base #"metre")) 2))
+  (output (: (Qty.of 9.0 (Unit.^ (Unit.base #"metre") 2)) (Qty Float64 (Unit.^ (Unit.base #"metre") 2)))))
+
+(case "the power form derives the same dimension as repeated multiplication"
+  (doc    "`(= (Qty.pow (Qty.of 2.0 metre) 2) (* (Qty.of 2.0 metre) (Qty.of 2.0 metre)))` is true: raising
+           to the 2nd power and multiplying twice derive the SAME dimension (metre²) AND the same value
+           (4.0), so the equality is well-dimensioned and holds. Pins that `Qty.pow n` is definitionally
+           the n-fold product — the unit exponents compose identically, decided by the canonical map.")
+  (input  (= (Qty.pow (Qty.of 2.0 (Unit.base #"metre")) 2)
+             (* (Qty.of 2.0 (Unit.base #"metre")) (Qty.of 2.0 (Unit.base #"metre")))))
+  (output (: true Bool)))
+
+(case "a quantity raised to the zeroth power is a dimensionless one"
+  (doc    "`(Qty.pow (Qty.of 5.0 metre) 0)` is the empty product: the unit's exponents are all scaled to
+           zero (Unit.one, the group identity) and the magnitude is the multiplicative identity 1.0. Pins
+           that the zeroth power is dimensionless — metre⁰ = one — matching the free-abelian-group law
+           that a zero exponent drops from the map.")
+  (input  (Qty.value (Qty.pow (Qty.of 5.0 (Unit.base #"metre")) 0)))
+  (output (: 1.0 Float64)))
+
+(case "the power form cubes an integer-magnitude quantity exactly"
+  (doc    "`(Qty.pow (Qty.of 2 metre) 3)` over Int64: the unit is metre³ and the erased magnitude is
+           2·2·2 = 8 by exact integer multiplication. Pins that the power works over the integer numeric
+           the seed has (the repeated multiply is the inner type's own `*`), not only over Float.")
+  (input  (Qty.value (Qty.pow (Qty.of 2 (Unit.base #"metre")) 3)))
+  (output (: 8 Int64)))
+
+(case "a runtime-magnitude quantity raised to a power emits the repeated multiply"
+  (doc    "`(Qty.pow (Qty.of x metre) 2)` with `x` a runtime Float64: the power can't be folded, so it
+           emits x·x at run time, so x=3.0 → 9.0 m². The runtime companion of the constant square — the
+           unit is a compile-time concern (metre²), only the magnitude's multiply is emitted.")
+  (input  (do
+            (def (main (: x Float64))
+              (Qty.value (Qty.pow (Qty.of x (Unit.base #"metre")) 2)))
+            (export main)))
+  (call   main (: 3.0 Float64))
+  (output (: 9.0 Float64)))
+
+(case "a negative power is the reciprocal, deriving an inverse unit"
+  (doc    "`(Qty.pow (Qty.of 2.0 second) -1)` raises a time to the -1 power: the unit is second⁻¹ = a
+           frequency (the exponent map's entry is negated, which `Unit.^ -1` and `Unit./ Unit.one` denote
+           identically), and the erased magnitude is the reciprocal 1/2 = 0.5. A negative power composes
+           the inverse dimension exactly as `(/ (Qty.of 1.0 Unit.one) q)` would — the free-abelian-group
+           inverse.")
+  (input  (Qty.pow (Qty.of 2.0 (Unit.base #"second")) -1))
+  (output (: (Qty.of 0.5 (Unit./ Unit.one (Unit.base #"second")))
+             (Qty Float64 (Unit./ Unit.one (Unit.base #"second"))))))
+
+(case "the negative power agrees with dividing into the dimensionless one"
+  (doc    "`(= (Qty.pow (Qty.of 2.0 second) -1) (/ (Qty.of 1.0 Unit.one) (Qty.of 2.0 second)))` is true:
+           raising to the -1 power and dividing one by the quantity derive the SAME inverse dimension
+           (second⁻¹) AND the same value (0.5), so the equality is well-dimensioned and holds. Pins that
+           `Qty.pow q -1` is definitionally the reciprocal — the group inverse — not a special case.")
+  (input  (= (Qty.pow (Qty.of 2.0 (Unit.base #"second")) -1)
+             (/ (Qty.of 1.0 Unit.one) (Qty.of 2.0 (Unit.base #"second")))))
+  (output (: true Bool)))
+
+(case "a negative power over an integer magnitude truncates the reciprocal"
+  (doc    "`(Qty.pow (Qty.of 2 second) -1)` over Int64: the unit is second⁻¹ and the reciprocal 1/2 is
+           computed by INTEGER division, which truncates toward zero to 0 — the documented precision loss
+           `only where the underlying numeric type is itself inexact` (here Int64 division truncates,
+           units-of-measure.md #A Unit Carries An Exact Scale). The dimension is exact regardless; only
+           the integer magnitude truncates, exactly as `(/ 1 2)` does outside the units layer.")
+  (input  (Qty.value (Qty.pow (Qty.of 2 (Unit.base #"second")) -1)))
+  (output (: 0 Int64)))
+
+(case "a runtime-magnitude quantity raised to a negative power emits the reciprocal"
+  (doc    "`(Qty.pow (Qty.of x second) -1)` with `x` a runtime Float64: the reciprocal can't be folded, so
+           it emits 1/x at run time, so x=4.0 → 0.25 s⁻¹. The runtime companion of the constant reciprocal
+           — the inverse unit is a compile-time concern (second⁻¹), only the magnitude's division is
+           emitted.")
+  (input  (do
+            (def (main (: x Float64))
+              (Qty.value (Qty.pow (Qty.of x (Unit.base #"second")) -1)))
+            (export main)))
+  (call   main (: 4.0 Float64))
+  (output (: 0.25 Float64)))
+
+; ============================================================================================
 ; Comparison — same dimension required (the ordering/equality obligation)
 ; ============================================================================================
 
@@ -593,3 +685,41 @@
             (def (main) 0)
             (export main)))
   (error  CDZ0502))
+
+(case "redeclaring a built-in unit with its own conversion is admissible"
+  (doc    "`(Unit.define #\"foot\" (Unit.of #\"metre\") 381 1250)` redeclares the built-in `foot` at its
+           OWN scale (381/1250 m) — an AGREEING redeclaration — so it is admitted, not CDZ0502
+           (units-of-measure.md #A Named Unit's Conversion Is Unique: a redeclaration that agrees is
+           admissible; only a CONFLICTING one is rejected). `foot` still resolves, and 2 ft = 0.6096 m.
+           The admissible companion of the conflict case: the check rejects a DISAGREEMENT, not a restated
+           agreement.")
+  (input  (do
+            (Unit.define #"foot" (Unit.of #"metre") 381 1250)
+            (def (main) (Qty.value (Unit.in (Unit.of #"metre") (Qty.of 2.0 (Unit.of #"foot")))))
+            (export main)))
+  (output (: 0.6096 Float64)))
+
+(case "an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator"
+  (doc    "`(Unit.define #\"foot\" (Unit.of #\"metre\") 762 2500)` restates the built-in `foot` as 762/2500
+           m, which REDUCES to the built-in 381/1250 — the same conversion written unreduced — so it
+           agrees and is admitted (not CDZ0502). Pins that the uniqueness check compares the NORMALIZED
+           ratio (a conversion is a rational number, not a syntactic num/den pair): 762/2500 and 381/1250
+           are one conversion, so 2 ft = 0.6096 m as before.")
+  (input  (do
+            (Unit.define #"foot" (Unit.of #"metre") 762 2500)
+            (def (main) (Qty.value (Unit.in (Unit.of #"metre") (Qty.of 2.0 (Unit.of #"foot")))))
+            (export main)))
+  (output (: 0.6096 Float64)))
+
+(case "redeclaring a user-declared unit with the same conversion is admissible"
+  (doc    "`(Unit.define #\"span\" (Unit.of #\"metre\") 3 1)` twice declares `span` = 3 m identically — the
+           agreement clause applies to a program's OWN earlier declaration, not only the built-in table
+           (units-of-measure.md #A Named Unit's Conversion Is Unique) — so the second declaration is
+           admitted and `span` resolves to one conversion: 2 span = 6.0 m. A CONFLICTING second
+           declaration would be CDZ0502; a restated one is fine.")
+  (input  (do
+            (Unit.define #"span" (Unit.of #"metre") 3 1)
+            (Unit.define #"span" (Unit.of #"metre") 3 1)
+            (def (main) (Qty.value (Unit.in (Unit.of #"metre") (Qty.of 2.0 (Unit.of #"span")))))
+            (export main)))
+  (output (: 6.0 Float64)))

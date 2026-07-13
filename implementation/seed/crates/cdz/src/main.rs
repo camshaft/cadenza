@@ -408,6 +408,11 @@ struct FixArgs {
     /// clean is applied (the `check --verify-fixes` bar). A fix that does not verify is NEVER applied.
     #[arg(long)]
     all: bool,
+    /// Report the applied fixes as JSON (one object per fix: `code`, `message`, `kind`) instead of the
+    /// human "applied N fix(es)" line — so an agent driving `fix` learns exactly WHICH faults were
+    /// repaired, not just how many. The file is still written (unless `--diff`/`--dry-run`).
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -575,48 +580,8 @@ fn apply_fix_to_source(
     repl: &str,
     surface: cadenza_syntax::convert::Format,
 ) -> Option<String> {
-    use cadenza_syntax::query::Tree;
-
-    let old = Tree::of(arenas);
-    // Transform the target node into its fixed form, producing the NEW tree. Each fix kind is a pure
-    // tree op — no text, no `…` sentinel, no paren-finding.
-    let new = transform_target(&old, target, &mut |node: &Tree| -> Option<Tree> {
-        match kind {
-            // Replace the node with the parsed payload subtree.
-            "replace" => parse_fragment(repl),
-            // Wrap: build the ctor form from `repl`'s parse and substitute its `…` hole atom with the
-            // ORIGINAL node subtree (spans intact) — `(Some …)` + node → `(Some <node>)`.
-            "wrap" => {
-                let ctor = parse_fragment(repl)?;
-                Some(substitute_hole(&ctor, node))
-            }
-            // Insert: append the parsed arm form(s) as new children at the end of the target LIST.
-            "insert" => {
-                let Tree::List(children, origin) = node else {
-                    return None; // an insert targets a list (the `(match …)` form)
-                };
-                let mut children = children.clone();
-                for arm in split_top_forms(repl) {
-                    children.push(parse_fragment(&arm)?);
-                }
-                Some(Tree::List(children, *origin))
-            }
-            // Delete is handled by the parent (removing the child), not by transforming the node —
-            // see `transform_target`'s delete path; this arm is unreachable for "delete".
-            _ => None,
-        }
-    });
-
-    // Delete removes the node from its parent's child list — a structural op the node-transform closure
-    // can't express (it returns a replacement node, not "no node"), so it has its own tree builder.
-    let new = if kind == "delete" {
-        delete_target(&old, target)
-    } else {
-        new
-    };
-    let new = new?;
-
-    let span_of = |t: &Tree| -> Option<(usize, usize)> {
+    let (old, new) = fix_old_new(arenas, kind, target, repl)?;
+    let span_of = |t: &cadenza_syntax::query::Tree| -> Option<(usize, usize)> {
         t.origin()
             .and_then(|id| spans.get(id))
             .map(|s| (s.start, s.end))
@@ -624,6 +589,77 @@ fn apply_fix_to_source(
     let edited =
         cadenza_syntax::query::textedit::rewrite_preserving(source, &old, &new, &span_of, surface);
     Some(edited.output)
+}
+
+/// The STRUCTURAL PATCH a fix realizes — the minimal, surface-correct, span-anchored byte edits
+/// (`[{start, end, text}]`) turning `source` into the fixed program. The machine-channel (`cdz check
+/// --json`) counterpart of [`apply_fix_to_source`]: same new-tree build + same `cadenza_syntax` engine,
+/// but returns the primitive edits (via `textedit::edits_preserving`) so an agent applies them directly
+/// (`source[start..end] := text`) instead of re-deriving positions from a kind/prefix/suffix. `None` when
+/// the fix cannot be built (unparseable payload, node not found).
+fn fix_edits(
+    source: &str,
+    arenas: &cadenza_syntax::Arenas,
+    spans: &cadenza_syntax::spans::SpanTable,
+    kind: &str,
+    target: cadenza_syntax::StructId,
+    repl: &str,
+    surface: cadenza_syntax::convert::Format,
+) -> Option<Vec<cadenza_syntax::query::textedit::Edit>> {
+    let (old, new) = fix_old_new(arenas, kind, target, repl)?;
+    let span_of = |t: &cadenza_syntax::query::Tree| -> Option<(usize, usize)> {
+        t.origin()
+            .and_then(|id| spans.get(id))
+            .map(|s| (s.start, s.end))
+    };
+    Some(cadenza_syntax::query::textedit::edits_preserving(
+        source, &old, &new, &span_of, surface,
+    ))
+}
+
+/// Build the `(old, new)` tree pair a fix transforms — the shared core of [`apply_fix_to_source`] and
+/// [`fix_edits`]. `old` is the parsed program; `new` is it with the target node transformed per kind (a
+/// PURE tree op — no text, no `…` sentinel, no paren-finding). `None` if the payload doesn't parse or the
+/// target isn't found.
+fn fix_old_new(
+    arenas: &cadenza_syntax::Arenas,
+    kind: &str,
+    target: cadenza_syntax::StructId,
+    repl: &str,
+) -> Option<(cadenza_syntax::query::Tree, cadenza_syntax::query::Tree)> {
+    use cadenza_syntax::query::Tree;
+    let old = Tree::of(arenas);
+    let new = if kind == "delete" {
+        // Delete removes the node from its parent's child list — a structural op the node-transform
+        // closure can't express (it returns a replacement node, not "no node"), so its own builder.
+        delete_target(&old, target)?
+    } else {
+        transform_target(&old, target, &mut |node: &Tree| -> Option<Tree> {
+            match kind {
+                // Replace the node with the parsed payload subtree.
+                "replace" => parse_fragment(repl),
+                // Wrap: build the ctor form from `repl`'s parse and substitute its `…` hole atom with the
+                // ORIGINAL node subtree (spans intact) — `(Some …)` + node → `(Some <node>)`.
+                "wrap" => {
+                    let ctor = parse_fragment(repl)?;
+                    Some(substitute_hole(&ctor, node))
+                }
+                // Insert: append the parsed arm form(s) as new children at the end of the target LIST.
+                "insert" => {
+                    let Tree::List(children, origin) = node else {
+                        return None; // an insert targets a list (the `(match …)` form)
+                    };
+                    let mut children = children.clone();
+                    for arm in split_top_forms(repl) {
+                        children.push(parse_fragment(&arm)?);
+                    }
+                    Some(Tree::List(children, *origin))
+                }
+                _ => None,
+            }
+        })?
+    };
+    Some((old, new))
 }
 
 /// Parse a fix-payload s-expression fragment (`(Some …)`, `(B unit)`, `compute`) into an owned [`Tree`],
@@ -974,18 +1010,14 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         };
 
         if args.json {
-            // The machine-readable shape: one JSON object per diagnostic, its structured fix nested. An
-            // agent reads `fix.kind` + `fix.from`/`fix.to` and applies the edit directly (span-mapped
-            // here, so it never re-derives positions). `verified` says whether to apply blind.
-            //
-            // How to APPLY, by kind (all over the byte range `[from, to)` of the source):
-            //   • replace / insert — `source[from..to] := replacement`.
-            //   • delete           — `source[from..to] := ""` (+ the tool trims one separator space).
-            //   • wrap             — `source[from..to] := prefix + source[from..to] + suffix`. The wrap
-            //     splits into `prefix`/`suffix` here rather than a single `replacement`: the compiler's
-            //     internal wrap form carries a `…` (U+2026) HOLE sentinel marking where the original text
-            //     goes, and an agent that spliced that raw string would write a literal `…` and CORRUPT the
-            //     file. Emitting `prefix`/`suffix` makes the wrap unambiguous and sentinel-free.
+            // The machine-readable shape: one JSON object per diagnostic, its structured fix nested. The
+            // fix carries a STRUCTURAL PATCH — `edits: [{from, to, text}]` — that an agent applies
+            // literally: for each edit (already sorted, non-overlapping), `source[from..to] := text`. The
+            // edits come from the SAME structural engine `cdz fix` applies (`cadenza_syntax`'s
+            // formatting-preserving rewriter over the fixed tree), so they are minimal and surface-correct
+            // — a wrap is two inserts around the preserved node bytes, an insert lands at the right child
+            // position, a delete drops the node + its separator — with NO `…` sentinel and no hand-derived
+            // positions. `kind` is advisory (what the fix does); `verified` says whether to apply blind.
             use cadenza_syntax::query::json;
             let mut obj = json::Object::new();
             obj.string("severity", severity);
@@ -999,26 +1031,36 @@ fn run_check(args: &CheckArgs) -> ExitCode {
                 obj.raw("from", &from.to_string());
                 obj.raw("to", &to.to_string());
             }
-            if fix_node != "-" {
+            // Compute the structural patch for the fix (if any). Only when the fix's node parses AND the
+            // patch builds — otherwise the diagnostic carries no `fix` (message-only guidance).
+            let patch = if fix_node != "-" {
+                fix_node.parse::<u32>().ok().and_then(|n| {
+                    fix_edits(
+                        &source,
+                        &arenas,
+                        &spans,
+                        fix_kind,
+                        cadenza_syntax::StructId(n),
+                        fix_repl,
+                        surface_of(&args.file),
+                    )
+                })
+            } else {
+                None
+            };
+            if let Some(edits) = patch.filter(|e| !e.is_empty()) {
                 let mut fix = json::Object::new();
                 fix.string("kind", fix_kind); // "replace" | "insert" | "wrap" | "delete"
-                if fix_kind == "wrap" {
-                    // A wrap emits surface-correct `prefix`/`suffix` (ML `Some(`/`)` vs s-expr `(Some `/`)`)
-                    // rather than a `replacement` bearing the internal `…` HOLE sentinel — an agent splicing
-                    // the raw sentinel over the range would write a literal `…` and corrupt the file. The
-                    // shared `rcdzc::wrap_prefix_suffix` reshapes for the surface then splits on the hole.
-                    let (prefix, suffix) =
-                        rcdzc::wrap_prefix_suffix(fix_repl, is_ml_source(&args.file));
-                    fix.string("prefix", &prefix);
-                    fix.string("suffix", &suffix);
-                } else {
-                    fix.string("replacement", fix_repl);
-                }
                 fix.raw("verified", if verified_flag { "true" } else { "false" });
-                if let Some((_, _, from, to)) = span_of(fix_node) {
-                    fix.raw("from", &from.to_string());
-                    fix.raw("to", &to.to_string());
+                let mut arr = json::Array::new();
+                for e in &edits {
+                    let mut eo = json::Object::new();
+                    eo.raw("from", &e.start.to_string());
+                    eo.raw("to", &e.end.to_string());
+                    eo.string("text", &e.text);
+                    arr.raw(&eo.finish());
                 }
+                fix.raw("edits", &arr.finish());
                 obj.raw("fix", &fix.finish());
             }
             println!("{}", obj.finish());
@@ -1091,6 +1133,9 @@ fn run_fix(args: &FixArgs) -> ExitCode {
     let mut current_arenas = arenas;
     let mut applied = 0usize;
     let mut considered_any = false;
+    // Each applied fix's `(code, kind, message)` — for the `--json` report so an agent learns WHICH
+    // faults were repaired (not just the count).
+    let mut applied_fixes: Vec<(String, String, String)> = Vec::new();
     for _ in 0..64 {
         let out = run_sidecar(
             &current_arenas,
@@ -1113,8 +1158,8 @@ fn run_fix(args: &FixArgs) -> ExitCode {
             if cols.len() < 8 {
                 continue;
             }
-            let (code, fix_kind, fix_node, fix_repl, fix_verified) =
-                (cols[1], cols[3], cols[4], cols[5], cols[6]);
+            let (code, fix_kind, fix_node, fix_repl, fix_verified, message) =
+                (cols[1], cols[3], cols[4], cols[5], cols[6], cols[7]);
             if fix_node == "-" || code == "-" {
                 continue;
             }
@@ -1148,6 +1193,7 @@ fn run_fix(args: &FixArgs) -> ExitCode {
             current = edited;
             current_arenas = next_arenas;
             applied += 1;
+            applied_fixes.push((code.to_string(), fix_kind.to_string(), message.to_string()));
             applied_this_pass = true;
             break;
         }
@@ -1157,6 +1203,41 @@ fn run_fix(args: &FixArgs) -> ExitCode {
     }
 
     let repaired = current;
+
+    // The applied-fixes report, as a JSON array of `{code, kind, message}` (empty when nothing applied) —
+    // so an agent driving `fix` sees exactly WHICH faults were repaired. Emitted to stdout REGARDLESS of
+    // the write mode; `--diff`/`--dry-run` still preview the text below, `--json` just replaces the human
+    // "applied N" line. Printed here (before the write) so a write failure doesn't suppress the report.
+    let emit_json_report = || {
+        use cadenza_syntax::query::json;
+        let mut arr = json::Array::new();
+        for (code, kind, message) in &applied_fixes {
+            let mut o = json::Object::new();
+            o.string("code", code);
+            o.string("kind", kind);
+            o.string("message", message);
+            arr.raw(&o.finish());
+        }
+        println!("{}", arr.finish());
+    };
+
+    // `--json` selects the machine report as the OUTPUT SHAPE (over `--diff`'s unified diff / `--dry-run`'s
+    // full text / the human "applied N" line). It still respects the WRITE MODE: with `--diff`/`--dry-run`
+    // the file is not written (a preview), otherwise the repaired text is written back — the report just
+    // says what changed either way.
+    if args.json {
+        if !args.diff
+            && !args.dry_run
+            && applied > 0
+            && let Err(e) = std::fs::write(&args.file, &repaired)
+        {
+            eprintln!("{PROG}: writing {}: {e}", args.file);
+            return ExitCode::FAILURE;
+        }
+        emit_json_report();
+        return ExitCode::SUCCESS;
+    }
+
     if applied == 0 {
         eprintln!(
             "{PROG}: {}: no applicable fixes ({} candidate fix(es) considered)",
