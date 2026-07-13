@@ -1047,6 +1047,29 @@ impl Db {
             .and_then(|t| t.synth)
     }
 
+    /// The constructor-field occurrence a BARE variant name denotes — `NLit` for `(type Node (NLit …) …)`,
+    /// the same field a qualified `(. Node NLit)` projects. A nullary variant used as a VALUE may be
+    /// written bare (`NNil`, not `(. Node NNil)` — `core-semantics.md` §A Sum Type Constructor Is A
+    /// Single-Arity Function), and a payload variant bare-applied (`(NLit 5)`); both resolve here to the
+    /// ctor field, then take the ordinary application/`(meta variant)` paths. The BUILT-IN prelude sums
+    /// (`Some`/`None`/`Ok`/`Err`) bind their bare variant names in the prelude map at load; this is the
+    /// same binding for a USER `(type …)` declaration, resolved generically (a scan of `type_decls`, no
+    /// name special-case). FIRST-WINS across declarations: if two sums declare a same-named variant a
+    /// bare reference takes the first-declared, and a qualified `(. Type Variant)` disambiguates — exactly
+    /// how `type_decl_by_name` / `def_by_name` resolve a shared name. `None` if no declared sum has a
+    /// variant named `name`.
+    pub fn variant_ctor_by_name(&self, name: &str) -> Option<StructId> {
+        for decl in &self.type_decls {
+            if decl.variants.iter().any(|v| v.name == name)
+                && let Some(record) = decl.synth
+                && let Some(field) = crate::sums::variant_ctor_field(&self.ast, record, name)
+            {
+                return Some(field);
+            }
+        }
+        None
+    }
+
     /// The `(index, TypeDecl)` of the sum whose DECLARATION OCCURRENCE is `occ` — the reverse of the
     /// nominal identity a `Ty::Sum { decl }` carries. Used by the escape renderer to recover a sum's
     /// variant names + payload types from its type-value. `None` if `occ` names no declaration.

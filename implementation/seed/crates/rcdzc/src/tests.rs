@@ -9307,6 +9307,86 @@ mod stage1 {
     }
 
     #[test]
+    fn a_bare_user_variant_name_resolves_like_the_qualified_form() {
+        // A USER `(type …)` sum's variant may be referenced BARE — `NLit`/`NNil`, not only the qualified
+        // `(. Node NLit)` (`core-semantics.md` §A Sum Type Constructor Is A Single-Arity Function). A bare
+        // reference resolves to the SAME ctor field the qualified member access projects, so it lowers to
+        // the same `Core::SumNew`. This is the user-declaration analog of the built-in sums binding bare
+        // `Some`/`None` — pinned by comparing the bare form's disc against the qualified form's.
+        use crate::core::Core;
+        use crate::db::Db;
+        use crate::lower::core_of;
+        use crate::testkit::parse;
+        let src = "(module m (type Node (NLit Int64) NNil) \
+                   (def (bare-lit (: a Int64)) (NLit a)) \
+                   (def (qual-lit (: a Int64)) (Node.NLit a)) \
+                   (def (bare-nil) NNil) \
+                   (def (qual-nil) Node.NNil) \
+                   (def (main) 0) (export main))";
+        let mut db = Db::load(parse(src));
+        let disc_of = |db: &mut Db, name: &str| -> u32 {
+            let body = db
+                .defs
+                .iter()
+                .find(|d| d.name == name)
+                .and_then(|d| d.body)
+                .unwrap_or_else(|| panic!("def {name}"));
+            match core_of(db, body) {
+                Core::SumNew { disc, .. } => disc,
+                other => panic!("expected Core::SumNew for {name}, got {other:?}"),
+            }
+        };
+        // The BARE payload variant and the QUALIFIED one lower to the same discriminant (0).
+        assert_eq!(disc_of(&mut db, "bare-lit"), disc_of(&mut db, "qual-lit"));
+        assert_eq!(disc_of(&mut db, "bare-lit"), 0, "NLit is variant 0");
+        // The BARE nullary variant and the QUALIFIED one likewise (disc 1).
+        assert_eq!(disc_of(&mut db, "bare-nil"), disc_of(&mut db, "qual-nil"));
+        assert_eq!(disc_of(&mut db, "bare-nil"), 1, "NNil is variant 1");
+    }
+
+    #[test]
+    fn a_bare_nullary_variant_constructs_and_matches_as_a_value() {
+        // 05-compound-types "a bare nullary constructor is the nullary sum value": a nullary variant used
+        // as a VALUE may be written bare (`NNil`), equivalent to `(Node.NNil unit)`. `(classify 0)` builds
+        // `NNil` bare and `(classify 7)` builds `(Node.NLit 7)`; `val` matches both → 1 + 7 = 8. Pins that
+        // the bare nullary form both CONSTRUCTS and MATCHES for a user sum, end-to-end through a run.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (type Node (NLit Int64) NNil) \
+                       (def (classify n) (if (= n 0) NNil (Node.NLit n))) \
+                       (def (val x) (match x ((Node.NLit v) v) ((Node.NNil _) 1))) \
+                       (def (main) (+ (val (classify 0)) (val (classify 7)))) (export main))"
+                )))
+                .expect("a bare nullary user variant must construct + match"),
+                "main"
+            ),
+            8
+        );
+    }
+
+    #[test]
+    fn a_bare_variant_is_shadowed_by_a_same_named_binding() {
+        // Scope-first resolution: a bare variant name resolves AFTER the lexical scope + top-level defs
+        // (step 3c, before the prelude), so a `def`/`let`/param of the same name SHADOWS the variant. A
+        // top-level `(def (NLit x) …)` named like the `Node` variant `NLit` wins over the ctor: `(NLit 5)`
+        // calls the def (→ 105), not the constructor. Pins that the bare-variant binding does not privilege
+        // a variant name over an ordinary binding.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (type Node (NLit Int64) NNil) \
+                       (def (NLit x) (+ x 100)) \
+                       (def (main) (NLit 5)) (export main))"
+                )))
+                .expect("a def named like a variant shadows the bare variant"),
+                "main"
+            ),
+            105
+        );
+    }
+
+    #[test]
     fn a_variant_construction_emits_the_heap_build_ops() {
         // Construction lowers to the right value-heap OPS — `collect_used_ops` reports exactly what
         // `emit` lays down (they must agree, or the import section omits a called op). A single-payload

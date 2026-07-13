@@ -359,6 +359,18 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
         trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → effect decl");
         return Resolved::Ref { value };
     }
+    // 3c. A BARE VARIANT CONSTRUCTOR of a user `(type …)` declaration — `NLit`/`NNil` for `(type Node
+    // (NLit Int64) NNil)`, the same ctor field a qualified `(. Node NLit)` projects. A nullary variant
+    // may be used bare as a VALUE (`NNil`) and a payload variant bare-applied (`(NLit 5)`); both bind to
+    // the ctor field and take the ordinary member/application paths. This is the user-declaration analog
+    // of the built-in sums binding bare `Some`/`None`/`Ok`/`Err` in the prelude map — after the type name
+    // + effect decls (a type/effect name shadows a variant) and before the prelude (a variant shadows a
+    // built-in), resolved generically off `type_decls` (no name special-case). FIRST-WINS across sums; a
+    // qualified `(. Type Variant)` disambiguates a shared variant name.
+    if let Some(value) = db.variant_ctor_by_name(name) {
+        trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → user sum variant ctor");
+        return Resolved::Ref { value };
+    }
     // 4. The prelude map — a built-in binds to its installed arena node (a record, for a module). The
     // same `Ref` a program binding produces, so member access / folding treats it identically.
     if let Some(&value) = db.prelude.get(name) {
