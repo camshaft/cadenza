@@ -8672,6 +8672,57 @@ mod stage1 {
     }
 
     #[test]
+    fn a_generic_recursive_sum_bare_self_reference_carries_its_params() {
+        // A GENERIC recursive sum whose self-reference is written BARE — `(type Tree (Leaf a) (Branch
+        // (Tuple Tree Tree)))` — must treat the bare `Tree` in the payload as the sum applied to its OWN
+        // params (`(Tree a)`), the same convention the constructor's RESULT type uses. Before the fix a
+        // bare self-reference reduced to the args-LESS `Ty::Sum{args:[]}`, which did not unify with the
+        // `(Tree Int64)` a `Branch` value carries → `cannot unify Tree with (Tree Int64)`. The param is
+        // annotated (recursive-sum-parameter instantiation inference is a separate increment). `sm` folds
+        // the tree to 12. Also covers a self-reference NESTED in a `List` payload (rose tree).
+        use crate::testkit::parse;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping generic-recursive-sum run");
+            return;
+        };
+        for (label, src, want) in [
+            (
+                "bare self-ref in a tuple payload",
+                "(module m (type Tree (Leaf a) (Branch (Tuple Tree Tree))) \
+                   (def (sm (: t (Tree Int64))) \
+                     (match t ((Tree.Leaf n) n) ((Tree.Branch (tuple l r)) (+ (sm l) (sm r))))) \
+                   (def (main) \
+                     (sm (Tree.Branch (tuple (Tree.Leaf 3) \
+                                             (Tree.Branch (tuple (Tree.Leaf 4) (Tree.Leaf 5))))))) \
+                   (export main))",
+                "12",
+            ),
+            (
+                "bare self-ref nested in a list payload",
+                "(module m (type Rose (RLeaf a) (RNode (List Rose))) \
+                   (def (sz (: t (Rose Int64))) \
+                     (match t ((Rose.RLeaf n) n) ((Rose.RNode xs) (List.len xs)))) \
+                   (def (main) (sz (Rose.RNode (list (Rose.RLeaf 1) (Rose.RLeaf 2) (Rose.RLeaf 3))))) \
+                   (export main))",
+                "3",
+            ),
+        ] {
+            let bytes = compile_component(&crate::codec::encode(&parse(src)))
+                .unwrap_or_else(|e| panic!("compile generic-recursive-sum ({label}): {e:?}"));
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "{label}"),
+                cdz_run::Outcome::Trap(t) => panic!("generic-recursive-sum trapped ({label}): {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn bare_prelude_option_needs_no_declaration() {
         // `Option`/`Some`/`None` are BUILT IN (prelude sums), so a program uses bare `Some`/`None` with
         // NO `(type Option …)` — the corpus surface. `(Some 5)` infers `Option Int64`; a bare `None` is
