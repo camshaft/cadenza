@@ -251,6 +251,21 @@ the component type. The new work:
   representation". +1 unit test (`multiple_closure_exports_decline_naming_the_feature`). The multi-
   export closure ENVELOPE itself (N `make`, shared `call`/resource per signature) remains the next
   real structural increment + the round-trip prerequisite.
+- **✅ MULTI-EXPORT ORACLE LANDED `@844030c5` (byte anchor, test-only).** A `ComponentBuilder` reference
+  proves the multi-export shape RUNS under wasmtime before hand-emitting it — the same oracle-first
+  rhythm C-HOST-1 used (`@63d3d96b`). TWO closure exports of the SAME signature `(-> Int64 Int64)`
+  (`make-inc` slot 0 = `(+ x 1)`, `make-triple` slot 1 = `(* x 3)`) share ONE `call`. 🔑 THE LOAD-BEARING
+  REALIZATION: the code slot is recovered from the resource rep at call time (`resource.rep` →
+  `call_indirect`), so a single `call` dispatches WHICHEVER closure a handle names — N same-signature
+  exports need N `make`s + 1 `call` + 1 resource type. Host drives each: `make-inc()`+`call(_,5)`=6,
+  `make-triple()`+`call(_,5)`=15. Test fns: `multi_closure_core` (2 lifted bodies + 2 makes + shared
+  call over a size-2 funcref table), `multi_inner_reexport_component` (2 make imports + shared call,
+  re-exported vs the resource identity), `oracle_multi_closure_component`,
+  `multi_export_closures_share_one_call_and_the_host_drives_each`. NEXT (the hand-emitted production
+  path): (a) `serialize::closure_resource_core_module` → N `make-<name>` + 1 shared `call`; (b)
+  `envelope::assemble_closure_resource` + inner component → N make imports/exports; (c) `emit` routes a
+  same-signature multi-export set to a new `emit_multi_closure_resource` (distinct-signature = N resource
+  types, a later slice); (d) `cdz-run` dispatches `make-<name>` by `opts.export`.
 - **C-HOST-4 — the round-trip (Direction 2).** A second export takes `borrow<closure-sig>`;
   `cdz-run` threads a handle returned by one export back into another; inside, the param is
   `resource.rep`'d to the cell and applied via `Core::CallClosure`. Proves host-as-custodian.

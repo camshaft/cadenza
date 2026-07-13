@@ -340,7 +340,10 @@ fn unify_width(subst: &mut Subst, a: Width, b: Width) -> Result<(), Reject> {
             trace!(target: "rcdzc::unify", lhs = x, rhs = y, "width conflict (CDZ0301, no silent promotion)");
             Err(Reject::coded(
                 Code::NumericMismatch,
-                format!("integer widths differ: {x} vs {y}"),
+                format!(
+                    "integer widths differ: {x}-bit vs {y}-bit — convert explicitly (Cadenza never \
+                     silently widens or narrows an integer)"
+                ),
             ))
         }
     }
@@ -418,13 +421,24 @@ fn mismatch(a: &Ty, b: &Ty) -> Reject {
     // `(+ 2 2.0)`). A non-numeric conflict (`Bool` vs `Int64`) stays the general CDZ0203.
     let is_numeric = |t: &Ty| matches!(t, Ty::Int(_) | Ty::Float(_));
     let both_numeric = is_numeric(a) && is_numeric(b);
-    let code = if both_numeric {
-        Code::NumericMismatch
-    } else {
-        Code::TypeMismatch
-    };
+    if both_numeric {
+        // Two different numeric types — the no-silent-promotion rule (CDZ0301). Name the RULE and point
+        // at the explicit conversion, since the repair is never an implicit coercion: an int↔float mix
+        // converts with `<Float>.of-int`, a width/sign mix with `<IntN>.of` (`numeric-model.md` §Numeric
+        // Types Do Not Silently Promote). This is the message; the operand-anchored `wrap` fix (D7/D8)
+        // rides alongside where inference has the AST node.
+        return Reject::coded(
+            Code::NumericMismatch,
+            format!(
+                "no implicit conversion between numeric types {} and {} — convert explicitly (Cadenza \
+                 never silently promotes a numeric type)",
+                a.render_name(),
+                b.render_name(),
+            ),
+        );
+    }
     Reject::coded(
-        code,
+        Code::TypeMismatch,
         format!("cannot unify {} with {}", a.render_name(), b.render_name()),
     )
 }
