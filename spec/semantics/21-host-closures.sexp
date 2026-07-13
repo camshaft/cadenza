@@ -323,3 +323,59 @@
               (export make-adder) (export twice-plus)))
   (call   twice-plus (: 1 Int64) (: 5 Int64))
   (output (: 12 Int64)))
+
+; WIDER SCALAR WIDTHS — a closure's `call` boundary crosses EVERY aliased-width scalar the ordinary export
+; boundary supports, not just the u32/s64/bool/f64 the value-heap runtime ops model. The closure functype
+; is a plain component functype (component primitive byte via `comp_valtype_of` + core valtype via
+; `valtype_of`), independent of the runtime-op ABI table — so `(-> Int32 Int32)`, `(-> UInt64 UInt64)`,
+; `(-> Int8 Int8)`, a `Float32` closure, and a mixed-width `(-> Int32 Bool)` all cross and dispatch.
+
+(case "a 32-bit-integer closure crosses the host boundary"
+  (doc    "`(fn (x) (+ x 1))` at `(-> Int32 Int32)` — the closure's arg and result cross as the component
+           `s32` primitive (core i32), narrower than the s64 the value-heap ops use. `call(5)` = 6. Pins
+           that a 32-bit closure signature crosses the `call` boundary (the boundary byte comes from
+           `comp_valtype_of`, wider than the runtime-op ABI table).")
+  (input  (do (def (main) (fn ((: x Int32)) (+ x 1))) (export main)))
+  (call   main (: 5 Int32))
+  (output (: 6 Int32)))
+
+(case "a 64-bit-unsigned closure crosses the host boundary"
+  (doc    "`(fn (x) (* x 2))` at `(-> UInt64 UInt64)` — crosses as the component `u64` primitive. `call(21)`
+           = 42. Pins the UNSIGNED 64-bit width (distinct from the signed s64 the runtime ops model).")
+  (input  (do (def (main) (fn ((: x UInt64)) (* x 2))) (export main)))
+  (call   main (: 21 UInt64))
+  (output (: 42 UInt64)))
+
+(case "an 8-bit-integer closure crosses the host boundary"
+  (doc    "`(fn (x) (- x 1))` at `(-> Int8 Int8)` — the narrowest aliased width, crossing as component `s8`
+           (core i32). `call(10)` = 9. Pins that a narrow width crosses (the runtime-op ABI table has no s8,
+           but the closure functype does not need it).")
+  (input  (do (def (main) (fn ((: x Int8)) (- x 1))) (export main)))
+  (call   main (: 10 Int8))
+  (output (: 9 Int8)))
+
+(case "a 32-bit-float closure crosses the host boundary"
+  (doc    "`(fn (x) (+. x 1.5))` at `(-> Float32 Float32)` — crosses as component `f32` (core f32), narrower
+           than the f64 the runtime ops use. `call(2.5)` = 4.0. Pins the 32-bit float width.")
+  (input  (do (def (main) (fn ((: x Float32)) (+. x 1.5))) (export main)))
+  (call   main (: 2.5 Float32))
+  (output (: 4.0 Float32)))
+
+(case "a capturing 32-bit-integer closure crosses and is called"
+  (doc    "`(def (adder (: k Int32)) (fn (x) (+ x k)))` — a capturing closure at the narrower Int32 width.
+           `make(100)` then `call(7)` = 107. Pins that make-forwarding + the captured cell compose with a
+           widened scalar width, exactly as at Int64.")
+  (input  (do (def (adder (: k Int32)) (fn ((: x Int32)) (+ x k))) (export adder)))
+  (call   adder (: 100 Int32) (: 7 Int32))
+  (output (: 107 Int32)))
+
+(case "a UInt64 closure round-trips through a consumer export"
+  (doc    "The round trip at a widened width: `(def (make-adder (: k UInt64)) (fn (x) (+ x k)))` produces a
+           `(-> UInt64 UInt64)` closure; `(def (apply-it (: g (-> UInt64 UInt64)) (: x UInt64)) (g x))`
+           consumes one. `make-adder(100)` → a handle → `apply-it(handle, 7)` = 107. Pins that the
+           producer/consumer boundary (own<t> + resource.rep dispatch) crosses a non-Int64 scalar width.")
+  (input  (do (def (make-adder (: k UInt64)) (fn ((: x UInt64)) (+ x k)))
+              (def (apply-it (: g (-> UInt64 UInt64)) (: x UInt64)) (g x))
+              (export make-adder) (export apply-it)))
+  (call   apply-it (: 100 UInt64) (: 7 UInt64))
+  (output (: 107 UInt64)))

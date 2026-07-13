@@ -8,6 +8,9 @@ pass	String.scalar-len of a string selected by a runtime match
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in to a unit of a different dimension is a compile-time error
+pass	a 32-bit-float closure crosses the host boundary
+pass	a 32-bit-integer closure crosses the host boundary
+pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
@@ -30,6 +33,7 @@ pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
 pass	a UInt32 holds a wasm section size at the width boundary
+pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
 pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
@@ -74,6 +78,7 @@ pass	a byte sequence is constructed from a list of integers in range
 pass	a byte sequence written as a literal renders back to the same literal
 pass	a byte-string literal equals the explicit byte sequence it desugars to
 pass	a byte-string literal with escapes equals its explicit byte sequence
+pass	a capturing 32-bit-integer closure crosses and is called
 pass	a capturing closure export tracks both the captured value and the call argument
 pass	a capturing closure is applied through a recursive higher-order function
 pass	a capturing closure stored in a tuple is extracted and applied
@@ -685,6 +690,7 @@ pass	adding quantities of incompatible dimension is a compile-time error
 pass	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
 pass	adding two named family units of one dimension converts to the reference (Float)
 pass	adding two quantities of the same dimension keeps that dimension
+pass	an 8-bit-integer closure crosses the host boundary
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation

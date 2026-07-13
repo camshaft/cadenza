@@ -23319,6 +23319,26 @@ mod closure_host_resource {
         );
     }
 
+    /// The closure `call` boundary crosses every aliased-width SCALAR, but a COMPOUND arg/result (a tuple,
+    /// record, list, …) must still DECLINE — `comp_valtype_of` returns a u32 byte for a `Tuple` (the opaque
+    /// handle it is threaded as between in-program functions), but that handle is meaningless across the
+    /// host boundary, so `closure_boundary_byte` restricts to Int/Bool/Float. Pins that the width-widening
+    /// did NOT accidentally let a compound closure arg cross as a bare handle (the compound-closure-arg
+    /// widening is a separate later increment).
+    #[test]
+    fn a_closure_with_a_compound_argument_declines() {
+        use crate::testkit::parse;
+        let src = "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) (. p 0))) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a closure whose ARG is a tuple must DECLINE (a compound is not a scalar boundary)");
+        assert!(
+            err.message.contains("no scalar host-boundary representation") && err.code.is_none(),
+            "expected the compound-closure-arg decline, got: {:?} / {}",
+            err.code,
+            err.message
+        );
+    }
+
     #[test]
     fn a_partial_application_escaping_as_a_result_declines_with_an_arity_message() {
         use crate::testkit::parse;
