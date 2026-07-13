@@ -1608,6 +1608,55 @@ pub fn reduce_ctor(
             db.cache_build(key, built);
             Ok(built)
         }
+        // `Map.swap`/`Map.take` — the value-yielding forms — reduce to the tuple `(tuple (Map.lookup m k)
+        // (Map.insert m k v))` (swap) / `(tuple (Map.lookup m k) (Map.remove m k))` (take): the prior/
+        // removed value optional PAIRED with the new map. Synthesized as AST so the ordinary pipeline
+        // lowers it AND `reduce_to_tuple_elems` reduces it the same way — so `(. (Map.swap …) 0)` folds to
+        // just the lookup (the corpus projects element 0), dropping the unused new map with no heap build.
+        // `args` are `[m, k]` (take) or `[m, k, v]` (swap). The operand occurrences are REUSED (kept in
+        // their lexical scope, as leaves of the new applications); `resolve_subtree` pins each. Build-once
+        // cached on the site (the `origin`), like `MapNew`.
+        Prim::MapSwap | Prim::MapTake => {
+            let key = crate::db::BuildKey {
+                prim,
+                args: vec![origin.0 as i64],
+            };
+            if let Some(cached) = db.cached_build(&key) {
+                return Ok(cached);
+            }
+            if args.len() < 2 {
+                return Err("Map.swap/Map.take takes a map, a key (and a value for swap)".to_string());
+            }
+            let (map, k) = (args[0], args[1]);
+            // `(. Map lookup)` applied to `(m k)` — the prior/removed value optional.
+            let lookup_app = {
+                let dot = db.push_name(".");
+                let map_mod = db.push_name("Map");
+                let lookup = db.push_name("lookup");
+                let member = db.push_list(vec![dot, map_mod, lookup]);
+                db.push_list(vec![member, map, k])
+            };
+            // The new-map half: `(Map.insert m k v)` for swap, `(Map.remove m k)` for take.
+            let update_app = {
+                let dot = db.push_name(".");
+                let map_mod = db.push_name("Map");
+                if prim == Prim::MapSwap {
+                    let insert = db.push_name("insert");
+                    let member = db.push_list(vec![dot, map_mod, insert]);
+                    db.push_list(vec![member, map, k, args[2]])
+                } else {
+                    let remove = db.push_name("remove");
+                    let member = db.push_list(vec![dot, map_mod, remove]);
+                    db.push_list(vec![member, map, k])
+                }
+            };
+            crate::resolve::resolve_subtree(db, lookup_app);
+            crate::resolve::resolve_subtree(db, update_app);
+            let head = db.push_str("tuple");
+            let built = db.push_list(vec![head, lookup_app, update_app]);
+            db.cache_build(key, built);
+            Ok(built)
+        }
         _ => Err("not a type constructor".to_string()),
     }
 }

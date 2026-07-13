@@ -1048,6 +1048,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         _ => Core::MapSize { map },
                     }
                 }
+                // `Map.swap` / `Map.take` — the value-yielding forms — reduce (via `reduce_ctor`) to the
+                // synthesized tuple `(tuple (Map.lookup m k) (Map.insert/remove m k v))`, then lower that.
+                // Going through `reduce_ctor` (not a direct build) means `reduce_to_tuple_elems` reduces
+                // them the SAME way, so a `(. (Map.swap …) 0)` projection folds to just the lookup — the
+                // corpus shape — dropping the unused new map with no heap build. Falls into the `Some(prim)`
+                // constructor catch-all below (which calls `reduce_ctor`); no dedicated arm needed here.
                 // Every other constructor prim — including the compound-VALUE constructors `TupleNew`/
                 // `RecordNew` reached via the shadowable `tuple`/`record` alias names — reduces via
                 // `reduce_ctor`, which rewrites `(tuple a b)` → the symbol-headed `((,) a b)` (and
