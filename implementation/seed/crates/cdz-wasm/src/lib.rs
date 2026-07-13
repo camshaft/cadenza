@@ -163,20 +163,33 @@ fn to_js_diag(
 
 /// Parse `text` in `surface` into rcdzc's binary AST bytes AND the front-end span table (node id →
 /// UTF-8 byte range) built from the SAME parse. The span table MUST be keyed by the CANONICAL node ids,
-/// because `codec::encode` canonicalizes (`canon.rs`) and the compiler decodes+reports THOSE ids. The
-/// s-expr reader already builds canonically, so its span table matches directly. The ML reader does NOT
-/// (it builds an infix operand before its operator head), so a raw ML span table is keyed by
-/// pre-canonical ids and a lookup by a compiler node id lands on the WRONG node — every id from the
-/// first infix operator on is shifted (`ml-parser-node-order`). So the ML path CANONICALIZES the arena
-/// and REMAPS the span table to the canonical ids first. Only the s-expression and ML surfaces have a
-/// reader; a binary or output-only (`debug`/`flat`) `from` has no source spans, so `spans` is `None`.
+/// because `codec::encode` canonicalizes (`canon.rs`) and the compiler decodes+reports THOSE ids. A raw
+/// span table can be keyed by pre-canonical ids, so a lookup by a compiler node id lands on the WRONG
+/// node; both readers therefore CANONICALIZE the arena and REMAP the span table first (the same fix
+/// `cdz`'s `load_program_spanned` applies). The ML reader is non-canonical because it builds an infix
+/// operand before its operator head (`ml-parser-node-order`); the s-expr reader builds a LONE form
+/// canonically, but its MULTI-form path wraps the roots in a synthetic `(do …)` whose head is built
+/// LAST, which canonicalization reorders — so a multi-form guide program needs the remap too (matching
+/// `cdz` M24; without it a `check`/underline lands on a neighbour's span). Only the s-expression and ML
+/// surfaces have a reader; a binary or output-only (`debug`/`flat`) `from` has no source spans, so
+/// `spans` is `None`.
 fn parse_spanned(
     text: &str,
     from: Format,
 ) -> Result<(Vec<u8>, Option<cadenza_syntax::spans::SpanTable>), String> {
     match from {
         Format::Sexpr => {
-            let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(text).map_err(|e| e.0)?;
+            // A SINGLE top-level form stays bare (`read_spanned`); MULTIPLE forms (a guide snippet with
+            // several `(def …)`/`(export …)`) wrap in a synthetic `(do …)` via `read_all_spanned` —
+            // `read_spanned` errors on trailing input, so fall back to it. Then canonicalize + remap so
+            // the span table is keyed by the ids the compiler reports (a lone form's map is identity, so
+            // that case is byte-unchanged).
+            let (raw_arenas, raw_spans) = match cadenza_syntax::sexpr::read_spanned(text) {
+                Ok(pair) => pair,
+                Err(_) => cadenza_syntax::sexpr::read_all_spanned(text).map_err(|e| e.0)?,
+            };
+            let (arenas, id_map) = cadenza_syntax::canon::canonicalize_with_map(&raw_arenas);
+            let spans = raw_spans.remap(&id_map, arenas.structure.len());
             Ok((cadenza_syntax::codec::encode(&arenas), Some(spans)))
         }
         Format::Ml => {
@@ -978,4 +991,40 @@ fn program_core_module(component: &[u8]) -> Option<Vec<u8>> {
 #[wasm_bindgen]
 pub fn required_runtime_hash() -> String {
     rcdzc::backend::wasm::runtime_abi::REQUIRED_RUNTIME_HASH.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A MULTI-form s-expr guide snippet (several top-level forms) must PARSE and its span table must be
+    /// keyed by the CANONICAL node ids the compiler reports. `read_spanned` errors on trailing input, so
+    /// before the fix a multi-form program failed to parse at all; and even parsed, the synthetic `(do …)`
+    /// wrap reorders ids under canonicalization, so an un-remapped table maps a diagnostic to a
+    /// NEIGHBOUR's span (the `cdz` M24 corruption). This pins both: it parses, and the `helper` def
+    /// name's node maps back to the `helper` bytes — not a neighbour.
+    #[test]
+    fn multi_form_sexpr_parses_and_spans_are_canonical() {
+        let src = "(def (helper x) (+ x 1)) (def (main) (helper 5)) (export main)";
+        let (ast_bytes, spans) = parse_spanned(src, Format::Sexpr).expect("multi-form parses");
+        assert!(!ast_bytes.is_empty(), "produced AST bytes");
+        let spans = spans.expect("s-expr carries spans");
+        // Every recorded span must slice its own text without panicking, and at least one span must be
+        // exactly the `helper` def name — proving the table is keyed by ids that still line up with the
+        // source after canonicalization (a shifted table would map some id onto `(f x y)`-style bytes).
+        let mut saw_helper_name = false;
+        for i in 0..(ast_bytes.len() as u32) {
+            if let Some(span) = spans.get(cadenza_syntax::ast::StructId(i))
+                && span.end <= src.len()
+                && &src[span.start..span.end] == "helper"
+            {
+                saw_helper_name = true;
+                break;
+            }
+        }
+        assert!(
+            saw_helper_name,
+            "a node's span must cover exactly `helper` — the canonical span mapping holds"
+        );
+    }
 }

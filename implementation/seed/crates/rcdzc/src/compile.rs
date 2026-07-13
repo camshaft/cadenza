@@ -337,6 +337,61 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             .at(occ),
         );
     }
+    // MODULE DIRECTIVE `(pragma <key> <arg>…)`. A directive's key must be drawn from the fixed registry
+    // the specification defines (`modules-and-namespaces.md` §A Module Directive Is Drawn From A Fixed
+    // Set), and its arguments must match the shape that key defines — so an unknown key is CDZ0601 and a
+    // recognized key with the wrong argument shape is CDZ0602, rather than silently ignored (a dropped
+    // meaning-changing directive would make one source mean two things on two toolchains). The registry
+    // is small and fixed HERE (the spec's set); the ONLY key it defines today is `default-integer`, which
+    // takes exactly one type argument. A WELL-FORMED directive (right key + arity) is NOT flagged here —
+    // its semantic effect / domain check (`default-integer`'s integer-domain predicate → CDZ0303, and the
+    // literal-defaulting behavior itself) is a separate, not-yet-built concern, so a well-formed pragma
+    // still DECLINES downstream rather than being mistaken for compiled. Every `(pragma …)` in the arena
+    // is checked (a top-level one or a module member alike); the fault anchors at the pragma form, which
+    // sorts before a later reference, so it is the reported error.
+    for form in (0..db.ast.structure.len() as u32).map(StructId) {
+        let Some(ptail) = db.ast.as_form(form, "pragma") else {
+            continue;
+        };
+        let key = ptail.first().and_then(|&k| db.ast.as_name(k));
+        match key {
+            // `default-integer <T>` — exactly one argument (the default type). Missing/extra → malformed.
+            Some("default-integer") => {
+                if ptail.len() != 2 {
+                    faults.push(
+                        Reject::coded(
+                            Code::MalformedDirective,
+                            "`default-integer` takes exactly one type argument (e.g. `(pragma default-integer Int64)`)",
+                        )
+                        .at(form),
+                    );
+                }
+            }
+            // A key the fixed registry does not define — rejected, not ignored.
+            Some(other) => {
+                faults.push(
+                    Reject::coded(
+                        Code::UnknownDirective,
+                        format!(
+                            "`{other}` is not a module directive this specification defines (the pragma \
+                             registry is a fixed set; an unknown key is rejected, not ignored)"
+                        ),
+                    )
+                    .at(form),
+                );
+            }
+            // `(pragma)` with no key at all — structurally malformed.
+            None => {
+                faults.push(
+                    Reject::coded(
+                        Code::MalformedDirective,
+                        "a `(pragma …)` directive needs a key (e.g. `(pragma default-integer Int64)`)",
+                    )
+                    .at(form),
+                );
+            }
+        }
+    }
     // DUPLICATE DEFINITION. A module evaluates to a record of its definitions, and a record has a FIXED
     // SET of field names (core-semantics.md #A Record Has A Fixed Set Of Named Fields), so defining the
     // same name twice is the same ill-formedness `(record (a 1) (a 2))` is rejected for (CDZ0201) — not

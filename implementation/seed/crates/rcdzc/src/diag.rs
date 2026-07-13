@@ -147,6 +147,19 @@ pub enum Code {
     /// mismatch. (The built-in family table can't hit this — a conflict there is a compiler bug that
     /// panics at construction; this codes the future USER family-declaration surface's conflict.)
     UnitConflict,
+    /// A module DIRECTIVE `(pragma <key> …)` names a key NOT in the fixed registry the specification
+    /// defines (`modules-and-namespaces.md` §A Module Directive Whose Key Is Not One The Fixed Set
+    /// Defines Is Rejected): a directive's meaning must be fixed across generations, so an unknown key is
+    /// rejected at compile time rather than ignored (a dropped meaning-changing directive would make one
+    /// source mean two things on two toolchains). Opens the CDZ06xx MODULE-DIRECTIVE band.
+    UnknownDirective,
+    /// A recognized module directive whose ARGUMENTS do not match the shape its key defines
+    /// (`modules-and-namespaces.md` §A Module Directive's Arguments Must Match The Shape The Directive's
+    /// Key Defines): the key is in the registry but the directive is structurally malformed (wrong
+    /// arity), e.g. `(pragma default-integer)` omitting its one required type argument. Distinct from
+    /// `UnknownDirective` (CDZ0601, an unknown KEY) and from a numeric-domain failure (CDZ0303, a
+    /// well-formed directive whose type argument fails the integer-domain predicate).
+    MalformedDirective,
     /// A ROBUSTNESS decline: a well-formed program the compiler cannot reduce to a component because it
     /// hits a recursion/resource BOUND — an unproductive compile-time recursion (a nullary self-call
     /// `(def (f) (f))` with no base case: following it re-enters the same body without end, and a nullary
@@ -187,6 +200,8 @@ impl Code {
             Code::IllFormedBinary => "CDZ0220",
             Code::DimensionMismatch => "CDZ0501",
             Code::UnitConflict => "CDZ0502",
+            Code::UnknownDirective => "CDZ0601",
+            Code::MalformedDirective => "CDZ0602",
             Code::RecursionBound => "CDZ0999",
         }
     }

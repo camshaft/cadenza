@@ -708,6 +708,57 @@ pub fn solve_lambda_param_ty(db: &mut Db, binder: StructId, body: StructId) -> T
     ground_param(subst.apply(&var))
 }
 
+/// The FUNCTION TYPE a lambda VALUE is EXPECTED to have from its immediate CONTEXT — the type its parent
+/// construct requires of it — when that context DECLARES an arrow. `type_of` computes a lambda's type
+/// bottom-up (from its body + param occurrences), so a bare `(fn (n) …)` whose param the body does not
+/// pin stays `(-> Any …)`; but the SITE the lambda occupies often declares the arrow: a variant
+/// constructor's PAYLOAD (`(T.Susp (fn (n) …))` where `T.Susp : (-> (-> Int64 C) T)`), the built-in
+/// `Some`/`Ok` payload, an annotation. This recovers that expected arrow so `lower_lambda_value` can type
+/// an otherwise-`Any` param/result from it — the "thread the use-site arrow back" the bottom-up pass omits
+/// (`core-semantics.md` §A Function Is A First-Class Value: a closure stored in a variant payload must
+/// type against the payload's declared function type). `None` when the context declares no arrow (a HOF
+/// call site — handled by the call's own unification — or a genuinely unconstrained position).
+pub(crate) fn expected_arrow_for_lambda(db: &mut Db, lambda: StructId) -> Option<Ty> {
+    // (1) An ANNOTATION `(: (fn …) (-> P R))` directly on the lambda — the parent is a `(:` form whose
+    //     second child is the type expression.
+    let parent = db.parent_of(lambda)?;
+    if let Some(ann) = db.ast.as_form(parent, ":")
+        && ann.len() == 2
+        && ann[0] == lambda
+        && let Some(t @ Ty::Fn(_, _)) = crate::eval::typeval_of(db, ann[1])
+    {
+        return Some(t);
+    }
+    // (2) A CONSTRUCTOR-PAYLOAD position — the parent is an application `(ctor … lambda …)` whose head is a
+    //     variant constructor. The lambda's expected type is the ctor's payload type at that argument
+    //     position. Read the ctor's `(-> payload… Sum)` scheme and take the payload at the lambda's index.
+    let crate::ast::Struct::List(list) = db.ast.get(parent) else {
+        return None;
+    };
+    let list = list.clone();
+    let head = *list.first()?;
+    let arg_ix = list.iter().skip(1).position(|&c| c == lambda)?;
+    if crate::eval::variant_disc_of(db, head).is_some() {
+        let mut fresh = Fresh::new();
+        let scheme = crate::eval::scheme_of(db, head, &mut fresh)?;
+        let inst = crate::unify::instantiate(&scheme, &mut fresh);
+        // Peel to the arg_ix-th arrow parameter — the payload this argument fills.
+        let mut cur = inst;
+        for _ in 0..arg_ix {
+            match cur {
+                Ty::Fn(_, r) => cur = *r,
+                _ => return None,
+            }
+        }
+        if let Ty::Fn(p, _) = cur
+            && matches!(*p, Ty::Fn(_, _))
+        {
+            return Some(*p);
+        }
+    }
+    None
+}
+
 /// The `db.defs` index whose signature declares the parameter name-occurrence `binder`, or `None` if
 /// `binder` is not a top-level def parameter (e.g. a `fn` lambda parameter). Walks up from the binder to
 /// the `(def (NAME param…) body)` it sits in.

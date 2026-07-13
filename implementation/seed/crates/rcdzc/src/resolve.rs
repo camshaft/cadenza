@@ -1076,9 +1076,24 @@ fn module_sibling_binds(db: &Db, form: StructId, name: &str) -> Option<Resolved>
     let module_form = db.module_by_synth_record(form)?;
     let members = db.ast.as_form(module_form, "module")?.get(1..)?;
     // FIRST-wins across the members (a duplicate name is a separate concern; the sum/def indices resolve a
-    // shared name first-wins too). `do_def_binds` yields exactly the `Ref`/`Lambda` a top-level/do-local
-    // def of the same shape would — so the ordinary application/fold paths apply uniformly.
-    members.iter().find_map(|&m| do_def_binds(db, m, name))
+    // shared name first-wins too). A NESTED `(module inner …)` member binds `inner` to its synthesized
+    // record — the same `Ref` the `(. outer inner)` projection folds to — so a sibling def's body may
+    // reference the inner module by bare name, exactly as it references a sibling def. `do_def_binds`
+    // yields exactly the `Ref`/`Lambda` a top-level/do-local def of the same shape would — so the ordinary
+    // application/fold paths apply uniformly.
+    members.iter().find_map(|&m| {
+        if db
+            .ast
+            .as_form(m, "module")
+            .and_then(|t| t.first())
+            .and_then(|&n| db.ast.as_name(n))
+            == Some(name)
+            && let Some(record) = db.module_synth_by_occ(m)
+        {
+            return Some(Resolved::Ref { value: record });
+        }
+        do_def_binds(db, m, name)
+    })
 }
 
 /// If `form` is a handle arm `(op (params…) state body)` ascended from its `body`, and `name` matches

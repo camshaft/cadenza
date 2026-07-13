@@ -1995,41 +1995,11 @@ fn collect_nested_decls(
             if let Some(decl) = scan_effect_decl(ast, form) {
                 effects.push(decl);
             }
-        } else if let Some(mod_tail) = ast.as_form(form, "module") {
-            // A do-local `(module NAME member…)` — record it (its record is synthesized after the scan by
-            // `modules::synthesize`) so its NAME binds in the enclosing scope. A `(def …)` member becomes a
-            // field; an `(effect …)`/`(op …)`/`(type …)`/`(module …)` member is a legitimate NON-export
-            // (correctly ABSENT from the record, so projecting it — `(. m log)` for an effect — is the
-            // closed-record CDZ0201 the corpus wants). But a member the compiler does NOT model as either a
-            // field or a benign non-export — a `(pragma …)` (a validation OBLIGATION: a malformed pragma
-            // must be rejected CDZ0602, which is not yet built) — would be silently DROPPED, letting the
-            // program run as if the obligation were absent (a decline-don't-miscompile violation). So an
-            // UNMODELED-obligation member blocks registration → the module name stays unbound → the program
-            // DECLINES. The modeled set is closed; anything outside it (today just `pragma`) blocks.
-            let modeled = |member: StructId| {
-                matches!(
-                    ast.head_name(member),
-                    Some("def" | "effect" | "op" | "type" | "module" | "doc")
-                )
-            };
-            let all_modeled = mod_tail.get(1..).unwrap_or(&[]).iter().all(|&m| modeled(m));
-            if all_modeled
-                && let Some(&name) = mod_tail.first()
-                && let Some(name_str) = ast.as_name(name)
-            {
-                modules.push(ModuleDecl {
-                    name: name_str.to_string(),
-                    occ: form,
-                    synth: None,
-                });
-            }
-            for &member in mod_tail.get(1..).unwrap_or(&[]) {
-                if let Some(def_tail) = ast.as_form(member, "def")
-                    && let Some(&def_body) = def_tail.get(1)
-                {
-                    collect_nested_decls(ast, def_body, top, types, effects, modules);
-                }
-            }
+        } else if ast.as_form(form, "module").is_some() {
+            // A do-local `(module NAME member…)` — register it and descend its members (including any
+            // NESTED `(module …)`) via the shared `collect_module_decl`, which handles arbitrarily deep
+            // module nesting.
+            collect_module_decl(ast, form, top, types, effects, modules);
         } else if let Some(def_tail) = ast.as_form(form, "def") {
             // A do-local `(def sig body)` whose body may itself be a `(do …)` carrying declarations.
             if let Some(&def_body) = def_tail.get(1) {
@@ -2038,6 +2008,61 @@ fn collect_nested_decls(
         } else {
             // Any other form may itself be (or contain) a nested `(do …)` — descend it directly.
             collect_nested_decls(ast, form, top, types, effects, modules);
+        }
+    }
+}
+
+/// Register a single `(module NAME member…)` DECLARATION and descend its members for further nested
+/// declarations — the recursive core shared by `collect_nested_decls`'s do-local module branch and its
+/// own recursion for a MODULE-IN-MODULE member. A `(def …)` member becomes an export FIELD; a nested
+/// `(module inner …)` member is itself registered (so `inner` is a field of the outer's record — a
+/// nested record) and recursed into, for arbitrarily deep module nesting. An `(effect …)`/`(op …)`/
+/// `(type …)`/`(doc …)` member is a legitimate NON-export (correctly ABSENT from the record, so
+/// projecting it is the closed-record CDZ0201 the corpus wants). A member the compiler does NOT model as
+/// either a field or a benign non-export — a `(pragma …)` (a validation OBLIGATION not yet built) —
+/// blocks registration: the module NAME stays unbound and the program DECLINES rather than silently
+/// dropping the obligation (decline-don't-miscompile). The modeled set is closed; anything outside it
+/// (today just `pragma`) blocks. The `all_modeled` guard is per-module, so an unmodeled member in the
+/// INNER module blocks only the inner's registration, not the outer's — matching a top-level module's
+/// independence.
+fn collect_module_decl(
+    ast: &Arenas,
+    form: StructId,
+    top: &std::collections::HashSet<StructId>,
+    types: &mut Vec<TypeDecl>,
+    effects: &mut Vec<EffectDecl>,
+    modules: &mut Vec<ModuleDecl>,
+) {
+    let Some(mod_tail) = ast.as_form(form, "module") else {
+        return;
+    };
+    let members = mod_tail.get(1..).unwrap_or(&[]).to_vec();
+    let modeled = |member: StructId| {
+        matches!(
+            ast.head_name(member),
+            Some("def" | "effect" | "op" | "type" | "module" | "doc")
+        )
+    };
+    let all_modeled = members.iter().all(|&m| modeled(m));
+    if all_modeled
+        && let Some(&name) = mod_tail.first()
+        && let Some(name_str) = ast.as_name(name)
+    {
+        modules.push(ModuleDecl {
+            name: name_str.to_string(),
+            occ: form,
+            synth: None,
+        });
+    }
+    for &member in &members {
+        if ast.as_form(member, "module").is_some() {
+            // A MODULE-IN-MODULE member — register + descend it (a nested record field of this module).
+            collect_module_decl(ast, member, top, types, effects, modules);
+        } else if let Some(def_tail) = ast.as_form(member, "def")
+            && let Some(&def_body) = def_tail.get(1)
+        {
+            // A `(def …)` member whose body may itself carry a `(do …)` with declarations.
+            collect_nested_decls(ast, def_body, top, types, effects, modules);
         }
     }
 }

@@ -13,23 +13,38 @@
 
 use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::db::ModuleDecl;
+use crate::fxhash::FxHashMap;
 use crate::prelude::{push_atom, push_list};
 
 /// Synthesize each module declaration's record, recording it on `decl.synth`. Runs during `Db::load`
 /// AFTER the scan (it reads the declarations) and BEFORE the parent index (which must index the
 /// synthesized nodes so a name inside a module member resolves by the ordinary scope walk).
 pub fn synthesize(ast: &mut Arenas, decls: &mut [ModuleDecl]) {
-    for decl in decls.iter_mut() {
-        decl.synth = Some(module_record(ast, decl.occ));
+    // Records are built INNER-FIRST: a MODULE-IN-MODULE member embeds the inner module's already-built
+    // record, so the inner must exist when the outer is built. `db::collect_module_decl` registers an
+    // outer module BEFORE its inner members, so iterating `decls` in REVERSE is inner-before-outer. Each
+    // built record is recorded in `synth_by_occ` (keyed by declaration occurrence) for an enclosing module
+    // to look up when it embeds a nested module member.
+    let mut synth_by_occ: FxHashMap<StructId, StructId> = FxHashMap::default();
+    for decl in decls.iter_mut().rev() {
+        let rec = module_record(ast, decl.occ, &synth_by_occ);
+        decl.synth = Some(rec);
+        synth_by_occ.insert(decl.occ, rec);
     }
 }
 
-/// Build one module's record `(record (name <field-value>)…)` from its `(module NAME def…)` declaration
-/// occurrence. Each `(def …)` member becomes a `(field-name <value>)` field: a value/nullary def's body,
-/// or a function def's synthesized `(fn (params) body)` lambda. A non-`def` member (a nested `(type …)`,
-/// `(module …)`, a `(delegate …)`) is skipped here — this increment realizes the value/function export
-/// surface; the metadata/capability channels are later increments (their cases decline meanwhile).
-fn module_record(ast: &mut Arenas, module_form: StructId) -> StructId {
+/// Build one module's record `(record (name <field-value>)…)` from its `(module NAME member…)`
+/// declaration occurrence. Each `(def …)` member becomes a `(field-name <value>)` field: a value/nullary
+/// def's body, or a function def's synthesized `(fn (params) body)` lambda. A NESTED `(module inner …)`
+/// member becomes an `(inner <inner-record>)` field whose value is the inner module's already-built
+/// record (looked up in `synth_by_occ`) — nesting the record, so a member-access chain projects it. A
+/// non-def / non-module member (a nested `(type …)`, `(effect …)`, `(doc …)`) is skipped — a legitimate
+/// non-export (correctly absent from the record; projecting it is the closed-record CDZ0201).
+fn module_record(
+    ast: &mut Arenas,
+    module_form: StructId,
+    synth_by_occ: &FxHashMap<StructId, StructId>,
+) -> StructId {
     // The record PRIMITIVE head is the STRING `"record"` (the bare NAME `record` is a shadowable prelude
     // alias); a compiler-synthesized record uses the string head so it resolves structurally to
     // `Resolved::Record` independent of any user binding of `record`, exactly as `sums`/`effects` do.
@@ -42,11 +57,28 @@ fn module_record(ast: &mut Arenas, module_form: StructId) -> StructId {
         .map(<[StructId]>::to_vec)
         .unwrap_or_default();
     for member in members {
-        if let Some(field) = def_field(ast, member) {
+        // A NESTED module member — a field `(inner <inner-record>)`. The inner record is built first (see
+        // `synthesize`), so `synth_by_occ` carries it; an inner that FAILED to register (an unmodeled
+        // member) has no entry, so it contributes no field and `(. outer inner)` is a closed-record
+        // CDZ0201 rather than a miscompile.
+        if let Some(inner_name) = module_member_name(ast, member)
+            && let Some(&inner_rec) = synth_by_occ.get(&member)
+        {
+            let k = push_atom(ast, Leaf::Name(inner_name));
+            children.push(push_list(ast, vec![k, inner_rec]));
+        } else if let Some(field) = def_field(ast, member) {
             children.push(field);
         }
     }
     push_list(ast, children)
+}
+
+/// The NAME of a `(module NAME …)` member, if `member` is a module form with a bare-name head — the field
+/// key an enclosing module registers for a nested module. `None` for a non-module member (a `(def …)` /
+/// `(type …)` / …), so the caller falls through to the ordinary `def_field`.
+fn module_member_name(ast: &Arenas, member: StructId) -> Option<String> {
+    let tail = ast.as_form(member, "module")?;
+    ast.as_name(*tail.first()?).map(str::to_string)
 }
 
 /// A `(field-name <value>)` field for a `(def SIG BODY)` module member, or `None` for a non-def / malformed
