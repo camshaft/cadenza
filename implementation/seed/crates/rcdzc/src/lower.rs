@@ -1232,11 +1232,12 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     // binding `rest` to the remaining map — a QUERY, not a structural shape. This increment folds a
     // CONSTANT `Core::MapNew` scrutinee (the corpus shape). A scalar-only match over a map (only bare-
     // binder/`_` arms — no `(map …)` pattern) falls through to the scalar path (a whole-value binder).
-    if matches!(crate::infer::type_of(db, scrutinee), crate::ty::Ty::Map(_, _))
-        && arms.iter().any(|&(pat, _)| {
-            db.ast.head_ctor(pat) == Some("map") || db.ast.head_name(pat) == Some("map")
-        })
-    {
+    if matches!(
+        crate::infer::type_of(db, scrutinee),
+        crate::ty::Ty::Map(_, _)
+    ) && arms.iter().any(|&(pat, _)| {
+        db.ast.head_ctor(pat) == Some("map") || db.ast.head_name(pat) == Some("map")
+    }) {
         return lower_match_map(db, scrutinee, arms);
     }
     // Classify each arm into a probe + optional GUARD + body. An arm's pattern may be a GUARDED pattern
@@ -1560,9 +1561,7 @@ fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     };
     // WELL-FORMEDNESS: a `(map …)` arm covers no shape (a map's key set is unbounded), so the arms must
     // include a CATCH-ALL (a bare binder / `_`) or the match is non-exhaustive (CDZ0210).
-    let has_catch_all = arms
-        .iter()
-        .any(|&(pat, _)| db.ast.as_name(pat).is_some());
+    let has_catch_all = arms.iter().any(|&(pat, _)| db.ast.as_name(pat).is_some());
     if !has_catch_all {
         return Core::Poison(Reject::coded(
             Code::NonExhaustive,
@@ -6424,12 +6423,36 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
     // `Core::BinBuild` the backend emits (alloc + per-segment range-check-and-write). A constant segment
     // still range-checks here (a provable trap fails the build even alongside a runtime sibling). A `bin`
     // mixing a runtime value with a `bits`/`bytes` segment declines (not yet built).
-    let any_runtime = segs.iter().any(|s| {
-        matches!(&s.kind, SegKind::Int { .. })
-            && !matches!(core_of(db, s.slot), Core::ConstInt(_) | Core::Poison(_))
+    let any_runtime = segs.iter().any(|s| match &s.kind {
+        // A runtime INT value (a param, not a `ConstInt`) — the segment builds at run time.
+        SegKind::Int { .. } => !matches!(core_of(db, s.slot), Core::ConstInt(_) | Core::Poison(_)),
+        // A `(bytes b)` splice whose `b` is not a compile-time-visible constant Bytes — spliced at run
+        // time via `bytes-concat`. (`bin_const_scrutinee` = Some only for a visible `Core::BytesOf`.)
+        SegKind::Bytes { .. } => bin_const_scrutinee(db, s.slot).is_none(),
+        SegKind::Bits { .. } => false,
     });
     if any_runtime {
-        let mut bsegs = Vec::with_capacity(segs.len());
+        // Build the `bin` as a sequence of PIECES concatenated at run time (`Core::BytesConcat`): each
+        // maximal RUN of fixed-width int segments is one `Core::BinBuild` piece, and each `(bytes b)`
+        // SPLICE segment contributes `b` directly. A runtime BIT-FIELD (`bits`) is sub-byte and can't be a
+        // standalone concat piece — decline a runtime bin containing one (a later slice). This composes an
+        // int header with a runtime bytes body — the length-prefixed frame — via `bytes-concat`.
+        let mut pieces: Vec<StructId> = Vec::new();
+        let mut run: Vec<crate::core::BinSeg> = Vec::new();
+        // Flush the current int-run as a `Core::BinBuild` piece (synthesized, so it emits standalone).
+        let flush_run =
+            |db: &mut Db, run: &mut Vec<crate::core::BinSeg>, pieces: &mut Vec<StructId>| {
+                if !run.is_empty() {
+                    let piece = synth_core(
+                        db,
+                        Core::BinBuild {
+                            segs: std::mem::take(run),
+                        },
+                        crate::ty::Ty::Bytes,
+                    );
+                    pieces.push(piece);
+                }
+            };
         for seg in segs {
             match &seg.kind {
                 SegKind::Int { width, signed } => {
@@ -6445,22 +6468,60 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                             "binary value does not fit segment",
                         ));
                     }
-                    bsegs.push(crate::core::BinSeg {
+                    run.push(crate::core::BinSeg {
                         width: *width,
                         signed: *signed,
                         little_endian: seg.little_endian,
                         value: seg.slot,
                     });
                 }
-                // A runtime bit-field / bytes-splice is not built yet — decline the whole `bin`.
-                SegKind::Bits { .. } | SegKind::Bytes { .. } => {
+                // A `(bytes b)` splice: flush the int-run, then splice `b` (a Bytes value). A dependent
+                // size `(bytes b n)` on CONSTRUCTION is a length constraint the const path checks; a
+                // RUNTIME sized splice (a runtime `b`/`n`) is not checked yet — decline it.
+                SegKind::Bytes { size } => {
+                    if let Core::Poison(r) = core_of(db, seg.slot) {
+                        return Core::Poison(r);
+                    }
+                    if size.is_some() {
+                        return Core::Poison(Reject::decline(
+                            "a runtime sized (bytes b n) construction is not yet built",
+                        ));
+                    }
+                    if crate::infer::type_of(db, seg.slot) != crate::ty::Ty::Bytes {
+                        return Core::Poison(Reject::decline(
+                            "a bin bytes splice operand is not a Bytes value",
+                        ));
+                    }
+                    flush_run(db, &mut run, &mut pieces);
+                    pieces.push(seg.slot);
+                }
+                // A runtime bit-field is sub-byte — not a concat piece; decline (a later slice).
+                SegKind::Bits { .. } => {
                     return Core::Poison(Reject::decline(
-                        "a runtime bin with a bit-field or bytes segment is not yet built (integer segments only)",
+                        "a runtime bin with a bit-field segment is not yet built",
                     ));
                 }
             }
         }
-        return Core::BinBuild { segs: bsegs };
+        flush_run(db, &mut run, &mut pieces);
+        // Concatenate the pieces left-to-right. Zero pieces = the empty bin (empty Bytes); one piece is
+        // itself; else fold to a chain of `Core::BytesConcat`.
+        let mut iter = pieces.into_iter();
+        let Some(first) = iter.next() else {
+            return Core::BytesOf { elems: Vec::new() }; // (bin) with only… nothing — empty
+        };
+        let mut acc = first;
+        for piece in iter {
+            acc = synth_core(
+                db,
+                Core::BytesConcat {
+                    lhs: acc,
+                    rhs: piece,
+                },
+                crate::ty::Ty::Bytes,
+            );
+        }
+        return core_of(db, acc);
     }
     let mut raw: Vec<u8> = Vec::new();
     // The open bit-accumulator between `bits` segments: `acc` holds `nbits` bits, MSB-first (the first

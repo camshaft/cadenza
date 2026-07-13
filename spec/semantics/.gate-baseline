@@ -420,6 +420,7 @@ pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bitwise AND masks bits
 pass	a runtime bitwise OR combines bits
 pass	a runtime bitwise XOR toggles bits
+pass	a runtime bytes value is spliced into a length-prefixed frame
 pass	a runtime closure compares its argument to a captured value in a branch
 pass	a runtime closure whose body calls a recursive top-level function
 pass	a runtime compound structural equality is expressible as a hand-written recursive comparator
@@ -587,6 +588,7 @@ pass	an Ok carrying a bare None type-checks under a whole-expression annotation
 pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
+pass	an abortive handler arm never resumes, so its value becomes the handle's value
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
 pass	an annotated destructuring let binder
@@ -777,6 +779,8 @@ pass	indexing a runtime string past its last scalar yields None
 pass	indexing a slice is relative to the slice's start
 pass	indexing an empty list yields None
 pass	inserting a key already present replaces its value, not the size
+pass	inserting a key of a different type into a map is a type error
+pass	inserting a value of a different type into a map is a type error
 pass	inserting into the empty map then looking a key up yields the value
 pass	integer division by a negative divisor truncates toward zero
 pass	integer division of a negative dividend truncates toward zero, not toward negative infinity
@@ -1164,9 +1168,7 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	extending a record adds a new field
 todo	extending a record with an already-present field is rejected
-todo	inserting a key of a different type into a map is a type error
 todo	inserting a present element is a no-op value
-todo	inserting a value of a different type into a map is a type error
 todo	inserting an element yields a set containing it
 todo	interning the same string twice yields equal symbols
 todo	map equality is independent of insertion order

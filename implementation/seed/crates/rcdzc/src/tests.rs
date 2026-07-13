@@ -6132,6 +6132,28 @@ mod match_engine {
             ),
             "a runtime u8 of -1 must trap"
         );
+        // A `(bytes b)` splice of a RUNTIME Bytes value: `(bin (u16 3) (bytes b))` builds a length-prefixed
+        // frame at run time (a `bytes-concat` of the header + the runtime body). `mk` builds a 3-byte body
+        // from a runtime `n`; the frame length is 2 (header) + 3 (body) = 5. And byte 4 (= body[2]) is 30.
+        let splice = "(module m (def (frame (: b Bytes)) (bin (u16 3) (bytes b))) (def (mk (: n Int64)) ((. Bytes of) (list (UInt8.wrap n) 20 30))) (def (main (: n Int64)) ";
+        assert_eq!(
+            val(
+                &format!("{splice} ((. Bytes len) (frame (mk n)))) (export main))"),
+                &["7"]
+            ),
+            "5",
+            "runtime bytes-splice: length = header + body"
+        );
+        assert_eq!(
+            val(
+                &format!(
+                    "{splice} (match ((. Bytes at) (frame (mk n)) 4) ((Some x) x) ((None _) -1))) (export main))"
+                ),
+                &["7"]
+            ),
+            "30",
+            "runtime bytes-splice: body byte spliced after the header"
+        );
     }
 
     #[test]
