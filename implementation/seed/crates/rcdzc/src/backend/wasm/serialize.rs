@@ -92,6 +92,16 @@ fn host_import_item(op_name: &str, type_idx: u32) -> Vec<u8> {
 /// Serialize one flat instruction, appending its bytes to `out`. `import_index` maps a runtime op's
 /// name to its core function index (its position `0..k` in the import section), so a `CallImport`
 /// resolves by name to the same index the import section assigned. Exhaustive over `Lir`.
+///
+/// This is the recursive instruction serializer: a `match` over every `Lir` variant, no wildcard arm —
+/// so a new instruction variant the serializer does not handle is a compile-time non-exhaustiveness
+/// error, never a silent fall-through. It consumes an already-selected `Lir` and only writes bytes: it
+/// resolves no name, decides no type, and chooses no effect handler — those decisions were all made by
+/// earlier phases, so emission is the pure serialization of decisions already made.
+//= spec/capabilities/compiler-pipeline.md#the-compiler-operates-on-ast-values
+//# The compiler MUST serialize instruction values to bytes through a recursive function that pattern-matches the instruction sum type exhaustively over its variants, so that an instruction variant the serializer does not handle is a compile-time error rather than a silent fall-through.
+//= spec/capabilities/compiler-pipeline.md#emission-serializes-a-lowered-representation
+//# The step that emits instruction bytes MUST consume an already-lowered representation and MUST NOT itself resolve a name, decide a type, or choose an effect's handler, so that emission is the serialization of decisions already made.
 fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut Vec<u8>) {
     match i {
         Lir::ConstI64(n) => {

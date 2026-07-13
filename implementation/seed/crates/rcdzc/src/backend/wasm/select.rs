@@ -15,6 +15,12 @@
 //! conversions, a `match` as a probe chain, a runtime `Core::Call`, and value-heap construction/
 //! projection for tuples, records, and sums. A construct without a machine form here declines (e.g. a
 //! runtime compound of a type that cannot yet cross the boundary).
+//!
+//! Selection reads an ALREADY-RESOLVED representation: it consumes the core form (`core_of`, itself a
+//! read of the resolved column `resolved_of`), where every name reference is already resolved to the
+//! binding it denotes — so this pass reads a resolved binding rather than searching a scope.
+//= spec/capabilities/compiler-pipeline.md#the-compiler-resolves-names-before-it-selects-instructions
+//# The compiler MUST lower the AST to an intermediate representation in which every name reference is resolved to the binding it denotes before it selects the instructions to emit, so that instruction selection reads a resolved binding rather than searching a scope.
 
 use crate::ast::StructId;
 use crate::backend::wasm::lir::{BlockType, Lir, ValType, valtype_of};

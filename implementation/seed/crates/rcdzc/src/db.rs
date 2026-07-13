@@ -26,6 +26,14 @@
 //! Finds Absence Declines). Every negative *decision* (a decline, a reject, a poison) is itself a
 //! filled value — a `Resolved::Poison` / `Core::Poison` — so it is distinguished from "not yet
 //! determined".
+//!
+//! Because name resolution (`resolve`), type checking (`infer`), and lowering (`lower`) each fill a
+//! COLUMN over the IR, every such transformation is applied to the intermediate representation, never
+//! as a side effect of emitting instruction bytes — the backend runs only after these columns are
+//! filled and reads them, so a transformation is a fact about the IR rather than something that happens
+//! during serialization.
+//= spec/capabilities/compiler-pipeline.md#emission-serializes-a-lowered-representation
+//# The compiler MUST perform name resolution, type checking, and each transformation it applies to a program as a transformation of its intermediate representation rather than as an effect of emitting instruction bytes.
 
 use crate::arena::Column;
 use crate::ast::{Arenas, Leaf, LeafId, Struct, StructId};

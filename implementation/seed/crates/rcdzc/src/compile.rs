@@ -34,10 +34,33 @@ use tracing::trace;
 /// a `Db`; each target's backend fills its artifact from the shared columns. Targets default to
 /// `[Wasm]` at the CLI, not here — this entry emits exactly what it is asked for.
 ///
+/// The program arrives as the `ast`-kinded artifact — the canonical binary form — which this entry
+/// decodes (`codec::decode`) into the AST arena the whole pipeline reads; the compiler never receives
+/// source text, only an AST value obtained by decoding the binary form.
+///
+//= spec/capabilities/compiler-pipeline.md#the-compiler-operates-on-ast-values
+//# The compiler MUST receive the program as an AST value obtained via quote or decode from the binary form.
+///
 /// A program compiles on the CORE guarantees alone — static typing (`collect_faults`), determinism, and
 /// capability-safety (the no-home effect check) — with NO verification layer as a precondition; the seed
 /// realizes no contract/refinement/proof layer, so engaging one is not something a program can (or must)
 /// opt into here.
+///
+/// The pipeline this drives is a sequence of phases each with a defined input and output — decode → layout
+/// → the demand-driven `Db` columns (resolve → infer → lower → select) → backend emission — and each phase
+/// is a deterministic function of its input (the `Db` is a pure memoized column store; no phase reads a
+/// clock, the environment, or iteration order). Faults are collected across the whole program, not raised
+/// at the first: `collect_faults` returns EVERY reached fault and `compile` reports one diagnostic per
+/// fault, so an error in one definition does not abort typing of its well-formed siblings.
+///
+//= spec/capabilities/compiler-pipeline.md#the-pipeline-has-defined-phases
+//# The compiler MUST proceed through phases each of which has a defined input and a defined output.
+///
+//= spec/capabilities/compiler-pipeline.md#the-pipeline-has-defined-phases
+//# Each phase MUST produce output that is a deterministic function of its input.
+///
+//= spec/capabilities/compiler-pipeline.md#phases-recover-from-errors
+//# The compiler MUST report all diagnostics it can produce for a program rather than stop at the first.
 ///
 //= constitution.md#viii-verification-is-progressive-and-meaning-preserving
 //# A program MUST be compilable when only the core guarantees — static typing, determinism, and capability-safety — are satisfied.
@@ -403,6 +426,16 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
 /// Every reachable expression is typed by inference before emission, and any type fault this collects
 /// DENIES the component (`compile` returns the faults with no artifact) — so a program that is not
 /// well-typed is rejected at compile time rather than emitted carrying a deferred type error:
+///
+/// This walk records a `Reject` for every faulting definition and keeps going over the well-formed
+/// remainder rather than aborting at the first fault, so the maximal set of diagnostics is produced in
+/// one pass (each `Reject` becomes one error diagnostic in `compile`'s output):
+///
+//= spec/capabilities/compiler-pipeline.md#phases-recover-from-errors
+//# A phase that encounters an error in one part of a program MUST record a diagnostic for that error.
+///
+//= spec/capabilities/compiler-pipeline.md#phases-recover-from-errors
+//# A phase that encounters an error in one part of a program MUST continue processing the well-formed remainder rather than abort the whole compilation.
 ///
 //= spec/capabilities/type-system.md#every-expression-has-a-static-type
 //# Every expression in a well-formed program MUST have a type determined before the program is compiled to a component.

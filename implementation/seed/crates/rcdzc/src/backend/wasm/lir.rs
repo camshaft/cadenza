@@ -59,6 +59,12 @@ impl BlockType {
 }
 
 /// One flat wasm instruction. Frozen for the Stage-0 slice.
+///
+/// This is the dedicated instruction sum: emitted instructions are values of a typed Rust `enum`
+/// deconstructed by pattern matching (see `serialize::instr`), never string-tagged pseudo-structures —
+/// so an instruction is inspected variant-by-variant like any other value, not by matching a string tag.
+//= spec/capabilities/compiler-pipeline.md#the-compiler-operates-on-ast-values
+//# The compiler MUST represent the instructions it emits as values of a typed sum type — the AST sum or a dedicated instruction sum — deconstructible by pattern matching, not as string-tagged pseudo-structures, so that an instruction is inspected like any other Cadenza value rather than by matching on a string tag.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Lir {
     /// `i64.const N` — a signed 64-bit constant (emitted via SLEB128).
