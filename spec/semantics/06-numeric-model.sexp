@@ -531,6 +531,33 @@
   (input  (/ -7 2))
   (output (: -3 Int64)))
 
+(case "a runtime negative dividend divided by a constant power of two truncates toward zero"
+  (doc    "Division by a constant power of two may be strength-reduced to a shift, but a signed division
+           truncates toward ZERO while an arithmetic right shift floors toward −∞ — so the strength
+           reduction must add a bias before shifting, or a negative dividend gives the wrong quotient.
+           `(/ n 4)` with the RUNTIME parameter `n` = −7 must be −1 (−7 truncated toward zero), NOT −2 (what
+           `-7 >> 2` yields). Pins that the constant-power-of-two `/` strength reduction reproduces
+           truncation-toward-zero for a negative runtime dividend — the runtime-emit companion of the
+           constant `(/ -7 2)` = −3 case above (which folds; this exercises the bias+shift the emit uses).
+           The remainder companion `(% n 4)` = −3 (sign of the dividend) is pinned below.")
+  (input  (do
+            (def (main (: n Int64)) (/ n 4))
+            (export main)))
+  (call   main (: -7 Int64))
+  (output (: -1 Int64)))
+
+(case "a runtime negative dividend mod a constant power of two takes the dividend's sign"
+  (doc    "The remainder companion: `(% n 4)` with `n` = −7 must be −3 (the remainder takes the sign of the
+           DIVIDEND), NOT 1 (what the bitmask `n & 3` yields). A strength reduction of signed `%` by a
+           power of two to a bitmask is only valid for a non-negative dividend; a negative one needs the
+           sign-correcting form. Pins that `%` by a constant power of two reproduces the dividend-signed
+           remainder for a negative runtime value.")
+  (input  (do
+            (def (main (: n Int64)) (% n 4))
+            (export main)))
+  (call   main (: -7 Int64))
+  (output (: -3 Int64)))
+
 (case "integer division by a negative divisor truncates toward zero"
   (doc    "`(/ 7 -2)` = -3: the quotient's magnitude is 3 (truncated, not 4) and its sign is negative.
            Pins that truncation toward zero holds when the DIVISOR is the negative operand too.")
