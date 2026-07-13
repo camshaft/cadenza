@@ -1853,6 +1853,22 @@
   (input  (or true (< (/ 1 0) 2)))
   (output (: true Bool)))
 
+(case "a runtime conjunction still shields a comparison right operand whose subexpression traps"
+  (doc    "The shielding must survive the branchless emit: an `and`/`or` whose right operand is a
+           trap-free COMPARISON may be lowered to a branchless `select` (both operands evaluated) — but
+           ONLY when the comparison's own operands are trap-free. `(and (= a 1) (< (/ 1 z) 5))` has a
+           right operand `(< (/ 1 z) 5)` whose subexpression `(/ 1 z)` can trap, so the connective MUST
+           keep short-circuiting: with `a = 99` the left `(= a 1)` is false, so the right operand is NOT
+           evaluated and the division by zero (z = 0) is shielded — the result is false, not a trap. Pins
+           that the branchless-connective optimization does not treat a comparison with a trapping
+           subexpression as a trap-free leaf; the left operand is a RUNTIME value, so this is the emit-path
+           shielding the constant-fold cases above cannot witness.")
+  (input  (do
+            (def (main (: a Int64) (: z Int64)) (if (and (= a 1) (< (/ 1 z) 5)) 1 0))
+            (export main)))
+  (call   main (: 99 Int64) (: 0 Int64))
+  (output (: 0 Int64)))
+
 (case "a boolean connective with a non-boolean operand is a type error"
   (doc    "`(and true 1)` gives an Int64 where a Bool operand is required. core-semantics.md #Boolean
            Connectives Short-Circuit: each operand is type-checked as a Bool whether or not it is
