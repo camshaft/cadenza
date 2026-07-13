@@ -61,6 +61,12 @@ export default function WhatsNext() {
         a scratchpad — break it, fix it, and press Run. That loop, with the compiler answering
         instantly, is the fastest way to build a feel for the language.
       </P>
+      <P>
+        When you outgrow a single code block, move to the{" "}
+        <Ch to="/playground">playground</Ch>: a full editor with a REPL for calling your functions one
+        at a time, a peek at the WebAssembly and Rust your code compiles to, and a Share button that
+        packs a whole program into a link.
+      </P>
     </article>
   );
 }
