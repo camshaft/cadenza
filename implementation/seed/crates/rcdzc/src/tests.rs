@@ -7056,6 +7056,40 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0201")
         );
+        // A NULLARY-signature export `(def (answer) 42)` is a `() → T` function INVOKED by applying it to
+        // unit — `((. m answer) unit)` → 42 (distinct from a bare-name VALUE def, projected directly). The
+        // synthesized field is `(fn (_$u) 42)`, so the application β-reduces to the body.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module m (def (answer) 42)) ((. m answer) unit))) (export main))"
+                ),
+                "main"
+            ),
+            42
+        );
+        // Two nullary exports, each applied to unit and summed → neither displaces the other.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module m (def (one) 1) (def (two) 2)) (+ ((. m one) unit) ((. m two) unit)))) (export main))"
+                ),
+                "main"
+            ),
+            3
+        );
+        // A module carrying an UNMODELED-obligation member (`(pragma …)` — a validation not yet built)
+        // does NOT register, so its name stays unbound and the program DECLINES (a codeless CDZ0101), NOT
+        // a silent run that drops the pragma (decline-don't-miscompile). `reject_code` = a coded rejection
+        // OR None for a codeless decline — a decline is `None` here (unbound `m` surfaces as CDZ0101 on
+        // the reference, but the MODULE form's obligation is what forces the decline).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-integer) (def (answer) 42)) ((. m answer) unit))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0101")
+        );
     }
 
     #[test]
@@ -22688,6 +22722,406 @@ mod closure_host_resource {
             out2[0],
             Val::S64(15),
             "make-triple → (* x 3) applied to 5 = 15, via the SAME shared call"
+        );
+    }
+
+    /// DISTINCT-SIGNATURE oracle core (the byte anchor for the N-resource-type multi-export): TWO closures
+    /// of DIFFERENT signatures — `inc : (-> Int64 Int64)` (slot 0) and `isz : (-> Int64 Bool)` (slot 1) —
+    /// each with its OWN `make` + `call` (distinct call functypes: `(i32,i64)->i64` vs `(i32,i64)->i32`).
+    /// Two funcref-table slots, ONE guest table (both lifteds live in it), but the boundary needs TWO
+    /// resource types (one per signature) since `own<t0>` and `own<t1>` are distinct. Exports: `make-inc`,
+    /// `call-inc`, `make-isz`, `call-isz`.
+    fn distinct_sig_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        // Types: 0 = resource-new/rep (i32)->i32; 1 = lifted-inc (i64)->i64; 2 = lifted-isz (i64)->i32;
+        // 3 = make ()->i32; 4 = call-inc (i32,i64)->i64; 5 = call-isz (i32,i64)->i32.
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types.ty().function(vec![ValType::I64], vec![ValType::I64]); // 1 inc
+        types.ty().function(vec![ValType::I64], vec![ValType::I32]); // 2 isz (bool→i32)
+        types.ty().function(vec![], vec![ValType::I32]); // 3 make
+        types
+            .ty()
+            .function(vec![ValType::I32, ValType::I64], vec![ValType::I64]); // 4 call-inc
+        types
+            .ty()
+            .function(vec![ValType::I32, ValType::I64], vec![ValType::I32]); // 5 call-isz
+        m.section(&types);
+
+        // Import resource-new/rep for BOTH resource types: t0's (new=0, rep=1) and t1's (new=2, rep=3).
+        // A core `resource.new`/`resource.rep` is typed to ONE resource type, so `make-isz` must new a t1
+        // handle through t1's intrinsic (the rep is a plain table slot, but the resource-TYPE distinction
+        // is real at the canon boundary).
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        imports.import("heap", "resource-new-t1", EntityType::Function(0));
+        imports.import("heap", "resource-rep-t1", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew0 = 0u32;
+        let f_rrep0 = 1u32;
+        let f_rnew1 = 2u32;
+        let f_rrep1 = 3u32;
+
+        // Defined funcs: lifted-inc=4(ty1), lifted-isz=5(ty2), make-inc=6(ty3), make-isz=7(ty3),
+        // call-inc=8(ty4), call-isz=9(ty5).
+        let mut funcs = FunctionSection::new();
+        funcs.function(1);
+        funcs.function(2);
+        funcs.function(3);
+        funcs.function(3);
+        funcs.function(4);
+        funcs.function(5);
+        m.section(&funcs);
+        let (f_lifted_inc, f_lifted_isz) = (4u32, 5u32);
+        let (f_make_inc, f_make_isz, f_call_inc, f_call_isz) = (6u32, 7u32, 8u32, 9u32);
+
+        let mut tables = TableSection::new();
+        tables.table(TableType {
+            element_type: RefType::FUNCREF,
+            minimum: 2,
+            maximum: Some(2),
+            table64: false,
+            shared: false,
+        });
+        m.section(&tables);
+
+        let mut exports = ExportSection::new();
+        exports.export("make-inc", ExportKind::Func, f_make_inc);
+        exports.export("call-inc", ExportKind::Func, f_call_inc);
+        exports.export("make-isz", ExportKind::Func, f_make_isz);
+        exports.export("call-isz", ExportKind::Func, f_call_isz);
+        m.section(&exports);
+
+        let mut elems = ElementSection::new();
+        elems.active(
+            Some(0),
+            &ConstExpr::i32_const(0),
+            Elements::Functions(std::borrow::Cow::Borrowed(&[f_lifted_inc, f_lifted_isz])),
+        );
+        m.section(&elems);
+
+        let mut code = CodeSection::new();
+        // lifted-inc(x) = x + 1
+        let mut li = Function::new(vec![]);
+        li.instruction(&Instruction::LocalGet(0));
+        li.instruction(&Instruction::I64Const(1));
+        li.instruction(&Instruction::I64Add);
+        li.instruction(&Instruction::End);
+        code.function(&li);
+        // lifted-isz(x) = (x == 0) as i32
+        let mut lz = Function::new(vec![]);
+        lz.instruction(&Instruction::LocalGet(0));
+        lz.instruction(&Instruction::I64Eqz);
+        lz.instruction(&Instruction::End);
+        code.function(&lz);
+        // make-inc() = resource.new-t0(slot 0)
+        let mut mi = Function::new(vec![]);
+        mi.instruction(&Instruction::I32Const(0));
+        mi.instruction(&Instruction::Call(f_rnew0));
+        mi.instruction(&Instruction::End);
+        code.function(&mi);
+        // make-isz() = resource.new-t1(slot 1)
+        let mut mz = Function::new(vec![]);
+        mz.instruction(&Instruction::I32Const(1));
+        mz.instruction(&Instruction::Call(f_rnew1));
+        mz.instruction(&Instruction::End);
+        code.function(&mz);
+        // call-inc(self, x) = call_indirect[ty1](x, resource.rep-t0(self))
+        let mut ci = Function::new(vec![]);
+        ci.instruction(&Instruction::LocalGet(1));
+        ci.instruction(&Instruction::LocalGet(0));
+        ci.instruction(&Instruction::Call(f_rrep0));
+        ci.instruction(&Instruction::CallIndirect {
+            type_index: 1,
+            table_index: 0,
+        });
+        ci.instruction(&Instruction::End);
+        code.function(&ci);
+        // call-isz(self, x) = call_indirect[ty2](x, resource.rep-t1(self))
+        let mut cz = Function::new(vec![]);
+        cz.instruction(&Instruction::LocalGet(1));
+        cz.instruction(&Instruction::LocalGet(0));
+        cz.instruction(&Instruction::Call(f_rrep1));
+        cz.instruction(&Instruction::CallIndirect {
+            type_index: 2,
+            table_index: 0,
+        });
+        cz.instruction(&Instruction::End);
+        code.function(&cz);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The inner re-export component for the DISTINCT-SIGNATURE oracle: imports TWO abstract resources
+    /// (`import-type-t0`, `import-type-t1`) + each signature's `make`/`call` typed against its own
+    /// resource, then re-exports BOTH resources (`t0`, `t1`) + all four funcs ascribed. Proves a single
+    /// interface can publish two resource-with-methods of distinct signatures. `t0` = `(-> Int64 Int64)`,
+    /// `t1` = `(-> Int64 Bool)`.
+    fn distinct_sig_inner_component() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        // Import the two abstract resources → types 0, 1.
+        let imp_t0 = c.import(
+            "import-type-t0",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        let imp_t1 = c.import(
+            "import-type-t1",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        // make-inc : () -> own<t0>
+        let (own_mi, o) = c.type_defined();
+        o.own(imp_t0);
+        let (mi_ty, mut f) = c.type_function();
+        f.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_mi)));
+        let mi_fn = c.import("import-func-make-inc", ComponentTypeRef::Func(mi_ty));
+        // call-inc : (self: own<t0>, s64) -> s64
+        let (own_ci, o) = c.type_defined();
+        o.own(imp_t0);
+        let (ci_ty, mut f) = c.type_function();
+        f.params([
+            ("self", ComponentValType::Type(own_ci)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let ci_fn = c.import("import-func-call-inc", ComponentTypeRef::Func(ci_ty));
+        // make-isz : () -> own<t1>
+        let (own_mz, o) = c.type_defined();
+        o.own(imp_t1);
+        let (mz_ty, mut f) = c.type_function();
+        f.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_mz)));
+        let mz_fn = c.import("import-func-make-isz", ComponentTypeRef::Func(mz_ty));
+        // call-isz : (self: own<t1>, s64) -> bool
+        let (own_cz, o) = c.type_defined();
+        o.own(imp_t1);
+        let (cz_ty, mut f) = c.type_function();
+        f.params([
+            ("self", ComponentValType::Type(own_cz)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::Bool)));
+        let cz_fn = c.import("import-func-call-isz", ComponentTypeRef::Func(cz_ty));
+        // RE-EXPORT both resources directly.
+        let exp_t0 = c.export("t0", ComponentExportKind::Type, imp_t0, None);
+        let exp_t1 = c.export("t1", ComponentExportKind::Type, imp_t1, None);
+        // Ascribe + export each func against the exported resource identities.
+        let (own, o) = c.type_defined();
+        o.own(exp_t0);
+        let (t, mut f) = c.type_function();
+        f.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own)));
+        c.export(
+            "make-inc",
+            ComponentExportKind::Func,
+            mi_fn,
+            Some(ComponentTypeRef::Func(t)),
+        );
+        let (own, o) = c.type_defined();
+        o.own(exp_t0);
+        let (t, mut f) = c.type_function();
+        f.params([
+            ("self", ComponentValType::Type(own)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        c.export(
+            "call-inc",
+            ComponentExportKind::Func,
+            ci_fn,
+            Some(ComponentTypeRef::Func(t)),
+        );
+        let (own, o) = c.type_defined();
+        o.own(exp_t1);
+        let (t, mut f) = c.type_function();
+        f.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own)));
+        c.export(
+            "make-isz",
+            ComponentExportKind::Func,
+            mz_fn,
+            Some(ComponentTypeRef::Func(t)),
+        );
+        let (own, o) = c.type_defined();
+        o.own(exp_t1);
+        let (t, mut f) = c.type_function();
+        f.params([
+            ("self", ComponentValType::Type(own)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::Bool)));
+        c.export(
+            "call-isz",
+            ComponentExportKind::Func,
+            cz_fn,
+            Some(ComponentTypeRef::Func(t)),
+        );
+        c
+    }
+
+    /// The outer DISTINCT-SIGNATURE oracle: wraps `distinct_sig_core` in TWO resource types (one per
+    /// signature) with their make/call pairs, published together under `cadenza:closure/exports`.
+    fn oracle_distinct_sig_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        // Two dtor stubs → two resource types (each rep i32).
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst0 = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor0 = c.core_alias_export(dtor_inst0, "t-dtor", ExportKind::Func);
+        let res_t0 = c.type_resource(ValType::I32, Some(dtor0));
+        let dtor_inst1 = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor1 = c.core_alias_export(dtor_inst1, "t-dtor", ExportKind::Func);
+        let res_t1 = c.type_resource(ValType::I32, Some(dtor1));
+        // Both resources' new/rep share the guest heap instance (the reps are into the one funcref table).
+        let rnew0 = c.resource_new(res_t0);
+        let rrep0 = c.resource_rep(res_t0);
+        let rnew1 = c.resource_new(res_t1);
+        let rrep1 = c.resource_rep(res_t1);
+        // The core imports ONE resource-new + ONE resource-rep (it makes both t0 and t1 handles through the
+        // same canon intrinsics — the rep is just a table slot; the resource TYPE distinction is a
+        // boundary/type-level concern, not a core one). Bind them to t0's intrinsics (t0 and t1 share the
+        // core rep space — a slot is a slot). Wait: a core resource.new is typed to ONE resource; make-isz
+        // must new a t1. So the core needs resource-new-t0/resource-rep-t0 AND -t1. Provide all four.
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew0),
+            ("resource-rep", ExportKind::Func, rrep0),
+            ("resource-new-t1", ExportKind::Func, rnew1),
+            ("resource-rep-t1", ExportKind::Func, rrep1),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let get =
+            |c: &mut ComponentBuilder, n: &str| c.core_alias_export(prog_inst, n, ExportKind::Func);
+        let mi_core = get(&mut c, "make-inc");
+        let ci_core = get(&mut c, "call-inc");
+        let mz_core = get(&mut c, "make-isz");
+        let cz_core = get(&mut c, "call-isz");
+        // lift make-inc : () -> own<t0>
+        let (own, o) = c.type_defined();
+        o.own(res_t0);
+        let (t, mut f) = c.type_function();
+        f.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own)));
+        let mi_comp = c.lift_func(mi_core, t, []);
+        // lift call-inc : (own<t0>, s64) -> s64
+        let (own, o) = c.type_defined();
+        o.own(res_t0);
+        let (t, mut f) = c.type_function();
+        f.params([
+            ("self", ComponentValType::Type(own)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let ci_comp = c.lift_func(ci_core, t, []);
+        // lift make-isz : () -> own<t1>
+        let (own, o) = c.type_defined();
+        o.own(res_t1);
+        let (t, mut f) = c.type_function();
+        f.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own)));
+        let mz_comp = c.lift_func(mz_core, t, []);
+        // lift call-isz : (own<t1>, s64) -> bool
+        let (own, o) = c.type_defined();
+        o.own(res_t1);
+        let (t, mut f) = c.type_function();
+        f.params([
+            ("self", ComponentValType::Type(own)),
+            ("x", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::Bool)));
+        let cz_comp = c.lift_func(cz_core, t, []);
+        let inner_idx = c.component(distinct_sig_inner_component());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t0", ComponentExportKind::Type, res_t0),
+                ("import-type-t1", ComponentExportKind::Type, res_t1),
+                ("import-func-make-inc", ComponentExportKind::Func, mi_comp),
+                ("import-func-call-inc", ComponentExportKind::Func, ci_comp),
+                ("import-func-make-isz", ComponentExportKind::Func, mz_comp),
+                ("import-func-call-isz", ComponentExportKind::Func, cz_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// DISTINCT-SIGNATURE end-to-end ORACLE (the byte anchor for N-resource-type multi-export): two
+    /// closures of DIFFERENT signatures cross as TWO resource types in one interface. `make-inc()` +
+    /// `call-inc(_, 5)` = 6 (an `(-> Int64 Int64)`); `make-isz()` + `call-isz(_, 0)` = true (an `(-> Int64
+    /// Bool)`). Proves a single `cadenza:closure/exports` can publish resources of distinct signatures,
+    /// each with its own `make`/`call` typed against its own resource. Licenses the compiler's N-resource
+    /// multi-export envelope (the hand-emitted path is a later increment).
+    #[test]
+    fn distinct_signature_closures_cross_as_distinct_resource_types() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_distinct_sig_component(&distinct_sig_core());
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("distinct-signature closure component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let get = |store: &mut Store<()>, name: &str| {
+            let idx = instance
+                .get_export_index(&mut *store, Some(&iface), name)
+                .unwrap_or_else(|| panic!("export {name}"));
+            instance
+                .get_func(&mut *store, idx)
+                .unwrap_or_else(|| panic!("func {name}"))
+        };
+        let make_inc = get(&mut store, "make-inc");
+        let call_inc = get(&mut store, "call-inc");
+        let make_isz = get(&mut store, "make-isz");
+        let call_isz = get(&mut store, "call-isz");
+
+        // make-inc() → t0 handle; call-inc(_, 5) = 6.
+        let mut h = [Val::Bool(false)];
+        make_inc.call(&mut store, &[], &mut h).expect("make-inc");
+        make_inc.post_return(&mut store).expect("post_return");
+        let mut out = [Val::Bool(false)];
+        call_inc
+            .call(&mut store, &[h[0].clone(), Val::S64(5)], &mut out)
+            .expect("call-inc");
+        call_inc.post_return(&mut store).expect("post_return");
+        assert_eq!(
+            out[0],
+            Val::S64(6),
+            "make-inc → (+ x 1)(5) = 6 (resource t0)"
+        );
+
+        // make-isz() → t1 handle; call-isz(_, 0) = true. A DIFFERENT resource type with a Bool result.
+        let mut h2 = [Val::Bool(false)];
+        make_isz.call(&mut store, &[], &mut h2).expect("make-isz");
+        make_isz.post_return(&mut store).expect("post_return");
+        let mut out2 = [Val::Bool(false)];
+        call_isz
+            .call(&mut store, &[h2[0].clone(), Val::S64(0)], &mut out2)
+            .expect("call-isz");
+        call_isz.post_return(&mut store).expect("post_return");
+        assert_eq!(
+            out2[0],
+            Val::Bool(true),
+            "make-isz → (= x 0)(0) = true (resource t1, a distinct signature)"
         );
     }
 

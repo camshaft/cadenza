@@ -339,8 +339,20 @@ the component type. The new work:
   consumer emitted a component whose lowered params didn't match the core body (the old functype hardcoded
   `own<t>` first); +3 corpus + a validity regression test. Consumer result byte is now the CONSUMER's own
   result (a consumer may return a different type than the closure). (5) a compound/closure-typed closure
-  ARG. The core vertical + all scalar widths + multi/any-position closure params are COMPLETE; only
-  distinct-signature multi-export, the compound-closure-arg, and the borrow<t> repeated-call remain.
+  ARG. The core vertical + all scalar widths + multi/any-position closure params are COMPLETE.
+- **✅ DISTINCT-SIGNATURE ORACLE LANDED `@355b7ee3` (byte anchor, test-only).** Proves the N-resource-type
+  shape RUNS under wasmtime before hand-emitting — two closures of DIFFERENT signatures (`inc : (-> Int64
+  Int64)` → resource `t0`, `isz : (-> Int64 Bool)` → resource `t1`) cross in ONE `cadenza:closure/exports`,
+  each with its own `make`/`call` typed against its own resource. 🔑 The core imports resource-new/rep for
+  BOTH resources (a core `resource.new` is typed to ONE resource, so `make-isz` news a `t1` through t1's
+  intrinsic — the rep is a plain table slot, but the resource-TYPE distinction is real at the canon
+  boundary); both lifteds still share the ONE guest funcref table. Host drives each: make-inc+call-inc(5)=6,
+  make-isz+call-isz(0)=true. Test fns `distinct_sig_core`, `distinct_sig_inner_component` (2 imported +
+  re-exported resources + 4 ascribed funcs), `oracle_distinct_sig_component`.
+- **NEXT: DISTINCT-SIGNATURE HAND-EMIT** — the compiler still declines "closures of DIFFERENT signatures"
+  (mod.rs). The N-resource-type envelope (N dtors, N resource types, N resource-new/rep pairs, an inner
+  component importing/re-exporting N resources + each fn ascribed to its own) is the last large envelope
+  refactor; then only the compound-closure-arg and the wasmtime-blocked borrow<t> remain.
 
 ## Risks / open questions
 
