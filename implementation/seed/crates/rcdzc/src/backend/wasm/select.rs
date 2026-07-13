@@ -746,7 +746,9 @@ pub fn collect_used_ops(
         // stored value is a BOXED handle (like a list element), used DIRECTLY as the `Some` payload —
         // `dup`'d so the map keeps its own reference (mirrors `ListAt`) — no unbox. The boxed key is an
         // owned temporary the emit `drop`s after the borrow-lookup.
-        Core::MapLookup { map, key, key_ty, .. } => {
+        Core::MapLookup {
+            map, key, key_ty, ..
+        } => {
             out.insert(OP_MAP_LOOKUP);
             out.insert(OP_DUP);
             out.insert(OP_DROP);
@@ -2554,20 +2556,32 @@ fn emit(
         // `map-insert(map, key, val)` — which CONSUMES the map handle + key + value and RETURNS the new
         // map, threading the handle through with no scratch local (like `bytes-set`). Entries insert in
         // SOURCE order, so a later duplicate key overwrites (keys compared by value). Leaves the map handle.
-        Core::MapNew { entries, key_ty, val_ty } => {
+        Core::MapNew {
+            entries,
+            key_ty,
+            val_ty,
+        } => {
             out.push(Lir::CallImport(OP_MAP_EMPTY)); // → [map]
             for &(k, v) in &entries {
                 emit(db, k, slots, base, high, scratch_ty, layout, out)?; // [map, key]
                 if let Some(op) = box_op_ty(&key_ty)? {
                     if let Some(m) = is_narrow_int(db, k) {
-                        out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                        out.push(if m.signed {
+                            Lir::I64ExtendI32S
+                        } else {
+                            Lir::I64ExtendI32U
+                        });
                     }
                     out.push(Lir::CallImport(op)); // [map, key-handle]
                 }
                 emit(db, v, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
                 if let Some(op) = box_op_ty(&val_ty)? {
                     if let Some(m) = is_narrow_int(db, v) {
-                        out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                        out.push(if m.signed {
+                            Lir::I64ExtendI32S
+                        } else {
+                            Lir::I64ExtendI32U
+                        });
                     }
                     out.push(Lir::CallImport(op)); // [map, key, val-handle]
                 }
@@ -2578,19 +2592,33 @@ fn emit(
         // `Map.insert(m, k, v)` — emit the map handle, the key boxed by its type, the value boxed by its
         // type, then `map-insert` (RETURNS the new map handle; consumes all three). Mirrors `MapNew`'s
         // per-entry insert.
-        Core::MapInsert { map, key, val, key_ty, val_ty } => {
+        Core::MapInsert {
+            map,
+            key,
+            val,
+            key_ty,
+            val_ty,
+        } => {
             emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
             if let Some(op) = box_op_ty(&key_ty)? {
                 if let Some(m) = is_narrow_int(db, key) {
-                    out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
                 }
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
             emit(db, val, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
             if let Some(op) = box_op_ty(&val_ty)? {
                 if let Some(m) = is_narrow_int(db, val) {
-                    out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
                 }
                 out.push(Lir::CallImport(op)); // [map, key, val-handle]
             }
@@ -2605,7 +2633,11 @@ fn emit(
             emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
             if let Some(op) = box_op_ty(&key_ty)? {
                 if let Some(m) = is_narrow_int(db, key) {
-                    out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
                 }
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
@@ -2626,7 +2658,14 @@ fn emit(
         // `dup`'d so the map keeps its own reference (mirrors `ListAt`'s borrowed `vec-get`) — else `None`.
         // The boxed key is an owned temporary `drop`ped after the borrow. Scratch: the key handle (i32,
         // dropped after lookup) and the looked-up value handle (i32).
-        Core::MapLookup { map, key, key_ty, disc_some, disc_none, .. } => {
+        Core::MapLookup {
+            map,
+            key,
+            key_ty,
+            disc_some,
+            disc_none,
+            ..
+        } => {
             let key_slot = base;
             let val_slot = base + 1;
             if val_slot + 1 > *high {
@@ -2638,7 +2677,11 @@ fn emit(
             emit(db, key, slots, base + 2, high, scratch_ty, layout, out)?; // [map, key]
             if let Some(op) = box_op_ty(&key_ty)? {
                 if let Some(m) = is_narrow_int(db, key) {
-                    out.push(if m.signed { Lir::I64ExtendI32S } else { Lir::I64ExtendI32U });
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
                 }
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
@@ -5336,6 +5379,22 @@ fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {
                 index: iy,
             },
         ) => ix == iy && core_eq(db, px, py),
+        // A sum-variant payload read: equal iff the SAME path off an equal (runtime) scrutinee — the
+        // pattern-binder analogue of `Proj`. `sum-payload`/`get-*` BORROW the handle and are pure (no rc
+        // change, no effect), so two reads of the same payload yield the same value; sharing them lets the
+        // arith-CSE compute `(Some x)`'s `x` ONCE for `(+ x x)` exactly as it already does for a repeated
+        // tuple/record field `(+ (. r x) (. r x))`. `path` is a small `Vec<PathStep>` (each `Copy`), so
+        // `==` is a cheap element compare.
+        (
+            Core::SumPayload {
+                scrutinee: sx,
+                path: px,
+            },
+            Core::SumPayload {
+                scrutinee: sy,
+                path: py,
+            },
+        ) => px == py && core_eq(db, sx, sy),
         _ => false,
     }
 }
@@ -7280,6 +7339,34 @@ mod tests {
             f.code.iter().filter(|i| **i == Lir::I64Add).count(),
             1,
             "one add over the shared product"
+        );
+    }
+
+    #[test]
+    fn a_repeated_sum_payload_read_is_shared_by_cse() {
+        // (match o ((Some x) (+ x x)) ((None) 0)) — the binder `x` resolves to a `Core::SumPayload` at
+        // EACH occurrence, so `(+ x x)` names two DISTINCT SumPayload nodes. `core_eq` now recognizes
+        // them as equal (same scrutinee + path), so the arith-CSE reads the payload ONCE
+        // (`sum-payload ; get-int` a single time) into a slot and shares it for both `+` operands —
+        // exactly as a repeated tuple/record field `(+ (. r x) (. r x))` already was. The match is kept
+        // runtime by making `f` recursive on a fresh `(None)`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: o (Option Int64)) (: acc Int64)) \
+               (match o ((Some x) (f (None) (+ acc (+ x x)))) ((None) acc))) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert_eq!(
+            f.code
+                .iter()
+                .filter(|i| matches!(i, Lir::CallImport(op) if *op == OP_SUM_PAYLOAD))
+                .count(),
+            1,
+            "the payload `x` is read exactly once and shared across `(+ x x)`, got: {:?}",
+            f.code
         );
     }
 
