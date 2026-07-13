@@ -20328,6 +20328,60 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wide_sum_match_with_named_binders_dispatches_correctly() {
+        // A match over a MANY-variant sum, each arm binding the payload by a NAME (`(Vi x) → …`). This is
+        // the shape whose compile was O(N²): each arm's payload-binder `x` resolved as an "unbound name"
+        // and ran the O(scope) nearest-name typo scan, AND each arm head `Vi` resolved via an O(variants)
+        // `variant_ctor_field` scan, AND the redundant-arm check's `Vec::contains` was O(arms) per arm —
+        // three O(N²)s. The fixes (lazy unbound-suggestion at the fault-surfacing site, a
+        // `variant_ctor_index`, a redundant-arm `HashSet`) make it LINEAR. This test LOCKS IN the behavior
+        // they must preserve: every arm dispatches to the value derived from its OWN bound payload, so a
+        // dropped/misindexed binder or ctor would return the wrong value. 12 variants — enough that the
+        // ctor index + binder resolution are genuinely exercised, small enough to run fast.
+        use crate::testkit::parse;
+        let n = 12;
+        let variants: String = (0..n).map(|i| format!(" (V{i} Int64)")).collect();
+        let arms: String = (0..n).map(|i| format!(" ((V{i} x) (+ x {i}))")).collect();
+        // `pick k` builds `Vk 100`; `code k` matches it and returns `100 + k` (payload + arm index) — so
+        // the binder `x` (=100) MUST reach each arm's body for the answer to be right.
+        let mut pick = String::from("(V0 100)");
+        for i in (0..n).rev() {
+            pick = format!("(if (= n {i}) (V{i} 100) {pick})");
+        }
+        let src = format!(
+            "(module m (type T{variants}) \
+               (def (pick (: n Int64)) {pick}) \
+               (def (code (: n Int64)) (match (pick n){arms})) \
+               (export code))"
+        );
+        let bytes =
+            compile_component(&crate::codec::encode(&parse(&src))).expect("compile wide-sum match");
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed wide-sum run");
+            return;
+        };
+        for k in [0, 5, 11] {
+            let opts = cdz_run::RunOpts {
+                export: Some("code".to_string()),
+                args: vec![k.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => {
+                    assert_eq!(
+                        s,
+                        (100 + k).to_string(),
+                        "arm V{k}: payload 100 + index {k}"
+                    )
+                }
+                cdz_run::Outcome::Trap(t) => panic!("wide-sum run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_runtime_value_eq_in_a_loop_condition_does_not_clash_scratch() {
         // REGRESSION: a runtime `value-eq` (or any i32 heap-handle-producing op) in the CONDITION of a
         // tail-recursive function compiled as a wasm LOOP must not reuse a scratch slot the sibling

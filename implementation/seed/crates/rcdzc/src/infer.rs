@@ -3457,6 +3457,29 @@ fn map_duplicate_const_key(db: &mut Db, entries: &[(StructId, StructId)]) -> Opt
     None
 }
 
+/// Enrich a bare UNBOUND-name reject (`resolve_name` emits `unbound name \`x\``, no suggestion) with the
+/// rustc-gold "did you mean?" — the nearest in-scope name + a heuristic replace fix — at the ONE site
+/// that surfaces an unbound name as a user fault. The nearest-name search is an O(names-in-scope)
+/// candidate scan (with a Levenshtein per candidate); doing it HERE (once per surfaced fault) instead of
+/// in `resolve_name` (once per resolve, including the many pattern-binder / shape-test resolves whose
+/// unbound Poison is never surfaced) is what keeps a match over an N-variant sum LINEAR rather than O(N²).
+/// The resulting message + heuristic fix are byte-identical to the old eager form.
+fn enrich_unbound(db: &mut Db, id: crate::ast::StructId, r: Reject) -> Reject {
+    // Only a genuinely-unstamped bare unbound reject is enriched; read the name off the faulting node.
+    let Some(name) = db.ast.as_name(id).map(str::to_string) else {
+        return r;
+    };
+    match crate::resolve::nearest_unbound_suggestion(db, id, &name) {
+        Some(candidate) => Reject::coded(
+            Code::Unbound,
+            format!("unbound name `{name}` — did you mean `{candidate}`?"),
+        )
+        .at(id)
+        .with_fix(Fix::replace_heuristic(id, candidate)),
+        None => r,
+    }
+}
+
 /// Collect faults at and under `id`, stamping each with its origin node. The recursive `collect_node`
 /// pushes this node's own faults and recurses into children (each child stamped by its OWN frame
 /// first); afterwards we stamp every fault THIS frame added that is still unanchored with `id` — so a
@@ -4376,7 +4399,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         Resolved::Poison(r) => {
             if r.code == Some(Code::Unbound) {
                 trace!(target: "rcdzc::infer", node = id.0, "fault: unbound name reported (CDZ0101)");
-                out.push(r);
+                out.push(enrich_unbound(db, id, r));
             }
         }
         // A ref's target-node fault is reported when that node is collected on its own. A bare

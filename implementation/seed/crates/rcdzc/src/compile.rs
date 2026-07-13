@@ -1230,7 +1230,7 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
 /// coverage is DECIDABLE from the pattern alone are represented; anything subtler is not classified (its
 /// arm is treated as covering nothing and shadowing nothing), so the check stays conservative — it never
 /// warns where it cannot prove redundancy.
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Hash, Clone)]
 enum ArmCover {
     /// A bare binder / `_` — matches EVERY value, so it shadows all arms after it.
     CatchAll,
@@ -1315,7 +1315,10 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
             continue;
         };
         let mut catch_all_seen = false;
-        let mut covered: Vec<ArmCover> = Vec::new();
+        // A HASH SET of already-covered literal/variant keys — an O(1) membership probe per arm. A `Vec`
+        // + `contains` was O(covered) per arm → O(arms²) for a match over an N-variant sum (each of N
+        // distinct-variant arms scanned the growing covered list).
+        let mut covered: std::collections::HashSet<ArmCover> = std::collections::HashSet::new();
         for (pat, _) in &arms {
             let cover = arm_cover(db, *pat);
             let redundant = match &cover {
@@ -1336,7 +1339,9 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
             }
             match cover {
                 Some(ArmCover::CatchAll) => catch_all_seen = true,
-                Some(c) if !covered.contains(&c) => covered.push(c),
+                Some(c) => {
+                    covered.insert(c);
+                }
                 _ => {}
             }
         }
