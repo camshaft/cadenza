@@ -117,10 +117,27 @@ function toDiag(d: {
   return { error: d.error, code: d.code, message: d.message, node: d.node, from: d.from, to: d.to, fix };
 }
 
+/// A parse-error throw (a `JsError` from `wasmCompile`/`wasmReplEval` on unparseable text) as a
+/// decline diagnostic, so a syntax error reads like any other "no" instead of rejecting the promise.
+/// Unanchored (byte 0) — the message carries the byte offset the wasm reported.
+function parseErrorDiag(e: unknown): Diag {
+  const message = e instanceof Error ? e.message : String(e);
+  return { error: true, code: "", message, node: 0, from: 0, to: 0, fix: null };
+}
+
 const api = {
   async compile(text: string, from: Surface): Promise<CompileOutcome> {
     await ensureReady();
-    const r = wasmCompile(text, from);
+    // `wasmCompile` THROWS (a JsError) when the text doesn't even parse — a syntax error, not a
+    // type/semantic decline. Catch it and surface it as a normal decline diagnostic so the caller
+    // shows the error rather than the promise rejecting (which would leave a Run stuck on
+    // "Compiling & running…" forever, since the caller doesn't set a done state on a rejection).
+    let r: ReturnType<typeof wasmCompile>;
+    try {
+      r = wasmCompile(text, from);
+    } catch (e) {
+      return { component: null, diagnostics: [parseErrorDiag(e)] };
+    }
     const component = r.component ? new Uint8Array(r.component) : null;
     const diagnostics: Diag[] = r.diagnostics.map(toDiag);
     return { component, diagnostics };
@@ -185,7 +202,14 @@ const api = {
   /// entry, so a scalar OR compound result flows through the normal run path.
   async replEval(buffer: string, expr: string, from: Surface): Promise<CompileOutcome> {
     await ensureReady();
-    const r = wasmReplEval(buffer, expr, from);
+    // Like `compile`, `wasmReplEval` throws on unparseable buffer/expr — surface it as a decline so a
+    // syntax error in a REPL entry doesn't reject the promise (which would hang the REPL call).
+    let r: ReturnType<typeof wasmReplEval>;
+    try {
+      r = wasmReplEval(buffer, expr, from);
+    } catch (e) {
+      return { component: null, diagnostics: [parseErrorDiag(e)] };
+    }
     const component = r.component ? new Uint8Array(r.component) : null;
     return { component, diagnostics: r.diagnostics.map(toDiag) };
   },
