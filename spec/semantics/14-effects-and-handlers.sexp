@@ -579,6 +579,22 @@
               (handle Idx 3 ((next (u) s (resume s (- s 1)))) (sum-down))) (export main)))
   (output (: 6 Int64)))
 
+(case "a recursive function with an annotated parameter walks and bails through an abortive handler"
+  (doc    "The recursive-effect idiom with an ANNOTATED parameter and an ABORTIVE discharge. `walk` takes
+           `(: n Int64)` and tail-recurses, counting `n` down; at zero it performs `(Bail.bail 99)`, whose
+           handler arm never resumes — so the abort at the base ABANDONS the walk and its value 99 becomes
+           the handle's value (propagating up the tail calls, no state threaded). Witnesses that recursive
+           effect-context specialization handles an annotated parameter (not only a bare name) — the
+           synthesized specialized function re-annotates the parameter with its solved type. `(walk 3)`
+           ticks 3→2→1→0 then bails → 99 (`DESIGN-effects-rcdzc.md` §4.2, §4.3).")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (walk (: n Int64))
+              (if (= n 0) (Bail.bail 99) (walk (- n 1))))
+            (def (main)
+              (handle Bail 0 ((bail (n) s n)) (walk 3))) (export main)))
+  (output (: 99 Int64)))
+
 (case "a recursive function threads two nested handlers' states at once"
   (doc    "Witnesses that effect-context resolution threads EACH enclosing handler's state
            independently across a recursion (capabilities-and-effects.md #A Handler Threads State

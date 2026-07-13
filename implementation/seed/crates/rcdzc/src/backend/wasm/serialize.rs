@@ -1158,6 +1158,23 @@ pub fn runtime_resource_core_module_form(
 /// closure's CORE valtypes (from its `Ty::Fn`), `make_param_vts` the EXPORT's core param valtypes (empty
 /// for a nullary export), `lifted_type_idx` the core type index of the lifted functype `(env, args…) -> R`
 /// (`layout.lifted_type_index(0, import_count)`).
+/// One closure EXPORT's `make` function, for the multi-export path. Each closure export gets its own
+/// `make` (which calls that export's body to build the cell, closing over that export's params, then
+/// `resource.new`s the handle); all same-signature exports SHARE the one `call` method. A single-export
+/// program is the N=1 case ([`closure_resource_core_module`]).
+#[derive(Clone)]
+pub struct ClosureMake {
+    /// The boundary export name — `"make"` for a single closure export, `"make-<def-name>"` for each of
+    /// several (so the host picks the one it wants by the source export name).
+    pub export_name: String,
+    /// The core function index of this export's BODY (which builds the closure cell) — `make` calls it.
+    pub export_abs: u32,
+    /// This export's parameter core valtypes (empty for a nullary export) — `make` forwards them.
+    pub param_vts: Vec<ValType>,
+}
+
+/// Single-export closure-resource core module — the N=1 case of [`multi_closure_resource_core_module`],
+/// preserved for the single-closure-export path (`emit_closure_resource`) and its serializer unit test.
 #[allow(clippy::too_many_arguments)]
 pub fn closure_resource_core_module(
     funcs: &[SelectedFunc],
@@ -1169,9 +1186,43 @@ pub fn closure_resource_core_module(
     lifted_type_idx: u32,
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
+    multi_closure_resource_core_module(
+        funcs,
+        imports,
+        &[ClosureMake {
+            export_name: "make".to_string(),
+            export_abs,
+            param_vts: make_param_vts.to_vec(),
+        }],
+        arg_vts,
+        ret_vt,
+        lifted_type_idx,
+        layout,
+    )
+}
+
+/// The MULTI-EXPORT closure-resource core module: N `make-<name>` functions (one per closure export,
+/// each building its export's cell + `resource.new`) sharing ONE `call` method. The shared `call` is the
+/// load-bearing realization (proven by the `multi_export_closures_share_one_call` oracle): the closure's
+/// code slot is recovered from the resource rep at call time (`resource.rep` → `arr-get(cell,0)` →
+/// `call_indirect`), so ONE `call` dispatches WHICHEVER closure a handle names, provided all exports share
+/// the closure SIGNATURE (`arg_vts`/`ret_vt`/`lifted_type_idx` are common — distinct signatures are a
+/// later slice with N resource types). Func/type index layout mirrors the single-export shape with the
+/// single make replaced by N makes: imports 0..k+2, n defined bodies, then N makes, then `call`.
+#[allow(clippy::too_many_arguments)]
+pub fn multi_closure_resource_core_module(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    makes: &[ClosureMake],
+    arg_vts: &[ValType],
+    ret_vt: ValType,
+    lifted_type_idx: u32,
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
     let n = funcs.len();
+    let nmk = makes.len();
     let vt_byte = |v: ValType| match v {
         ValType::I32 => wasm_abi::CORE_I32,
         ValType::I64 => wasm_abi::CORE_I64,
@@ -1180,7 +1231,8 @@ pub fn closure_resource_core_module(
     };
 
     // ── Type section ── import functypes 0..k, resource-new/resource-rep (k, k+1), one functype per
-    // defined body, then make `()->i32` and call `(i32 self, args…)->R`.
+    // defined body, then one make functype PER make (params may differ per export), then call
+    // `(i32 self, args…)->R`.
     let mut type_items = Vec::new();
     for o in imports {
         type_items.extend_from_slice(&import_functype(o));
@@ -1197,17 +1249,17 @@ pub fn closure_resource_core_module(
     for f in funcs {
         type_items.extend_from_slice(&functype(f)?);
     }
-    // make `(export-params…)->i32`.
-    let make_type_idx = defined_type_base + n;
-    {
-        let params: Vec<u8> = make_param_vts.iter().map(|v| vt_byte(*v)).collect();
+    // make[i] `(export-params…)->i32` — one per closure export (its type index = defined_type_base+n+i).
+    let make_type_base = defined_type_base + n;
+    for mk in makes {
+        let params: Vec<u8> = mk.param_vts.iter().map(|v| vt_byte(*v)).collect();
         let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
         t.extend_from_slice(&wasm_vec(params.len(), &params));
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         type_items.extend_from_slice(&t);
     }
-    // call `(i32 self, args…) -> R`.
-    let call_type_idx = make_type_idx + 1;
+    // call `(i32 self, args…) -> R` — shared across all makes (same closure signature).
+    let call_type_idx = make_type_base + nmk;
     {
         let mut params = vec![wasm_abi::CORE_I32]; // self rep
         params.extend(arg_vts.iter().map(|v| vt_byte(*v)));
@@ -1216,7 +1268,7 @@ pub fn closure_resource_core_module(
         t.extend_from_slice(&wasm_vec(1, &[vt_byte(ret_vt)]));
         type_items.extend_from_slice(&t);
     }
-    let total_types = defined_type_base + n + 2;
+    let total_types = defined_type_base + n + nmk + 1;
     let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
 
     // ── Import section ── k ops + resource-new + resource-rep, all from "heap".
@@ -1232,16 +1284,21 @@ pub fn closure_resource_core_module(
     let f_rnew = k as u32;
     let f_rrep = (k + 1) as u32;
 
-    // ── Function section ── defined bodies, then make + call.
+    // ── Function section ── defined bodies, then the N makes, then call.
     let mut func_items = Vec::new();
     for i in 0..n {
         uleb128((defined_type_base + i) as u64, &mut func_items);
     }
-    uleb128(make_type_idx as u64, &mut func_items);
+    for i in 0..nmk {
+        uleb128((make_type_base + i) as u64, &mut func_items);
+    }
     uleb128(call_type_idx as u64, &mut func_items);
-    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n + 2, &func_items));
-    let make_abs = (defined_type_base + n) as u32;
-    let call_abs = make_abs + 1;
+    let func_sec = section(
+        wasm_abi::CORE_SEC_FUNCTION,
+        &wasm_vec(n + nmk + 1, &func_items),
+    );
+    let make_abs_base = (defined_type_base + n) as u32; // first make's core func index
+    let call_abs = make_abs_base + nmk as u32;
 
     // ── Table + Element sections ── the funcref table holding the lifted closure(s), from `layout.lifted`
     // (same shape `core_module` emits). REQUIRED here: `call` dispatches `call_indirect` over table 0.
@@ -1267,7 +1324,8 @@ pub fn closure_resource_core_module(
         (table_sec, elem_sec)
     };
 
-    // ── Export section ── make + call (no memory: a scalar-arg/result `call` needs no linear memory).
+    // ── Export section ── the N makes (each under its own boundary name) + call (no memory: a
+    // scalar-arg/result `call` needs no linear memory).
     let export_sec = {
         let export = |name: &str, kind: u8, idx: u32| {
             let mut item = uleb_bytes(name.len() as u64);
@@ -1277,26 +1335,32 @@ pub fn closure_resource_core_module(
             item
         };
         let mut items = Vec::new();
-        items.extend_from_slice(&export("make", wasm_abi::EXPORT_KIND_FUNC, make_abs));
+        for (i, mk) in makes.iter().enumerate() {
+            items.extend_from_slice(&export(
+                &mk.export_name,
+                wasm_abi::EXPORT_KIND_FUNC,
+                make_abs_base + i as u32,
+            ));
+        }
         items.extend_from_slice(&export("call", wasm_abi::EXPORT_KIND_FUNC, call_abs));
-        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(2, &items))
+        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(nmk + 1, &items))
     };
 
-    // ── Code section ── defined bodies, then make + call.
+    // ── Code section ── defined bodies, then the N makes, then call.
     let mut code_items = Vec::new();
     for f in funcs {
         code_items.extend_from_slice(&code_entry(f, &import_index));
     }
-    // make: forward the export's params (locals 0..len), `call export` (builds the closure cell, closing
-    // over those params), then `resource.new`.
-    {
+    // make[i]: forward its export's params (locals 0..len), `call <export body>` (builds the closure cell,
+    // closing over those params), then `resource.new`.
+    for mk in makes {
         let mut inner = uleb_bytes(0); // make declares no locals of its own
-        for p in 0..make_param_vts.len() {
+        for p in 0..mk.param_vts.len() {
             inner.push(op::LOCAL_GET);
             uleb128(p as u64, &mut inner);
         }
         inner.push(op::CALL);
-        uleb128(export_abs as u64, &mut inner);
+        uleb128(mk.export_abs as u64, &mut inner);
         inner.push(op::CALL);
         uleb128(f_rnew as u64, &mut inner);
         inner.push(op::END);
@@ -1354,7 +1418,7 @@ pub fn closure_resource_core_module(
         e.extend_from_slice(&inner);
         code_items.extend_from_slice(&e);
     }
-    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + 2, &code_items));
+    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + nmk + 1, &code_items));
 
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);

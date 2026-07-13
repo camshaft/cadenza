@@ -2124,9 +2124,19 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     let orig_params = db.defs[callee_def].params.clone();
     let mut orig_param_specs: Vec<(String, crate::ty::Ty)> = Vec::with_capacity(orig_params.len());
     for &p in &orig_params {
+        // A param is either a BARE name `n` or an ANNOTATED binder `(: n T)`. Extract the NAME from either:
+        // a bare name atom directly, or the FIRST operand of a `(: name T)` form. The synthesized copy is
+        // always re-annotated with the SOLVED type below, so the original annotation itself is not reused
+        // (a `(: n T)` param and a bare `n` param produce the identical `(: n <solved>)` in the spec sig).
         let name = match db.ast.as_name(p) {
             Some(n) => n.to_string(),
-            None => return None,
+            None => match db.ast.as_form(p, ":").and_then(|t| t.first().copied()) {
+                Some(name_occ) => match db.ast.as_name(name_occ) {
+                    Some(n) => n.to_string(),
+                    None => return None, // a non-name binder in the annotation — unsupported
+                },
+                None => return None, // neither a bare name nor a `(: name T)` binder
+            },
         };
         let ty = crate::infer::type_of(db, p);
         if matches!(ty, crate::ty::Ty::Any) {
