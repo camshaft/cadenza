@@ -94,6 +94,17 @@
   (input  (= "hello" "world"))
   (output (: false Bool)))
 
+(case "a string-literal pattern in a match selects by string equality, distinguishing Unicode"
+  (doc    "A `match` may test a String scrutinee against string-LITERAL patterns, selecting the arm whose
+           literal equals the scrutinee (by normalized contents, collections-and-text.md #String Equality
+           Follows Normalized Contents) — the same equality the `=` operator uses. `(match \"café\" (\"cafe\"
+           1) (\"café\" 2) (_ 9))` selects the `\"café\"` arm, not `\"cafe\"`: the é distinguishes them, so
+           the result is 2. Pins that string-literal pattern matching is by full Unicode-scalar equality
+           (not a byte-prefix or ASCII-fold), and that a non-matching literal falls through to the wildcard
+           — the string companion of the integer-literal-pattern match.")
+  (input  (match "café" ("cafe" 1) ("café" 2) (_ 9)))
+  (output (: 2 Int64)))
+
 ; --- The empty string is an ordinary String value ---------------------------------------
 ; `""` is the zero-length string — a first-class String the compiler needs (an empty error message, an
 ; empty name). Its length is 0 (counted in Unicode scalar values, of which it has none), it is equal
