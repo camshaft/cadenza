@@ -4266,6 +4266,93 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_branch_refinement_folds_a_redundant_nested_comparison_and_eliminates_its_dead_branch() {
+        // FLOW-SENSITIVE COMPARISON FOLD + DEAD-BRANCH ELIMINATION: when an enclosing branch has refined a
+        // variable so a NESTED comparison against a constant is already decided, the inner `if` collapses
+        // to only its taken branch — no re-compare, no `select`, no dead branch. Three shapes: the SAME
+        // test repeated (`(> n 0)` inside `(> n 0)`), an IMPLIED test (`n >= 5` ⇒ `n > 0` true), and a
+        // test the refinement makes FALSE (`n < 0` ⇒ `n > 10` false). Pins the elimination at the Lir
+        // level (the inner condition's compare op is gone) AND the value parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // IMPLIED-true: `(if (>= n 5) (if (> n 0) 1 2) 3)` — the inner `(> n 0)` is known true, so the
+        // inner `if` is just `1`. Exactly ONE comparison remains (the outer `>= 5`), NOT two, and there is
+        // no `Select` (the inner did not become a branchless select on a constant).
+        let implied = select(
+            "(module m (def (f (: n Int64)) (if (>= n 5) (if (> n 0) 1 2) 3)) (def (main) 0) (export main))",
+            "f",
+        );
+        let cmp_count = implied
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i,
+                    Lir::I64GtS | Lir::I64GeS | Lir::I64LtS | Lir::I64LeS | Lir::I64Eq
+                )
+            })
+            .count();
+        assert_eq!(
+            cmp_count, 1,
+            "only the outer comparison should remain (inner folded away), got: {implied:?}"
+        );
+        assert!(
+            !implied.iter().any(|i| matches!(i, Lir::Select)),
+            "the decided inner `if` collapses to its taken branch, no select, got: {implied:?}"
+        );
+        // VALUE parity across all three shapes and both branch outcomes.
+        let same = "(if (> n 0) (if (> n 0) 1 2) 3)";
+        assert_eq!(run::<i64>("(: n Int64)", same, &[Val::S64(5)]), 1);
+        assert_eq!(run::<i64>("(: n Int64)", same, &[Val::S64(0)]), 3);
+        let imp = "(if (>= n 5) (if (> n 0) 1 2) 3)";
+        assert_eq!(run::<i64>("(: n Int64)", imp, &[Val::S64(10)]), 1);
+        assert_eq!(run::<i64>("(: n Int64)", imp, &[Val::S64(5)]), 1);
+        assert_eq!(run::<i64>("(: n Int64)", imp, &[Val::S64(3)]), 3);
+        let fls = "(if (< n 0) (if (> n 10) 1 2) 3)";
+        assert_eq!(run::<i64>("(: n Int64)", fls, &[Val::S64(-1)]), 2);
+        assert_eq!(run::<i64>("(: n Int64)", fls, &[Val::S64(0)]), 3);
+        assert_eq!(run::<i64>("(: n Int64)", fls, &[Val::S64(20)]), 3);
+        // A comparison the refinement does NOT decide (constant strictly inside the range) is UNCHANGED —
+        // `n >= 5` does not decide `n > 8`, so both compares stay. This guards against over-folding.
+        let undecided = select(
+            "(module m (def (f (: n Int64)) (if (>= n 5) (if (> n 8) 1 2) 3)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            undecided
+                .iter()
+                .filter(|i| matches!(i, Lir::I64GtS | Lir::I64GeS))
+                .count(),
+            2,
+            "an undecided inner comparison must NOT be folded, got: {undecided:?}"
+        );
+        assert_eq!(run::<i64>("(: n Int64)", "(if (>= n 5) (if (> n 8) 1 2) 3)", &[Val::S64(6)]), 2);
+        assert_eq!(run::<i64>("(: n Int64)", "(if (>= n 5) (if (> n 8) 1 2) 3)", &[Val::S64(9)]), 1);
+    }
+
+    #[test]
     fn a_narrow_binary_op_with_a_constant_left_operand_emits_valid_wasm() {
         // ⚠ INVALID WASM regression: a narrow binary op whose LEFT operand is a bare integer literal and
         // whose right is a narrow-typed variable mis-emitted the literal at its i64 default beside the i32

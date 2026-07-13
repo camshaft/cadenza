@@ -6681,6 +6681,79 @@ fn fold_comparison_at_type_bound(
     }
 }
 
+/// EMIT-TIME comparison fold against the CURRENT flow-sensitive refinement (cycle 82's branch-range
+/// stack). When one operand is a compile-time constant `c` and the other a runtime value whose refined
+/// `value_range` lies ENTIRELY on one side of `c`, the comparison is decidable to a constant bool — a
+/// redundant re-test the enclosing branch already established (`(if (> n 0) (if (> n 0) …) …)`, or an
+/// IMPLIED test `(if (>= n 5) (if (> n 0) …) …)`). This is the sibling of [`fold_comparison_at_type_bound`]
+/// but is called from the `Core::Compare` EMIT arm (not `lower`), because refinements are populated only
+/// during emit — `lower` runs with the stack empty and cannot see branch facts. Returns only the
+/// CONSTANT-bool verdicts (not the `== bound` collapse, which needs a synthesized node `lower` owns).
+///
+/// SOUND: the refined range is a fact the branch GUARANTEES; folding the comparison discards the runtime
+/// operand, so — exactly as `fold_comparison_at_type_bound` — it only fires when that operand is
+/// `is_trap_free` (a refined variable is a `Param`/`LocalRef`, trap-free), never dropping a trap.
+pub(crate) fn refined_comparison_const(
+    db: &mut Db,
+    op: Prim,
+    lhs: StructId,
+    rhs: StructId,
+) -> Option<bool> {
+    if matches!(op, Prim::Eq) {
+        return None;
+    }
+    let const_val = |db: &mut Db, id: StructId| match core_of(db, id) {
+        Core::ConstInt(v) => v.to_i64(),
+        _ => None,
+    };
+    // (runtime operand `v`, its `[min, max]` refined range, the constant `c`, whether `v` is on the left).
+    let (v, (min, max), c, v_on_left) =
+        if let (Some(c), Some(b)) = (const_val(db, rhs), value_range(db, lhs)) {
+            (lhs, b, c, true)
+        } else if let (Some(c), Some(b)) = (const_val(db, lhs), value_range(db, rhs)) {
+            (rhs, b, c, false)
+        } else {
+            return None;
+        };
+    // Only a genuinely REFINED variable is interesting here: a bare declared-type range already folds in
+    // `lower` (via `fold_comparison_at_type_bound`), so if this fires only on the type bound it is a
+    // no-op the const-fold tier handled. Require the operand be a variable with an active refinement so
+    // we add value only where `lower` could not see the branch fact.
+    let refined = matches!(
+        core_of(db, v),
+        Core::Param { binder } | Core::LocalRef { binder } if db.refined_range(binder).is_some()
+    );
+    if !refined {
+        return None;
+    }
+    // Discarding `v` must not drop a trap (a refined `Param`/`LocalRef` is trap-free, so this holds).
+    if !is_trap_free(db, v) {
+        return None;
+    }
+    // Normalize to `(cmp v c)`.
+    let cmp = match (op, v_on_left) {
+        (Prim::Lt, true) | (Prim::Gt, false) => Prim::Lt,
+        (Prim::Gt, true) | (Prim::Lt, false) => Prim::Gt,
+        (Prim::Le, true) | (Prim::Ge, false) => Prim::Le,
+        (Prim::Ge, true) | (Prim::Le, false) => Prim::Ge,
+        _ => return None,
+    };
+    // `v ∈ [min, max]`. Decide only when the WHOLE range lies on one side of `c`.
+    let above_max = |c: i64| max.is_some_and(|m| c > m); // c strictly above the range → v < c always
+    let at_or_above_max = |c: i64| max.is_some_and(|m| c >= m);
+    match cmp {
+        Prim::Lt if above_max(c) => Some(true),      // v < c: c > max → always
+        Prim::Lt if c <= min => Some(false),         // v < c: c <= min → never
+        Prim::Ge if above_max(c) => Some(false),     // v >= c: c > max → never
+        Prim::Ge if c <= min => Some(true),          // v >= c: c <= min → always
+        Prim::Le if at_or_above_max(c) => Some(true), // v <= c: c >= max → always
+        Prim::Le if c < min => Some(false),          // v <= c: c < min → never
+        Prim::Gt if at_or_above_max(c) => Some(false), // v > c: c >= max → never
+        Prim::Gt if c < min => Some(true),           // v > c: c < min → always
+        _ => None,
+    }
+}
+
 /// The inclusive range a runtime value provably occupies, as `(min, max)` where `min: i64` is always
 /// known and `max: Option<i64>` is absent when the upper bound is not i64-representable (an unsigned-64
 /// value spans `[0, 2^64)` — min 0, no i64 max). `None` when no bound is known at all. Prefers the DERIVED
