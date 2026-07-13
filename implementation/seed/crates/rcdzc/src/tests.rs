@@ -3186,6 +3186,85 @@ mod runtime_ops {
         assert_eq!(run::<i32>("(: a Int32)", "(% a 8)", &[Val::S32(-100)]), -4);
     }
 
+    #[test]
+    fn divisibility_by_a_power_of_two_becomes_a_mask_test() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(= (% x 2) 0)` (the even test) → `x & 1 ; eqz` — NO div/rem, no bias sequence.
+        let even = lir("(: x Int64)", "(= (% x 2) 0)");
+        assert!(
+            even.contains(&Lir::I64And)
+                && even.contains(&Lir::I64Eqz)
+                && !even
+                    .iter()
+                    .any(|i| matches!(i, Lir::I64RemS | Lir::I64DivS)),
+            "even test is a mask+eqz, no rem/div; got {even:?}"
+        );
+        // A non-power-of-two divisor keeps the `%` (rem_s).
+        let three = lir("(: x Int64)", "(= (% x 3) 0)");
+        assert!(
+            three.iter().any(|i| matches!(i, Lir::I64RemS)),
+            "(= (% x 3) 0) keeps rem_s; got {three:?}"
+        );
+
+        // VALUE PARITY — the mask test must agree with the true `%`-then-`==0`, ESPECIALLY for negatives
+        // (signed `%` is sign-of-dividend, but divisibility is sign-agnostic).
+        for (x, k, div) in [
+            (8i64, 2i64, true),
+            (7, 2, false),
+            (-8, 2, true),
+            (-7, 2, false),
+            (0, 2, true),
+            (-1, 2, false),
+            (16, 8, true),
+            (-16, 8, true),
+            (-12, 8, false),
+            (i64::MIN, 2, true), // MIN is even; the mask test must not choke where signed `%` bias would
+        ] {
+            assert_eq!(
+                run::<bool>("(: x Int64)", &format!("(= (% x {k}) 0)"), &[Val::S64(x)]),
+                div,
+                "({x} % {k} == 0) should be {div}"
+            );
+        }
+        // Unsigned divisibility too.
+        assert!(run::<bool>(
+            "(: u UInt64)",
+            "(= (% u 4) 0)",
+            &[Val::U64(16)]
+        ));
+        assert!(!run::<bool>(
+            "(: u UInt64)",
+            "(= (% u 4) 0)",
+            &[Val::U64(17)]
+        ));
+    }
+
     // ── shifts: count guarded to [0,N); << checked for overflow; >> arithmetic/logical by sign ─────
 
     #[test]
@@ -4822,6 +4901,65 @@ mod match_engine {
     }
 
     #[test]
+    fn an_annotation_mismatch_to_a_sum_offers_a_wrap_in_variant_fix() {
+        // "try wrapping the expression in `Some`" (`spec/capabilities/diagnostics.md` §A Diagnostic
+        // Carries A Route To A Fix): `(: n Option)` where `n : Int64` and `Option`'s `Some` carries an
+        // Int64 → name + a WRAP fix. The `…` (WRAP_HOLE) marks where the original `n` goes.
+        let d = reject_full(
+            "(module m (type Option (Some Int64) None) \
+               (def (f (: n Int64)) (: n Option)) (export f))",
+        )
+        .expect("annotation mismatch must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            d.message.contains("wrap the value in `Some`"),
+            "names the variant: {}",
+            d.message
+        );
+        let fix = d.fix.expect("a wrap fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(Some {})", crate::abi::WRAP_HOLE),
+            "wraps the original in the Some ctor"
+        );
+        assert!(!fix.verified, "a wrap is a heuristic (intent guess)");
+    }
+
+    #[test]
+    fn the_wrap_variant_is_derived_generically_from_the_user_sum_not_hardcoded() {
+        // The ctor name comes from the DECLARATION, not a built-in `Some`/`Ok` — a user sum `Box` with a
+        // single `Int64`-payload variant `Wrap` yields "wrap in `Wrap`" (no-keys-outside-the-prelude).
+        let d = reject_full(
+            "(module m (type Box (Wrap Int64)) (def (f (: n Int64)) (: n Box)) (export f))",
+        )
+        .expect("mismatch must reject");
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!("(Wrap {})", crate::abi::WRAP_HOLE)).as_deref(),
+            "message: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn an_annotation_mismatch_with_no_fitting_variant_carries_no_wrap() {
+        // A sum whose variants are all NULLARY (or whose payloads don't match the value type) offers no
+        // wrap — a wrap is suggested only when it would actually resolve the mismatch. `Flag` = On | Off.
+        let d = reject_full(
+            "(module m (type Flag On Off) (def (f (: n Int64)) (: n Flag)) (export f))",
+        )
+        .expect("mismatch must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            !d.message.contains("wrap"),
+            "no wrap suggestion: {}",
+            d.message
+        );
+        assert!(d.fix.is_none(), "no fix carried: {:?}", d.fix);
+    }
+
+    #[test]
     fn a_bare_literal_past_int64_is_malformed_not_out_of_range() {
         // 01-literals "an out-of-range integer literal is a malformed literal": a BARE unannotated literal
         // that overflows the default signed `Int64` — `9223372036854775808` (Int64.max+1),
@@ -6072,6 +6210,17 @@ mod match_engine {
             ),
             "-9",
             "runtime length mismatch → catch-all"
+        );
+        // MULTI-ARM dispatch: a leading literal tag selects among 2+ `(bin …)` arms (a chain of `if`s over
+        // the runtime scrutinee). tag 1 → x ; tag 2 → y+1000 ; else → catch-all. Exercises the nested-if
+        // scratch discipline (each arm's `BinIntRead` re-reads the materialized scrutinee, no slot clash).
+        let m2 = "(module m (def (main (: t Int64) (: v Int64)) (match (bin (u8 t) (u16 v)) ((bin (u8 1) (u16 x)) x) ((bin (u8 2) (u16 y)) (+ y 1000)) (_ -1))) (export main))";
+        assert_eq!(run(m2, &["1", "42"]), "42", "runtime multi-arm: tag 1");
+        assert_eq!(run(m2, &["2", "42"]), "1042", "runtime multi-arm: tag 2");
+        assert_eq!(
+            run(m2, &["9", "42"]),
+            "-1",
+            "runtime multi-arm: no tag → catch-all"
         );
     }
 
@@ -7832,6 +7981,56 @@ mod match_engine {
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "a String-payload variant must COMPILE — not reject Named as nullary (encode_ty must round-trip String)"
         );
+    }
+
+    #[test]
+    fn a_quantity_type_round_trips_through_encode_and_decode() {
+        // L1-0 SAFETY (the DESIGN doc §9 mandatory test): a `Ty::Qty` MUST survive the `Ty → type-value
+        // AST → Ty` round-trip that every constructor scheme takes (`eval::encode_typeval` /
+        // `resolve::decode_ty`, reached via `typeval_of`). A MISSING `encode_ty`/`decode_ty` arm would
+        // silently encode a quantity as `Unit` (the catch-all) — the exact hole that mis-typed `Bytes`
+        // and `String` before their arms landed — so a `(-> T (Qty T u))` scheme would round-trip to
+        // `(-> T Unit)` and every quantity op would mis-type. This pins the round-trip for the
+        // dimensionless unit, a base unit, a derived (velocity) unit, and a squared unit.
+        use crate::db::Db;
+        use crate::eval::{encode_typeval, typeval_of};
+        use crate::testkit::parse;
+        use crate::ty::{Ty, Unit};
+        let ast = parse("(module m (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let cases = vec![
+            // A dimensionless quantity over Int64 — the empty unit map.
+            Ty::Qty {
+                inner: Box::new(Ty::int64()),
+                unit: Unit::one(),
+            },
+            // A base-unit quantity over Float64 — `{metre: 1}`.
+            Ty::Qty {
+                inner: Box::new(Ty::float64()),
+                unit: Unit::base("metre"),
+            },
+            // A DERIVED unit (velocity) over Float64 — metre·second⁻¹, `{metre: 1, second: -1}`.
+            Ty::Qty {
+                inner: Box::new(Ty::float64()),
+                unit: Unit::base("metre").div(&Unit::base("second")),
+            },
+            // A SQUARED unit (area) over Float64 — `{metre: 2}`.
+            Ty::Qty {
+                inner: Box::new(Ty::float64()),
+                unit: Unit::base("metre").pow(2),
+            },
+        ];
+        for ty in cases {
+            let node = encode_typeval(&mut db, &ty);
+            let decoded = typeval_of(&mut db, node)
+                .unwrap_or_else(|| panic!("a {} type-value must decode", ty.render_name()));
+            assert_eq!(
+                decoded,
+                ty,
+                "a {} type MUST survive the encode/decode round-trip (a missing arm would encode it as Unit)",
+                ty.render_name()
+            );
+        }
     }
 
     #[test]
@@ -10750,6 +10949,44 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_function_over_a_sum_infers_its_unannotated_parameters() {
+        // A recursive function that MATCHES an unannotated parameter against a user sum's constructors —
+        // `(def (len c) (match c (CNil 0) ((CCons (tuple h t)) (+ 1 (len t)))))` — infers `c : Code` from
+        // the pattern SHAPE (`pattern_implied_ty` threads the variant/tuple pattern onto the param var),
+        // rather than leaving it a free var that grounds to `Any` and declines "annotate its parameters".
+        // A PASS-THROUGH parameter returned by one arm (`ys` in `cat`) is inferred from the sibling arm's
+        // determined result. Both were previously an unannotated-recursive-param decline. `compiles`
+        // means the recursive signatures were determined (no decline); the runtime run is corpus-gated.
+        let compiles = |body: &str| -> bool {
+            let src = format!("(module m {body} (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            out.artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+        };
+        // `len` — a single sum parameter matched against its constructors, inferred from the pattern.
+        assert!(compiles(
+            "(type Code CNil (CCons (Tuple Int64 Code))) \
+             (def (len c) (match c (CNil 0) ((CCons (tuple h t)) (+ 1 (len t))))) \
+             (def (main) (len (CCons (tuple 1 (CCons (tuple 2 CNil))))))"
+        ));
+        // `cat` — TWO sum parameters, one (`xs`) inferred from the pattern, the other (`ys`) inferred as
+        // the pass-through returned by the `CNil` arm (its type borrowed from the `CCons` arm's result).
+        assert!(compiles(
+            "(type Code CNil (CCons (Tuple Int64 Code))) \
+             (def (cat xs ys) (match xs (CNil ys) ((CCons (tuple h t)) (CCons (tuple h (cat t ys)))))) \
+             (def (len c) (match c (CNil 0) ((CCons (tuple h t)) (+ 1 (len t))))) \
+             (def (main) (len (cat (CCons (tuple 1 CNil)) CNil)))"
+        ));
+    }
+
+    #[test]
     fn a_nullary_function_call_invokes_it() {
         // `(def (g) 7)` is a NULLARY function; `(g)` — a zero-argument application — invokes it and
         // yields 7. A nullary def resolves its name to its body value (a bare `g` IS 7), so the call
@@ -11173,6 +11410,42 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "a parameterized recursive walk threading a determined list state must compile"
+        );
+    }
+
+    #[test]
+    fn an_abortive_handler_arm_abandons_the_computation() {
+        // E4: an ABORTIVE arm `(Bail.bail (n) s n)` never resumes — performing `(Bail.bail 7)` inside
+        // `(+ 1 (Bail.bail 7))` ABANDONS the surrounding `+ 1` (control never returns) and the handle
+        // yields the arm value 7, NOT 8. The fold classifies the arm abortive (no `resume` in its body)
+        // and, when the perform fires in a strict position, records the arm value as the whole handle's
+        // value (the surrounding computation is dead). This is the "bail" / typed early-exit class.
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (+ 1 (Bail.bail 7)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("an abortive handler compiles"),
+                "main"
+            ),
+            7
+        );
+    }
+
+    #[test]
+    fn a_conditional_abortive_perform_declines_rather_than_miscompiles() {
+        // E4 soundness guard: an abortive perform inside an `if` BRANCH fires on only ONE control path,
+        // so the E4-a unconditional short-circuit (which collapses the WHOLE handle body to the arm value)
+        // would be UNSOUND — `(if (< x 5) (Bail.bail 7) 0)` must yield 0 when `x >= 5`, not 7. A runtime
+        // condition can't fold, so the perform stays genuinely conditional. `reduce_handle` DECLINES it
+        // (a real `block`/`br` control node for a conditional abort is a later increment) rather than
+        // miscompile. Regression guard for a live-on-spec miscompile E4-a's guard missed.
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main (: x Int64)) \
+                     (handle 99 ((Bail.bail (n) s n)) (if (< x 5) (Bail.bail 7) 0))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a conditional abortive perform must decline, not miscompile the other branch"
         );
     }
 
@@ -16356,6 +16629,77 @@ mod debug_info {
             .to_vec()
     }
 
+    /// Every embedded core module's bytes, in order — the resource envelope embeds several (a dtor plus
+    /// the main walker core), and the `.debug_*` sections ride in a LATER one, not the first `dtor`. A
+    /// raw section-framing scan (a component's core-module is section id 1) rather than `wasmparser`,
+    /// whose stateful reader chokes when a nested module's own `\0asm` magic follows the section header.
+    fn core_modules_of(component: &[u8]) -> Vec<Vec<u8>> {
+        fn uleb(b: &[u8], i: &mut usize) -> u64 {
+            let (mut r, mut s) = (0u64, 0u32);
+            loop {
+                let x = b[*i];
+                *i += 1;
+                r |= u64::from(x & 0x7f) << s;
+                s += 7;
+                if x & 0x80 == 0 {
+                    return r;
+                }
+            }
+        }
+        let mut mods = Vec::new();
+        if component.get(0..4) != Some(b"\0asm") {
+            return mods;
+        }
+        let mut i = 8; // past `\0asm` + the 4-byte version/layer word
+        while i < component.len() {
+            let sid = component[i];
+            i += 1;
+            let len = uleb(component, &mut i) as usize;
+            // In a COMPONENT, section id 1 is an embedded core module (its body IS a `\0asm…` module).
+            if sid == 1 {
+                mods.push(component[i..i + len].to_vec());
+            }
+            i += len;
+        }
+        mods
+    }
+
+    /// The bytes of a named custom section inside a CORE module (`\0asm`…), or `None`. A dev-only
+    /// scanner used to byte-compare a sidecar's `.debug_*` against the embedded component's.
+    fn custom_section_of(core: &[u8], want: &str) -> Option<Vec<u8>> {
+        fn uleb(b: &[u8], i: &mut usize) -> u64 {
+            let (mut r, mut s) = (0u64, 0u32);
+            loop {
+                let x = b[*i];
+                *i += 1;
+                r |= u64::from(x & 0x7f) << s;
+                s += 7;
+                if x & 0x80 == 0 {
+                    return r;
+                }
+            }
+        }
+        if core.get(0..4) != Some(b"\0asm") {
+            return None;
+        }
+        let mut i = 8;
+        while i < core.len() {
+            let sid = core[i];
+            i += 1;
+            let len = uleb(core, &mut i) as usize;
+            let body = &core[i..i + len];
+            if sid == 0 {
+                let mut j = 0;
+                let nl = uleb(body, &mut j) as usize;
+                if std::str::from_utf8(&body[j..j + nl]) == Ok(want) {
+                    return Some(body[j + nl..].to_vec());
+                }
+            }
+            i += len;
+        }
+        None
+    }
+
     /// The parsed `name` section: the optional module name and the `(func_index, name)` pairs.
     type NameSection = (Option<String>, Vec<(u32, String)>);
 
@@ -17240,6 +17584,91 @@ mod debug_info {
                 .windows(b".debug_info".len())
                 .any(|w| w == b".debug_info"),
             "a plain compound-returning component must carry no DWARF"
+        );
+    }
+
+    #[test]
+    fn a_compound_returning_export_gets_a_dwarf_sidecar_matching_the_embedded_dwarf() {
+        // Mode S for the RESOURCE-ESCAPE path: a compound-returning export used to DECLINE a detached
+        // `dwarf` sidecar ("not yet supported"). It now emits one, and — the load-bearing invariant —
+        // its `.debug_*` sections are BYTE-IDENTICAL to the ones the embedded (Mode E) component carries,
+        // so a debugger maps to the same instructions with either artifact. Covers the flat-tuple, sum,
+        // and runtime-Bytes escape cores (each a distinct resource core layout).
+        for src in [
+            // runtime tuple (recursive build → real user bodies, resource-escape core)
+            "(module m \
+               (def (f (: n Int64)) (if (= n 0) (tuple n 7) (f (- n 1)))) \
+               (def (main) (f 3)) \
+               (export main))",
+            // runtime sum (Some payload, disc-switch walker)
+            "(module m \
+               (def (pick (: n Int64)) (if (= n 0) (Some 5) (pick (- n 1)))) \
+               (def (main) (pick 3)) \
+               (export main))",
+            // runtime Bytes (looping walker)
+            "(module m \
+               (def (grow (: n Int64) (: acc Bytes)) \
+                 (if (= n 0) acc (grow (- n 1) (Bytes.concat acc (Bytes.of (list 65)))))) \
+               (def (main) (grow 3 (Bytes.of (list)))) \
+               (export main))",
+        ] {
+            // The sidecar (Mode S).
+            let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+            assert!(
+                !out.has_error(),
+                "a compound-returning export must now emit a dwarf sidecar, not decline: {:?}",
+                out.diagnostics
+            );
+            let sidecar = out.artifact("dwarf").expect("a dwarf artifact").to_vec();
+
+            // The embedded (Mode E) component — find the core module that carries the DWARF (a resource
+            // envelope embeds several; the dtor core carries none).
+            let embedded = component_of(src, Target::WasmDebug);
+            let debug_core = core_modules_of(&embedded)
+                .into_iter()
+                .find(|m| custom_section_of(m, ".debug_info").is_some())
+                .expect("an embedded core module carrying DWARF");
+
+            for sect in [".debug_info", ".debug_line", ".debug_abbrev", ".debug_str"] {
+                let s = custom_section_of(&sidecar, sect);
+                let e = custom_section_of(&debug_core, sect);
+                assert_eq!(
+                    s, e,
+                    "the sidecar's {sect} must be byte-identical to the embedded component's \
+                     (same code offsets); src = {src}"
+                );
+                assert!(s.is_some(), "the sidecar must carry {sect}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_constant_compound_export_gets_a_valid_empty_dwarf_sidecar() {
+        // A FULLY-CONSTANT compound bakes its bytes into a resource core with NO user function to
+        // attribute — the embedded path emits no `.debug_*` for it. The sidecar must therefore be a
+        // VALID module with an empty compile unit (no subprograms), NOT a decline and not malformed.
+        let src = "(module m (def (pair) (tuple 42 7)) (export pair))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        assert!(
+            !out.has_error(),
+            "a constant compound must emit an (empty) sidecar, not decline: {:?}",
+            out.diagnostics
+        );
+        let sidecar = out.artifact("dwarf").expect("a dwarf artifact").to_vec();
+        // A bare core module carrying a `.debug_info` (the CU) but the CU has no subprogram DIEs — there
+        // were no user bodies. We assert the section EXISTS (the standalone module is well-formed) and
+        // that the embedded component carried no `.debug_info` (nothing to attribute), the dual property.
+        assert!(
+            custom_section_of(&sidecar, ".debug_info").is_some(),
+            "even an empty CU sidecar carries a .debug_info section"
+        );
+        let embedded = component_of(src, Target::WasmDebug);
+        let has_embedded_dwarf = core_modules_of(&embedded)
+            .iter()
+            .any(|m| custom_section_of(m, ".debug_info").is_some());
+        assert!(
+            !has_embedded_dwarf,
+            "a constant compound's embedded component has no user body → no embedded DWARF"
         );
     }
 

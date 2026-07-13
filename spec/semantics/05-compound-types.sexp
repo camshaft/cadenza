@@ -1557,14 +1557,19 @@
            takes exactly this shape: index a runtime sequence, and destructure the `Option`'s payload —
            itself a user-sum constructor — in one arm. Pins that a payload binder that is a CONSTRUCTOR
            pattern (not a bare name, not a tuple) recurses correctly: the `Some` payload's heap handle is
-           materialized and matched against the inner `(E.Lit n)`, binding `n`. `(first-lit (list (E.Lit
-           5)))` = 5. This is the ctor-under-Option companion of the nested-tuple-in-payload case above,
-           and the shape a self-hosted compiler uses to read one element of a node list.")
+           materialized and matched against the inner `(E.Lit n)`, binding `n`. The match is EXHAUSTIVE —
+           both of `E`'s variants under `Some` (`(Some (E.Lit n))`, `(Some (E.Neg n))`) plus `None` are
+           covered; a nested constructor pattern refines the match but does NOT waive coverage of its
+           siblings (the same rule the nested-literal refinement `(Some 0)`+`(Some k)` follows — a match
+           missing `(Some (E.Neg _))` would be non-exhaustive, CDZ0210). `(first-lit (list (E.Lit 5)))` = 5.
+           This is the ctor-under-Option companion of the nested-tuple-in-payload case above, and the shape
+           a self-hosted compiler uses to read one element of a node list.")
   (needs  sum-type-declaration)
   (input  (do
             (type E (Lit Int64) (Neg Int64))
             (def (first-lit xs) (match (List.at xs 0)
                                   ((Some (E.Lit n)) n)
+                                  ((Some (E.Neg n)) (- 0 n))
                                   ((None _)         0)))
             (def (main) (first-lit (list (E.Lit 5)))) (export main)))
   (output (: 5 Int64)))

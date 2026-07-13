@@ -64,14 +64,23 @@ pub struct DiagnosticFix {
     pub verified: bool,
 }
 
+/// The ellipsis placeholder marking where a `Wrap` fix's ORIGINAL node text goes inside its
+/// `replacement` — `(Some …)` means "put `(Some ` before the node's text and `)` after". A single
+/// character (U+2026) that does not occur in Cadenza source, so it never collides with real spelling.
+pub const WRAP_HOLE: char = '…';
+
 /// How a [`DiagnosticFix`] applies its `replacement` at its `node` — the ABI projection of a
-/// [`crate::diag::Edit`]'s shape, so a consumer performs a REPLACE or an INSERT without re-deriving it.
+/// [`crate::diag::Edit`]'s shape, so a consumer performs the right tree op without re-deriving it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FixKind {
     /// Replace the target node's surface spelling with `replacement`.
     Replace,
     /// Append `replacement` (rendered child forms) at the end of the target list node's children.
     InsertInto,
+    /// Wrap the target node: `replacement` contains exactly one [`WRAP_HOLE`] (`…`) marking where the
+    /// node's ORIGINAL text goes — the consumer replaces the node's span with `replacement` with the
+    /// hole substituted by the original text (`(Some …)` → `(Some <expr>)`).
+    Wrap,
 }
 
 impl DiagnosticFix {
@@ -84,6 +93,9 @@ impl DiagnosticFix {
             }
             crate::diag::Edit::InsertArms { at, arms } => {
                 (FixKind::InsertInto, at.0, arms.join(" "))
+            }
+            crate::diag::Edit::Wrap { at, prefix, suffix } => {
+                (FixKind::Wrap, at.0, format!("{prefix}{WRAP_HOLE}{suffix}"))
             }
         };
         DiagnosticFix {
@@ -124,7 +136,7 @@ impl Diagnostic {
             code: reject.code.map(|c| c.code().to_string()),
             message: reject.message.clone(),
             node: reject.at.map(|id| id.0),
-            fix: reject.fix.as_ref().map(DiagnosticFix::from_fix),
+            fix: reject.fix.as_ref().map(|f| DiagnosticFix::from_fix(f)),
         }
     }
 

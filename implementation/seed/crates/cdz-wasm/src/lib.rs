@@ -44,16 +44,19 @@ pub struct Diagnostic {
     pub to: u32,
     /// A proposed structural repair (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
     /// A Fix), surfaced to the guide's quick-fix affordance. `fix_replacement` is empty when the
-    /// diagnostic carries no fix; otherwise it is the surface payload. `fix_insert` picks the operation:
-    /// `false` = REPLACE the `[fix_from, fix_to)` byte range with `fix_replacement`; `true` = INSERT
-    /// `fix_replacement` (rendered child forms — the missing match arms) just before the byte at
-    /// `fix_to` (the end of the target list, i.e. before its closing paren). `fix_verified` distinguishes
-    /// a machine-applicable fix from a heuristic the user should confirm.
+    /// diagnostic carries no fix; otherwise it is the surface payload, applied per `fix_kind` over the
+    /// target `[fix_from, fix_to)` byte range:
+    ///   - `"replace"` — replace the range with `fix_replacement`;
+    ///   - `"insert"` — insert `fix_replacement` (rendered child forms, e.g. missing match arms) just
+    ///     before `fix_to` (the end of the target list, before its closing paren);
+    ///   - `"wrap"` — replace the range with `fix_replacement`, in which the character `…` (U+2026)
+    ///     marks where the ORIGINAL range text goes (`(Some …)` → `(Some <expr>)`).
+    /// `fix_verified` distinguishes a machine-applicable fix from a heuristic the user should confirm.
     pub fix_replacement: String,
     pub fix_from: u32,
     pub fix_to: u32,
     pub fix_verified: bool,
-    pub fix_insert: bool,
+    pub fix_kind: String,
 }
 
 /// The outcome of a compile: on success `component` holds the WebAssembly component bytes and
@@ -92,13 +95,17 @@ fn to_js_diag(
     let (from, to) = d.node.map(span_of).unwrap_or((0, 0));
     // Carry the structural fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
     // Fix) through to the guide's quick-fix affordance — its target node mapped to a byte range here.
-    let (fix_replacement, fix_from, fix_to, fix_verified, fix_insert) = match &d.fix {
+    let (fix_replacement, fix_from, fix_to, fix_verified, fix_kind) = match &d.fix {
         Some(f) => {
             let (ff, ft) = span_of(f.node);
-            let insert = matches!(f.kind, rcdzc::FixKind::InsertInto);
-            (f.replacement.clone(), ff, ft, f.verified, insert)
+            let kind = match f.kind {
+                rcdzc::FixKind::Replace => "replace",
+                rcdzc::FixKind::InsertInto => "insert",
+                rcdzc::FixKind::Wrap => "wrap",
+            };
+            (f.replacement.clone(), ff, ft, f.verified, kind.to_string())
         }
-        None => (String::new(), 0, 0, false, false),
+        None => (String::new(), 0, 0, false, String::new()),
     };
     Diagnostic {
         error: d.severity == rcdzc::Severity::Error,
@@ -111,7 +118,7 @@ fn to_js_diag(
         fix_from,
         fix_to,
         fix_verified,
-        fix_insert,
+        fix_kind,
     }
 }
 
@@ -190,7 +197,7 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
                     fix_from: 0,
                     fix_to: 0,
                     fix_verified: false,
-                    fix_insert: false,
+                    fix_kind: String::new(),
                 }],
             });
         }
@@ -436,7 +443,7 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
                 fix_from: 0,
                 fix_to: 0,
                 fix_verified: false,
-                fix_insert: false,
+                fix_kind: String::new(),
             }]);
         }
     };
@@ -495,7 +502,11 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
             fix_from,
             fix_to,
             fix_verified: fix_verified == "verified",
-            fix_insert: fix_kind == "insert",
+            fix_kind: if has_fix {
+                fix_kind.to_string()
+            } else {
+                String::new()
+            },
         });
     }
     Ok(out)

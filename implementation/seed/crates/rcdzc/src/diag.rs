@@ -195,6 +195,16 @@ pub enum Edit {
         at: crate::ast::StructId,
         arms: Vec<String>,
     },
+    /// WRAP the node `at` in an enclosing form — the consumer replaces `at`'s span with `prefix` + the
+    /// node's ORIGINAL text + `suffix` (e.g. `prefix = "(Some "`, `suffix = ")"` → `(Some <expr>)`).
+    /// The "try wrapping the expression in `Some`" edit: unlike `ReplaceNode` it PRESERVES the original
+    /// sub-expression, embedding it in a constructor call, so the consumer needs the original text (which
+    /// it has, from the span) rather than a re-rendered copy.
+    Wrap {
+        at: crate::ast::StructId,
+        prefix: String,
+        suffix: String,
+    },
 }
 
 impl Fix {
@@ -244,6 +254,27 @@ impl Fix {
             applicability: Applicability::Heuristic,
         }
     }
+
+    /// A heuristic "wrap the expression" fix — enclose the node `at` in `prefix` … `suffix` (e.g.
+    /// `(Some ` … `)`). Heuristic: the wrap resolves the type mismatch the compiler saw, but whether the
+    /// author MEANT to wrap (vs. change the annotation, vs. a different variant) is a guess. `label`
+    /// states the action ("wrap in `(Some …)`").
+    pub fn wrap_heuristic(
+        at: crate::ast::StructId,
+        prefix: impl Into<String>,
+        suffix: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Fix {
+        Fix {
+            label: label.into(),
+            edit: Edit::Wrap {
+                at,
+                prefix: prefix.into(),
+                suffix: suffix.into(),
+            },
+            applicability: Applicability::Heuristic,
+        }
+    }
 }
 
 /// A produced "no": either a coded rejection or an uncoded decline, each carrying a human message and
@@ -272,8 +303,10 @@ pub struct Reject {
     /// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). `None` when the
     /// compiler has no actionable suggestion (most declines, and rejections whose repair is not
     /// mechanical). Carried alongside the message so a consumer applies the edit rather than parsing
-    /// prose.
-    pub fix: Option<Fix>,
+    /// prose. BOXED so a fix-less `Reject` (the overwhelming majority — and the `Err` of the many
+    /// `Result<_, Reject>` the compiler threads) stays pointer-small; the fix's several strings live on
+    /// the heap only when one is actually attached.
+    pub fix: Option<Box<Fix>>,
 }
 
 impl Reject {
@@ -304,7 +337,7 @@ impl Reject {
     /// Attach a proposed structural fix — the fluent form a producer uses when, alongside the "no", it
     /// can name the repair: `Reject::coded(..).at(id).with_fix(Fix::replace_heuristic(id, "foo"))`.
     pub fn with_fix(mut self, fix: Fix) -> Reject {
-        self.fix = Some(fix);
+        self.fix = Some(Box::new(fix));
         self
     }
 

@@ -1703,20 +1703,7 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
         // Build from the LAST arm backward: `acc` starts at the catch-all body's occurrence, and each
         // preceding `(bin …)` arm wraps it as `(if <predicate> <arm-body> <acc>)`. A synthesized `if`
         // node's core is pre-filled so it lowers directly (no re-resolution).
-        // This slice handles ONE `(bin …)` arm + a catch-all (the common shape: parse one format, else
-        // fall back). Two or more bin arms would chain nested `if`s whose per-arm predicate scratch does
-        // not yet compose cleanly (a slot-typing collision across arms) — decline that until the next
-        // slice, rather than emit an invalid module.
-        let bin_arm_count = classified
-            .iter()
-            .filter(|a| matches!(a, BinArm::Bin(..)))
-            .count();
-        if bin_arm_count > 1 {
-            return Core::Poison(Reject::decline(
-                "a runtime bin match with more than one bin arm is not yet lowered (one bin arm + catch-all)",
-            ));
-        }
-        // MATERIALIZE the scrutinee ONCE: it is read many times (the arm's length probe + literal probes
+        // MATERIALIZE the scrutinee ONCE: it is read many times (each arm's length probe + literal probes
         // + the matched arm's binder reads), so recomputing the `BinBuild` per read would both re-run the
         // construction AND clash scratch slots. Mark it a KEPT binding and read it through a `LocalRef`, so
         // it evaluates once into a slot and every read is a `local.get`. The whole match is wrapped in a
@@ -4206,6 +4193,18 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         // matches `render_name`; its VALUE renders as the float literal. Needed when a float is NESTED in
         // a compound value form (`(tuple 1.0 2.0)`) whose type annotation the escape bakes.
         Ty::Float(ft) => Some(b.name(format!("Float{}", ft.ground_width()))),
+        // A quantity's type surface is `(Qty <inner> <unit>)` — matches `render_name`. The inner type is
+        // built recursively; the unit is built as its canonical written form (`Unit.one`, `(Unit.base
+        // #"n")`, `(Unit.^ (Unit.base #"n") k)`, left-nested `(Unit.* …)`), reusing `Unit::render` via a
+        // parse-free reconstruction: since the unit renders to a literal s-expression, build it as a name
+        // atom carrying that rendered text (the host re-reads it; a quantity value never crosses as a
+        // machine value, its inner erased value does — this surface is the recorded static type only).
+        Ty::Qty { inner, unit } => {
+            let head = b.name("Qty");
+            let ity = type_ast(b, inner)?;
+            let uty = b.name(unit.render());
+            Some(b.list(vec![head, ity, uty]))
+        }
         // A function/type-value has no boundary value form, so no type surface. A program that would
         // escape one declines before reaching the escape.
         Ty::Fn(_, _) | Ty::Type | Ty::Var(_) | Ty::Any => None,
@@ -5423,6 +5422,13 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         Ty::Map(k, v) => {
             let (k, v) = ((**k).clone(), (**v).clone());
             ty_heap_walkable(db, &k, seen) && ty_heap_walkable(db, &v, seen)
+        }
+        // A quantity ERASES to its inner numeric type, so it is walkable iff that inner type is — a `(Qty
+        // Int64 u)` compares by its erased `Int64`. (A quantity `=` folds at compile time in Layer 1, but
+        // classifying it by the inner type keeps this correct if a runtime quantity ever reaches `=`.)
+        Ty::Qty { inner, .. } => {
+            let inner = (**inner).clone();
+            ty_heap_walkable(db, &inner, seen)
         }
         // A collection / text / char / float / function / type-value / unresolved leaf is NOT walkable
         // here (its canonical form needs machinery this increment does not emit, or it is not a runtime

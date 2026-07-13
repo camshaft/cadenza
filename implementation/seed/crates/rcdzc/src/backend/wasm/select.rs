@@ -214,10 +214,16 @@ const NULL_HANDLE: i32 = 0;
 /// listed here, and `valtype_of` already agrees it is an i32 handle; omitting it let an `if` over a
 /// list take the scalar `select` path and emit a module that failed wasm validation (i64/i32 mismatch).
 fn is_heap_type(ty: &Ty) -> bool {
-    matches!(
-        ty,
-        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Map(_, _) | Ty::Bytes
-    )
+    match ty {
+        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Map(_, _) | Ty::Bytes => {
+            true
+        }
+        // A quantity ERASES to its inner numeric type before the backend (`lower` strips the `Qty`), so
+        // a `Ty::Qty` should not reach selection. Defensively classify it by its inner type — a quantity
+        // over a heap numeric would be heap, but Layer 1's numerics are all scalars (int/float).
+        Ty::Qty { inner, .. } => is_heap_type(inner),
+        _ => false,
+    }
 }
 
 /// Whether the reference to the `let` binding `binder` ESCAPES the node at `id` — i.e. its reference
@@ -448,6 +454,9 @@ fn box_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
         Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes | Ty::Fn(_, _) => {
             Ok(None)
         }
+        // A quantity erases to its inner numeric type (`lower` strips the `Qty`), so box it by that inner
+        // type — a `(Qty Int64 u)` element boxes exactly as an `Int64` element.
+        Ty::Qty { inner, .. } => box_op_ty(inner),
         other => Err(Reject::decline(format!(
             "a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -476,6 +485,8 @@ fn get_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
         Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes | Ty::Fn(_, _) => {
             Ok(None)
         }
+        // A quantity erases to its inner numeric type — unbox by that inner type (the dual of `box_op_ty`).
+        Ty::Qty { inner, .. } => get_op_ty(inner),
         other => Err(Reject::decline(format!(
             "projecting a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -2377,15 +2388,10 @@ fn emit(
             little_endian,
         } => {
             let w = width as u32;
-            let bytes_slot = base;
-            if base + 1 > *high {
-                *high = base + 1;
-            }
-            scratch_ty.insert(bytes_slot, ValType::I32);
-            emit(db, bytes, slots, base + 1, high, scratch_ty, layout, out)?; // [bytes]
-            out.push(Lir::LocalSet(bytes_slot));
-            // Assemble the value: for MSB-first position p (0=MSB), the byte at buffer position `pos` is
-            // shifted left by (w-1-p)*8 and OR'd in. `le` reverses which buffer byte is the MSB.
+            // The `bytes` operand is the materialized scrutinee (a `LocalRef` — a cheap `local.get`), so
+            // it is RE-EMITTED per `bytes-get` rather than stashed in a scratch slot. Claiming a scratch
+            // slot here (typed i32) collided with an i64 slot in a nested-if match chain; re-emitting the
+            // handle avoids any scratch of our own, so nothing this arm emits can re-type a shared slot.
             out.push(Lir::ConstI64(0)); // [acc:i64]
             for p in 0..w {
                 let shift = (w - 1 - p) * 8; // MSB-first bit position
@@ -2394,7 +2400,7 @@ fn emit(
                 } else {
                     byte_offset + p
                 };
-                out.push(Lir::LocalGet(bytes_slot)); // [acc, bytes]
+                emit(db, bytes, slots, base, high, scratch_ty, layout, out)?; // [acc, bytes]
                 out.push(Lir::ConstI32(pos as i32)); // [acc, bytes, pos]
                 out.push(Lir::CallImport(OP_BYTES_GET)); // [acc, byte:i32]
                 out.push(Lir::I64ExtendI32U); // [acc, byte:i64] (0..=255)
@@ -3366,6 +3372,33 @@ fn emit(
             if op == Prim::Eq
                 && let Some(nonzero) = eq_zero_operand(db, lhs, rhs)
             {
+                // DIVISIBILITY-BY-POWER-OF-TWO: `(= (% x 2^k) 0)` — the "is x divisible by 2^k?" test (the
+                // even test `(= (% x 2) 0)` is the k=1 case) — is exactly `(x & (2^k − 1)) == 0`, for BOTH
+                // signednesses (a number is divisible by 2^k iff its low k bits are zero, regardless of
+                // sign). Emitting `x & mask ; eqz` skips the whole `%` — for a SIGNED `%` that is the ~10
+                // instruction round-toward-zero bias sequence (`emit_div_rem`), collapsed to 3. Verified
+                // `(x % 2^k == 0) ≡ (x & (2^k−1) == 0)` exhaustively over signed inputs and every k. Only
+                // fires when the divisor is a compile-time power of two > 1 (`k=1` divisor `2` even test;
+                // `%1` folds to 0 in `lower`, never reaching here).
+                if let Some((x, mask)) = rem_pow2_mask(db, nonzero) {
+                    emit_operand(db, x, it, slots, base, high, scratch_ty, layout, out)?;
+                    out.push(if it.ground_width() <= 32 {
+                        Lir::ConstI32(mask as i32)
+                    } else {
+                        Lir::ConstI64(mask)
+                    });
+                    out.push(if it.ground_width() <= 32 {
+                        Lir::I32And
+                    } else {
+                        Lir::I64And
+                    });
+                    out.push(if it.ground_width() <= 32 {
+                        Lir::I32Eqz
+                    } else {
+                        Lir::I64Eqz
+                    });
+                    return Ok(());
+                }
                 emit_operand(db, nonzero, it, slots, base, high, scratch_ty, layout, out)?;
                 out.push(if it.ground_width() <= 32 {
                     Lir::I32Eqz
@@ -6504,6 +6537,27 @@ fn emit_wrap(
 /// `true`, so it should not reach here — return `None` defensively so it takes the ordinary `eq` path
 /// rather than a wrong single-operand `eqz`). The zero test is by VALUE (`IntValue::eq_value` against
 /// zero), width-agnostic — a zero of any width is the additive identity the `eqz` recognizes.
+/// If `id` is `(% x C)` with `C` a compile-time power of two `> 1`, return `(x, C-1)` — the dividend and
+/// the low-bit mask, for the divisibility test `(= (% x 2^k) 0)` ⇔ `(= (x & (2^k−1)) 0)`. Sign-agnostic:
+/// `x % 2^k == 0` iff `x`'s low `k` bits are all zero, whichever sign, so this fires for both signed and
+/// unsigned `%`. `None` for any other operand (a non-power-of-two divisor, a constant dividend that
+/// already folded, or a different op). `C == 1` never reaches here (`%1` folds to `0` in `lower`).
+fn rem_pow2_mask(db: &mut Db, id: StructId) -> Option<(StructId, i64)> {
+    let Core::Arith {
+        op: Prim::Rem,
+        lhs,
+        rhs,
+    } = core_of(db, id)
+    else {
+        return None;
+    };
+    let Core::ConstInt(v) = core_of(db, rhs) else {
+        return None;
+    };
+    let d = v.to_i64()?;
+    (d > 1 && (d & (d - 1)) == 0).then_some((lhs, d - 1))
+}
+
 fn eq_zero_operand(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<StructId> {
     let is_zero = |db: &mut Db, id: StructId| matches!(core_of(db, id), Core::ConstInt(v) if v.eq_value(&crate::ast::IntValue::zero()));
     let l0 = is_zero(db, lhs);
