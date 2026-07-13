@@ -2859,11 +2859,28 @@ fn pure_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> PureHole {
     // user/recursive call are all NON-uniform or effect-shielding — decline (Impure) if they carry an
     // effect, else they are pure and fall through to the strongly-pure check below.
     match resolved_of(db, node) {
-        // A conditional / short-circuit connective / match: if a discharged perform is anywhere inside, the
-        // continuation is non-uniform (branch-dependent, or the perform may not run) → Impure. If none, the
-        // whole form is pure and admissible as opaque context (handled by the strongly-pure fall-through).
-        Resolved::If { .. }
-        | Resolved::And { .. }
+        // An `if`: the CONDITION is a STRICT, always-evaluated-first position, so a hole there has a
+        // UNIFORM continuation `C = (if <cond[□]> then else)` — foldable (`(if (< (Amb.flip) 5) 1 2)` →
+        // resume 10 gives `(if (< 10 5) 1 2)`). The BRANCHES run CONDITIONALLY after the condition; a
+        // perform in a branch is a NON-uniform continuation (it may not run, or its continuation differs by
+        // branch) — NOT this fold (the resumptive-conditional hoist lifts a branch-performing conditional
+        // in a strict position elsewhere; a branch perform the hoist can't lift declines). So: admit a hole
+        // in `cond` only when BOTH branches are strongly pure (they are copied verbatim into `C`, and a
+        // multi-shot resume duplicates them — safe iff effect-free); a branch that is not strongly pure →
+        // Impure. When `cond` has no hole and both branches are pure, the whole `if` is Pure.
+        Resolved::If { cond, then_, else_ } => {
+            if !strongly_pure(db, then_, ctx) || !strongly_pure(db, else_, ctx) {
+                return PureHole::Impure;
+            }
+            pure_hole(db, cond, ctx)
+        }
+        // A short-circuit connective / match / let / nested handle / resume: if a discharged perform is
+        // anywhere inside, the continuation is non-uniform (branch-dependent, sequenced, or the perform may
+        // not run) → Impure. If none, the whole form is pure and admissible as opaque context (the
+        // strongly-pure fall-through). (`and`/`or`'s lhs and `match`'s scrutinee are strict-first positions
+        // like an `if` condition and could fold a hole there too — deferred as a follow-up increment; here
+        // they conservatively decline, an over-decline, never a mis-fold.)
+        Resolved::And { .. }
         | Resolved::Match { .. }
         | Resolved::Let { .. }
         | Resolved::Handle { .. }

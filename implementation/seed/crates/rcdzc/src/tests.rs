@@ -20207,17 +20207,49 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_tail_resume_under_a_conditional_continuation_declines() {
-        // The E5 BOUNDARY (still): a non-tail resume whose perform sits under a CONDITIONAL —
-        // `(if (< (Amb.flip) 5) 1 2)` — has a NON-UNIFORM continuation (the perform's result flows into a
-        // branch selector, not one downstream computation), so `pure_hole` returns Impure and the fold
-        // declines rather than mis-fold. Realizing it needs the captured-continuation machinery
-        // (defunctionalized frames), a later increment. Contrast the pure one-hole case above, which folds.
+    fn a_pure_one_hole_in_an_if_condition_folds() {
+        // The perform may sit in an `if` CONDITION — a STRICT, always-evaluated-first position, so its
+        // continuation `C = (if (< □ 5) 1 2)` is a uniform pure one-hole context (the branches are pure and
+        // run only AFTER the condition). `(resume 10 s)` → `C[10] = (if (< 10 5) 1 2)` = 2; arm
+        // `(+ 1 (resume 10 s))` → `(+ 1 2)` = 3. Both branches must be strongly pure (they are copied into
+        // `C` and a multi-shot resume duplicates them); a perform in a BRANCH still declines (below).
         let src = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 5) 1 2))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a hole in an if condition folds"),
+                "main"
+            ),
+            3
+        );
+        // A MULTI-shot arm over a condition-hole context duplicates the whole `if` (pure) safely:
+        //   `C = (if (< □ 5) 100 2)`, arm `(* (resume 1 s) (resume 2 s))`
+        //     → `(* (if (< 1 5) 100 2) (if (< 2 5) 100 2))` = `(* 100 100)` = 10000.
+        let multi = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (* (resume 1 s) (resume 2 s)))) (if (< (Amb.flip) 5) 100 2))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(multi)))
+                    .expect("a multi-shot condition-hole context folds"),
+                "main"
+            ),
+            10000
+        );
+    }
+
+    #[test]
+    fn a_non_tail_resume_in_an_if_branch_declines() {
+        // The E5 BOUNDARY (still): a non-tail resume whose perform sits in an `if` BRANCH —
+        // `(if c (+ 1 (Amb.flip)) 0)` — has a NON-UNIFORM continuation (the perform runs only on the taken
+        // branch, and its continuation differs by branch), so `pure_hole` returns Impure and the fold
+        // declines rather than mis-fold. Realizing it needs the captured-continuation machinery
+        // (defunctionalized frames), a later increment. Contrast the condition-hole case above, which folds.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (+ 1 (Amb.flip)) 0))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a non-tail resume under a conditional continuation must decline (needs E5 frame capture)"
+            "a non-tail resume in an if branch must decline (needs E5 frame capture)"
         );
     }
 
