@@ -1116,10 +1116,22 @@ fn collect_param_constraints(
                 resolved_of(db, scrutinee),
                 Resolved::Param { binder } if env.contains_key(&binder)
             );
+            // A scrutinee that is an APPLICATION OF A FN-TYPED PARAMETER — `(match (f h) …)` — has type
+            // `f`'s RESULT VAR (a fresh, uncommitted var `arg_ty_in_env` peels from `f`'s arrow). The arm
+            // patterns pin that result: a `C.A`/`C.B` pattern means `f : (-> _ C)`, so unifying `st` with
+            // the pattern-implied sum solves `f`'s result. Safe for this shape (the result is a fresh var,
+            // not a determined instantiation), unlike a general call-result scrutinee (a `List.at` whose
+            // element instantiation the shape-unify would corrupt) — so gate on the head being an env param.
+            let scrut_is_fn_param_app = matches!(
+                resolved_of(db, scrutinee),
+                Resolved::Apply { head, .. } if binder_var_of(db, head, env).is_some()
+            );
             for (pat, _) in &arms {
                 if let Some(pt) = literal_pattern_ty(db, *pat) {
                     let _ = crate::unify::unify(subst, &st, &pt);
-                } else if scrut_is_param && let Some(pt) = pattern_implied_ty(db, *pat, fresh) {
+                } else if (scrut_is_param || scrut_is_fn_param_app)
+                    && let Some(pt) = pattern_implied_ty(db, *pat, fresh)
+                {
                     let _ = crate::unify::unify(subst, &st, &pt);
                 }
             }

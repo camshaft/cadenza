@@ -365,6 +365,26 @@
             (export main)))
   (output (: 6 Int64)))
 
+(case "a recursive HOF infers a callback whose RESULT is a sum matched in the body"
+  (doc    "The callback's RESULT type is inferred too, not only its parameter: `find` applies an
+           unannotated `f` and MATCHES its result — `(match (f h) ((C.A n) …) ((C.B) …))`. The `C.A`/`C.B`
+           arm patterns pin `f`'s result to the sum `C`, so `f : (-> Int64 C)` with no annotation. `find`
+           returns the first element for which `f` yields `C.A`: over `[0, 5]` with `f x = (if (> x 1) (C.A
+           x) (C.B))`, element 5 gives `(C.A 5)` → 5. Pins that a fn-param's result is solved from a match
+           on its application, the result-side companion of inferring the parameter from `(f h)`.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type L Nil (Cons Int64 L))
+            (type C (A Int64) B)
+            (def (find f (: l L))
+              (match l
+                ((L.Nil) (C.B))
+                ((L.Cons h t) (match (f h) ((C.A n) (C.A n)) ((C.B) (find f t))))))
+            (def (main) (match (find (fn ((: x Int64)) (if (> x 1) (C.A x) (C.B))) (L.Cons 0 (L.Cons 5 L.Nil)))
+                          ((C.A n) n) ((C.B) 0)))
+            (export main)))
+  (output (: 5 Int64)))
+
 (case "a closure capturing two enclosing bindings folds through nested arithmetic"
   (doc    "`(fn (x) (+ (* x a) b))` captures BOTH `a` and `b` from enclosing lets; applied to 5 with
            a = 2, b = 3 → (5·2)+3 = 13. Pins that MULTIPLE distinct captures from different enclosing
