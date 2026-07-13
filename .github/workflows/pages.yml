@@ -75,13 +75,16 @@ jobs:
       - name: Build & stage guide wasm
         run: cargo xtask guide-wasm
 
-      # 3. Build the static site under the Pages base path.
+      # 3. Verify every guide example compiles + every graded exercise runs to its expected value
+      #    (against the wasm compiler staged above), then build the static site under the Pages base
+      #    path. The example check gates the deploy: a chapter can't ship an example that doesn't run.
       - name: Build site
         working-directory: guide
         env:
           VITE_BASE: /${{ github.event.repository.name }}/
         run: |
           npm ci
+          npm run check:examples
           npm run build
 
       - uses: actions/configure-pages@v5

@@ -10,7 +10,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "wasm": "cd ../implementation/seed/crates/cdz-wasm && wasm-pack build --target web --release && node ../../../../guide/scripts/stage-wasm.mjs"
+    "wasm": "cd ../implementation/seed/crates/cdz-wasm && wasm-pack build --target web --release && node ../../../../guide/scripts/stage-wasm.mjs",
+    "check:examples": "node scripts/check-examples.mjs"
   },
   "dependencies": {
     "@bytecodealliance/jco": "^1.25.2",
