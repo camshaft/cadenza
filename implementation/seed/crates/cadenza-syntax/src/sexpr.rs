@@ -36,7 +36,14 @@ pub struct ReadError(pub String);
 /// entry point (`convert`/`check`/`fix`, `cdz-wasm`) returns a clean diagnostic instead of crashing.
 pub const MAX_NESTING_DEPTH: u32 = 1024;
 
-/// Parse a single s-expression from `text` into its own `Arenas` (rooted at the parsed form).
+/// Parse a single s-expression from `text` into its own `Arenas` (rooted at the parsed form). This is
+/// the READER — text to the canonical representation, so a program can be written as text before a
+/// surface syntax exists; and it is NOT in the compiler's derive path (the compiler consumes the binary
+/// AST directly, `ast-encoding.md` §Parsing And Printing Are Not In The Compiler's Trusted Path).
+//= spec/capabilities/self-hosting-surface.md#a-reader-converts-text-to-the-canonical-representation
+//# A reader MUST convert the text of a program to the program's canonical representation, so that a program can be written as text before a surface syntax exists.
+//= spec/capabilities/self-hosting-surface.md#a-reader-converts-text-to-the-canonical-representation
+//# A reader MUST NOT be required in the path that derives a component, consistent with the ast-encoding contract keeping parsing out of the compiler's trusted path.
 pub fn read(text: &str) -> Result<Arenas, ReadError> {
     let mut b = Builder::new();
     let mut p = Reader::new(text, &mut b, false);
@@ -120,7 +127,13 @@ fn read_all_impl(text: &str, track: bool) -> Result<(Arenas, Option<SpanTable>),
 // reader above (it re-reads to a structurally-equal arena).
 // ============================================================================
 
-/// Render `arenas` as an s-expression string.
+/// Render `arenas` as an s-expression string. This is the PRINTER — the canonical representation to
+/// text that the reader above converts back to the same canonical representation, so reader ∘ printer
+/// round-trips to a structurally-equal value.
+//= spec/capabilities/self-hosting-surface.md#a-printer-renders-the-canonical-representation-as-re-readable-text
+//# A printer MUST render a program's canonical representation as text that a reader converts back to the same canonical representation.
+//= spec/capabilities/self-hosting-surface.md#a-printer-renders-the-canonical-representation-as-re-readable-text
+//# Reading the text a printer produced for a value MUST yield a value equal to the original under structural equality, so that the reader and printer round-trip.
 pub fn print(arenas: &Arenas) -> String {
     let mut out = String::new();
     print_node(arenas, arenas.root, &mut out);

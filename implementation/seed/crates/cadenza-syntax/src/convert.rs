@@ -2,6 +2,17 @@
 //! the **s-expression** text, and the **ML** text. All three are projections of the same
 //! [`Arenas`]; converting is `read into arenas` then `write from arenas`. Pure (no I/O) — the CLI
 //! bin does the file/stdin/stdout plumbing.
+//!
+//! This crate IS the reader/printer surface the compiler exposes — text-to-canonical-binary (a
+//! `read`) and canonical-binary-to-text (a `print`) — so the knowledge of a value's textual form lives
+//! here, not in a host; and the text a printer produces is the value's canonical text (a structurally-
+//! equal value prints identical text):
+//!
+//= spec/capabilities/self-hosting-surface.md#the-reader-printer-and-display-are-compiler-exposed-surfaces
+//# The reader, printer, and display conversion MUST be surfaces the compiler exposes — text-to-canonical-binary, canonical-binary-to-text, and typed-result-to-text — rather than logic any host embeds, so that the knowledge of a value's textual form lives in the compiler and a host stays value-agnostic (host-interface-binding.md §The Host Formats Nothing).
+//!
+//= spec/capabilities/self-hosting-surface.md#the-reader-printer-and-display-are-compiler-exposed-surfaces
+//# The text form the printer produces for a value MUST be the value's canonical text form, so that two runs producing structurally-equal values print identical text.
 
 use crate::ast::Arenas;
 use crate::{codec, parser, sexpr};
