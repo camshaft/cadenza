@@ -39,6 +39,20 @@ use std::collections::BTreeMap;
 /// step (into an array cell). A path is a `Vec<PathStep>` from the scrutinee root; the empty path is the
 /// scrutinee itself. This is what lets the decision-tree matcher share a prefix (one outer `sum-disc`
 /// switch) AND reach a binder at any depth (`type-system.md §Patterns Compose`).
+/// One fixed-width INTEGER segment of a runtime [`Core::BinBuild`] — the lean core form of a `(uNN v)`/
+/// `(iNN v)` segment: its byte `width` (1/2/4/8), `signed` (two's-complement `iNN`), `little_endian` (the
+/// `le` modifier), and the `value` occurrence to encode (a runtime int emitted at select). BN4b/runtime
+/// construction handles only integer segments so far; bit-fields + `(bytes …)` splices with a runtime
+/// value are later slices, so a `Core::BinBuild` carries only int segments (a `bin` mixing them with a
+/// runtime bytes/bits segment still declines at `lower`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct BinSeg {
+    pub width: u8,
+    pub signed: bool,
+    pub little_endian: bool,
+    pub value: StructId,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PathStep {
     /// Descend into a sum variant's PAYLOAD — `sum-payload(handle)`. (A single-payload variant; a
@@ -250,6 +264,13 @@ pub enum Core {
     /// both, empty is the identity). Present when the pair is not both compile-time-visible constants (a
     /// constant pair folds to a `Core::BytesOf` in `lower`). The byte companion of `Core::ListConcat`.
     BytesConcat { lhs: StructId, rhs: StructId },
+    /// A `(bin <seg>…)` CONSTRUCTION with at least one RUNTIME segment value (an all-constant `(bin …)`
+    /// folds to a `Core::BytesOf` in `lower`). Builds a `Bytes` on the rope heap at run time: each
+    /// fixed-width integer segment range-checks its value against the segment (trap "binary value does not
+    /// fit segment" if out of range — the runtime companion of the constant CDZ0304) and writes its `w`
+    /// bytes big-endian (`le` reversed). The segments are the LEAN [`BinSeg`] form (width/signedness/
+    /// endianness + the value occurrence), so `Core` does not depend on the resolver's `Segment`.
+    BinBuild { segs: Vec<BinSeg> },
     /// `Bytes.slice` — the FALLIBLE sub-range read, present when the operand is a RUNTIME value (a
     /// constant `Bytes.of` + constant `start`/`len` FOLDS to a `SumNew` in `lower`). The backend
     /// bounds-checks (`start >= 0 && len >= 0 && start + len <= bytes-len`), and in range builds
@@ -265,6 +286,52 @@ pub enum Core {
     /// `Bytes.compact` — a content-equal byte sequence with independent storage (runtime `bytes-compact`;
     /// consumes its operand). Present when the operand is a RUNTIME value (a constant folds to itself).
     BytesCompact { operand: StructId },
+    /// A MAP value construction — `(map (k v) …)` or `Map.empty`. `entries` are `(key, value)` occurrence
+    /// pairs, IN SOURCE ORDER (a later duplicate key overwrites an earlier one, keys compared by value).
+    /// Present when it survives to selection as a RUNTIME value. The backend builds it on the persistent
+    /// CHAMP `map-*` heap: `map-empty` then a `map-insert(key, value)` per entry (each key/value boxed by
+    /// its type before the insert, which CONSUMES the map handle + the key + the value). `key_ty`/`val_ty`
+    /// are the solved key/value types (choosing the box/unbox ops). An empty map has no entries.
+    MapNew {
+        entries: Vec<(StructId, StructId)>,
+        key_ty: crate::ty::Ty,
+        val_ty: crate::ty::Ty,
+    },
+    /// `Map.insert` — add-or-replace `key ↦ val` in `map`, returning the new map (runtime `map-insert`;
+    /// persistent, CONSUMES the map handle). `key`/`val` are boxed by their types before the insert, as a
+    /// map entry is at construction. A present key replaces its value (keys compared by value).
+    MapInsert {
+        map: StructId,
+        key: StructId,
+        val: StructId,
+        key_ty: crate::ty::Ty,
+        val_ty: crate::ty::Ty,
+    },
+    /// `Map.lookup` — the FALLIBLE keyed read, present when the map is a RUNTIME value. The backend emits
+    /// `map-lookup(map, key)` (BORROWS both; the boxed key is dropped after) — a NULL handle for an absent
+    /// key — and wraps it: a non-null handle → `Some(<unbox value>)`, null → `None`. `disc_some`/`disc_none`
+    /// are the built-in Option variants' discriminants (read at lowering off the result type). `val_ty`
+    /// chooses the value unbox. The map companion of `ListAt` (a NULL-or-handle test instead of bounds).
+    MapLookup {
+        map: StructId,
+        key: StructId,
+        key_ty: crate::ty::Ty,
+        val_ty: crate::ty::Ty,
+        disc_some: u32,
+        disc_none: u32,
+    },
+    /// `Map.remove` — drop `key`'s association from `map`, returning the new map (runtime `map-remove`;
+    /// persistent, CONSUMES the map handle, BORROWS the key). Removing an absent key yields a map equal to
+    /// the operand (total). `key` is boxed by its type before the remove.
+    MapRemove {
+        map: StructId,
+        key: StructId,
+        key_ty: crate::ty::Ty,
+    },
+    /// `Map.size` — the count of distinct keys the map associates, present when the map is a RUNTIME value.
+    /// The backend emits `map-size(map)` (BORROWS; O(1) from the CHAMP root) + an i32→i64 extend to `Int64`.
+    /// The map companion of `ListLen`.
+    MapSize { map: StructId },
     /// A SUM VALUE CONSTRUCTION — `(Option.Some 5)` or a bare nullary `None`. `disc` is the variant's
     /// discriminant (read off the ctor's `(meta variant)` at lowering); `payloads` are the argument
     /// occurrences (empty for a nullary variant). The backend builds `sum-new(disc, payload)` where the

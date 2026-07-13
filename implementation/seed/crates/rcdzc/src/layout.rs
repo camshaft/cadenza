@@ -84,6 +84,13 @@ pub struct Layout {
     /// lives on the layout the backend fills — set by the backend's `with_host_order` once the set is
     /// collected, mirroring how `import_base` is fixed once the runtime-op set is known.
     pub host_order: Vec<(String, String)>,
+    /// The STRING constants a host call passes as a `string` argument (E2h-string), each with its BYTE
+    /// OFFSET in the program core module's data segment. A `Core::HostCall` with a string arg emits
+    /// `(ptr=offset, len)` (the `(ptr,len)` the canonical ABI reads the string from). Assigned by the
+    /// backend before selection (each distinct string laid once, at a running offset); empty when no host
+    /// call passes a string (then the core module needs no memory/data — byte-identical to the scalar
+    /// host shape). Target-agnostic (plain strings + offsets), so it lives on the layout.
+    pub host_strings: Vec<(String, u32)>,
 }
 
 impl Layout {
@@ -120,6 +127,7 @@ impl Layout {
             lifted,
             lifted_reached,
             host_order: Vec::new(),
+            host_strings: Vec::new(),
         }
     }
 
@@ -143,6 +151,15 @@ impl Layout {
         }
     }
 
+    /// A copy of this layout with the host-call STRING constants (+ their data-segment offsets) set
+    /// (E2h-string). Set by the backend after it lays out the host-arg strings.
+    pub fn with_host_strings(&self, host_strings: Vec<(String, u32)>) -> Layout {
+        Layout {
+            host_strings,
+            ..self.clone()
+        }
+    }
+
     /// The core-func index of the host-delegated op `(effect, op)` — its position in `host_order`. `None`
     /// if the program does not delegate it (a compiler bug — the order is collected from the same
     /// `Core::HostCall` nodes selection emits).
@@ -150,6 +167,16 @@ impl Layout {
         self.host_order
             .iter()
             .position(|(e, o)| e == effect && o == op)
+    }
+
+    /// The data-segment byte OFFSET of the host-arg string constant `s` — where its UTF-8 bytes lie in the
+    /// program core module's memory, so a `Core::HostCall` string arg emits `(ptr=offset, len)`. `None` if
+    /// the string was not laid out (a compiler bug — the same walk that collects them drives emission).
+    pub fn host_string_offset(&self, s: &str) -> Option<u32> {
+        self.host_strings
+            .iter()
+            .find(|(v, _)| v == s)
+            .map(|(_, off)| *off)
     }
 
     /// The absolute wasm-function index of definition `def`, or `None` if it is not emitted. Imports
@@ -375,6 +402,22 @@ fn collect_closure_codes(db: &mut Db, id: StructId, out: &mut std::collections::
             collect_closure_codes(db, list, out);
             collect_closure_codes(db, index, out);
         }
+        Core::MapNew { entries, .. } => {
+            for (k, v) in entries {
+                collect_closure_codes(db, k, out);
+                collect_closure_codes(db, v, out);
+            }
+        }
+        Core::MapInsert { map, key, val, .. } => {
+            collect_closure_codes(db, map, out);
+            collect_closure_codes(db, key, out);
+            collect_closure_codes(db, val, out);
+        }
+        Core::MapLookup { map, key, .. } | Core::MapRemove { map, key, .. } => {
+            collect_closure_codes(db, map, out);
+            collect_closure_codes(db, key, out);
+        }
+        Core::MapSize { map } => collect_closure_codes(db, map, out),
         Core::BytesAt { bytes, index, .. } => {
             collect_closure_codes(db, bytes, out);
             collect_closure_codes(db, index, out);
@@ -413,6 +456,11 @@ fn collect_closure_codes(db: &mut Db, id: StructId, out: &mut std::collections::
         Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
             for e in elems {
                 collect_closure_codes(db, e, out);
+            }
+        }
+        Core::BinBuild { segs } => {
+            for s in segs {
+                collect_closure_codes(db, s.value, out);
             }
         }
         Core::Proj { operand, .. } => collect_closure_codes(db, operand, out),
@@ -513,6 +561,23 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, list, out);
             collect_call_callees(db, index, out);
         }
+        crate::core::Core::MapNew { entries, .. } => {
+            for (k, v) in entries {
+                collect_call_callees(db, k, out);
+                collect_call_callees(db, v, out);
+            }
+        }
+        crate::core::Core::MapInsert { map, key, val, .. } => {
+            collect_call_callees(db, map, out);
+            collect_call_callees(db, key, out);
+            collect_call_callees(db, val, out);
+        }
+        crate::core::Core::MapLookup { map, key, .. }
+        | crate::core::Core::MapRemove { map, key, .. } => {
+            collect_call_callees(db, map, out);
+            collect_call_callees(db, key, out);
+        }
+        crate::core::Core::MapSize { map } => collect_call_callees(db, map, out),
         crate::core::Core::BytesAt { bytes, index, .. } => {
             collect_call_callees(db, bytes, out);
             collect_call_callees(db, index, out);
@@ -551,6 +616,11 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         | crate::core::Core::BytesOf { elems } => {
             for e in elems {
                 collect_call_callees(db, e, out);
+            }
+        }
+        crate::core::Core::BinBuild { segs } => {
+            for s in segs {
+                collect_call_callees(db, s.value, out);
             }
         }
         crate::core::Core::Proj { operand, .. }

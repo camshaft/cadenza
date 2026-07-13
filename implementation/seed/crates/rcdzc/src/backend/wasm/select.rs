@@ -192,6 +192,19 @@ const OP_DUP: &str = "dup";
 /// so an owned-temporary operand is `drop`ped by the emit AFTER the compare. The runtime `=` on two
 /// runtime compounds neither of which the compiler folded.
 const OP_VALUE_EQ: &str = "value-eq";
+/// Persistent CHAMP map ops. `map-empty() -> handle` — the canonical empty map; `map-insert(m, key, val)
+/// -> handle` — add-or-replace (CONSUMES m, key, val; returns the new map); `map-lookup(m, key) -> handle`
+/// — the value for `key` or NULL when absent (BORROWS m + key); `map-remove(m, key) -> handle` — m without
+/// `key` (CONSUMES m; BORROWS key); `map-size(m) -> u32` — the entry count (BORROWS, O(1)). Keys and values
+/// cross as plain handles; the runtime compares keys by a tagless structural walk.
+const OP_MAP_EMPTY: &str = "map-empty";
+const OP_MAP_INSERT: &str = "map-insert";
+const OP_MAP_LOOKUP: &str = "map-lookup";
+const OP_MAP_REMOVE: &str = "map-remove";
+const OP_MAP_SIZE: &str = "map-size";
+/// NULL — the absent-value handle `map-lookup` returns for a key the map does not contain (the runtime's
+/// canonical null handle, 0). `Map.lookup` tests the returned handle against it to build `None` vs `Some`.
+const NULL_HANDLE: i32 = 0;
 
 /// Whether a solved type is a HEAP VALUE — one held as an owned runtime handle that the Perceus
 /// contract reclaims (a tuple, record, sum, or list). A scalar (integer/bool/unit) owns no heap cell,
@@ -203,7 +216,7 @@ const OP_VALUE_EQ: &str = "value-eq";
 fn is_heap_type(ty: &Ty) -> bool {
     matches!(
         ty,
-        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes
+        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Map(_, _) | Ty::Bytes
     )
 }
 
@@ -258,6 +271,10 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
             elems.iter().any(|&e| binding_escapes(db, e, binder, false))
         }
+        // A runtime `(bin …)` construction consumes each segment's scalar int value into the built bytes.
+        Core::BinBuild { segs } => segs
+            .iter()
+            .any(|s| binding_escapes(db, s.value, binder, false)),
         // `List.push`/`concat` CONSUME both operands (the persistent op takes ownership of the list and
         // the pushed/concatenated value into the result).
         Core::ListPush { list, elem } => {
@@ -271,6 +288,31 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::ListUpdate { list, elem, .. } => {
             binding_escapes(db, list, binder, false) || binding_escapes(db, elem, binder, false)
         }
+        // A map construction CONSUMES each entry's key AND value into the built map — a binding used as a
+        // key or value escapes into it (like a tuple/list element).
+        Core::MapNew { entries, .. } => entries.iter().any(|&(k, v)| {
+            binding_escapes(db, k, binder, false) || binding_escapes(db, v, binder, false)
+        }),
+        // `Map.insert` CONSUMES the map, the key, and the value into the new map (the persistent op takes
+        // ownership of all three) — any of them used here escapes into the result.
+        Core::MapInsert { map, key, val, .. } => {
+            binding_escapes(db, map, binder, false)
+                || binding_escapes(db, key, binder, false)
+                || binding_escapes(db, val, binder, false)
+        }
+        // `Map.lookup` BORROWS the map (returns a fresh Option; the boxed key is an owned temporary the
+        // emit drops), so a map bound here does NOT escape through the lookup. The key flows into an owned
+        // temporary — consuming — so it escapes if used there.
+        Core::MapLookup { map, key, .. } => {
+            binding_escapes(db, map, binder, true) || binding_escapes(db, key, binder, false)
+        }
+        // `Map.remove` CONSUMES the map into the new map (persistent op takes ownership); the key is boxed
+        // into an owned temporary (consuming), dropped by the emit after the borrow-compare.
+        Core::MapRemove { map, key, .. } => {
+            binding_escapes(db, map, binder, false) || binding_escapes(db, key, binder, false)
+        }
+        // `Map.size` BORROWS its map operand (`map-size` reads the root without consuming) — like `List.len`.
+        Core::MapSize { map } => binding_escapes(db, map, binder, true),
         // A call CONSUMES its arguments; a host call likewise consumes its arguments across the boundary.
         Core::Call { args, .. } | Core::HostCall { args, .. } => {
             args.iter().any(|&a| binding_escapes(db, a, binder, false))
@@ -380,7 +422,13 @@ fn cont_binding_escapes(db: &mut Db, cont: &crate::core::SumCont, binder: Struct
 /// box op — so this returns `Ok(None)` for a compound (the caller skips the box). A type with no heap
 /// representation at all (a function/type-value) DECLINES. Reads the solved type.
 fn box_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
-    match type_of(db, id) {
+    box_op_ty(&type_of(db, id))
+}
+
+/// The box op for a solved TYPE directly (not a node) — used where a map's key/value type is known but
+/// no representative node is at hand (a `Map.lookup` value unbox reads `val_ty`). Mirrors [`box_op`].
+fn box_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
+    match ty {
         Ty::Int(_) => Ok(Some(OP_BOX_INT)),
         Ty::Bool => Ok(Some(OP_BOX_BOOL)),
         // A nested compound — a tuple/record, a SUM (its `sum-new` handle), a LIST (`vec-*` handle), or a
@@ -404,7 +452,13 @@ fn box_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
 /// handle `arr-get` yields IS the nested compound — so this returns `Ok(None)` (the caller uses the
 /// handle as-is). A projection of a type with no heap representation declines.
 fn get_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
-    match type_of(db, id) {
+    get_op_ty(&type_of(db, id))
+}
+
+/// The unbox op for a solved TYPE directly (not a node) — the dual of [`box_op_ty`], used where a value
+/// type is known but no node is at hand (a `Map.lookup` reads its `Some` payload back by `val_ty`).
+fn get_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
+    match ty {
         Ty::Int(_) => Ok(Some(OP_GET_INT)),
         Ty::Bool => Ok(Some(OP_GET_BOOL)),
         // A nested compound / SUM / LIST / BYTES handle `arr-get` (or `sum-payload`) yields is used
@@ -589,6 +643,14 @@ pub fn collect_used_ops(
                 collect_used_ops(db, *elem, out);
             }
         }
+        // A runtime `(bin …)` build allocs the byte buffer + writes each segment byte with `bytes-set`.
+        Core::BinBuild { segs } => {
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+            for s in &segs {
+                collect_used_ops(db, s.value, out);
+            }
+        }
         // `Bytes.len` uses `bytes-len` and evaluates its operand.
         Core::BytesLen { operand } => {
             out.insert(OP_BYTES_LEN);
@@ -631,6 +693,80 @@ pub fn collect_used_ops(
             out.insert(OP_ARR_ALLOC);
             collect_used_ops(db, list, out);
             collect_used_ops(db, index, out);
+        }
+        // A map construction is `map-empty` then a `map-insert` per entry (each key/value boxed by its
+        // type). Mirrors the emit arm's op choices.
+        Core::MapNew {
+            entries,
+            key_ty,
+            val_ty,
+        } => {
+            out.insert(OP_MAP_EMPTY);
+            if !entries.is_empty() {
+                out.insert(OP_MAP_INSERT);
+                if let Ok(Some(op)) = box_op_ty(&key_ty) {
+                    out.insert(op);
+                }
+                if let Ok(Some(op)) = box_op_ty(&val_ty) {
+                    out.insert(op);
+                }
+            }
+            for (k, v) in &entries {
+                collect_used_ops(db, *k, out);
+                collect_used_ops(db, *v, out);
+            }
+        }
+        // `Map.insert` = `map-insert`, boxing the key and value by their types.
+        Core::MapInsert {
+            map,
+            key,
+            val,
+            key_ty,
+            val_ty,
+        } => {
+            out.insert(OP_MAP_INSERT);
+            if let Ok(Some(op)) = box_op_ty(&key_ty) {
+                out.insert(op);
+            }
+            if let Ok(Some(op)) = box_op_ty(&val_ty) {
+                out.insert(op);
+            }
+            collect_used_ops(db, map, out);
+            collect_used_ops(db, key, out);
+            collect_used_ops(db, val, out);
+        }
+        // A RUNTIME `Map.lookup`: box the key, `map-lookup` (→ the stored value handle, or NULL when
+        // absent), then build `Some(value)` / `None` (`sum-new`, `arr-alloc(0)` for None's unit). The
+        // stored value is a BOXED handle (like a list element), used DIRECTLY as the `Some` payload —
+        // `dup`'d so the map keeps its own reference (mirrors `ListAt`) — no unbox. The boxed key is an
+        // owned temporary the emit `drop`s after the borrow-lookup.
+        Core::MapLookup {
+            map, key, key_ty, ..
+        } => {
+            out.insert(OP_MAP_LOOKUP);
+            out.insert(OP_DUP);
+            out.insert(OP_DROP);
+            out.insert(OP_SUM_NEW);
+            out.insert(OP_ARR_ALLOC);
+            if let Ok(Some(op)) = box_op_ty(&key_ty) {
+                out.insert(op);
+            }
+            collect_used_ops(db, map, out);
+            collect_used_ops(db, key, out);
+        }
+        // `Map.remove` = `map-remove`, boxing the key by its type.
+        Core::MapRemove { map, key, key_ty } => {
+            out.insert(OP_MAP_REMOVE);
+            if let Ok(Some(op)) = box_op_ty(&key_ty) {
+                out.insert(op);
+            }
+            collect_used_ops(db, map, out);
+            collect_used_ops(db, key, out);
+        }
+        // `Map.size` = `map-size` (→ u32, extended to i64) — reads the map operand.
+        Core::MapSize { map } => {
+            out.insert(OP_MAP_SIZE);
+            collect_used_ops(db, map, out);
         }
         // A RUNTIME `Bytes.at`: `bytes-len` (bounds test) + `bytes-get` (the raw byte VALUE, in bounds),
         // then `box-int` the byte into the `Some` payload (`sum-new`), or `arr-alloc(0)` for `None`'s
@@ -2112,6 +2248,90 @@ fn emit(
             }
             Ok(()) // leaves [buf] — the bytes handle
         }
+        // A runtime `(bin …)` construction of fixed-width INTEGER segments. Alloc a buffer of the total
+        // static width, then per segment: materialize its int value in an i64 scratch slot, RANGE-CHECK it
+        // against the segment (trap "binary value does not fit segment" if out of range — the runtime
+        // companion of the constant CDZ0304), and write its `w` bytes big-endian (`le` reversed) via
+        // `bytes-set` (which returns the buffer, so it threads on the stack). Uses TWO scratch slots: `buf`
+        // (the byte buffer handle) and `val` (the current segment's i64 value); both above `base`.
+        Core::BinBuild { segs } => {
+            let total: u32 = segs.iter().map(|s| s.width as u32).sum();
+            // The current segment's value lives in an i64 scratch slot (range-checked, then its bytes
+            // extracted by shift/mask). The byte buffer handle is THREADED ON THE STACK: `bytes-set`
+            // returns the buffer, so each write leaves `[buf]` for the next — exactly like `BytesOf`.
+            let val_slot = base;
+            if base + 1 > *high {
+                *high = base + 1;
+            }
+            scratch_ty.insert(val_slot, ValType::I64);
+            out.push(Lir::ConstI32(total as i32)); // [total]
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [buf]
+            let mut offset: u32 = 0;
+            for s in &segs {
+                let w = s.width as u32;
+                let bits = w * 8;
+                // Materialize the segment value in the i64 slot (a narrow int emits an i32 → extend by
+                // its OWN signedness; an Int64 is already i64). Stack still just `[buf]` after the set.
+                emit(db, s.value, slots, base + 1, high, scratch_ty, layout, out)?; // [buf, val:i32|i64]
+                if let Some(m) = is_narrow_int(db, s.value) {
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
+                }
+                out.push(Lir::LocalSet(val_slot)); // val := value:i64  → [buf]
+                // RANGE CHECK: the value must fit the segment's (signed, bits) width, else trap. Width 8
+                // (an i64 holds every i64) needs no check. Signed: `-(2^(bits-1)) <= val < 2^(bits-1)`;
+                // unsigned: `0 <= val < 2^bits`. Emitted as `(low-fail | high-fail) → trap`.
+                if bits < 64 {
+                    if s.signed {
+                        let hi = (1i64 << (bits - 1)) - 1;
+                        let lo = -(1i64 << (bits - 1));
+                        out.push(Lir::LocalGet(val_slot));
+                        out.push(Lir::ConstI64(hi));
+                        out.push(Lir::I64GtS); // val > hi
+                        out.push(Lir::LocalGet(val_slot));
+                        out.push(Lir::ConstI64(lo));
+                        out.push(Lir::I64LtS); // val < lo
+                        out.push(Lir::I32Or);
+                        out.push(Lir::IfUnreachableEnd); // → trap "binary value does not fit segment"
+                    } else {
+                        out.push(Lir::LocalGet(val_slot));
+                        out.push(Lir::ConstI64(0));
+                        out.push(Lir::I64LtS); // val < 0
+                        out.push(Lir::LocalGet(val_slot));
+                        out.push(Lir::ConstI64(1i64 << bits)); // 2^bits
+                        out.push(Lir::I64GeS); // val >= 2^bits (val < 2^63 since bits<64, so signed cmp ok)
+                        out.push(Lir::I32Or);
+                        out.push(Lir::IfUnreachableEnd); // → trap
+                    }
+                }
+                // Write the `w` bytes MSB-first; `le` reverses the buffer position. Each `bytes-set`
+                // consumes `[buf, pos, byte]` and returns `[buf]`, threading the buffer.
+                for p in 0..w {
+                    let shift = (w - 1 - p) * 8;
+                    let pos = if s.little_endian {
+                        offset + (w - 1 - p)
+                    } else {
+                        offset + p
+                    };
+                    // stack is [buf]
+                    out.push(Lir::ConstI32(pos as i32)); // [buf, pos]
+                    out.push(Lir::LocalGet(val_slot)); // [buf, pos, val:i64]
+                    if shift > 0 {
+                        out.push(Lir::ConstI64(shift as i64));
+                        out.push(Lir::I64ShrU);
+                    }
+                    out.push(Lir::I32WrapI64);
+                    out.push(Lir::ConstI32(0xff));
+                    out.push(Lir::I32And); // [buf, pos, byte:i32]
+                    out.push(Lir::CallImport(OP_BYTES_SET)); // → [buf]
+                }
+                offset += w;
+            }
+            Ok(()) // leaves [buf] — the bytes handle
+        }
         // `Bytes.len` — emit the bytes handle, then `bytes-len` (→ u32, an i32 slot), then extend to i64
         // (a length is non-negative), since `Bytes.len : Int64`. Mirrors `List.len` exactly.
         Core::BytesLen { operand } => {
@@ -2302,6 +2522,167 @@ fn emit(
             out.push(Lir::LocalTee(elem_slot)); // [disc_some, elem], elem_slot = elem
             out.push(Lir::CallImport(OP_DUP)); // pops elem, rc++ → [disc_some]
             out.push(Lir::LocalGet(elem_slot)); // [disc_some, elem] (the retained handle)
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
+            out.push(Lir::Else);
+            // ELSE — None: the unit payload is an empty array.
+            out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
+            out.push(Lir::ConstI32(0));
+            out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc_none, unit-payload]
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+            out.push(Lir::End);
+            Ok(())
+        }
+        // A MAP construction — `(map …)` or `Map.empty`. `map-empty` leaves a fresh empty map; then for
+        // each entry, box the key and value by their types (a narrow int extended i32→i64 first) and
+        // `map-insert(map, key, val)` — which CONSUMES the map handle + key + value and RETURNS the new
+        // map, threading the handle through with no scratch local (like `bytes-set`). Entries insert in
+        // SOURCE order, so a later duplicate key overwrites (keys compared by value). Leaves the map handle.
+        Core::MapNew {
+            entries,
+            key_ty,
+            val_ty,
+        } => {
+            out.push(Lir::CallImport(OP_MAP_EMPTY)); // → [map]
+            for &(k, v) in &entries {
+                emit(db, k, slots, base, high, scratch_ty, layout, out)?; // [map, key]
+                if let Some(op) = box_op_ty(&key_ty)? {
+                    if let Some(m) = is_narrow_int(db, k) {
+                        out.push(if m.signed {
+                            Lir::I64ExtendI32S
+                        } else {
+                            Lir::I64ExtendI32U
+                        });
+                    }
+                    out.push(Lir::CallImport(op)); // [map, key-handle]
+                }
+                emit(db, v, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
+                if let Some(op) = box_op_ty(&val_ty)? {
+                    if let Some(m) = is_narrow_int(db, v) {
+                        out.push(if m.signed {
+                            Lir::I64ExtendI32S
+                        } else {
+                            Lir::I64ExtendI32U
+                        });
+                    }
+                    out.push(Lir::CallImport(op)); // [map, key, val-handle]
+                }
+                out.push(Lir::CallImport(OP_MAP_INSERT)); // → [map'] (consumes map, key, val)
+            }
+            Ok(()) // leaves [map] — the map handle
+        }
+        // `Map.insert(m, k, v)` — emit the map handle, the key boxed by its type, the value boxed by its
+        // type, then `map-insert` (RETURNS the new map handle; consumes all three). Mirrors `MapNew`'s
+        // per-entry insert.
+        Core::MapInsert {
+            map,
+            key,
+            val,
+            key_ty,
+            val_ty,
+        } => {
+            emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
+            emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
+            if let Some(op) = box_op_ty(&key_ty)? {
+                if let Some(m) = is_narrow_int(db, key) {
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
+                }
+                out.push(Lir::CallImport(op)); // [map, key-handle]
+            }
+            emit(db, val, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
+            if let Some(op) = box_op_ty(&val_ty)? {
+                if let Some(m) = is_narrow_int(db, val) {
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
+                }
+                out.push(Lir::CallImport(op)); // [map, key, val-handle]
+            }
+            out.push(Lir::CallImport(OP_MAP_INSERT)); // → [map']
+            Ok(())
+        }
+        // `Map.remove(m, k)` — emit the map handle, the key boxed by its type, then `map-remove` (RETURNS
+        // the new map; consumes the map, borrows the key — the boxed key is an owned temporary dropped
+        // inside the op). Removing an absent key yields a map equal to the operand (total).
+        Core::MapRemove { map, key, key_ty } => {
+            emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
+            emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
+            if let Some(op) = box_op_ty(&key_ty)? {
+                if let Some(m) = is_narrow_int(db, key) {
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
+                }
+                out.push(Lir::CallImport(op)); // [map, key-handle]
+            }
+            out.push(Lir::CallImport(OP_MAP_REMOVE)); // → [map']
+            Ok(())
+        }
+        // `Map.size(m)` — emit the map handle, `map-size` (→ u32, an i32 slot), then extend to i64 (a
+        // count is non-negative), since `Map.size : Int64`. Mirrors `List.len`/`Bytes.len`.
+        Core::MapSize { map } => {
+            emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
+            out.push(Lir::CallImport(OP_MAP_SIZE)); // → [size:i32]
+            out.push(Lir::I64ExtendI32U); // → [size:i64] — Map.size : Int64
+            Ok(())
+        }
+        // A runtime `Map.lookup(m, k)` — the fallible keyed read. Box the key, `map-lookup(m, key)` (BORROWS
+        // both; returns the STORED VALUE HANDLE, or NULL when the key is absent). If the returned handle is
+        // non-null build `Some(value)` — the value is a boxed handle used DIRECTLY as the `Some` payload,
+        // `dup`'d so the map keeps its own reference (mirrors `ListAt`'s borrowed `vec-get`) — else `None`.
+        // The boxed key is an owned temporary `drop`ped after the borrow. Scratch: the key handle (i32,
+        // dropped after lookup) and the looked-up value handle (i32).
+        Core::MapLookup {
+            map,
+            key,
+            key_ty,
+            disc_some,
+            disc_none,
+            ..
+        } => {
+            let key_slot = base;
+            let val_slot = base + 1;
+            if val_slot + 1 > *high {
+                *high = val_slot + 1;
+            }
+            scratch_ty.insert(key_slot, ValType::I32);
+            scratch_ty.insert(val_slot, ValType::I32);
+            emit(db, map, slots, base + 2, high, scratch_ty, layout, out)?; // [map]
+            emit(db, key, slots, base + 2, high, scratch_ty, layout, out)?; // [map, key]
+            if let Some(op) = box_op_ty(&key_ty)? {
+                if let Some(m) = is_narrow_int(db, key) {
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
+                }
+                out.push(Lir::CallImport(op)); // [map, key-handle]
+            }
+            out.push(Lir::LocalTee(key_slot)); // [map, key], key_slot = key (for the later drop)
+            out.push(Lir::CallImport(OP_MAP_LOOKUP)); // [value-or-null] (borrows map + key)
+            out.push(Lir::LocalSet(val_slot)); // val_slot = value-or-null, stack empty
+            // Drop the boxed key temporary now that the borrow-lookup is done (map-lookup borrows it).
+            out.push(Lir::LocalGet(key_slot));
+            out.push(Lir::CallImport(OP_DROP));
+            // present = (value != NULL).
+            out.push(Lir::LocalGet(val_slot));
+            out.push(Lir::ConstI32(NULL_HANDLE));
+            out.push(Lir::I32Ne); // [present]
+            out.push(Lir::If(BlockType::Val(ValType::I32)));
+            // THEN — Some(value). The stored value handle is BORROWED (the map still owns it); `dup` it so
+            // the `Some` payload owns its own reference, then use it as the payload under `disc_some`.
+            out.push(Lir::ConstI32(disc_some as i32)); // [disc_some]
+            out.push(Lir::LocalGet(val_slot)); // [disc_some, value]
+            out.push(Lir::CallImport(OP_DUP)); // pops value, rc++ → [disc_some]
+            out.push(Lir::LocalGet(val_slot)); // [disc_some, value] (retained)
             out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
             out.push(Lir::Else);
             // ELSE — None: the unit payload is an empty array.
@@ -3231,10 +3612,32 @@ fn emit(
                 Reject::decline("a host call's operation is not in the host-import set")
             })?;
             for &arg in &args {
-                if matches!(crate::infer::type_of(db, arg), Ty::Unit) {
-                    continue; // a unit argument carries no boundary value
+                let at = crate::infer::type_of(db, arg);
+                match at {
+                    // A unit argument carries no boundary value.
+                    Ty::Unit => continue,
+                    // A STRING argument crosses as `(ptr, len)` — its constant bytes were laid in the core
+                    // module's data segment at a known offset (`host_string_offset`), so push that ptr +
+                    // the byte length. Only a CONSTANT string is supported (a runtime byte-rope is a later
+                    // increment); a non-constant string arg declines.
+                    Ty::String => {
+                        let s = match core_of(db, arg) {
+                            Core::ConstStr(s) => s,
+                            _ => {
+                                return Err(Reject::decline(
+                                    "a host call with a non-constant string argument is not yet emitted",
+                                ));
+                            }
+                        };
+                        let offset = layout.host_string_offset(&s).ok_or_else(|| {
+                            Reject::decline("a host-arg string was not laid in the data segment")
+                        })?;
+                        out.push(Lir::ConstI32(offset as i32));
+                        out.push(Lir::ConstI32(s.len() as i32));
+                    }
+                    // A scalar argument emits its value directly.
+                    _ => emit(db, arg, slots, base, high, scratch_ty, layout, out)?,
                 }
-                emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
             }
             out.push(Lir::CallHostImport(index));
             Ok(())

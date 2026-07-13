@@ -24,7 +24,7 @@
 use crate::arena::Slot;
 use crate::ast::StructId;
 use crate::db::Db;
-use crate::diag::{Code, Reject};
+use crate::diag::{Code, Fix, Reject};
 use crate::resolve::resolved_of;
 use crate::resolved::Resolved;
 use crate::ty::{Scheme, Ty};
@@ -103,6 +103,24 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             let mut fresh = crate::unify::Fresh::new();
             match crate::eval::scheme_of(db, id, &mut fresh) {
                 Some(scheme) => scheme.ty,
+                None => Ty::Any,
+            }
+        }
+        // An OPERATOR record used as a bare VALUE (not as an application head) — it carries a `(meta
+        // apply)` primitive AND a `(meta t)` scheme, so its type is that scheme instantiated. This is what
+        // types `Map.empty` (a nullary value operator, `∀k v. (Map k v)`) when it flows into an argument
+        // position (`(Map.insert Map.empty …)`), and a bare operator passed as a HOF argument (its arrow
+        // type). An APPLIED operator never reaches here — `apply_type` reads its scheme directly off the
+        // head — so this only fires for a bare use. Checked before the type-value branch (an op record is
+        // not a type-value: it has a `(meta apply)`, so `typeval_of` declines it) and the plain-record
+        // branch (which would wrongly type it as `(record (apply …) (t …))`).
+        Resolved::Record { .. }
+            if crate::eval::meta_apply_of(db, id).is_some()
+                && crate::eval::variant_disc_of(db, id).is_none() =>
+        {
+            let mut fresh = crate::unify::Fresh::new();
+            match crate::eval::scheme_of(db, id, &mut fresh) {
+                Some(scheme) => crate::unify::instantiate(&scheme, &mut fresh),
                 None => Ty::Any,
             }
         }
@@ -1363,7 +1381,27 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                 let at = crate::unify::freshen_free(&type_of(db, arg), &mut fresh);
                 if let Err(reject) = crate::unify::unify(&mut subst, &param, &at) {
                     trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, "apply: argument conflicts with parameter (type fault)");
-                    out.push(reject);
+                    // A wrong-type payload to a VARIANT CONSTRUCTOR — `(T.Mk "x")` for `(Mk Int64)` — is a
+                    // MALFORMED construction (`CDZ0201`), the code the corpus assigns a constructor applied
+                    // to a wrong-type/wrong-arity payload (the typed-payload companion of the nullary-Unit
+                    // check above). It flows through this SAME instantiated-and-substituted unify as any
+                    // application — so a GENERIC/nested construction (`(Ok (Err 9))`, `(Some (None))`) is
+                    // NOT over-rejected — only the diagnostic CODE is specialized: a variant-ctor head
+                    // reclassifies the unify mismatch from the generic `CDZ0203` to the structural
+                    // `CDZ0201`. A non-ctor head (an ordinary function, an operator) keeps `CDZ0203`.
+                    if crate::eval::variant_disc_of(db, head).is_some() {
+                        out.push(Reject::coded(
+                            Code::Malformed,
+                            format!(
+                                "a variant constructor's payload has declared type {}, but a value of \
+                                 type {} was applied",
+                                subst.apply(&param).render_name(),
+                                subst.apply(&at).render_name()
+                            ),
+                        ));
+                    } else {
+                        out.push(reject);
+                    }
                 }
                 cur = *result;
             }
@@ -1388,6 +1426,39 @@ pub fn type_errors(db: &mut Db, id: StructId) -> Vec<Reject> {
     collect(db, id, &mut out);
     trace!(target: "rcdzc::infer", node = id.0, faults = out.len(), "type check complete");
     out
+}
+
+/// The `record has no field \`key\`` rejection for a member access `member` (`(. operand key)`),
+/// enriched with a "did you mean?" suggestion when a field of the record is a near-miss for `key`
+/// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix — the record analogue of
+/// the unbound-name suggestion). `operand`'s field names are the candidate set. A close field →
+/// message names it AND the reject carries a heuristic ReplaceNode fix on the KEY occurrence (so an
+/// editor rewrites exactly the field token, `(. r fild)` → `(. r field)`); no close field → the plain
+/// message, no fix.
+fn no_field_reject(
+    db: &mut Db,
+    member: StructId,
+    operand: StructId,
+    key: &crate::resolved::Symbol,
+) -> Reject {
+    let fields = crate::eval::record_field_names(db, operand);
+    let suggestion = crate::diag::suggest::nearest(&key.name, &fields);
+    // The key occurrence is the second child of the `(. operand key)` form — the node the fix rewrites.
+    let key_occ = db.ast.as_form(member, ".").and_then(|t| t.get(1).copied());
+    match (suggestion, key_occ) {
+        (Some(field), Some(occ)) => Reject::coded(
+            Code::Malformed,
+            format!(
+                "record has no field `{}` — did you mean `{field}`?",
+                key.name
+            ),
+        )
+        .with_fix(Fix::replace_heuristic(occ, field)),
+        _ => Reject::coded(
+            Code::Malformed,
+            format!("record has no field `{}`", key.name),
+        ),
+    }
 }
 
 /// Collect faults at and under `id`, stamping each with its origin node. The recursive `collect_node`
@@ -1543,10 +1614,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 crate::eval::Member::Field(_) => {}
                 crate::eval::Member::NoField => {
                     trace!(target: "rcdzc::infer", node = id.0, key = %key.name, "fault: record has no such field (CDZ0201)");
-                    out.push(Reject::coded(
-                        Code::Malformed,
-                        format!("record has no field `{}`", key.name),
-                    ))
+                    out.push(no_field_reject(db, id, operand, &key))
                 }
                 // The operand did not reduce to a compile-time-visible record. Before rejecting, check
                 // its TYPE: a RUNTIME record (a call result, an `if` selection) carries a record type,
@@ -1558,10 +1626,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         Ty::Record(fields) if fields.contains_key(&key) => {}
                         Ty::Record(_) => {
                             trace!(target: "rcdzc::infer", node = id.0, key = %key.name, "fault: runtime record has no such field (CDZ0201)");
-                            out.push(Reject::coded(
-                                Code::Malformed,
-                                format!("record has no field `{}`", key.name),
-                            ))
+                            out.push(no_field_reject(db, id, operand, &key))
                         }
                         // An UNCONSTRAINED operand (`Any`) — a bare (unannotated) parameter of a
                         // non-recursive def, whose type is not known until the def inlines at a call

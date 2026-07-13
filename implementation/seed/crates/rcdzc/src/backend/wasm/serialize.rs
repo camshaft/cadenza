@@ -49,15 +49,26 @@ fn import_item(op_name: &str, type_idx: u32) -> Vec<u8> {
 }
 
 /// The CORE functype `0x60 <params-vec> <results-vec>` of a HOST-delegated op — its parameter and result
-/// CORE valtype bytes (`AbiValType::core_byte`). A `Unit` domain/result contributes no core slot (it is
-/// elided at the boundary), so `params`/`result` already hold only the scalar slots.
+/// CORE valtype bytes. A `Unit` domain/result contributes no core slot (elided at the boundary). A SCALAR
+/// param is one core slot (`AbiValType::core_byte`); a STRING param is TWO core slots `(i32 ptr, i32 len)`
+/// — the canonical ABI lowering of `string` into linear memory.
 fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
+    use crate::backend::wasm::host::HostParam;
     let mut item = vec![0x60];
     let mut params = Vec::new();
     for p in &f.params {
-        params.push(p.core_byte());
+        match p {
+            HostParam::Scalar(v) => params.push(v.core_byte()),
+            HostParam::Str => params.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32]),
+        }
     }
-    item.extend_from_slice(&wasm_vec(f.params.len(), &params));
+    // A string param is 2 core slots, so count the total slots (not the param count).
+    let slot_count = f
+        .params
+        .iter()
+        .map(|p| if matches!(p, HostParam::Str) { 2 } else { 1 })
+        .sum::<usize>();
+    item.extend_from_slice(&wasm_vec(slot_count, &params));
     match f.result {
         Some(r) => item.extend_from_slice(&wasm_vec(1, &[r.core_byte()])),
         None => item.extend_from_slice(&wasm_vec(0, &[])),
@@ -506,20 +517,40 @@ fn core_module_impl(
     // func import per runtime op (from module `"heap"`, `h..import_count`). Omitted entirely when there
     // are no imports of either kind. The order fixes both the host-import index a `CallHostImport`
     // resolves against and the `import_index` map a runtime `CallImport` resolves against.
+    // A host string ARGUMENT lowers to `(ptr, len)` read out of linear memory, so a program with a host
+    // string arg IMPORTS a memory (from module `"mem"`, name `"mem"`) that the component's shared-memory
+    // module provides and the string op's canon-lower reads. The import is a MEMORY desc (`0x02`) with
+    // limits `{ min: 1 }`. Placed AFTER the func imports (a memory import does not occupy a func index).
+    let needs_memory = !layout.host_strings.is_empty();
     let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-    let import_sec = if import_count == 0 {
+    let import_sec = if import_count == 0 && !needs_memory {
         Vec::new()
     } else {
         let mut import_items = Vec::new();
+        let mut import_n = 0usize;
         for (i, f) in host_fns.iter().enumerate() {
             import_items.extend_from_slice(&host_import_item(&f.op, i as u32));
+            import_n += 1;
         }
         for (j, o) in imports.iter().enumerate() {
             let ti = (h + j) as u32;
             import_items.extend_from_slice(&import_item(o.name, ti));
             import_index.insert(o.name, ti);
+            import_n += 1;
         }
-        section(2, &wasm_vec(import_count, &import_items))
+        if needs_memory {
+            // `mem`.`mem` — a memory import, desc kind `0x02`, limits `{ min: 1 }` (flag 0x00, min 1).
+            let mut item = uleb_bytes("mem".len() as u64);
+            item.extend_from_slice(b"mem");
+            item.extend_from_slice(&uleb_bytes("mem".len() as u64));
+            item.extend_from_slice(b"mem");
+            item.push(0x02); // import desc: memory
+            item.push(0x00); // limits flag: min only
+            uleb128(1, &mut item); // min 1 page
+            import_items.extend_from_slice(&item);
+            import_n += 1;
+        }
+        section(2, &wasm_vec(import_n, &import_items))
     };
 
     // Function section: defined func `i` (function index `import_count + i`) uses type index
@@ -589,6 +620,29 @@ fn core_module_impl(
         (table_sec, elem_sec)
     };
 
+    // DATA section — one active segment per host-arg string, at its assigned byte offset in the imported
+    // memory (`host_strings`). The `Core::HostCall` string-arg emit pushes `(offset, len)` pointing here,
+    // and the string op's canon-lower reads the UTF-8 bytes out. Empty (no data section) for a program
+    // with no host string arg — byte-identical to before.
+    let data_sec = if layout.host_strings.is_empty() {
+        Vec::new()
+    } else {
+        let mut items = Vec::new();
+        for (s, offset) in &layout.host_strings {
+            let mut seg = vec![0x00]; // active, memory 0
+            seg.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(*offset as i64, &mut seg);
+            seg.push(op::END);
+            seg.extend_from_slice(&uleb_bytes(s.len() as u64));
+            seg.extend_from_slice(s.as_bytes());
+            items.extend_from_slice(&seg);
+        }
+        section(
+            wasm_abi::CORE_SEC_DATA,
+            &wasm_vec(layout.host_strings.len(), &items),
+        )
+    };
+
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);
     core.extend_from_slice(&type_sec);
@@ -598,6 +652,7 @@ fn core_module_impl(
     core.extend_from_slice(&export_sec);
     core.extend_from_slice(&elem_sec);
     core.extend_from_slice(&code_sec);
+    core.extend_from_slice(&data_sec);
     // The `name` custom section (Mode E, D0) is now appended by `wasm::append_debug_sections` AFTER this
     // returns — uniformly for BOTH the ordinary path and the resource-escape path — so `core_module`
     // stays purely the executed sections (byte-identical to today for every caller).

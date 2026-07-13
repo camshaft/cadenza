@@ -206,6 +206,25 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 )),
             }
         }
+        // `Map.empty` used as a VALUE — an operator record whose `(meta apply)` is `Prim::MapEmpty`.
+        // Lowers to an empty `Core::MapNew` (built on the CHAMP heap via `map-empty`). Its key/value types
+        // are read off the node's solved type `Ty::Map(k, v)` (unified against its use — an empty map's
+        // key/value are unconstrained until a `Map.insert`/comparison fixes them; no entries to box, so
+        // `Any` is harmless here). Checked before the plain-record arm so it is not lowered as a data
+        // record of its meta fields.
+        Resolved::Record { .. }
+            if crate::eval::meta_apply_of(db, id) == Some(crate::resolved::Prim::MapEmpty) =>
+        {
+            let (key_ty, val_ty) = match crate::infer::type_of(db, id) {
+                crate::ty::Ty::Map(k, v) => (*k, *v),
+                _ => (crate::ty::Ty::Any, crate::ty::Ty::Any),
+            };
+            Core::MapNew {
+                entries: Vec::new(),
+                key_ty,
+                val_ty,
+            }
+        }
         // A record value — kept as a compound; folds away only when a member reads a field of it.
         // (Materialize the shared `Arc` map into the `Core::Record` owned map — a single O(fields)
         // copy per record NODE, not per access, so it does not reintroduce the O(N²) the Arc removed.)
@@ -919,6 +938,26 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                             "a string concatenation is only folded for constant ASCII operands (the \
                              normalizing byte-rope join arrives with the runtime string heap)",
                         )),
+                    }
+                }
+                // `Map.insert` — add-or-replace `key ↦ val`, returning the new map. For M1 the map operand
+                // is a RUNTIME map (built inline or a parameter); emit `Core::MapInsert` carrying the
+                // solved key/value types (for the box ops). A poison operand propagates.
+                Some(Prim::MapInsert) if args.len() == 3 => lower_map_insert(db, id, &args),
+                // `Map.lookup` — the FALLIBLE keyed read `(Map k v) → k → (Option v)`. Emit the runtime
+                // `Core::MapLookup` (a NULL-or-handle test → `Some`/`None`). The result Option's discs are
+                // read off the result type; the value type off the map operand.
+                Some(Prim::MapLookup) if args.len() == 2 => {
+                    lower_map_lookup(db, id, args[0], args[1])
+                }
+                // `Map.remove` — drop a key's association, returning the new map. Emit `Core::MapRemove`.
+                Some(Prim::MapRemove) if args.len() == 2 => lower_map_remove(db, args[0], args[1]),
+                // `Map.size` — the count of distinct keys, an `Int64`. Emit the runtime `Core::MapSize`.
+                Some(Prim::MapSize) if args.len() == 1 => {
+                    let map = args[0];
+                    match core_of(db, map) {
+                        Core::Poison(r) => Core::Poison(r),
+                        _ => Core::MapSize { map },
                     }
                 }
                 // Every other constructor prim — including the compound-VALUE constructors `TupleNew`/
@@ -2555,6 +2594,16 @@ fn probe_matches_str(probe: &crate::core::Probe, s: &str) -> bool {
 /// must fold — the runtime path is taken solely when `lambda_body` is `None` (a genuinely heap-held
 /// closure). So this is checked AFTER the lambda-reduction attempt would have fired for a foldable head.
 fn head_is_runtime_fn_value(db: &mut Db, id: StructId) -> bool {
+    // A CAPTURED free variable that is a fn value — a lifted closure body applies a closure it CAPTURED
+    // (`(fn (x) (f x))` where `f` is captured from an enclosing scope). Inside the lifted body `f` is a
+    // runtime closure HANDLE read from the env cell (`Core::Captured`), NOT the compile-time lambda it was
+    // defined from — so it must apply via `call_indirect`, not β-reduce. Checked FIRST: without this the
+    // `Ref` arm below follows `f` through to its original `(fn …)` definition and reports NOT-runtime, so
+    // `(f x)` mis-lowered — `f`'s handle was read as a scalar and ADDED to `x` instead of called (a
+    // miscompile of a closure that captures another capturing closure).
+    if db.captured_ref.contains_key(&id) {
+        return true;
+    }
     match resolved_of(db, id) {
         Resolved::Param { .. } => true,
         Resolved::Ref { value } => head_is_runtime_fn_value(db, value),
@@ -4260,7 +4309,16 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::FMul
         | Prim::FDiv
         | Prim::FloatCtor
-        | Prim::FloatOfInt => {
+        | Prim::FloatOfInt
+        | Prim::MapCtor
+        | Prim::MapNew
+        | Prim::MapEmpty
+        | Prim::MapInsert
+        | Prim::MapLookup
+        | Prim::MapRemove
+        | Prim::MapSize
+        | Prim::MapSwap
+        | Prim::MapTake => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -4792,6 +4850,91 @@ fn lower_list_at(db: &mut Db, id: StructId, list: StructId, index: StructId) -> 
         disc_some,
         disc_none,
     }
+}
+
+/// The solved KEY and VALUE types of a map operand — `(k, v)` from its `Ty::Map(k, v)`. `None` if the
+/// operand's type is not a map (a poison or an unsolved type), so the caller declines rather than
+/// guessing a box op. Used by the `Map.*` lowerings to pick the key/value box ops.
+fn map_kv_types(db: &mut Db, map: StructId) -> Option<(crate::ty::Ty, crate::ty::Ty)> {
+    match crate::infer::type_of(db, map) {
+        crate::ty::Ty::Map(k, v) => Some((*k, *v)),
+        _ => None,
+    }
+}
+
+/// Lower `(Map.insert map key val)` — add-or-replace, returning the new map. For M1 this emits the
+/// runtime `Core::MapInsert` on a runtime map operand (a constant-map fold is a later increment). The
+/// key/value types come from the map operand's `Ty::Map` (they choose the box ops). A poison propagates.
+fn lower_map_insert(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
+    let (map, key, val) = (args[0], args[1], args[2]);
+    for &a in &[map, key, val] {
+        if let Core::Poison(r) = core_of(db, a) {
+            return Core::Poison(r);
+        }
+    }
+    // The key/value types come from the INSERT NODE's own solved type `Map k v` (the RESULT map),
+    // which unification has fully determined — NOT from the map OPERAND, whose isolated type may still
+    // be `Map ?0 ?1` for a bare `Map.empty` (its key/value are solved only via this insert's arguments).
+    let Some((key_ty, val_ty)) = map_kv_types(db, id) else {
+        return Core::Poison(Reject::decline(
+            "Map.insert result is not a solved map type",
+        ));
+    };
+    Core::MapInsert {
+        map,
+        key,
+        val,
+        key_ty,
+        val_ty,
+    }
+}
+
+/// Lower `(Map.lookup map key)` — the fallible keyed read → `(Option v)`. Emits the runtime
+/// `Core::MapLookup` (a NULL-or-handle test building `Some`/`None`). The result Option's discriminants
+/// are read off the node's result type; the key/value types off the map operand. A poison propagates.
+fn lower_map_lookup(db: &mut Db, id: StructId, map: StructId, key: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, map) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, key) {
+        return Core::Poison(r);
+    }
+    let Some((disc_some, disc_none)) = option_discs(db, id) else {
+        return Core::Poison(Reject::decline(
+            "Map.lookup result is not the built-in Option sum",
+        ));
+    };
+    let Some((key_ty, val_ty)) = map_kv_types(db, map) else {
+        return Core::Poison(Reject::decline(
+            "Map.lookup operand is not a solved map type",
+        ));
+    };
+    Core::MapLookup {
+        map,
+        key,
+        key_ty,
+        val_ty,
+        disc_some,
+        disc_none,
+    }
+}
+
+/// Lower `(Map.remove map key)` — drop a key's association, returning the new map. Emits the runtime
+/// `Core::MapRemove`. The key type comes from the map operand's `Ty::Map` (for the box op). A poison
+/// propagates.
+fn lower_map_remove(db: &mut Db, map: StructId, key: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, map) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, key) {
+        return Core::Poison(r);
+    }
+    let Some((key_ty, _)) = map_kv_types(db, map) else {
+        return Core::Poison(Reject::decline(
+            "Map.remove operand is not a solved map type",
+        ));
+    };
+    Core::MapRemove { map, key, key_ty }
 }
 
 /// Lower `(String.at string index)` — the fallible SCALAR-indexed read. FOLD when both operands are
@@ -5368,6 +5511,50 @@ fn lower_bytes_slice(
 /// dependent-bytes + the runtime path).
 fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment]) -> Core {
     use crate::resolved::SegKind;
+    // RUNTIME construction: if ANY segment's value is not a compile-time constant, the `bin` can't fold to
+    // a baked `Core::BytesOf` — it builds at run time. This slice handles a `bin` of ONLY fixed-width
+    // INTEGER segments (a runtime `bits`/`bytes` segment is a later increment); such a `bin` lowers to a
+    // `Core::BinBuild` the backend emits (alloc + per-segment range-check-and-write). A constant segment
+    // still range-checks here (a provable trap fails the build even alongside a runtime sibling). A `bin`
+    // mixing a runtime value with a `bits`/`bytes` segment declines (not yet built).
+    let any_runtime = segs.iter().any(|s| {
+        matches!(&s.kind, SegKind::Int { .. })
+            && !matches!(core_of(db, s.slot), Core::ConstInt(_) | Core::Poison(_))
+    });
+    if any_runtime {
+        let mut bsegs = Vec::with_capacity(segs.len());
+        for seg in segs {
+            match &seg.kind {
+                SegKind::Int { width, signed } => {
+                    if let Core::Poison(r) = core_of(db, seg.slot) {
+                        return Core::Poison(r);
+                    }
+                    // A CONSTANT sibling still range-checks (a provable misfit fails the build).
+                    if let Core::ConstInt(v) = core_of(db, seg.slot)
+                        && !v.fits_width(*signed, (*width as u32) * 8)
+                    {
+                        return Core::Poison(Reject::coded(
+                            Code::ConstTrap,
+                            "binary value does not fit segment",
+                        ));
+                    }
+                    bsegs.push(crate::core::BinSeg {
+                        width: *width,
+                        signed: *signed,
+                        little_endian: seg.little_endian,
+                        value: seg.slot,
+                    });
+                }
+                // A runtime bit-field / bytes-splice is not built yet — decline the whole `bin`.
+                SegKind::Bits { .. } | SegKind::Bytes { .. } => {
+                    return Core::Poison(Reject::decline(
+                        "a runtime bin with a bit-field or bytes segment is not yet built (integer segments only)",
+                    ));
+                }
+            }
+        }
+        return Core::BinBuild { segs: bsegs };
+    }
     let mut raw: Vec<u8> = Vec::new();
     // The open bit-accumulator between `bits` segments: `acc` holds `nbits` bits, MSB-first (the first
     // field's bits occupy the high end). Whole bytes are flushed to `raw` as soon as `nbits >= 8`.
@@ -5829,6 +6016,15 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::FDiv => "/.",
         Prim::FloatCtor => "Float",
         Prim::FloatOfInt => "of-int",
+        Prim::MapCtor => "Map",
+        Prim::MapNew => "map-new",
+        Prim::MapEmpty => "map-empty",
+        Prim::MapInsert => "map-insert",
+        Prim::MapLookup => "map-lookup",
+        Prim::MapRemove => "map-remove",
+        Prim::MapSize => "map-size",
+        Prim::MapSwap => "map-swap",
+        Prim::MapTake => "map-take",
     }
 }
 

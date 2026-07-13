@@ -79,6 +79,10 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // the module of list OPERATIONS (its `len`/… fields, reached by member access `(. List len)`). One
     // record carries both roles: applying it builds the type, projecting a field gives an operation.
     names.insert("List".to_string(), list_module(ast));
+    // `Map` — BOTH the map-TYPE constructor (`(Map Int64 Int64)` in type position → `(meta apply)=Map`,
+    // TWO parameters) AND the module of map OPERATIONS (`empty`/`insert`/`lookup`/`remove`/`size`, reached
+    // by member access `(. Map insert)`). One record carries both roles, exactly like `List`.
+    names.insert("Map".to_string(), map_module(ast));
     // `Bytes` — the module of byte-sequence OPERATIONS (`of`/`len` fields, reached by member access
     // `(. Bytes of)`). Unlike `List` it is NOT also a type constructor: `Bytes` is a ground type-VALUE
     // (a non-parametric leaf), so the module ALSO carries `(meta t) = Bytes` — bare `Bytes` in type
@@ -239,6 +243,119 @@ fn list_module(ast: &mut Arenas) -> StructId {
         children.push(push_list(ast, vec![k, op]));
     }
     push_list(ast, children)
+}
+
+/// The `Map` module record — a record carrying BOTH `(meta apply)` = the `Map` type constructor (so
+/// `(Map Int64 Int64)` in type position builds `Ty::Map`, TWO parameters) AND a field per map OPERATION
+/// (reached by member access `(. Map insert)`). Each operation is an operator record: its `(meta t)` is
+/// a TWO-parameter type-lambda `(fn (k v) …)` over the key and value types, its `(meta apply)` the
+/// runtime op. Realizes `empty : ∀k v. (Map k v)`, `insert : ∀k v. (Map k v) → k → v → (Map k v)`,
+/// `lookup : ∀k v. (Map k v) → k → (Option v)`, `remove : ∀k v. (Map k v) → k → (Map k v)`, `size :
+/// ∀k v. (Map k v) → Int64`. Mirrors `list_module`, but the type constructor and every scheme take two
+/// parameters instead of one.
+fn map_module(ast: &mut Arenas) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    // `(meta apply)` = the `Map` TYPE constructor (`(Map Int64 Int64)` reduces to `Ty::Map(Int64, Int64)`).
+    let builder = intrinsic_node(ast, "Map");
+    let apply_field = meta_field(ast, "apply", builder);
+    // One field per realized operation — each an operator record `(name <op-record>)` whose `(meta t)`
+    // is a two-parameter `(fn (k v) …)` type-lambda. Each lambda is built first (a `&mut ast` borrow)
+    // then handed to `list_op_record` (the shared operator-record builder — nothing list-specific in it).
+    let empty_lambda = map_empty_type_lambda(ast);
+    let insert_lambda = map_insert_type_lambda(ast);
+    let lookup_lambda = map_lookup_type_lambda(ast);
+    let remove_lambda = map_remove_type_lambda(ast);
+    let size_lambda = map_size_type_lambda(ast);
+    let mut children = vec![head, apply_field];
+    for (name, prim, lambda) in [
+        ("empty", "map-empty", empty_lambda),
+        ("insert", "map-insert", insert_lambda),
+        ("lookup", "map-lookup", lookup_lambda),
+        ("remove", "map-remove", remove_lambda),
+        ("size", "map-size", size_lambda),
+    ] {
+        let op = list_op_record(ast, prim, lambda);
+        let k = push_atom(ast, Leaf::Name(name.to_string()));
+        children.push(push_list(ast, vec![k, op]));
+    }
+    push_list(ast, children)
+}
+
+/// Build `(Map k v)` — the map type applied to the key parameter `k` and value parameter `v`, the shared
+/// shape in the `Map` operation type-lambdas (a fresh occurrence per use, referencing the same param names).
+fn map_k_v_type(ast: &mut Arenas) -> StructId {
+    let map = push_atom(ast, Leaf::Name("Map".to_string()));
+    let k = push_atom(ast, Leaf::Name("k".to_string()));
+    let v = push_atom(ast, Leaf::Name("v".to_string()));
+    push_list(ast, vec![map, k, v])
+}
+
+/// Wrap `body` in `(fn (k v) body)` — the two-parameter type-lambda over the key type `k` and value type
+/// `v`, shared by the `Map` operation schemes (the map analogue of `list_type_lambda`).
+fn map_type_lambda(ast: &mut Arenas, body: StructId) -> StructId {
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let k_param = push_atom(ast, Leaf::Name("k".to_string()));
+    let v_param = push_atom(ast, Leaf::Name("v".to_string()));
+    let params = push_list(ast, vec![k_param, v_param]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// The type-lambda `(fn (k v) (Map k v))` for `Map.empty` — `∀k v. (Map k v)`: the empty map value, a
+/// bare (non-arrow) polymorphic type. The `(fn (k v) …)` wrapper makes `scheme_of` read a SCHEME over
+/// both parameters, so each use of `Map.empty` instantiates a fresh `(Map ?k ?v)` its keys/values solve.
+fn map_empty_type_lambda(ast: &mut Arenas) -> StructId {
+    let map_k_v = map_k_v_type(ast);
+    map_type_lambda(ast, map_k_v)
+}
+
+/// The type-lambda `(fn (k v) (-> (Map k v) (-> k (-> v (Map k v)))))` for `Map.insert` — `∀k v. (Map k
+/// v) → k → v → (Map k v)`: add-or-replace `key ↦ val`, returning the new map.
+fn map_insert_type_lambda(ast: &mut Arenas) -> StructId {
+    let map_r = map_k_v_type(ast);
+    let v = push_atom(ast, Leaf::Name("v".to_string()));
+    let val_arrow = arrow_type(ast, v, map_r); // (-> v (Map k v))
+    let k = push_atom(ast, Leaf::Name("k".to_string()));
+    let key_arrow = arrow_type(ast, k, val_arrow); // (-> k (-> v (Map k v)))
+    let map_l = map_k_v_type(ast);
+    let body = arrow_type(ast, map_l, key_arrow); // (-> (Map k v) (-> k (-> v (Map k v))))
+    map_type_lambda(ast, body)
+}
+
+/// The type-lambda `(fn (k v) (-> (Map k v) (-> k (Option v))))` for `Map.lookup` — `∀k v. (Map k v) →
+/// k → (Option v)`: the fallible keyed read (`Some v` present, `None` absent). `(Option v)` reduces via
+/// the built-in `Option` sum ctor, exactly as `List.at`'s `(Option a)` does.
+fn map_lookup_type_lambda(ast: &mut Arenas) -> StructId {
+    let option_v = {
+        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let v = push_atom(ast, Leaf::Name("v".to_string()));
+        push_list(ast, vec![option, v])
+    };
+    let k = push_atom(ast, Leaf::Name("k".to_string()));
+    let key_arrow = arrow_type(ast, k, option_v); // (-> k (Option v))
+    let map_l = map_k_v_type(ast);
+    let body = arrow_type(ast, map_l, key_arrow); // (-> (Map k v) (-> k (Option v)))
+    map_type_lambda(ast, body)
+}
+
+/// The type-lambda `(fn (k v) (-> (Map k v) (-> k (Map k v))))` for `Map.remove` — `∀k v. (Map k v) →
+/// k → (Map k v)`: drop a key's association, returning the new map (total — an absent key yields an
+/// equal map).
+fn map_remove_type_lambda(ast: &mut Arenas) -> StructId {
+    let map_r = map_k_v_type(ast);
+    let k = push_atom(ast, Leaf::Name("k".to_string()));
+    let key_arrow = arrow_type(ast, k, map_r); // (-> k (Map k v))
+    let map_l = map_k_v_type(ast);
+    let body = arrow_type(ast, map_l, key_arrow); // (-> (Map k v) (-> k (Map k v)))
+    map_type_lambda(ast, body)
+}
+
+/// The type-lambda `(fn (k v) (-> (Map k v) Int64))` for `Map.size` — `∀k v. (Map k v) → Int64`: the
+/// count of distinct keys. The map companion of `List.len`.
+fn map_size_type_lambda(ast: &mut Arenas) -> StructId {
+    let map_l = map_k_v_type(ast);
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let body = arrow_type(ast, map_l, int64); // (-> (Map k v) Int64)
+    map_type_lambda(ast, body)
 }
 
 /// The `Bytes` module record — a record carrying `(meta t) = Bytes` (the ground type-value, so bare

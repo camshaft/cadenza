@@ -109,8 +109,8 @@ impl<'a> Lexer<'a> {
             },
             '<' => return Some(self.two(a, Kind::Lt, &[('=', Kind::Le), ('<', Kind::Shl)])),
             '>' => return Some(self.two(a, Kind::Gt, &[('=', Kind::Ge), ('>', Kind::Shr)])),
-            '+' => return Some(self.wrapping(a, Kind::Plus, Kind::PlusPct)),
-            '*' => return Some(self.wrapping(a, Kind::Star, Kind::StarPct)),
+            '+' => return Some(self.wrapping(a, Kind::Plus, Kind::PlusPct, Kind::PlusDot)),
+            '*' => return Some(self.wrapping(a, Kind::Star, Kind::StarPct, Kind::StarDot)),
             '%' => Kind::Percent,
             '&' => Kind::Amp,
             '^' => Kind::Caret,
@@ -159,23 +159,33 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// `+`/`*` with an optional `%` wrapping suffix.
-    fn wrapping(&mut self, a: Char, plain: Kind, wrapping: Kind) -> Token {
-        if self.peek() == Some('%') {
-            let b = self.bump().unwrap();
-            Token {
-                kind: wrapping,
-                span: a.span.merge(b.span),
+    /// `+`/`*` with an optional `%` wrapping suffix OR a `.` float suffix (`+.`/`*.` — the OCaml-style
+    /// floating-point operators, distinct from the integer `+`/`*`). The two suffixes are mutually
+    /// exclusive glyphs, so a single peek decides: `%` → wrapping, `.` → float, else plain.
+    fn wrapping(&mut self, a: Char, plain: Kind, wrapping: Kind, float: Kind) -> Token {
+        match self.peek() {
+            Some('%') => {
+                let b = self.bump().unwrap();
+                Token {
+                    kind: wrapping,
+                    span: a.span.merge(b.span),
+                }
             }
-        } else {
-            Token {
+            Some('.') => {
+                let b = self.bump().unwrap();
+                Token {
+                    kind: float,
+                    span: a.span.merge(b.span),
+                }
+            }
+            _ => Token {
                 kind: plain,
                 span: a.span,
-            }
+            },
         }
     }
 
-    /// `/` — a `//` line comment, `///` doc comment, or the division operator.
+    /// `/` — a `//` line comment, `///` doc comment, `/.` float division, or the division operator.
     fn slash(&mut self, a: Char) -> Token {
         if self.peek() == Some('/') {
             self.bump(); // second '/'
@@ -190,6 +200,14 @@ impl<'a> Lexer<'a> {
                 Kind::LineComment
             };
             Token { kind, span }
+        } else if self.peek() == Some('.') {
+            // `/.` — floating-point division (distinct from the integer `/`). Checked AFTER the
+            // comment forms so `//`/`///` still win.
+            let b = self.bump().unwrap();
+            Token {
+                kind: Kind::SlashDot,
+                span: a.span.merge(b.span),
+            }
         } else {
             Token {
                 kind: Kind::Slash,
@@ -215,6 +233,16 @@ impl<'a> Lexer<'a> {
                 let b = self.bump().unwrap();
                 Token {
                     kind: Kind::MinusPct,
+                    span: a.span.merge(b.span),
+                }
+            }
+            // `-.` — floating-point subtraction. A float LITERAL needs a leading digit (`.5` is not a
+            // number), so a `-` followed by `.` is unambiguously the float operator, not a negative
+            // fraction. (Checked after the `-<digit>` negative-number arm above.)
+            Some('.') => {
+                let b = self.bump().unwrap();
+                Token {
+                    kind: Kind::MinusDot,
                     span: a.span.merge(b.span),
                 }
             }
@@ -468,6 +496,53 @@ mod tests {
                 Kind::Ident,
             ]
         );
+    }
+
+    #[test]
+    fn float_operators() {
+        // The OCaml-style FP operators `+.`/`-.`/`*.`/`/.` lex as one token each — distinct from the
+        // integer `+`/`-`/`*`/`/` and from member access / a float literal.
+        assert_eq!(
+            kinds("a +. b -. c *. d /. e"),
+            vec![
+                Kind::Ident,
+                Kind::PlusDot,
+                Kind::Ident,
+                Kind::MinusDot,
+                Kind::Ident,
+                Kind::StarDot,
+                Kind::Ident,
+                Kind::SlashDot,
+                Kind::Ident,
+            ]
+        );
+        // A float operator does NOT swallow a following float LITERAL — `+.3.5` is `+.` then `3.5`.
+        assert_eq!(
+            kinds("a +.3.5"),
+            vec![Kind::Ident, Kind::PlusDot, Kind::Float]
+        );
+        // The integer operators are UNCHANGED (no `.` suffix): `+`/`-`/`*`/`/` still tokenize plainly.
+        assert_eq!(
+            kinds("a + b - c * d / e"),
+            vec![
+                Kind::Ident,
+                Kind::Plus,
+                Kind::Ident,
+                Kind::Minus,
+                Kind::Ident,
+                Kind::Star,
+                Kind::Ident,
+                Kind::Slash,
+                Kind::Ident,
+            ]
+        );
+        // Member access and a float literal are UNAFFECTED (the `.` there is not an operator suffix).
+        assert_eq!(kinds("r.x"), vec![Kind::Ident, Kind::Dot, Kind::Ident]);
+        assert_eq!(kinds("3.5"), vec![Kind::Float]);
+        // `//` comments still win over `/.` (the comment check precedes the float-suffix check): a
+        // trailing `// c` lexes as one comment (trivia, filtered by `kinds`), NOT `/` `/` or `/.` `c`
+        // — so only the leading `a` remains.
+        assert_eq!(kinds("a // c"), vec![Kind::Ident]);
     }
 
     #[test]

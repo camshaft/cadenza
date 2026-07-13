@@ -138,6 +138,8 @@ pub const COMP_U64: u8 = 0x77;
 pub const COMP_F32: u8 = 0x76;
 /// component `f64`.
 pub const COMP_F64: u8 = 0x75;
+/// component `string`.
+pub const COMP_STRING: u8 = 0x73;
 /// core TYPE section id.
 pub const CORE_SEC_TYPE: u8 = 0x01;
 /// core FUNCTION section id.
