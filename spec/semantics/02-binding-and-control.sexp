@@ -1481,6 +1481,21 @@
             (def (main) (classify 0)) (export main)))
   (output (: 100 Int64)))
 
+(case "a two-arm match does not evaluate the unselected arm's trapping body"
+  (doc    "A 2-arm `match` with leaf-value bodies may be lowered to a branchless `select` (both bodies on
+           the stack, the discriminant chooses) — but ONLY when both bodies are trap-free. `(match n (0 (/
+           1 z)) (_ 99))` has a trapping body `(/ 1 z)` in the first arm, so it MUST keep the branch: with
+           n = 5 the wildcard arm is selected → 99, and the first arm's division by zero (z = 0) is NOT
+           evaluated. A naive branchless-select that evaluated both bodies would trap here. Pins that the
+           2-arm-match-to-select optimization does not treat a trapping arm body as a select leaf — the
+           match evaluates only the selected arm (core-semantics.md #Matching Is Exhaustive Or Rejected +
+           the trap-observation rule). The anchor: with n = 0 the first arm IS selected and it traps.")
+  (input  (do
+            (def (main (: n Int64) (: z Int64)) (match n (0 (/ 1 z)) (_ 99)))
+            (export main)))
+  (call   main (: 5 Int64) (: 0 Int64))
+  (output (: 99 Int64)))
+
 (case "a runtime scrutinee selects a non-first literal arm"
   (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: arms are tried top-to-bottom
            and the first whose pattern matches the runtime value wins. Here the runtime value 2
