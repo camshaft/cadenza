@@ -79,6 +79,20 @@ pub fn abi_val_type(ty: &Ty) -> Option<AbiValType> {
 /// `out` accumulates across all reachable bodies (the caller runs it over `layout.order`). A duplicate
 /// `(effect, op)` is not re-added (the same op called twice is ONE import). Descends every sub-position
 /// (both `if` branches, arm bodies, operands) so an op used only under a branch is still imported.
+///
+/// This SET is the manifest and the import list at once: it is derived from the host ops the reachable
+/// bodies actually REACH (the escaping delegated row, after nearer handlers interpose), so the imports
+/// the envelope emits mirror it exactly — one import per reached host op, and none for an op no body
+/// reaches. A program that delegates/reaches no host op collects the EMPTY set (an empty manifest = a
+/// pure program). (The value-heap runtime interface is collected separately, not counted here.)
+//= spec/contracts/host-interface-binding.md#imports-mirror-the-manifest-exactly
+//# The set of host operations a component imports MUST equal the set of capabilities its manifest enumerates.
+//= spec/contracts/host-interface-binding.md#imports-mirror-the-manifest-exactly
+//# The compiler MUST NOT emit an import for a host operation the manifest does not enumerate.
+//= spec/contracts/host-interface-binding.md#imports-mirror-the-manifest-exactly
+//# The compiler MUST NOT emit a manifest entry for which no corresponding import is generated.
+//= spec/contracts/host-interface-binding.md#the-manifest-is-a-projection-of-the-escaping-effect-row
+//# A program's escaping effect row MUST equal the set of host functions it imports, where the escaping row is the union of the effects its entrypoints delegate to the host that no nearer handler discharges (capabilities-and-effects.md §A Host Import Is A Boundary Effect And The Manifest Is Its Row), so that the manifest is a projection of that delegated row rather than a separately-asserted list and an effect an enclosing handler fully interposes before a delegation generates no import.
 pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>) {
     match core_of(db, id) {
         Core::HostCall {
