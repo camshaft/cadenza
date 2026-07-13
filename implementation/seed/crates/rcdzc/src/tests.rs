@@ -4481,6 +4481,53 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_kept_let_binding_carries_its_initializers_range() {
+        // A multi-use `let`-binding's `Core::LocalRef` carries the range of its INITIALIZER (the binder IS
+        // the initializer occurrence). So `(let ((y (& x 255))) (+ y y))` propagates [0,255] through `y`,
+        // and `(+ y y)` ∈ [0,510] sheds its overflow guard — exactly as the inlined `(+ (& x 255) (& x
+        // 255))` does. Without this, the kept `LocalRef` fell back to the declared type (Int64) and kept
+        // its guard.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let guards = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::IfUnreachableEnd)).count();
+        // Masked binding used twice: [0,255] flows through `y`, both `+` and `*` shed their guards.
+        assert_eq!(guards(&lir("(: x Int64)", "(let ((y (& x 255))) (+ y y))")), 0, "[0,255]+[0,255] no guard");
+        assert_eq!(guards(&lir("(: x Int64)", "(let ((y (& x 255))) (* y y))")), 0, "[0,255]*[0,255] no guard");
+        // SOUNDNESS: a full-range binding (`(+ x 1)`, range unbounded) KEEPS its guards.
+        assert!(guards(&lir("(: x Int64)", "(let ((y (+ x 1))) (+ y y))")) > 0, "full-range binding keeps guard");
+
+        // VALUE PARITY — the guard-elided binding computes the same as the guarded form.
+        assert_eq!(run::<i64>("(: x Int64)", "(let ((y (& x 255))) (+ y y))", &[Val::S64(200)]), 400);
+        assert_eq!(run::<i64>("(: x Int64)", "(let ((y (& x 255))) (* y y))", &[Val::S64(20)]), 400);
+        assert_eq!(run::<i64>("(: x Int64)", "(let ((y (& x 255))) (+ y y))", &[Val::S64(-1)]), 510); // -1&255=255, +255=510
+    }
+
+    #[test]
     fn a_branch_condition_refines_a_variables_range_and_elides_a_dead_guard() {
         // FLOW-SENSITIVE RANGE REFINEMENT: inside `(if (> n 0) …)` the then-branch KNOWS `n ≥ 1`, so
         // `(- n 1)` cannot underflow — its overflow guard is DEAD and dropped. The refinement is a sound

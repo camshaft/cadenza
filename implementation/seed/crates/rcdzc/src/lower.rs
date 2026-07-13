@@ -6948,6 +6948,17 @@ fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
         };
         return Some((lo, hi));
     }
+    // A kept `let`-binding reference (`Core::LocalRef { binder }`, no active refinement) carries the range
+    // of its INITIALIZER — `binder` IS the initializer's occurrence (see `lower_let`). So a multi-use
+    // masked binding `(let ((y (& x 255))) (+ y y))` propagates `[0,255]` through `y`, letting `(+ y y)`
+    // shed its overflow guard exactly as the inlined `(+ (& x 255) (& x 255))` does. The initializer is a
+    // distinct, earlier node (a binding never references itself), so the recursion bottoms out. No
+    // refinement applies here (the block above returned early if one did).
+    if let Core::LocalRef { binder } = core_of(db, id)
+        && let Some(r) = value_range(db, binder)
+    {
+        return Some(r);
+    }
     // An ARITHMETIC / BITWISE / SHIFT node's range PROPAGATES from its operands' ranges — this is the
     // dataflow layer that lets a bounded sub-expression bound its enclosing op (`(+ (& x 15) (& y 15))`
     // → [0,30], and a further `(+ … (& z 15))` → [0,45]). All interval math is in `i128` so endpoints
