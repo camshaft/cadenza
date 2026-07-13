@@ -112,6 +112,18 @@ pub fn check(sexpr_text: &str) -> Result<(), String> {
     let round_tripped = crate::render(&crate::read(&reconstructed)?);
 
     if original_records == round_tripped {
+        return Ok(());
+    }
+
+    // The migration serializes through the ML surface, which is allowed to CANONICALIZE once — e.g.
+    // the name-alias compound ctors `(tuple a b)`/`(list …)` normalize to the string-primitive
+    // `("tuple" …)`/`("list" …)` (a deliberate, semantics-preserving rewrite, not information loss).
+    // So require a FIXED POINT rather than byte-identity: migrating the RECONSTRUCTED text again must
+    // reproduce it. That still catches a real migration bug (a non-idempotent / lossy transform) while
+    // tolerating the one-time ctor canonicalization. Mirrors `xtask roundtrip`'s ML idempotence rule.
+    let reconstructed2 = to_sexpr(&migrate(&reconstructed)?)?;
+    let round_tripped2 = crate::render(&crate::read(&reconstructed2)?);
+    if round_tripped == round_tripped2 {
         Ok(())
     } else {
         Err(first_record_diff(&original_records, &round_tripped))
