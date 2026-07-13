@@ -5603,10 +5603,54 @@ fn emit_operand(
         let op_slot = m_slot(it);
         let operand_slot = valtype_of(&type_of(db, id));
         if operand_slot == Some(ValType::I64) && op_slot == ValType::I32 {
+            // Before truncating a control-flow operand's i64 value down to the narrow op width, REJECT a
+            // constant branch VALUE that does not fit — `(+ (if c 1099511627776 2) 5) : Int8` must be a
+            // CDZ0302 (as the bare `(: (if c 1099511627776 2) Int8)` is), NOT a silent `i32.wrap_i64`
+            // truncation to `0`. The operand's branches were emitted at the `if`/`match` node's own
+            // deferred→i64 width (nothing threads the narrow op width INTO the branches), so a constant
+            // branch literal wider than the type slips through until this wrap. Walk the value-position
+            // constants and range-check each at `it` — the same check `emit_operand` applies to a DIRECT
+            // literal operand. (A runtime branch value is unconstrainable here and keeps the wrap; only a
+            // compile-time-constant branch is judged, matching how the bare-if path grounds its literals.)
+            reject_oversize_branch_constant(db, id, it)?;
             out.push(Lir::I32WrapI64);
         }
     }
     Ok(())
+}
+
+/// When a control-flow operand (`if`/`match`/`let`) is truncated to a NARROW op width, reject a
+/// compile-time-constant branch VALUE that does not fit that width (CDZ0302) — so an out-of-range literal
+/// buried in a conditional branch is caught rather than silently wrapped. Walks only VALUE positions that
+/// carry the operand's result: an `if`'s two branches, a scalar `match`'s arm bodies, a `let`'s body; it
+/// recurses through nested control flow. A `ConstInt` value that overflows `it` is the error; any
+/// non-constant (a param, a call, an arithmetic node — whose own overflow the enclosing op's range-check
+/// governs) is left alone. Conservative: it never rejects a value the language would accept.
+fn reject_oversize_branch_constant(db: &mut Db, id: StructId, it: IntTy) -> Result<(), Reject> {
+    match core_of(db, id) {
+        Core::ConstInt(v) => {
+            if !v.fits_width(it.ground_signed(), it.ground_width()) {
+                return Err(Reject::coded(
+                    Code::IntOutOfRange,
+                    "integer literal does not fit its width",
+                ));
+            }
+            Ok(())
+        }
+        Core::If { then_, else_, .. } => {
+            reject_oversize_branch_constant(db, then_, it)?;
+            reject_oversize_branch_constant(db, else_, it)
+        }
+        Core::Match { arms, .. } => {
+            for arm in arms {
+                reject_oversize_branch_constant(db, arm.body, it)?;
+            }
+            Ok(())
+        }
+        Core::Let { body, .. } => reject_oversize_branch_constant(db, body, it),
+        // Any other value (param, ref, call, arithmetic, …) is not a bare constant — leave it.
+        _ => Ok(()),
+    }
 }
 
 /// Emit a FLOAT operation's OPERAND at the operation's width `w` (32 or 64). The float analogue of
