@@ -9047,6 +9047,49 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mistyped_argument_to_a_sum_parameter_offers_a_wrap_in_variant_fix() {
+        // The wrap-in-variant repair at the CALL SITE (not only the `(: n T)` annotation): passing `5 :
+        // Int64` to a `(: o (Option Int64))` parameter offers "wrap in `Some`" → `(Some 5)`. This closes
+        // the argument-position gap (the annotation path already had it); both now route through the shared
+        // `wrap_variant_for`.
+        let d = reject_full(
+            "(module m (def (f (: o (Option Int64))) o) (def (main) (f 5)) (export main))",
+        )
+        .expect("the mistyped argument must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        let fix = d.fix.expect("a wrap fix is carried at the call site");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(Some {})", crate::abi::WRAP_HOLE),
+            "wraps the argument in `Some`"
+        );
+        assert!(!fix.verified, "a wrap is a heuristic (intent guess)");
+        // FORCED-CHOICE ONLY: `(Result Int64 Int64)` given an `Int64` — BOTH `Ok` and `Err` could wrap it
+        // → ambiguous → NO fix (we never guess which construction the author meant).
+        let ambiguous = reject_full(
+            "(module m (def (f (: r (Result Int64 Int64))) r) (def (main) (f 5)) (export main))",
+        )
+        .expect("the mistyped argument must reject");
+        assert!(
+            ambiguous.fix.is_none(),
+            "an ambiguous wrap (Ok vs Err both fit) offers no fix: {:?}",
+            ambiguous.fix
+        );
+        // The OTHER-arm case is unambiguous: `(Result Int64 String)` given `Int64` → only `Ok` fits.
+        let ok_only = reject_full(
+            "(module m (def (f (: r (Result Int64 String))) r) (def (main) (f 5)) (export main))",
+        )
+        .expect("reject");
+        assert_eq!(
+            ok_only.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!("(Ok {})", crate::abi::WRAP_HOLE)).as_deref(),
+            "only Ok's payload matches Int64: {}",
+            ok_only.message
+        );
+    }
+
+    #[test]
     fn a_bare_literal_past_int64_is_malformed_not_out_of_range() {
         // 01-literals "an out-of-range integer literal is a malformed literal": a BARE unannotated literal
         // that overflows the default signed `Int64` — `9223372036854775808` (Int64.max+1),

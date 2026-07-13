@@ -2148,7 +2148,9 @@ fn integer_text_of_float_literal(
 /// A Fix). Derives the name GENERICALLY from the sum's declaration (which variant's payload fits),
 /// never a hard-coded `Some`/`Ok` (the no-keys-outside-the-prelude rule). `None` when `expected` is not
 /// a sum, or no variant's single payload matches — so a wrap is offered only when it would actually
-/// resolve the mismatch. Variants are scanned in declaration order → deterministic.
+/// resolve the mismatch. When TWO variants could each wrap the value — `(Result Int64 Int64)` given an
+/// `Int64`, where both `Ok` and `Err` fit — the choice is AMBIGUOUS and `None` is returned rather than
+/// guess one; a forced (unique) match is required. Variants are scanned in declaration order → deterministic.
 fn wrap_variant_for(db: &mut Db, expected: &Ty, actual: &Ty) -> Option<String> {
     // Both a boxed `Ty::Sum` and an erased single-variant `Ty::Nominal` newtype offer the wrap: `(: n
     // Box)` for `(type Box (Wrap Int64))` suggests `(Wrap n)` exactly as `(: n Option)` suggests
@@ -2162,6 +2164,7 @@ fn wrap_variant_for(db: &mut Db, expected: &Ty, actual: &Ty) -> Option<String> {
         .iter()
         .filter_map(|v| v.ctor.map(|c| (v.name.clone(), c)))
         .collect();
+    let mut hit: Option<String> = None;
     for (name, ctor) in variants {
         // A single-payload variant whose payload agrees with `actual` → wrapping the value in it yields
         // the expected sum. (A multi-payload variant's payload is a tuple, which a bare value never
@@ -2169,10 +2172,13 @@ fn wrap_variant_for(db: &mut Db, expected: &Ty, actual: &Ty) -> Option<String> {
         if let Some(payload) = payload_ty_at_instantiation(db, ctor, expected)
             && payload.agrees_with(actual)
         {
-            return Some(name);
+            if hit.is_some() {
+                return None; // two variants could each wrap it — ambiguous, don't guess
+            }
+            hit = Some(name);
         }
     }
-    None
+    hit
 }
 
 /// The UNDERLYING structural type of the nominal NEWTYPE declared at `decl`, or `None` if `decl` is not
@@ -3114,7 +3120,21 @@ fn check_application(
                 let at = type_of(db, arg);
                 if let Err(reject) = crate::unify::unify(&mut subst, &pt, &at) {
                     trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, "apply: argument conflicts with parameter annotation (type fault)");
-                    out.push(reject);
+                    // A value of the parameter sum's PAYLOAD type where the SUM is expected — `(f 5)` to a
+                    // `(: o (Option Int64))` parameter. Offer the rustc-flagship "wrap in `Some`" repair:
+                    // WRAP the argument in the matching constructor `(Some 5)`. General over any sum (reads
+                    // the expected sum's own variants), forced-choice only (ambiguous → no suggestion), and
+                    // the wrap type-checks in one shot. Heuristic — the intent (which construction) is a guess.
+                    if let Some(variant) = wrap_variant_for(db, &pt, &at) {
+                        out.push(reject.with_fix(Fix::wrap_heuristic(
+                            arg,
+                            format!("({variant} "),
+                            ")",
+                            format!("wrap the value in `{variant}`"),
+                        )));
+                    } else {
+                        out.push(reject);
+                    }
                 }
             }
             // OVER-APPLICATION: more arguments than the lambda's arity, and the body's result is not
@@ -3375,6 +3395,22 @@ fn check_application(
                         // `--verify-fixes` upgrades it to verified on the recompile, so an agent still gets
                         // the machine-applicable signal without the compiler claiming intent it can't know.
                         out.push(reject.with_fix(Fix::replace_heuristic(arg, int_text)));
+                    } else if let Some(variant) = wrap_variant_for(db, &sparam, &sat) {
+                        // A value of the sum's PAYLOAD type where the SUM itself is expected — `5 : Int64`
+                        // where `(Option Int64)` is required, in an OPERATOR/ctor argument position. The
+                        // rustc-flagship repair: WRAP the value in the matching constructor — `(Some 5)`.
+                        // `wrap_variant_for` picks the sum's UNIQUE single-payload variant whose payload
+                        // equals the actual type (general over any sum, not hard-coded to Option/Some — it
+                        // reads the expected sum's own variant set), so the wrap type-checks in one shot.
+                        // HEURISTIC: wrapping resolves the mismatch, but WHICH variant the author meant is a
+                        // guess when a value could be the payload of more than one construction — and an
+                        // ambiguous match returns None, so we only suggest when the choice is forced.
+                        out.push(reject.with_fix(Fix::wrap_heuristic(
+                            arg,
+                            format!("({variant} "),
+                            ")",
+                            format!("wrap the value in `{variant}`"),
+                        )));
                     } else {
                         out.push(reject);
                     }
