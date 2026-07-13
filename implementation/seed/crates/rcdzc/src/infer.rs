@@ -72,6 +72,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Int(_) => Ty::int(),
         Resolved::Bool(_) => Ty::Bool,
         Resolved::Str(_) => Ty::String,
+        Resolved::Bytes(_) => Ty::Bytes,
         Resolved::Float(_) => Ty::Float,
         Resolved::Unit => Ty::Unit,
         // A name IS its bound value's type — follow the ref (a lazy `type_of` on the value occurrence).
@@ -1656,6 +1657,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Bytes(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::TypeVal(_)

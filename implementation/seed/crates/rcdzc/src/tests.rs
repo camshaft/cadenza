@@ -4180,6 +4180,51 @@ mod match_engine {
     }
 
     #[test]
+    fn a_byte_string_literal_is_a_constant_bytes_value() {
+        // `b"…"` in source is a `Ty::Bytes` constant, equal to the `Bytes.of` of the same bytes — it
+        // lowers to a `Core::BytesOf`, so it rides the constant equality/slice/concat fold. Named escapes
+        // (`\n`), `\xNN` hex (incl. a high byte ≥ 0x80), and the empty literal all decode. Each returns a
+        // scalar (1/0) via `if (= …)` so `main` needs no bytes escape.
+        for (body, want) in [
+            (
+                "(module m (def (main) (if (= b\"ABC\" (Bytes.of (list 65 66 67))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= b\"\\x89PNG\" (Bytes.of (list 137 80 78 71))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= b\"A\\nB\" (Bytes.of (list 65 10 66))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= b\"\" (Bytes.of (list))) 1 0)) (export main))",
+                1,
+            ),
+            // a differing byte → false (the literal really carries its bytes, not just Bytes-ness)
+            (
+                "(module m (def (main) (if (= b\"ABC\" (Bytes.of (list 65 66 99))) 1 0)) (export main))",
+                0,
+            ),
+            // usable through the ordinary bytes ops: length of a literal
+            (
+                "(module m (def (main) (Bytes.len b\"ABCD\")) (export main))",
+                4,
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "byte-string literal is a constant Bytes: {body}"
+            );
+        }
+    }
+
+    #[test]
     fn bytes_of_out_of_range_element_is_a_width_error() {
         // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
         // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the
@@ -9409,7 +9454,9 @@ mod stage1 {
             runtime_cache_dir: None,
         };
         match cdz_run::run(&bytes, &opts).expect("run value-eq-in-loop") {
-            cdz_run::Outcome::Value(s) => assert_eq!(s, "3", "find(0) searches up to n where N.I n = N.I 3"),
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "3", "find(0) searches up to n where N.I n = N.I 3")
+            }
             cdz_run::Outcome::Trap(t) => panic!("value-eq-in-loop run trapped: {t}"),
         }
     }

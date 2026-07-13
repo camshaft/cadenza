@@ -413,6 +413,10 @@ pub enum Resolved {
     /// A string literal — its text already normalized to canonical form by the reader (escapes expanded,
     /// NFC). A `Ty::String` constant; folds to a `Core::ConstStr` and escapes as its baked UTF-8 bytes.
     Str(String),
+    /// A byte-string literal `b"…"` — the reader unescaped it to raw bytes. A `Ty::Bytes` constant; lowers
+    /// to a `Core::BytesOf` of its bytes (same shape `(Bytes.of (list …))` builds), so it bakes at escape,
+    /// compares/slices/concats as a constant, and renders back `b"…"`. The companion of `Str` for bytes.
+    Bytes(Vec<u8>),
     /// A FLOATING-POINT literal (`2.0`). Types as `Ty::Float` — DISTINCT from `Ty::Int`, so mixing a
     /// float and an integer in one arithmetic operator is rejected (no silent promotion). Its VALUE does
     /// not yet run: `core_of` DECLINES (there is no float arithmetic / boundary rep yet), so a pure-float

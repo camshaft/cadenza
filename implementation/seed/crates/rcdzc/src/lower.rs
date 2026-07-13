@@ -85,6 +85,22 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Int(v) => Core::ConstInt(v),
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Str(s) => Core::ConstStr(s),
+        // A byte-string literal `b"…"` lowers to a `Core::BytesOf` of its bytes — each a fresh `UInt8`
+        // `Leaf::Int` synthesized into the arena (the SAME shape `(Bytes.of (list …))` and
+        // `String.to-bytes` build), so it bakes at escape, compares/slices/concats as a constant, and
+        // renders back `b"…"`. No runtime op for a constant.
+        Resolved::Bytes(bs) => {
+            let elems: Vec<StructId> = bs
+                .iter()
+                .map(|&byte| {
+                    db.push_atom(crate::ast::Leaf::Int {
+                        value: IntValue::from_i64(byte as i64),
+                        radix: crate::ast::Radix::Dec,
+                    })
+                })
+                .collect();
+            Core::BytesOf { elems }
+        }
         // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
         // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where
@@ -2310,6 +2326,7 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Bytes(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)
@@ -3104,6 +3121,7 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
         Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Bytes(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)
