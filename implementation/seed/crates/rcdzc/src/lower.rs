@@ -2119,6 +2119,8 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
 /// CDZ0210. A constant sum FOLDS to the selected body (like a scalar match); a runtime sum emits a
 /// `Core::MatchSum` tree. A payload binder resolves to a `SumPayload` on its own (resolve Case 6), so an
 /// arm carries only its discriminant + continuation.
+//= spec/capabilities/type-system.md#a-match-is-exhaustive-against-the-sum-type-s-variant-set
+//# The exhaustiveness rule governing a match MUST be checked against the scrutinee sum type's variant set, so that a match covering fewer than all variants is a compile-time rejection determined by that variant set rather than a runtime outcome.
 /// Lower a `match` over a BYTES scrutinee whose arms include `(bin …)` binary patterns (BN3, constant
 /// scrutinee). Each arm is either a `(bin <seg>…)` pattern or a CATCH-ALL (a bare binder / `_`). A `bin`
 /// arm MATCHES iff the segment automaton (`bin_match_decode`) consumes the whole scrutinee AND every

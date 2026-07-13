@@ -170,6 +170,14 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             unify(subst, pa, pb)?;
             unify(subst, ra, rb)
         }
+        // Two records unify (hence compare) only at an IDENTICAL field-name set, two tuples only at equal
+        // arity, two sums only at the same decl (variant set) — a shape mismatch is a `mismatch` (CDZ0203),
+        // rejected as a type error rather than answered `false`. Since `=` unifies its operand types, a
+        // comparison of differing-shape structural values is caught here, not computed.
+        //= spec/capabilities/type-system.md#structural-values-are-comparable-only-when-their-shapes-match
+        //# Two records MUST be comparable only when their sets of field names are identical, two tuples only when their lengths are identical, and two sums only when their variant sets are identical, because values of different shapes have no meaningful equality.
+        //= spec/capabilities/type-system.md#structural-values-are-comparable-only-when-their-shapes-match
+        //# A comparison of two structural values whose shapes differ MUST be rejected by a type-tracking generation as a type error rather than reported as unequal, so that a shape mismatch is caught rather than answered.
         (Ty::Record(fa), Ty::Record(fb)) => {
             if fa.len() != fb.len() {
                 return Err(mismatch(&a, &b));
