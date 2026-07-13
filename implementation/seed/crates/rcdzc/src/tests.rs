@@ -10949,6 +10949,44 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_function_over_a_sum_infers_its_unannotated_parameters() {
+        // A recursive function that MATCHES an unannotated parameter against a user sum's constructors —
+        // `(def (len c) (match c (CNil 0) ((CCons (tuple h t)) (+ 1 (len t)))))` — infers `c : Code` from
+        // the pattern SHAPE (`pattern_implied_ty` threads the variant/tuple pattern onto the param var),
+        // rather than leaving it a free var that grounds to `Any` and declines "annotate its parameters".
+        // A PASS-THROUGH parameter returned by one arm (`ys` in `cat`) is inferred from the sibling arm's
+        // determined result. Both were previously an unannotated-recursive-param decline. `compiles`
+        // means the recursive signatures were determined (no decline); the runtime run is corpus-gated.
+        let compiles = |body: &str| -> bool {
+            let src = format!("(module m {body} (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            out.artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+        };
+        // `len` — a single sum parameter matched against its constructors, inferred from the pattern.
+        assert!(compiles(
+            "(type Code CNil (CCons (Tuple Int64 Code))) \
+             (def (len c) (match c (CNil 0) ((CCons (tuple h t)) (+ 1 (len t))))) \
+             (def (main) (len (CCons (tuple 1 (CCons (tuple 2 CNil))))))"
+        ));
+        // `cat` — TWO sum parameters, one (`xs`) inferred from the pattern, the other (`ys`) inferred as
+        // the pass-through returned by the `CNil` arm (its type borrowed from the `CCons` arm's result).
+        assert!(compiles(
+            "(type Code CNil (CCons (Tuple Int64 Code))) \
+             (def (cat xs ys) (match xs (CNil ys) ((CCons (tuple h t)) (CCons (tuple h (cat t ys)))))) \
+             (def (len c) (match c (CNil 0) ((CCons (tuple h t)) (+ 1 (len t))))) \
+             (def (main) (len (cat (CCons (tuple 1 CNil)) CNil)))"
+        ));
+    }
+
+    #[test]
     fn a_nullary_function_call_invokes_it() {
         // `(def (g) 7)` is a NULLARY function; `(g)` — a zero-argument application — invokes it and
         // yields 7. A nullary def resolves its name to its body value (a bare `g` IS 7), so the call
