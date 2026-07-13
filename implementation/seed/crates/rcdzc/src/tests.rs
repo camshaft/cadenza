@@ -12068,6 +12068,25 @@ mod stage1 {
         }
     }
 
+    /// `run_closure`'s sibling for a program whose `main` takes a single BOOL argument — used to exercise
+    /// a closure that captures a boolean (its lifted body unboxes with `get-bool`). Same composed-runtime
+    /// path; `arg` is rendered as the s-expr boolean literal the entrypoint expects.
+    fn run_closure_bool(src: &str, arg: bool) -> Option<String> {
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let runtime = find_runtime_wasm()?;
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![arg.to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => Some(s),
+            cdz_run::Outcome::Trap(t) => panic!("closure run trapped: {t}"),
+        }
+    }
+
     #[test]
     fn a_function_crosses_a_recursive_boundary_as_a_runtime_closure() {
         // The genuine runtime-closure case (`call_indirect`): a function argument passed to a RECURSIVE
@@ -12151,6 +12170,29 @@ mod stage1 {
               (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g b)) 2) (rec g (- n 1))))) \
             (def (main (: n Int64)) (rec (fn ((: x Int64)) (* x 3)) n)) (export main))";
         assert_eq!(run_closure(src2, 3).unwrap(), "27");
+    }
+
+    #[test]
+    fn a_closure_that_captures_a_boolean_imports_the_ops_its_lifted_body_uses() {
+        // A runtime op used ONLY inside a LIFTED closure body must still be imported. The used-op set that
+        // fixes the module's import layout was walked over the top-level defs ONLY, NOT the lambda-lifted
+        // bodies — so an op no top-level def happens to use, but a closure body does (`get-bool` unboxing a
+        // captured boolean; `box-bool` storing it), resolved to a bogus import index and the module was
+        // INVALID (`call 4294967295`). `collect_module_used_ops` now walks the reached lifted bodies too.
+        // `(fn (x) (if flag (* x 2) x))` captures the boolean `flag`; the lifted body reads it back with
+        // `get-bool`. With flag=true it doubles: apply-sum over 3,2,1 = 6+4+2 = 12. (Before the fix this
+        // compiled to a module wasmtime rejects — `run_closure` would panic on the invalid component.)
+        let src = "(module m \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main (: t Bool)) (apply-sum (fn ((: x Int64)) (if t (* x 2) x)) 3)) \
+            (export main))";
+        let Some(r) = run_closure_bool(src, true) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "12"); // flag=true → 2·(3+2+1) = 12
+        assert_eq!(run_closure_bool(src, false).unwrap(), "6"); // flag=false → 3+2+1 = 6
     }
 
     #[test]

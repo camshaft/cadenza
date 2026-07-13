@@ -128,10 +128,7 @@ pub fn emit(
     // deterministic sorted set, and resolve each to its generated `RtOp`. Empty for a program that uses
     // no runtime op — no import section, no shift → byte-identical to a runtime-free build.
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
-    for &def in &layout.order {
-        let body = def_body(db, def)?;
-        select::collect_used_ops(db, body, &mut used);
-    }
+    collect_module_used_ops(db, layout, &mut used)?;
     let imports: Vec<&runtime_abi::RtOp> = used
         .iter()
         .map(|name| {
@@ -576,10 +573,7 @@ pub fn emit_dwarf(
     // code offsets this DWARF references match that component byte-for-byte. Mirrors `emit`'s ordinary
     // multi-export path.
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
-    for &def in &layout.order {
-        let body = def_body(db, def)?;
-        select::collect_used_ops(db, body, &mut used);
-    }
+    collect_module_used_ops(db, layout, &mut used)?;
     let imports: Vec<&runtime_abi::RtOp> = used
         .iter()
         .map(|name| {
@@ -635,10 +629,7 @@ fn emit_runtime_resource(
     // `t-encode` calls (arr-get + get-int/get-bool per template leaf). The walker ops are added here
     // because they appear only in the synthesized encode body, not in any reachable Core.
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
-    for &def in &layout.order {
-        let body = def_body(db, def)?;
-        select::collect_used_ops(db, body, &mut used);
-    }
+    collect_module_used_ops(db, layout, &mut used)?;
     // The walker's ops: `arr-get` to descend a nested path, and per leaf its `get-*` accessor.
     if tpl.leaves.iter().any(|l| !l.path.is_empty()) {
         used.insert("arr-get");
@@ -887,6 +878,29 @@ fn def_body(db: &Db, def: usize) -> Result<crate::ast::StructId, Reject> {
     db.defs[def]
         .body
         .ok_or_else(|| Reject::decline(format!("definition `{}` has no body", db.defs[def].name)))
+}
+
+/// The runtime ops every emitted function will call, into `used`. Walks BOTH the top-level defs
+/// (`layout.order`) AND the lambda-lifted closure bodies (`layout.lifted`) — a lifted body is emitted as
+/// its own wasm function, so an op used ONLY inside a closure (e.g. `get-bool` unboxing a captured
+/// boolean, which no top-level def happens to use) must be collected too, or its `CallImport` resolves to
+/// a bogus index and the module is invalid. A REACHED lifted body selects its real body; an unreached one
+/// emits an inert stub that calls no runtime op, so only reached bodies are walked.
+fn collect_module_used_ops(
+    db: &mut Db,
+    layout: &Layout,
+    used: &mut std::collections::BTreeSet<&'static str>,
+) -> Result<(), Reject> {
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        select::collect_used_ops(db, body, used);
+    }
+    for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
+        if layout.lifted_reached.get(code).copied().unwrap_or(true) {
+            select::collect_used_ops(db, lifted.body, used);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

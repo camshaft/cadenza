@@ -432,6 +432,29 @@
   (call   main (: 3 Int64))
   (output (: 15 Int64)))
 
+; A closure that captures a BOOLEAN. The captured value's TYPE decides the runtime op that unboxes it
+; from the env cell — an integer capture reads `get-int`, a boolean reads `get-bool`. That op is emitted
+; ONLY inside the LIFTED closure body, never in a top-level def, so the module's import set (which is
+; walked to fix each op's import index) must include ops used only in lifted bodies — else `get-bool`
+; resolves to a bogus index and the component is invalid. This case exercises a boolean capture read
+; back inside the closure: `(fn (x) (if flag (* x 2) x))` closes over the boolean `flag`.
+
+(case "a closure captures a boolean and reads it back inside its lifted body through a recursive HOF"
+  (doc    "`(fn (x) (if flag (* x 2) x))` captures the boolean `flag` from `main`'s scope; the lifted
+           closure body unboxes it with `get-bool` (an op used ONLY in the lifted body, so it must be
+           collected into the import set from the lifted bodies, not just the top-level defs). Passed to
+           the recursive `apply-sum` and applied at each step. With flag=true the closure doubles, so
+           apply-sum over 3,2,1 = 6+4+2 = 12. Pins that a captured boolean round-trips through the env
+           cell and that a lifted-body-only runtime op is imported.")
+  (input  (do
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1)))))
+            (def (main (: flag Bool))
+              (apply-sum (fn ((: x Int64)) (if flag (* x 2) x)) 3))
+            (export main)))
+  (call   main (: true Bool))
+  (output (: 12 Int64)))
+
 ; An UNANNOTATED closure parameter — `(fn (x) …)` with no `(: x T)` — is grounded from its USES in the
 ; body, exactly as a recursive def's unannotated parameter is (`type-system.md`: a parameter's type is
 ; solved from how it is used). `(fn (x) (* x 2))` uses `x` as an integer operand, so `x : Int64` falls
