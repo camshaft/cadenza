@@ -15595,6 +15595,29 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bigint_fixed_int_mix_is_the_numeric_no_promotion_error_cdz0301() {
+        // `(+ (BigInt.of n) 1)` mixes a BigInt with a fixed Int64 — the numeric model's no-silent-
+        // promotion rule, so CDZ0301 "no implicit conversion between numeric types", NOT the generic
+        // CDZ0203 "type mismatch". `BigInt` must count as numeric in `unify::mismatch` (the `unify`
+        // BigInt arm's own comment says it "falls to mismatch … CDZ0301"). This is the 15-rows/BigInt
+        // corpus case `(+ (BigInt.of 1) 1)` → CDZ0301.
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: n Int64)) (+ (BigInt.of n) 1)) (export f))"
+            )
+            .as_deref(),
+            Some("CDZ0301"),
+            "a BigInt/fixed-int mix is the numeric no-promotion error"
+        );
+        // A non-numeric conflict is still the generic CDZ0203 (BigInt did not widen the numeric net).
+        assert_eq!(
+            reject_code("(module m (def (f (: b Bool)) (+ b 1)) (export f))").as_deref(),
+            Some("CDZ0203"),
+            "a Bool/Int mix stays the generic type mismatch"
+        );
+    }
+
+    #[test]
     fn a_unit_scale_distinguishes_type_identity_from_dimensional_compatibility() {
         // F2-0: a unit carries a compile-time SCALE (num/den) alongside its dimension (exponent map).
         // `same_dimension` compares the MAP alone (gates `+`/`compare` compatibility — `metre` and
