@@ -1183,7 +1183,14 @@ fn collect_param_constraints(
             // to a scrutinee that IS a parameter — a scrutinee that is a CALL RESULT (`(List.at xs i)`)
             // carries its own instantiation that this shape-unify would corrupt, so it is left to the
             // ordinary application constraints.
-            let st = arg_ty_in_env(db, scrutinee, env, subst, fresh);
+            // Type the scrutinee. When it is a SCHEME CALL (`(List.at xs i)`), type it INTO the outer
+            // subst (`type_scheme_apply_into`) so its result's generic var LINKS to the argument param's
+            // element (`(Option a)` with `a == xs`'s element); a later constraint on the result — a
+            // `(Some x)` arm's `x` pinned by the sibling `(None _) → 0` — then flows back to `xs`'s element,
+            // solving the recursive list-consumer's parameter. A non-call scrutinee (a param, a fn-param
+            // application) uses `arg_ty_in_env` as before.
+            let st = type_scheme_apply_into(db, scrutinee, env, subst, fresh)
+                .unwrap_or_else(|| arg_ty_in_env(db, scrutinee, env, subst, fresh));
             let scrut_is_param = matches!(
                 resolved_of(db, scrutinee),
                 Resolved::Ref { value } if env.contains_key(&value)
@@ -1201,10 +1208,22 @@ fn collect_param_constraints(
                 resolved_of(db, scrutinee),
                 Resolved::Apply { head, .. } if binder_var_of(db, head, env).is_some()
             );
+            // A SCHEME-CALL scrutinee (`(List.at xs i)`) whose type `type_scheme_apply_into` linked into
+            // the OUTER subst above — `st` is that call's real result instantiation (`(Option a)`, `a`
+            // tied to `xs`'s element), NOT a disconnected clone. So shape-unifying a pattern against it is
+            // SAFE and DESIRABLE: it binds the payload binder (`(Some x)`'s `x`) to the linked `a`, so a
+            // sibling arm's determined type pins `a` and thence the argument param's element. (The old
+            // "a call-result shape-unify corrupts the instantiation" caveat applied to the clone-typed
+            // `st`; with the outer-subst link there is nothing to corrupt — it IS the instantiation.)
+            let scrut_is_scheme_call = matches!(
+                resolved_of(db, scrutinee),
+                Resolved::Apply { head, .. }
+                    if crate::eval::scheme_of(db, head, fresh).is_some()
+            );
             for (pat, _) in &arms {
                 if let Some(pt) = literal_pattern_ty(db, *pat) {
                     let _ = crate::unify::unify(subst, &st, &pt);
-                } else if (scrut_is_param || scrut_is_fn_param_app)
+                } else if (scrut_is_param || scrut_is_fn_param_app || scrut_is_scheme_call)
                     && let Some(pt) = pattern_implied_ty(db, *pat, fresh)
                 {
                     let _ = crate::unify::unify(subst, &st, &pt);
@@ -1254,17 +1273,12 @@ fn collect_param_constraints(
                     // sum's payload `a` not yet pinned) makes this arm a pass-through a sibling's
                     // determined type fixes — solving the generic arg. A binder whose type is already
                     // determined (a concrete-payload sum) is NOT open (falls through, supplies its type).
-                    Resolved::SumPayload { scrutinee, .. }
-                        if matches!(
-                            resolved_of(db, scrutinee),
-                            Resolved::Ref { value } if env.contains_key(&value)
-                        ) || matches!(
-                            resolved_of(db, scrutinee),
-                            Resolved::Param { binder } if env.contains_key(&binder)
-                        ) =>
-                    {
-                        arg_ty_in_env(db, body, env, subst, fresh)
-                    }
+                    // The scrutinee may be a PARAM (`t`) OR a CALL RESULT (`(List.at xs i)`) — `arg_ty_in_env`
+                    // types either through the local subst (the call via its scheme, `(Option ?a)`), so the
+                    // `(Some x) → x` arm of `(match (List.at xs i) ((Some x) x) ((None _) 0))` is open and a
+                    // sibling arm's `0` (Int64) pins `x`, hence `xs`'s element — a recursive list consumer
+                    // that indexes with `List.at` and returns the payload directly.
+                    Resolved::SumPayload { .. } => arg_ty_in_env(db, body, env, subst, fresh),
                     _ => return None,
                 };
                 // Open iff it applies to a bare var — a solved/annotated type supplies, not borrows.
@@ -1507,7 +1521,15 @@ fn arg_ty_in_env(
             let root = match resolved_of(db, scrutinee) {
                 Resolved::Ref { value } => env.get(&value).cloned(),
                 Resolved::Param { binder } => env.get(&binder).cloned(),
-                _ => None,
+                // The scrutinee is a CALL RESULT — `(match (List.at xs k) ((Some h) …))`, where the
+                // `Some` payload binder `h` reads the element out of `List.at`'s `(Option a)` result. Type
+                // the call THROUGH the local subst (`arg_ty_in_env`'s scheme-application arm returns
+                // `(Option ?a)` with `?a` linked to `xs`'s element var), then walk the payload path from
+                // that `Option`. Without this, the binder's type read `Any` and the list's element never
+                // got pinned by the arm body (`(+ h …)`) — the recursive list-consumer declined "projecting
+                // a tuple element of type ?N needs the value heap". The param-scrutinee cases above cover a
+                // binder read directly off a parameter sum; this covers one read off a call's result sum.
+                _ => Some(arg_ty_in_env(db, scrutinee, env, subst, fresh)),
             };
             if let Some(root) = root {
                 return walk_payload_ty(db, subst.apply(&root), &steps, &heads, subst);
@@ -1518,6 +1540,38 @@ fn arg_ty_in_env(
     // Not a parameter reference — its ordinary type. (Reads the type column; a nested op over a param
     // returns the op's result type, which the enclosing unify relates to the param var separately.)
     type_of(db, arg)
+}
+
+/// Type a scheme APPLICATION (`(List.at xs i)`) into the CALLER's `subst` — like `arg_ty_in_env`'s
+/// scheme arm, but the argument unifications persist in the passed `subst` instead of a discarded clone.
+/// Instantiate the head's `(meta t)` scheme with fresh vars, then unify each argument's local-subst type
+/// into the curried parameter positions; the RESULT type shares the same fresh vars, so a param
+/// argument's type var LINKS to the result (`(List.at xs i)` → `(Option a)` with `a == xs`'s element).
+/// Returns `None` when the head has no scheme or is under-applied. The persisting link is what lets a
+/// later constraint on the result (a `(Some x)` arm's `x` pinned by a sibling arm) flow back to the
+/// argument's parameter (`xs`'s element), which the clone-based `arg_ty_in_env` cannot do.
+fn type_scheme_apply_into(
+    db: &mut Db,
+    node: StructId,
+    env: &crate::fxhash::FxHashMap<StructId, Ty>,
+    subst: &mut Subst,
+    fresh: &mut Fresh,
+) -> Option<Ty> {
+    let Resolved::Apply { head, args } = resolved_of(db, node) else {
+        return None;
+    };
+    let scheme = crate::eval::scheme_of(db, head, fresh)?;
+    let mut cur = crate::unify::instantiate(&scheme, fresh);
+    for &arg in args.iter() {
+        let applied = subst.apply(&cur);
+        let Ty::Fn(param, result) = applied else {
+            return None; // under-applied / not a function chain
+        };
+        let at = arg_ty_in_env(db, arg, env, subst, fresh);
+        let _ = crate::unify::unify(subst, &param, &at);
+        cur = *result;
+    }
+    Some(subst.apply(&cur))
 }
 
 /// Walk `root` (a sum's LOCAL-subst instantiation) down a `SumPayload` access path — the same descent

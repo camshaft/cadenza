@@ -357,6 +357,7 @@ pass	a let-bound variable passed to a let-bound lambda resolves at the call site
 pass	a linear non-tail recursion over a non-associative operator preserves its exact result
 pass	a list annotated with the wrong element type is rejected
 pass	a list built at run time by a push-loop escapes to the host
+pass	a list built by a recursive push-loop is then iterated by index
 pass	a list built by a runtime-length loop has that many elements
 pass	a list chosen by a runtime if is length-measured without emitting invalid wasm
 pass	a list compound export under a non-main name crosses to the host
@@ -365,6 +366,7 @@ pass	a list mixing integer and float elements is a type error
 pass	a list of maps with different keys is homogeneous, not a type error
 pass	a list of records with different field sets is a type error
 pass	a list of tuples with different arities is a type error
+pass	a list value consumed by two operations in one function is not freed early
 pass	a list with a runtime element is returned as a program result
 pass	a list-concatenating helper threads lists through a call
 pass	a literal in a let binder is refutable and rejected
@@ -421,6 +423,7 @@ pass	a module may nest three deep
 pass	a module nested in a module projects as a nested record field
 pass	a module value definition registers a reachable export field
 pass	a module with two definitions of the same name is rejected
+pass	a multi-argument call node is evaluated by iterating its payload arg list
 pass	a multi-argument closure among distinct-signature exports
 pass	a multi-argument closure round-trips through a consumer
 pass	a multi-export set of parameterized capturing closures is driven per export
@@ -1469,16 +1472,13 @@ todo	a default-integer pragma makes a bare literal take the declared integer typ
 todo	a factorial that overflows the integer type traps through the recursion
 todo	a final unquote-splice binds the remaining elements as a list
 todo	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
-todo	a list built by a recursive push-loop is then iterated by index
 todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
-todo	a list value consumed by two operations in one function is not freed early
 todo	a literal subterm in a quote pattern matches by equality
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a match on an uninhabited scrutinee is exhaustive with zero arms
 todo	a module's delegated capability is reachable as metadata, not as an export
-todo	a multi-argument call node is evaluated by iterating its payload arg list
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested unquote pattern matches a sub-AST by shape
