@@ -144,10 +144,10 @@ fn parse_spanned(
         Format::Ml => {
             let parsed = cadenza_syntax::parser::read_ml(text);
             if let Some(err) = parsed.errors.first() {
-                return Err(format!(
-                    "ML parse error at byte {}: {}",
-                    err.span.start, err.message
-                ));
+                // Drop the raw "at byte N" (a byte offset the editor can't place); the caller that
+                // renders this as a diagnostic sets the source RANGE from the error's span
+                // (`ml_parse_error_span`), so the guide can underline the exact syntax mistake.
+                return Err(err.message.clone());
             }
             // Canonicalize + remap so the span table is keyed by the ids the compiler reports (see the
             // doc above) — the same fix `cdz`'s `load_program_spanned` applies for the ML surface.
@@ -160,6 +160,21 @@ fn parse_spanned(
             .map(|b| (b, None))
             .map_err(|e| e.0),
     }
+}
+
+/// The UTF-8 byte range `[from, to)` of the FIRST ML parse error in `text`, or `None` when it parses
+/// cleanly / is not the ML surface. The `compile` entry uses this to give a parse-error diagnostic a
+/// source RANGE (so the guide editor underlines the mistake) rather than a positionless `(0, 0)`. Cheap
+/// enough to re-read here: it runs only on the error path, when a component was not produced anyway.
+fn ml_parse_error_span(text: &str, from: Format) -> Option<(u32, u32)> {
+    if from != Format::Ml {
+        return None;
+    }
+    let parsed = cadenza_syntax::parser::read_ml(text);
+    parsed
+        .errors
+        .first()
+        .map(|e| (e.span.start as u32, e.span.end as u32))
 }
 
 /// Decode `ast_bytes` into a `Db` and run one sidecar `Query`, returning its result artifact's bytes
@@ -189,6 +204,10 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
     let (ast_bytes, spans) = match parse_spanned(text, from) {
         Ok(pair) => pair,
         Err(msg) => {
+            // A parse failure is a codeless error diagnostic — carry the error's SOURCE RANGE (from the
+            // ML parser's span) so the guide editor underlines the exact syntax mistake, not a
+            // positionless (0, 0). (The message no longer embeds the byte offset — the range carries it.)
+            let (from_b, to_b) = ml_parse_error_span(text, from).unwrap_or((0, 0));
             return Ok(CompileResult {
                 component: None,
                 diagnostics: vec![Diagnostic {
@@ -196,8 +215,8 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
                     code: String::new(),
                     message: msg,
                     node: u32::MAX,
-                    from: 0,
-                    to: 0,
+                    from: from_b,
+                    to: to_b,
                     fix_replacement: String::new(),
                     fix_from: 0,
                     fix_to: 0,

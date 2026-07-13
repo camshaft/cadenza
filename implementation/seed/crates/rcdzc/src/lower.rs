@@ -1318,7 +1318,33 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     db.reparent(rewritten, Some(id), db.child_ix_of(id) as u32);
                     core_of(db, rewritten)
                 }
-                None => Core::Poison(Reject::decline(crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE)),
+                None => {
+                    // `reduce_handle` failed. When the handle's EFFECT NAME is UNBOUND (`handle Nope …`),
+                    // every arm op `(. Nope op)` projects an unbound name — a CDZ0101 already reported
+                    // authoritatively at the name — and the fold could never run, so the generic "not yet
+                    // reducible" decline here is a SHADOW of that CDZ0101 (a second `error:` for one root
+                    // cause). Detect it by lowering an arm op whose `(meta effect-op)` is absent and
+                    // checking its poison is a CDZ0101; if so, propagate THAT poison (it dedups against the
+                    // anchored unbound-name copy) so `handle Nope …` reports ONE error carrying the
+                    // did-you-mean fix. An UNDECLARED op on a KNOWN effect (`gett` on `E`) is left to its
+                    // CDZ0403 (whose decline M2's `dedup_faults` already suppresses) — lowering that arm op
+                    // would surface the weaker raw member-access CDZ0201 instead. A handle whose arms all
+                    // resolve but still can't fold (a real cross-function / non-tail resume) keeps the
+                    // honest decline (the corpus expects it).
+                    let unbound_arm_op = arms.iter().map(|a| a.op).find(|&op| {
+                        crate::eval::effect_op_of(db, op).is_none()
+                            && matches!(
+                                core_of(db, op),
+                                Core::Poison(ref r) if r.code == Some(crate::diag::Code::Unbound)
+                            )
+                    });
+                    match unbound_arm_op {
+                        Some(op) => core_of(db, op),
+                        None => Core::Poison(Reject::decline(
+                            crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE,
+                        )),
+                    }
+                }
             }
         }
         // A `(host (E…) body)` DELEGATES its listed effects to the component boundary (an entrypoint's
@@ -5869,6 +5895,16 @@ fn arith_identity(
         // constant — `(& x M)` returns `lc` (x) when `rc` (M) masks x's whole width; symmetric for `(& M x)`.
         Prim::BitAnd if is_full_mask_for(db, lhs, rc) => Some(lc.clone()),
         Prim::BitAnd if is_full_mask_for(db, rhs, lc) => Some(rc.clone()),
+        // NESTED-MASK COLLAPSE: `(& (& v C1) C2)` → `(& v (C1 & C2))`. AND is associative and total
+        // (never traps), so masking twice with constants is one mask by their bitwise-AND — one fewer op,
+        // and the folded constant often enables downstream range folds (`(& (& x 255) 15)` → `(& x 15)`,
+        // range [0,15]). `v` keeps its own traps (it stays the operand). Either the LEFT or RIGHT outer
+        // operand may be the inner `(& v C1)`; the other must be the constant `C2`. Guarded on the shape
+        // (via `nested_mask_collapse`, which returns `None` when it does not apply) so the same-operand
+        // `& a a` fold below still fires. Verified value-identical: `(a & C1) & C2 == a & (C1 & C2)`.
+        Prim::BitAnd if let Some(folded) = nested_mask_collapse(db, lhs, lc, rhs, rc) => {
+            Some(folded)
+        }
         // `x << 0` / `x >> 0` → x (a zero shift COUNT is a no-op; count is the right operand).
         Prim::Shl | Prim::Shr if is(rc, 0) => Some(lc.clone()),
         // `(>>ᵤ x k)` → 0 when the LOGICAL right shift drops ALL of `x`'s significant bits — its provable
@@ -5909,6 +5945,65 @@ fn arith_identity(
         Prim::BitAnd | Prim::BitOr if core_equiv(db, lhs, rhs) => Some(lc.clone()),
         _ => None,
     }
+}
+
+/// The NESTED-MASK COLLAPSE for an outer `&` whose operands are `(lhs, rhs)` (cores `lc`/`rc`): when one
+/// operand is `(& v C1)` and the OTHER is a constant `C2`, returns `(& v (C1 & C2))` — one mask instead
+/// of two. `None` when neither shape matches (so the caller's later folds still fire). AND is total, so
+/// no trap is dropped; `v` stays the operand (its own traps preserved). The folded constant `C1 & C2` is
+/// a fresh `Leaf::Int` atom, lowered lazily to `Core::ConstInt` and grounded to the op width at selection.
+fn nested_mask_collapse(
+    db: &mut Db,
+    lhs: StructId,
+    lc: &Core,
+    rhs: StructId,
+    rc: &Core,
+) -> Option<Core> {
+    // The `(v, C1)` of an inner `(& v C1)` node, C1 a constant on either side.
+    let nested_and_const = |db: &mut Db, inner: StructId| -> Option<(StructId, i64)> {
+        let Core::Arith {
+            op: Prim::BitAnd,
+            lhs: il,
+            rhs: ir,
+        } = core_of(db, inner)
+        else {
+            return None;
+        };
+        match (core_of(db, il), core_of(db, ir)) {
+            (Core::ConstInt(c), _) => c.to_i64().map(|c| (ir, c)),
+            (_, Core::ConstInt(c)) => c.to_i64().map(|c| (il, c)),
+            _ => None,
+        }
+    };
+    let combine = |db: &mut Db, inner: StructId, outer_c: i64| -> Option<Core> {
+        let (v, inner_c) = nested_and_const(db, inner)?;
+        let folded = inner_c & outer_c;
+        let fc = db.push_atom(crate::ast::Leaf::Int {
+            value: IntValue::from_i64(folded),
+            radix: crate::ast::Radix::Dec,
+        });
+        trace!(target: "rcdzc::fold", inner_c, outer_c, folded, "nested-mask collapse (& (& v C1) C2) → (& v (C1&C2))");
+        Some(Core::Arith {
+            op: Prim::BitAnd,
+            lhs: v,
+            rhs: fc,
+        })
+    };
+    // `(& (& v C1) C2)` — inner on the LEFT, constant C2 on the RIGHT.
+    if let Core::ConstInt(c2) = rc
+        && let Some(c2) = c2.to_i64()
+        && let Some(folded) = combine(db, lhs, c2)
+    {
+        return Some(folded);
+    }
+    // `(& C2 (& v C1))` — constant C2 on the LEFT, inner on the RIGHT.
+    if let Core::ConstInt(c2) = lc
+        && let Some(c2) = c2.to_i64()
+        && let Some(folded) = combine(db, rhs, c2)
+    {
+        return Some(folded);
+    }
+    None
 }
 
 /// Whether masking the value at `val` with the constant `mask_core` is a NO-OP — i.e. `val & M == val`.
@@ -6995,6 +7090,16 @@ pub(crate) fn divisor_can_be_neg_one(db: &mut Db, id: StructId) -> bool {
 /// or possibly-negative range → `false` (keep the bias).
 pub(crate) fn value_provably_nonneg(db: &mut Db, id: StructId) -> bool {
     matches!(value_range(db, id), Some((lo, _)) if lo >= 0)
+}
+
+/// Whether the value at `id` provably lies within the inclusive `[lo, hi]` — its `value_range` is known
+/// AND fully contained. Consults the same lattice as the guard-elision checks (a mask, an unsigned type,
+/// a flow-refinement). Used by `emit_wrap`'s truncation-elision: a `wrap` to width N is a no-op when the
+/// operand already lies in the target's `[min_N, max_N]` (an unsigned target's `[0, 2^N-1]`), even when
+/// the operand's TYPE is wider — `UInt8.wrap(& x 255)` needs no re-mask. Conservative: an unknown range,
+/// or one that exceeds either bound, → `false` (keep the truncation).
+pub(crate) fn value_range_within(db: &mut Db, id: StructId, lo: i64, hi: i64) -> bool {
+    matches!(value_range(db, id), Some((vlo, Some(vhi))) if vlo >= lo && vhi <= hi)
 }
 
 /// Structurally compare two CONSTANT compound values at `a`/`b`, returning `Some(true/false)` if BOTH are

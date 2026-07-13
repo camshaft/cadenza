@@ -750,9 +750,14 @@ impl Db {
             }
         }
         let (parent, child_ix) = parent_index(&ast);
+        // The set of nested-module SYNTHESIZED RECORD ids — each is a scope (its members are mutually
+        // visible), so the scope-skip index must land the walk on it (see `is_binding_candidate`). Built
+        // once here from `modules` (all `synth` are `Some` post-synthesis); an O(1) membership probe.
+        let module_records: crate::fxhash::FxHashSet<StructId> =
+            modules.iter().filter_map(|m| m.synth).collect();
         // Per-node lexical-scope skip pointer (nearest binding-candidate ancestor + entry child) so the
         // scope walk hops over non-binding forms — O(1) per binder instead of O(nesting depth).
-        let scope_skip = build_scope_skip(&ast, &parent);
+        let scope_skip = build_scope_skip(&ast, &parent, &module_records);
         // Index each SCOPE FORM's parameter binders by name (last-wins), so `binder_in`'s per-reference
         // "does this scope declare `name`?" probe is O(1) rather than an O(params) signature scan.
         let scope_binders = build_scope_binders(&ast);
@@ -1257,6 +1262,20 @@ impl Db {
             .and_then(|m| m.synth)
     }
 
+    /// The DECLARATION occurrence (`(module …)` form) whose synthesized record IS `record`, if any — the
+    /// reverse of [`module_synth_by_occ`]. A module's members are mutually visible in each other's bodies,
+    /// and the synthesized record is the join point every member body's parent chain ascends through (a
+    /// member's synth field lambda reuses the member body, so the body's ancestors lead up to the record);
+    /// `resolve::binder_in` uses this to recognize the record as a scope and resolve a bare sibling
+    /// reference against the module's `(def …)` members. `None` if `record` is not a module's synth record
+    /// (a sum/effect synth record, a user record, or any other node).
+    pub fn module_by_synth_record(&self, record: StructId) -> Option<StructId> {
+        self.modules
+            .iter()
+            .find(|m| m.synth == Some(record))
+            .map(|m| m.occ)
+    }
+
     /// The constructor-field occurrence a BARE variant name denotes — `NLit` for `(type Node (NLit …) …)`,
     /// the same field a qualified `(. Node NLit)` projects. A nullary variant used as a VALUE may be
     /// written bare (`NNil`, not `(. Node NNil)` — `core-semantics.md` §A Sum Type Constructor Is A
@@ -1379,7 +1398,23 @@ fn parent_index(ast: &Arenas) -> (Vec<Option<StructId>>, Vec<u32>) {
 /// THIS name/child just returns `None` from `binder_in`, and the walk continues), but it must never
 /// UNDER-approximate (skipping a real binder would mis-resolve). Kept in lockstep with `binder_in`'s
 /// cases — a new binding form must be added here too. `parent` is the precomputed parent index.
-fn is_binding_candidate(ast: &Arenas, parent: &[Option<StructId>], form: StructId) -> bool {
+fn is_binding_candidate(
+    ast: &Arenas,
+    parent: &[Option<StructId>],
+    module_records: &crate::fxhash::FxHashSet<StructId>,
+    form: StructId,
+) -> bool {
+    // A nested module's SYNTHESIZED RECORD is a scope: its `(def …)` members are mutually visible in each
+    // other's bodies (`resolve::binder_in`'s Case R / `module_sibling_binds`). The record is the join point
+    // every member body's parent chain ascends through — a member's synth field lambda reuses the original
+    // member body, so `parent_index` re-parents that body under the synth `fn`, and the field-pair's parent
+    // is the record — so without the record as a candidate the scope-skip index would hop PAST it and Case R
+    // would never fire, spuriously unbinding a bare sibling reference (the `is_binding_candidate` trap:
+    // every binding form MUST be listed here). Checked first (an O(1) set probe); the record is a
+    // `("record" …)` string-headed node with no head NAME, so the head/parent cases below never match it.
+    if module_records.contains(&form) {
+        return true;
+    }
     // By head: a `let`/`fn`/`def` form, or a match-arm `(guard <binder> <cond>)` — the guard binds the
     // pattern's binder in scope for the guard COND (`binder_in`'s Case 5g / `guard_cond_binds`). Without
     // the guard as a candidate the scope-skip index would hop PAST it and Case 5g would never fire, so a
@@ -1447,6 +1482,7 @@ fn is_binding_candidate(ast: &Arenas, parent: &[Option<StructId>], form: StructI
 fn build_scope_skip(
     ast: &Arenas,
     parent: &[Option<StructId>],
+    module_records: &crate::fxhash::FxHashSet<StructId>,
 ) -> Vec<Option<(StructId, StructId)>> {
     let n = ast.structure.len();
     let mut skip: Vec<Option<(StructId, StructId)>> = vec![None; n];
@@ -1476,7 +1512,7 @@ fn build_scope_skip(
         while let Some(node) = stack.pop() {
             let entry = match parent[node.0 as usize] {
                 Some(p) => {
-                    if is_binding_candidate(ast, parent, p) {
+                    if is_binding_candidate(ast, parent, module_records, p) {
                         Some((p, node)) // parent is the nearest candidate; enter it through `node`
                     } else {
                         skip[p.0 as usize] // inherit parent's candidate + its entry child

@@ -1355,6 +1355,76 @@ fn a_narrowing_wrap_of_a_wider_wrap_elides_the_inner_wrap() {
     }
 }
 
+/// `T.wrap x` where the OPERAND'S VALUE (not just its type) provably fits the target width — the
+/// truncation mask / sign-extend is redundant and elided, even when the operand's TYPE is wider.
+/// `UInt8.wrap(& x 255)`: the operand is Int64-typed but its value ∈ [0,255], so the trailing `& 255`
+/// is a no-op. Consults the value-range lattice (a mask, a flow-refinement). VALUE parity preserved.
+#[test]
+fn a_wrap_of_an_in_range_value_elides_the_truncation() {
+    use crate::backend::wasm::lir::Lir;
+    use crate::backend::wasm::select::select_function;
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let code_of = |src: &str| -> Vec<Lir> {
+        let full = format!(
+            "(module m (def (f {}) {}) (def (main) 0) (export main))",
+            "(: x Int64)", src
+        );
+        let mut db = crate::db::Db::load(parse(&full));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("f");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let bb = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (bb, crate::infer::type_of(&mut db, bb))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        select_function(&mut db, body, &ps, &layout)
+            .expect("select")
+            .code
+    };
+    // UInt8.wrap of a [0,255] value: the operand's `& 255` is at the i64 source width (`I64And`); the
+    // wrap's OWN truncation mask would be an `i32.and` AFTER `i32.wrap_i64` — and it is ELIDED (zero
+    // `I32And`). (A bare `UInt8.wrap x` DOES emit that `i32.and`; see `bare` below.)
+    let masked = code_of("(: ((. UInt8 wrap) (& x 255)) UInt8)");
+    assert!(
+        !masked.iter().any(|i| matches!(i, Lir::I32And)),
+        "the wrap's redundant i32 truncation mask is elided; got {masked:?}"
+    );
+    // Int8.wrap of a [0,7] value (fits [-128,127]): the sign-extend pair (shl/shr_s) is elided.
+    let signed = code_of("(: ((. Int8 wrap) (& x 7)) Int8)");
+    assert!(
+        !signed.iter().any(|i| matches!(i, Lir::I32Shl)),
+        "a value in [0,7] fits Int8 — no sign-extend reshape; got {signed:?}"
+    );
+    // SAFETY: a wrap of a NOT-in-range value keeps the truncation — the `i32.and` after `i32.wrap_i64`.
+    let bare = code_of("(: ((. UInt8 wrap) x) UInt8)");
+    assert!(
+        bare.iter().any(|i| matches!(i, Lir::I32And)),
+        "a bare narrowing wrap keeps its i32 truncation mask; got {bare:?}"
+    );
+    // VALUE PARITY — the elided-mask wrap computes the same as the full one.
+    let mk = |src: &str| {
+        let full = format!("(module m (def (f (: x Int64)) {src}) (export f))");
+        compile_component(&crate::codec::encode(&parse(&full))).expect("compile")
+    };
+    let b = mk("(: ((. UInt8 wrap) (& x 255)) UInt8)");
+    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::S64(300)]), 44); // 300 & 255 = 44
+    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::S64(255)]), 255);
+    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::S64(-1)]), 255); // -1 & 255 = 255
+    let s = mk("(: ((. Int8 wrap) (& x 7)) Int8)");
+    assert_eq!(run_returns_with::<i8>(&s, "f", &[Val::S64(5)]), 5);
+    assert_eq!(run_returns_with::<i8>(&s, "f", &[Val::S64(7)]), 7);
+}
+
 /// A reference buried under many NON-binding forms still resolves to its outer binder — the
 /// correctness guard for the lexical-scope SKIP index (`Db::scope_skip`) that hops over the non-binding
 /// spine (record/`if`/application) instead of visiting every enclosing form. A wrong skip pointer (or
@@ -5838,6 +5908,92 @@ mod runtime_ops {
     }
 
     #[test]
+    fn nested_masks_collapse_to_a_single_and() {
+        // `(& (& v C1) C2)` → `(& v (C1 & C2))` — AND is associative and total, so two constant masks are
+        // one mask by their bitwise-AND. Pins the collapse at the Lir level (exactly ONE `and`) and the
+        // value parity, and checks the same-operand `& a a` fold still fires (the collapse is guarded).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let and_count = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I32And | Lir::I64And))
+                .count()
+        };
+        // `(& (& x 255) 15)` → one `and` (255 & 15 = 15).
+        assert_eq!(
+            and_count(&lir("(: x Int64)", "(: (& (& x 255) 15) Int64)")),
+            1,
+            "two masks → one"
+        );
+        // Constant on the LEFT of the outer `&`.
+        assert_eq!(
+            and_count(&lir("(: x Int64)", "(: (& 15 (& x 255)) Int64)")),
+            1,
+            "left-const → one"
+        );
+        // A triple nest collapses all the way to one `and`.
+        assert_eq!(
+            and_count(&lir("(: x Int64)", "(: (& (& (& x 255) 63) 15) Int64)")),
+            1,
+            "triple mask → one"
+        );
+        // The same-operand fold is NOT shadowed by the collapse guard: `(& x x)` → `x` (no `and`).
+        assert_eq!(
+            and_count(&lir("(: x Int64)", "(: (& x x) Int64)")),
+            0,
+            "& a a still folds to a"
+        );
+
+        // VALUE PARITY — subset and NON-subset mask pairs.
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (& (& x 255) 15) Int64)", &[Val::S64(58)]),
+            10
+        ); // 58&15
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (& (& x 255) 15) Int64)", &[Val::S64(-1)]),
+            15
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (& (& x 12) 10) Int64)", &[Val::S64(15)]),
+            8
+        ); // 15 & (12&10=8)
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (& 15 (& x 255)) Int64)", &[Val::S64(58)]),
+            10
+        );
+        // Narrow (Int8): the folded constant grounds to the narrow width.
+        assert_eq!(
+            run::<i8>("(: x Int8)", "(: (& (& x 15) 7) Int8)", &[Val::S8(13)]),
+            5
+        ); // 13&15&7 = 5
+    }
+
+    #[test]
     fn a_mask_covering_a_shifted_values_range_is_elided() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;
@@ -7420,6 +7576,38 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0203"),
             "a non-unit argument is rejected, not silently dropped"
+        );
+    }
+
+    #[test]
+    fn a_module_member_calls_a_sibling_export_by_name() {
+        // 11-modules "a module function calls a sibling export by name": a module's `(def …)` members are
+        // MUTUALLY visible in each other's bodies (not sequential like a do-block) — the synthesized record
+        // is the join point each member body's parent chain ascends through, and `resolve::binder_in`'s
+        // Case R resolves a bare sibling reference against ALL the module's members. `f` calls its sibling
+        // `dbl`; f(3) = dbl(3) + 1 = 7. The reference is a captured free var of `f`'s body (its binding is
+        // OUTSIDE the lambda), so `pin_free_vars`/`ref_binder` pin the sibling `Lambda` before β-reduction,
+        // else the copied body would re-resolve it against an orphan scope (a spurious CDZ0101).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module lib (def (dbl x) (* x 2)) (def (f x) (+ (dbl x) 1))) ((. lib f) 3))) (export main))"
+                ),
+                "main"
+            ),
+            7
+        );
+        // The DO-LOCAL analogue is the same free-var-capture fix (a do-local `def` function referenced by a
+        // sibling do-local `def` function): `dbl` binds lexically to a `Lambda`, so it must pin exactly as a
+        // module sibling does. (A do-local VALUE def already worked — it resolves to a `Ref`, always pinned.)
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (def (dbl x) (* x 2)) (def (f x) (+ (dbl x) 1)) (f 3))) (export main))"
+                ),
+                "main"
+            ),
+            7
         );
     }
 
@@ -14918,6 +15106,43 @@ mod stage1 {
                 .iter()
                 .any(|d| d.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE),
             "the not-reducible decline must not accompany the coded handler reject"
+        );
+    }
+
+    #[test]
+    fn a_handle_with_an_unbound_effect_name_reports_one_error_not_a_shadowing_decline() {
+        // `handle Nope …` where `Nope` is not a declared effect: the unbound name is CDZ0101 (with a
+        // did-you-mean fix), and the handle can't fold → the emit path would ALSO return the "not yet
+        // reducible" decline. That decline is a consequence of the unbound effect, not an independent
+        // limitation — the lower path detects the arm op is an unbound name and propagates that CDZ0101
+        // (which dedups) instead of the decline, so the fault is ONE primary error carrying the fix.
+        let src = "(do (effect E (op get (-> Unit Int64))) \
+                   (def (main) (handle Nope 0 ((get (u) s (resume s s))) 42)) (export main))";
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "an unbound effect name = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0101"));
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE),
+            "the not-reducible decline must not shadow the unbound-effect CDZ0101"
         );
     }
 
@@ -24326,6 +24551,33 @@ mod closure_host_resource {
             .expect("distinct-signature closure-resource core module validates");
     }
 
+    /// DISTINCT-SIGNATURE END-TO-END (the whole COMPILER pipeline): a program exporting closures of TWO
+    /// different signatures (`inc : (-> Int64 Int64)`, `isz : (-> Int64 Bool)`) compiles to a VALID
+    /// component with two resource types (`t0`/`t1`), each with its own `make-<name>`/`call-g<n>`. Pins
+    /// that `emit_distinct_sig_resource` → `distinct_sig_resource_core_module` →
+    /// `assemble_distinct_sig_resource` produces a wasmtime-parseable component (the earlier cuts hit two
+    /// bugs: a wrong `import_base` — off by 2*(G-1) — and a NON-kebab `call-0` extern name). `Component::new`
+    /// = wasmtime's structural validator, the semantic floor. Runnable e2e is witnessed by the corpus.
+    #[test]
+    fn a_distinct_signature_multi_export_is_a_valid_component() {
+        use crate::testkit::parse;
+        let src = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
+                   (def (isz) (fn ((: x Int64)) (= x 0))) (export inc) (export isz))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::new(&engine, &program)
+            .expect("a distinct-signature multi-export must produce a VALID component");
+        // The interface publishes two resource types + per-signature make/call — confirm it's the closure
+        // interface and imports the runtime (the cells are heap values).
+        assert!(
+            cdz_run::required_runtime(&program)
+                .expect("valid")
+                .is_some(),
+            "a distinct-signature closure program imports the value-heap runtime"
+        );
+    }
+
     /// C-HOST-1 END-TO-END (the whole COMPILER pipeline): a real `(def (main) (fn (x) (+ x 1)))` program
     /// compiles to a closure-resource component (`emit_closure_resource` → `closure_resource_core_module`
     /// → `assemble_closure_resource`), and the HOST calls it — `make()` → closure handle, `call(handle, 5)`
@@ -24696,33 +24948,27 @@ mod closure_host_resource {
         );
     }
 
-    /// MULTI-EXPORT closures of the SAME signature now COMPILE (the emit path routes them to
-    /// `emit_multi_closure_resource`); the two REMAINING multi-export shapes still decline cleanly, naming
-    /// what is unsupported: (a) closure exports of DIFFERENT signatures (would need N resource types), and
-    /// (b) a closure exported ALONGSIDE a non-closure export (would need to compose two envelopes). Pins
-    /// both the newly-working case and the honest Todos for the later slices.
+    /// MULTI-EXPORT closures now COMPILE for BOTH the same-signature (one resource type, shared `call`) and
+    /// the DISTINCT-signature (N resource types, per-group `call-g<n>`) shapes. The only REMAINING
+    /// multi-export shape that declines is a closure exported ALONGSIDE a non-closure export (composing the
+    /// resource envelope with the plain scalar boundary is a later increment). Pins the two working cases +
+    /// the honest Todo.
     #[test]
-    fn multi_export_closures_compile_when_same_signature_else_decline() {
+    fn multi_export_closures_compile_same_or_distinct_signature_else_decline() {
         use crate::testkit::parse;
-        // Same signature → COMPILES.
+        // Same signature → COMPILES (shared call).
         let same = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
                     (def (triple) (fn ((: x Int64)) (* x 3))) (export inc) (export triple))";
         crate::compile::compile_component(&crate::codec::encode(&parse(same)))
             .expect("two same-signature closure exports compile (multi-export path)");
 
-        // DIFFERENT signatures (one `(-> Int64 Int64)`, one `(-> Int64 Bool)`) → decline naming the slice.
+        // DIFFERENT signatures → now COMPILES (N resource types, per-group call).
         let diff = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
                     (def (isz) (fn ((: x Int64)) (= x 0))) (export inc) (export isz))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(diff)))
-            .expect_err("closure exports of different signatures must DECLINE");
-        assert!(
-            err.message.contains("DIFFERENT signatures") && err.code.is_none(),
-            "expected the distinct-signature multi-export decline, got: {:?} / {}",
-            err.code,
-            err.message
-        );
+        crate::compile::compile_component(&crate::codec::encode(&parse(diff)))
+            .expect("distinct-signature closure exports compile (distinct-sig path)");
 
-        // A closure ALONGSIDE a non-closure export → decline naming the slice.
+        // A closure ALONGSIDE a non-closure export → still declines naming the slice.
         let mixed = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
                      (def (two) 2) (export inc) (export two))";
         let err = crate::compile::compile_component(&crate::codec::encode(&parse(mixed)))
