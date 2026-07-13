@@ -523,7 +523,6 @@
   (doc    "`(Unit.in byte-per-second (Qty.of 1.0 mbps))` converts 1 megabit-per-second to bytes-per-
            second: a megabit is 10^6 bits = 10^6/8 bytes, so 1 mbps = 125000 byte/s. `mbps` is a named
            unit of the DERIVED dimension `information/time`, converting to its reference `byte/second`.")
-  (needs  units-of-measure)
   (input  (Qty.value (Unit.in (Unit.of #"byte-per-second") (Qty.of 1.0 (Unit.of #"mbps")))))
   (output (: 125000.0 Float64)))
 
@@ -532,7 +531,6 @@
            a computed rate and an `mbps` quantity combine and convert: (250000 byte / 1 s) + 1 mbps =
            250000 + 125000 = 375000 byte/s. Pins that a NAMED derived-dimension unit and a DERIVED-by-
            arithmetic dimension are one free-abelian-group element, mixing and converting freely.")
-  (needs  units-of-measure)
   (input  (Qty.value (Unit.in (Unit.of #"byte-per-second")
                        (+ (/ (Qty.of 250000.0 (Unit.of #"byte")) (Qty.of 1.0 (Unit.of #"second")))
                           (Qty.of 1.0 (Unit.of #"mbps"))))))
@@ -543,6 +541,5 @@
            — different dimensions — so it is CDZ0501. A named DERIVED-dimension unit obeys the same
            dimensional safety as an atomic one: its dimension is the exponent map `{byte:1, second:-1}`,
            incompatible with `{metre:1}`.")
-  (needs  units-of-measure)
   (input  (+ (Qty.of 1.0 (Unit.of #"mbps")) (Qty.of 1.0 (Unit.of #"metre"))))
   (error  CDZ0501))
