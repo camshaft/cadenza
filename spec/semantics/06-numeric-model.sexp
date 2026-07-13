@@ -1596,3 +1596,58 @@
             (def (main (: k Int64)) (mk k)) (export main)))
   (call   main (: 99 Int64))
   (error  CDZ0302))
+
+; --- Negation `(- 0 a)` overflows only at the type's MIN -------------------------------------------
+; Negating a two's-complement integer overflows at exactly ONE input: the type's minimum, whose
+; magnitude has no positive counterpart in the range (numeric-model.md #Overflow Is Defined — the
+; checked form traps rather than wrapping). Every other value negates cleanly. The backend specializes
+; the `(- 0 a)` negation overflow guard to the single test `a == MIN` (rather than the general
+; subtraction round-trip); these cases pin that the guard fires at MIN and NOWHERE else, and — the sharp
+; part — that MIN is the WIDTH'S min, so a narrow `Int8`/`Int16` negation traps at -128 / -32768 and not
+; only at the Int64 min (a specialization that compared against the 64-bit min would silently wrap the
+; narrow overflow to a truncated value instead of trapping).
+
+(case "negating a runtime Int64 near the boundary is exact just above the min"
+  (doc    "`(- 0 n)` is negation. At n = Int64.min + 1 it is Int64.max, at Int64.max it is Int64.min + 1,
+           and ordinary values negate cleanly — every input EXCEPT the min negates without overflow. Pins
+           the value side of the `(- 0 a)` negation: the guard must NOT over-fire on the values adjacent
+           to the min (a live Pass guard; the min-input overflow is the companion trap case below).")
+  (input  (do (def (main (: n Int64)) (- 0 n)) (export main)))
+  (call   main (: -9223372036854775807 Int64))
+  (output (: 9223372036854775807 Int64))
+  (call   main (: 9223372036854775807 Int64))
+  (output (: -9223372036854775807 Int64))
+  (call   main (: 5 Int64))
+  (output (: -5 Int64))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64)))
+
+(case "negating a runtime Int64 overflows at Int64.min"
+  (doc    "The companion of the boundary case above: at n = Int64.min (-9223372036854775808) the result
+           +9223372036854775808 has no Int64 representation, so the checked negation TRAPS rather than
+           wrapping to the min (numeric-model.md #Overflow Is Defined). Pins that the `(- 0 a)` overflow
+           guard FIRES at the single input where negation overflows — a `(- 0 min)` that ran to a value
+           would be the miscompile this catches.")
+  (input  (do (def (main (: n Int64)) (- 0 n)) (export main)))
+  (call   main (: -9223372036854775808 Int64))
+  (trap   "integer overflow"))
+
+(case "negating a runtime narrow integer just above its min is exact"
+  (doc    "`(- 0 n)` over `Int8` gives 127 at n = -127 and negates ordinary values cleanly. The value side
+           of the narrow-width negation: a live Pass guard that the `(- 0 a)` guard does not over-fire on
+           an Int8 value adjacent to its min. The min-input overflow is the companion trap case below.")
+  (input  (do (def (main (: n Int8)) (- 0 n)) (export main)))
+  (call   main (: -127 Int8))
+  (output (: 127 Int8))
+  (call   main (: 100 Int8))
+  (output (: -100 Int8)))
+
+(case "negating a runtime narrow integer traps at the width's own min, not the Int64 min"
+  (doc    "`(- 0 n)` over `Int8` traps at n = -128 (Int8.min, whose negation 128 is out of the -128..127
+           range). The overflow is at the WIDTH'S min, so a negation-overflow guard that specialized
+           against the 64-bit min would MISS this and wrap -(-128) to a truncated value instead of
+           trapping. Pins that the `(- 0 a)` guard uses the operand's own width for MIN — the sharp edge
+           of the specialized negation overflow guard.")
+  (input  (do (def (main (: n Int8)) (- 0 n)) (export main)))
+  (call   main (: -128 Int8))
+  (trap   "integer overflow"))
