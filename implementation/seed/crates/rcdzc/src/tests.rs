@@ -1732,6 +1732,45 @@ fn a_runtime_closure_leaks_exactly_one_cell_known_gap() {
     );
 }
 
+/// KNOWN LEAK (tracking probe, the PERVASIVE case): a recursive fold over a HEAP LIST leaks EVERY node —
+/// the recursion-heap-reclamation gap is NOT closure-specific and NOT O(1); it is O(N) in the data. A
+/// `match` reading `sum-payload` does not drop the matched shell, so a list threaded through a recursive
+/// fold and consumed by `match` at each level leaks all its cells. `len(build 3)` returns the CORRECT 3
+/// but leaves 7 live cells (3 Cons + 3 tuples + 1 Nil). This pins the leak COUNT so it cannot silently
+/// worsen and documents the real scope of the gap (contrast the O(1) closure sub-case above). The FIX is
+/// the general Perceus drop-insertion pass (a sum-match drops the matched shell after dup-ing its payload;
+/// a dead heap param drops on its branch) — its own workstream, high correctness stakes. Flip the expected
+/// counts to 0 when it lands. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_recursive_list_fold_leaks_every_node_known_gap() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[list-leak] debug-counters runtime not in the store; skipping known-leak probe");
+        return;
+    };
+    let src = "(module m (type L (Cons (Tuple Int64 L)) Nil) \
+        (def (len (: xs L) (: acc Int64)) \
+           (match xs ((L.Cons (tuple h t)) (len t (+ acc 1))) ((L.Nil _) acc))) \
+        (def (build (: n Int64)) (if (< n 1) (L.Nil ()) (L.Cons (tuple n (build (- n 1)))))) \
+        (def (main) (len (build 3) 0)) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    // The answer is CORRECT despite the leak (reclamation gap, not a miscompile).
+    assert_eq!(rt.call("main", &[]), Val::S64(3), "len(build 3) computes 3");
+    // A 3-element list = 3 Cons + 3 (Int,list) tuples + 1 Nil = 7 cells, none reclaimed (the recursion
+    // heap-reclamation gap). Flip to 0 when the general Perceus drop-insertion pass lands. This documents
+    // the PERVASIVE, O(N)-in-data scope of the gap (the closure sub-case above is only O(1)).
+    assert_eq!(
+        rt.live_objects(),
+        7,
+        "KNOWN GAP: a recursive list fold leaks every heap node (match does not reclaim the matched \
+         shell); 7 cells for a 3-element list. Flip to 0 when the Perceus drop-insertion pass lands."
+    );
+}
+
 /// R2 RECLAMATION ACCEPTANCE: a RUNTIME compound that ESCAPES to the host as a resource leaves NO live
 /// heap cells after the `make`/`encode` round-trip — `encode` (which takes `own<t>`, consuming the
 /// resource) calls `heap.drop(rep)` after the walk, reclaiming the compound's rc handle (cascading to its
