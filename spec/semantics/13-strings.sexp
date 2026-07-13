@@ -151,7 +151,6 @@
            empty string (the in-bounds degenerate companion of the empty-range slice at index 0 already
            witnessed, here at an interior index). A slice whose start equals its end is present and
            empty, not None: the range [2,2) is valid and empty. The unwrapped slice MUST equal \"\".")
-  (needs  fallible-access)
   (input  (= (Option.expect (String.slice "hello" 2 2) "slice is in bounds") ""))
   (output (: true Bool)))
 
@@ -183,7 +182,6 @@
 (case "string indexing returns Some of the character"
   (doc    "Witnesses fallible String indexing (collections-and-text.md #Indexing And Lookup Are Fallible,
            Not Trapping): an in-bounds scalar index yields the one-scalar string wrapped in Some.")
-  (needs  fallible-access)
   (input  (String.at "hello" 1))
   (output (: (Some "e") (Option String))))
 
@@ -203,7 +201,6 @@
            (collections-and-text.md #A String Is A Sequence Of Unicode Scalar Values), the companion
            of String.scalar-len counting scalars; the ASCII `(String.at \"hello\" 1)` cannot distinguish
            scalar index from byte offset.")
-  (needs  fallible-access)
   (input  (String.at "café" 3))
   (output (: (Some "é") (Option String))))
 
@@ -213,7 +210,6 @@
            byte- or UTF-16-based index would land inside 😀's encoding. Pins scalar-value addressing
            at the boundary that most tempts a byte/UTF-16 miscount (the indexing companion of the
            supplementary-plane length case).")
-  (needs  fallible-access)
   (input  (String.at "😀b" 1))
   (output (: (Some "b") (Option String))))
 
@@ -230,7 +226,6 @@
   (doc    "`(String.at \"hi\" 5)` indexes scalar position 5 of a two-scalar string — out of range, no
            character to return — so it MUST yield None (collections-and-text.md #Indexing And Lookup Are
            Fallible, Not Trapping), the String companion of the List.at / Bytes.at out-of-bounds Nones.")
-  (needs  fallible-access)
   (input  (String.at "hi" 5))
   (output (: (None unit) (Option String))))
 
@@ -240,7 +235,6 @@
            into a huge positive offset (either reading out of bounds or, worse, an unspecified in-range
            byte); fallible indexing requires None (collections-and-text.md #Indexing And Lookup Are
            Fallible, Not Trapping). The negative-index companion of the out-of-range case above.")
-  (needs  fallible-access)
   (input  (String.at "hi" -1))
   (output (: (None unit) (Option String))))
 
@@ -248,7 +242,6 @@
   (doc    "Witnesses fallible String slicing: an in-bounds range yields the substring wrapped in Some
            (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping). This case reads
            the Option directly, without unwrapping, to pin the Some.")
-  (needs  fallible-access)
   (input  (String.slice "hello world" 0 5))
   (output (: (Some "hello") (Option String))))
 
@@ -265,7 +258,6 @@
   (doc    "`(String.slice \"hi\" 0 5)` asks for scalars 0..5 of a two-scalar string — the end 5 is
            beyond the length — so the slice has no defined substring and MUST yield None
            (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping).")
-  (needs  fallible-access)
   (input  (String.slice "hi" 0 5))
   (output (: (None unit) (Option String))))
 
@@ -273,7 +265,6 @@
   (doc    "`(String.slice \"hello\" 3 1)` has end 1 before start 3 — a reversed range with no defined
            substring — so it MUST yield None rather than return an empty or reversed string. Pins that
            the start ≤ end constraint is checked, not silently normalized.")
-  (needs  fallible-access)
   (input  (String.slice "hello" 3 1))
   (output (: (None unit) (Option String))))
 
@@ -282,7 +273,6 @@
            yield None, not wrap a negative bound to a large unsigned offset (the same negative-index
            miscompile the String.at case guards). Pins that both slice bounds are range-checked as
            signed values.")
-  (needs  fallible-access)
   (input  (String.slice "hello" -1 3))
   (output (: (None unit) (Option String))))
 
@@ -291,7 +281,6 @@
            selects zero scalars, so it is Some of the empty string \"\" — present, NOT None. Pins that
            the bounds check admits start = end (an empty result) rather than rejecting it, the boundary
            just inside the reversed-range None above.")
-  (needs  fallible-access)
   (input  (String.slice "hello" 2 2))
   (output (: (Some "") (Option String))))
 
@@ -307,7 +296,6 @@
   (doc    "`(String.slice s 1 4)` on a string PARAMETER `s = \"hello\"` yields Some \"ell\" — scalars
            1..4. Feeding `s` as a parameter defeats const-folding, so this exercises the runtime UTF-8
            slice walk, which must agree with the folded literal cases above.")
-  (needs  fallible-access)
   (input  (do
             (def (f s) (Option.expect (String.slice s 1 4) "in range"))
             (def (main) (f "hello")) (export main)))
@@ -318,7 +306,6 @@
            scalar, TWO UTF-8 bytes). A runtime slice that indexed by BYTE offset would split é or read
            the wrong range; pins that the runtime walk maps scalar offsets to byte offsets, exactly as
            String.at does (13-strings §reading a string's scalar addresses scalar values, not bytes).")
-  (needs  fallible-access)
   (input  (do
             (def (f s) (Option.expect (String.slice s 1 3) "in range"))
             (def (main) (f "aébc")) (export main)))
@@ -328,7 +315,6 @@
   (doc    "`(String.slice s 0 5)` on the two-scalar `s = \"hi\"` has end 5 past the length, so it yields
            None — the runtime bounds check agrees with the folded out-of-range case. The match takes the
            None arm (-1), witnessing the absent result rather than a trap or a short string.")
-  (needs  fallible-access)
   (input  (do
             (def (f s) (match (String.slice s 0 5) ((Some x) (String.byte-len x)) ((None _) -1)))
             (def (main) (f "hi")) (export main)))
@@ -338,7 +324,6 @@
   (doc    "`(String.slice s 2 2)` on a runtime `s = \"hello\"` selects zero scalars — Some \"\", present
            not None (the empty-span boundary, on the runtime path). `String.byte-len` of the result is
            0, distinguishing Some \"\" (0) from None (which the match would send elsewhere).")
-  (needs  fallible-access)
   (input  (do
             (def (f s) (match (String.slice s 2 2) ((Some x) (String.byte-len x)) ((None _) -1)))
             (def (main) (f "hello")) (export main)))
@@ -491,7 +476,6 @@
            the multi-byte é comes back whole. Pins runtime `String.at`: the seed walks the UTF-8 buffer
            to the scalar's byte span and slices it (a String is a Bytes-backed leaf), matching the const
            `chars().nth`. The concat forces a runtime value (a bare literal would const-fold).")
-  (needs   fallible-access)
   (input   (do
              (def (at s i) (String.at (String.concat s "") i))
              (def (main)   (at "café" 3)) (export main)))
@@ -503,7 +487,6 @@
            Not Trapping). `(at \"hi\" 5)` on the two-scalar \"hi\" is out of range → None. Pins that a
            runtime `String.at` out-of-bounds is a handled absence — the branch a reader takes at
            end-of-input.")
-  (needs   fallible-access)
   (input   (do
              (def (at s i) (String.at (String.concat s "") i))
              (def (main)   (match (at "hi" 5) ((Some c) (String.byte-len c)) ((None _) -1))) (export main)))
@@ -563,7 +546,6 @@
            (c a f, then é as the two bytes 0xC3 0xA9 = 195 169) to `(Some \"café\")`. Pins that a
            well-formed byte sequence decodes to `(Some s)` — the success arm of the total decode
            (collections-and-text.md #Decoding Bytes To A String Is Total, Not Trapping).")
-  (needs  binary-matching)
   (input  (= (String.from-bytes (Bytes.of (list 99 97 102 195 169))) (Some "café")))
   (output (: true Bool)))
 
@@ -573,7 +555,6 @@
            an unspecified string with a replacement character. Pins the failure arm as an ordinary value
            the program handles (collections-and-text.md #Decoding Bytes To A String Is Total, Not
            Trapping). This is the whole point of the total decode: ill-formed input is data, not a halt.")
-  (needs  binary-matching)
   (input  (= (String.from-bytes (Bytes.of (list 255))) None))
   (output (: true Bool)))
 
@@ -587,7 +568,6 @@
            distinction (overlong encodings have been used to smuggle forbidden bytes past naive
            validators). This is a requirement on the runtime's UTF-8 validator the reader relies on:
            the byte sequence, not the code point, must be canonical.")
-  (needs  binary-matching)
   (input  (= (String.from-bytes (Bytes.of (list 192 128))) None))
   (output (: true Bool)))
 
@@ -601,7 +581,6 @@
            encoding a surrogate is not a well-formed String. Pins that the runtime validator rejects
            surrogate encodings, not only structurally-broken bytes — the same Unicode-scalar boundary
            the char surface enforces, now on the byte-decode path the reader uses.")
-  (needs  binary-matching)
   (input  (= (String.from-bytes (Bytes.of (list 237 160 128))) None))
   (output (: true Bool)))
 
@@ -614,7 +593,6 @@
            encodings, and surrogates — a byte sequence whose STRUCTURE is valid but whose CODE POINT is out
            of range (the decode companion of the `Char.from-int 1114112` = U+110000 rejection). Pins that
            the validator checks the decoded scalar's range, not only the byte structure.")
-  (needs  binary-matching)
   (input  (= (String.from-bytes (Bytes.of (list 244 144 128 128))) None))
   (output (: true Bool)))
 
@@ -623,7 +601,6 @@
            `(String.from-bytes b)` and taking `(String.to-bytes s)` gives back the original UTF-8 bytes.
            Pins encode as the inverse of decode-of-well-formed (collections-and-text.md #Decoding Bytes To
            A String Is Total, Not Trapping, 3rd sentence).")
-  (needs  binary-matching)
   (input  (match (String.from-bytes (Bytes.of (list 99 97 102 195 169)))
             ((Some s) (= (String.to-bytes s) (Bytes.of (list 99 97 102 195 169))))
             ((None _) false)))
@@ -639,7 +616,6 @@
            but the same decode-and-match inside a called helper does not yet — the fallible decode's result
            must survive the boundary the way `Bytes.at`/`List.at` results now do. Companion of the
            round-trip case above, which matches `from-bytes` at `main`; this one crosses a call.")
-  (needs  fallible-access)
   (input  (do
             (def (dec b) (match (String.from-bytes b)
                            ((Some s) (String.byte-len s))
@@ -655,7 +631,6 @@
            inline, matching `std::str::from_utf8` — rejecting invalid leads, overlong forms, surrogates,
            and code points > U+10FFFF) drives the fallible decode's `None`, so a reader handles
            malformed input rather than trapping on it. Companion of the well-formed case above.")
-  (needs  fallible-access)
   (input  (do
             (def (dec b) (match (String.from-bytes b)
                            ((Some s) (String.byte-len s))
@@ -668,7 +643,6 @@
            next n bytes as UTF-8 into `name : String`. Against `(list 3 102 111 111)` — n=3, then the
            ASCII bytes of \"foo\" — the `utf8` segment matches and binds name = \"foo\". Pins the
            string-typed binary segment (options/binary-syntax/), the decode built into pattern matching.")
-  (needs  binary-matching)
   (input  (match (Bytes.of (list 3 102 111 111))
             ((bin (u8 n) (utf8 name n)) name)
             (_ "invalid")))
@@ -681,7 +655,6 @@
            match must be exhaustive (CDZ0210), a catch-all is required, so the ill-formed case is
            necessarily handled (collections-and-text.md #Decoding Bytes To A String Is Total, Not
            Trapping — the exhaustiveness clause). This is how binary matching absorbs invalid UTF-8.")
-  (needs  binary-matching)
   (input  (match (Bytes.of (list 1 255))
             ((bin (u8 n) (utf8 name n)) name)
             (_ "invalid")))
@@ -694,7 +667,6 @@
            itself is a source of non-match. Pins that the ill-formed-UTF-8 case cannot be silently
            dropped: the compiler forces a branch for it (collections-and-text.md #Decoding Bytes To A
            String Is Total, Not Trapping).")
-  (needs  binary-matching)
   (input  (match (Bytes.of (list 3 102 111 111))
             ((bin (u8 n) (utf8 name n)) name)))
   (error  CDZ0210))
@@ -720,7 +692,6 @@
            \"hello\" 1)` reads the scalar at scalar-position 1 — the char `#\\e` — wrapped in Some (an
            Option<Char>, the fallible read analogous to List.at and String.at). This is the operation
            that was missing: String.scalar-len counted scalars but nothing returned one.")
-  (needs  chars)
   (input  (String.scalar-at "hello" 1))
   (output (: (Some #\e) (Option Char))))
 
@@ -729,7 +700,6 @@
            string, so it yields None rather than trapping (collections-and-text.md #A String's Scalars
            Are Addressable — reading is total, and #Indexing And Lookup Are Fallible, Not Trapping). The
            Char analogue of the out-of-range String.at / List.at Nones.")
-  (needs  chars)
   (input  (String.scalar-at "hi" 5))
   (output (: (None unit) (Option Char))))
 
@@ -739,7 +709,6 @@
            encoding, so a byte offset would land mid-scalar. Pins that scalar access addresses by scalar
            value (collections-and-text.md #A String Is A Sequence Of Unicode Scalar Values), returning a
            Char — the Char companion of the scalar-indexed String.at case above.")
-  (needs  chars)
   (input  (String.scalar-at "café" 3))
   (output (: (Some #\é) (Option Char))))
 
@@ -747,7 +716,6 @@
   (doc    "Witnesses collections-and-text.md #A Char Converts To And From An Integer Totally:
            `(Char.to-int #\\a)` is 97 — the Unicode scalar value (code point) of the char `a`. Total:
            every char is a scalar value that has an integer code point, so to-int never fails.")
-  (needs  chars)
   (input  (Char.to-int #\a))
   (output (: 97 Int64)))
 
@@ -756,7 +724,6 @@
            so the conversion succeeds (collections-and-text.md #A Char Converts To And From An Integer
            Totally). from-int is FALLIBLE (returns an Option) because not every integer is a scalar; this
            is the success arm.")
-  (needs  chars)
   (input  (Char.from-int 97))
   (output (: (Some #\a) (Option Char))))
 
@@ -766,7 +733,6 @@
            #A Char Converts To And From An Integer Totally, and #A Char Is A Single Unicode Scalar Value:
            surrogates are excluded). Pins that the surrogate range is rejected as data (None), never a
            trap and never an ill-formed Char. This is why from-int must be fallible.")
-  (needs  chars)
   (input  (Char.from-int 55296))
   (output (: (None unit) (Option Char))))
 
@@ -775,7 +741,6 @@
            is not a scalar value and from-int yields None (collections-and-text.md #A Char Converts To
            And From An Integer Totally). The high-end companion of the surrogate case; both are handled
            as data, not traps.")
-  (needs  chars)
   (input  (Char.from-int 1114112))
   (output (: (None unit) (Option Char))))
 
@@ -784,7 +749,6 @@
            `(Char.to-int #\\a)` = 97 and `(Char.from-int 97)` = `(Some #\\a)`, so matching the Some arm
            and taking to-int returns 97. Pins from-int as the inverse of to-int on a valid scalar
            (collections-and-text.md #A Char Converts To And From An Integer Totally). MUST be true.")
-  (needs  chars)
   (input  (match (Char.from-int 97)
             ((Some c) (= (Char.to-int c) 97))
             ((None _) false)))
@@ -796,7 +760,6 @@
            A Single Unicode Scalar Value; options/char-literal-syntax/). The static companion of the
            dynamic `(Char.from-int 55296)` → None: a literal cannot spell a non-scalar, so the surrogate
            case is caught at read time rather than producing an invalid Char.")
-  (needs  chars)
   (input  #\u+D800)
   (error  CDZ0002))
 
@@ -806,7 +769,6 @@
            the scalar value of `a` (97) is less than that of `b` (98). Pins that a Char order and the
            string order defined on scalar values agree by construction — a Char is comparable and its
            order is its scalar order.")
-  (needs  chars)
   (input  (< #\a #\b))
   (output (: true Bool)))
 
@@ -814,6 +776,5 @@
   (doc    "`(= #\\a #\\a)` is true — a char's value is its scalar, and two chars are equal exactly when
            their scalar values are equal. Pins Char equality as scalar equality, the equality companion
            of the Char order case.")
-  (needs  chars)
   (input  (= #\a #\a))
   (output (: true Bool)))

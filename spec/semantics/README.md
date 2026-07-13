@@ -139,18 +139,19 @@ The differential gate treats a decline as *todo*, not as disagreement, so a gree
 every program a generation *does* compile agrees with the recorded outcome. There is no separate
 "dynamic" outcome recorded alongside the rejection: the `(error <CODE>)` clause is the whole story.
 
-**Generation-divergence annotation — optional, inline.**
-- `(needs <capability>)` — the `input` requires a capability to be evaluated at all (e.g.
-  `numeric-model` for rational/float arithmetic, `effects` for the algebraic-handler layer). A
-  generation runs the case only if it realizes `<capability>` (conformance-gate.md §"A Generation Is
-  Judged Against The Capabilities It Realizes"; `options/realized-capability-set/`). A case with no
-  `(needs …)` is core — every generation, including the seed, runs it.
+**Generation divergence — expressed by the DECLINE mechanism, not a tag.** A case whose input a
+generation does not yet realize is not skipped: it is compiled and run, and the compiler's own
+**decline** (reject-don't-miscompile) scores it *todo*. The former `(needs <capability>)` annotation —
+which pre-empted the run — has been retired: the decline mechanism already expresses "todo" correctly
+and automatically, decided by the compiler rather than hand-annotated, and running the case keeps both
+its pass-guard (when the generation does realize it) and its regression-catch (a wrong value / dropped
+trap). So there is no generation-divergence tag; every case runs on every generation.
 
 The result value form is `(: <value> <Type>)` — a value paired with its type — serialized under the
 canonical value form ([`contracts/deterministic-value-form.md`](../contracts/deterministic-value-form.md)),
-so a case's expected output is byte-exact. A case that carries neither `(compiler …)` nor `(needs …)`
-is one every generation realizes and reproduces from the recorded oracle — the common case, and the
-concrete meaning of "a well-typed program does not go wrong."
+so a case's expected output is byte-exact. A case that carries no `(compiler …)` clause is one every
+generation reproduces from the recorded oracle (or declines → todo) — the common case, and the concrete
+meaning of "a well-typed program does not go wrong."
 
 ## Authoring rules
 
@@ -170,14 +171,14 @@ concrete meaning of "a well-typed program does not go wrong."
 
 ## Which cases a generation runs
 
-A generation's behavior gate runs the cases whose required capabilities it **realizes**, not every
-case ever authored (conformance-gate.md §"A Generation Is Judged Against The Capabilities It Realizes";
-`options/realized-capability-set/`). This is a per-case filter, not a directory split:
+A generation's behavior gate runs **every** case — there is no per-case skip filter. A generation that
+does not yet realize what a case exercises **declines** it (reject-don't-miscompile), and the gate
+scores that decline as *todo*, not disagreement — so the compiler itself decides "this generation
+doesn't do it yet," per case, at run time (conformance-gate.md §"A Generation Is Judged Against The
+Capabilities It Realizes"):
 
-- A case with **no** `(needs …)` is core — every generation runs it, including the seed.
-- A case with `(needs <capability>)` runs only on a generation that realizes `<capability>`.
-- A `(output …)` / `(trap …)` primary clause is the recorded result every running
-  generation must reproduce when it runs the program.
+- A `(output …)` / `(trap …)` primary clause is the recorded result every generation that COMPILES the
+  program must reproduce; one that cannot yet compile it declines → todo.
 - An `(error <CODE>)` primary clause is the rejection every generation that covers the relevant rule
   must produce; a generation that does not yet cover the rule **declines** (reject-don't-miscompile)
   and the gate scores that as todo, not disagreement. So mixed-type arithmetic `(+ 2 2.0)` records the
@@ -187,13 +188,12 @@ case ever authored (conformance-gate.md §"A Generation Is Judged Against The Ca
 The **seed** is a compiler that realizes the static-typing floor incrementally
 (constitution §VII; Amendment 0.4.0;
 `../learnings/2026-07-04-static-typing-is-mandatory-post-pivot.md`). It thus runs every
-`(needs …)`-free case: producing the `(error <CODE>)` rejection where a case records one for a rule it
+case: producing the `(error <CODE>)` rejection where a case records one for a rule it
 covers, reproducing the terminal clause otherwise, and enforcing the capability floor. It
 realizes lowering, binding, control flow, matching, structural equality, the static-typing floor,
 runtime traps that survive type-checking (overflow, division by zero, index out of bounds),
-observable behavior, and the primitive value forms — and nothing that a `(needs …)`
-marks as a later generation's, nor a type rule it does not yet cover (which it declines rather than
-miscompiles).
+observable behavior, and the primitive value forms — and it declines (rather than miscompiles) a
+construct it does not yet realize or a type rule it does not yet cover.
 
 ## Files
 

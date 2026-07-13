@@ -22,7 +22,6 @@
            the host call, then terminates normally with the unit value (the operation's WIT result is
            Unit). The (output …) clause pins the terminal condition and (host-calls …) pins the ordered
            host-call observation.")
-  (needs  effects)
   (input  (do
             (effect log (op emit (-> String Unit)))
             (def (main)
@@ -60,7 +59,6 @@
            a compiler that rejects this as ungranted (CDZ0401) falsely rejects a valid program because the
            performing function is recursive. A generation that does not yet follow a recursive call in
            delegation reachability must not reject a program the delegation grants.")
-  (needs  effects)
   (input  (do
             (effect log (op emit (-> String Unit)))
             (def (go n)
@@ -81,7 +79,6 @@
            former reached-but-undeclared host operation and the former undischarged intra-program effect
            (CDZ0402, now merged), since host-binding is an entrypoint routing decision rather than a
            declaration-time property.")
-  (needs  effects)
   (input  (do
             (effect log (op emit (-> String Unit)))
             (def (main)
@@ -94,7 +91,6 @@
            would carry latent authority — a granted capability that is never exercised — and the program
            is rejected (CDZ0404). The manifest must be exactly the effects that escape, no more and no
            fewer.")
-  (needs  effects)
   (input  (do
             (effect log (op emit (-> String Unit)))
             (def (main)
@@ -108,7 +104,6 @@
            it and the run makes the host call — the manifest is the union of what the entrypoints
            delegate — then terminates normally with the unit value. The (output …) clause pins the
            terminal condition.")
-  (needs  effects)
   (input  (do
             (effect log (op emit (-> String Unit)))
             (def (main)
@@ -134,7 +129,6 @@
            operation's return value is used. The (host-responses …) fixture supplies the response the host
            returns in call order, so the run's result is a deterministic function of input and that
            response; (host-calls …) pins the call.")
-  (needs  effects)
   (input  (do
             (effect ask (op ask (-> Unit Int64)))
             (def (main)

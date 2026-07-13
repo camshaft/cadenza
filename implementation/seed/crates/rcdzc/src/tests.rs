@@ -9321,6 +9321,62 @@ mod match_engine {
     }
 
     #[test]
+    fn a_unit_scale_distinguishes_type_identity_from_dimensional_compatibility() {
+        // F2-0: a unit carries a compile-time SCALE (num/den) alongside its dimension (exponent map).
+        // `same_dimension` compares the MAP alone (gates `+`/`compare` compatibility — `metre` and
+        // `kilometre` are the SAME dimension, so combinable); `==` compares MAP + SCALE (type identity —
+        // `metre` and `kilometre` are DISTINCT types). `scaled` applies a prefix; the scales multiply
+        // under `mul`/`pow`.
+        use crate::ty::Unit;
+        let metre = Unit::base("metre");
+        let km = metre.scaled(1000, 1).expect("kilo scales");
+        // Same dimension (both length), different type identity (different scale).
+        assert!(
+            metre.same_dimension(&km),
+            "metre and kilometre share the length dimension"
+        );
+        assert_ne!(
+            metre, km,
+            "metre and kilometre are DISTINCT units (different scale)"
+        );
+        assert_eq!(
+            metre.scale(),
+            (1, 1),
+            "a base unit is the scale-1 reference"
+        );
+        assert_eq!(
+            km.scale(),
+            (1000, 1),
+            "a kilo-prefixed unit scales the reference by 1000"
+        );
+        // A different DIMENSION is not compatible.
+        let second = Unit::base("second");
+        assert!(
+            !metre.same_dimension(&second),
+            "metre and second are different dimensions"
+        );
+        // `at_reference` drops the scale (the common unit a conversion lands at).
+        assert_eq!(
+            km.at_reference(),
+            metre,
+            "km at its reference scale IS metre"
+        );
+        // Prefix scales MULTIPLY under `pow`: (km)² has scale 10⁶.
+        assert_eq!(km.pow(2).scale(), (1_000_000, 1), "(km)² scales by 10^6");
+        // A milli prefix is an exact rational scale 1/1000 (a machine-int ratio, no bignum).
+        let mm = metre.scaled(1, 1000).expect("milli scales");
+        assert_eq!(
+            mm.scale(),
+            (1, 1000),
+            "millimetre scales the reference by 1/1000"
+        );
+        assert!(
+            metre.same_dimension(&mm) && metre != mm,
+            "mm: same dimension, distinct unit"
+        );
+    }
+
+    #[test]
     fn a_quantity_erases_to_its_inner_numeric_value() {
         // L1-1b: `Qty.value (Qty.of 5.0 metre)` recovers the erased inner `5.0` — a quantity is CHECKED
         // THEN ERASED, so `Qty.of`/`Qty.value` are runtime no-ops and the compiled program is plain
@@ -13139,19 +13195,40 @@ mod stage1 {
     }
 
     #[test]
-    fn an_abortive_perform_in_a_short_circuit_operand_declines() {
-        // E4 soundness guard, the short-circuit variant: `(or true (Bail.bail 7))` evaluates its right
-        // operand only when `true` is false — a CONDITIONAL abort. Unlike an `if`, the threading path folds
-        // `and`/`or` as a STRICT `Apply` (both operands, no per-branch abort capture), so an abort in the
-        // right operand would set the abort cell and collapse the whole handle — the wrong value. The guard
-        // marks a short-circuit right operand `under_cond`, so the abort is flagged and `reduce_handle`
-        // DECLINES (a short-circuit conditional abort needs the `if`-style per-branch fold, a later step).
-        // `Bail.bail` returns `Bool` here so it can sit in an `or`.
+    fn an_abortive_perform_in_a_short_circuit_operand_desugars_and_folds() {
+        // E4 short-circuit desugar: a connective is a conditional in disguise — `(and lhs rhs)` runs `rhs`
+        // only when `lhs` is true, `(or lhs rhs)` only when `lhs` is false. `hoist_conditional_abort`
+        // desugars a connective whose RIGHT operand carries an abort to the equivalent `if` — `(and lhs
+        // rhs)` → `(if lhs rhs false)`, `(or lhs rhs)` → `(if lhs true rhs)` — so the abort lands in a
+        // branch tail the per-branch capture folds. `Bail.bail : Int64 -> Bool` here and the arm yields a
+        // Bool (`(< n 0)`), so the abort value is Bool — consistent with the connective's Bool branches.
+        // `(and true (Bail.bail 7))`: lhs true → rhs runs → abort → `(< 7 0)` = false.
         let src = "(do (effect Bail (op bail (-> Int64 Bool))) \
-                   (def (main) (handle false ((Bail.bail (n) s n)) (or true (Bail.bail 7)))) (export main))";
+                   (def (main) (handle true ((Bail.bail (n) s (< n 0))) (and true (Bail.bail 7)))) (export main))";
+        assert!(
+            !run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a short-circuit abort desugars and compiles"),
+                "main"
+            ),
+            "the abort yields (< 7 0) = false"
+        );
+    }
+
+    #[test]
+    fn an_abortive_arm_whose_value_type_mismatches_the_op_result_declines() {
+        // E4 type-consistency guard: an abortive arm materializes its BODY as the abort value, which lands
+        // in the position the perform occupied — a position typed by the op's declared RESULT type (the
+        // type checker types a perform by its result, never by the arm value). If the arm body's type
+        // differs — `bail : Int64 -> Bool` but the arm yields `n : Int64` — the abort value does not fit
+        // (in `(if c (Bail.bail 7) false)` it disagrees with the `false` sibling, emitting an ill-typed
+        // `if` = invalid wasm). The checker misses this gap, so the fold declines. Regression guard for a
+        // latent miscompile the branch-tail/hoist folds would otherwise have emitted.
+        let src = "(do (effect Bail (op bail (-> Int64 Bool))) \
+                   (def (main (: x Int64)) (handle false ((Bail.bail (n) s n)) (if (< x 5) (Bail.bail 7) false))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "an abortive perform in a short-circuit right operand must decline, not miscompile"
+            "an abortive arm whose value type mismatches the op result must decline, not emit invalid wasm"
         );
     }
 

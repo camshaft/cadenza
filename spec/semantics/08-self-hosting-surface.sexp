@@ -14,7 +14,6 @@
            Re-Readable Text: read(print(v)) is equal to v under structural equality. Here v is the
            AST value for (+ 1 2); print renders it as text, read parses it back, and the two ASTs
            compare equal.")
-  (needs self-hosting-surface)
   (input  (= (read (print (quote (+ 1 2))))
              (quote (+ 1 2))))
   (output (: true Bool)))

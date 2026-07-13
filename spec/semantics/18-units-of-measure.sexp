@@ -58,7 +58,6 @@
   (doc    "`(Qty.of 5.0 (Unit.base #\"metre\"))` attaches the base dimension `metre` to the Float64
            value 5.0, producing a `(Qty Float64 metre)`. The unit is a COMPILE-TIME value; the recorded
            type documents the erased static type — the emitted value is just the Float64 5.0.")
-  (needs  units-of-measure)
   (input  (Qty.of 5.0 (Unit.base #"metre")))
   (output (: (Qty.of 5.0 (Unit.base #"metre")) (Qty Float64 (Unit.base #"metre")))))
 
@@ -67,7 +66,6 @@
            the dimensional layer (the widening that requires no check, verification-layers.md #Refinement
            Coercions Are Checked). The unit leaves the value only through this explicit call, never
            implicitly; the recovered value is the ordinary numeric it always was underneath.")
-  (needs  units-of-measure)
   (input  (Qty.value (Qty.of 5.0 (Unit.base #"metre"))))
   (output (: 5.0 Float64)))
 
@@ -76,7 +74,6 @@
            group. Its erased value is 3.0, but its static type `(Qty Float64 Unit.one)` is DISTINCT from
            the bare `Float64`: crossing between them is explicit (`Qty.of` in, `Qty.value` out), never an
            implicit coercion, exactly as the numeric core never silently promotes between numeric types.")
-  (needs  units-of-measure)
   (input  (Qty.of 3.0 Unit.one))
   (output (: (Qty.of 3.0 Unit.one) (Qty Float64 Unit.one))))
 
@@ -89,7 +86,6 @@
            underlying Float64 addition runs unchanged on the erased values; the unit layer adds one
            obligation — the two dimensions must be EQUAL — and contributes nothing to the emitted
            arithmetic (units-of-measure.md #Dimensional Analysis Does Not Alter The Numeric Core).")
-  (needs  units-of-measure)
   (input  (+ (Qty.of 2.0 (Unit.base #"metre")) (Qty.of 3.0 (Unit.base #"metre"))))
   (output (: (Qty.of 5.0 (Unit.base #"metre")) (Qty Float64 (Unit.base #"metre")))))
 
@@ -99,7 +95,6 @@
            #Dimensional Mismatch Is An Error). There is no runtime trap: units are erased before the
            program runs, so a dimensional inconsistency can only be a compile-time event. THE core case
            the whole layer exists for — a length is never added to a time.")
-  (needs  units-of-measure)
   (input  (+ (Qty.of 1.0 (Unit.base #"metre")) (Qty.of 1.0 (Unit.base #"second"))))
   (error  CDZ0501))
 
@@ -107,7 +102,6 @@
   (doc    "The subtraction companion: `(- (Qty.of 5.0 metre) (Qty.of 2.0 second))` is the same
            dimensional-mismatch rejection (CDZ0501) as addition — `-` requires equal dimensions exactly
            as `+` does. Pins that the obligation is on the operator class, not just on `+`.")
-  (needs  units-of-measure)
   (input  (- (Qty.of 5.0 (Unit.base #"metre")) (Qty.of 2.0 (Unit.base #"second"))))
   (error  CDZ0501))
 
@@ -120,7 +114,6 @@
            has value 6.0 — an area (units-of-measure.md #Dimensional Mismatch Is An Error: an operation
            that derives a dimension MUST produce the dimension its rule defines). Multiplication never
            requires equal dimensions; it composes them by the group product.")
-  (needs  units-of-measure)
   (input  (* (Qty.of 2.0 (Unit.base #"metre")) (Qty.of 3.0 (Unit.base #"metre"))))
   (output (: (Qty.of 6.0 (Unit.^ (Unit.base #"metre") 2)) (Qty Float64 (Unit.^ (Unit.base #"metre") 2)))))
 
@@ -128,7 +121,6 @@
   (doc    "`(/ (Qty.of 6.0 metre) (Qty.of 2.0 second))` derives metre/second — a velocity — with value
            3.0. The classic derived unit falls out of the group quotient rather than needing to be
            enumerated. The underlying Float64 division runs unchanged on the erased values.")
-  (needs  units-of-measure)
   (input  (/ (Qty.of 6.0 (Unit.base #"metre")) (Qty.of 2.0 (Unit.base #"second"))))
   (output (: (Qty.of 3.0 (Unit./ (Unit.base #"metre") (Unit.base #"second")))
              (Qty Float64 (Unit./ (Unit.base #"metre") (Unit.base #"second"))))))
@@ -138,7 +130,6 @@
            metre·one = metre, value 6.0. Pins that `Unit.one` is the group identity — multiplying by it
            leaves the dimension unchanged — so scaling by a constant does not change a quantity's
            dimension.")
-  (needs  units-of-measure)
   (input  (* (Qty.of 2.0 (Unit.base #"metre")) (Qty.of 3.0 Unit.one)))
   (output (: (Qty.of 6.0 (Unit.base #"metre")) (Qty Float64 (Unit.base #"metre")))))
 
@@ -147,7 +138,6 @@
            its inverse (the free-abelian-group law) — leaving a dimensionless `(Qty Float64 Unit.one)`
            with value 3.0. Pins that dimensional composition CANCELS: a ratio of like quantities is
            dimensionless, decided by the exponent map going to all-zero, not by syntax.")
-  (needs  units-of-measure)
   (input  (/ (Qty.of 6.0 (Unit.base #"metre")) (Qty.of 2.0 (Unit.base #"metre"))))
   (output (: (Qty.of 3.0 Unit.one) (Qty Float64 Unit.one))))
 
@@ -159,7 +149,6 @@
   (doc    "`(< (Qty.of 2.0 metre) (Qty.of 3.0 metre))` compares two lengths and is true — comparison
            requires EQUAL dimensions (you can order two lengths) and yields a bare Bool. The underlying
            Float64 comparison runs unchanged on the erased values.")
-  (needs  units-of-measure)
   (input  (< (Qty.of 2.0 (Unit.base #"metre")) (Qty.of 3.0 (Unit.base #"metre"))))
   (output (: true Bool)))
 
@@ -168,7 +157,6 @@
            dimensions — so the compiler rejects it (CDZ0501): comparison, like `+`/`-`, requires equal
            dimensions (units-of-measure.md #Dimensional Mismatch Is An Error). You cannot ask whether a
            length is less than a time.")
-  (needs  units-of-measure)
   (input  (< (Qty.of 2.0 (Unit.base #"metre")) (Qty.of 3.0 (Unit.base #"second"))))
   (error  CDZ0501))
 
@@ -177,7 +165,6 @@
            incompatible dimensions — rejected with CDZ0501, not silently false. A dimensional mismatch
            is a compile error even under `=`, because the operands cannot inhabit one dimension; there is
            no dimension at which a length equals a time.")
-  (needs  units-of-measure)
   (input  (= (Qty.of 1.0 (Unit.base #"metre")) (Qty.of 1.0 (Unit.base #"second"))))
   (error  CDZ0501))
 
@@ -193,7 +180,6 @@
            written as metre·metre to one written as metre² — the SAME dimension by canonical exponent
            map ({metre: 2}) — so the addition is well-dimensioned and yields metre² with value 5.0. Pins
            that dimensional equality compares canonical forms, not syntax: metre·metre = metre².")
-  (needs  units-of-measure)
   (input  (+ (* (Qty.of 2.0 (Unit.base #"metre")) (Qty.of 2.0 (Unit.base #"metre")))
              (Qty.of 1.0 (Unit.^ (Unit.base #"metre") 2))))
   (output (: (Qty.of 5.0 (Unit.^ (Unit.base #"metre") 2)) (Qty Float64 (Unit.^ (Unit.base #"metre") 2)))))
@@ -208,7 +194,6 @@
            CDZ0501 (the dimensional specialization of the annotation-conflicts rejection; CDZ0203 names
            the general case, CDZ0501 names it when the conflict is dimensional). An annotation constrains
            but never contradicts the derived dimension.")
-  (needs  units-of-measure)
   (input  (: (* (Qty.of 2.0 (Unit.base #"metre")) (Qty.of 3.0 (Unit.base #"metre")))
              (Qty Float64 (Unit.base #"metre"))))
   (error  CDZ0501))
@@ -227,7 +212,6 @@
            Float64 with no change to the numeric byte form. The comparison is between two bare Float64
            values (the quantity's dimension was discarded by Qty.value), so it is an ordinary numeric
            equality, not a dimensional one.")
-  (needs  units-of-measure)
   (input  (= (Qty.value (Qty.of 5.0 (Unit.base #"metre"))) 5.0))
   (output (: true Bool)))
 
@@ -237,7 +221,6 @@
            — rejected with the numeric no-promotion diagnostic CDZ0301, exactly as bare `(+ 2 3.0)` is
            (numeric-model.md #Numeric Types Do Not Silently Promote). Pins that the unit layer sits OVER
            the numeric core and does not relax it: the dimensions agree, but the numeric types must too.")
-  (needs  units-of-measure)
   (input  (+ (Qty.of 2 (Unit.base #"metre")) (Qty.of 3.0 (Unit.base #"metre"))))
   (error  CDZ0301))
 
@@ -255,7 +238,6 @@
            25.0 metre/second. The dimensions are checked at compile time and erased, so the emitted
            `speed` is plain Float64 division; the quantity types are the compile-time contract, not a
            runtime representation.")
-  (needs  units-of-measure)
   (input  (do
             (def (speed d t) (/ d t))
             (def (main) (speed (Qty.of 100.0 (Unit.base #"metre")) (Qty.of 4.0 (Unit.base #"second")))) (export main)))
@@ -279,7 +261,6 @@
            rational division (no float rounding), and the DIMENSION is feet/second by the unit-group
            quotient — both in one operation. The result is `(Qty Rational feet/second)` with the exact
            magnitude 2/3. THE `feet / seconds` case: dimensioned and exact together.")
-  (needs  units-of-measure)
   (input  (/ (Qty.of (Rational.of 1 3) (Unit.base #"feet"))
              (Qty.of (Rational.of 1 2) (Unit.base #"second"))))
   (output (: (Qty.of (Rational.of 2 3) (Unit./ (Unit.base #"feet") (Unit.base #"second")))
@@ -291,7 +272,6 @@
            the Float64 case is. Pins that the dimensional check is over the unit, INDEPENDENT of the
            underlying numeric type T: choosing exact rational magnitudes does not relax the dimensional
            obligation.")
-  (needs  units-of-measure)
   (input  (+ (Qty.of (Rational.of 1 2) (Unit.base #"feet"))
              (Qty.of (Rational.of 1 2) (Unit.base #"second"))))
   (error  CDZ0501))
@@ -301,7 +281,6 @@
            discarded), the EXACT rational magnitude remains — the erased value of `(Qty Rational u)` is
            exactly the underlying Rational, unchanged. Pins that units erase before emission while
            rationals do not: dimension is a compile-time layer, exactness is a runtime value.")
-  (needs  units-of-measure)
   (input  (Qty.value (Qty.of (Rational.of 1 3) (Unit.base #"feet"))))
   (output (: 1/3 Rational)))
 
@@ -326,7 +305,6 @@
            (units-of-measure.md #A Unit Carries An Exact Scale To Its Dimension's Reference). The result
            is `(Qty Rational metre)` = 127/5000 m. Pins that a within-dimension conversion is the exact
            scale the family declares.")
-  (needs  units-of-measure)
   (input  (Unit.in (Unit.of #"metre") (Qty.of (Rational.of 1 1) (Unit.of #"inch"))))
   (output (: (Qty.of (Rational.of 127 5000) (Unit.of #"metre")) (Qty Rational (Unit.of #"metre")))))
 
@@ -337,7 +315,6 @@
            132/5000 = 33/1250 m. The result is `(Qty Rational metre)` — the common reference unit, a
            deterministic function of the operand units (units-of-measure.md #Combining Units Of One
            Dimension Is Well-Formed). Exact because the magnitudes are `Rational`.")
-  (needs  units-of-measure)
   (input  (+ (Qty.of (Rational.of 1 1) (Unit.of #"inch")) (Qty.of (Rational.of 1 1) (Unit.of #"millimetre"))))
   (output (: (Qty.of (Rational.of 33 1250) (Unit.of #"metre")) (Qty Rational (Unit.of #"metre")))))
 
@@ -346,7 +323,6 @@
            CDZ0501, unchanged. Automatic conversion applies WITHIN a dimension (inch↔mm), never ACROSS
            one (inch↔second): there is no scale relating a length to a time. Pins that the mixing
            relaxation does not weaken the dimensional safety the layer exists for.")
-  (needs  units-of-measure)
   (input  (+ (Qty.of (Rational.of 1 1) (Unit.of #"inch")) (Qty.of (Rational.of 1 1) (Unit.of #"second"))))
   (error  CDZ0501))
 
@@ -355,7 +331,6 @@
            different units — so each converts to the reference and compares there: 25 mm = 25/1000 =
            1/40 m, 1 inch = 127/5000 m; 1/40 = 125/5000 < 127/5000, so it is true. Pins that comparison,
            like `+`/`-`, converts differing units of one dimension rather than rejecting them.")
-  (needs  units-of-measure)
   (input  (< (Qty.of (Rational.of 25 1) (Unit.of #"millimetre")) (Qty.of (Rational.of 1 1) (Unit.of #"inch"))))
   (output (: true Bool)))
 
@@ -373,7 +348,6 @@
            converts 3 km to metres: `(Unit.prefix kilo metre)` has scale 1000·1 = 1000, so 3 km = 3000 m.
            Pins that a prefixed unit is a unit of the same dimension differing by the exact prefix
            factor.")
-  (needs  units-of-measure)
   (input  (Unit.in (Unit.of #"metre") (Qty.of (Rational.of 3 1) (Unit.prefix kilo (Unit.of #"metre")))))
   (output (: (Qty.of (Rational.of 3000 1) (Unit.of #"metre")) (Qty Rational (Unit.of #"metre")))))
 
@@ -382,7 +356,6 @@
            converts 5 ms to seconds: `milli` = 10⁻³ = 1/1000, so 5 ms = 5/1000 = 1/200 s. Pins that
            negative-power prefixes are exact `Rational` scales — the second reason exact rationals are
            load-bearing for units (a milli/micro/nano factor has no exact float or integer form).")
-  (needs  units-of-measure)
   (input  (Unit.in (Unit.of #"second") (Qty.of (Rational.of 5 1) (Unit.prefix milli (Unit.of #"second")))))
   (output (: (Qty.of (Rational.of 1 200) (Unit.of #"second")) (Qty Rational (Unit.of #"second")))))
 
@@ -390,7 +363,6 @@
   (doc    "`(Unit.in (Unit.of #\"byte\") (Qty.of (Rational.of 1 1) (Unit.prefix mebi (Unit.of #\"byte\"))))`
            converts 1 MiB to bytes: `mebi` = 2²⁰ = 1048576, so 1 MiB = 1048576 byte. Pins the binary
            prefix family (kibi/mebi/gibi) alongside the decimal one — distinct scales for `information`.")
-  (needs  units-of-measure)
   (input  (Unit.in (Unit.of #"byte") (Qty.of (Rational.of 1 1) (Unit.prefix mebi (Unit.of #"byte")))))
   (output (: (Qty.of (Rational.of 1048576 1) (Unit.of #"byte")) (Qty Rational (Unit.of #"byte")))))
 
@@ -400,7 +372,6 @@
            the reference `byte` and sums to 1024 + 1000 = 2024 byte — NOT 2000, never silently equated.
            Pins that the two prefix systems are genuinely different scales the arithmetic keeps distinct
            (the classic KiB-vs-kB conflation is caught, not hidden).")
-  (needs  units-of-measure)
   (input  (+ (Qty.of (Rational.of 1 1) (Unit.prefix kibi (Unit.of #"byte")))
              (Qty.of (Rational.of 1 1) (Unit.prefix kilo (Unit.of #"byte")))))
   (output (: (Qty.of (Rational.of 2024 1) (Unit.of #"byte")) (Qty Rational (Unit.of #"byte")))))

@@ -40,7 +40,6 @@
            (host-responses …) fixture supplies the response in call order; given that response the run
            deterministically computes 100. How the host produces the response — inline, fiber-suspend, or
            re-derive from the recorded responses — is host policy the program does not observe.")
-  (needs  effects)
   (input  (do
             (effect ask (op ask (-> Unit Int64)))
             (def (main)
@@ -54,7 +53,6 @@
   (doc    "Witnesses capabilities-and-effects.md #A Run Is A Deterministic Function Of Its Input And
            Responses: two host calls consume two responses in the order made; the sum is a deterministic
            function of input and the ordered response sequence.")
-  (needs  effects)
   (input  (do
             (effect ask (op ask (-> Unit Int64)))
             (def (main)
@@ -79,7 +77,6 @@
            asserts the one call), while the handled `Scale` does not appear. This is the invariant that a
            host call arises only under a tail-resumptive/abortive intra-program handler, never spanning a
            reified continuation a re-derivation could not reconstruct.")
-  (needs  effects)
   (input  (do
             (effect ask (op ask (-> Unit Int64)))
             (effect Scale (op by (-> Int64 Int64)))
@@ -113,7 +110,6 @@
            out-of-scope at the arm's def site (CDZ0401). This is the test-harness / metering power move —
            observe host I/O without the performing code knowing — and the first case exercising
            re-perform-to-parent, guarding the under-frame.")
-  (needs  effects)
   (input  (do
             (effect ask (op ask (-> Unit Int64)))
             (effect Count (op tick (-> Unit Unit)))
@@ -134,7 +130,6 @@
            program imports no host function, so its manifest is empty (host-calls asserts none), yet it uses
            an effect internally. Operations are qualified by their declaring effect (#An Effect Declaration
            Names The Effect And Types Its Operations).")
-  (needs  effects)
   (input  (do
             (effect Choose (op pick (-> Unit Int64)))
             (def (main)
@@ -147,7 +142,6 @@
            resumes the continuation exactly once, so the affine discipline holds and the result is a
            single value (the resumed computation is not duplicated). `Get` is declared with a nullary
            operation `get` returning Int64, performed as `(Get.get)`; the handler is stateless.")
-  (needs  effects)
   (input  (do
             (effect Get (op get (-> Unit Int64)))
             (def (main)
@@ -165,7 +159,6 @@
            `br`s out of, carrying the arm value (`DESIGN-effects-rcdzc.md` §4.2). Contrast the tail-
            resumptive `Get` above (resumes, so `+ 1` runs): the arm's resume DISCIPLINE, not the operator,
            decides whether the surrounding computation survives.")
-  (needs  effects)
   (input  (do
             (effect Bail (op bail (-> Int64 Int64)))
             (def (main)
@@ -183,7 +176,6 @@
            where the abort must escape the enclosing `+` — that needs a control block the perform `br`s out
            of and is not yet reducible. Here the branch tail is the handle value, so the fold is per-branch:
            `(if true 7 99)` → 7 (`DESIGN-effects-rcdzc.md` §4.2).")
-  (needs  effects)
   (input  (do
             (effect Bail (op bail (-> Int64 Int64)))
             (def (main)
@@ -200,7 +192,6 @@
            descends into a `let` body, not just a bare `if` (`DESIGN-effects-rcdzc.md` §4.2). Contrast an
            abort in a NON-tail `let` INIT (`(let ((k (if c (Bail.bail 7) 0))) …)`), which must escape into
            `k` and is not yet reducible.")
-  (needs  effects)
   (input  (do
             (effect Bail (op bail (-> Int64 Int64)))
             (def (main)
@@ -216,7 +207,6 @@
            up the original lexical chain — the fold synthesizes a fresh body subtree, which must remain
            anchored where the `handle` sat so `x` reaches `main`'s parameter binder (not a spurious unbound
            name). Runtime parameters are what make an effectful body more than a constant.")
-  (needs  effects)
   (input  (do
             (effect Get (op get (-> Int64 Int64)))
             (def (main (: x Int64))
@@ -232,7 +222,6 @@
            value); the other branch reads the parameter `x` and falls through. Called with `x = 9` (not <
            5), the false branch yields `x` = 9 — no abort. This composes the branch-tail abortive fold with
            a free parameter reference and a runtime condition (`DESIGN-effects-rcdzc.md` §4.2).")
-  (needs  effects)
   (input  (do
             (effect Bail (op bail (-> Int64 Int64)))
             (def (main (: x Int64))
@@ -250,7 +239,6 @@
            the sibling operand `100` is pure). Called with `x = 3` (< 5) the abort fires, discarding the
            `+ 100` → 7; with `x = 9` the false branch runs → `100 + 50` = 150. This is the 'validate an
            argument, bail out of the whole computation on failure' shape (`DESIGN-effects-rcdzc.md` §4.2).")
-  (needs  effects)
   (input  (do
             (effect Bail (op bail (-> Int64 Int64)))
             (def (main (: x Int64))
@@ -258,6 +246,24 @@
                 (+ 100 (if (< x 5) (Bail.bail 7) 50)))) (export main)))
   (call   main (: 3 Int64))
   (output (: 7 Int64)))
+
+(case "an abortive perform in a short-circuit connective's right operand abandons the computation"
+  (doc    "A short-circuit connective is a conditional in disguise — `(and lhs rhs)` evaluates `rhs` only
+           when `lhs` is true — so an abort in the right operand is a conditional abort, equivalent to
+           `(if lhs rhs false)`. `(and (< x 5) (Bail.bail 7))`: when `x < 5` the right operand runs and the
+           abort fires, abandoning the computation and yielding the arm value; when `x >= 5` the connective
+           short-circuits to false without performing. Here `Bail.bail : Int64 -> Bool` and the arm yields a
+           Bool (`(< n 100)`), so the abort value is Bool — consistent with the connective's Bool result.
+           Called with `x = 3` (< 5) the abort fires → `(< 7 100)` = true. Witnesses that the abortive fold
+           reaches a short-circuit operand by desugaring it to the `if` form (`DESIGN-effects-rcdzc.md`
+           §4.2).")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Bool)))
+            (def (main (: x Int64))
+              (handle false ((Bail.bail (n) s (< n 100)))
+                (and (< x 5) (Bail.bail 7)))) (export main)))
+  (call   main (: 3 Int64))
+  (output (: true Bool)))
 
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
@@ -278,7 +284,6 @@
            body never reads it. Contrast a stateless handler (seed unit, thread s unchanged): this one
            genuinely folds. This upgrades the fresh-name idiom from a pure function of its argument to a
            real supply — the compiler's `Fresh` state model.")
-  (needs  effects)
   (input  (do
             (effect Fresh (op next (-> Unit Int64)))
             (def (main)
@@ -300,8 +305,6 @@
            This is the compiler's diagnostics idiom as a real accumulator (the earlier record-and-continue
            `Diag.emit` that resumed unit and discarded the code was the stateless placeholder for it), and
            it needs the list-growth capability to build the accumulator.")
-  (needs  effects)
-  (needs  list-growth)
   (input  (do
             (effect Diag (op emit (-> Int64 Unit))
                          (op collect (-> Unit (List Int64))))
@@ -322,8 +325,6 @@
            monomorphization must lower as a real specialized function (its state lives on the value heap,
            threaded as trailing params/returns), not only the self-contained scalar case. `List.len`
            makes `main` return a scalar so the whole program is the runtime-scalar path.")
-  (needs  effects)
-  (needs  list-growth)
   (input  (do
             (effect Diag (op emit (-> Int64 Unit))
                          (op collect (-> Unit (List Int64))))
@@ -346,7 +347,6 @@
            never performed. Both handlers are stateless (seed `unit`). Pins that an operation is reached
            through its declaring effect and a shared operation name is collision-free — the two `resolve`
            arms live under distinct handlers keyed to distinct effects.")
-  (needs  effects)
   (input  (do
             (effect Unify (op resolve (-> Int64 Int64)))
             (effect Scope (op resolve (-> Int64 Int64)))
@@ -386,7 +386,6 @@
            free cross-effect case above (`Unify.resolve` / `Scope.resolve`), which is two effects' distinct
            operations. A generation that does not yet detect a duplicate operation name declines rather
            than silently choosing one.")
-  (needs  effects)
   (input  (do
             (effect E (op f (-> Int64 Int64)) (op f (-> Int64 Int64)))
             (def (main) 1) (export main)))
@@ -410,7 +409,6 @@
            `Bump` handler in scope and the effect would be ungranted (CDZ0401) — the defined output 42 is
            the witness that a function may perform an operation its CALLER discharges. The handler is
            stateless (seed `unit`).")
-  (needs  effects)
   (input  (do
             (effect Bump (op by (-> Int64 Int64)))
             (def (gen) (Bump.by 41))
@@ -426,7 +424,6 @@
            which installs no handler, to `main`'s handler, which resumes with 5; `mid` then computes
            `(+ 5 100)` = 105. An intermediate function that installs no handler is transparent to
            resolution — it is merely a frame on the chain. The handler is stateless.")
-  (needs  effects)
   (input  (do
             (effect Ping (op ping (-> Unit Int64)))
             (def (leaf) (Ping.ping))
@@ -444,7 +441,6 @@
            `main`'s outer *100 handler is never reached (the inner arm does not re-perform, so it does not
            forward). The result is 10, not 1000 — pinning that the nearest DYNAMIC handler discharges the
            operation and shadows the outer one. Both handlers are stateless.")
-  (needs  effects)
   (input  (do
             (effect Mul (op by (-> Int64 Int64)))
             (def (leaf) (Mul.by 1))
@@ -464,7 +460,6 @@
            Under definition-site resolution `ask` has no `Get` handler in scope and both calls would be
            ungranted (CDZ0401); the defined output 32 is the witness for dynamic resolution. Both handlers
            are stateless.")
-  (needs  effects)
   (input  (do
             (effect Get (op get (-> Unit Int64)))
             (def (ask) (+ (Get.get) 1))
@@ -482,7 +477,6 @@
            resumes with 7; the +1s then compose back up the chain: d=7, c=8, b=9, a=10.
            Pins that dynamic resolution reaches an arbitrarily deep enclosing handler and that the
            intermediate frames are transparent. The handler is stateless.")
-  (needs  effects)
   (input  (do
             (effect Ask (op ask (-> Unit Int64)))
             (def (d) (Ask.ask))
@@ -504,7 +498,6 @@
            the folded state is not a lexical-scope construct but a dynamic-extent one that persists across
            calls, exactly as the compiler's fresh-name supply must. The handle evaluates to the body's
            tuple; the final counter 2 is discarded.")
-  (needs  effects)
   (input  (do
             (effect Fresh (op next (-> Unit Int64)))
             (def (label)   (Fresh.next))
@@ -538,7 +531,6 @@
            discharging it needs effect-context monomorphization — until a generation realizes that,
            the compiler declines rather than inlines (reject-don't-miscompile). The recorded output
            3 is the semantics a monomorphizing generation produces.")
-  (needs  effects)
   (input  (do
             (effect Countdown (op tick (-> Unit Int64)))
             (def (loop)
@@ -560,7 +552,6 @@
            fresh state. Being recursive-while-performing, it declines under inlining-only resolution
            and needs effect-context monomorphization; the recorded output 6 is the realized
            semantics.")
-  (needs  effects)
   (input  (do
             (effect Idx (op next (-> Unit Int64)))
             (def (sum-down)
@@ -588,7 +579,6 @@
            self-hosting compiler pass that walks a structure while folding more than one piece of
            state (a fresh-name counter AND a diagnostics list). Recursive-while-performing, so it
            needs effect-context monomorphization; the recorded output 30 is the realized semantics.")
-  (needs  effects)
   (input  (do
             (effect A (op tick (-> Unit Int64)))
             (effect B (op bump (-> Unit Int64)))
@@ -616,7 +606,6 @@
            continuations as data (a general one-shot / scheduler tier) discharges this; the recorded
            output 100 is that semantics. This case guards against the compiler crashing on
            unbounded context growth.")
-  (needs  effects)
   (input  (do
             (effect Fresh (op next (-> Unit Int64)))
             (def (loop n)
@@ -657,7 +646,6 @@
            perform without checking feeds the Bool through the op's Int64 slot and produces a wrong value
            (and a String argument yields a garbage integer). A generation that does not yet check a
            perform's arguments declines rather than emitting the mistyped operation.")
-  (needs  effects)
   (input  (do
             (effect E (op op (-> Int64 Int64)))
             (def (main)
@@ -687,7 +675,6 @@
            Int `42` into the handler arm as a String, so `(E.emit 42)` runs to `unit` instead of being
            rejected. The argument check must be uniform across parameter types. A generation that does not
            yet check a String-parameter op's argument declines rather than binding the mistyped value.")
-  (needs  effects)
   (input  (do
             (effect E (op emit (-> String Unit)))
             (def (main)
@@ -716,7 +703,6 @@
            Int64`, so `(E.put 42)` runs to `unit` (a downstream `(List.len xs)` reads a non-list value). The
            argument check must be uniform across all parameter type shapes. A generation that does not yet
            check a compound-parameter op's argument declines rather than binding the mistyped value.")
-  (needs  effects)
   (input  (do
             (effect E (op put (-> (List Int64) Unit)))
             (def (main)
@@ -750,7 +736,6 @@
            feeds the Bool through the op's Int64 result slot and yields `true` from `(E.op 1)` rather than
            rejecting. A generation that does not yet check the resume value against the result type
            declines rather than yielding it.")
-  (needs  effects)
   (input  (do
             (effect E (op op (-> Int64 Int64)))
             (def (main)
@@ -779,7 +764,6 @@
            compound one yields the mistyped value — `(E.get)` returns `42`, and resuming with a tuple where
            a list is declared renders `(list)`, a type-confusion wrong value. A generation that does not yet
            check a compound result type declines rather than yielding the mistyped value.")
-  (needs  effects)
   (input  (do
             (effect E (op get (-> (List Int64))))
             (def (main)
@@ -804,7 +788,6 @@
            scope-checks the value but not the state runs to the handler's result instead of rejecting. A
            generation that does not yet scope-check the resume state declines rather than emitting a
            component.")
-  (needs  effects)
   (input  (do
             (effect E (op put (-> Int64 Unit)))
             (def (main)
@@ -817,7 +800,6 @@
            closed set of an effect's operations (capabilities-and-effects.md #A Handler Arm Names An
            Operation Its Effect Declares). A generation that does not yet check arm membership declines
            rather than running the program (reject-don't-miscompile).")
-  (needs  effects)
   (input  (do
             (effect Choose (op pick (-> Unit Int64)))
             (def (main)
@@ -835,7 +817,6 @@
            handles, each exhaustive for its own effect (see the collision-free cross-effect case, which is
            two nested single-operation handlers). A generation that does not yet check handler
            exhaustiveness declines rather than running the partial handler (reject-don't-miscompile).")
-  (needs  effects)
   (input  (do
             (effect Diag (op emit (-> Int64 Unit)) (op collect (-> Unit (List Int64))))
             (def (main)
@@ -852,7 +833,6 @@
            (undischarged intra-program effect) and the former undeclared-host CDZ0401 are one condition.
            Contrast the interpose case above, where an enclosing `host (ask)` delegation gives the effect
            a home.")
-  (needs  effects)
   (input  (do
             (effect Ask (op ask (-> Unit Int64)))
             (def (main)
@@ -863,7 +843,6 @@
   (doc    "Witnesses capabilities-and-effects.md #Purity Is The Empty Effect Row: a program that reaches
            no effect it must route runs straight to normal termination, makes no host call, and has an
            empty manifest. This is the same property the compiler component itself has.")
-  (needs  effects)
   (input  (do
             (def (main) (+ 20 22)) (export main)))
   (output (: 42 Int64))

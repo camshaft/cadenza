@@ -274,7 +274,6 @@
            chain of runtime-compound `let`s compiles at all (and to the right value) — the shape a
            compiler's threaded state / accumulator passes take. The observable is 12; the DEPTH is the
            compile-time-cost regression guard (this depth exhausted memory before the fix).")
-  (needs  collections)
   (input  (let ((l1  (List.push (list) 1)))
           (let ((l2  (List.push l1 2)))
           (let ((l3  (List.push l2 3)))
@@ -434,14 +433,12 @@
            in a non-final position has no observable effect, so the block yields its last form (42). The
            earlier `do` cases only drop scalars; this pins that a COMPOUND intermediate is dropped the
            same way rather than blocking the block.")
-  (needs  collections)
   (input  (do (record (a 1)) 42))
   (output (: 42 Int64)))
 
 (case "a sequencing block discards a pure list intermediate"
   (doc    "Companion of the case above with a list intermediate: `(do (list 1 2 3) 7)` evaluates the
            list, discards it (no effect), and yields the last form 7.")
-  (needs  collections)
   (input  (do (list 1 2 3) 7))
   (output (: 7 Int64)))
 
@@ -827,7 +824,6 @@
            different-arity tuple branches are rejected), but a list's length is NOT, so different-length
            list branches MUST be accepted. Pins that the branch-shape check does not treat list length as
            a shape mismatch — a compiler reusing the tuple-arity check on lists wrongly rejects this.")
-  (needs  collections)
   (input  (if true (list 1 2) (list 3 4 5)))
   (output (: (list 1 2) (List Int64))))
 
@@ -934,7 +930,6 @@
            \"he\"; `expect` unwraps the in-bounds slice to \"he\", which the \"he\" arm matches, yielding
            100. A slice result is fallible (collections-and-text.md #Indexing And Lookup Are Fallible,
            Not Trapping), so the program names the in-bounds expectation before matching the substring.")
-  (needs  fallible-access)
   (input  (match (Option.expect (String.slice "hello" 0 2) "slice is in bounds")
             ("he"  100)
             (_  200)))
@@ -1326,7 +1321,6 @@
            (core-semantics.md #Pattern Matching, the literal refines the match). For a runtime `b=true`
            the `(F.S true)` arm fires → 1. Pins that a literal payload test works for a Bool payload, not
            only Int — the get-bool + i32 compare sibling of the Int literal test.")
-  (needs  sum-type-declaration)
   (input  (do
             (type F (S Bool) C)
             (def (f b) (match (F.S b) ((F.S true) 1) ((F.S k) 0) ((F.C _) -1)))
@@ -1483,7 +1477,6 @@
 (case "deeply nested pattern matching"
   (doc    "The compiler pattern-matches over nested AST: a list node containing a name node.
            Patterns nest arbitrarily deep.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Expr (Lit Int64) (Add (Tuple Expr Expr)))
             (let ((e (Expr.Add (tuple (Expr.Lit 1) (Expr.Lit 2)))))
@@ -1857,7 +1850,6 @@
 (case "conjunction is true exactly when both operands are true"
   (doc    "The `and` value table over the four Bool pairs, folded to one witness: only true∧true is
            true (core-semantics.md #Boolean Connectives Short-Circuit).")
-  (needs  boolean-connectives)
   (input  (do
             (def (row a b) (if (and a b) 1 0))
             (def (main) (+ (+ (row true true) (row true false)) (+ (row false true) (row false false)))) (export main)))
@@ -1866,7 +1858,6 @@
 (case "disjunction is false exactly when both operands are false"
   (doc    "The `or` value table: only false∨false is false, so three of the four pairs are true
            (core-semantics.md #Boolean Connectives Short-Circuit).")
-  (needs  boolean-connectives)
   (input  (do
             (def (row a b) (if (or a b) 1 0))
             (def (main) (+ (+ (row true true) (row true false)) (+ (row false true) (row false false)))) (export main)))
@@ -1875,7 +1866,6 @@
 (case "negation inverts a boolean"
   (doc    "`(not true)` is false and `(not false)` is true (core-semantics.md #Boolean Connectives
            Short-Circuit).")
-  (needs  boolean-connectives)
   (input  (do (def (main) (if (not false) (not true) true)) (export main)))
   (output (: false Bool)))
 
@@ -1885,7 +1875,6 @@
            the result is false — the connective shields the trap exactly as an unselected conditional
            branch does (core-semantics.md #Boolean Connectives Short-Circuit). Without short-circuit
            this would trap.")
-  (needs  boolean-connectives)
   (input  (and false (< (/ 1 0) 2)))
   (output (: false Bool)))
 
@@ -1893,7 +1882,6 @@
   (doc    "`(or true (< (/ 1 0) 2))`: `or` evaluates its right operand ONLY when the left is false, so
            with the left true the trap in the right operand is NOT evaluated and the result is true.
            The dual of the `and` shielding case (core-semantics.md #Boolean Connectives Short-Circuit).")
-  (needs  boolean-connectives)
   (input  (or true (< (/ 1 0) 2)))
   (output (: true Bool)))
 
@@ -1918,7 +1906,6 @@
            Connectives Short-Circuit: each operand is type-checked as a Bool whether or not it is
            evaluated, so the compiler MUST reject the non-Bool operand (CDZ0201) rather than run — the
            same discipline as a conditional's branch type-check, applied to a connective's operand.")
-  (needs  boolean-connectives)
   (input  (and true 1))
   (error  CDZ0201))
 
@@ -1970,7 +1957,6 @@
            infer runtime compound result shape' — ask-77, the mutual-recursion face of the tail-recursive
            tuple return. `(dn (list 42 7) 0)` at i=0 yields `(tuple (AInt 42) 1)`; `top` returns `(AInt 42)`;
            `main` reads 42. `List.at`+`Option.expect` keeps the element a genuine runtime value (unfolded).")
-  (needs   sum-type-declaration)
   (input  (do
             (type Ast (AInt Int64) ALeaf (AList (List Ast)))
             (def (dn b i)

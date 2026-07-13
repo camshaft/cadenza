@@ -209,27 +209,114 @@ impl FloatTy {
 /// lands (Layer 2, families/prefixes), this key becomes a `resolved::Symbol`; nothing else about the
 /// group algebra changes. A unit is a COMPILE-TIME value: it indexes `Ty::Qty` and is ERASED before
 /// emission, so it never reaches the backend (`units-of-measure.md` §Dimensions Are Checked Then Erased).
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
-pub struct Unit(std::collections::BTreeMap<String, i64>);
+/// A UNIT = a DIMENSION (an exponent map) together with a compile-time SCALE to that dimension's
+/// reference (`units-of-measure.md` §A Unit Carries An Exact Scale To Its Dimension's Reference). Two
+/// concepts, kept distinct on purpose:
+///   - the DIMENSION `exp` — the free-abelian-group element (base name → signed exponent, zero-exponent
+///     bases dropped). This alone gates COMPATIBILITY: `+`/`-`/comparison require EQUAL dimensions
+///     (`same_dimension`), and `*`/`/` compose them. `metre` and `kilometre` are the SAME dimension.
+///   - the SCALE `scale_num`/`scale_den` — a machine-integer ratio to the dimension's reference unit
+///     (`metre`=1/1, `kilometre`=1000/1, `millimetre`=1/1000, `mebibyte`=2²⁰/1). This is what makes
+///     `metre` and `kilometre` DISTINCT units (distinct types) of one dimension, and what a conversion
+///     multiplies by. The scale is COMPILE-TIME METADATA, not a runtime `Rational`: a conversion emits
+///     `value * num / den` in the quantity's OWN inner numeric type T (spec §48: it "los[es] precision
+///     only where the underlying numeric type is itself inexact" — exact over `Int`/`Rational`, rounding
+///     over `Float`), so NO arbitrary-precision value is needed. Every real unit scale fits `i128` with
+///     enormous headroom (the largest, `tera`=10¹² / `tebi`=2⁴⁰ / `mile`=201168/125).
+///
+/// TYPE IDENTITY (`==`, `Ord`, `Hash`) compares BOTH map and scale, so `(Qty T metre)` and `(Qty T
+/// kilometre)` are distinct static types (crossing needs an explicit conversion); DIMENSIONAL
+/// compatibility (`same_dimension`) compares the map ALONE. A base-dimension name is a `String` in
+/// Layer 1 (the corpus writes `#"metre"`); it becomes a `resolved::Symbol` when Symbols land. A unit is
+/// COMPILE-TIME: it indexes `Ty::Qty` and is ERASED before emission (§Dimensions Are Checked Then
+/// Erased) — only the scale MULTIPLY a mixed-unit combine denotes may survive, as ordinary T arithmetic.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Unit {
+    /// The dimension: base name → signed exponent, zero-exponent bases dropped (the group element).
+    exp: std::collections::BTreeMap<String, i64>,
+    /// The scale to the dimension's reference unit, as a normalized machine-integer ratio (den > 0,
+    /// lowest terms). `1/1` for a reference/base unit; `1000/1` for a kilo-prefixed unit; `1/1000` for a
+    /// milli-prefixed one. Compile-time metadata a conversion multiplies by (in the inner type T).
+    scale_num: i128,
+    scale_den: i128,
+}
+
+impl Default for Unit {
+    fn default() -> Unit {
+        Unit::one()
+    }
+}
 
 impl Unit {
-    /// The dimensionless unit — the group identity (the EMPTY exponent map). `Unit.one`.
+    /// The dimensionless unit — the group identity (EMPTY exponent map, scale 1/1). `Unit.one`.
     pub fn one() -> Unit {
-        Unit(std::collections::BTreeMap::new())
+        Unit {
+            exp: std::collections::BTreeMap::new(),
+            scale_num: 1,
+            scale_den: 1,
+        }
     }
 
-    /// A base dimension named `name`, to the first power — the single-entry map `{name: 1}`. `(Unit.base
-    /// #"metre")`.
+    /// A base dimension named `name`, to the first power, at the REFERENCE scale 1/1 — the single-entry
+    /// map `{name: 1}`. `(Unit.base #"metre")`. A base unit IS the scale-1 reference of its dimension.
     pub fn base(name: impl Into<String>) -> Unit {
         let mut m = std::collections::BTreeMap::new();
         m.insert(name.into(), 1);
-        Unit(m)
+        Unit {
+            exp: m,
+            scale_num: 1,
+            scale_den: 1,
+        }
     }
 
     /// Whether this is the dimensionless unit (the empty map) — a `(Qty T Unit.one)` scaled result, or a
-    /// ratio of like quantities that cancelled to no dimension.
+    /// ratio of like quantities that cancelled to no dimension. (Ignores the scale — a dimensionless
+    /// SCALED value, e.g. a bare ratio, is still dimensionless.)
     pub fn is_dimensionless(&self) -> bool {
-        self.0.is_empty()
+        self.exp.is_empty()
+    }
+
+    /// Whether two units share a DIMENSION — their exponent maps are equal, IGNORING scale. This gates
+    /// combine/compare compatibility (`metre` + `kilometre` is well-formed; `metre` + `second` is
+    /// CDZ0501) and is the relation `units-of-measure.md` §Combining Units Of One Dimension Is
+    /// Well-Formed rests on. Distinct from `==` (type identity), which also requires equal scale.
+    pub fn same_dimension(&self, other: &Unit) -> bool {
+        self.exp == other.exp
+    }
+
+    /// This unit's scale to its dimension's reference, as a `(num, den)` machine-integer ratio. A
+    /// conversion from this unit to another of the same dimension multiplies a value by `self.scale /
+    /// other.scale` (in the inner numeric type). `1/1` for a reference unit.
+    pub fn scale(&self) -> (i128, i128) {
+        (self.scale_num, self.scale_den)
+    }
+
+    /// This unit at the REFERENCE scale (1/1) — its dimension with the scale dropped. The common unit a
+    /// mixed-unit combine converts to (`units-of-measure.md` §the common (reference) unit), and the unit
+    /// a conversion's result carries.
+    pub fn at_reference(&self) -> Unit {
+        Unit {
+            exp: self.exp.clone(),
+            scale_num: 1,
+            scale_den: 1,
+        }
+    }
+
+    /// This unit SCALED by a compile-time ratio `num/den` — a prefix (`kilo` = 1000/1, `milli` = 1/1000,
+    /// `mebi` = 2²⁰/1) applied to a unit produces another unit of the SAME dimension differing only by
+    /// that exact factor (`units-of-measure.md` §A Scaled Unit Is A Unit Scaled By An Exact Factor). The
+    /// scales MULTIPLY (a `(Unit.prefix kilo metre)` squared is km², scale 10⁶). Normalizes the result
+    /// ratio (lowest terms, positive denominator). `None` if `den == 0` or an intermediate overflows
+    /// `i128` (no real prefix comes close).
+    pub fn scaled(&self, num: i128, den: i128) -> Option<Unit> {
+        let n = self.scale_num.checked_mul(num)?;
+        let d = self.scale_den.checked_mul(den)?;
+        let (n, d) = normalize_ratio(n, d)?;
+        Some(Unit {
+            exp: self.exp.clone(),
+            scale_num: n,
+            scale_den: d,
+        })
     }
 
     /// The PRODUCT of two units — pointwise exponent ADD, dropping any base whose combined exponent is
@@ -237,30 +324,52 @@ impl Unit {
     /// inverse cancels to `Unit.one`. The `*`/`/` dimensional rule (`units-of-measure.md` §An Operation
     /// That Derives A Dimension).
     pub fn mul(&self, other: &Unit) -> Unit {
-        let mut m = self.0.clone();
-        for (k, e) in &other.0 {
+        let mut m = self.exp.clone();
+        for (k, e) in &other.exp {
             let entry = m.entry(k.clone()).or_insert(0);
             *entry += e;
             if *entry == 0 {
                 m.remove(k);
             }
         }
-        Unit(m)
+        // The scales MULTIPLY (a product's scale is the product of the operand scales — `km·km` = 10⁶
+        // m²); normalize, falling back to 1/1 on overflow (no real derived unit reaches i128).
+        let (sn, sd) = normalize_ratio(
+            self.scale_num.saturating_mul(other.scale_num),
+            self.scale_den.saturating_mul(other.scale_den),
+        )
+        .unwrap_or((1, 1));
+        Unit {
+            exp: m,
+            scale_num: sn,
+            scale_den: sd,
+        }
     }
 
     /// The QUOTIENT of two units — pointwise exponent SUBTRACT, dropping zeros. `(Unit./ metre second)` =
     /// `{metre: 1, second: -1}` (a velocity); `(Unit./ metre metre)` = `Unit.one` (a ratio of like
     /// quantities is dimensionless, decided by the exponent map going to all-zero).
     pub fn div(&self, other: &Unit) -> Unit {
-        let mut m = self.0.clone();
-        for (k, e) in &other.0 {
+        let mut m = self.exp.clone();
+        for (k, e) in &other.exp {
             let entry = m.entry(k.clone()).or_insert(0);
             *entry -= e;
             if *entry == 0 {
                 m.remove(k);
             }
         }
-        Unit(m)
+        // The scales DIVIDE (a quotient's scale is the quotient of the operand scales); normalize,
+        // falling back to 1/1 on overflow.
+        let (sn, sd) = normalize_ratio(
+            self.scale_num.saturating_mul(other.scale_den),
+            self.scale_den.saturating_mul(other.scale_num),
+        )
+        .unwrap_or((1, 1));
+        Unit {
+            exp: m,
+            scale_num: sn,
+            scale_den: sd,
+        }
     }
 
     /// This unit raised to a compile-time integer power `n` (may be negative) — each exponent scaled by
@@ -271,19 +380,51 @@ impl Unit {
             return Unit::one();
         }
         let mut m = std::collections::BTreeMap::new();
-        for (k, e) in &self.0 {
+        for (k, e) in &self.exp {
             let scaled = e * n;
             if scaled != 0 {
                 m.insert(k.clone(), scaled);
             }
         }
-        Unit(m)
+        // The scale is raised to the SAME power: `(km)²` has scale 10⁶ (a positive power multiplies the
+        // ratio n times; a negative power inverts). Normalize; fall back to 1/1 on overflow.
+        let (base_n, base_d) = if n >= 0 {
+            (self.scale_num, self.scale_den)
+        } else {
+            (self.scale_den, self.scale_num) // invert for a negative power
+        };
+        let times = n.unsigned_abs() as u32;
+        let mut sn: i128 = 1;
+        let mut sd: i128 = 1;
+        let mut ok = true;
+        for _ in 0..times {
+            match (sn.checked_mul(base_n), sd.checked_mul(base_d)) {
+                (Some(a), Some(b)) => {
+                    sn = a;
+                    sd = b;
+                }
+                _ => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        let (sn, sd) = if ok {
+            normalize_ratio(sn, sd).unwrap_or((1, 1))
+        } else {
+            (1, 1)
+        };
+        Unit {
+            exp: m,
+            scale_num: sn,
+            scale_den: sd,
+        }
     }
 
     /// The base→exponent pairs in canonical (sorted) order — for encoding the unit into an arena subtree
-    /// and for rendering.
+    /// and for rendering. (The scale is carried separately, via [`scale`].)
     pub fn entries(&self) -> impl Iterator<Item = (&String, &i64)> {
-        self.0.iter()
+        self.exp.iter()
     }
 
     /// Render the unit for a `(Qty T <unit>)` type annotation — the canonical written form. The
@@ -292,11 +433,11 @@ impl Unit {
     /// renders a left-nested `(Unit.* …)`. This mirrors the corpus surface so a rendered quantity type
     /// re-reads to the same unit.
     pub fn render(&self) -> String {
-        if self.0.is_empty() {
+        if self.exp.is_empty() {
             return "Unit.one".to_string();
         }
         let mut factors: Vec<String> = Vec::new();
-        for (name, &exp) in &self.0 {
+        for (name, &exp) in &self.exp {
             let base = format!("(Unit.base #\"{name}\")");
             if exp == 1 {
                 factors.push(base);
@@ -312,6 +453,37 @@ impl Unit {
         }
         acc
     }
+}
+
+/// Normalize a machine-integer ratio `num/den` to canonical form — lowest terms, denominator strictly
+/// positive — the form a `Unit`'s scale is kept in (so two units of equal scale compare equal by field).
+/// `None` if `den == 0` (no valid scale) or the sign flip of `i128::MIN` overflows. Shared by `scaled`/
+/// `mul`/`div`/`pow`; a scale is always a well-defined positive-denominator ratio of small integers.
+fn normalize_ratio(mut num: i128, mut den: i128) -> Option<(i128, i128)> {
+    if den == 0 {
+        return None;
+    }
+    if den < 0 {
+        num = num.checked_neg()?;
+        den = den.checked_neg()?;
+    }
+    let g = gcd_i128(num.unsigned_abs(), den.unsigned_abs());
+    if g > 1 {
+        num /= g as i128;
+        den /= g as i128;
+    }
+    Some((num, den))
+}
+
+/// The greatest common divisor of two unsigned magnitudes (Euclid) — reduces a scale ratio to lowest
+/// terms. `gcd(0, n) = n`.
+fn gcd_i128(mut a: u128, mut b: u128) -> u128 {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
 }
 
 /// A solved type — the closed variant set inference determines and every pass below reads.
