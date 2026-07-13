@@ -386,6 +386,14 @@ impl Prim {
         )
     }
 
+    /// Whether this primitive is a FLOAT arithmetic operator (`+.` `-.` `*.` `/.`) — shape `∀a. (Float
+    /// a) → (Float a) → (Float a)`. Distinct from `is_arith` (the integer ops): a float op folds two
+    /// constant floats (round-to-nearest-even at the width) and NEVER traps on overflow (IEEE); a runtime
+    /// operand emits the machine `f64.add`/… (F4).
+    pub fn is_float_arith(self) -> bool {
+        matches!(self, Prim::FAdd | Prim::FSub | Prim::FMul | Prim::FDiv)
+    }
+
     /// Whether this primitive is an integer CONVERSION — a unary op from a polymorphic source integer to
     /// a fixed target width. `Wrap` (truncating, returns `T`) is the only one now; the checked `Of`
     /// (returning `Option<T>`) joins it with sum types. Routed as a unary application in `lower`/`select`.

@@ -120,6 +120,7 @@ pass	a declaration in a do block shadows an outer binding
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
 pass	a deeply nested constant expression compiles or declines without crashing
 pass	a delegation naming an effect that is never reached is rejected as latent authority
+pass	a destructuring let over a runtime value binds its parts
 pass	a different function argument through the same recursive higher-order function
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
 pass	a division whose divisor folds to zero still traps
@@ -190,10 +191,12 @@ pass	a lambda captures an enclosing function parameter and is applied in its bod
 pass	a large whole-valued float renders its full value, not an integer saturation
 pass	a later declaration in a do block sees an earlier one
 pass	a later let binding sees an earlier one in the same let
+pass	a later let binding sees an earlier pattern's binders
 pass	a le pattern segment reads a fixed-width integer little-endian
 pass	a left shift by a floating-point count does not silently promote
 pass	a left shift by the bit width or more traps rather than wrapping
 pass	a left shift that overflows Int64 traps like multiplication
+pass	a let binder may be a tuple pattern that destructures the value
 pass	a let binding is in scope in its body
 pass	a let binding shadows a built-in constructor name in application-head position
 pass	a let binding shadows the record constructor in application-head position
@@ -217,6 +220,7 @@ pass	a list chosen by a runtime if is length-measured without emitting invalid w
 pass	a list mixing integer and boolean elements is a type error
 pass	a list with a runtime element is returned as a program result
 pass	a list-concatenating helper threads lists through a call
+pass	a literal in a let binder is refutable and rejected
 pass	a literal inside a NESTED constructor pattern refines the match
 pass	a literal inside a constructor pattern matches a runtime payload
 pass	a literal inside a tuple pattern matches a runtime element
@@ -303,6 +307,7 @@ pass	a non-empty scrutinee does not match an empty bin pattern
 pass	a non-exhaustive guarded match is rejected even when a constant scrutinee folds its guard true
 pass	a non-final unsized bytes segment is ill-formed
 pass	a non-first field is projected from a record returned across a call boundary
+pass	a non-linear tuple binding pattern is rejected
 pass	a non-matching literal inside a constructor pattern binds the runtime payload
 pass	a non-power-of-two float width is rejected
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
@@ -325,6 +330,7 @@ pass	a pattern that binds the same name twice is rejected
 pass	a pipeline chain applies its stages left to right
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a program that delegates no effect is pure and never suspends
+pass	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
 pass	a radix literal with a bad digit is a malformed literal, not an unbound name
@@ -361,12 +367,14 @@ pass	a recursive reader decodes a CBOR application tree and evaluates it by head
 pass	a recursive user sum type is built at run time and renders its variant names
 pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a reference to an unbound name is rejected before running
+pass	a refutable constructor pattern in a let binder is rejected
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a returned capturing closure bound with let and applied folds like the inline form
 pass	a returned runtime string with a multi-byte scalar renders the scalar verbatim
 pass	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
 pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
+pass	a run's result is a deterministic function of a host call's recorded response
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bitwise AND masks bits
@@ -477,6 +485,8 @@ pass	a truncating conversion of a negative value uses two's complement
 pass	a tuple access out of arity on a function-returned tuple is a type error, not a trap
 pass	a tuple annotated as a scalar type is rejected
 pass	a tuple annotated with the wrong arity is rejected
+pass	a tuple binding pattern against a non-tuple value is a shape error
+pass	a tuple binding pattern nests to any depth
 pass	a tuple is constructed with positional elements
 pass	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
 pass	a tuple of two sums is matched with nested constructor patterns
@@ -511,6 +521,7 @@ pass	a variant carrying a RECORD payload constructs and matches
 pass	a variant carrying a record payload escapes to the host
 pass	a well-formed annotation still checks and accepts a matching type (the control)
 pass	a wildcard in a nested pattern position ignores that element
+pass	a wrong-arity tuple binding pattern is a shape error
 pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error
 pass	a zero-bit integer width is rejected
 pass	a zero-length slice is the empty byte sequence
@@ -661,6 +672,11 @@ pass	expect unwraps the ok case of a runtime result
 pass	expect unwraps the present case of a runtime optional
 pass	extracting a high byte composes shift and mask
 pass	false is less than true
+pass	float division rounds under the fixed mode
+pass	float division that does not divide evenly rounds to nearest
+pass	float multiplication uses the float operator
+pass	float subtraction uses the float operator
+pass	floating-point uses the fixed rounding mode
 pass	functions are single-arity and curried
 pass	greater-than at the integer extremes is signed
 pass	greater-than comparison
@@ -857,6 +873,7 @@ pass	two effects each declaring a same-named operation do not collide
 pass	two empty byte sequences are equal
 pass	two empty strings are equal
 pass	two functions defined by mutual recursion compute a result
+pass	two host calls consume their responses in order
 pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
 pass	two narrow record fields are projected and added
@@ -911,7 +928,7 @@ todo	a default-integer pragma fixes a type but adds no conversion — no-promoti
 todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a default-integer pragma naming a non-integer type is rejected
 todo	a delegated capability is not itself an export field
-todo	a delegated effect performed inside an intra-program handler
+pass	a delegated effect performed inside an intra-program handler
 todo	a dependent size of zero binds an empty body and leaves the rest untouched
 todo	a dependent-size segment binds exactly the number of bytes an earlier segment named
 todo	a dependent-size segment that overruns the remaining bytes falls through
@@ -967,7 +984,6 @@ todo	a peephole rewrite rule reads in the shape of the code it rewrites
 todo	a plain quote does not evaluate a quasiquote's unquote nested inside it
 todo	a plain record compared to a nominal record of the same shape is a type error
 todo	a program that makes a host call has that call in its observable behavior
-pass	a program uses a response-returning delegated host function's return value
 todo	a projected tuple element IS observed, so its trap occurs (the anchor)
 todo	a quantity is constructed from a numeric value and a unit
 todo	a quantity over an exact rational magnitude divides exactly and derives its dimension
@@ -995,7 +1011,6 @@ todo	a recursive sum consumer whose arguments are recursive sum producers compil
 todo	a recursive sum type works with pattern matching
 todo	a recursively-built binary tree renders its full runtime structure
 todo	a recursively-built linked list renders its full runtime spine
-pass	a run's result is a deterministic function of a host call's recorded response
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	a runtime string is indexed by scalar and the extracted scalar is returned
 todo	a runtime symbol compared to an interned constant matches by content
@@ -1097,11 +1112,6 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	extending a record adds a new field
 todo	extending a record with an already-present field is rejected
-todo	float division rounds under the fixed mode
-todo	float division that does not divide evenly rounds to nearest
-todo	float multiplication uses the float operator
-todo	float subtraction uses the float operator
-todo	floating-point uses the fixed rounding mode
 todo	host calls are observed in the order they were made
 todo	inserting a key already present replaces its value, not the size
 todo	inserting a key of a different type into a map is a type error
@@ -1182,7 +1192,6 @@ todo	the value-yielding remove reports the value it dropped
 todo	two dependent-size segments each bind the count a preceding segment named
 todo	two distinct names bound to the same value key the same map entry
 todo	two equal chars compare equal
-pass	two host calls consume their responses in order
 todo	two maps of different sizes are unequal, not a type error
 todo	two maps with different keys are unequal, not a type error
 todo	two rationals denoting the same number are equal regardless of how they were written

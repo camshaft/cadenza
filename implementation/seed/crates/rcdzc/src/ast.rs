@@ -363,6 +363,66 @@ impl Decimal {
         text.parse::<f64>().unwrap_or(0.0).to_bits()
     }
 
+    /// Build a `Decimal` from a computed `f64` so that `to_f64_bits()` returns EXACTLY this value's
+    /// bits — the inverse used by the float-arithmetic fold to represent a computed result (`(+. 0.1
+    /// 0.2)` → the f64 `0.30000000000000004`) as a `Core::ConstFloat`. `None` for a NON-FINITE result
+    /// (`±inf`/NaN): a `Decimal` holds only finite values, and inf/NaN have no written form the reader
+    /// accepts (the float-literal-overflow gap), so a fold producing one DECLINES rather than inventing
+    /// a value form. Uses Rust's shortest round-tripping formatting (`{:e}`, Ryū) — the produced decimal
+    /// re-parses to the same f64 bit-for-bit — then converts the base-10 significand to the base-256
+    /// magnitude `to_f64_bits` reads. `-0.0` is preserved (its `{:e}` form carries the leading `-`).
+    pub fn from_f64(f: f64) -> Option<Decimal> {
+        if !f.is_finite() {
+            return None;
+        }
+        // `{:e}` → `[-]D[.DDDD]eEXP` (shortest round-tripping). Split sign, mantissa, exponent.
+        let s = format!("{f:e}");
+        let (negative, rest) = match s.strip_prefix('-') {
+            Some(r) => (true, r),
+            None => (false, s.as_str()),
+        };
+        let (mantissa, exp10): (&str, i64) = match rest.split_once('e') {
+            Some((m, e)) => (m, e.parse().ok()?),
+            None => (rest, 0),
+        };
+        // Fold the fractional digits into the exponent: `D.FFFF` with k frac digits = `DFFFF · 10^-k`.
+        let (int_part, frac_part) = match mantissa.split_once('.') {
+            Some((i, fr)) => (i, fr),
+            None => (mantissa, ""),
+        };
+        let mut digits = String::from(int_part);
+        digits.push_str(frac_part);
+        let exponent = exp10 - frac_part.len() as i64;
+        // Convert the base-10 digit string to a big-endian base-256 magnitude (Horner: acc = acc*10 + d,
+        // carried in a little-endian byte vector). Leading zeros collapse to the empty magnitude (zero).
+        let mut mag: Vec<u8> = Vec::new(); // little-endian base-256 during build
+        for ch in digits.bytes() {
+            if !ch.is_ascii_digit() {
+                return None;
+            }
+            let mut carry = (ch - b'0') as u32;
+            for byte in mag.iter_mut() {
+                let v = (*byte as u32) * 10 + carry;
+                *byte = (v & 0xff) as u8;
+                carry = v >> 8;
+            }
+            while carry > 0 {
+                mag.push((carry & 0xff) as u8);
+                carry >>= 8;
+            }
+        }
+        // Strip leading (most-significant) zeros → big-endian, minimal, empty iff zero.
+        while mag.last() == Some(&0) {
+            mag.pop();
+        }
+        mag.reverse();
+        Some(Decimal {
+            negative,
+            significand: mag,
+            exponent,
+        })
+    }
+
     /// Whether the value this decimal denotes rounds to a FINITE `Float64`. A literal whose magnitude
     /// exceeds the largest finite double (`~1.8e308`) rounds to `±inf` — a value with no written form
     /// the reader accepts — so it is a MALFORMED literal (`numeric-model.md` §A Floating-Point Literal

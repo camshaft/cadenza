@@ -509,7 +509,60 @@ pub fn perform_host_target(
         }
         cur = parent;
     }
+    // FALLBACK — the perform has no `host` ANCESTOR in the parent chain. This happens when the perform is
+    // in a SYNTHESIZED node (a `reduce_handle` rewrite of an intra-program handler that wraps a
+    // host-delegated call — the rewritten body is fresh, re-parented under no `host`). The routing is
+    // still sound: `check_no_home` (CDZ0401) guarantees every perform reaching emit HAS a home, and a
+    // handler for THIS effect would have reduced the perform away — so a residual perform of an effect
+    // some ENTRYPOINT delegates is genuinely host-bound. Consult the program-wide delegation set (the
+    // union of the entrypoints' `host` clauses — "the manifest is the union of its delegations").
+    if program_delegates_effect(db, decl) {
+        let result = op_result_type(db, head)?;
+        return Some((effect_name, op_name, result));
+    }
     None
+}
+
+/// Whether ANY entrypoint (`export`) body delegates the effect `decl` to the host — a `(host (E…) …)`
+/// whose effect list names it, anywhere in a reachable export body. The program-wide delegation set (the
+/// manifest is the union of the entrypoints' delegations); used as the fallback when a perform's `host`
+/// ancestor was erased by a `reduce_handle` node synthesis. Memoized-free but cheap (a handful of
+/// exports, walked once per residual host perform).
+fn program_delegates_effect(db: &mut Db, decl: crate::ast::StructId) -> bool {
+    let export_bodies: Vec<StructId> = db
+        .exports
+        .iter()
+        .filter_map(|e| e.def.and_then(|d| db.defs[d].body))
+        .collect();
+    export_bodies
+        .into_iter()
+        .any(|b| body_has_host_delegating(db, b, decl, 0))
+}
+
+/// Whether the subtree at `node` contains a `(host (E…) …)` delegating the effect `decl`. A structural
+/// walk (bounded); a `host` node's effect list is checked, then the walk descends every child.
+fn body_has_host_delegating(
+    db: &mut Db,
+    node: StructId,
+    decl: crate::ast::StructId,
+    depth: u32,
+) -> bool {
+    if depth > 128 {
+        return false;
+    }
+    if let Resolved::Host { effects, .. } = resolved_of(db, node)
+        && effects
+            .iter()
+            .any(|&e| effect_decl_of_host_name(db, e) == Some(decl))
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| body_has_host_delegating(db, c, decl, depth + 1)),
+        Struct::Atom(_) => false,
+    }
 }
 
 /// The effect-declaration occurrence a `host`'s effect-list ENTRY names — a bare effect name occurrence
