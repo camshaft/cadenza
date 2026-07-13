@@ -135,6 +135,7 @@ pass	a decimal integer literal
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
 pass	a declaration in a do block shadows an outer binding
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
+pass	a deeper nested call chain still folds in linear time near the inliner limit
 pass	a deeply nested constant expression compiles or declines without crashing
 pass	a deeply nested literal in a tuple let-binder is refutable and rejected
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
@@ -430,7 +431,9 @@ pass	a recursive reader decodes a CBOR application tree and evaluates it by head
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
 pass	a recursive sum type works with pattern matching
 pass	a recursive user sum type is built at run time and renders its variant names
+pass	a recursively-built binary tree renders its full runtime structure
 pass	a recursively-built byte sequence assembles its bytes at run time
+pass	a recursively-built linked list renders its full runtime spine
 pass	a reference to an unbound name is rejected before running
 pass	a refutable constructor pattern in a let binder is rejected
 pass	a repeated let binding shadows the earlier one for what follows
@@ -1124,8 +1127,6 @@ todo	a recognized pragma with a malformed argument list is rejected
 todo	a recursive function that installs a fresh handler on each call grows its context without bound
 todo	a recursive resolver transforms one runtime sum tree into another, then consumes it
 todo	a recursive resolver whose trapping arm builds a compound compiles
-todo	a recursively-built binary tree renders its full runtime structure
-todo	a recursively-built linked list renders its full runtime spine
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	a runtime string is indexed by scalar and the extracted scalar is returned
 todo	a runtime symbol compared to an interned constant matches by content

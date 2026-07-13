@@ -5503,6 +5503,39 @@ mod match_engine {
     }
 
     #[test]
+    fn an_argument_fault_is_reported_whether_or_not_the_parameter_is_used() {
+        // The fault walk over a call `(f arg)` must catch a fault IN `arg` — an unbound name, a malformed
+        // application — for BOTH a USED parameter (the argument is substituted into the reduced body, so
+        // the body walk sees it) AND a DEAD parameter the body ignores (the argument is absent from the
+        // reduced body, so it must be descended on its own). The redundant-descent elimination that made a
+        // deep call chain's fault walk LINEAR (drop the raw-argument descent for a USED parameter, since
+        // its argument is already in the reduced body) must NOT lose a DEAD argument's faults — those are
+        // still descended (`param_is_referenced` is false → the argument is checked).
+        // USED parameter — the fault surfaces via the reduced body.
+        assert_eq!(
+            reject_code("(module m (def (f a) (+ a 1)) (def (main) (f frobnicate)) (export main))")
+                .as_deref(),
+            Some("CDZ0101")
+        );
+        // DEAD parameter — the body ignores `a`, so the argument's fault is caught by descending the
+        // (un-substituted) argument, not the reduced body. An unbound name and a malformed application.
+        assert_eq!(
+            reject_code("(module m (def (f a) 0) (def (main) (f frobnicate)) (export main))")
+                .as_deref(),
+            Some("CDZ0101")
+        );
+        assert_eq!(
+            reject_code("(module m (def (f a) 0) (def (main) (f (5 3))) (export main))").as_deref(),
+            Some("CDZ0201")
+        );
+        // A well-formed argument to a dead parameter still compiles (no over-rejection).
+        assert_eq!(
+            reject_code("(module m (def (f a) 0) (def (main) (f 99)) (export main))"),
+            None
+        );
+    }
+
+    #[test]
     fn a_binary_operator_with_no_operands_is_rejected_cdz0201() {
         // 07-type-system "a bare equality/arithmetic keyword is rejected, not a crash": a binary operator
         // applied to ZERO operands — `(=)` / `(+)` — is a MALFORMED application (the operator demands its
