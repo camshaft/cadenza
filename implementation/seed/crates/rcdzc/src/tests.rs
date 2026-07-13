@@ -3557,6 +3557,74 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_narrow_signed_division_by_a_non_neg_one_divisor_elides_its_range_check() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(/ x:Int8 3)`: the divisor is a constant ≠ -1, so the only overflowing quotient (MIN_8/-1)
+        // cannot arise — the narrow-signed range-check is dead (just `i32.div_s`, no comparison/trap).
+        let c = lir("(: x Int8)", "(/ x 3)");
+        assert!(
+            c.contains(&Lir::I32DivS) && !c.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "a narrow div by a non-(-1) constant drops its range-check; got {c:?}"
+        );
+        // A divisor whose range excludes -1 (`(& y 7)` ∈ [0,7]) likewise — the ÷0 native trap stays.
+        let masked = lir("(: x Int8) (: y Int8)", "(/ x (& y 7))");
+        assert!(
+            !masked.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "a narrow div by a range-excludes-(-1) divisor drops its range-check; got {masked:?}"
+        );
+        // SAFETY: a runtime divisor (could be -1) KEEPS the range-check.
+        let open = lir("(: x Int8) (: y Int8)", "(/ x y)");
+        assert!(
+            open.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "a runtime divisor keeps the range-check; got {open:?}"
+        );
+        // SAFETY: divisor IS -1 → keep (MIN_8 / -1 overflows).
+        let neg1 = lir("(: x Int8)", "(/ x -1)");
+        assert!(
+            neg1.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "a -1 divisor keeps the range-check; got {neg1:?}"
+        );
+
+        // VALUE/TRAP PARITY: the range-elided div computes correctly and still ÷0-traps; the kept `-1`
+        // div still traps at MIN_8.
+        assert_eq!(run::<i8>("(: x Int8)", "(/ x 3)", &[Val::S8(127)]), 42); // 127/3
+        assert_eq!(run::<i8>("(: x Int8)", "(/ x 3)", &[Val::S8(-128)]), -42); // MIN_8/3 fits, no trap
+        assert!(traps(
+            "(: x Int8) (: y Int8)",
+            "(/ x (& y 7))",
+            &[Val::S8(10), Val::S8(0)]
+        )); // ÷0
+        assert!(traps("(: x Int8)", "(/ x -1)", &[Val::S8(-128)])); // MIN_8 / -1 overflows
+        assert_eq!(run::<i8>("(: x Int8)", "(/ x -1)", &[Val::S8(100)]), -100); // in range, no trap
+    }
+
+    #[test]
     fn divisibility_by_a_power_of_two_becomes_a_mask_test() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;

@@ -6567,8 +6567,13 @@ fn emit_div_rem(
     // A narrow signed division needs a range-check on the quotient (its `min_N / -1` overflows the type
     // but not the slot). Every other case — `%` (bounded by the divisor), unsigned `/` (magnitude only
     // shrinks), full-width signed `/` (the machine `div_s` traps MIN/-1 itself) — is exact after the
-    // native trap, so no scratch is needed.
-    let needs_range_check = matches!(op, Prim::Div) && m.signed && m.narrow();
+    // native trap, so no scratch is needed. And the range-check is DEAD when the divisor provably is NOT
+    // `-1` (the sole overflowing quotient is `MIN_N / -1`): a constant divisor `≠ -1`, or one whose range
+    // excludes -1 (`(/ x:Int8 3)`, `(/ x (& y 7))`) — then the machine `div_s` result always fits.
+    let needs_range_check = matches!(op, Prim::Div)
+        && m.signed
+        && m.narrow()
+        && crate::lower::divisor_can_be_neg_one(db, rhs);
     if !needs_range_check {
         emit_operand(db, lhs, ot, slots, base, high, scratch_ty, layout, out)?;
         emit_operand(db, rhs, ot, slots, base, high, scratch_ty, layout, out)?;

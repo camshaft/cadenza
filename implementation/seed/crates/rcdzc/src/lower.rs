@@ -6456,6 +6456,19 @@ pub(crate) fn shl_provably_in_range(db: &mut Db, val: StructId, k: u32) -> bool 
     rlo >= tmin as i128 && rhi <= tmax as i128
 }
 
+/// Whether the divisor at `id` could be `-1`. The narrow-signed-division range-check exists SOLELY for
+/// the `MIN_N / -1` overflow (the only quotient that leaves the type); if the divisor provably is NOT
+/// `-1`, that check is dead. Returns `true` (keep the check) unless the divisor's range EXCLUDES `-1` —
+/// a constant `≠ -1`, or a value whose `value_range` does not straddle `-1` (e.g. an unsigned/nonneg
+/// value, or a masked `(& y 7)` ∈ [0,7]). Conservative: an unknown range → `true`.
+pub(crate) fn divisor_can_be_neg_one(db: &mut Db, id: StructId) -> bool {
+    match value_range(db, id) {
+        Some((lo, Some(hi))) => lo <= -1 && -1 <= hi, // -1 within [lo, hi]
+        Some((lo, None)) => lo <= -1,                 // unbounded above; can reach -1 iff lo <= -1
+        None => true,                                 // unknown → assume it can
+    }
+}
+
 /// Structurally compare two CONSTANT compound values at `a`/`b`, returning `Some(true/false)` if BOTH are
 /// compile-time-visible constants (a `SumNew`/`Tuple`/`Record`/`ListNew`, or a scalar leaf), else `None`
 /// (a runtime operand — the caller declines, deferring to the heap walk). Equality is STRUCTURAL
