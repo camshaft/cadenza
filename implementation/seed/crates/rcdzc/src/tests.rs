@@ -9469,6 +9469,47 @@ mod stage1 {
     }
 
     #[test]
+    fn a_sum_match_disc_zero_probe_uses_eqz_and_dispatches() {
+        // A sum match dispatches on `sum-disc(scrutinee) == disc`; when the tested discriminant is 0 —
+        // the FIRST declared variant (`Some`), the common first-arm probe — that is `i32.eqz` (opcode
+        // 0x45), not `const 0 ; i32.eq`. Verify BOTH the emitted core module carries an `i32.eqz` AND the
+        // match still dispatches correctly across the present/absent variants (composed run). `Some`
+        // first so its disc-0 probe is the eqz.
+        use crate::testkit::parse;
+        let src = "(module m (type Option (Some Int64) None) \
+                     (def (pick (: n Int64)) \
+                        (match (if (> n 0) (Option.Some n) Option.None) \
+                          ((Option.Some x) x) (Option.None -1))) \
+                     (export pick))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        // The emitted component's embedded core module carries an `i32.eqz` (opcode 0x45) — the disc-0
+        // probe. Without the eqz special case the probe would be `i32.const 0` (0x41 0x00) + `i32.eq`
+        // (0x46) and no 0x45 would appear (this program has no other eqz — no scalar `== 0`, no bool
+        // negation). A whole-component byte scan suffices: the core module is embedded verbatim.
+        assert!(
+            bytes.contains(&0x45),
+            "the disc-0 (Some) probe must emit an i32.eqz (0x45)"
+        );
+        // And the dispatch is correct: `pick 5` → 5 (Some arm reads the payload), `pick 0` → -1 (None).
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping composed run");
+            return;
+        };
+        for (arg, want) in [("5", "5"), ("0", "-1")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("pick".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "pick {arg}"),
+                cdz_run::Outcome::Trap(t) => panic!("disc-0-eqz sum-match run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_nested_sum_match_is_a_decision_tree() {
         // The Maranget decision tree over MONOMORPHIC nested sums: `Box` wraps an `Inner` (itself a sum),
         // so `(match b ((Full (Pos x)) x) ((Full (Neg y)) y) (Empty -1))` shares the OUTER `Full` probe

@@ -2280,11 +2280,16 @@ fn emit(
                     }
                 },
             };
-            // disc(handle) == disc_present ?
+            // disc(handle) == disc_present ?  (`disc_present == 0` → `i32.eqz`, one instruction — the
+            // sum-disc eqz special case; a `Some`/`Ok` present variant is discriminant 0.)
             out.push(Lir::LocalGet(handle_slot));
             out.push(Lir::CallImport(OP_SUM_DISC)); // [disc]
-            out.push(Lir::ConstI32(disc_present as i32));
-            out.push(Lir::I32Eq); // [present?]
+            if disc_present == 0 {
+                out.push(Lir::I32Eqz); // [present?]
+            } else {
+                out.push(Lir::ConstI32(disc_present as i32));
+                out.push(Lir::I32Eq); // [present?]
+            }
             out.push(Lir::If(block_ty));
             // THEN — the present payload: sum-payload + unbox by result type.
             out.push(Lir::LocalGet(handle_slot));
@@ -3739,8 +3744,15 @@ fn emit_sum_match_arms(
                 }
             }
             out.push(Lir::CallImport(OP_SUM_DISC)); // → [disc]
-            out.push(Lir::ConstI32(disc as i32));
-            out.push(Lir::I32Eq);
+            // `disc == 0` is `i32.eqz` (one instruction), not `const 0 ; i32.eq` (two) — the sum-disc
+            // twin of the scalar/probe eqz special case (cycle 43). A `0` discriminant is the FIRST
+            // declared variant (`Some`, `Ok`, …), so this fires on the common first-arm test.
+            if disc == 0 {
+                out.push(Lir::I32Eqz);
+            } else {
+                out.push(Lir::ConstI32(disc as i32));
+                out.push(Lir::I32Eq);
+            }
             out.push(Lir::If(block_ty));
             emit_sum_cont(
                 db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty,
@@ -3806,14 +3818,16 @@ fn emit_sum_cont(
             let body_base = *high;
             out.push(Lir::If(block_ty));
             if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, *body)) {
-                emit_operand(db, *body, rit, slots, body_base, high, scratch_ty, layout, out)?;
+                emit_operand(
+                    db, *body, rit, slots, body_base, high, scratch_ty, layout, out,
+                )?;
             } else {
                 emit(db, *body, slots, body_base, high, scratch_ty, layout, out)?;
             }
             out.push(Lir::Else);
             emit_sum_cont(
-                db, scrutinee, els, result_it, block_ty, slots, body_base, high, scratch_ty, layout,
-                out,
+                db, scrutinee, els, result_it, block_ty, slots, body_base, high, scratch_ty,
+                layout, out,
             )?;
             out.push(Lir::End);
             Ok(())
