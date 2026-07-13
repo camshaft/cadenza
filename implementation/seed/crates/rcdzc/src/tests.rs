@@ -7417,6 +7417,24 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_newtype_over_a_sum_escapes_to_the_host() {
+        // REGRESSION: a newtype-over-sum RETURNED to the host at RUN TIME used to DECLINE ("a `(Option
+        // Int64)` sum crosses the host boundary only as a single nullary export's result") — the escape
+        // routing matched the raw `Ty::Nominal` result and missed the sum-escape arm, so it fell to the
+        // scalar decline. It now routes on the ERASED (stripped) result → the sum escape. The `(if …)`
+        // keeps the payload RUNTIME (a constant folds through a type-agnostic path that masked the bug).
+        // The value renders as its underlying sum (`(: (Some 7) (Option Int64))` — the erased inner).
+        let Some(v) = run_heap_value_escape(
+            "(module m (type Cached (Mk (Option Int64))) \
+               (def (main) (Mk (Some (if true 7 0)))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime newtype-over-sum escape");
+            return;
+        };
+        assert_eq!(v, "(: (Some 7) (Option Int64))");
+    }
+
+    #[test]
     fn a_newtype_over_a_sum_erases_to_the_same_component_as_the_bare_sum() {
         // The proof there is NO double-box: a newtype-over-Option compiles to the BYTE-IDENTICAL component
         // as the bare Option it wraps — the `Mk` tag erased to nothing. (A constant fold makes both a
