@@ -283,6 +283,11 @@ impl<'a, 'b> Reader<'a, 'b> {
             Some(b'(') => self.read_list(),
             Some(b')') => Err(ReadError(format!("unexpected ')' at byte {}", self.pos))),
             Some(b'"') => self.read_string(),
+            // A byte-string literal `b"…"` — the value form of a `Bytes` (the companion of the `"…"`
+            // string literal). Only the exact `b"` prefix opens one; a bare `b` (or `b` starting a
+            // longer identifier like `byte`) reads as an ordinary name. Escapes mirror `escape_bytes`:
+            // `\n \t \r \\ \"` named, `\xNN` two-hex, else the raw byte.
+            Some(b'b') if self.src.get(self.pos + 1) == Some(&b'"') => self.read_byte_string(),
             // `` ` `` / `,` / `,@` sigils, matching the corpus quasiquote display. The inner form is
             // built BEFORE the synthetic head (preserving structure-id order — the reader is the
             // round-trip oracle, so the arena stays byte-identical to the untracked path). The head
@@ -400,6 +405,49 @@ impl<'a, 'b> Reader<'a, 'b> {
         Ok(self.mk_atom_leaf(Leaf::Str(s), Span::new(start, self.pos)))
     }
 
+    /// Read a byte-string literal `b"…"` into a `Leaf::Bytes` (arbitrary bytes, NOT normalized as
+    /// text). The escape vocabulary is the INVERSE of `literal::escape_bytes` (the render side): `\n \t
+    /// \r \\ \"` are the named byte escapes, `\xNN` is a two-hex-digit byte, and any other `\c` keeps `c`
+    /// verbatim (matching `read_string`'s lenient fallback). A raw byte stands for itself. `b"A\nB"`
+    /// reads to `[65, 10, 66]`; `b"\x89PNG"` to `[137, 80, 78, 71]`. The atom spans `b"` through the
+    /// closing quote.
+    fn read_byte_string(&mut self) -> Result<StructId, ReadError> {
+        let start = self.pos;
+        self.bump(); // `b`
+        self.bump(); // opening quote
+        let mut bytes: Vec<u8> = Vec::new();
+        loop {
+            match self.bump() {
+                None => return Err(ReadError("unterminated byte string".into())),
+                Some(b'"') => break,
+                Some(b'\\') => match self.bump() {
+                    Some(b'n') => bytes.push(b'\n'),
+                    Some(b't') => bytes.push(b'\t'),
+                    Some(b'r') => bytes.push(b'\r'),
+                    Some(b'\\') => bytes.push(b'\\'),
+                    Some(b'"') => bytes.push(b'"'),
+                    // `\xNN` — exactly two hex digits, the byte they name.
+                    Some(b'x') => {
+                        let hi = self.bump();
+                        let lo = self.bump();
+                        match (hi.and_then(hex_digit), lo.and_then(hex_digit)) {
+                            (Some(h), Some(l)) => bytes.push((h << 4) | l),
+                            _ => {
+                                return Err(ReadError(
+                                    "a byte-string \\x escape needs two hex digits".into(),
+                                ));
+                            }
+                        }
+                    }
+                    Some(other) => bytes.push(other),
+                    None => return Err(ReadError("unterminated escape".into())),
+                },
+                Some(b) => bytes.push(b),
+            }
+        }
+        Ok(self.mk_atom_leaf(Leaf::Bytes(bytes), Span::new(start, self.pos)))
+    }
+
     fn read_atom_or_name(&mut self) -> Result<StructId, ReadError> {
         let start = self.pos;
         while let Some(b) = self.peek() {
@@ -473,6 +521,17 @@ fn is_dotted_name(tok: &str) -> bool {
                 .next()
                 .is_some_and(|c| c.is_alphabetic() || c == '_')
     })
+}
+
+/// The value `0..=15` of an ASCII hex digit byte (`0-9`, `a-f`, `A-F`), or `None`. Used to decode a
+/// byte-string `\xNN` escape.
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -580,6 +639,11 @@ mod tests {
             "true",
             "(f a b c)",
             "(quasiquote (unquote x))",
+            // Byte-string literals `b"…"`: printable-ASCII raw, named + `\xNN` escapes, empty.
+            "b\"ABC\"",
+            "b\"\\x89PNG\"",
+            "b\"A\\nB\"",
+            "b\"\"",
         ] {
             let a = read(src).unwrap();
             let printed = print(&a);
@@ -590,6 +654,30 @@ mod tests {
                 "print∘read stable for {src:?} (printed {printed:?})"
             );
         }
+    }
+
+    #[test]
+    fn reads_a_byte_string_literal_into_bytes() {
+        // `b"…"` is a byte-string literal → `Leaf::Bytes` (the companion of `"…"` → `Leaf::Str`).
+        // Named escapes, `\xNN` hex (incl. a high byte ≥ 0x80), and the empty literal all decode.
+        for (src, want) in [
+            ("b\"ABC\"", vec![65u8, 66, 67]),
+            ("b\"\\x89PNG\"", vec![137, 80, 78, 71]),
+            ("b\"A\\nB\"", vec![65, 10, 66]),
+            ("b\"\"", vec![]),
+        ] {
+            let a = read(src).unwrap();
+            match a.get(a.root) {
+                Struct::Atom(l) => match a.leaf(*l) {
+                    Leaf::Bytes(b) => assert_eq!(b, &want, "bytes for {src:?}"),
+                    other => panic!("{src:?} read as {other:?}, not Leaf::Bytes"),
+                },
+                _ => panic!("{src:?} is not an atom"),
+            }
+        }
+        // A bare `b` is still an ordinary NAME — only the exact `b"` prefix opens a byte string.
+        let a = read("b").unwrap();
+        assert_eq!(a.as_name(a.root), Some("b"));
     }
 
     #[test]

@@ -3578,6 +3578,35 @@ mod recursion {
     }
 
     #[test]
+    fn a_recursive_param_used_only_as_a_call_argument_infers_from_the_callee() {
+        // A recursive def's parameter used ONLY as a call ARGUMENT — never touched by a primitive
+        // operator, never annotated — was left unconstrained (`Any`) and the def DECLINED. The
+        // recursive-param solver derived a constraint only from an operator applied to the parameter or
+        // the self-call, never from an argument position. Fixed by unifying such an argument against the
+        // CALLEE's k-th parameter type (`callee_param_ty`), which the callee's own body pins. `a`, passed
+        // only to `(twice a)` where `twice` adds it, infers Int64: `f(5,3)` = twice(5)*3 = 30.
+        let bytes = component(
+            "(module m (def (twice a) (+ a a)) \
+               (def (f a n) (if (< n 1) 0 (+ (twice a) (f a (- n 1))))) \
+               (def (main) (f 5 3)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 30);
+    }
+
+    #[test]
+    fn a_param_passed_to_a_polymorphic_callee_is_not_over_constrained() {
+        // The argument-position constraint is PRECISE: it fires only when the callee's k-th parameter is
+        // DETERMINED (not `Any`/`Var`). A parameter passed to a POLYMORPHIC callee (`id`, whose param is
+        // unconstrained) gets NO spurious constraint, so `g` stays usable at any type. `(+ (g 3) (g 4))`
+        // = 7 — `g`'s param inlines from each concrete argument as before, not pinned by the `id` call.
+        let bytes = component(
+            "(module m (def (id x) x) (def (g v) (id v)) \
+               (def (main) (+ (g 3) (g 4))) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
+    }
+
+    #[test]
     fn a_heap_match_composed_with_checked_arith_uses_disjoint_scratch_slots() {
         // ⚠ INVALID WASM regression: a recursive body composing a heap-`match` result (an inlined
         // `byte-at` → `Bytes.at` MatchSum materializing an i32 Option handle in a scratch slot) with
@@ -4175,6 +4204,51 @@ mod match_engine {
                 ),
                 want,
                 "constant Bytes.slice folds: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_byte_string_literal_is_a_constant_bytes_value() {
+        // `b"…"` in source is a `Ty::Bytes` constant, equal to the `Bytes.of` of the same bytes — it
+        // lowers to a `Core::BytesOf`, so it rides the constant equality/slice/concat fold. Named escapes
+        // (`\n`), `\xNN` hex (incl. a high byte ≥ 0x80), and the empty literal all decode. Each returns a
+        // scalar (1/0) via `if (= …)` so `main` needs no bytes escape.
+        for (body, want) in [
+            (
+                "(module m (def (main) (if (= b\"ABC\" (Bytes.of (list 65 66 67))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= b\"\\x89PNG\" (Bytes.of (list 137 80 78 71))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= b\"A\\nB\" (Bytes.of (list 65 10 66))) 1 0)) (export main))",
+                1,
+            ),
+            (
+                "(module m (def (main) (if (= b\"\" (Bytes.of (list))) 1 0)) (export main))",
+                1,
+            ),
+            // a differing byte → false (the literal really carries its bytes, not just Bytes-ness)
+            (
+                "(module m (def (main) (if (= b\"ABC\" (Bytes.of (list 65 66 99))) 1 0)) (export main))",
+                0,
+            ),
+            // usable through the ordinary bytes ops: length of a literal
+            (
+                "(module m (def (main) (Bytes.len b\"ABCD\")) (export main))",
+                4,
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "byte-string literal is a constant Bytes: {body}"
             );
         }
     }
@@ -6394,7 +6468,7 @@ mod diagnostics {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::{FromVal, run_returns, run_returns_with};
+    use super::{FromVal, find_runtime_wasm, run_returns, run_returns_with};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -8182,6 +8256,27 @@ mod stage1 {
     }
 
     #[test]
+    fn recursion_is_detected_through_a_nested_do() {
+        // A self-call inside a nested `(do …)` is a real recursion edge. `resolve_do` collapses a `do` to
+        // `Ref{last}` (intermediates discarded as pure), which would hide a self-call in a `do` item from
+        // `is_recursive`'s callee walk — so `collect_callees` reads a `do` by raw AST and descends every
+        // item. Without this, `sum-to` here would read as NON-recursive and inline without end (a hang) or
+        // miscompile. `(do 0 (sum-to (- n 1)))` puts the self-call as the last item, and `(do (dummy) …)`
+        // shape (a discarded intermediate then the recursive tail) is exactly the effect-walk shape. This
+        // pins recursion detection through `do` at the plain (non-effect) level. `sum-to 3` = 3+2+1+0 = 6.
+        let src = "(module m (def (sum-to n) (if (= n 0) 0 (do 7 (+ n (sum-to (- n 1)))))) \
+                   (def (main) (sum-to 3)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("recursion through a nested do is detected and compiles"),
+                "main"
+            ),
+            6
+        );
+    }
+
+    #[test]
     fn nested_intra_program_handlers_compose_inside_out() {
         // E3-nested: two nested `handle`s compose — the fold reduces the INNER handle first (discharging
         // its effect), leaving the OUTER effect's performs for the outer fold. `(A.a)` resumes 22 (inner),
@@ -9428,23 +9523,52 @@ mod stage1 {
         //      stack`. Hit even by a SCALAR guard (no heap handle).
         //  (2) BRANCH SCRATCH — when the guard produces an i32 heap handle (`value-eq`/`MatchSum`), its
         //      scratch slot must sit above the fall-through's i64 iteration arithmetic.
-        // A scalar guard exercises (1); the value-eq guard exercises (1)+(2). `find(0)` = 3 either way.
+        // A scalar guard exercises (1); the value-eq guard exercises (1)+(2). This also covers the two
+        // sibling scratch seams a heap-op-in-a-loop hit: a value-eq as the match SCRUTINEE (its handle
+        // scratch vs the probe chain's arm-body arith), and a value-eq guard on a LITERAL-probe arm (its
+        // handle scratch in the THEN vs the probe-else's iteration arith). All must be valid modules.
         use crate::testkit::parse;
         let Some(runtime) = super::find_runtime_wasm() else {
             eprintln!("runtime wasm not found; skipping guarded-wildcard-loop run");
             return;
         };
-        for (label, src) in [
+        for (label, src, want) in [
             (
-                "scalar guard",
+                "scalar guard (tail depth)",
                 "(module m (def (find (: n Int64)) \
                    (match n ((guard x (> x 2)) x) (_ (find (+ n 1))))) (export find))",
+                "3",
             ),
             (
-                "value-eq guard",
+                "value-eq guard on wildcard (tail depth + scratch)",
                 "(module m (type N (I Int64) (J Int64)) (def (mk (: n Int64)) (N.I n)) \
                    (def (find (: n Int64)) \
                      (match n ((guard x (= (mk x) (mk 3))) x) (_ (find (+ n 1))))) (export find))",
+                "3",
+            ),
+            (
+                "value-eq as match scrutinee (scrutinee scratch)",
+                "(module m (type N (I Int64) (J Int64)) (def (mk (: n Int64)) (N.I n)) \
+                   (def (find (: n Int64)) \
+                     (match (= (mk n) (mk 3)) (true n) (false (find (+ n 1))))) (export find))",
+                "3",
+            ),
+            (
+                "value-eq guard on literal-probe arm (probe-else scratch)",
+                "(module m (type N (I Int64) (J Int64)) (def (mk (: n Int64)) (N.I n)) \
+                   (def (find (: n Int64)) \
+                     (match n ((guard 3 (= (mk n) (mk 3))) 300) (_ (find (+ n 1))))) (export find))",
+                "300",
+            ),
+            (
+                "value-eq guard on SUM-match arm, call scrutinee (sum-cont scratch)",
+                "(module m (type N (I Int64) (J Int64)) \
+                   (def (bump (: n Int64)) (if (< n 0) (N.J n) (N.I n))) \
+                   (def (mk (: n Int64)) (N.I n)) \
+                   (def (find (: n Int64)) \
+                     (match (bump n) ((guard (N.I x) (= (mk x) (mk 3))) x) (_ (find (+ n 1))))) \
+                   (export find))",
+                "3",
             ),
         ] {
             let bytes = compile_component(&crate::codec::encode(&parse(src)))
@@ -9456,7 +9580,7 @@ mod stage1 {
                 runtime_cache_dir: None,
             };
             match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
-                cdz_run::Outcome::Value(s) => assert_eq!(s, "3", "find(0) = 3 ({label})"),
+                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "find(0) = {want} ({label})"),
                 cdz_run::Outcome::Trap(t) => panic!("guarded-wildcard-loop trapped ({label}): {t}"),
             }
         }
@@ -9782,37 +9906,75 @@ mod stage1 {
         );
     }
 
+    /// Run `src`'s `main` with a single integer `arg` through the COMPOSED value-heap runtime (a closure
+    /// is a heap cell, so instantiation needs the runtime linked), returning the rendered result string.
+    /// Skips (returns `None`) if the runtime wasm is not built.
+    fn run_closure(src: &str, arg: i64) -> Option<String> {
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "a runtime closure imports the value-heap runtime (a heap cell, not a fold)"
+        );
+        let runtime = find_runtime_wasm()?;
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![arg.to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => Some(s),
+            cdz_run::Outcome::Trap(t) => panic!("closure run trapped: {t}"),
+        }
+    }
+
     #[test]
     fn a_function_crosses_a_recursive_boundary_as_a_runtime_closure() {
-        use wasmtime::component::Val;
         // The genuine runtime-closure case (`call_indirect`): a function argument passed to a RECURSIVE
         // higher-order function, applied inside the recursion. `apply-sum` cannot inline (it recurses),
         // so its function parameter `g` is a real runtime CLOSURE VALUE — the lambda `(fn (x) (* x 2))`
-        // is LAMBDA-LIFTED to a standalone function, passed as a funcref-table slot, and applied via
+        // is LAMBDA-LIFTED to a standalone function, passed as a heap-cell handle, and applied via
         // `call_indirect`. `apply-sum g n = g(n) + g(n-1) + … + g(1)`, so with `g = (*2)` the result is
         // `2·(n + (n-1) + … + 1) = n·(n+1)`. `core-semantics.md` §A Function Is A First-Class Value.
         let src = "(module m \
             (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
               (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
             (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (* x 2)) n)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(0)]), 0);
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(1)]), 2);
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(3)]), 12);
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(5)]), 30);
-        // A DIFFERENT lifted lambda through the same recursive HOF — `(+ x 100)` — so the result is
-        // `sum(k=1..n) (k + 100) = n(n+1)/2 + 100n`. Pins that the closure carries the RIGHT code (the
-        // table slot selects the applied function), not a fixed one.
+        let Some(r0) = run_closure(src, 0) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r0, "0");
+        assert_eq!(run_closure(src, 1).unwrap(), "2");
+        assert_eq!(run_closure(src, 3).unwrap(), "12");
+        assert_eq!(run_closure(src, 5).unwrap(), "30");
+        // A DIFFERENT lifted lambda through the same recursive HOF — `(+ x 100)` — so the closure must
+        // carry the RIGHT code (the table slot selects the applied function). n=3: 3·100 + 6 = 306.
         let src2 = "(module m \
             (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
               (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
             (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (+ x 100)) n)) (export main))";
-        let bytes2 = compile_component(&crate::codec::encode(&parse(src2))).expect("compile");
-        // n=3: (3+100)+(2+100)+(1+100) = 306.
-        assert_eq!(
-            run_returns_with::<i64>(&bytes2, "main", &[Val::S64(3)]),
-            306
-        );
+        assert_eq!(run_closure(src2, 3).unwrap(), "306");
+    }
+
+    #[test]
+    fn a_capturing_closure_crosses_a_recursive_boundary() {
+        // A CAPTURING closure: `(fn (x) (+ x k))` closes over the free variable `k` from `main`'s scope.
+        // It is a genuine runtime closure with an ENVIRONMENT — a heap cell holding the code pointer AND
+        // the captured `k` — passed to the recursive `apply-sum` and applied at each step, each
+        // application reading `k` back from the cell. `core-semantics.md` §A Function Value Captures The
+        // Bindings In Scope Where It Is Created. `apply-sum (fn (x) (+ x k)) 3 = (3+k)+(2+k)+(1+k) = 6+3k`.
+        let src = "(module m \
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
+            (def (main (: k Int64)) (apply-sum (fn ((: x Int64)) (+ x k)) 3)) (export main))";
+        let Some(r0) = run_closure(src, 0) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r0, "6");
+        assert_eq!(run_closure(src, 10).unwrap(), "36");
+        assert_eq!(run_closure(src, 100).unwrap(), "306");
     }
 
     #[test]

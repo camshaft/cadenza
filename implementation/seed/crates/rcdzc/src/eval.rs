@@ -649,6 +649,19 @@ fn ensure_callees(db: &mut Db, node: StructId) {
 /// per node. (`collect_callees` recurses into sub-expressions of the SAME body, accumulating into
 /// `out`; the memo keys only whole body/callee nodes the DFS visits, not every interior node.)
 fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
+    // A nested `(do e0 … en)` — EVERY item runs (in sequence), so a self-call in ANY of them is a real
+    // recursion edge. `resolve_do` collapses a `do` to `Ref{last}` (its intermediates are discarded as
+    // pure — no effect model at that layer), which would HIDE a self-call in an intermediate from the
+    // callee walk (e.g. `(do (E.emit n) (walk (- n 1)))` — the recursive `(walk …)` is the last item, but
+    // an intermediate could also self-call). Read the `do` by raw AST and descend every item, so
+    // `is_recursive` sees a self-call wherever it sits in the block. (Checked before the `resolved_of`
+    // match, which would only see the collapsed `Ref{last}` and miss the intermediates.)
+    if let Some(items) = db.ast.as_form(node, "do") {
+        for &item in items.to_vec().iter() {
+            collect_callees(db, item, out);
+        }
+        return;
+    }
     match resolved_of(db, node) {
         Resolved::Apply { head, args } => {
             if let Some(cb) = callee_body(db, head) {
@@ -734,6 +747,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::Bytes(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)

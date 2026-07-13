@@ -562,6 +562,14 @@ pub struct Db {
     /// program with no runtime closure — byte-identical to before. `DESIGN-runtime-closures-rcdzc.md` §3.
     pub(crate) lifted: Vec<crate::lower::LiftedLambda>,
 
+    /// CAPTURED-reference occurrences: a body reference inside a lifted lambda that names a FREE VARIABLE
+    /// (a binding from the lambda's creation scope), mapped to `(capture index, solved type)`. Recorded
+    /// by `lower::lower_lambda_value` when the lambda is lifted; read when the LIFTED body is lowered so
+    /// that reference produces a `Core::Captured` (an env-cell read) rather than following the ref to the
+    /// out-of-scope binding. Keyed by the reference OCCURRENCE (unique per use). Empty for a program with
+    /// no capturing closure. `DESIGN-runtime-closures-rcdzc.md` §3.
+    pub(crate) captured_ref: crate::fxhash::FxHashMap<StructId, (usize, Ty)>,
+
     /// The set of subtree roots [`crate::resolve::resolve_subtree`] has ALREADY fully walked. That
     /// function eagerly resolves every node under a root to PIN an argument's meaning before
     /// β-reduction re-parents it; `apply_lambda` calls it on each argument at EVERY application. The
@@ -714,6 +722,7 @@ impl Db {
             rec_worklist: Vec::new(),
             kept_bindings: crate::fxhash::FxHashSet::default(),
             lifted: Vec::new(),
+            captured_ref: crate::fxhash::FxHashMap::default(),
             resolved_subtrees: crate::fxhash::FxHashSet::default(),
             def_schemes: crate::fxhash::FxHashMap::default(),
             param_types: crate::fxhash::FxHashMap::default(),

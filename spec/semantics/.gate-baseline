@@ -7,7 +7,11 @@ pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
 pass	a CBOR atom decodes each scalar major type to its value
+pass	a CBOR head decodes its major type and big-endian argument from the input bytes
+pass	a CBOR reader walks a variable-length array using its decoded length as the element count
 pass	a CBOR simple value that is not a known boolean is classified as not-a-boolean
+pass	a CBOR skip steps over a tagged item to the value it wraps
+pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
@@ -42,6 +46,10 @@ pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
 pass	a byte sequence carrying a runtime byte value is a first-class value
 pass	a byte sequence is constructed from a list of integers in range
+pass	a byte sequence written as a literal renders back to the same literal
+pass	a byte-string literal equals the explicit byte sequence it desugars to
+pass	a byte-string literal with escapes equals its explicit byte sequence
+pass	a capturing closure is applied through a recursive higher-order function
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a checked result is consumed by matching its Option at run time
 pass	a closure captures the binding in scope where it was created
@@ -101,6 +109,7 @@ pass	a field is projected off a record unwrapped from a result with expect
 pass	a field is projected off a record unwrapped from an optional with expect
 pass	a field read follows the record's SORTED field order, not its written order
 pass	a fixpoint loop that threads a growing list accumulator returns that list
+pass	a fixpoint that re-seeds a fresh list each round via a helper returns a list
 pass	a float in integer-width position is rejected
 pass	a floating-point literal
 pass	a function applied to an argument
@@ -275,6 +284,7 @@ pass	a record with a non-adjacent duplicate field name is a type error
 pass	a record with a runtime field is returned as a program result
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
 pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
+pass	a recursive byte walk threading a Bytes parameter through a helper infers without annotation
 pass	a recursive def computes over its argument
 pass	a recursive def with a match base case computes over its argument
 pass	a recursive emitter dispatches on a sum's variants to build bytes per node
@@ -286,8 +296,10 @@ pass	a recursive function sums a range it walks by performing a fresh-index effe
 pass	a recursive function that threads a tuple accumulator returns it
 pass	a recursive list accumulator grown by push and returned in the base arm stays a list
 pass	a recursive lower from a sum to Bytes assembles its output in match arms
+pass	a recursive parameter used only as a call argument infers from the callee's parameter type
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
+pass	a recursive reader decodes a CBOR application tree and evaluates it by head index
 pass	a recursive user sum type is built at run time and renders its variant names
 pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a reference to an unbound name is rejected before running
@@ -323,6 +335,7 @@ pass	a runtime string equality selects a branch by comparing a parameter to a li
 pass	a runtime string slice out of range yields None
 pass	a runtime string slice with an empty in-range span is Some of the empty string
 pass	a runtime subtraction that overflows traps
+pass	a runtime sum equality as a match SCRUTINEE drives a tail-recursive loop
 pass	a runtime sum equality drives a tail-recursive loop
 pass	a runtime sum match drives a tail-recursive loop
 pass	a runtime sum whose payload comes from recursion compares equal by a heap walk
@@ -345,12 +358,17 @@ pass	a scalar element is projected DIRECTLY from a named function's runtime tupl
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
 pass	a self-tail call passing a heap-match argument compiles to valid wasm
+pass	a sequencing block discards a pure compound intermediate
+pass	a sequencing block discards a pure list intermediate
+pass	a sequencing block whose last form is unit yields unit
+pass	a sequencing block yields the value of its last form
 pass	a shadowed-constructor application types at the binding's return type
 pass	a signed narrow if-branch opposite a bare literal computes at the narrow width
 pass	a signed narrow match binder returns the bound value
 pass	a signed narrow tuple element round-trips through the heap with its sign
 pass	a signed narrow-width parameter plus a bare literal computes at the parameter width
 pass	a signed-byte entrypoint returns its runtime argument
+pass	a single-form body admits a sequence by holding a do block
 pass	a slice spanning a concatenation sees the logical bytes
 pass	a slice whose end is beyond the string length yields None
 pass	a slice whose end precedes its start yields None
@@ -397,6 +415,8 @@ pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a user sum's nullary variant escapes with its bare variant name
 pass	a user sum's payload variant escapes with its bare variant name
+pass	a value-eq guard on a LITERAL-probe arm drives a tail-recursive loop
+pass	a value-eq guard on a SUM-match arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
 pass	a variant carrying a RECORD payload constructs and matches
 pass	a variant carrying a record payload escapes to the host
@@ -429,6 +449,7 @@ pass	an element is projected from a runtime-constructed tuple
 pass	an element is projected from a tuple returned by a function
 pass	an element is projected from a tuple returned by a nullary function
 pass	an element read across a concatenation boundary is the right value
+pass	an empty byte-string literal is the empty byte sequence
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
@@ -622,6 +643,7 @@ pass	record equality is independent of the order fields are written
 pass	record fields render in canonical (key-sorted) order regardless of source order
 pass	recursive factorial with a match base case
 pass	recursive fibonacci with literal match base cases
+pass	resolving a head against a prelude symbol rejects a length-mismatched prefix
 pass	resolving a name in a shadowing environment returns the innermost binding's slot
 pass	resuming with a value of the wrong type for the operation's result is a type error
 pass	runtime float equality compares by canonical byte form
@@ -741,10 +763,6 @@ todo	Qty.value recovers the underlying numeric value, discarding the unit
 todo	Result propagates errors without trapping
 todo	Type is a first-class value
 todo	a BigInt operation does not silently promote a fixed-width operand
-todo	a CBOR head decodes its major type and big-endian argument from the input bytes
-todo	a CBOR reader walks a variable-length array using its decoded length as the element count
-todo	a CBOR skip steps over a tagged item to the value it wraps
-todo	a CBOR skip walks past a whole nested item to the next offset
 todo	a LEB128 non-final byte composes mask, continuation bit, and to-byte
 todo	a NaN nested in a list compares equal under the canonical byte form
 todo	a NaN nested in a sum payload compares equal under the canonical byte form
@@ -765,9 +783,6 @@ todo	a bottom-up fold matches a tuple of its recursive results with constructor 
 todo	a bound name in a map key is used by its value, not the literal name
 todo	a built map renders its entries in canonical key order
 todo	a built-in Ast constructor applied to a wrong-type payload is a type error
-todo	a byte sequence written as a literal renders back to the same literal
-todo	a byte-string literal equals the explicit byte sequence it desugars to
-todo	a byte-string literal with escapes equals its explicit byte sequence
 todo	a char literal naming a surrogate is a reader error
 todo	a char order agrees with its scalar value
 todo	a checked conversion of a negative value into an unsigned type traps
@@ -791,7 +806,6 @@ todo	a diverging expression unifies with an integer position
 todo	a factorial that overflows the integer type traps through the recursion
 todo	a final bytes segment binds the remainder after the sized segments
 todo	a final unquote-splice binds the remaining elements as a list
-todo	a fixpoint that re-seeds a fresh list each round via a helper returns a list
 todo	a function declaration in a do block calls an earlier sibling declaration
 todo	a function declaration in a do block is callable by the following forms
 todo	a function deriving a velocity from a distance and a time
@@ -871,7 +885,6 @@ todo	a reader literal carries a qualified name with a dot
 todo	a recognized pragma with a malformed argument list is rejected
 todo	a recursive function that installs a fresh handler on each call grows its context without bound
 todo	a recursive function threads two nested handlers' states at once
-todo	a recursive reader decodes a CBOR application tree and evaluates it by head index
 todo	a recursive resolver transforms one runtime sum tree into another, then consumes it
 todo	a recursive resolver whose trapping arm builds a compound compiles
 todo	a recursive sum consumer whose arguments are recursive sum producers compiles
@@ -889,16 +902,11 @@ todo	a runtime string slice addresses scalar values, not bytes
 todo	a runtime symbol compared to an interned constant matches by content
 todo	a runtime symbol that differs from the interned constant does not match
 todo	a scalar element is projected from a let-bound runtime tuple
-todo	a sequencing block discards a pure compound intermediate
-todo	a sequencing block discards a pure list intermediate
-todo	a sequencing block whose last form is unit yields unit
-todo	a sequencing block yields the value of its last form
 todo	a set collapses a duplicate element
 todo	a set is constructed from a list of its elements
 todo	a set with elements of two different types is a type error
 todo	a signed i8 segment encodes as two's complement
 todo	a signed pattern segment reads a two's-complement integer as negative
-todo	a single-form body admits a sequence by holding a do block
 todo	a string compared to a symbol is a type error
 todo	a string literal
 todo	a string literal is normalized to the canonical text form
@@ -945,7 +953,6 @@ todo	an argument bound to a used parameter IS observed, so its trap occurs (the 
 todo	an association list is searched by key with a tuple-carrying Option match
 todo	an element pattern matches a list by its length and elements
 todo	an empty binary form is the empty byte sequence
-todo	an empty byte-string literal is the empty byte sequence
 todo	an empty map is unequal to a non-empty map, not a type error
 todo	an empty quote is rejected, not a crash
 todo	an empty scrutinee matches an empty bin pattern
@@ -1072,7 +1079,6 @@ todo	record reshaping is subset comparison as explicit projection
 todo	removing a key drops its association and the size
 todo	removing an absent key leaves the map unchanged
 todo	removing an element yields a set without it
-todo	resolving a head against a prelude symbol rejects a length-mismatched prefix
 todo	resuming with a wrong-type value for a compound result type is a type error
 todo	scaling a quantity by a dimensionless quantity keeps its dimension
 todo	set equality is independent of the order elements are written
