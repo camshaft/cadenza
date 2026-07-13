@@ -1286,7 +1286,20 @@ pub fn reduce_handle(
         // value). The arm body's free names keep their pinned resolution through `beta_reduce`; `C`'s free
         // names resolve against the handle scope (the structural splice copy re-parents them). The
         // next-state is dead — nothing after the perform reads state on a pure spine.
-        return Some(rewrite_resume_to_context(db, substituted, body, perform));
+        let folded = rewrite_resume_to_context(db, substituted, body, perform);
+        // TYPE-CONSISTENCY GUARD (the resumptive analogue of the abortive guard above). A `resume` node
+        // types as `Ty::Any` (infer.rs), so an arm body `(+ 1 (resume 10 s))` type-checks LENIENTLY — the
+        // `+` accepts the `Any`-typed resume. But `(resume v s)` yields `C[v]`, which has the handle BODY's
+        // type: for a Bool-typed body `(< (Amb.flip) 5)` the fold produces `(+ 1 (< 10 5))` — an integer
+        // `+` over a Bool — which the ORIGINAL program was ill-typed to express (the arm consumes the
+        // continuation result at a type the body cannot supply). `reduce_handle` runs at LOWERING, after
+        // inference, so nothing re-checks the folded term — it would reach codegen as invalid wasm. Re-run
+        // the type checker on the folded result and DECLINE if it faults, so an ill-typed composition is
+        // rejected (the whole program errors — the handle has no valid fold), never miscompiled.
+        if !crate::infer::type_errors(db, folded).is_empty() {
+            return None;
+        }
+        return Some(folded);
     }
     // Thread the INIT state through the body in evaluation order. The handle's value is the body's
     // value (the accumulated state is observable only through the operations), so we return the

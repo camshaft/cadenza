@@ -20101,6 +20101,48 @@ mod stage1 {
     }
 
     #[test]
+    fn a_pure_one_hole_locates_the_hole_at_a_non_leading_and_a_nested_position() {
+        // The hole may be at a NON-LEADING operand and NESTED several operators deep — `splice_context`
+        // locates the sole perform occurrence by identity, so pure siblings on either side and enclosing
+        // operators are preserved. `C = (- 200 □)`, arm `(+ 1 (resume 10 s))` → `(+ 1 (- 200 10))` = 191.
+        let non_leading = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (- 200 (Amb.flip)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(non_leading)))
+                    .expect("hole at a non-leading operand folds"),
+                "main"
+            ),
+            191
+        );
+        // `C = (+ 1 (* 3 □))`, arm `(+ 1 (resume 10 s))` → `(+ 1 (+ 1 (* 3 10)))` = 32.
+        let nested = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 1 (* 3 (Amb.flip))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(nested)))
+                    .expect("hole nested deep folds"),
+                "main"
+            ),
+            32
+        );
+    }
+
+    #[test]
+    fn a_pure_one_hole_fold_that_would_be_ill_typed_is_rejected_not_miscompiled() {
+        // SOUNDNESS: the fold is a source-to-source rewrite that then TYPE-CHECKS normally, so a fold that
+        // produces an ill-typed term REJECTS rather than miscompiles. Here `C = (< □ 5)` : Bool, so the arm
+        // `(+ 1 (resume 10 s))` folds to `(+ 1 (< 10 5))` — an integer `+` over a Bool — which the type
+        // checker rejects. Pins that the pure-continuation fold does not smuggle a type error past inference.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (< (Amb.flip) 5))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a fold that yields an ill-typed term (+ over Bool) must be rejected, not miscompiled"
+        );
+    }
+
+    #[test]
     fn a_perform_threads_through_strict_one_operand_forms() {
         // E-fold arms for `not` / projection / member / annotation — STRICT one-operand forms that had no
         // thread arm (a perform inside declined, though `if`/`match` fold). Each threads its operand:
