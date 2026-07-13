@@ -4020,13 +4020,22 @@ fn try_emit_disc_br_table(
     if !contiguous_in_order {
         return Ok(None);
     }
-    // Open the ONE typed join block, then `m + 1` empty label blocks (m arm labels + the default label),
-    // innermost = arm 0. The `br_table` sits at the innermost point; its target list maps index k → the
-    // `br` depth that exits block $a_k, and the default index → the $default block.
-    // At the innermost point the block nesting (outermost→innermost) is: join, default, a_{m-1}, …, a_0.
-    // From there, `br d` exits: d=0 → $a_0, …, d=m-1 → $a_{m-1}, d=m → $default, d=m+1 → $join.
+    // EXHAUSTIVE-MATCH DEFAULT ELISION: with NO default arm the match lists every variant, and the discs
+    // are exactly the contiguous `0..m` (checked above), so the discriminant is ALWAYS in `[0, m)` — the
+    // `br_table`'s own out-of-range default is DEAD. Rather than a `$default` block wrapping a stack-
+    // polymorphic `unreachable`, the LAST arm serves as the table default (`br_table 0 … m-2  default=m-1`):
+    // one fewer block and no dead `unreachable`. When a real default arm IS present it keeps its own block
+    // (the table default routes there for a disc the arms do not cover — though for a sum that cannot occur
+    // either, the arm is still emitted since the shape allows a user wildcard).
+    let has_default_block = default.is_some();
+    // Open the ONE typed join block, then the label blocks: `m` arm labels, plus the `$default` label ONLY
+    // when a default arm is present. Innermost = arm 0.
+    // Block nesting at the innermost point (outermost→innermost): join, [default], a_{m-1}, …, a_0.
+    // From there `br d` exits: d=0 → $a_0, …, d=m-1 → $a_{m-1}, then [d=m → $default,] d=(m+default) → $join.
     out.push(Lir::Block(block_ty)); // $join (typed)
-    out.push(Lir::Block(BlockType::Empty)); // $default
+    if has_default_block {
+        out.push(Lir::Block(BlockType::Empty)); // $default
+    }
     for _ in 0..m {
         out.push(Lir::Block(BlockType::Empty)); // $a_{m-1} … $a_0
     }
@@ -4042,39 +4051,37 @@ fn try_emit_disc_br_table(
         }
     }
     out.push(Lir::CallImport(OP_SUM_DISC)); // → [disc: i32]
-    // Target k (arm index) → depth k (exits $a_k); default → depth m (exits $default).
-    let targets: Vec<u32> = (0..m).collect();
-    out.push(Lir::BrTable(targets, m));
+    if has_default_block {
+        // Target k (arm index) → depth k (exits $a_k); table default → depth m (exits $default).
+        let targets: Vec<u32> = (0..m).collect();
+        out.push(Lir::BrTable(targets, m));
+    } else {
+        // Exhaustive: disc ∈ [0, m). Index k (0..m-1) → $a_k; the table default IS the last arm $a_{m-1}
+        // (depth m-1), the disc that necessarily remains — no separate default block.
+        let targets: Vec<u32> = (0..m - 1).collect();
+        out.push(Lir::BrTable(targets, m - 1));
+    }
     // Now emit each arm body after its label's `end`, in innermost→outermost order (arm 0 first). After
-    // closing block $a_k, control from `br_table` index k lands here; run the continuation and `br` its
-    // value to $join. The `br` depth to reach $join from inside arm k's region: after `end`ing $a_0..$a_k
-    // we are inside (default, a_{m-1}, …, a_{k+1}) plus join — so $join is `(m - 1 - k) + 1 + 1` levels
-    // out? Compute concretely below by tracking remaining enclosing blocks.
-    // After the br_table, we `End` block $a_0 first. Just before that End, enclosing blocks
-    // (inner→outer) are [a_0, a_1, …, a_{m-1}, default, join]. Each `End` we emit pops one.
+    // closing block $a_k, control from `br_table` index k (or, for the last arm without a default block,
+    // the table default) lands here; run the continuation and `br` its value to $join.
+    // After `end`ing $a_0..$a_k the enclosing arm blocks (inner→outer) are a_{k+1}, …, a_{m-1}, then
+    // [$default,] $join. So $join is `(m-1-k)` arm blocks out, plus 1 more if a $default block sits below.
+    let join_from_arm_extra = if has_default_block { 1 } else { 0 };
     for (k, arm) in disc_arms.iter().enumerate() {
         out.push(Lir::End); // close $a_k → its br_table target lands here
-        // Enclosing blocks now (inner→outer): a_{k+1}, …, a_{m-1}, default, join.
-        // $join depth = (m - 1 - k) arm blocks + 1 default + 0 (join is that count) = (m-1-k)+1 = m-k.
         emit_sum_cont(
             db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty, layout,
             out,
         )?;
-        out.push(Lir::Br(m - k as u32)); // br to $join, carrying the value
+        out.push(Lir::Br((m - 1 - k as u32) + join_from_arm_extra)); // br to $join, carrying the value
     }
-    // Close $default; emit the default continuation (falls through to $join's end — it is the last thing
-    // before `End $join`, so no `br` is needed).
-    out.push(Lir::End); // close $default
-    match default {
-        Some(d) => emit_sum_cont(
+    // Close $default and emit its continuation (falls through to $join's end — no `br` needed). Only when
+    // a real default arm exists; an exhaustive match has no $default block (the last arm covered it).
+    if let Some(d) = default {
+        out.push(Lir::End); // close $default
+        emit_sum_cont(
             db, scrutinee, &d.cont, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
-        )?,
-        None => {
-            // No default arm: an exhaustive sum lists every variant, so the default label is unreachable.
-            // Emit an `unreachable` so the block is well-formed (it must still produce `block_ty` on the
-            // fallthrough path, and `unreachable` is stack-polymorphic — satisfies any result type).
-            out.push(Lir::Unreachable);
-        }
+        )?;
     }
     out.push(Lir::End); // close $join
     Ok(Some(()))
@@ -7050,6 +7057,82 @@ mod tests {
             !f.code.iter().any(|i| matches!(i, Lir::I64Eq)),
             "a br_table dispatch has no linear per-arm equality probe, got: {:?}",
             f.code
+        );
+    }
+
+    #[test]
+    fn an_exhaustive_sum_match_br_table_elides_the_dead_default_block() {
+        // A 3-variant EXHAUSTIVE sum match (Sign: Neg/Zero/Pos, no wildcard) — the disc is provably in
+        // [0,3), so the br_table's out-of-range default is dead. The LAST arm serves as the default:
+        // `br_table [0, 1] default=2` (2 explicit targets, NOT 3), and there is no separate `$default`
+        // block wrapping an `unreachable`. So the table's target list has `m-1 = 2` entries.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: s Sign)) \
+               (let ((r (match s ((Neg) 10) ((Zero) 20) ((Pos) 30)))) r)) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        let table = f
+            .code
+            .iter()
+            .find_map(|i| match i {
+                Lir::BrTable(targets, default) => Some((targets.clone(), *default)),
+                _ => None,
+            })
+            .expect("an exhaustive sum match emits a br_table");
+        assert_eq!(
+            table.0,
+            vec![0, 1],
+            "3 variants → 2 explicit targets (arms 0,1); the last arm is the default"
+        );
+        assert_eq!(
+            table.1, 2,
+            "the table default targets the last arm (disc 2)"
+        );
+        // No `unreachable` from a dead default (this match has no arithmetic guards, so ANY unreachable
+        // would be the elided dead-default one).
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::Unreachable)),
+            "no dead-default unreachable, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_sum_match_with_a_wildcard_keeps_its_default_block() {
+        // A sum match with FEWER explicit arms than variants + a wildcard (Color: Red/Green/Blue + `_`
+        // covering Yellow) DOES need a real default block — the table default routes the uncovered disc
+        // there. So the br_table has all 3 explicit targets AND a distinct default depth (= 3), and the
+        // default block exists.
+        let ast = crate::testkit::parse(
+            "(module m (type Color Red Green Blue Yellow) \
+               (def (f (: c Color)) \
+                 (let ((r (match c ((Red) 1) ((Green) 2) ((Blue) 3) (_ 9)))) r)) (export f))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("def f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        let table = f
+            .code
+            .iter()
+            .find_map(|i| match i {
+                Lir::BrTable(targets, default) => Some((targets.clone(), *default)),
+                _ => None,
+            })
+            .expect("br_table");
+        assert_eq!(
+            table.0,
+            vec![0, 1, 2],
+            "3 explicit disc arms each get a target; the default is separate"
+        );
+        assert_eq!(
+            table.1, 3,
+            "the default routes past the 3 arms to the $default block"
         );
     }
 
