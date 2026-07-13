@@ -12,6 +12,13 @@
 //! type error. `instantiate` freshens a [`Scheme`]'s bound variables so each use is independent, which
 //! is what makes an operator generic over the integer type. Nothing here reads a column or an AST node
 //! — it is pure over [`Ty`].
+//!
+//! Unification equates types by EQUALITY — two types either unify or the program is rejected; there is
+//! no widening/narrowing arm that would let one type stand in for another, so the type system never
+//! inserts an implicit subtyping coercion the program did not write:
+//!
+//= spec/capabilities/type-system.md#subtyping-is-explicit-or-absent
+//# The type system MUST NOT introduce an implicit subtyping coercion that the program did not write.
 
 use crate::diag::{Code, Reject};
 use crate::fxhash::FxHashMap;
