@@ -2278,28 +2278,41 @@ struct MatchRow {
 }
 
 /// Reject a match-arm pattern that binds the same name more than once (CDZ0102) — a pattern is a BINDER
-/// POSITION and must be LINEAR (`core-semantics.md §Patterns Compose`). Walks the whole pattern collecting
-/// BINDER names (a bare non-`_` name that is NOT a variant constructor of a sum in scope, NOR a literal),
-/// and faults the second occurrence, anchored there. A `_` binds nothing (may repeat); a variant name
-/// (`Some`, `E.Lit`) is a constructor, not a binder; a literal is a value, not a binder. Recurses into
-/// tuple/variant sub-patterns and peels a `(guard …)` wrapper. (A non-deduping walk — unlike resolve's
+/// POSITION and must be LINEAR. Walks the whole pattern collecting BINDER names (a bare non-`_` name that
+/// is NOT a variant constructor of a sum in scope, NOR a literal), and faults the second occurrence,
+/// anchored there. A `_` binds nothing (may repeat); a variant name (`Some`, `E.Lit`) is a constructor,
+/// not a binder; a literal is a value, not a binder. Recurses into tuple/variant sub-patterns and peels a
+/// `(guard …)` wrapper — so linearity holds across the WHOLE composed pattern, a name in two sub-patterns
+/// faulting exactly as one appearing twice in a flat pattern. (A non-deduping walk — unlike resolve's
 /// binder lookups it must SEE every occurrence to catch the repeat.)
+///
+//= spec/capabilities/core-semantics.md#bindings-introduced-by-a-pattern-are-scoped-to-its-branch
+//# A pattern MUST bind each name at most once; a pattern that binds the same name more than once MUST be a compile-time error (`CDZ0102`), so that a pattern is linear rather than silently shadowing an earlier binder or imposing a hidden equality constraint.
+//= spec/capabilities/core-semantics.md#patterns-compose
+//# A composed pattern MUST bind the union of its sub-patterns' bindings, matched recursively, and MUST remain linear across the whole pattern, so that a name appearing in more than one sub-pattern is the same `CDZ0102` error as one appearing twice in a flat pattern.
 fn check_pattern_linear(db: &mut Db, pat: StructId) -> Result<(), Reject> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     collect_pattern_binders(db, pat, &mut seen)
 }
 
 /// Validate a pattern in a BINDING position — a `let` binder, a `def`/`fn` parameter — where there is NO
-/// alternative arm, so the pattern MUST be irrefutable (`core-semantics.md §A Binding Position Accepts An
-/// Irrefutable Pattern`). `value_ty` is the type of the value being bound (a `let` initializer's type, or
-/// a parameter's solved type), used for the shape/arity check; pass `Ty::Any` when it is not yet solved
-/// (the permissive treatment a projection of `Any` gets — no shape check, only classification+linearity).
+/// alternative arm, so the pattern MUST be irrefutable. `value_ty` is the type of the value being bound (a
+/// `let` initializer's type, or a parameter's solved type), used for the shape/arity check; pass `Ty::Any`
+/// when it is not yet solved (the permissive treatment a projection of `Any` gets — no shape check, only
+/// classification+linearity).
 ///
 /// A binding pattern IS a single-arm match, so an ill-formed one gets the code the desugared match would.
 /// A REFUTABLE pattern (a multi-variant constructor, a literal, a length-constrained list pattern) is
 /// CDZ0210 (non-exhaustive — the other cases are uncovered and there is no fall-through arm). A
 /// SHAPE-INCOMPATIBLE pattern (a wrong-arity tuple, a tuple pattern vs a non-tuple value) is CDZ0201. A
 /// NON-LINEAR pattern (a binder repeated, flat or nested) is CDZ0102 (via `check_pattern_linear`).
+///
+//= spec/capabilities/core-semantics.md#a-binding-position-accepts-an-irrefutable-pattern
+//# A binding position has no alternative arm, so its pattern MUST be irrefutable — it MUST match every value of the bound value's type.
+//= spec/capabilities/core-semantics.md#a-binding-position-accepts-an-irrefutable-pattern
+//# A refutable pattern in a binding position — a constructor pattern of a multi-variant sum, a literal, or a length-constrained list pattern, none of which matches every value of its type — MUST be a compile-time error (`CDZ0210`), the same non-exhaustiveness the equivalent single-arm match would raise under *Matching Is Exhaustive Or Rejected*.
+//= spec/capabilities/core-semantics.md#a-binding-position-accepts-an-irrefutable-pattern
+//# A pattern whose shape cannot match the bound value's type at all — a tuple pattern of the wrong arity, or a tuple pattern against a non-tuple value — MUST be a compile-time error (`CDZ0201`), and a non-linear binding pattern MUST be the same `CDZ0102` error as in any other pattern position.
 ///
 /// A pattern that is irrefutable in principle but not-yet-supported (a record pattern, a single-variant
 /// user sum, any list pattern) DECLINES (reject-don't-miscompile — a later increment accepts it), NOT a
@@ -6805,11 +6818,14 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
             trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant char comparison");
             Core::ConstBool(r)
         }
-        // NaN under the CANONICAL BYTE FORM (core-semantics.md #Floating-Point Equality Follows The
-        // Canonical Byte Form): every NaN shares one canonical byte form, so `(= nan nan)` is TRUE (NOT
-        // IEEE `f64.eq`, which says nan≠nan) and `nan` is UNEQUAL to any finite float (distinct byte
-        // forms). Ordering (`<`/`>`) against a NaN is undefined (unordered) — decline, as the finite-pair
-        // path does for a NaN operand. Handled BEFORE the finite `ConstFloat` pair.
+        // NaN under the CANONICAL BYTE FORM: every NaN shares one canonical byte form, so `(= nan nan)`
+        // is TRUE (NOT IEEE `f64.eq`, which says nan≠nan) and `nan` is UNEQUAL to any finite float
+        // (distinct byte forms). Ordering (`<`/`>`) against a NaN is undefined (unordered) — decline, as
+        // the finite-pair path does for a NaN operand. Handled BEFORE the finite `ConstFloat` pair. (A
+        // negative zero is likewise a distinct byte form from positive zero, so `(= -0.0 0.0)` is false —
+        // the `ConstFloat` pair compares the canonical decimal, which carries the sign.)
+        //= spec/capabilities/core-semantics.md#floating-point-equality-follows-the-canonical-byte-form
+        //# A floating-point value MUST be equal to another floating-point value exactly when their canonical byte forms are identical, so that a negative zero is distinct from a positive zero and all not-a-number values are equal to one another.
         (Core::ConstFloatNan, Core::ConstFloatNan) => {
             if matches!(op, Prim::Eq) {
                 trace!(target: "rcdzc::fold", "folded nan = nan → true (canonical byte form)");
@@ -6873,11 +6889,13 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
         // booleans, which have a machine representation the backend can compare); a compound operand
         // still declines (heap-walk equality is a later stage).
         _ => {
-            // CONSTANT COMPOUND EQUALITY folds STRUCTURALLY (`core-semantics.md §Equality Is Structural`:
-            // two values are equal when they have the same type and their contents are equal
-            // component-wise). Only for `=` (a total ordering `<`/`>` over compounds is a later stage);
-            // only when BOTH operands are compile-time-visible constant compounds (a `SumNew`/`Tuple`/
-            // `Record`/`ListNew`, recursively) — a runtime operand still needs the heap walk (deferred).
+            // CONSTANT COMPOUND EQUALITY folds STRUCTURALLY: two values are equal when they have the same
+            // type and their contents are equal component-wise. Only for `=` (a total ordering `<`/`>`
+            // over compounds is a later stage); only when BOTH operands are compile-time-visible constant
+            // compounds (a `SumNew`/`Tuple`/`Record`/`ListNew`, recursively) — a runtime operand still
+            // needs the heap walk (`value-eq`/`champ_eq`, deferred to the backend).
+            //= spec/capabilities/core-semantics.md#equality-is-structural
+            //# Two values MUST be equal when they have the same type and their contents are equal component-wise.
             // `(= (Some 1) (Some 1))` → true, `(= (Some 1) (Some 2))` → false, `(= None None)` → true,
             // `(= (tuple 1 2) (tuple 1 2))` → true. A nested compound compares recursively (a payload/
             // element that is itself a compound). Returns `None` when either side is not a constant

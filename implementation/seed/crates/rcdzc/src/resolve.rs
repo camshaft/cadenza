@@ -827,16 +827,25 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     // Case 2: `form` is a let's BINDINGS-LIST, ascended from pair `from` → the bindings BEFORE `from`
     // are visible (an initializer sees the earlier bindings, not itself or later ones). A bindings-list
     // has NO head name (it is a bare list of pairs), so this is only reached for a headless/other-headed
-    // form — its own parent-shape check (`let_of_bindings_list`) confirms it.
+    // form — its own parent-shape check (`let_of_bindings_list`) confirms it. This is the let's
+    // in-order scope: an initializer observes the bindings written before it and none written after,
+    // and `last_binder_named` returns the LAST match, so a repeated name shadows the earlier one for the
+    // initializers that follow.
+    //= spec/capabilities/core-semantics.md#the-bindings-of-one-let-take-effect-in-order
+    //# The bindings of a single `let` MUST take effect in the order they are written: each binding's initializer MUST observe the bindings written before it in the same `let`, and MUST NOT observe the bindings written after it.
+    //= spec/capabilities/core-semantics.md#the-bindings-of-one-let-take-effect-in-order
+    //# A binding whose name repeats an earlier binding in the same `let` MUST shadow the earlier one for the initializers and body that follow it, in accordance with §"Shadowing Is Well-Defined".
     if let_of_bindings_list(db, form).is_some() {
         return last_binder_named(db, form, name, Some(from));
     }
     // Case 5: `form` is a MATCH ARM `(pattern body)`, ascended from `body`, and `pattern` is a bare
     // BINDER name (not a literal, not `_`) equal to `name` → the binder binds the whole scrutinee for
-    // this arm's body (`core-semantics.md` §Bindings Introduced By A Pattern Are Scoped To Its Branch).
-    // The bound value IS the scrutinee, so a reference resolves to the scrutinee occurrence — its type
-    // and (at lowering) its value flow straight through, no separate slot. Scoped to THIS arm only:
-    // an arm is reached from the enclosing `(match …)`, so a binder in one arm is invisible to another.
+    // this arm's body. The bound value IS the scrutinee, so a reference resolves to the scrutinee
+    // occurrence — its type and (at lowering) its value flow straight through, no separate slot. Scoped
+    // to THIS arm only: an arm is reached from the enclosing `(match …)` and this case fires ONLY when
+    // ascending from that arm's own body, so a binder in one arm is invisible to another arm.
+    //= spec/capabilities/core-semantics.md#bindings-introduced-by-a-pattern-are-scoped-to-its-branch
+    //# A name a pattern binds MUST be in scope only in the branch guarded by that pattern.
     if let Some(scrutinee) = match_arm_binds(db, form, from, name) {
         return Some(Resolved::Ref { value: scrutinee });
     }
