@@ -4197,6 +4197,101 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_branch_condition_refines_a_variables_range_and_elides_a_dead_guard() {
+        // FLOW-SENSITIVE RANGE REFINEMENT: inside `(if (> n 0) …)` the then-branch KNOWS `n ≥ 1`, so
+        // `(- n 1)` cannot underflow — its overflow guard is DEAD and dropped. The refinement is a sound
+        // NARROWING (the branch guarantees it), so only a provably-dead guard is elided; a `±c` that could
+        // still leave the type keeps its guard. Pins the elision at the Lir level (no `Unreachable` in the
+        // subtraction) AND the value/trap parity (correct results; a live guard still traps).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // `(> n 0)` → then-branch `n ≥ 1` → `(- n 1)` in [0, MAX-1] cannot underflow: NO guard.
+        let elided = select(
+            "(module m (def (f (: n Int64)) (if (> n 0) (- n 1) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !elided.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "the underflow guard on (- n 1) under n>0 is dead and must be elided, got: {elided:?}"
+        );
+        // CONTRAST: `(+ n 1)` under `n ≥ 1` CAN overflow (n = MAX), so its guard is KEPT.
+        let kept = select(
+            "(module m (def (f (: n Int64)) (if (> n 0) (+ n 1) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            kept.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "the overflow guard on (+ n 1) under n>0 is LIVE (n=MAX overflows) and must be kept, got: {kept:?}"
+        );
+        // VALUE + TRAP parity. The elided-guard function computes correctly and never falsely traps:
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(if (> n 0) (- n 1) 0)", &[Val::S64(5)]),
+            4
+        );
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(if (> n 0) (- n 1) 0)", &[Val::S64(0)]),
+            0
+        );
+        // `n = MIN` takes the else-branch (no subtraction) — no false underflow trap.
+        assert_eq!(
+            run::<i64>(
+                "(: n Int64)",
+                "(if (> n 0) (- n 1) 0)",
+                &[Val::S64(i64::MIN)]
+            ),
+            0
+        );
+        // The kept-guard function still TRAPS at the real overflow (n = MAX, n+1 leaves Int64).
+        assert!(traps(
+            "(: n Int64)",
+            "(if (> n 0) (+ n 1) 0)",
+            &[Val::S64(i64::MAX)]
+        ));
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(if (> n 0) (+ n 1) 0)", &[Val::S64(5)]),
+            6
+        );
+        // `<` refines the ELSE branch: `(if (< n 1) 0 (- n 1))` — else knows `n ≥ 1`, guard dropped.
+        let else_refine = select(
+            "(module m (def (f (: n Int64)) (if (< n 1) 0 (- n 1))) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !else_refine
+                .iter()
+                .any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "the else-branch of (< n 1) knows n>=1, so (- n 1) sheds its guard, got: {else_refine:?}"
+        );
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(if (< n 1) 0 (- n 1))", &[Val::S64(3)]),
+            2
+        );
+    }
+
+    #[test]
     fn a_narrow_binary_op_with_a_constant_left_operand_emits_valid_wasm() {
         // ⚠ INVALID WASM regression: a narrow binary op whose LEFT operand is a bare integer literal and
         // whose right is a narrow-typed variable mis-emitted the literal at its i64 default beside the i32
@@ -22561,6 +22656,7 @@ mod closure_host_resource {
             OPS.arr_get,
             OPS.arr_set,
             OPS.box_int,
+            OPS.drop,
             OPS.get_int,
         ];
         // Defined func 0 = the export body `main : () -> own<closure>` — its RESULT is the closure type,
@@ -22670,6 +22766,7 @@ mod closure_host_resource {
             OPS.arr_get,
             OPS.arr_set,
             OPS.box_int,
+            OPS.drop,
             OPS.get_int,
         ];
         let fn_ty = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone()));
@@ -22794,6 +22891,7 @@ mod closure_host_resource {
             OPS.arr_get,
             OPS.arr_set,
             OPS.box_int,
+            OPS.drop,
             OPS.get_int,
         ];
         let fn_ty = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone()));
@@ -22954,6 +23052,45 @@ mod closure_host_resource {
         assert_eq!(rt.closure_make_call(&[], &[Val::S64(41)]), Val::S64(42));
     }
 
+    /// C-HOST-5 (the leak fix): a closure `make`+`call` round-trip leaves NO live heap cell. `make` builds
+    /// the closure cell (`arr-alloc`), `call` takes `own<t>` (the canonical ABI transfers ownership INTO
+    /// `call`), dispatches the closure, then RELEASES the cell — `heap.drop(rep)` after the `call_indirect`
+    /// returns (the lifted body has finished reading its captures from the env). This mirrors the value-heap
+    /// escape's own-owns-and-drops fix ([[rcdzc-r1-resource-encode-linking-findings]]): `resource.rep` on a
+    /// BORROWED self traps in wasmtime 37, so `call` keeps `own<t>` and drops the rep itself rather than
+    /// relying on a `borrow<t>` + host-drop dtor. A CAPTURING closure (`adder(10)`) is the real test — its
+    /// cell holds the captured `k`, so the drop must reclaim a genuinely live node. `#[ignore]` — needs the
+    /// debug-counters runtime in the store (`cargo xtask build`).
+    #[test]
+    #[ignore]
+    fn a_closure_call_leaves_no_live_objects() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_debug_runtime_wasm() else {
+            eprintln!(
+                "[C-HOST-5] debug-counters runtime not in the store; skipping closure leak probe"
+            );
+            return;
+        };
+        // A capturing closure: make(10) allocates a cell holding k=10; call(5) dispatches (+ x k) = 15 and
+        // must release the cell. After the round-trip, live-objects must be 0.
+        let src = "(module m (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        assert_eq!(
+            rt.closure_make_call(&[Val::S64(10)], &[Val::S64(5)]),
+            Val::S64(15),
+            "adder(10) then call(5) = 15"
+        );
+        assert_eq!(
+            rt.live_objects(),
+            0,
+            "closure leak: the closure cell is still live after make+call (expected 0 — `call` owns the \
+             own<t> handle and must drop the cell after dispatch)"
+        );
+    }
+
     /// C-HOST-2: a PARAMETERIZED export returning a CAPTURING closure. `(def (adder (: k Int64)) (fn (x)
     /// (+ x k)))` crosses as `adder : (s64) -> own<closure>`; the host calls `make(10)` (which runs the
     /// export body, closing over k=10 into the cell), then `call(handle, 5)` → 15. This proves (a) the
@@ -23067,6 +23204,43 @@ mod closure_host_resource {
         assert_eq!(
             rt.closure_produce_consume("make-adder", &[Val::S64(100)], "apply-it", &[Val::S64(7)]),
             Val::S64(107)
+        );
+    }
+
+    /// C-HOST-5 (round-trip leak fix): a produce→consume round trip leaves NO live heap cell. The producer
+    /// mints the closure cell (`make-adder` → `resource.new`); the consumer takes it back as `own<t>`,
+    /// applies it, then the consumer wrapper RELEASES the cell (`heap.drop(rep)` after the body returns).
+    /// The `twice-plus` consumer applies the closure TWICE (`(+ (g x) (g x))`) — the drop must come AFTER
+    /// the body, once, not per application. After the round trip `live-objects` is 0. `#[ignore]` — needs
+    /// the debug-counters runtime (`cargo xtask build`).
+    #[test]
+    #[ignore]
+    fn a_round_trip_leaves_no_live_objects() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_debug_runtime_wasm() else {
+            eprintln!(
+                "[C-HOST-5] debug-counters runtime not in the store; skipping round-trip leak probe"
+            );
+            return;
+        };
+        let src = "(do (def (make-adder (: k Int64)) (fn ((: x Int64)) (+ x k))) \
+                   (def (twice-plus (: g (-> Int64 Int64)) (: x Int64)) (+ (g x) (g x))) \
+                   (export make-adder) (export twice-plus))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // make-adder(1) → a closure (+ x 1); twice-plus(handle, 5) = (5+1) + (5+1) = 12.
+        assert_eq!(
+            rt.closure_produce_consume("make-adder", &[Val::S64(1)], "twice-plus", &[Val::S64(5)]),
+            Val::S64(12),
+            "make-adder(1) then twice-plus(_, 5) = 12"
+        );
+        assert_eq!(
+            rt.live_objects(),
+            0,
+            "round-trip leak: the handed-back closure cell is still live after the consumer (expected 0 — \
+             the consumer owns the own<t> handle and must drop the cell after the body returns)"
         );
     }
 
