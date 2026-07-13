@@ -6738,6 +6738,19 @@ fn emit_operand_into(
         } else {
             Machine::of(ot)
         };
+        // STRENGTH REDUCTION reaches the NESTED-operand path too: a `(* v 2^k)` that is an OPERAND of an
+        // enclosing op (`(* (* x 2) 4)`) strength-reduces to `v << k` exactly as a top-level `* 2^k` does
+        // (the `Core::Arith` emit arm). Without this, a nested constant-pow2 multiply fell straight to
+        // `emit_checked_arith_to`, emitting the full `mul` + `div_s` round-trip guard the top-level path
+        // avoids. The shift leaves its result on the stack; store it into the operand slot (mirrors the
+        // fallback `emit_operand ; LocalSet` below).
+        if matches!(op, Prim::Mul)
+            && let Some((val, k)) = mul_pow2_shift(db, lhs, rhs, m)
+        {
+            emit_mul_pow2_as_shift(db, m, val, k, slots, base, high, scratch_ty, layout, out)?;
+            out.push(Lir::LocalSet(slot));
+            return Ok(());
+        }
         return emit_checked_arith_to(
             db,
             op,

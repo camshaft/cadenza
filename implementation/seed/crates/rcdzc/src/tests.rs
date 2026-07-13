@@ -2621,6 +2621,74 @@ fn multiply_by_power_of_two_runs_and_traps_like_the_multiply() {
     );
 }
 
+/// STRENGTH REDUCTION reaches a NESTED `* 2^k`: `(* (* x 2) 4)` — the inner `(* x 2)`, an OPERAND of the
+/// outer multiply, must strength-reduce to `x << 1` exactly as a top-level `* 2^k` does. Before, the
+/// nested-operand emit path (`emit_operand_into`) routed a `Mul` straight to the checked-multiply recipe,
+/// emitting a full `mul` + `div_s` overflow round-trip the shift avoids. Pins the reduction at the Lir
+/// level (no `mul`/`div_s` in the nested chain, two `shl`) AND value + overflow-trap parity.
+#[test]
+fn a_nested_multiply_by_a_power_of_two_also_strength_reduces() {
+    use crate::backend::wasm::lir::Lir;
+    use crate::db::Db;
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let lir = |params: &str, body: &str| -> Vec<Lir> {
+        let ast = parse(&format!(
+            "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+        ));
+        let mut db = Db::load(ast);
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("def f");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+            .expect("select")
+            .code
+    };
+    // `(* (* x 2) 4)` — the inner `* 2` (an operand) strength-reduces: NO `mul`/`div_s`, TWO `shl`.
+    let code = lir("(: x Int64)", "(: (* (: (* x 2) Int64) 4) Int64)");
+    assert!(
+        !code.iter().any(|i| matches!(i, Lir::I64Mul | Lir::I64DivS)),
+        "the nested `* 2` must strength-reduce (no mul/div_s), got: {code:?}"
+    );
+    assert_eq!(
+        code.iter().filter(|i| matches!(i, Lir::I64Shl)).count(),
+        2,
+        "both multiplies become shifts, got: {code:?}"
+    );
+
+    // VALUE PARITY: (* (* x 2) 4) = x*8.
+    let src = "(module m (def (f (: x Int64)) (* (: (* x 2) Int64) 4)) (export f))";
+    let b = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S64(5)]), 40);
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S64(-3)]), -24);
+    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S64(0)]), 0);
+    // OVERFLOW-TRAP PARITY: 2^61 * 8 = 2^64 overflows Int64 — the nested shift chain must still trap.
+    assert!(
+        call_traps(&b, "f", &[Val::S64(1i64 << 61)]),
+        "a nested `* 2^k` chain must trap on overflow like the multiply"
+    );
+    // NARROW: Int8 (* (* x 2) 4) = x*8. 15*8=120 fits; 20*8=160 overflows Int8 → trap (outer); 100*2=200
+    // overflows Int8 already → trap (inner). Both must fire.
+    let s8 = "(module m (def (f (: x Int8)) (* (: (* x 2) Int8) 4)) (export f))";
+    let b8 = compile_component(&crate::codec::encode(&parse(s8))).expect("compile");
+    assert_eq!(run_returns_with::<i8>(&b8, "f", &[Val::S8(15)]), 120);
+    assert!(call_traps(&b8, "f", &[Val::S8(20)]), "outer Int8 overflow (160) traps");
+    assert!(call_traps(&b8, "f", &[Val::S8(100)]), "inner Int8 overflow (200) traps");
+}
+
 /// An exported comparison `(def (lt (: a Int64) (: b Int64)) (< a b))` runs to a boolean over runtime
 /// args — the signed machine comparison at the boundary.
 #[test]
