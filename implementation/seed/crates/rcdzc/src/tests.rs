@@ -4593,6 +4593,75 @@ mod runtime_ops {
             7
         ); // 15 & 7 = 7
     }
+
+    #[test]
+    fn a_logical_shift_dropping_all_significant_bits_folds_to_zero() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(x & 15) >>ᵤ 4`: the masked value fits 4 bits, `>>ᵤ 4` shifts them all out → constant 0, no
+        // `shr_u`, no `and` (the whole expression is dead).
+        let zero = lir("(: x UInt8)", "(>> (& x 15) 4)");
+        assert!(
+            zero.contains(&Lir::ConstI32(0))
+                && !zero
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32ShrU | Lir::I64ShrU)),
+            "the fully-shifted-out value folds to 0, no shift; got {zero:?}"
+        );
+        // `(x & 15) >>ᵤ 3` keeps a bit (value fits 1 bit, not 0) — NOT folded.
+        let kept = lir("(: x UInt8)", "(>> (& x 15) 3)");
+        assert!(
+            kept.iter().any(|i| matches!(i, Lir::I32ShrU)),
+            "a shift leaving a bit keeps the shr_u; got {kept:?}"
+        );
+        // A SIGNED value is NOT provably nonnegative (its slot high bits may be sign extension), so
+        // `unsigned_value_bits` declines it and the fold does not fire — the `shr_s` stays. (Use an
+        // in-range count on an Int16 so this is a genuine runtime shift, not a count-guard trap.)
+        let signed = lir("(: x Int16)", "(>> (& x 15) 7)");
+        assert!(
+            signed.iter().any(|i| matches!(i, Lir::I32ShrS)),
+            "a signed >> is not folded to 0; got {signed:?}"
+        );
+
+        // VALUE PARITY.
+        assert_eq!(
+            run::<u8>("(: x UInt8)", "(>> (& x 15) 4)", &[Val::U8(200)]),
+            0
+        ); // (200&15)=8, 8>>4=0
+        assert_eq!(
+            run::<u8>("(: x UInt8)", "(>> (& x 15) 4)", &[Val::U8(255)]),
+            0
+        ); // (255&15)=15, 15>>4=0
+        assert_eq!(
+            run::<u8>("(: x UInt8)", "(>> (& x 15) 3)", &[Val::U8(255)]),
+            1
+        ); // 15>>3 = 1
+    }
 }
 
 // ── runtime functions + recursion (ANF step 2 / B1): a recursive call is a real wasm call ─────────

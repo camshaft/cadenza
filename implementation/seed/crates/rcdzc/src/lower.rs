@@ -5258,6 +5258,25 @@ fn arith_identity(
         Prim::BitAnd if is_full_mask_for(db, rhs, lc) => Some(rc.clone()),
         // `x << 0` / `x >> 0` → x (a zero shift COUNT is a no-op; count is the right operand).
         Prim::Shl | Prim::Shr if is(rc, 0) => Some(lc.clone()),
+        // `(>>ᵤ x k)` → 0 when the LOGICAL right shift drops ALL of `x`'s significant bits — its provable
+        // bit-bound `B <= k`. E.g. `(x & 15) >>ᵤ 4`: `x & 15` fits 4 bits, `>>ᵤ 4` shifts them all out → 0.
+        // DISCARDS `x`, so gated on `is_trap_free` (a trapping operand's trap must survive). `k` must be a
+        // valid IN-RANGE constant count (`< width`) — an out-of-range shift TRAPS rather than yielding 0,
+        // so a too-large `k` is left for the runtime count-guard. `unsigned_value_bits` returns the bound
+        // only for an unsigned logical-shift chain, so this never misfires on a signed `>>ₛ` (which
+        // sign-extends, not zero-fills).
+        Prim::Shr
+            if is_trap_free(db, lhs)
+                && let Core::ConstInt(k) = rc
+                && let Some(k) = k.to_i64()
+                && k >= 1
+                && let Some(bits) = unsigned_value_bits(db, lhs)
+                && (k as u32) < shift_width(db, lhs)
+                && bits <= k as u32 =>
+        {
+            trace!(target: "rcdzc::fold", node = lhs.0, k, bits, "logical shift drops all significant bits → 0");
+            Some(zero())
+        }
         // `x / 1` → x (division by one is the identity; keeps x, so its own traps stay).
         Prim::Div if is(rc, 1) => Some(lc.clone()),
         // `x % 1` → 0 (every integer is divisible by 1) — DISCARDS x, so only when x cannot trap.
@@ -5325,6 +5344,33 @@ fn unsigned_value_bits(db: &mut Db, val: StructId) -> Option<u32> {
     {
         return Some(inner_bits.saturating_sub(k as u32).max(1));
     }
+    // A bitwise AND with a NON-NEGATIVE constant mask `M` caps the result at `M`'s significant-bit count:
+    // `v & M` sets no bit above `M`'s highest set bit, so it fits `⌈log2(M+1)⌉` bits regardless of `v`'s
+    // range. This narrows `(& x 15)` to 4 bits even when `x` is a full UInt8, so a following `>>ᵤ 4` sees
+    // an all-bits-shifted-out value. (A negative `M` — all high slot bits set — is not a narrowing.)
+    if let Core::Arith {
+        op: Prim::BitAnd,
+        lhs: a,
+        rhs: b,
+    } = core_of(db, val)
+    {
+        // Each operand's bit-bound: a NON-NEGATIVE constant contributes its own significant-bit count
+        // (`⌈log2(v+1)⌉`), a runtime operand its `unsigned_value_bits`. `v & M` sets no bit above EITHER
+        // operand's highest possible set bit, so the AND fits the MIN of the two bounds. Either operand
+        // being a small constant mask caps the result — `(& x:UInt8 15)` → min(8, 4) = 4.
+        let operand_bits = |db: &mut Db, o: StructId| -> Option<u32> {
+            match core_of(db, o) {
+                Core::ConstInt(v) => v
+                    .to_i64()
+                    .filter(|&x| x >= 0)
+                    .map(|x| (64 - (x as u64).leading_zeros()).max(1)),
+                _ => unsigned_value_bits(db, o),
+            }
+        };
+        if let (Some(ab), Some(bb)) = (operand_bits(db, a), operand_bits(db, b)) {
+            return Some(ab.min(bb).max(1));
+        }
+    }
     // Otherwise the bound is the value's own resolved unsigned width.
     let crate::ty::Ty::Int(it) = crate::infer::type_of(db, val) else {
         return None;
@@ -5333,6 +5379,20 @@ fn unsigned_value_bits(db: &mut Db, val: StructId) -> Option<u32> {
         return None; // only a resolved UNSIGNED type; signed/deferred is not provably nonnegative.
     };
     (n < 64).then_some(n) // 2^64 - 1 is not i64-representable here.
+}
+
+/// The language WIDTH `N` of `val`'s resolved integer type — the range a shift COUNT is guarded to
+/// `[0, N)`. Used by the shift-out-to-zero fold to confirm the constant count is IN-RANGE (an
+/// out-of-range shift TRAPS, so it must NOT be folded to 0). `None` if the type is not a resolved
+/// integer (a deferred width would guess the guard bound).
+fn shift_width(db: &mut Db, val: StructId) -> u32 {
+    match crate::infer::type_of(db, val) {
+        crate::ty::Ty::Int(it) => match it.width {
+            crate::ty::Width::Fixed(n) => n,
+            _ => 0, // deferred/var — treat as 0 so the `k < width` guard fails (no fold).
+        },
+        _ => 0,
+    }
 }
 
 /// Whether the node at `id` lowers to a core that CANNOT TRAP at run time — so discarding it (an
