@@ -9,9 +9,18 @@
 //! already follow a `Ref` into a record). This is "records everywhere" taken to the representation:
 //! nothing is privileged by name (`reference-compiler.md` §Nothing Is Privileged By Name) OR by shape.
 //!
+//= spec/capabilities/core-semantics.md#a-built-in-module-is-a-record-of-its-operations
+//# A built-in module — a collection of operations the language provides rather than a program defines — MUST be a record whose fields name those operations, indistinguishable in form from a module a program defines.
+//!
+//= spec/capabilities/core-semantics.md#a-built-in-module-is-a-record-of-its-operations
+//# A built-in module and a program-defined module MUST be accessed by the identical mechanism; the language MUST NOT recognize a built-in module's name in any position a program-defined module's name would not be recognized.
+//!
 //! Resolving a name is one ordered lookup — the lexical scope, then this map (`prelude-and-
 //! resolution.md` §The Prelude Is A Single Map The Resolver Consults By Name Alone). A program binding
-//! shadows a built-in of the same name because `resolve` searches the scope FIRST — no special case.
+//! shadows a built-in of the same name because `resolve` searches the scope FIRST — no special case:
+//!
+//= spec/capabilities/core-semantics.md#a-built-in-module-is-a-record-of-its-operations
+//# A reference to a built-in module's name MUST resolve to that record under the same scope and shadowing rules as any other binding, and an operation MUST be reached by member access on that record, so that projecting a built-in operation (`Mod.op` denoting `(.
 //!
 //! No open-vs-closed rule. A built-in module carries EVERY field it will ever have; a field for an
 //! operation not yet realized is filled with an `(unrealized …)` node that resolves to a DECLINE. So
@@ -185,10 +194,14 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
         );
     }
 
-    // `compare` — the THREE-WAY comparison `∀a. a → a → Ordering` (core-semantics.md §A Total Order Is
-    // Observed Through A Three-Way Comparison). The PRIMITIVE the boolean `<`/`>`/… agree with; its
-    // result is the `Ordering` sum (Less/Equal/Greater), not a Bool. Same operator-record mechanism as
-    // the relational comparisons; only the result type differs.
+    // `compare` — the THREE-WAY comparison `∀a. a → a → Ordering`. The PRIMITIVE the boolean `<`/`>`/…
+    // agree with; its result is the `Ordering` sum (Less/Equal/Greater), not a Bool — an ordinary closed
+    // three-variant sum deconstructed by the same exhaustive match as any other sum. Same operator-record
+    // mechanism as the relational comparisons; only the result type differs.
+    //= spec/capabilities/core-semantics.md#a-total-order-is-observed-through-a-three-way-comparison
+    //# A type that offers a total order MUST offer a three-way comparison that yields an ordering value with exactly three variants — less, equal, and greater — so that a single comparison reports the full relation between two values rather than a single boolean bit of it.
+    //= spec/capabilities/core-semantics.md#a-total-order-is-observed-through-a-three-way-comparison
+    //# The ordering value's type MUST be an ordinary closed sum type of the language, so that a comparison result is deconstructed by the same exhaustive match as any other sum and every consumer handles all three cases.
     names.insert(
         "compare".to_string(),
         operator_record(ast, "compare", OpShape::Compare),
