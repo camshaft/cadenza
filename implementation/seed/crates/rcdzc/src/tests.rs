@@ -15746,6 +15746,25 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_sum_carrying_bytes_renders_via_the_value_encode_walker() {
+        // A recursive sum whose payload carries BYTES (a `BytesList` — a parse tree, a binary structure)
+        // now COMPILES its value-encode escape. Previously `shape_of` DECLINED on `Ty::Bytes`; it now emits
+        // `ShapeNode::Bytes` (descriptor tag 4) and the runtime `value-encode` flattens the rope + renders
+        // a KIND_BYTES leaf (guarded byte-exact in cdz-runtime's `value_encode_renders_a_bytes_leaf`).
+        use crate::testkit::parse;
+        let src = "(module m (type BytesList (Cons (Tuple Bytes BytesList)) Nil) \
+                     (def (build (: n Int64)) (if (< n 1) (BytesList.Nil ()) \
+                        (BytesList.Cons (tuple (Bytes.of (list 1 2)) (build (- n 1)))))) \
+                     (def (main) (build 2)) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a recursive sum carrying Bytes compiles via the value-encode walker");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+            "the bytes-bearing recursive-sum escape imports the runtime"
+        );
+    }
+
+    #[test]
     fn a_value_eq_on_a_sum_payload_string_compiles() {
         // Comparing a variant's PAYLOAD (a `SumPayload`/tuple-element read) to a constant string —
         // `(= h "+")` where `h` is bound from a `(NPrim (tuple h a b))` payload — is the shape a recursive

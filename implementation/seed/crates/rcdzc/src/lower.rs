@@ -4506,6 +4506,7 @@ enum ShapeNode {
     Int,
     Bool,
     Str,
+    Bytes,
     Unit,
     Tuple(Vec<u32>),
     List(u32),
@@ -4539,6 +4540,7 @@ impl ShapeTableBuilder {
             Ty::Int(_) => self.push(ShapeNode::Int),
             Ty::Bool => self.push(ShapeNode::Bool),
             Ty::String => self.push(ShapeNode::Str),
+            Ty::Bytes => self.push(ShapeNode::Bytes),
             Ty::Unit => self.push(ShapeNode::Unit),
             Ty::Tuple(elems) => {
                 if elems.is_empty() {
@@ -4610,8 +4612,8 @@ impl ShapeTableBuilder {
                 self.table[self_ix as usize] = ShapeNode::Named(name.clone(), inner_ix);
                 self_ix
             }
-            // Float/Bytes payload rendering is a later slice — decline (the escape falls through). Str
-            // is supported (→ `ShapeNode::Str`, above); the runtime `value-encode` renders a KIND_STR leaf.
+            // Float payload rendering is a later slice — decline (the escape falls through). Str/Bytes are
+            // supported (→ `ShapeNode::Str`/`Bytes`, above); the runtime `value-encode` renders their leaves.
             _ => return None,
         })
     }
@@ -4642,6 +4644,7 @@ impl ShapeTableBuilder {
                 ShapeNode::Int => d.push(0),
                 ShapeNode::Bool => d.push(1),
                 ShapeNode::Str => d.push(3), // matches the runtime `decode_shape` tag 3 = Str
+                ShapeNode::Bytes => d.push(4), // matches the runtime `decode_shape` tag 4 = Bytes
                 ShapeNode::Unit => d.push(5),
                 ShapeNode::Tuple(idxs) => {
                     d.push(6);

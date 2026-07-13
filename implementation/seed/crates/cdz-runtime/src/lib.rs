@@ -952,6 +952,7 @@ mod doc {
     pub const KIND_BOOL_FALSE: u8 = 8;
     pub const KIND_BOOL_TRUE: u8 = 9;
     pub const KIND_NAME: u8 = 10;
+    pub const KIND_BYTES: u8 = 11;
     pub const TAG_ATOM: u8 = 0;
     pub const TAG_LIST: u8 = 1;
 }
@@ -1093,6 +1094,7 @@ enum DocLeaf {
     Int(bool, Vec<u8>), // (negative, big-endian magnitude)
     Bool(bool),
     Str(Vec<u8>), // UTF-8 body verbatim (the runtime String's raw bytes)
+    Bytes(Vec<u8>), // raw byte payload verbatim (the runtime Bytes value, rope flattened)
 }
 enum DocStruct {
     Atom(u32),
@@ -1129,6 +1131,12 @@ impl DocBuilder {
     /// the codec DECODER re-interns leaves on read, so a repeated string in the pool is harmless.
     fn str_leaf(&mut self, bytes: Vec<u8>) -> u32 {
         self.leaves.push(DocLeaf::Str(bytes));
+        (self.leaves.len() - 1) as u32
+    }
+    /// A bytes leaf — the raw byte payload verbatim (the codec's `KIND_BYTES`, `write_bytes` = LEB len +
+    /// bytes, same framing as a `Str`/`Name` leaf, distinct kind). Not deduped (like `str_leaf`).
+    fn bytes_leaf(&mut self, bytes: Vec<u8>) -> u32 {
+        self.leaves.push(DocLeaf::Bytes(bytes));
         (self.leaves.len() - 1) as u32
     }
     fn atom(&mut self, leaf: u32) -> u32 {
@@ -1170,6 +1178,12 @@ impl DocBuilder {
                 DocLeaf::Str(bytes) => {
                     // KIND_STR + write_bytes (LEB len + UTF-8 body) — same framing as a Name, distinct kind.
                     out.push(doc::KIND_STR);
+                    doc_leb(&mut out, bytes.len() as u64);
+                    out.extend_from_slice(bytes);
+                }
+                DocLeaf::Bytes(bytes) => {
+                    // KIND_BYTES + write_bytes (LEB len + raw bytes) — same framing as Str/Name, distinct kind.
+                    out.push(doc::KIND_BYTES);
                     doc_leb(&mut out, bytes.len() as u64);
                     out.extend_from_slice(bytes);
                 }
@@ -1276,9 +1290,19 @@ fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shap
                         let l = b.str_leaf(bytes);
                         out.push(b.atom(l));
                     }
-                    // Float/Bytes runtime rendering is a later slice (Float needs the Decimal
-                    // significand/exponent encoding; Bytes needs a rope flatten); they decline here.
-                    Shape::Float | Shape::Bytes => return None,
+                    Shape::Bytes => {
+                        // A Bytes value may be a ROPE (concat/slice nodes) — materialize it to a leaf
+                        // (iterative `bytes_flatten`, so no deep-rope stack overflow; content-preserving so
+                        // UNOBSERVABLE even on a borrowed/shared value), then read the leaf's raw and emit a
+                        // KIND_BYTES leaf. A leaf is already flat (flatten is a no-op there).
+                        bytes_flatten(h);
+                        let bytes = with_node(h, Vec::new(), |n| n.raw.as_slice().to_vec());
+                        let l = b.bytes_leaf(bytes);
+                        out.push(b.atom(l));
+                    }
+                    // Float rendering is a later slice (it needs the codec's Decimal significand/exponent
+                    // encoding); it declines here.
+                    Shape::Float => return None,
                     Shape::Tuple(elems) => {
                         if elems.is_empty() {
                             let l = b.name_leaf("unit");
@@ -5584,7 +5608,13 @@ mod tests {
                 let l = b.str_leaf(bytes);
                 b.atom(l)
             }
-            S::Float | S::Bytes => return None,
+            S::Bytes => {
+                bytes_flatten(h);
+                let bytes = with_node(h, Vec::new(), |n| n.raw.as_slice().to_vec());
+                let l = b.bytes_leaf(bytes);
+                b.atom(l)
+            }
+            S::Float => return None,
             S::Tuple(elems) => {
                 if elems.is_empty() {
                     let l = b.name_leaf("unit");
@@ -5810,6 +5840,131 @@ mod tests {
         // The three string bodies appear in the leaf pool.
         assert!(iter_doc.windows(1).any(|w| w == b"a"), "string 'a' present");
         assert!(iter_doc.windows(3).any(|w| w == b"ccc"), "string 'ccc' present");
+        op_drop(acc);
+        assert_eq!(live_nodes(), 0, "no leak");
+    }
+
+    /// `value-encode` renders a Bytes payload (`Shape::Bytes`) as a `KIND_BYTES` leaf (kind 11, same
+    /// `write_bytes` framing as Str/Name). Previously `encode_value` DECLINED on `Shape::Bytes`, so a
+    /// recursive value carrying a Bytes field could not cross the host boundary. A Bytes value may be a
+    /// ROPE (concat/slice); the walk flattens it first (iterative, unobservable). Byte-exact + rope case.
+    #[test]
+    fn value_encode_renders_a_bytes_leaf() {
+        reset();
+        let before = live_nodes();
+        // Descriptor: table [0] = Bytes, root = 0. Tag 4 = Bytes.
+        let desc: &[u8] = &[0x01, 0x04, 0x00]; // table_len=1, [0]=Bytes(tag 4), root=0
+
+        // (1) A flat leaf [0x01, 0x02, 0xff].
+        let flat = bytes_leaf(&[0x01, 0x02, 0xff]);
+        let got = op_value_encode_form(flat, desc).expect("encode a Bytes leaf");
+        let expect: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\0\1
+            0x01, // leaf_count = 1
+            0x0b, 0x03, 0x01, 0x02, 0xff, // KIND_BYTES(11), len 3, bytes
+            0x01, // struct_count = 1
+            0x00, 0x00, // TAG_ATOM, leaf id 0
+            0x00, // root = 0
+        ];
+        assert_eq!(got, expect, "Bytes value form must be a KIND_BYTES leaf, byte-identical to the codec");
+        op_drop(flat);
+
+        // (2) An EMPTY bytes value.
+        let empty = op_bytes_alloc(0);
+        let got_e = op_value_encode_form(empty, desc).expect("encode empty Bytes");
+        let expect_e: &[u8] = &[
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x01, 0x0b, 0x00, 0x01, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(got_e, expect_e, "empty Bytes → KIND_BYTES with a zero-length body");
+        op_drop(empty);
+
+        // (3) A ROPE (concat of two leaves) must FLATTEN to its logical bytes before encoding — the
+        // KIND_BYTES body is the concatenation, identical to a flat leaf of the same content.
+        let rope = op_bytes_concat(bytes_leaf(&[0xaa, 0xbb]), bytes_leaf(&[0xcc]));
+        let got_r = op_value_encode_form(rope, desc).expect("encode a Bytes rope");
+        assert_eq!(
+            &got_r[8..14],
+            &[0x01, 0x0b, 0x03, 0xaa, 0xbb, 0xcc],
+            "a rope flattens to its logical bytes (0xaa 0xbb 0xcc) in one KIND_BYTES leaf"
+        );
+        op_drop(rope);
+
+        assert_eq!(live_nodes(), before, "no leak: every bytes value dropped");
+    }
+
+    /// A Bytes field nested inside a recursive sum encodes (a parse tree, a binary structure). Descriptor:
+    /// a Cons/Nil list whose element is Bytes; drives the iterative walk through Sum → Tuple → Bytes and
+    /// back via Ref, and checks byte-identity vs the recursive oracle (which flattens ropes identically).
+    #[test]
+    fn value_encode_bytes_list_matches_recursive_reference() {
+        reset();
+        // table [0]=Bytes, [1]=Sum[(Cons→2),(Nil→3)], [2]=Tuple[→0,→1], [3]=Unit, [4]=Named("BL"→1); root=4.
+        let mut d: Vec<u8> = Vec::new();
+        let leb = |out: &mut Vec<u8>, mut v: u64| loop {
+            let mut b = (v & 0x7f) as u8;
+            v >>= 7;
+            if v != 0 {
+                b |= 0x80;
+            }
+            out.push(b);
+            if v == 0 {
+                break;
+            }
+        };
+        let name = |out: &mut Vec<u8>, s: &str| {
+            let mut v = s.len() as u64;
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+            out.extend_from_slice(s.as_bytes());
+        };
+        leb(&mut d, 5);
+        d.push(4); // [0] Bytes
+        d.push(9); // [1] Sum
+        leb(&mut d, 2);
+        name(&mut d, "Cons");
+        leb(&mut d, 2);
+        name(&mut d, "Nil");
+        leb(&mut d, 3);
+        d.push(6); // [2] Tuple [→0, →1]
+        leb(&mut d, 2);
+        leb(&mut d, 0);
+        leb(&mut d, 1);
+        d.push(5); // [3] Unit
+        d.push(10); // [4] Named("BL" → 1)
+        name(&mut d, "BL");
+        leb(&mut d, 1);
+        leb(&mut d, 4);
+
+        // Build a list of two Bytes elements, one of them a ROPE (to exercise flatten under the walk).
+        let e0 = bytes_leaf(&[0x10, 0x20]);
+        let e1 = op_bytes_concat(bytes_leaf(&[0x30]), bytes_leaf(&[0x40, 0x50])); // rope → 0x30 0x40 0x50
+        let nil = op_sum_new(1, op_arr_alloc(0));
+        let pair1 = op_arr_alloc(2);
+        op_arr_set(pair1, 0, e1);
+        op_arr_set(pair1, 1, nil);
+        let cons1 = op_sum_new(0, pair1);
+        let pair0 = op_arr_alloc(2);
+        op_arr_set(pair0, 0, e0);
+        op_arr_set(pair0, 1, cons1);
+        let acc = op_sum_new(0, pair0);
+
+        let iter_doc = op_value_encode_form(acc, &d).expect("iterative encode of a Bytes list");
+        let descriptor = decode_descriptor(&d).expect("descriptor");
+        let mut b = DocBuilder::default();
+        let root = encode_value_recursive(&descriptor, &mut b, acc, descriptor.root, 0).expect("recursive");
+        let rec_doc = b.finish(root);
+        assert_eq!(iter_doc, rec_doc, "iterative and recursive Bytes-list encode must agree");
+        // The flattened rope body appears verbatim.
+        assert!(iter_doc.windows(3).any(|w| w == [0x30, 0x40, 0x50]), "flattened rope body present");
         op_drop(acc);
         assert_eq!(live_nodes(), 0, "no leak");
     }
