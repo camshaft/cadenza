@@ -372,10 +372,18 @@ the component type. The new work:
   round-trips). ONE clarity fix: a closure TRANSFORMER export (both a closure PARAM and a closure RESULT,
   e.g. `(def (twice (: g …)) (fn (x) (g (g x))))`) used to leak a confusing internal error; now declines
   cleanly naming the shape (`emit_roundtrip_resource` detects it up front). +1 decline test.
-- **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG-or-RESULT (recursion
-  into the value-heap escape's encode/decode); a closure exported ALONGSIDE a non-closure export; the
-  DISTINCT-SIG round-trip (round-trip emit generalized to N resource types); a closure TRANSFORMER (`own<t>`
-  both directions); the wasmtime-blocked `borrow<t>` repeated-call handle. Everything else is DONE + robust.
+- **✅ DISTINCT-SIG ROUND-TRIP SERIALIZER SEAM LANDED `@204174bb`.** `serialize::distinct_sig_roundtrip_core_module`
+  emits G signature groups, EACH a producer(s) + consumer(s): per group its own `resource-new-<g>`/
+  `resource-rep-<g>`, its makes (new-<g>), its consumer wrappers (each closure param rep-<g>'d → cell, body
+  called, cell dropped). `RtSigGroup { makes, consumers }`; no shared `call-<g>`. +1 serializer unit test
+  (two groups, valid). NEXT for the distinct-sig round-trip: the ENVELOPE (N resource types + producers +
+  consumers, model = `assemble_distinct_sig_resource` + the round-trip inner component), `emit` grouping
+  (producers+consumers by sig → `RtSigGroup`s; replaces the "mixing DIFFERENT signatures" round-trip
+  decline), and `cdz-run` (make-<name> → the group's matching consumer).
+- **REMAINING (all optional, none blocking):** the distinct-sig round-trip ENVELOPE+EMIT+HOST (serializer
+  done); a compound/closure-typed closure ARG-or-RESULT (recursion into the value-heap escape's encode/
+  decode); a closure exported ALONGSIDE a non-closure export; a closure TRANSFORMER (`own<t>` both
+  directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call handle. Everything else DONE.
 
 ## Risks / open questions
 
