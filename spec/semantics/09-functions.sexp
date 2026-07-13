@@ -740,6 +740,22 @@
             (def (main) (fact 21)) (export main)))
   (trap   "integer overflow"))
 
+(case "a linear non-tail recursion over a non-associative operator preserves its exact result"
+  (doc    "A compiler may turn a LINEAR non-tail recursion — one self-call whose result feeds a single
+           enclosing operation — into an accumulator TAIL LOOP (accumulator introduction), so deep
+           recursion runs in constant stack. That rewrite must preserve the EXACT result, including for a
+           NON-ASSOCIATIVE operator where the evaluation ORDER matters. `(alt n) = n - (alt (n-1))`, base
+           `(alt 0) = 0`, is right-nested subtraction: alt(5) = 5−(4−(3−(2−(1−0)))) = 5−(4−(3−(2−1))) =
+           5−(4−(3−1)) = 5−(4−2) = 5−2 = 3. A transform that naively accumulated `acc − n` left-to-right
+           would give a DIFFERENT number; the loop must reproduce the right-nested value 3. Pins that
+           accumulator introduction is result-preserving for a non-associative step, not only for `+`/`*`.")
+  (input  (do
+            (def (alt (: n Int64)) (if (= n 0) 0 (- n (alt (- n 1)))))
+            (def (main (: n Int64)) (alt n))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 3 Int64)))
+
 ; --- Two functions may recurse through EACH OTHER (mutual recursion) ----------------------
 ; core-semantics.md §Recursion + §A Function Is A First-Class Value: recursion need not be
 ; self-recursion — two top-level defs may call each other, each in scope in the other's body (the same
