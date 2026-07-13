@@ -1983,7 +1983,7 @@ mod tests {
         // concrete part pins the result — which, for terminating monomorphic recursion, cannot happen
         // (there must be a base case, and it pins the type).
         let ast = parse(
-            "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
+            "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (let ((r (sum-to (+ n -1)))) (+ n r)))) (def (main) (sum-to 3)) (export main))",
         );
         let mut db = Db::load(ast);
         let d = def_of(&db, "sum-to");
@@ -2003,7 +2003,7 @@ mod tests {
         // now HAS a scheme `Int64 -> Int64` — where before A2 it declined. (The mechanism the recursive
         // corpus rides.)
         let ast = parse(
-            "(module m (def (sum-to n) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
+            "(module m (def (sum-to n) (if (= n 0) 0 (let ((r (sum-to (+ n -1)))) (+ n r)))) (def (main) (sum-to 3)) (export main))",
         );
         let mut db = Db::load(ast);
         let d = def_of(&db, "sum-to");
@@ -2021,7 +2021,7 @@ mod tests {
         // The NON-NEGOTIABLE property (build-order Stage 2 "done when"; the coarse-kind post-mortem): a
         // recursive def's parameter type is the SAME regardless of which node's type is demanded first.
         // Solve `sum-to`'s param via two different first-demands and assert they agree.
-        let src = "(module m (def (sum-to n) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))";
+        let src = "(module m (def (sum-to n) (if (= n 0) 0 (let ((r (sum-to (+ n -1)))) (+ n r)))) (def (main) (sum-to 3)) (export main))";
 
         // Order A: demand the def's scheme first (drives the solve from the signature).
         let mut db_a = Db::load(parse(src));

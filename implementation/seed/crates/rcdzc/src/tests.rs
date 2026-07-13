@@ -3736,6 +3736,74 @@ mod recursion {
     }
 
     #[test]
+    fn a_linear_nontail_recursion_is_accumulator_transformed_into_a_loop() {
+        use wasmtime::component::Val;
+        // ACCUMULATOR INTRODUCTION (the guide's `sm`, written NON-tail): `(def (sm n) (if (= n 0) 0
+        // (+ n (sm (- n 1)))))`. The recursive call is an OPERAND of `+`, so it is NOT a tail call and
+        // would compile to a stack-growing `call` — `sm 100000` stack-overflowed. `accum::introduce`
+        // rewrites it to a tail-recursive accumulator (`+` is associative, base 0 is its identity), which
+        // the loop transform then compiles to a `loop`. So a MILLION-deep sum now runs in O(1) stack, and
+        // the value is unchanged.
+        let sm = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (sm (: n Int64)) (if (= n 0) 0 (+ n (sm (- n 1))))) (export sm))",
+        )))
+        .expect("compile");
+        assert_eq!(run_returns_with::<i64>(&sm, "sm", &[Val::S64(5)]), 15);
+        assert_eq!(run_returns_with::<i64>(&sm, "sm", &[Val::S64(100)]), 5050);
+        // The payoff: 1,000,000 terms — a stack overflow before the transform, constant stack after.
+        assert_eq!(
+            run_returns_with::<i64>(&sm, "sm", &[Val::S64(1_000_000)]),
+            500_000_500_000
+        );
+        // PRODUCT shape (factorial): `*` is associative with identity 1. `(def (fac n) (if (= n 0) 1
+        // (* n (fac (- n 1)))))` — transformed the same way. fac(10) = 3628800.
+        let fac = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (fac (: n Int64)) (if (= n 0) 1 (* n (fac (- n 1))))) (export fac))",
+        )))
+        .expect("compile");
+        assert_eq!(run_returns_with::<i64>(&fac, "fac", &[Val::S64(5)]), 120);
+        assert_eq!(
+            run_returns_with::<i64>(&fac, "fac", &[Val::S64(10)]),
+            3_628_800
+        );
+        // The self-call may sit in EITHER operand: `(+ (sm2 (- n 1)) n)` (self-call first) also transforms.
+        let commuted = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (sm2 (: n Int64)) (if (= n 0) 0 (+ (sm2 (- n 1)) n))) (export sm2))",
+        )))
+        .expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&commuted, "sm2", &[Val::S64(1_000_000)]),
+            500_000_500_000
+        );
+    }
+
+    #[test]
+    fn the_accumulator_transform_declines_shapes_it_cannot_reassociate() {
+        use wasmtime::component::Val;
+        // The transform must NOT fire (and must leave the def correct) when the shape is not a linear
+        // associative-combine recursion. Each of these stays a plain recursion and still computes right.
+        // (1) TWO self-calls (fibonacci) — not linear; must not transform.
+        let fib = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (fib (: n Int64)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (export fib))",
+        )))
+        .expect("compile");
+        assert_eq!(run_returns_with::<i64>(&fib, "fib", &[Val::S64(10)]), 55);
+        // (2) base value is NOT the op's identity (`+` with base 100) — reassociating would change the
+        // result, so it must NOT transform. sm(3) = 3+2+1+100 = 106.
+        let based = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (sm (: n Int64)) (if (= n 0) 100 (+ n (sm (- n 1))))) (export sm))",
+        )))
+        .expect("compile");
+        assert_eq!(run_returns_with::<i64>(&based, "sm", &[Val::S64(3)]), 106);
+        // (3) a non-associative combine (`-`) — must not transform. f(3) = -(f2)-1 chain = -3.
+        let sub = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (f (: n Int64)) (if (= n 0) 0 (- (f (- n 1)) 1))) (export f))",
+        )))
+        .expect("compile");
+        assert_eq!(run_returns_with::<i64>(&sub, "f", &[Val::S64(3)]), -3);
+    }
+
+    #[test]
     fn a_narrow_two_parameter_recursion_emits_valid_wasm() {
         use wasmtime::component::Val;
         // A recursive function with TWO narrow (UInt8) parameters, threading the accumulator through the
