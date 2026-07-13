@@ -4247,26 +4247,48 @@ mod runtime_ops {
             "the overflow guard on (+ n 1) under n>0 is LIVE (n=MAX overflows) and must be kept, got: {kept:?}"
         );
         // VALUE + TRAP parity. The elided-guard function computes correctly and never falsely traps:
-        assert_eq!(run::<i64>("(: n Int64)", "(if (> n 0) (- n 1) 0)", &[Val::S64(5)]), 4);
-        assert_eq!(run::<i64>("(: n Int64)", "(if (> n 0) (- n 1) 0)", &[Val::S64(0)]), 0);
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(if (> n 0) (- n 1) 0)", &[Val::S64(5)]),
+            4
+        );
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(if (> n 0) (- n 1) 0)", &[Val::S64(0)]),
+            0
+        );
         // `n = MIN` takes the else-branch (no subtraction) — no false underflow trap.
         assert_eq!(
-            run::<i64>("(: n Int64)", "(if (> n 0) (- n 1) 0)", &[Val::S64(i64::MIN)]),
+            run::<i64>(
+                "(: n Int64)",
+                "(if (> n 0) (- n 1) 0)",
+                &[Val::S64(i64::MIN)]
+            ),
             0
         );
         // The kept-guard function still TRAPS at the real overflow (n = MAX, n+1 leaves Int64).
-        assert!(traps("(: n Int64)", "(if (> n 0) (+ n 1) 0)", &[Val::S64(i64::MAX)]));
-        assert_eq!(run::<i64>("(: n Int64)", "(if (> n 0) (+ n 1) 0)", &[Val::S64(5)]), 6);
+        assert!(traps(
+            "(: n Int64)",
+            "(if (> n 0) (+ n 1) 0)",
+            &[Val::S64(i64::MAX)]
+        ));
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(if (> n 0) (+ n 1) 0)", &[Val::S64(5)]),
+            6
+        );
         // `<` refines the ELSE branch: `(if (< n 1) 0 (- n 1))` — else knows `n ≥ 1`, guard dropped.
         let else_refine = select(
             "(module m (def (f (: n Int64)) (if (< n 1) 0 (- n 1))) (def (main) 0) (export main))",
             "f",
         );
         assert!(
-            !else_refine.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            !else_refine
+                .iter()
+                .any(|i| matches!(i, Lir::IfUnreachableEnd)),
             "the else-branch of (< n 1) knows n>=1, so (- n 1) sheds its guard, got: {else_refine:?}"
         );
-        assert_eq!(run::<i64>("(: n Int64)", "(if (< n 1) 0 (- n 1))", &[Val::S64(3)]), 2);
+        assert_eq!(
+            run::<i64>("(: n Int64)", "(if (< n 1) 0 (- n 1))", &[Val::S64(3)]),
+            2
+        );
     }
 
     #[test]
@@ -4340,15 +4362,27 @@ mod runtime_ops {
         );
         // VALUE + TRAP parity. Bounded-range cases compute; the wrong-polarity case still traps at MIN.
         assert_eq!(
-            run::<i64>("(: n Int64)", "(if (and (> n 0) (< n 100)) (- n 1) 0)", &[Val::S64(50)]),
+            run::<i64>(
+                "(: n Int64)",
+                "(if (and (> n 0) (< n 100)) (- n 1) 0)",
+                &[Val::S64(50)]
+            ),
             49
         );
         assert_eq!(
-            run::<i64>("(: n Int64)", "(if (and (> n 0) (< n 100)) (+ n 1) 0)", &[Val::S64(99)]),
+            run::<i64>(
+                "(: n Int64)",
+                "(if (and (> n 0) (< n 100)) (+ n 1) 0)",
+                &[Val::S64(99)]
+            ),
             100
         );
         assert_eq!(
-            run::<i64>("(: n Int64)", "(if (or (< n 1) (> n 99)) 0 (- n 1))", &[Val::S64(50)]),
+            run::<i64>(
+                "(: n Int64)",
+                "(if (or (< n 1) (> n 99)) 0 (- n 1))",
+                &[Val::S64(50)]
+            ),
             49
         );
         // Two DIFFERENT variables both refined by an `and`.
@@ -4518,8 +4552,22 @@ mod runtime_ops {
             2,
             "an undecided inner comparison must NOT be folded, got: {undecided:?}"
         );
-        assert_eq!(run::<i64>("(: n Int64)", "(if (>= n 5) (if (> n 8) 1 2) 3)", &[Val::S64(6)]), 2);
-        assert_eq!(run::<i64>("(: n Int64)", "(if (>= n 5) (if (> n 8) 1 2) 3)", &[Val::S64(9)]), 1);
+        assert_eq!(
+            run::<i64>(
+                "(: n Int64)",
+                "(if (>= n 5) (if (> n 8) 1 2) 3)",
+                &[Val::S64(6)]
+            ),
+            2
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: n Int64)",
+                "(if (>= n 5) (if (> n 8) 1 2) 3)",
+                &[Val::S64(9)]
+            ),
+            1
+        );
     }
 
     #[test]
@@ -6986,6 +7034,40 @@ mod match_engine {
             )
             .as_deref(),
             Some("CDZ0201")
+        );
+        // A NULLARY-signature export `(def (answer) 42)` is a `() → T` function INVOKED by applying it to
+        // unit — `((. m answer) unit)` → 42 (distinct from a bare-name VALUE def, projected directly). The
+        // synthesized field is `(fn (_$u) 42)`, so the application β-reduces to the body.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module m (def (answer) 42)) ((. m answer) unit))) (export main))"
+                ),
+                "main"
+            ),
+            42
+        );
+        // Two nullary exports, each applied to unit and summed → neither displaces the other.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module m (def (one) 1) (def (two) 2)) (+ ((. m one) unit) ((. m two) unit)))) (export main))"
+                ),
+                "main"
+            ),
+            3
+        );
+        // A module carrying an UNMODELED-obligation member (`(pragma …)` — a validation not yet built)
+        // does NOT register, so its name stays unbound and the program DECLINES (a codeless CDZ0101), NOT
+        // a silent run that drops the pragma (decline-don't-miscompile). `reject_code` = a coded rejection
+        // OR None for a codeless decline — a decline is `None` here (unbound `m` surfaces as CDZ0101 on
+        // the reference, but the MODULE form's obligation is what forces the decline).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-integer) (def (answer) 42)) ((. m answer) unit))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0101")
         );
     }
 
@@ -23686,7 +23768,9 @@ mod closure_host_resource {
         use crate::testkit::parse;
         use wasmtime::component::Val;
         let Some(runtime) = super::find_debug_runtime_wasm() else {
-            eprintln!("[C-HOST-5] debug-counters runtime not in the store; skipping closure leak probe");
+            eprintln!(
+                "[C-HOST-5] debug-counters runtime not in the store; skipping closure leak probe"
+            );
             return;
         };
         // A capturing closure: make(10) allocates a cell holding k=10; call(5) dispatches (+ x k) = 15 and
@@ -23835,8 +23919,8 @@ mod closure_host_resource {
         use crate::testkit::parse;
         let engine = wasmtime::Engine::default();
         let valid = |src: &str, what: &str| {
-            let program =
-                crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+            let program = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+                .expect("compile");
             wasmtime::component::Component::new(&engine, &program)
                 .unwrap_or_else(|e| panic!("{what} must produce a VALID component: {e:?}"));
         };
@@ -23873,7 +23957,9 @@ mod closure_host_resource {
         use crate::testkit::parse;
         use wasmtime::component::Val;
         let Some(runtime) = super::find_debug_runtime_wasm() else {
-            eprintln!("[C-HOST-5] debug-counters runtime not in the store; skipping round-trip leak probe");
+            eprintln!(
+                "[C-HOST-5] debug-counters runtime not in the store; skipping round-trip leak probe"
+            );
             return;
         };
         let src = "(do (def (make-adder (: k Int64)) (fn ((: x Int64)) (+ x k))) \
@@ -23927,10 +24013,13 @@ mod closure_host_resource {
     fn a_closure_with_a_compound_argument_declines() {
         use crate::testkit::parse;
         let src = "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) (. p 0))) (export main))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("a closure whose ARG is a tuple must DECLINE (a compound is not a scalar boundary)");
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a closure whose ARG is a tuple must DECLINE (a compound is not a scalar boundary)",
+        );
         assert!(
-            err.message.contains("no scalar host-boundary representation") && err.code.is_none(),
+            err.message
+                .contains("no scalar host-boundary representation")
+                && err.code.is_none(),
             "expected the compound-closure-arg decline, got: {:?} / {}",
             err.code,
             err.message

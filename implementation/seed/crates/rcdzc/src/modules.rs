@@ -69,15 +69,23 @@ fn def_field(ast: &mut Arenas, member: StructId) -> Option<StructId> {
     let name = children.first().and_then(|&c| ast.as_name(c))?.to_string();
     let params: Vec<StructId> = children[1..].to_vec();
     let k = push_atom(ast, Leaf::Name(name));
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     if params.is_empty() {
-        // Nullary `(def (x) V)` — field value is the body (a nullary export; applied `(f unit)` via the
-        // ordinary calling convention).
-        return Some(push_list(ast, vec![k, body]));
+        // Nullary FUNCTION `(def (answer) V)` — a `() → T` export INVOKED by applying it to the unit value
+        // `((. m answer) unit)` (core-semantics.md §A Nullary Function's Argument Type Is Unit; the module
+        // cases write `((. m answer) unit)`). Distinct from a bare-name VALUE `(def v V)` (handled above,
+        // whose field IS the value, projected `(. m v)` with no application). Field value is the lambda
+        // `(fn (_$u) V)` over ONE ignored unit param — a fresh `_`-prefixed name that never collides with
+        // a user binder (unused-binding-suppressed) — so `((. m answer) unit)` β-reduces to `V` by the
+        // ordinary application path, and the body (which references no param) is unchanged.
+        let unit_param = push_atom(ast, Leaf::Name("_$u".to_string()));
+        let params_list = push_list(ast, vec![unit_param]);
+        let lambda = push_list(ast, vec![fn_head, params_list, body]);
+        return Some(push_list(ast, vec![k, lambda]));
     }
     // Function `(def (f p…) BODY)` — field value is the lambda `(fn (p…) BODY)`. The params are the RAW
     // signature occurrences (bare `a` or annotated `(: a T)`), exactly the shape a `Resolved::Lambda` / a
     // top-level def's params carry, so the ordinary application path β-reduces it.
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     let params_list = push_list(ast, params);
     let lambda = push_list(ast, vec![fn_head, params_list, body]);
     Some(push_list(ast, vec![k, lambda]))
