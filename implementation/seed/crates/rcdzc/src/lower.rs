@@ -431,6 +431,30 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                                 format!("tuple index {index} is out of range"),
                             )),
                         }
+                    } else if let Core::Tuple { elems } = core_of(db, operand) {
+                        // The RESOLVED fold (`reduce_to_tuple_elems`) sees through a `(tuple …)` literal
+                        // but NOT an operand whose tuple is produced by a tuple OPERATION — `Tuple.split-at`
+                        // / `Tuple.pop`, which `lower_tuple_split_at`/`lower_tuple_pop` FOLD to a constant
+                        // `Core::Tuple` but which resolve as a `Prim` application, not a `Resolved::Tuple`.
+                        // Fold the projection through that constant tuple's CORE, exactly as the literal
+                        // path does: `(. (Tuple.split-at (tuple 10 20) 0) 1)` → element 1 = the suffix tuple
+                        // `(tuple 10 20)`, with NO heap build. This is what makes `Tuple.split-at` at the
+                        // k=0 / k=arity boundary — whose empty side is a `Unit` element — usable: the
+                        // constant fold reaches the same representation the byte-identical literal `(tuple
+                        // unit (tuple 10 20))` does, instead of a runtime `Core::Proj` whose `Unit` element
+                        // hits the not-yet-built value-heap path. Only fires when the resolved fold failed
+                        // AND the operand still lowered to a constant tuple (a runtime tuple's `core_of` is
+                        // not `Core::Tuple`, so it correctly stays a runtime `Core::Proj` below).
+                        match elems.get(index) {
+                            Some(&elem) => {
+                                trace!(target: "rcdzc::fold", node = id.0, index, "tuple projection folds through a constant-tuple operation result (no heap build)");
+                                core_of(db, elem)
+                            }
+                            None => Core::Poison(Reject::coded(
+                                Code::Malformed,
+                                format!("tuple index {index} is out of range"),
+                            )),
+                        }
                     } else {
                         trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, index, "tuple projection stays runtime (operand is a runtime tuple)");
                         Core::Proj { operand, index }

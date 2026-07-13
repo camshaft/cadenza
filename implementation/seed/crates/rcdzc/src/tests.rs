@@ -11460,6 +11460,49 @@ mod match_engine {
     }
 
     #[test]
+    fn accessing_through_an_empty_side_split_at_folds_like_the_literal() {
+        // 15-rows "accessing through an empty-side split-at is usable, like the equivalent literal": a
+        // split at k=0 (or k=arity) has a `Unit` empty side, yielding `(Tuple Unit (Tuple …))`. Reading
+        // THROUGH it (`.1 .0`) used to DECLINE "a tuple element of type Unit needs the value heap" — the
+        // projection stayed a runtime read whose Unit element hit the not-yet-built heap path — where the
+        // BYTE-IDENTICAL literal `(tuple unit (tuple 10 20))` folds through and runs. The projection now
+        // folds through the constant tuple the split-at operation produces (its `core_of` is `Core::Tuple`),
+        // reaching the same representation the literal does. main => 10.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (. (. (Tuple.split-at (tuple 10 20) 0) 1) 0)) (export main))"
+                ),
+                "main"
+            ),
+            10,
+            "an empty-prefix split-at, accessed through, folds to the projected element"
+        );
+        // k=arity (empty SUFFIX) reading through the prefix, likewise.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (. (. (Tuple.split-at (tuple 10 20) 2) 0) 0)) (export main))"
+                ),
+                "main"
+            ),
+            10,
+            "an empty-suffix split-at, accessed through the prefix, folds too"
+        );
+        // INTERIOR split (both sides non-empty) still works — this is not an empty-side-only fix.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (. (. (Tuple.split-at (tuple 10 20 30) 2) 1) 0)) (export main))"
+                ),
+                "main"
+            ),
+            30,
+            "an interior split's suffix element is read correctly"
+        );
+    }
+
+    #[test]
     fn a_list_homogeneity_violation_is_cdz0201_by_shape() {
         // 05-compound-types §A List Is An Ordered Homogeneous Sequence — the same taxonomy line the numeric
         // operators and `if`-branches draw. A homogeneity violation between two DISTINCT NUMERIC types, or
