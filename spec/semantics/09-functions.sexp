@@ -258,6 +258,42 @@
   (call   main (: true Bool))
   (output (: 11 Int64)))
 
+; The runtime-condition selection above FOLDS because the chosen function is applied AT the selection
+; site — `((if b f g) 5)` commutes the application into each branch, so no function value survives. But
+; when the runtime-selected function is instead THREADED THROUGH A RECURSIVE HOF — chosen by `if`, then
+; passed to `applyer` and applied inside the recursion — the `if` CANNOT commute into the recursive
+; callee, so the selected closure must survive as a genuine runtime heap VALUE and dispatch via
+; `call_indirect`. This is the runtime-selected companion to the recursive-HOF case below: the closure's
+; identity is decided at run time, yet it is still applied indirectly at each recursion step.
+
+(case "a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)"
+  (doc    "`(if b (fn (x) (+ x 10)) (fn (x) (* x 10)))` is selected by the runtime Bool `b`, then passed
+           to the recursive `applyer` and applied at each step — the `if` cannot commute into the
+           recursion, so the chosen closure is a real runtime value dispatched via call_indirect. With
+           b=true the closure is `(+ x 10)`: applyer sums (3+10)+(2+10)+(1+10) = 36.")
+  (input  (do
+            (def (applyer (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (applyer g (- n 1)))))
+            (def (main (: b Bool))
+              (applyer (if b (fn ((: x Int64)) (+ x 10)) (fn ((: x Int64)) (* x 10))) 3))
+            (export main)))
+  (call   main (: true Bool))
+  (output (: 36 Int64)))
+
+(case "a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)"
+  (doc    "The false branch of the case above: with b=false the chosen closure is `(* x 10)`, so applyer
+           sums (3·10)+(2·10)+(1·10) = 60. The SAME program with the other runtime input dispatches the
+           other lifted closure through the same recursive indirect-call site — the table slot carried by
+           the runtime-selected closure cell selects which code runs.")
+  (input  (do
+            (def (applyer (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (applyer g (- n 1)))))
+            (def (main (: b Bool))
+              (applyer (if b (fn ((: x Int64)) (+ x 10)) (fn ((: x Int64)) (* x 10))) 3))
+            (export main)))
+  (call   main (: false Bool))
+  (output (: 60 Int64)))
+
 ; A function argument passed to a RECURSIVE higher-order function, applied inside the recursion. This
 ; is the case a function value MUST exist at run time: the recursive `apply-sum` cannot be inlined
 ; away (it recurses), so its function parameter `g` is a genuine runtime CLOSURE VALUE — the lambda is
@@ -391,6 +427,30 @@
             (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n))
             (export main)))
   (call   main (: 3 Int64))
+  (output (: 9 Int64)))
+
+; A closure RETURNED from a RECURSIVE function, then applied through a recursive HOF — two runtime
+; function paths composed. `core-semantics.md` §A Function Is A First-Class Value lists both "returned
+; as a result" and "passed as an argument"; here they meet at run time. Because `pick` is RECURSIVE it
+; cannot be inlined away, so the closure it returns is a genuine runtime value (not folded at the call
+; site the way a non-recursive factory folds), and it then crosses into the recursive `applyer` and
+; dispatches via `call_indirect` at each step. Pins that a lifted closure produced by one runtime
+; function survives being handed to another and applied indirectly.
+
+(case "a closure returned from a recursive function is applied through a recursive HOF"
+  (doc    "`pick` recurses to its base case and returns the closure `(fn (x) (+ x 1))`; because `pick`
+           recurses it cannot fold, so its returned closure is a real runtime value. That value is passed
+           to the recursive `applyer` and applied at each step via an indirect call. `pick n` always
+           reaches `(+ x 1)`, so `applyer (pick n) 3 = (3+1)+(2+1)+(1+1) = 9` regardless of the runtime
+           `n` fed to pick. Pins that a returned-then-passed runtime closure dispatches correctly.")
+  (input  (do
+            (def (pick (: n Int64))
+              (if (= n 0) (fn ((: x Int64)) (+ x 1)) (pick (- n 1))))
+            (def (applyer (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (applyer g (- n 1)))))
+            (def (main (: n Int64)) (applyer (pick n) 3))
+            (export main)))
+  (call   main (: 5 Int64))
   (output (: 9 Int64)))
 
 ; core-semantics.md §A Function Is A First-Class Value: a function can be "stored in a data structure."
