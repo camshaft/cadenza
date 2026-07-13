@@ -43,6 +43,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Basics.tsx")),
   },
   {
+    slug: "functions",
+    title: "Composing functions",
+    blurb: "Pipelines, composition, and applying one argument at a time.",
+    section: "Fundamentals",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/Functions.tsx")),
+  },
+  {
     slug: "control-flow",
     title: "Control flow",
     blurb: "if / then / else, sequencing, and short-circuit logic.",
@@ -110,6 +118,14 @@ export const CHAPTERS: Chapter[] = [
     blurb: "Checked integers and no silent promotion.",
     section: "Fundamentals",
     Component: lazy(() => import("./chapters/Numbers.tsx")),
+  },
+  {
+    slug: "floats",
+    title: "Floating-point numbers",
+    blurb: "Real-valued arithmetic with its own operators.",
+    section: "Fundamentals",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/Floats.tsx")),
   },
   {
     slug: "whats-next",
