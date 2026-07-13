@@ -2656,6 +2656,12 @@ pub struct ClosureConsume {
     pub params: Vec<ConsumeParam>,
     /// The consumer's result valtype.
     pub ret_vt: ValType,
+    /// True when the consumer's result is a byte-rope (`Bytes`/`String`) — the wrapper copies the body's
+    /// returned handle out as a `list<u8>` `(ptr,len)` return area (via `bytes-len`/`bytes-get`) instead of
+    /// returning the scalar value. `ret_vt` is `I32` either way (a bytes handle IS an i32) so the core
+    /// consumer functype's result stays `i32`; only the BODY differs. When any consumer is byte-rope the
+    /// module gains a shared memory + `cabi_realloc`.
+    pub ret_is_bytes: bool,
 }
 
 /// The ROUND-TRIP closure-resource core module (C-HOST-4): N producer `make-<name>` functions (as in
@@ -2681,6 +2687,10 @@ pub fn roundtrip_resource_core_module(
     let n = funcs.len();
     let nmk = makes.len();
     let ncons = consumers.len();
+    // A byte-rope consumer result crosses as `list<u8>` → the module needs a shared memory + `cabi_realloc`
+    // (the consumer wrapper writes its `list<u8>` payload + `(ptr,len)` return area into linear memory, then
+    // the envelope lifts that consumer with the Memory/Realloc canon options).
+    let any_bytes = consumers.iter().any(|c| c.ret_is_bytes);
     let vt_byte = |v: ValType| match v {
         ValType::I32 => wasm_abi::CORE_I32,
         ValType::I64 => wasm_abi::CORE_I64,
@@ -2732,7 +2742,15 @@ pub fn roundtrip_resource_core_module(
         t.extend_from_slice(&wasm_vec(1, &[vt_byte(c.ret_vt)]));
         type_items.extend_from_slice(&t);
     }
-    let total_types = defined_type_base + n + nmk + ncons;
+    // If any consumer is byte-rope, one shared `cabi_realloc` functype `(i32×4)->i32` after the consumers.
+    let realloc_type_idx = (defined_type_base + n + nmk + ncons) as u32;
+    if any_bytes {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let total_types = defined_type_base + n + nmk + ncons + usize::from(any_bytes);
     let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
 
     // ── Import section ── k ops + resource-new + resource-rep.
@@ -2759,12 +2777,16 @@ pub fn roundtrip_resource_core_module(
     for i in 0..ncons {
         uleb128((consume_type_base + i) as u64, &mut func_items);
     }
+    if any_bytes {
+        uleb128(realloc_type_idx as u64, &mut func_items);
+    }
     let func_sec = section(
         wasm_abi::CORE_SEC_FUNCTION,
-        &wasm_vec(n + nmk + ncons, &func_items),
+        &wasm_vec(n + nmk + ncons + usize::from(any_bytes), &func_items),
     );
     let make_abs_base = (defined_type_base + n) as u32;
     let consume_abs_base = make_abs_base + nmk as u32;
+    let realloc_abs = consume_abs_base + ncons as u32; // valid only when any_bytes
 
     // ── Table + Element ── the funcref table from `layout.lifted` (a consumer's call_indirect dispatches
     // over it; the closure the host handed back was lifted in this module).
@@ -2790,7 +2812,15 @@ pub fn roundtrip_resource_core_module(
         (table_sec, elem_sec)
     };
 
-    // ── Export section ── each make + each consumer, under its boundary name.
+    // ── Memory ── only when a byte-rope consumer must write its `list<u8>` payload.
+    let mem_sec = if any_bytes {
+        section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]))
+    } else {
+        Vec::new()
+    };
+
+    // ── Export section ── each make + each consumer, under its boundary name; plus (when byte-rope) `memory`
+    // + `cabi_realloc` for the compound consumer's canon lift.
     let export_sec = {
         let export = |name: &str, kind: u8, idx: u32| {
             let mut item = uleb_bytes(name.len() as u64);
@@ -2823,9 +2853,20 @@ pub fn roundtrip_resource_core_module(
                 p.body_abs,
             ));
         }
+        if any_bytes {
+            items.extend_from_slice(&export("memory", wasm_abi::EXPORT_KIND_MEMORY, 0));
+            items.extend_from_slice(&export(
+                "cabi_realloc",
+                wasm_abi::EXPORT_KIND_FUNC,
+                realloc_abs,
+            ));
+        }
         section(
             wasm_abi::CORE_SEC_EXPORT,
-            &wasm_vec(nmk + ncons + plain.len(), &items),
+            &wasm_vec(
+                nmk + ncons + plain.len() + if any_bytes { 2 } else { 0 },
+                &items,
+            ),
         )
     };
 
@@ -2852,23 +2893,27 @@ pub fn roundtrip_resource_core_module(
     // consumer[i](params…) = consume_body(<rep'd closures / passthrough scalars>…). A CLOSURE param's
     // boundary handle is `resource.rep`'d to the guest cell (in a scratch local), then that cell is passed
     // to the body; a scalar param is forwarded straight. The consumer body treats its closure param(s) as
-    // plain cell handles (a normal `Core::CallClosure`), so this wrapper is the boundary→cell bridge.
+    // plain cell handles (a normal `Core::CallClosure`), so this wrapper is the boundary→cell bridge. A
+    // SCALAR-result consumer leaves the body's value R on the stack; a BYTE-ROPE-result consumer instead
+    // copies the body's returned Bytes/String handle out as a `list<u8>` `(ptr,len)` return area.
+    let imp = |name: &str| import_index[name] as u64;
     for c in consumers {
         let nparams = c.params.len() as u32;
-        // One i32 scratch local per closure param (holding the rep'd cell). Scratch slots start past the
-        // params (0..nparams).
+        // One i32 scratch local per closure param (holding the rep'd cell). A byte-rope consumer needs 3
+        // MORE i32 scratch locals (the returned Bytes handle, its length, the copy index).
         let n_closures = c
             .params
             .iter()
             .filter(|p| matches!(p, ConsumeParam::Closure))
             .count();
+        let n_scratch = n_closures + if c.ret_is_bytes { 3 } else { 0 };
         let mut inner = Vec::new();
         inner.extend_from_slice(&wasm_vec(
-            if n_closures == 0 { 0 } else { 1 },
-            &if n_closures == 0 {
+            if n_scratch == 0 { 0 } else { 1 },
+            &if n_scratch == 0 {
                 Vec::new()
             } else {
-                let mut g = uleb_bytes(n_closures as u64);
+                let mut g = uleb_bytes(n_scratch as u64);
                 g.push(wasm_abi::CORE_I32);
                 g
             },
@@ -2898,22 +2943,103 @@ pub fn roundtrip_resource_core_module(
         }
         inner.push(op::CALL);
         uleb128(c.consume_abs as u64, &mut inner);
-        // C-HOST-5: each closure param crossed as `own<t>` (ownership transferred INTO the consumer), so
-        // the wrapper owns each handed-back cell's last reference — RELEASE each now (`heap.drop(rep)`),
-        // after the consumer BODY returned (it finished borrowing the cell for every `(g x)` application,
-        // including a body that applies the closure more than once). The body's result R is on the stack;
-        // each `drop` takes a rep (a separate push) and returns nothing, leaving R on top.
-        for (_, cell) in cell_of.iter() {
-            inner.push(op::LOCAL_GET);
-            uleb128(*cell as u64, &mut inner);
+        if c.ret_is_bytes {
+            // The body returned a Bytes/String HANDLE (on the stack). Save it, drop the closure cells
+            // (own<t> release), then copy the byte-rope out as a `list<u8>` `(ptr,len)` return area — the
+            // same copy loop the byte-rope `call` uses. `cell_slot` is past the params + closure cells.
+            const OUT: i64 = 8;
+            let bh = cell_slot;
+            let nlen = cell_slot + 1;
+            let iv = cell_slot + 2;
+            let get = |l: u32, out: &mut Vec<u8>| {
+                out.push(op::LOCAL_GET);
+                uleb128(l as u64, out);
+            };
+            let set = |l: u32, out: &mut Vec<u8>| {
+                out.push(op::LOCAL_SET);
+                uleb128(l as u64, out);
+            };
+            let ci32 = |v: i64, out: &mut Vec<u8>| {
+                out.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128(v, out);
+            };
+            set(bh, &mut inner);
+            // release the closure cells now that the body is done borrowing them.
+            for cell in cell_of.values() {
+                get(*cell, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner);
+            }
+            get(bh, &mut inner);
             inner.push(op::CALL);
-            uleb128(
-                *import_index
-                    .get("drop")
-                    .expect("drop imported for the closure-cell release") as u64,
-                &mut inner,
-            );
+            uleb128(imp("bytes-len"), &mut inner);
+            set(nlen, &mut inner);
+            ci32(0, &mut inner);
+            set(iv, &mut inner);
+            inner.push(op::BLOCK);
+            inner.push(wasm_abi::BLOCK_EMPTY);
+            inner.push(op::LOOP);
+            inner.push(wasm_abi::BLOCK_EMPTY);
+            get(iv, &mut inner);
+            get(nlen, &mut inner);
+            inner.push(op::I32_GE_U);
+            inner.push(op::BR_IF);
+            uleb128(1, &mut inner);
+            ci32(OUT, &mut inner);
+            get(iv, &mut inner);
+            inner.push(op::I32_ADD);
+            get(bh, &mut inner);
+            get(iv, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("bytes-get"), &mut inner);
+            inner.push(op::I32_STORE8);
+            inner.push(0x00);
+            inner.push(0x00);
+            get(iv, &mut inner);
+            ci32(1, &mut inner);
+            inner.push(op::I32_ADD);
+            set(iv, &mut inner);
+            inner.push(op::BR);
+            uleb128(0, &mut inner);
+            inner.push(op::END);
+            inner.push(op::END);
+            ci32(0, &mut inner);
+            ci32(OUT, &mut inner);
+            inner.push(op::I32_STORE);
+            inner.push(0x02);
+            inner.push(0x00);
+            ci32(4, &mut inner);
+            get(nlen, &mut inner);
+            inner.push(op::I32_STORE);
+            inner.push(0x02);
+            inner.push(0x00);
+            get(bh, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+            ci32(0, &mut inner);
+        } else {
+            // C-HOST-5: each closure param crossed as `own<t>` (ownership transferred INTO the consumer), so
+            // the wrapper owns each handed-back cell's last reference — RELEASE each now (`heap.drop(rep)`),
+            // after the consumer BODY returned (it finished borrowing the cell for every `(g x)`
+            // application, including a body that applies the closure more than once). The body's result R is
+            // on the stack; each `drop` takes a rep (a separate push) and returns nothing, leaving R on top.
+            for cell in cell_of.values() {
+                inner.push(op::LOCAL_GET);
+                uleb128(*cell as u64, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner);
+            }
         }
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    // cabi_realloc stub (only when a byte-rope consumer needs it).
+    if any_bytes {
+        let mut inner = uleb_bytes(0);
+        inner.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut inner);
         inner.push(op::END);
         let mut e = uleb_bytes(inner.len() as u64);
         e.extend_from_slice(&inner);
@@ -2921,7 +3047,7 @@ pub fn roundtrip_resource_core_module(
     }
     let code_sec = section(
         wasm_abi::CORE_SEC_CODE,
-        &wasm_vec(n + nmk + ncons, &code_items),
+        &wasm_vec(n + nmk + ncons + usize::from(any_bytes), &code_items),
     );
 
     let mut core = Vec::new();
@@ -2930,6 +3056,7 @@ pub fn roundtrip_resource_core_module(
     core.extend_from_slice(&import_sec);
     core.extend_from_slice(&func_sec);
     core.extend_from_slice(&table_sec);
+    core.extend_from_slice(&mem_sec);
     core.extend_from_slice(&export_sec);
     core.extend_from_slice(&elem_sec);
     core.extend_from_slice(&code_sec);

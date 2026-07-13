@@ -2717,7 +2717,13 @@ fn emit(
                 let bits = w * 8;
                 // Materialize the segment value in the i64 slot (a narrow int emits an i32 → extend by
                 // its OWN signedness; an Int64 is already i64). Stack still just `[buf]` after the set.
-                emit(db, s.value, slots, base + 1, high, scratch_ty, layout, out)?; // [buf, val:i32|i64]
+                // The value sub-expression's transient scratch must FLOAT above the high-water mark, not
+                // reuse a fixed `base + 1`: two segments each with a `(g x)` closure application (or any
+                // slot-typed temp) would otherwise alias one wasm local at two widths — segment 1 an i32
+                // closure cell, segment 2 an i64 arith stash — re-typing it → "expected i64, found i32"
+                // (the disjoint-slot discipline `emit_checked_arith`/`emit_call_args` follow for siblings).
+                let seg_base = (val_slot + 1).max(*high);
+                emit(db, s.value, slots, seg_base, high, scratch_ty, layout, out)?; // [buf, val:i32|i64]
                 emit_box_i32_to_i64_extend(db, s.value, out);
                 out.push(Lir::LocalSet(val_slot)); // val := value:i64  → [buf]
                 // RANGE CHECK: the value must fit the segment's (signed, bits) width, else trap. Width 8
