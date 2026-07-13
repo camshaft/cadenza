@@ -255,6 +255,7 @@ pass	a function returning None or a nested Some infers its compound result shape
 pass	a function returning a boolean predicate result
 pass	a function returns a heap sub-node selected by a match arm
 pass	a function stored in a record field is called after extraction
+pass	a function stored in a record field of a sum payload is called after a match
 pass	a function stored in a tuple element is called after extraction
 pass	a function takes a boolean parameter and branches on it
 pass	a function whose name is capitalized is called, not treated as a constructor

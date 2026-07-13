@@ -3653,6 +3653,24 @@ fn head_is_runtime_fn_value(db: &mut Db, id: StructId) -> bool {
         Resolved::SumPayload { .. } | Resolved::Proj { .. } => {
             crate::eval::lambda_body(db, id).is_none()
         }
+        // A record-field projection `(. rec f)` whose field TYPE is a function — the record-field analogue
+        // of `Proj`'s tuple-element. When `rec` is a RUNTIME record (e.g. bound as a sum-match payload,
+        // `(match h ((H.M rec) ((. rec f) x)))`) the fn field cannot fold to its lambda, so it is a runtime
+        // closure handle read from the value heap and applied via `call_indirect`. FOUR gates keep this
+        // from diverting things that already work: (1) it carries NO `(meta apply)` — a prelude OPERATION
+        // reached by member syntax (`(. Bytes at)`, `Map.insert`) is an operator/type-builder with its own
+        // prim path, NOT a runtime closure (diverting them broke every `Bytes.at`/`List.at`/… op); (2) it
+        // is NOT a variant constructor — `(. Shape Rect)` is a `Member` of arrow type reached by its
+        // `Prim::SumNew` path; (3) the field type is `Ty::Fn` — an ordinary DATA field read (`rec.n`) stays
+        // on its folding path; (4) it does NOT reduce to a lambda — a constant record's fn field folds and
+        // β-reduces. Only a genuine fn-typed field of a RUNTIME record (no prim, no ctor, no fold) is a
+        // runtime closure handle.
+        Resolved::Member { .. } => {
+            crate::eval::meta_apply_of(db, id).is_none()
+                && crate::eval::variant_disc_of(db, id).is_none()
+                && matches!(crate::infer::type_of(db, id), crate::ty::Ty::Fn(_, _))
+                && crate::eval::lambda_body(db, id).is_none()
+        }
         _ => false,
     }
 }
