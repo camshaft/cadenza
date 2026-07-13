@@ -1350,6 +1350,63 @@ fn fix_without_all_leaves_a_heuristic_only_file_untouched() {
 }
 
 #[test]
+fn check_surfaces_a_non_exhaustive_match_on_a_param_with_the_add_arm_fix() {
+    // A non-exhaustive match on a function PARAMETER used to be invisible to `cdz check` (the lowering
+    // walk ran only on nullary exported bodies). It is now surfaced with its structured "add the missing
+    // arm" insert fix — an agent reads the CDZ0210 and the arm to add.
+    let dir = scratch_dir("check_nx");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(module m (type C (A) (B) (D)) (def (f (: c C)) (match c ((A) 1) ((B) 2))) (export f))\n",
+    )
+    .unwrap();
+    let (ok, stdout, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(!ok, "non-exhaustive is an error");
+    assert!(
+        stdout.contains("CDZ0210") && stdout.contains("`D` not covered"),
+        "surfaces the missing variant: {stdout}"
+    );
+    assert!(
+        stdout.contains("add `(D unit)`"),
+        "offers the add-arm fix: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fix_all_declines_an_add_arm_fix_whose_placeholder_body_would_not_type_check() {
+    // HONESTY of `--verify-fixes`/`--all`: a fix upgrades/applies only if it clears its code AND
+    // introduces NO NEW error. The add-arm insert `(D unit)` clears the CDZ0210 but its `unit`
+    // placeholder body mismatches the other arms (`Int64`) — a fresh CDZ0203 — so it stays HEURISTIC
+    // and `fix --all` leaves the file untouched rather than writing a broken program.
+    let dir = scratch_dir("fix_nx_decline");
+    let f = dir.join("prog.sexp");
+    let original =
+        "(module m (type C (A) (B) (D)) (def (f (: c C)) (match c ((A) 1) ((B) 2))) (export f))\n";
+    std::fs::write(&f, original).unwrap();
+    // `--verify-fixes` does NOT upgrade it: the help line keeps the `(heuristic)` marker.
+    let (_, stdout, _) = run(&["check", "--verify-fixes", f.to_str().unwrap()], "");
+    assert!(
+        stdout.contains("help (heuristic): add `(D unit)`"),
+        "the placeholder-body insert stays heuristic under --verify-fixes: {stdout}"
+    );
+    // `fix --all` declines it (would leave a CDZ0203) and leaves the file untouched.
+    let (ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok);
+    assert!(
+        stderr.contains("no applicable fixes"),
+        "the broken-placeholder insert is not applied: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        original,
+        "the file is untouched"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn fix_applies_a_rule_verified_fix_without_all() {
     // The compiler's OWN verified fix (CDZ0306 `_`-prefix silence) applies WITHOUT `--all` — it is
     // proven by a rule, not a recompile. `q` unused → `_q`, leaving `p` untouched.

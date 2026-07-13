@@ -3253,6 +3253,17 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     }
                 }
             }
+            // EXHAUSTIVENESS is well-formedness — a non-exhaustive match is a compile-time error
+            // (`core-semantics.md` §Matching Is Exhaustive Or Rejected) whether or not the enclosing def
+            // is reached, exactly as an unbound name in an uncalled sibling is. The emit path lowers only
+            // reached (and, for the standalone walk, nullary-exported) bodies, so `check` missed a
+            // non-exhaustive match on a function PARAMETER; surface it here, where `collect_node` visits
+            // EVERY match in every body. `match_nonexhaustive_fault` returns only the CDZ0210 (carrying
+            // its "add the missing arm" fix), never a not-yet-lowerable decline — so this adds the
+            // actionable fix to `check`/`--json`/`fix` without raising false alarms.
+            if let Some(r) = crate::lower::match_nonexhaustive_fault(db, id) {
+                out.push(r);
+            }
             collect(db, scrutinee, out);
             for (_, body) in &arms {
                 collect(db, *body, out);

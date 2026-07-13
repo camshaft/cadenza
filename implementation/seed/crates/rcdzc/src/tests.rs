@@ -10658,6 +10658,51 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_non_exhaustive_match_on_a_function_param_surfaces_in_the_diagnostics_query() {
+        // The `diagnostics()` query (what `cdz check`/`--json`/`fix` run) checks well-formedness over
+        // EVERY def body, but the reached-poison (lowering) walk runs only on nullary EXPORTED bodies — so
+        // a non-exhaustive match on a function PARAMETER (the common case) was silently missed by `check`.
+        // Now `collect_node`'s match arm surfaces the CDZ0210 (with its "add the missing arm" fix), whether
+        // the def is exported or not, so an agent using `check` sees the actionable fix.
+        let src_exported = "(module m (type C (A) (B) (D)) \
+             (def (f (: c C)) (match c ((A) 1) ((B) 2))) (export f))";
+        let d: Vec<_> = crate::diagnostics(&mut Db::load(parse(src_exported)))
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0210"))
+            .collect();
+        assert_eq!(d.len(), 1, "one non-exhaustive fault: {d:?}");
+        assert!(
+            d[0].message.contains("`D`") && d[0].message.contains("not covered"),
+            "names the missing variant: {}",
+            d[0].message
+        );
+        let fix = d[0].fix.as_ref().expect("carries the add-arm fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::InsertInto);
+        assert_eq!(fix.replacement, "(D unit)");
+
+        // A NON-exported function's non-exhaustive match is caught too — it escapes emission entirely
+        // (dead, never laid out), so this is the only place it is reported.
+        let src_unexported = "(module m (type C (A) (B) (D)) \
+             (def (f (: c C)) (match c ((A) 1) ((B) 2))) (def (main) 0) (export main))";
+        assert!(
+            crate::diagnostics(&mut Db::load(parse(src_unexported)))
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0210")),
+            "a non-exhaustive match in an uncalled function is still flagged"
+        );
+
+        // An EXHAUSTIVE match stays clean — no false positive.
+        let src_ok = "(module m (type C (A) (B) (D)) \
+             (def (f (: c C)) (match c ((A) 1) ((B) 2) ((D) 3))) (export f))";
+        assert!(
+            crate::diagnostics(&mut Db::load(parse(src_ok)))
+                .iter()
+                .all(|d| d.code.as_deref() != Some("CDZ0210")),
+            "an exhaustive match produces no non-exhaustive fault"
+        );
+    }
+
+    #[test]
     fn an_unbound_name_anchors_to_a_user_node() {
         // The diagnostic for an unbound name carries a node index, and it is a genuine USER node (below
         // the program's node count) — the front-end can map it to the `nope` occurrence.

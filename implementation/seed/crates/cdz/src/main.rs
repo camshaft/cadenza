@@ -648,11 +648,16 @@ fn apply_fix_to_source(
 /// cleared" (returns `false`), so a fix is confirmed ONLY when the program parses AND the same-code
 /// error is gone. Conservative: it does not require the WHOLE program to be clean (an unrelated
 /// pre-existing error may remain), only that THIS diagnostic's code no longer appears.
-fn fix_clears_code(text: &str, is_ml: bool, code: &str) -> bool {
+/// The multiset of ERROR-severity diagnostics a source produces, each keyed by `(code, node-id)` — the
+/// baseline a candidate fix is judged against. Returns `None` if the source does not parse/compile at the
+/// entry (a broken edit), so a caller treats an unparseable result as "no clean verdict". The node id is
+/// the diagnostic's ANCHOR (col 2 of the wire), so two independent errors of the same code at different
+/// spots are distinct keys — a fix that clears one but leaves the other is not mistaken for a regression.
+fn program_error_keys(text: &str, is_ml: bool) -> Option<Vec<(String, String)>> {
     let arenas = if is_ml {
         let parsed = cadenza_syntax::parser::read_ml(text);
         if !parsed.errors.is_empty() {
-            return false; // the edit broke the parse — not a clean fix
+            return None; // the edit broke the parse — no verdict
         }
         parsed.arenas
     } else {
@@ -660,7 +665,7 @@ fn fix_clears_code(text: &str, is_ml: bool, code: &str) -> bool {
             Ok(a) => a,
             Err(_) => match cadenza_syntax::sexpr::read_all(text) {
                 Ok(a) => a,
-                Err(_) => return false,
+                Err(_) => return None,
             },
         }
     };
@@ -668,16 +673,60 @@ fn fix_clears_code(text: &str, is_ml: bool, code: &str) -> bool {
         &arenas,
         rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics),
     );
-    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
-        return false; // the AST failed to compile at the entry — treat as not cleared
-    };
-    // The wire is one fault per line: `severity<TAB>code<TAB>…`. The fix clears the fault iff NO line is
-    // an error with this same code.
+    let bytes = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS)?; // no artifact → failed at entry
     let text_out = String::from_utf8_lossy(bytes);
-    !text_out.lines().any(|line| {
-        let mut cols = line.splitn(3, '\t');
-        cols.next() == Some("error") && cols.next() == Some(code)
-    })
+    // The wire is one fault per line: `severity<TAB>code<TAB>node<TAB>…`. Keep the ERROR lines' (code, node).
+    let mut keys: Vec<(String, String)> = text_out
+        .lines()
+        .filter_map(|line| {
+            let mut cols = line.splitn(4, '\t');
+            match (cols.next(), cols.next(), cols.next()) {
+                (Some("error"), Some(code), Some(node)) => Some((code.to_string(), node.to_string())),
+                _ => None,
+            }
+        })
+        .collect();
+    keys.sort();
+    Some(keys)
+}
+
+/// Whether applying an edit to a program is a CONFIRMED, machine-applicable fix — the `--verify-fixes` /
+/// `cdz fix --all` upgrade rule. Two conditions, both necessary (`spec/capabilities/diagnostics.md` §A
+/// Confirmed Fix Is Marked Verified): (1) the edited program clears an error with `code` (the fault is
+/// gone), AND (2) the edit introduces NO NEW error — every error the edited program still has was already
+/// present in `baseline`. Condition (2) is what keeps an insert-arms fix HEURISTIC: adding `(Blue unit)`
+/// clears the CDZ0210 but its `unit` PLACEHOLDER body mismatches the other arms' type (a fresh CDZ0203),
+/// so it is not "apply blind" — the author must fill the body. `baseline` is `program_error_keys` of the
+/// ORIGINAL source; `None` means the original itself did not compile (then any edit that yields a clean
+/// parse and clears the code is accepted — there is no baseline to regress against).
+fn fix_verifies(text: &str, is_ml: bool, code: &str, baseline: Option<&[(String, String)]>) -> bool {
+    let Some(after) = program_error_keys(text, is_ml) else {
+        return false; // the edit broke the parse/compile — not a clean fix
+    };
+    // (1) an error with this code must be GONE — the edited program has strictly fewer of this code.
+    let count_of = |keys: &[(String, String)], c: &str| keys.iter().filter(|(k, _)| k == c).count();
+    let cleared = match baseline {
+        Some(b) => count_of(&after, code) < count_of(b, code),
+        None => !after.iter().any(|(k, _)| k == code),
+    };
+    if !cleared {
+        return false;
+    }
+    // (2) NO NEW error: every remaining error key must have been in the baseline (compared as a multiset,
+    // so an edit that turns one error into two of a kind is caught). A missing baseline waives this — the
+    // original did not compile, so there is nothing to regress.
+    if let Some(b) = baseline {
+        let mut remaining = b.to_vec();
+        for key in &after {
+            match remaining.iter().position(|k| k == key) {
+                Some(i) => {
+                    remaining.swap_remove(i);
+                }
+                None => return false, // a key not accounted for by the baseline — a NEW error
+            }
+        }
+    }
+    true
 }
 
 /// `cdz check FILE` — report every well-formedness fault, "diagnostics as you type". Drives the
@@ -703,6 +752,14 @@ fn run_check(args: &CheckArgs) -> ExitCode {
     };
     let text = String::from_utf8_lossy(bytes);
     let mut any_error = false;
+    // The ORIGINAL program's error set — the baseline `--verify-fixes` judges each candidate fix against
+    // (a fix upgrades to verified only if it clears its code AND introduces no new error). Computed once
+    // (a recompile), only when `--verify-fixes` is set, so plain `check`/`--json` pay nothing.
+    let baseline_errors: Option<Vec<(String, String)>> = if args.verify_fixes {
+        program_error_keys(&source, is_ml_source(&args.file))
+    } else {
+        None
+    };
     // A node id → its 1-based `(line, col)` start plus its `[from, to)` UTF-8 byte range, via the span
     // table this process kept. `None` for an unanchored (`-`) or unmapped node.
     let span_of = |node: &str| -> Option<(usize, usize, usize, usize)> {
@@ -764,7 +821,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
                 .and_then(|(_, _, from, to)| {
                     apply_fix_to_source(&source, fix_kind, from, to, fix_repl, is_ml)
                 })
-                .map(|edited| fix_clears_code(&edited, is_ml, code))
+                .map(|edited| fix_verifies(&edited, is_ml, code, baseline_errors.as_deref()))
                 .unwrap_or(false)
         } else {
             false
@@ -872,6 +929,9 @@ fn run_fix(args: &FixArgs) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let diag_text = String::from_utf8_lossy(bytes);
+    // The original program's error set — the baseline each `--all` candidate is judged against (apply it
+    // only if it clears its code AND introduces no new error, so a placeholder-body insert stays unapplied).
+    let baseline_errors: Option<Vec<(String, String)>> = program_error_keys(&source, is_ml);
 
     // Collect the edits to apply. Each Diagnostics line is `severity  code  node  fix-kind  fix-node
     // fix-replacement  fix-verified  message` (8 TAB cols); a fix has a real `fix-node`.
@@ -905,7 +965,7 @@ fn run_fix(args: &FixArgs) -> ExitCode {
             true
         } else if args.all {
             apply_fix_to_source(&source, fix_kind, from, to, fix_repl, is_ml)
-                .map(|edited| fix_clears_code(&edited, is_ml, code))
+                .map(|edited| fix_verifies(&edited, is_ml, code, baseline_errors.as_deref()))
                 .unwrap_or(false)
         } else {
             false
