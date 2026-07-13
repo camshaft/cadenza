@@ -2492,7 +2492,7 @@ pub(crate) fn check_binding_pattern(
 fn classify_binding_ctor(
     db: &mut Db,
     pat: StructId,
-    _value_ty: &crate::ty::Ty,
+    value_ty: &crate::ty::Ty,
 ) -> Result<(), Reject> {
     // The constructor head: a bare name / member `(. Sum V)` used as a whole pattern, or a `(head arg…)`
     // application's head.
@@ -2520,11 +2520,37 @@ fn classify_binding_ctor(
         .map(|d| d.variants.len())
         .unwrap_or(0);
     if variant_count == 1 {
-        // A single-variant sum's sole constructor covers the type — irrefutable, but binding-position
-        // support for it is Increment B. DECLINE (not reject) so a valid program flips to accept later.
-        return Err(Reject::decline(
-            "a single-variant-sum binding pattern is not yet supported (Increment B)",
-        ));
+        // A single-variant sum's sole constructor ALWAYS matches — the pattern is IRREFUTABLE, so it is a
+        // valid binding position (`(let (((Id.Mk n) v)) …)`). Its payload sub-patterns must themselves be
+        // irrefutable, exactly as a tuple pattern's elements are: recurse `check_binding_pattern` into each
+        // payload arg at the payload's type (a literal payload → CDZ0210, a bare binder / nested tuple →
+        // Ok). The payload TYPE is the variant's payload at this instantiation; `pattern_constraints` then
+        // checks the shape/arity (CDZ0201) + linearity, reusing the match-arm machinery, so the binder
+        // references (which resolve to a `SumPayload` reading the payload — resolve `last_binder_named`'s
+        // ctor case) read a well-formed pattern. A nullary single-variant sum (`(type Marker (The))`) has
+        // no payload arg to bind — nothing to recurse, trivially irrefutable.
+        check_pattern_linear(db, pat)?;
+        let args: Vec<StructId> = match db.ast.get(pat) {
+            crate::ast::Struct::List(children) => match children.first().copied() {
+                // A bare member `(. Sum V)` used whole — no payload args in the pattern.
+                Some(first) if db.ast.as_name(first) == Some(".") => Vec::new(),
+                _ => children[1..].to_vec(),
+            },
+            _ => Vec::new(),
+        };
+        // Each payload arg's type — the variant's payload types at the value's instantiation. A single
+        // payload IS the underlying type; multiple payloads box as one tuple (matched positionally). Use
+        // the value type's payload when resolvable, else `Any` (permissive — arity/shape faults below).
+        for &arg in &args {
+            // A payload arg is validated for irrefutability against `Any` (refutability is a property of
+            // the pattern shape, not the value type — the tuple case does the same for its elements).
+            check_binding_pattern(db, arg, &crate::ty::Ty::Any)?;
+        }
+        // Shape/arity + nested-literal-type agreement, reusing the match-arm collector (CDZ0201 on a
+        // wrong-arity payload). Runs after the per-arg irrefutability check, exactly as the tuple case.
+        let mut lit_tests = Vec::new();
+        pattern_constraints(db, pat, value_ty, Vec::new(), &mut lit_tests)?;
+        return Ok(());
     }
     // A multi-variant constructor is refutable — the other variants are uncovered, and there is no
     // alternative arm. CDZ0210, the non-exhaustive-single-arm-match code.
