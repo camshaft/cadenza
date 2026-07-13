@@ -1929,6 +1929,16 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
     for di in 0..db.defs.len() {
         let params = db.defs[di].params.clone();
         let body = db.defs[di].body;
+        // The SET of parameter NAMES the body references — collected in ONE walk of the body, not one
+        // per-parameter walk (which was O(params × body) = O(N²) for a wide-param def). `param_is_used`'s
+        // verdict is purely NAME-based (`resolves_to_param` accepts ANY param, so a body reference marks
+        // its parameter used by matching NAME), and a def's parameter names are unique (CDZ0102 rejects a
+        // repeated one), so a name-keyed set reproduces the per-parameter check EXACTLY. Skipped entirely
+        // when the def has no user parameters to check.
+        let referenced: std::collections::HashSet<String> = match body {
+            Some(b) if !params.is_empty() => used_param_names(db, b),
+            _ => std::collections::HashSet::new(),
+        };
         for p in params {
             // The parameter's NAME occurrence (a bare `a` or the inner name of `(: a T)`).
             let name_occ = param_name_occ(db, p);
@@ -1940,14 +1950,13 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
             if name.starts_with('_') {
                 continue;
             }
-            let used_in_body = body.is_some_and(|b| param_is_used(db, b, name_occ, &name));
-            if !used_in_body {
+            if !referenced.contains(&name) {
                 binders.push(Binder {
                     name_occ,
                     target: name_occ,
                     name,
                     kind: "parameter",
-                    precomputed_unused: true, // decided by `param_is_used`, not the `used` set
+                    precomputed_unused: true, // decided by the reference-name set, not the `used` set
                 });
             }
         }
@@ -2039,34 +2048,36 @@ fn param_name_occ(db: &Db, param: StructId) -> StructId {
 /// use OF THIS parameter, not a same-named inner binding that shadows it. This is synthesis-INDEPENDENT
 /// (it keys on the reference's own resolution kind, not the resolved-to occurrence id), so it is not
 /// fooled by a recursive function freshening the parameter binder into a synthesized copy.
-fn param_is_used(db: &mut Db, body: StructId, param_occ: StructId, name: &str) -> bool {
-    // The body subtree's node range: a def body and everything under it. The arena is built so a
-    // subtree's descendants are not contiguous by id, so walk structurally.
-    fn walk(db: &mut Db, id: StructId, param_occ: StructId, name: &str) -> bool {
-        // A matching name occurrence (not the declaration) that is a genuine REFERENCE — not itself a
-        // BINDER position (a `let` binding's name resolves to the outer param too, but it is a
-        // declaration, not a use — so a param shadowed by a same-named inner `let` is NOT "used"). A
-        // reference resolves to a `Param` (its own) or a `Ref`-to-`Param` (recursion may freshen the
-        // binder → the KIND, not the target occ, is the signal).
-        if id != param_occ
-            && db.ast.as_name(id) == Some(name)
+/// The SET of parameter NAMES that the def body subtree at `body` references — ONE structural walk
+/// collecting every name occurrence that resolves to a parameter, so the wide-param unused check is O(body)
+/// once, not O(body) per parameter (which was O(params × body) = O(N²) for a def with many parameters). A
+/// name is collected iff it is a genuine REFERENCE resolving to a parameter — NOT a `let` binding's name
+/// position (a same-named inner `let` binder resolves to the outer param but is a declaration, not a use,
+/// so a param shadowed by it is NOT used). `resolves_to_param` accepts a `Param` or a `Ref`-to-`Param`
+/// (recursion may freshen the binder → the resolution KIND is the signal, not the target occ). This
+/// reproduces the old per-parameter `param_is_used` verdict EXACTLY: it was name-based (matched a param's
+/// NAME anywhere in the body), and a def's parameter names are unique (CDZ0102). The old `id != param_occ`
+/// declaration guard is subsumed — a parameter's own declaration occurrence lives in the SIGNATURE, not in
+/// the body walked here.
+fn used_param_names(db: &mut Db, body: StructId) -> std::collections::HashSet<String> {
+    fn walk(db: &mut Db, id: StructId, out: &mut std::collections::HashSet<String>) {
+        if let Some(name) = db.ast.as_name(id).map(str::to_string)
             && !is_let_binding_name(db, id)
             && resolves_to_param(db, id)
         {
-            return true;
+            out.insert(name);
         }
         // Recurse into children (a user node's subtree). Clone the child list to avoid holding a
         // borrow across the recursive `&mut` call.
         if let crate::ast::Struct::List(kids) = db.ast.get(id) {
             for c in kids.clone() {
-                if walk(db, c, param_occ, name) {
-                    return true;
-                }
+                walk(db, c, out);
             }
         }
-        false
     }
-    walk(db, body, param_occ, name)
+    let mut out = std::collections::HashSet::new();
+    walk(db, body, &mut out);
+    out
 }
 
 /// Whether `id` resolves to a parameter — its own `Param`, or a `Ref` to one (a body reference is a

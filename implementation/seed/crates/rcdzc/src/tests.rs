@@ -18205,6 +18205,44 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_wide_parameter_list_flags_exactly_the_unused_parameters() {
+        // The unused-parameter check collects the SET of body-referenced parameter names in ONE walk (was
+        // one full-body walk PER parameter → O(params × body) = O(N²) for a wide signature). This locks in
+        // the set-membership verdict at width: a 12-param def whose body references only the EVEN-indexed
+        // params must warn for EXACTLY the 6 odd-indexed ones — no false positives on the used ones, no
+        // misses on the unused ones. Guards that the O(N)→set rewrite preserves the per-parameter verdict.
+        let params = (0..12)
+            .map(|i| format!("x{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        // Body sums the even-indexed params (x0 + x2 + … + x10) — a balanced-ish chain of references.
+        let body = (0..12)
+            .filter(|i| i % 2 == 0)
+            .map(|i| format!("x{i}"))
+            .reduce(|a, b| format!("(+ {a} {b})"))
+            .unwrap();
+        let src = format!("(module m (def (f {params}) {body}) (export f))");
+        let u = unused_of(&src);
+        assert_eq!(
+            u.len(),
+            6,
+            "exactly the 6 odd-indexed params are unused: {u:?}"
+        );
+        for odd in [1, 3, 5, 7, 9, 11] {
+            assert!(
+                u.iter().any(|m| m.contains(&format!("`x{odd}`"))),
+                "x{odd} (never referenced) must warn: {u:?}"
+            );
+        }
+        for even in [0, 2, 4, 6, 8, 10] {
+            assert!(
+                !u.iter().any(|m| m.contains(&format!("`x{even}`"))),
+                "x{even} (referenced) must NOT warn: {u:?}"
+            );
+        }
+    }
+
+    #[test]
     fn an_unused_let_binding_and_parameter_warn() {
         // `b` (a let binding) and `q` (a parameter) are declared but never referenced → CDZ0306; `a`
         // and `p` are used, so they do not warn.
