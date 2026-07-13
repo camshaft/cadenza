@@ -5327,7 +5327,19 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // widest fixed integer — the honest current story (the numeric model reserves wider values
                 // to a big-integer layer not yet constructible), so the author knows the value simply has
                 // no representable fixed type rather than expecting a `--from`-style flag.
+                // A bare literal overflowing the signed-Int64 default that STILL FITS UNSIGNED 64 (`2^63 ..
+                // 2^64-1`, e.g. `18446744073709551615`) has a concrete fixed type — `UInt64` — it just is
+                // not the default a bare literal takes. The mechanical repair: ANNOTATE it `(: <lit>
+                // UInt64)` (the annotation grounds the literal to UInt64, whose range holds it). Only the
+                // BARE case (`context.is_none()`) and only when the value fits unsigned 64 — a value past
+                // 2^64-1 has NO fixed type (BigInt is not literal-spellable), so no fix. When a fix applies,
+                // the message says UInt64 holds it rather than "Int64 is the widest".
+                let fits_u64 = context.is_none() && v.fits_width(false, 64);
                 let msg = match int_width_range(signed, width) {
+                    Some(range) if fits_u64 => format!(
+                        "integer literal is out of range for {ty_name} (the valid range is {range}) — \
+                         it fits `UInt64`; annotate it `(: … UInt64)`"
+                    ),
                     Some(range) if context.is_none() => format!(
                         "integer literal is out of range for {ty_name} (the valid range is {range}; \
                          Int64 is the widest fixed-size integer)"
@@ -5337,7 +5349,16 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     ),
                     None => format!("integer literal is out of range for {ty_name}"),
                 };
-                out.push(Reject::coded(Code::Malformed, msg));
+                let mut reject = Reject::coded(Code::Malformed, msg);
+                if fits_u64 {
+                    reject = reject.with_fix(Fix::wrap_heuristic(
+                        id,
+                        "(: ",
+                        " UInt64)",
+                        "annotate the literal `UInt64` (its range holds this value)",
+                    ));
+                }
+                out.push(reject);
             }
         }
         Resolved::Prim(_)

@@ -10207,6 +10207,10 @@ mod match_engine {
         );
         // NO OVER-ACCEPTANCE: a bare literal past i64 with NO integer-operand context is still CDZ0201; a
         // value too big even for the contextual UInt64 (2^64) is still rejected (now naming UInt64).
+        // A bare over-i64 literal that STILL FITS UNSIGNED 64 (`18446744073709551615` = 2^64-1) is
+        // malformed as a bare (signed-default) literal, but has a concrete fixed type — so it names its
+        // range AND offers the "annotate `UInt64`" repair (its range holds the value), NOT the
+        // "widest fixed-size integer" dead-end.
         let d = reject_full("(module m (def (main) 18446744073709551615) (export main))")
             .expect("a bare literal past i64 is rejected");
         assert_eq!(
@@ -10214,13 +10218,26 @@ mod match_engine {
             Some("CDZ0201"),
             "a bare literal past i64 with no context is still malformed"
         );
-        // The message names the valid RANGE it overflowed AND that Int64 is the widest fixed integer
-        // (the honest current story — no wider fixed type / BigInt is not yet constructible).
         assert!(
-            d.message.contains("the valid range is")
-                && d.message.contains("widest fixed-size integer"),
-            "a bare over-Int64 literal names its range + the widest-fixed note; got {}",
+            d.message.contains("the valid range is") && d.message.contains("UInt64"),
+            "a fits-u64 bare literal names its range + the UInt64 route; got {}",
             d.message
+        );
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!("(: {} UInt64)", crate::abi::WRAP_HOLE)).as_deref(),
+            "it carries the annotate-`UInt64` wrap fix: {}",
+            d.message
+        );
+        // A value past UInt64.max (2^64) has NO fixed type — it gets the bare range message with the
+        // "widest fixed-size integer" note and NO fix (BigInt is not literal-spellable).
+        let past = reject_full("(module m (def (main) 99999999999999999999) (export main))")
+            .expect("a value past u64 is rejected");
+        assert!(
+            past.message.contains("widest fixed-size integer") && past.fix.is_none(),
+            "a past-u64 bare literal keeps the widest-fixed note, no fix; got {} fix={:?}",
+            past.message,
+            past.fix
         );
         let d = reject_full(
             "(module m (def (main (: x UInt64)) (& x 18446744073709551616)) (export main))",
@@ -16874,6 +16891,39 @@ mod diagnostics {
             no.fix.is_none(),
             "no coercion Bool→Int64 payload: {:?}",
             no.fix
+        );
+    }
+
+    #[test]
+    fn a_bare_literal_over_int64_that_fits_uint64_offers_an_annotate_uint64_fix() {
+        // A bare integer literal overflowing the signed-Int64 default (`18446744073709551615` = 2^64-1)
+        // still has a concrete fixed type — `UInt64` — so it is malformed only as a bare (signed-default)
+        // literal. Offer the ANNOTATE fix: `(: <lit> UInt64)` (whose range holds the value). Just past
+        // i64.max (2^63) is the boundary case; a value past 2^64-1 has NO fixed type → no fix.
+        for src in [
+            "(module m (def (main) 18446744073709551615) (export main))",
+            "(module m (def (main) 9223372036854775808) (export main))",
+        ] {
+            let d = first_error(src);
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            let fix = d.fix.expect("an annotate-UInt64 fix is carried");
+            assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+            assert_eq!(
+                fix.replacement,
+                format!("(: {} UInt64)", crate::abi::WRAP_HOLE),
+                "annotates the literal UInt64: {src}"
+            );
+            assert!(
+                !fix.verified,
+                "the author may want a different width → heuristic"
+            );
+        }
+        // Past UInt64.max → no fixed type holds it → no fix (honest, not BigInt-guessing).
+        let past = first_error("(module m (def (main) 99999999999999999999) (export main))");
+        assert!(
+            past.fix.is_none(),
+            "no fix for a value past UInt64.max: {:?}",
+            past.fix
         );
     }
 
