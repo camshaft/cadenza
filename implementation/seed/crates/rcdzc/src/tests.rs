@@ -9319,6 +9319,41 @@ mod match_engine {
     }
 
     #[test]
+    fn a_high_uint64_literal_operand_takes_uint64_from_context() {
+        // A bare literal in [2^63, 2^64-1] as an OPERAND of a binary op whose sibling is a UInt64 value
+        // takes UInt64 from that operand (numeric-model.md §a constraint on a literal takes precedence),
+        // so it is NOT the malformed-out-of-range-for-Int64 fault a bare unannotated literal would be. The
+        // gap was UInt64-only: only it has representable values above Int64.max, so the fit-check against
+        // the i64 default rejected a full-width mask while UInt8/UInt32 highs (which fit i64) sailed through.
+        let ok = |src: &str| {
+            assert_eq!(
+                reject_code(src),
+                None,
+                "a high UInt64 literal operand must take UInt64 from context: {src}"
+            );
+        };
+        // Full-width mask (2^64-1), addition of 2^63 (i64::MAX+1), and a comparison — all against a UInt64.
+        ok("(module m (def (main (: x UInt64)) (& x 18446744073709551615)) (export main))");
+        ok("(module m (def (main (: x UInt64)) (+ x 9223372036854775808)) (export main))");
+        ok("(module m (def (main (: x UInt64)) (if (< x 18446744073709551615) 1 0)) (export main))");
+        // NO OVER-ACCEPTANCE: a bare literal past i64 with NO integer-operand context is still CDZ0201; a
+        // value too big even for the contextual UInt64 (2^64) is still rejected (now naming UInt64).
+        assert_eq!(
+            reject_code("(module m (def (main) 18446744073709551615) (export main))").as_deref(),
+            Some("CDZ0201"),
+            "a bare literal past i64 with no context is still malformed"
+        );
+        let d = reject_full("(module m (def (main (: x UInt64)) (& x 18446744073709551616)) (export main))")
+            .expect("a value past UInt64.max must still be rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("UInt64"),
+            "the reject names the overflowed contextual type: {}",
+            d.message
+        );
+    }
+
+    #[test]
     fn an_out_of_range_literal_names_the_valid_range() {
         // CDZ0302 states the concrete VALID RANGE the literal missed (rustc's "the range is `-128..=127`"),
         // not only the type name — a signed N-bit is `-(2^(N-1))..=2^(N-1)-1`, an unsigned N-bit

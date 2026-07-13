@@ -290,6 +290,7 @@ pass	a hexadecimal integer literal
 pass	a hexadecimal literal is case-insensitive
 pass	a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern
 pass	a hexadecimal literal with digit separators
+pass	a high UInt64 literal operand takes UInt64 from context, not Int64
 pass	a higher-order function applies a callback that matches its own sum argument
 pass	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
