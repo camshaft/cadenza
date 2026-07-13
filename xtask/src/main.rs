@@ -566,8 +566,10 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
 
 /// The outcome of driving one program (sexpr text) through the pipeline.
 enum Ran {
-    /// Ran to a value, rendered to canonical text.
-    Value(String),
+    /// Ran to a value, rendered to canonical text, plus the OBSERVED HOST CALLS (each a dotted `E.op`, in
+    /// call order — from cdz-run's `host-call` stderr lines). The observed sequence is verified against a
+    /// case's `(host-calls …)`; empty for a program that makes no host call (the common shape).
+    Value(String, Vec<String>),
     /// The compiler rejected/declined the program. `code` is the diagnostic CODE the compiler emitted
     /// (`Some("CDZ0210")`) — a TYPED rejection the corpus can match against `(error CODE)` — or `None`
     /// for a codeless DECLINE (an unimplemented construct: `Reject::decline`), which grades as `todo`
@@ -690,7 +692,13 @@ fn run_program_wasm(
     child.stdin.take().unwrap().write_all(&component).ok();
     let run_out = child.wait_with_output().expect("wait cdz-run");
     if run_out.status.success() {
-        Ran::Value(String::from_utf8_lossy(&run_out.stdout).trim().to_string())
+        // cdz-run prints the OBSERVED host calls to stderr as `host-call\t<op>` lines, in call order;
+        // parse them so the case's `(host-calls …)` can be verified. Empty for a non-host program.
+        let observed = observed_host_calls(&run_out.stderr);
+        Ran::Value(
+            String::from_utf8_lossy(&run_out.stdout).trim().to_string(),
+            observed,
+        )
     } else {
         Ran::Trap(first_line(&run_out.stderr))
     }
@@ -965,10 +973,11 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     // module `use`s the shared `cdz_rt::CdzEnv`, so link the pre-built `cdz-rt` rlib: `-L dependency=<dir>
     // --extern cdz_rt=<dir>/libcdz_rt.rlib`. (Sync mode needs no extern — it emits plain `fn`s.)
     let mut cmd = Command::new("rustc");
-    cmd.args(["-O", "--edition", "2021"]).arg(&src).arg("-o").arg(&bin);
-    if async_mode
-        && let Some(dir) = tools.cdz_rt_dir.as_deref()
-    {
+    cmd.args(["-O", "--edition", "2021"])
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin);
+    if async_mode && let Some(dir) = tools.cdz_rt_dir.as_deref() {
         cmd.arg("-L")
             .arg(format!("dependency={}", dir.display()))
             .arg("--extern")
@@ -1013,7 +1022,12 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
         }
     };
     if run.status.success() {
-        Ran::Value(String::from_utf8_lossy(&run.stdout).trim().to_string())
+        // The Rust backend has no host-boundary path — a host-delegating case declines before reaching
+        // here — so the observed-host-call list is always empty.
+        Ran::Value(
+            String::from_utf8_lossy(&run.stdout).trim().to_string(),
+            Vec::new(),
+        )
     } else {
         Ran::Trap(first_line(&run.stderr))
     }
@@ -1302,6 +1316,16 @@ fn first_line(bytes: &[u8]) -> String {
         .to_string()
 }
 
+/// The OBSERVED host calls in cdz-run's stderr — each `host-call\t<op>` line's op, in emitted (call)
+/// order (E2h). Empty when the run made no host call. The gate compares this sequence against a case's
+/// recorded `(host-calls …)`.
+fn observed_host_calls(stderr: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .filter_map(|l| l.strip_prefix("host-call\t").map(str::to_string))
+        .collect()
+}
+
 /// The FIRST diagnostic CODE in rcdzc's stderr — the `CDZ####` inside the first `error [CODE]` line
 /// (`rcdzc: error [CDZ0210] (node 3): …`). `None` if no line carries a bracketed code (a codeless
 /// decline, or a warning-only run). Scans line-by-line for the first `error [` so a later warning's
@@ -1512,7 +1536,8 @@ fn gate_one_case(
                     println!("call:     {} {}", call.export, call.args.join(" "));
                 }
                 let actual = match ran {
-                    Ran::Value(v) => format!("value {v}"),
+                    Ran::Value(v, calls) if calls.is_empty() => format!("value {v}"),
+                    Ran::Value(v, calls) => format!("value {v} [host-calls: {}]", calls.join(", ")),
                     Ran::Declined { code: Some(c) } => format!("rejected [{c}]"),
                     Ran::Declined { code: None } => {
                         "declined (compiler can't compile it yet)".to_string()
@@ -1567,6 +1592,10 @@ struct CorpusRecord {
     /// lines, in call order. A host-delegating case's program consumes these; the wasm gate driver
     /// forwards each to `cdz-run --host-response`. Empty for a non-host case.
     host_responses: Vec<(String, String)>,
+    /// The recorded HOST-CALL sequence (E2h) — the dotted `E.op` names from the record stream's
+    /// `host-call` lines, in call order. The gate verifies the run's observed host calls against this
+    /// (`grade_ran`); empty for a case with no `(host-calls …)`.
+    host_calls: Vec<String>,
 }
 
 /// One (call, expected-payload) trial of a case — a single run of the compiled program.
@@ -1613,6 +1642,7 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
     let mut modules: Vec<(String, String)> = Vec::new();
     let mut trials: Vec<Trial> = Vec::new();
     let mut host_responses: Vec<(String, String)> = Vec::new();
+    let mut host_calls: Vec<String> = Vec::new();
     let (mut call_export, mut call_args): (Option<String>, Vec<String>) = (None, Vec::new());
     for line in text.lines() {
         if line == "---" {
@@ -1623,6 +1653,7 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                 trials: std::mem::take(&mut trials),
                 needs: std::mem::take(&mut needs),
                 host_responses: std::mem::take(&mut host_responses),
+                host_calls: std::mem::take(&mut host_calls),
             });
             // Defensive: a well-formed record ends every trial with an `expect`, so nothing is pending.
             call_export = None;
@@ -1662,6 +1693,8 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                         host_responses.push((op.to_string(), value.to_string()));
                     }
                 }
+                // `host-call\t<op>` — one recorded host operation, in call order.
+                "host-call" => host_calls.push(val.to_string()),
                 _ => {}
             }
         }
@@ -1712,6 +1745,22 @@ fn grade_ran(rec: &CorpusRecord, rans: &[Ran]) -> Grade {
             }
         }
     }
+    // HOST-CALL verification (E2h): if the case recorded a `(host-calls …)` sequence, the run's OBSERVED
+    // host calls must match it EXACTLY (order included) — a dropped, extra, or reordered call is a Fail,
+    // closing the false-pass hole where a unit-returning host op (`log.emit`) matches the return value
+    // while its side-effecting call was silently dropped. Verified only when the case RAN to a value
+    // (a decline/trap is graded above); the observed calls come from the run that produced the value.
+    // Applied once per case (host cases are single-trial), against the FIRST value-producing trial.
+    if !rec.host_calls.is_empty()
+        && let Some(Ran::Value(_, observed)) = rans.iter().find(|r| matches!(r, Ran::Value(..)))
+        && *observed != rec.host_calls
+    {
+        return Grade::Fail(format!(
+            "host-call mismatch: expected [{}], observed [{}]",
+            rec.host_calls.join(", "),
+            observed.join(", ")
+        ));
+    }
     if todo { Grade::Todo } else { Grade::Pass }
 }
 
@@ -1736,8 +1785,8 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
             let expected_val = expected_value(payload);
             let expected_full = payload.trim().to_string();
             match ran {
-                Ran::Value(v) if *v == expected_val || *v == expected_full => Grade::Pass,
-                Ran::Value(v) => Grade::Fail(format!("expected {expected_full}, ran → {v}")),
+                Ran::Value(v, _) if *v == expected_val || *v == expected_full => Grade::Pass,
+                Ran::Value(v, _) => Grade::Fail(format!("expected {expected_full}, ran → {v}")),
                 Ran::Declined { .. } => Grade::Todo, // compiler can't compile it yet
                 Ran::Trap(t) => Grade::Fail(format!("expected {expected_full}, trapped: {t}")),
                 // A broken artifact for a case the corpus says yields a VALUE is the miscompile the
@@ -1762,7 +1811,7 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
         "error" => {
             let want = payload.trim();
             match ran {
-                Ran::Value(v) => Grade::Fail(format!("expected rejection {want}, ran → {v}")),
+                Ran::Value(v, _) => Grade::Fail(format!("expected rejection {want}, ran → {v}")),
                 Ran::Declined { code: Some(got) } if got == want => Grade::Pass,
                 // Rejected (a different code), a codeless decline, or a trap — refused, not miscompiled.
                 Ran::Declined { .. } | Ran::Trap(_) => Grade::Todo,
@@ -1774,7 +1823,7 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
         // `trap …`: matching a trap reason needs machinery not yet wired (the runtime message). Count as
         // todo unless a clear disagreement — a program the corpus says TRAPS that instead ran to a value.
         "trap" => match ran {
-            Ran::Value(v) => Grade::Fail(format!("expected a trap, ran → {v}")),
+            Ran::Value(v, _) => Grade::Fail(format!("expected a trap, ran → {v}")),
             // A broken artifact for a case that should TRAP is still a miscompile (the backend was asked
             // for a runnable artifact that traps and emitted un-compilable source instead).
             Ran::BadArtifact(e) => {
