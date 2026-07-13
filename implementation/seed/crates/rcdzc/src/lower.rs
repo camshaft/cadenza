@@ -1248,7 +1248,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     Core::Poison(r) => Core::Poison(r),
                     _ => {
                         trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: head is not applyable (decline)");
-                        Core::Poison(Reject::decline("value is not applyable"))
+                        Core::Poison(Reject::decline(crate::diag::NOT_APPLYABLE_DECLINE))
                     }
                 },
             }
