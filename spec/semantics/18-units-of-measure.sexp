@@ -44,11 +44,19 @@
 ; derived from well-dimensioned source with the capability included is byte-identical to one derived
 ; with it excluded — dimensional discharge does not change emitted bytes.
 ;
-; Tagged `(needs units-of-measure)`: dimensional analysis is an OPTIONAL verification layer a later
-; generation realizes (units-of-measure.md #This Capability Is Optional; it is not on the ignition
-; path — the seed clears ignition with the numeric core alone; options/realized-capability-set/). The
-; seed does not realize it, so its behavior gate SKIPS these cases — they pin the contract the
-; realization must meet, they are not seed declines.
+; Tagged `(needs units-of-measure)`: dimensional analysis is an OPTIONAL verification layer
+; (units-of-measure.md #This Capability Is Optional; not on the ignition path — the seed clears ignition
+; with the numeric core alone; options/realized-capability-set/). `(needs …)` is DOCUMENTATION of what a
+; case exercises; the behavior gate grades EVERY case by what the compiler DOES (it never skips a tagged
+; case). The dimensional CORE is now REALIZED over the numeric types the compiler has: construction/
+; observation/erasure, `+`/`-`/`*`/`/`/comparison with dimensions composing, CDZ0501 on incompatible
+; dimensions, named families + SI/IEC prefixes (`Unit.of`/`Unit.prefix`), automatic and explicit
+; (`Unit.in`) conversion — all over `Int`/`Float` magnitudes (a conversion "los[es] precision only where
+; the underlying numeric type is itself inexact", #A Unit Carries An Exact Scale To Its Dimension's
+; Reference: exact over `Int`, rounding over `Float`), constant AND runtime. The cases still tagged that
+; DECLINE are exactly the ones whose magnitude is a `Rational` (`(Rational.of …)`) — EXACT-magnitude
+; mixing needs the exact-rational numeric type, which a later increment realizes; they pin the contract
+; that realization must meet, they are not miscompiles.
 
 ; ============================================================================================
 ; Construction and observation — Qty.of attaches a unit; Qty.value recovers the numeric value
