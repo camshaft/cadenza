@@ -863,9 +863,15 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         // nest, which since inlining became linear is now reachable on a well-formed
                         // program). This does NOT route through `lower_recursive_call_or_decline` (that is
                         // only for an `is_recursive`-origin decline), so the wording is free to be exact.
-                        trace!(target: "rcdzc::lower", node = id.0, "apply: reduction depth limit hit → decline (resource limit)");
-                        return Core::Poison(Reject::decline(
-                            "a call chain nested deeper than the inliner reduces (a resource limit was reached)",
+                        // A resource-limit rejection — the "declined at a bound, not crashed" class, coded
+                        // CDZ0999 like the unproductive-recursion decline. Reached either by a call chain
+                        // nested past `REDUCE_DEPTH_LIMIT`, or by the TOTAL-work budget (`REDUCE_NODE_BUDGET`)
+                        // that `enter_reduction` enforces to stop an explosively-growing (non-normalizing)
+                        // term — a self-applying lambda whose reduction would otherwise hang the compiler.
+                        trace!(target: "rcdzc::lower", node = id.0, "apply: reduction limit hit → decline (resource limit, CDZ0999)");
+                        return Core::Poison(Reject::coded(
+                            Code::RecursionBound,
+                            "an expression does not reduce to a value within the compiler's reduction limits (a call chain nested too deeply, or a non-terminating / explosively-growing reduction)",
                         ));
                     }
                 }
@@ -4197,6 +4203,13 @@ fn lower_recursive_call_or_decline(
     args: &[StructId],
     msg: String,
 ) -> Core {
+    // A REDUCTION-BUDGET decline (a non-normalizing / explosively-growing term — a self-applying lambda
+    // whose reduction the total-work budget stopped) is a resource-limit rejection, the SAME "declined at
+    // a bound, not crashed" class as the unproductive-recursion CDZ0999. Code it so, so it is a diagnosed
+    // reject rather than a bare uncoded decline (the compiler stops and reports, never hangs).
+    if msg.contains("reduction budget") {
+        return Core::Poison(Reject::coded(Code::RecursionBound, msg));
+    }
     // Only a RECURSION decline becomes a call; every other decline (partial application, over-arity)
     // propagates as-is. The recursion decline is the one `apply_lambda` raises via `is_recursive`.
     let is_recursion_decline = msg.contains("recursive function needs runtime specialization");

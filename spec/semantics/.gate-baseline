@@ -711,6 +711,7 @@ pass	a scalar element is projected DIRECTLY from a named function's runtime tupl
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a scalar element is projected from a let-bound runtime tuple
 pass	a second same-signature closure export shares the one call method
+pass	a self-applying term is declined at the reduction budget, not hung on
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
 pass	a self-tail call passing a heap-match argument compiles to valid wasm
 pass	a sequencing block discards a pure compound intermediate

@@ -268,6 +268,20 @@ pub struct ModuleDecl {
 /// cheap safety net. No legitimate compile-time fold nests this deep.
 pub(crate) const REDUCE_DEPTH_LIMIT: u32 = 32;
 
+/// The bound on the TOTAL number of β-reductions the evaluator may ATTEMPT in one compile — the
+/// cumulative-WORK budget that complements [`REDUCE_DEPTH_LIMIT`]'s per-fold DEPTH budget. A term can
+/// stay within the depth limit yet drive an EXPONENTIAL number of bounded reductions: a self-applying
+/// lambda `(fn (v) (v (v v)))` applied to itself is not statically recursive (it calls a PARAMETER, so
+/// `is_recursive` finds no call-graph cycle) and each reduction stays shallow, but the type/fault walk
+/// over the shared, doubling term attempts ~2^depth reductions — the compiler does unbounded work and
+/// appears to hang (the `cdz-smith` timeout). Every reduction funnels through [`Db::enter_reduction`],
+/// which counts entries against this budget and denies past it, so the reduction DECLINES rather than
+/// diverges — the same decline a too-deep fold gets. Set FAR above any legitimate compile (no corpus
+/// program attempts even 20 000 reductions — a real fold's total is linear in its inlined size), yet an
+/// explosive term crosses it in a fraction of a second, so a valid program never hits it and a diverging
+/// one declines promptly instead of hanging. Reset per `Db` (a fresh compile); never decremented.
+pub(crate) const REDUCE_NODE_BUDGET: u64 = 1_000_000;
+
 /// The bound on RECURSIVE-DESCENT depth across the demand queries (`type_of`, the fault `collect`, and
 /// `core_of`) — a backstop against a native stack overflow on pathologically deep input. Each query is
 /// recursive descent (a node's answer re-enters the query for its sub-expressions), so a deeply NESTED
@@ -526,6 +540,18 @@ pub struct Db {
     /// legitimately nests the same body twice while both calls terminate; only the depth distinguishes
     /// a terminating nest from an unbounded one.)
     pub(crate) reduce_depth: u32,
+
+    /// The running COUNT of nodes β-reduction has synthesized this compile — the WORK budget the depth
+    /// counter cannot provide. `reduce_depth` bounds how DEEPLY reductions nest, but a term can grow
+    /// EXPONENTIALLY in SIZE across a bounded depth: a self-applying lambda `(fn (v) (v (v v)))` bound to
+    /// `x` and applied `(x x)` roughly DOUBLES its application count each reduction, so even 32 bounded
+    /// levels synthesize ~2^32 nodes — the depth guard is satisfied while the compiler does unbounded
+    /// work and appears to hang (the `cdz-smith` timeout). A monotonic node budget over the whole compile
+    /// is the sound second guard: past [`REDUCE_NODE_BUDGET`] the evaluator declines the reduction (a
+    /// non-normalizing / explosively-growing term) rather than diverging, exactly as the depth guard
+    /// declines a too-deep one. Reset to 0 per `Db` (a fresh compile); never decremented (it measures
+    /// total synthesis work, not current depth).
+    pub(crate) reduce_nodes: u64,
 
     /// The current RECURSIVE-DESCENT depth across the demand queries (`type_of`, `collect`, `core_of`)
     /// — the recursive-descent backstop. Bumped on entering a query's recursion and restored on exit;
@@ -943,6 +969,7 @@ impl Db {
             file_scope,
             user_node_count,
             reduce_depth: 0,
+            reduce_nodes: 0,
             descent_depth: 0,
             collect_limited: false,
             build_cache: crate::fxhash::FxHashMap::default(),
@@ -1019,6 +1046,20 @@ impl Db {
         if self.reduce_depth >= REDUCE_DEPTH_LIMIT {
             return None;
         }
+        // TOTAL-WORK budget across the whole compile — the guard the per-reduction DEPTH counter cannot
+        // give. A term can stay within the depth limit yet drive an EXPONENTIAL number of bounded
+        // reductions: a self-applying lambda `(fn (v) (v (v v)))` applied to itself is not statically
+        // recursive (it calls a PARAMETER, so `is_recursive` finds no cycle) and each reduction stays
+        // shallow, but the type/fault walk over the shared, doubling term attempts ~2^depth reductions —
+        // the compiler does unbounded work and appears to hang (the `cdz-smith` timeout). Every reduction
+        // attempt funnels through here, so counting entries bounds that total work: past
+        // [`REDUCE_NODE_BUDGET`] deny entry (like the depth limit), so the reduction DECLINES rather than
+        // diverges. `reduce_nodes` is monotonic per compile (never decremented — it measures cumulative
+        // work, not current depth); a real program's total reductions are far below the budget.
+        if self.reduce_nodes >= REDUCE_NODE_BUDGET {
+            return None;
+        }
+        self.reduce_nodes += 1;
         self.reduce_depth += 1;
         Some(ReductionGuard { db: self })
     }

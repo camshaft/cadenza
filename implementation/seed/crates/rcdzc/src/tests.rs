@@ -26413,6 +26413,39 @@ mod stage1 {
     }
 
     #[test]
+    fn a_self_applying_term_declines_at_the_reduction_budget_not_hangs() {
+        // A self-application whose argument applies itself — `((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))`
+        // — has NO normal form (each β-reduction produces a larger term). It is NOT statically recursive
+        // (the lambdas call a PARAMETER, so `is_recursive` finds no call-graph cycle) and each reduction
+        // stays within `REDUCE_DEPTH_LIMIT`, so the DEPTH guard alone does not stop it — the term roughly
+        // DOUBLES each step and the type/fault walk would attempt an EXPONENTIAL number of reductions and
+        // HANG (the `cdz-smith` timeout finding). The TOTAL-work budget (`REDUCE_NODE_BUDGET`, enforced in
+        // `Db::enter_reduction`) bounds cumulative reduction attempts: past it the reduction DECLINES at
+        // the resource bound (CDZ0999, "declined not crashed"), so a non-normalizing term is a prompt,
+        // diagnosed decline — never a compiler hang. Regression for the self-application timeout. The test
+        // TERMINATING at all (returning an `Err` quickly) is the property; the code pins the diagnosis.
+        let src =
+            "(module m (def (main) ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))) (export main))";
+        let reject = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a non-normalizing self-application must decline, not hang");
+        assert_eq!(
+            reject.code.as_deref(),
+            Some("CDZ0999"),
+            "a diverging reduction declines at the resource bound (CDZ0999): {} / {:?}",
+            reject.message,
+            reject.code
+        );
+        // The original cdz-smith reproducer (a self-applier inside a match/list) likewise TERMINATES —
+        // here it surfaces a genuine type error (`(v0 16.32)` applies a non-function) before the blowup,
+        // which is fine: the point is it produces a diagnostic promptly rather than hanging.
+        let smith = "(module m (def (main) (list ((fn (v0) (match (v0 16.32) (0 (v0 v0)) (_ (v0 144)))) (fn (v1) (v1 (v1 v1)))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(smith))).is_err(),
+            "the cdz-smith self-application reproducer must decline, not hang"
+        );
+    }
+
+    #[test]
     fn a_pathologically_deep_expression_declines_not_crashes() {
         // A `(+ 1 (+ 1 …))` nest far past the recursive-descent depth bound must DECLINE (a
         // resource-limit rejection) rather than overflow the stack and abort — a completes-or-declines,
