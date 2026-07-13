@@ -267,6 +267,7 @@ pass	a function stored in a record field is called after extraction
 pass	a function stored in a record field of a sum payload is called after a match
 pass	a function stored in a tuple element is called after extraction
 pass	a function takes a boolean parameter and branches on it
+pass	a function whose body always diverges has result type Never
 pass	a function whose name is capitalized is called, not treated as a constructor
 pass	a function's return type ascription agreeing with the body is transparent
 pass	a function's return type contradicting the body is rejected
@@ -535,6 +536,7 @@ pass	a program that makes a host call has that call in its observable behavior
 pass	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
+pass	a projected tuple element IS observed, so its trap occurs (the anchor)
 pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
 pass	a quantity raised to the zeroth power is a dimensionless one
@@ -633,6 +635,7 @@ pass	a runtime condition selects an abortive branch reading an enclosing paramet
 pass	a runtime conditional selects its then-branch when the runtime condition holds
 pass	a runtime conjunction still shields a comparison right operand whose subexpression traps
 pass	a runtime division by zero traps
+pass	a runtime division of the minimum integer by -1 overflows and traps
 pass	a runtime division truncates toward zero
 pass	a runtime final rest segment binds the empty tail when the scrutinee is only the header
 pass	a runtime fixed-width segment is emitted big-endian and read back by index
@@ -754,6 +757,8 @@ pass	a tag-length-value record round-trips through construct then match
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a tail-recursive function returning a tuple is tuple-valued
 pass	a tail-recursive string accumulator builds a runtime string and its length is measured
+pass	a tautology comparison against a masked value's derived range still traps on the operand
+pass	a tautology comparison against the type minimum still traps on a div-by-zero operand
 pass	a tautology comparison still folds when its operand cannot trap
 pass	a three-argument closure exported to the host is called with all three
 pass	a three-element runtime tuple is returned as a result
@@ -866,6 +871,7 @@ pass	an annotated tuple-pattern parameter still checks its annotation against th
 pass	an annotated value takes a narrower integer width
 pass	an annotation by a reflected type that contradicts the value is rejected
 pass	an annotation that contradicts the value is rejected
+pass	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
 pass	an arithmetic operator with a single operand is rejected, not a crash
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
@@ -1219,6 +1225,7 @@ pass	projecting a record restricts it to the named fields
 pass	projecting a record with a duplicate label is rejected
 pass	projecting a tuple passed as a function parameter yields the element, never an invalid component
 pass	projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling
+pass	projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs
 pass	promoting a Float32 to Float64 is exact
 pass	pushing an element of a different type onto a list is a type error
 pass	pushing an element onto a list appends it
@@ -1442,7 +1449,6 @@ todo	a default-integer pragma fixes a type but adds no conversion — no-promoti
 todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a factorial that overflows the integer type traps through the recursion
 todo	a final unquote-splice binds the remaining elements as a list
-todo	a function whose body always diverges has result type Never
 todo	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 todo	a list built by a recursive push-loop is then iterated by index
 todo	a list update at a genuinely out-of-bounds index traps (the control)
@@ -1462,7 +1468,6 @@ todo	a non-final unquote-splice in a quote pattern is ill-formed
 todo	a peephole rewrite rule reads in the shape of the code it rewrites
 todo	a plain quote does not evaluate a quasiquote's unquote nested inside it
 todo	a plain record compared to a nominal record of the same shape is a type error
-todo	a projected tuple element IS observed, so its trap occurs (the anchor)
 todo	a quantity over an exact rational magnitude divides exactly and derives its dimension
 todo	a quote pattern binds an unquoted operand of a compound form
 todo	a quote pattern is equivalent to the Ast.* constructor pattern
@@ -1479,11 +1484,8 @@ todo	a rational with numerator and denominator both negative normalizes to posit
 todo	a rational's sign is normalized onto the numerator
 todo	a rational-magnitude quantity erases to its exact rational value
 todo	a recursive function that installs a fresh handler on each call grows its context without bound
-todo	a runtime division of the minimum integer by -1 overflows and traps
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	a runtime string is indexed by scalar and the extracted scalar is returned
-todo	a tautology comparison against a masked value's derived range still traps on the operand
-todo	a tautology comparison against the type minimum still traps on a div-by-zero operand
 todo	a transformation over the built-in Ast composes across a function call
 todo	a utf8 bin segment binds a decoded string when the bytes are well-formed
 todo	a utf8 bin segment is a non-match on ill-formed bytes, forcing the catch-all
@@ -1495,7 +1497,6 @@ todo	an IEC binary prefix scales a unit by a power of two
 todo	an SI decimal prefix scales a unit by a power of ten
 todo	an arbitrary-precision integer multiplication does not overflow
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
-todo	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 todo	an association list is searched by key with a tuple-carrying Option match
 todo	an explicit annotation overrides the default-integer pragma
 todo	an export and a like-named metadata key do not collide
@@ -1522,7 +1523,6 @@ todo	expect traps on the absent case of a runtime optional
 todo	negating a runtime Int64 overflows at Int64.min
 todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 todo	pattern matching over AST distinguishes forms
-todo	projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs
 todo	projecting the result of a function that threads a tuple parameter must not trap
 todo	quasiquote constructs AST with selective evaluation
 todo	quasiquote makes AST construction readable

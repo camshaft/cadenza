@@ -123,6 +123,20 @@ pub enum Outcome {
     Trap(String),
 }
 
+/// Render a run error to a trap MESSAGE that surfaces the wasm trap REASON, not just the outer
+/// "error while executing at wasm backtrace:" wrapper anyhow prints. wasmtime attaches a
+/// [`wasmtime::Trap`] code to a trapping error's chain; its `Display` is the canonical reason
+/// (`integer divide by zero`, `integer overflow`, `wasm 'unreachable' instruction executed`, `out of
+/// bounds memory access`, …). Surface that reason FIRST so a reason-matching consumer (the behavior
+/// gate) can recognize the trap, then the full error for a human. A non-trap error (no `Trap` in the
+/// chain) renders as before.
+fn trap_message(e: &anyhow::Error) -> String {
+    match e.downcast_ref::<wasmtime::Trap>() {
+        Some(trap) => format!("{trap}: {e:?}"),
+        None => format!("{e}"),
+    }
+}
+
 /// How to run a component: which export, what arguments, and the value-heap runtime to compose.
 #[derive(Debug, Default, Clone)]
 pub struct RunOpts {
@@ -328,7 +342,7 @@ fn run_export(
             let _ = func.post_return(&mut *store);
             Ok(Outcome::Value(rendered))
         }
-        Err(e) => Ok(Outcome::Trap(format!("{e}"))),
+        Err(e) => Ok(Outcome::Trap(trap_message(&e))),
     }
 }
 
@@ -711,7 +725,7 @@ fn run_roundtrip_closure(
         arg_off += prod_params.len();
         let mut handle = [Val::Bool(false)];
         if let Err(e) = producer.call(&mut *store, &prod_args, &mut handle) {
-            return Ok(Outcome::Trap(format!("{e}")));
+            return Ok(Outcome::Trap(trap_message(&e)));
         }
         let _ = producer.post_return(&mut *store);
         handles.push(handle[0].clone());
@@ -742,7 +756,7 @@ fn run_roundtrip_closure(
             let _ = consumer.post_return(&mut *store);
             Ok(Outcome::Value(render_closure_call_result(out.first())))
         }
-        Err(e) => Ok(Outcome::Trap(format!("{e}"))),
+        Err(e) => Ok(Outcome::Trap(trap_message(&e))),
     }
 }
 
@@ -856,7 +870,7 @@ fn run_closure_resource(
         let make_args = coerce_args(&arg_strs[..n_make], &make_param_types)?;
         let mut handle = [Val::Bool(false)];
         if let Err(e) = make.call(&mut *store, &make_args, &mut handle) {
-            return Ok(Outcome::Trap(format!("{e}")));
+            return Ok(Outcome::Trap(trap_message(&e)));
         }
         let _ = make.post_return(&mut *store);
         let param_types: Vec<Type> = call
@@ -873,7 +887,7 @@ fn run_closure_resource(
                 let _ = call.post_return(&mut *store);
                 Ok(Outcome::Value(render_closure_call_result(out.first())))
             }
-            Err(e) => Ok(Outcome::Trap(format!("{e}"))),
+            Err(e) => Ok(Outcome::Trap(trap_message(&e))),
         };
     }
     // The make function to call: a single-export program publishes a bare `make`; a MULTI-EXPORT program
@@ -925,7 +939,7 @@ fn run_closure_resource(
     let make_args = coerce_args(&arg_strs[..n_make], &make_param_types)?;
     let mut handle = [Val::Bool(false)];
     if let Err(e) = make.call(&mut *store, &make_args, &mut handle) {
-        return Ok(Outcome::Trap(format!("{e}")));
+        return Ok(Outcome::Trap(trap_message(&e)));
     }
     let _ = make.post_return(&mut *store);
     // `call`'s params are `(self, args…)`; coerce the REMAINING arg strings to the DECLARED arg types
@@ -945,7 +959,7 @@ fn run_closure_resource(
             let _ = call.post_return(&mut *store);
             Ok(Outcome::Value(render_closure_call_result(out.first())))
         }
-        Err(e) => Ok(Outcome::Trap(format!("{e}"))),
+        Err(e) => Ok(Outcome::Trap(trap_message(&e))),
     }
 }
 
@@ -977,12 +991,12 @@ fn run_resource_escape(
 
     let mut handle = [Val::Bool(false)];
     if let Err(e) = make.call(&mut *store, &[], &mut handle) {
-        return Ok(Outcome::Trap(format!("{e}")));
+        return Ok(Outcome::Trap(trap_message(&e)));
     }
     let _ = make.post_return(&mut *store);
     let mut out = [Val::Bool(false)];
     if let Err(e) = encode.call(&mut *store, &handle, &mut out) {
-        return Ok(Outcome::Trap(format!("{e}")));
+        return Ok(Outcome::Trap(trap_message(&e)));
     }
     let _ = encode.post_return(&mut *store);
 
