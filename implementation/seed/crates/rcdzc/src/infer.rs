@@ -1747,6 +1747,24 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                                 sat.render_name()
                             ),
                         ));
+                    } else if let (Ty::Float(_), Ty::Int(_)) = (&sparam, &sat) {
+                        // An INTEGER operand where a FLOAT is expected (`(+. x 2.0)` with `x : Int64`) —
+                        // the numeric model has NO silent promotion, so this is CDZ0301. But it has a
+                        // mechanical repair: the corpus-blessed `(<FloatType>.of-int …)` conversion
+                        // (`06-numeric-model.sexp` — `(+. (Float64.of-int 1) 2.0)`). Suggest wrapping the
+                        // integer operand in the EXPECTED float type's `of-int` op — the float type's own
+                        // rendered name gives the module (`Float64`/`Float32`), so the ctor is derived, not
+                        // hard-coded (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
+                        // Fix). The reject KEEPS its unify-produced message + code; the fix rides alongside.
+                        let float_name = sparam.render_name();
+                        out.push(reject.with_fix(Fix::wrap_heuristic(
+                            arg,
+                            format!("({float_name}.of-int "),
+                            ")",
+                            format!(
+                                "convert the integer to {float_name} with `{float_name}.of-int`"
+                            ),
+                        )));
                     } else {
                         out.push(reject);
                     }

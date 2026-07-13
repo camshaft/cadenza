@@ -14,14 +14,14 @@
 (def (uleb n)
   (doc "Unsigned LEB128 of a non-negative Int64 — section/vector lengths, indices, u32 operands.")
   (if (< n 128)
-      (u8 (Int64.to-byte n))
-      (cat (u8 (Int64.to-byte (| (& n 127) 128))) (uleb (>> n 7)))))
+      (u8 (UInt8.wrap n))
+      (cat (u8 (UInt8.wrap (| (& n 127) 128))) (uleb (>> n 7)))))
 
 (def (sleb n)
   (doc "Signed LEB128 of an Int64 — the operand of i64.const.")
   (if (sleb-done n)
-      (u8 (Int64.to-byte (& n 127)))
-      (cat (u8 (Int64.to-byte (| (& n 127) 128))) (sleb (>> n 7)))))
+      (u8 (UInt8.wrap (& n 127)))
+      (cat (u8 (UInt8.wrap (| (& n 127) 128))) (sleb (>> n 7)))))
 
 (def (sleb-done n)
   (doc "A signed value is complete when the shifted remainder is all sign bits and the current

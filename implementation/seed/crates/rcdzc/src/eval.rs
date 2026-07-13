@@ -337,7 +337,12 @@ pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, Struc
     // body `x` then finds no `x` binding and reports a spurious unbound name (a differently-typed
     // shadow additionally MISCOMPILED to an invalid component). A binder is copied structurally like
     // any other node, never substituted. (Only VALUE references — a bare use of the name — are.)
-    if is_binder_occurrence(db, body) {
+    // A binder-position name (a `let`/match/param binder, or a RECORD FIELD KEY), or a MEMBER-KEY name
+    // (the `key` of a `(. operand key)` projection), NAMES a label — it is not a value reference, so it
+    // is copied structurally, never substituted. Both a field key and a projection key select a field by
+    // its LABEL; substituting the argument for such a name (`(. (record (x 5)) x)` under a param `x`)
+    // would corrupt the label into a non-name and reject a valid program (CDZ0201).
+    if is_binder_occurrence(db, body) || is_member_key_occurrence(db, body) {
         let leaf = match db.ast.get(body) {
             crate::ast::Struct::Atom(lid) => db.ast.leaf(*lid).clone(),
             // A non-atom binder (an annotated `(: name T)` binder) copies structurally below.
@@ -479,7 +484,43 @@ fn is_binder_occurrence(db: &Db, id: StructId) -> bool {
     if db.ast.as_form(pair, ":").is_some() && is_param_list(db, grandparent, pair) {
         return true;
     }
+    // A RECORD FIELD KEY — `id` is the KEY (first child) of a `(key value)` field pair whose grandparent
+    // is a record FORM. The key is a LABEL (a field name, `read_key`), NOT a value reference, so it must
+    // be immune to argument substitution: without this, calling `(def (f (: x Int64)) (record (x 5)))`
+    // β-substitutes the argument for the key `x`, corrupting `(record (x 5))` into `(record (7 5))`,
+    // which `read_key` then rejects (CDZ0201 "record field key must be a name"). The field VALUE (the
+    // pair's SECOND child) is NOT a binder — it is an ordinary expression that legitimately references
+    // the parameter (`(record (y x))`), so only the FIRST child qualifies (checked above: `id` is the
+    // pair's first child). The grandparent is a record form in EITHER spelling: the `record` NAME alias
+    // `(record …)` or the unshadowable STRING primitive `("record" …)`. (A field pair has exactly two
+    // children; a `(meta name)` key is already immune as it is not a bare param name.)
+    if pair_children.len() == 2
+        && (db.ast.head_name(grandparent) == Some("record")
+            || db.ast.head_ctor(grandparent) == Some("record"))
+    {
+        return true;
+    }
     false
+}
+
+/// Whether `id` is a NAME occurrence in a MEMBER-KEY position — the field/member name of a `(. operand
+/// key)` projection, where `key` is `id`. Such a name is a LABEL selecting a field (`resolve_member`
+/// reads it via `as_name`, like `read_key` for a record field), NOT a value reference, so β-reduction
+/// must not substitute an argument for it. Without this, calling `(def (f (: x Int64)) (. r x))`
+/// β-substitutes the argument for the projection key `x`, turning `(. r x)` into `(. r 7)` — a member
+/// access by a non-name key, which resolves to a malformed projection (CDZ0201 / a positional index on
+/// a non-tuple). Mirrors the record-field-key immunity in [`is_binder_occurrence`]; the projection
+/// OPERAND (tail position 0) is an ordinary expression and stays substitutable — only the KEY (position
+/// 1) is a label. A `(meta name)` key is already immune (not a bare param name).
+fn is_member_key_occurrence(db: &Db, id: StructId) -> bool {
+    let Some(parent) = db.parent_of(id) else {
+        return false;
+    };
+    // The parent must be a `(. operand key)` form and `id` its KEY (the second tail element).
+    match db.ast.as_form(parent, ".") {
+        Some(tail) => tail.len() == 2 && tail[1] == id,
+        None => false,
+    }
 }
 
 /// Whether `list` is a `fn`/`def` PARAMETER LIST that contains `child` as one of its parameters. A `fn`'s

@@ -1196,6 +1196,48 @@ fn a_let_bound_value_under_a_fn_param_compiles() {
     assert_eq!(run_returns::<i64>(&bytes, "main"), 22);
 }
 
+/// A record field KEY (and a member-access field name) that coincides with a PARAMETER name survives the
+/// call — the β-reduction key-immunity fix. `beta_reduce` substitutes the argument for VALUE references to
+/// the parameter, but a field key `(record (x 5))` and a projection key `(. r x)` are LABELS, not value
+/// reads; substituting the argument for them (turning `(record (x 5))` into `(record (7 5))`) corrupted a
+/// valid record and rejected the program CDZ0201. `is_binder_occurrence` (record key) +
+/// `is_member_key_occurrence` (projection key) now copy such a name structurally. The `let`-bound analogue
+/// always worked (a `let`-local is not β-substituted), which proved the param case was a bug.
+#[test]
+fn a_record_field_key_coinciding_with_a_parameter_survives_the_call() {
+    use crate::testkit::parse;
+    // Field keyed `x`, projected `x`, under param `x` → 5 (the key is a label, immune to substitution).
+    let proj =
+        "(module m (def (f (: x Int64)) (. (record (x 5)) x)) (def (main) (f 7)) (export main))";
+    assert_eq!(
+        run_returns::<i64>(
+            &compile_component(&crate::codec::encode(&parse(proj))).expect("compile"),
+            "main"
+        ),
+        5
+    );
+    // Multi-field: the colliding key `x` does not corrupt the record; project the non-colliding `y` → 2.
+    let multi = "(module m (def (f (: x Int64)) (. (record (x 1) (y 2)) y)) (def (main) (f 7)) (export main))";
+    assert_eq!(
+        run_returns::<i64>(
+            &compile_component(&crate::codec::encode(&parse(multi))).expect("compile"),
+            "main"
+        ),
+        2
+    );
+    // The COMPLEMENT — a field VALUE that references the param STILL substitutes (immunity is key-only):
+    // `(record (y x))` with x=7, projected → 7. Guards against over-immunizing the whole field pair.
+    let value =
+        "(module m (def (f (: x Int64)) (. (record (y x)) y)) (def (main) (f 7)) (export main))";
+    assert_eq!(
+        run_returns::<i64>(
+            &compile_component(&crate::codec::encode(&parse(value))).expect("compile"),
+            "main"
+        ),
+        7
+    );
+}
+
 /// A reference to EACH of a wide signature's parameters resolves to the right one — the correctness
 /// guard for the O(1) per-scope binder index (`Db::scope_binders`) that replaced `binder_in`'s
 /// O(params)-per-reference signature scan. `f` takes six params and its body references three of them
@@ -4233,6 +4275,70 @@ mod runtime_ops {
             0
         );
     }
+
+    #[test]
+    fn a_full_width_mask_on_an_unsigned_value_is_elided() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(& x 255)` on a UInt8 covers the whole value range → the `&` is a no-op, elided to just `x`.
+        let full8 = lir("(: x UInt8)", "(& x 255)");
+        assert!(
+            !full8.iter().any(|i| matches!(i, Lir::I32And | Lir::I64And)),
+            "UInt8 (& x 255) elides the mask; got {full8:?}"
+        );
+        // `(& x 65535)` on a UInt16 likewise.
+        let full16 = lir("(: x UInt16)", "(& x 65535)");
+        assert!(
+            !full16
+                .iter()
+                .any(|i| matches!(i, Lir::I32And | Lir::I64And)),
+            "UInt16 (& x 65535) elides the mask; got {full16:?}"
+        );
+        // A PARTIAL mask does NOT elide (`(& x 15)` clears the high nibble).
+        let partial = lir("(: x UInt8)", "(& x 15)");
+        assert!(
+            partial
+                .iter()
+                .any(|i| matches!(i, Lir::I32And | Lir::I64And)),
+            "a partial mask keeps the and; got {partial:?}"
+        );
+
+        // VALUE PARITY — the elided mask must give the same value as the explicit `&`.
+        assert_eq!(run::<u8>("(: x UInt8)", "(& x 255)", &[Val::U8(200)]), 200);
+        assert_eq!(run::<u8>("(: x UInt8)", "(& x 255)", &[Val::U8(0)]), 0);
+        assert_eq!(run::<u8>("(: x UInt8)", "(& x 255)", &[Val::U8(255)]), 255);
+        assert_eq!(
+            run::<u16>("(: x UInt16)", "(& x 65535)", &[Val::U16(40000)]),
+            40000
+        );
+        // The partial mask still masks correctly (parity where it is NOT elided).
+        assert_eq!(run::<u8>("(: x UInt8)", "(& x 15)", &[Val::U8(200)]), 8); // 200 & 15 = 8
+    }
 }
 
 // ── runtime functions + recursion (ANF step 2 / B1): a recursive call is a real wasm call ─────────
@@ -6131,6 +6237,28 @@ mod match_engine {
                 cdz_run::Outcome::Trap(_)
             ),
             "a runtime u8 of -1 must trap"
+        );
+        // A `(bytes b)` splice of a RUNTIME Bytes value: `(bin (u16 3) (bytes b))` builds a length-prefixed
+        // frame at run time (a `bytes-concat` of the header + the runtime body). `mk` builds a 3-byte body
+        // from a runtime `n`; the frame length is 2 (header) + 3 (body) = 5. And byte 4 (= body[2]) is 30.
+        let splice = "(module m (def (frame (: b Bytes)) (bin (u16 3) (bytes b))) (def (mk (: n Int64)) ((. Bytes of) (list (UInt8.wrap n) 20 30))) (def (main (: n Int64)) ";
+        assert_eq!(
+            val(
+                &format!("{splice} ((. Bytes len) (frame (mk n)))) (export main))"),
+                &["7"]
+            ),
+            "5",
+            "runtime bytes-splice: length = header + body"
+        );
+        assert_eq!(
+            val(
+                &format!(
+                    "{splice} (match ((. Bytes at) (frame (mk n)) 4) ((Some x) x) ((None _) -1))) (export main))"
+                ),
+                &["7"]
+            ),
+            "30",
+            "runtime bytes-splice: body byte spliced after the header"
         );
     }
 
@@ -8553,6 +8681,36 @@ mod diagnostics {
     }
 
     #[test]
+    fn an_integer_operand_to_a_float_operator_offers_an_of_int_coercion_fix() {
+        // The numeric-mismatch fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
+        // A Fix): `(+. x 2.0)` with `x : Int64` is CDZ0301 (no silent promotion), but the repair is the
+        // corpus-blessed `(Float64.of-int x)` — a WRAP fix converting the integer operand. Applying it
+        // makes the program type-check.
+        let d = first_error("(module m (def (f (: x Int64)) (+. x 2.0)) (export f))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
+        let fix = d.fix.expect("a coercion fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(Float64.of-int {})", crate::abi::WRAP_HOLE),
+            "wraps the integer operand in Float64.of-int"
+        );
+        assert!(!fix.verified, "a coercion is a heuristic (intent guess)");
+    }
+
+    #[test]
+    fn a_non_numeric_mismatch_to_a_float_operator_carries_no_coercion_fix() {
+        // The coercion fix fires ONLY for an Int→Float mismatch — a Bool operand to `+.` is a plain
+        // CDZ0203/CDZ0301 with no `of-int` repair (converting a Bool to a float is not the fix).
+        let d = first_error("(module m (def (f (: x Bool)) (+. x 2.0)) (export f))");
+        assert!(
+            d.fix.is_none(),
+            "no coercion fix for a non-integer operand: {:?}",
+            d.fix
+        );
+    }
+
+    #[test]
     fn the_same_fault_is_reported_once_even_when_two_passes_find_it() {
         // An unbound name in a REACHABLE position is found by BOTH the type-check walk and the
         // reached-poison walk — it must be reported ONCE (deduped by code+node), not twice.
@@ -10243,9 +10401,9 @@ mod stage1 {
     // ── truncating conversion `T.wrap` (R3): constant FOLD, no sums, never traps ──────────────────
     //
     // `(UInt8.wrap n)` = `((. UInt8 wrap) n)` — projecting the module's `wrap` operator and applying it.
-    // On a constant it FOLDS via `IntValue::wrap_to` to a `ConstInt` already at the target width. It is
-    // the honest, principled form of the old `to-byte`: the target width comes from the TYPE (`UInt8`),
-    // not a magic op name. The result crosses the boundary as the target's faithful primitive (u8/s8/…).
+    // On a constant it FOLDS via `IntValue::wrap_to` to a `ConstInt` already at the target width. The
+    // target width comes from the TYPE (`UInt8`), not a magic op name — one truncating conversion, width-
+    // indexed. The result crosses the boundary as the target's faithful primitive (u8/s8/…).
 
     #[test]
     fn wrap_truncates_an_out_of_range_constant() {
@@ -10258,8 +10416,8 @@ mod stage1 {
 
     #[test]
     fn wrap_of_a_negative_uses_twos_complement() {
-        // `(UInt8.wrap -1)` = 255 — the low 8 bits of -1's two's-complement (all ones). This is exactly
-        // the old `(Int.to-byte -1)`, now typed as UInt8 with the width from the type.
+        // `(UInt8.wrap -1)` = 255 — the low 8 bits of -1's two's-complement (all ones); the target width
+        // (UInt8) comes from the type.
         let src = "(module m (def (main) (UInt8.wrap -1)) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
         assert_eq!(run_returns::<u8>(&bytes, "main"), 255);
@@ -17496,6 +17654,68 @@ mod debug_info {
         assert!(
             !stdout.contains("DW_TAG_formal_parameter"),
             "a nullary function must have no formal parameters:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn float_params_get_formal_parameter_dies_with_a_float_base_type() {
+        // D3 for FLOATS: a `Float32`/`Float64` parameter is a scalar the runtime holds in a wasm
+        // `f32`/`f64` local, so it earns a `DW_TAG_formal_parameter` with a `DW_ATE_float` base type +
+        // a `DW_OP_WASM_location` local slot — a debugger can `print` a float argument, exactly as for
+        // an integer. (Before this, `base_type_of` returned `None` for `Ty::Float`, so a float param got
+        // NO DIE.) Both widths are covered: `Float64` → `f64` (8 bytes), `Float32` → `f32` (4 bytes).
+        use std::io::Write;
+        use std::process::Command;
+        let src = "(module m \
+                     (def (scale (: x Float64) (: k Float32)) (*. x (Float64.of-int 1))) \
+                     (export scale))";
+        let out = compile_debug(src, &[Request::Emit(Target::Dwarf)]);
+        assert!(!out.has_error(), "compile failed: {:?}", out.diagnostics);
+        let dwarf = out.artifact("dwarf").expect("dwarf").to_vec();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("cdz-d3f-{}.wasm", std::process::id()));
+        std::fs::File::create(&path)
+            .and_then(|mut f| f.write_all(&dwarf))
+            .expect("write");
+        let output = match Command::new("llvm-dwarfdump")
+            .arg("--debug-info")
+            .arg(&path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("llvm-dwarfdump not found; skipping");
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "dwarfdump failed:\n{stdout}");
+        assert!(
+            !stdout.to_lowercase().contains("error:"),
+            "dwarfdump reported an error:\n{stdout}"
+        );
+        // Both scalar float widths get a base type with the IEEE-float encoding.
+        assert!(
+            stdout.contains("DW_ATE_float"),
+            "a float param must reference a DW_ATE_float base type:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("\"f64\"") && stdout.contains("\"f32\""),
+            "both f64 and f32 base types must be present:\n{stdout}"
+        );
+        // The params are formal parameters with names + wasm-local locations.
+        assert!(
+            stdout.contains("DW_TAG_formal_parameter")
+                && stdout.contains("\"x\"")
+                && stdout.contains("\"k\""),
+            "the float params x and k must have formal_parameter DIEs:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("DW_OP_WASM_location 0x0 0x0")
+                && stdout.contains("DW_OP_WASM_location 0x0 0x1"),
+            "the float params must sit at local slots 0 and 1:\n{stdout}"
         );
     }
 
