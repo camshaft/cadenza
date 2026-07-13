@@ -407,10 +407,30 @@ the component type. The new work:
   Gate 1261p/0f. 🔑 This is the THIRD sighting of the kebab-extern-name gotcha (after `call-0`→`call-g<n>`
   and the effect-boundary names spec fixed at `@371a8d32`): ANY name minted at the component boundary must
   pass `kebab_extern_name`; PRIVATE wiring names should be index-derived so a source identifier can't leak.
+- **✅ CLOSURE ALONGSIDE A NON-CLOSURE EXPORT COMPLETE `@293f175e` — the MIXED multi-export.** A program can
+  now export a closure factory AND a plain (non-closure) function in ONE component (previously declined "not
+  yet supported"). The closure(s) cross via the resource envelope (`make-<name>` + shared `call` under
+  `cadenza:closure/exports`); each plain export is aliased off the SAME program instance and published as an
+  ORDINARY top-level component func. Oracle-first: `oracle_mixed_component` +
+  `a_closure_export_and_a_plain_export_coexist_and_the_host_drives_both` proved the resource-instance +
+  top-level-func coexistence RUNS under wasmtime before hand-emit. Pieces: (a)
+  `serialize::multi_closure_resource_core_module` gains a `plain: &[PlainExport]` param — the plain bodies
+  are already defined funcs, so it just adds an EXPORT entry per plain export by its core-func index (no new
+  functype/code); (b) `envelope::assemble_mixed_closure_resource` generalizes the multi-closure envelope
+  (P=0 case) — each plain body is aliased AFTER `call`, lifted as a top-level comp func, exported directly
+  under its kebab name (functypes/lifts laid after the call's); (c) `emit_mixed_closure_resource` (mod.rs)
+  replaces the ALONGSIDE decline — partitions exports into closures (`Ty::Fn` result) + plain, requires the
+  closures share ONE signature; (d) `cdz-run` routes `(call <plain>)` to the top-level bare func (via the
+  kebab rule) and `(call <closure>)` to make/call (the guard is now "the named export is not a top-level
+  func"). Scope: same-signature closures + aliased-scalar plain params/results. STILL DECLINES: DISTINCT
+  closure signatures alongside a plain export (the distinct-sig envelope has no plain slot); a compound plain
+  result (needs the memory/realloc lift shape). +6 corpus (closure+plain both driven; parameterized plain
+  beside a capturing factory; two same-sig closures beside a plain export). Gate 1282p/0f.
 - **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG-or-RESULT (recursion
-  into the value-heap escape's encode/decode); a closure exported ALONGSIDE a non-closure export; a closure
-  TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call
-  handle. Everything else DONE.
+  into the value-heap escape's encode/decode); DISTINCT closure signatures alongside a non-closure export
+  (the mixed envelope's same-signature restriction); a compound-RESULT plain export alongside a closure; a
+  closure TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>`
+  repeated-call handle. Everything else DONE.
 
 ## Risks / open questions
 
