@@ -2445,11 +2445,19 @@ fn collect_pattern_binders(
                 return Ok(());
             }
             if !seen.insert(name.clone()) {
+                // RENAME the repeated binder to a fresh non-colliding name (`a` → `a2`), making the pattern
+                // linear (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). Fresh
+                // relative to the binders already seen in this pattern, so it collides with none. Heuristic:
+                // the rename clears the hard error; the fresh binder is then unused until the author uses it
+                // (two same-named binders were likely meant to be distinct values, or an equality the pattern
+                // language does not express). Anchored at the repeated binder occurrence.
+                let fresh = crate::diag::suggest::fresh_suffixed_name(&name, seen);
                 return Err(Reject::coded(
                     Code::NonLinearBinder,
                     format!("pattern binds `{name}` more than once (a pattern must be linear)"),
                 )
-                .at(pat));
+                .at(pat)
+                .with_fix(Fix::replace_heuristic(pat, fresh)));
             }
         }
         return Ok(());

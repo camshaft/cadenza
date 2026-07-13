@@ -1478,6 +1478,32 @@ fn check_shows_one_error_for_a_misspelled_handler_op_not_a_cascade() {
 }
 
 #[test]
+fn fix_all_renames_a_duplicate_parameter_and_clears_the_hard_error() {
+    // CDZ0102's rename fix end-to-end: `(def (f (: x Int64) (: x Int64)) …)` → the second `x` becomes
+    // `x2`, and the repaired file no longer has the CDZ0102 error (the fresh binder is unused — a CDZ0306
+    // WARNING — but that is not an error, so the no-regression verify passes and `fix --all` applies it).
+    let dir = scratch_dir("fix_dupparam");
+    let f = dir.join("prog.sexp");
+    std::fs::write(
+        &f,
+        "(module m (def (f (: x Int64) (: x Int64)) (+ x 1)) (export f))\n",
+    )
+    .unwrap();
+    let (ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok, "fix succeeds: {stderr}");
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("(: x Int64) (: x2 Int64)"),
+        "the duplicate parameter is renamed: {repaired}"
+    );
+    // The CDZ0102 hard error is gone (a CDZ0306 unused-param warning may remain, but check exits 0).
+    let (ok2, stdout, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(ok2, "no error remains: {stdout}");
+    assert!(!stdout.contains("CDZ0102"), "the non-linear error is cleared: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn fix_all_wraps_a_no_home_effect_in_a_host_delegation_and_recompiles_clean() {
     // CDZ0401's `Edit::Wrap` end-to-end: an ungranted effect gets `(host (E) <body>)` wrapped around the
     // entrypoint body, and the repaired file re-checks clean. The wrap verifies (recompile, no regression),

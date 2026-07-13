@@ -440,6 +440,12 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // def (a name may of course repeat ACROSS defs); the binder NAME sees through a `(: name T)` binder.
     let param_lists: Vec<Vec<StructId>> = db.defs.iter().map(|d| d.params.clone()).collect();
     for params in &param_lists {
+        // All param names of this list — the set the rename fix must avoid so a fresh name collides with
+        // neither an earlier NOR a later parameter (renaming `x` in `(f x x)` to `x2` must dodge a real `x2`).
+        let all_names: std::collections::HashSet<String> = params
+            .iter()
+            .filter_map(|&p| db.ast.as_name(crate::eval::param_name_occ(db, p)).map(str::to_string))
+            .collect();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for &p in params {
             let name_occ = crate::eval::param_name_occ(db, p);
@@ -447,6 +453,12 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 continue; // a param with no extractable name (a malformed binder) — not a dup check
             };
             if !seen.insert(name.clone()) {
+                // RENAME the repeated occurrence to a fresh non-colliding name (`x` → `x2`), making the
+                // parameter list linear (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route
+                // To A Fix). Heuristic: the rename clears the hard error, but the fresh binder is then
+                // unused (a CDZ0306 warning) until the author wires it up — renaming vs. dropping the
+                // duplicate (which changes arity) is the author's call. Anchored at the repeated binder.
+                let fresh = crate::diag::suggest::fresh_suffixed_name(&name, &all_names);
                 faults.push(
                     Reject::coded(
                         Code::NonLinearBinder,
@@ -455,7 +467,8 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                              linear, like a pattern)"
                         ),
                     )
-                    .at(name_occ),
+                    .at(name_occ)
+                    .with_fix(crate::diag::Fix::replace_heuristic(name_occ, fresh)),
                 );
             }
         }
