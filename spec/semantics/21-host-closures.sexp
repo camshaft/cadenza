@@ -1047,3 +1047,39 @@
   (input  (do (type Flag (Mk Bool)) (def (main) (fn ((: x Int64)) (Mk (> x 0)))) (export main)))
   (call   main (: 5 Int64))
   (output (: true Bool)))
+
+; A COMPOUND-RESULT closure: the closure's result is a runtime `Bytes`, which crosses the `call` boundary
+; as `list<u8>` (the raw payload) rather than a scalar. Unlike a scalar `call`, the emitted core carries a
+; MEMORY + `cabi_realloc`, and `call` — after dispatching the lifted closure (which returns a runtime Bytes
+; HANDLE) — runs a `bytes-len`/`bytes-get` copy loop writing the payload + the canonical `(ptr, len)` return
+; area, then drops both the closure cell and the transient Bytes handle. The `call` is lifted with
+; Memory/Realloc canon options (`assemble_closure_bytes_resource`), the shape the compound-result oracle
+; proved runs. The host reads the bytes back directly (a bare `list<u8>`, rendered as the byte sequence).
+
+(case "a closure returning Bytes crosses to the host as list<u8>"
+  (doc    "`(fn (n) (bin (u8 n) (u8 n+1)))` — the closure's result is a runtime `Bytes`. `make()` → a
+           handle; `call(handle, 5)` dispatches the closure (building `[5, 6]` on the value heap), and the
+           `call` method copies that Bytes handle into linear memory and returns it as `list<u8>` — the host
+           reads `(5 6)`. Pins the compound-result closure boundary end-to-end (memory + cabi_realloc +
+           Memory/Realloc-lifted `call` + the bytes copy loop).")
+  (input  (do (def (main) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))))))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (5 6)))
+
+(case "a Bytes-returning closure on a different argument"
+  (doc    "The same `(fn (n) (bin (u8 n) (u8 n+1)))`, called with 100 → the bytes `[100, 101]`. Confirms the
+           copied payload tracks the closure's runtime input, not a fixed buffer.")
+  (input  (do (def (main) (fn ((: n Int64)) (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))))))
+              (export main)))
+  (call   main (: 100 Int64))
+  (output (100 101)))
+
+(case "a capturing closure returning Bytes"
+  (doc    "`(def (tag (: hdr Int64)) (fn (n) (bin (u8 hdr) (u8 n))))` captures a header byte and returns a
+           2-byte `Bytes`. `make(9)` builds a closure over hdr=9, then `call(handle, 200)` → `[9, 200]`.
+           Composes make-param capture with a compound (`Bytes`) closure result.")
+  (input  (do (def (tag (: hdr Int64)) (fn ((: n Int64)) (bin (u8 (UInt8.wrap hdr)) (u8 (UInt8.wrap n)))))
+              (export tag)))
+  (call   tag (: 9 Int64) (: 200 Int64))
+  (output (9 200)))

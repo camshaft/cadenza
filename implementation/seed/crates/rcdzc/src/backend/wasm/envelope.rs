@@ -1530,6 +1530,168 @@ pub fn assemble_closure_resource(
     out
 }
 
+/// Assemble a closure-resource component whose `call` returns a COMPOUND (`Bytes` → `list<u8>`), not a
+/// scalar. A fork of [`assemble_closure_resource`] that (1) ALSO aliases the program core's `memory` +
+/// `cabi_realloc` (the compound result crosses through linear memory by the canonical ABI), and (2) lifts
+/// `call` with Memory/Realloc canon options against a `(self: own<t>, args…) -> list<u8>` functype. Pairs
+/// with [`serialize::closure_bytes_resource_core_module`] (whose `call` writes the payload + `(ptr,len)`
+/// return area). BYTE target: `tests::closure_host_resource::oracle_closure_list_component`.
+///
+/// Core-func indices (k = imports.len()): lowered ops 0..k; `t-dtor` k; `resource.new` k+1, `resource.rep`
+/// k+2; aliased `make` k+3, `call` k+4, `cabi_realloc` k+5 (memory is a memory index, not a func). Component
+/// types: 0 = import instance-type, 1 = resource; make `own<t>` 2 + make-ft 3; call `own<t>` 4 + `list<u8>`
+/// 5 + call-ft 6. Component funcs: aliased ops 0..k; `make` lift → k, `call` lift → k+1.
+pub fn assemble_closure_bytes_resource(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    make_param_bytes: &[u8],
+    arg_bytes: &[u8],
+) -> Vec<u8> {
+    let k = imports.len();
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+
+    // sec 7: import instance-type (component type 0). — identical prologue to `assemble_closure_resource`.
+    let instance_type = {
+        let mut decls = Vec::new();
+        for (i, op) in imports.iter().enumerate() {
+            decls.push(0x01);
+            decls.extend_from_slice(&op_comp_functype(op));
+            decls.push(0x04);
+            decls.extend_from_slice(&extern_name(op.name));
+            decls.push(0x01);
+            uleb128(i as u64, &mut decls);
+        }
+        let mut it = vec![0x42];
+        it.extend_from_slice(&wasm_vec(2 * k, &decls));
+        it
+    };
+    out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(1, &instance_type)));
+    out.extend_from_slice(&{
+        let mut item = extern_name(import_name);
+        item.push(0x05);
+        uleb128(0, &mut item);
+        section(sec::COMPONENT_IMPORT, &wasm_vec(1, &item))
+    });
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        for op in imports {
+            items.extend_from_slice(&comp_alias_item(0, op.name));
+        }
+        section(sec::ALIAS, &wasm_vec(k, &items))
+    });
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        for i in 0..k {
+            items.extend_from_slice(&canon_lower_item(i as u32));
+        }
+        section(sec::CANON, &wasm_vec(k, &items))
+    });
+    let drop_core = imports
+        .iter()
+        .position(|op| op.name == RUNTIME_DROP)
+        .map(|i| i as u32)
+        .expect("the closure-resource escape imports `drop` for the dtor");
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&[(RUNTIME_DROP, drop_core)])),
+    ));
+    out.extend_from_slice(&core_module_section(dtor_core));
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(0, &[(HEAP_DTOR_MODULE, 0)])),
+    ));
+    out.extend_from_slice(&section(
+        sec::ALIAS,
+        &wasm_vec(1, &core_alias_item(1, DTOR_CORE_EXPORT)),
+    ));
+    out.extend_from_slice(&section(
+        sec::COMPONENT_TYPE,
+        &wasm_vec(1, &resource_type_item(k as u32)),
+    ));
+    out.extend_from_slice(&{
+        let mut items = resource_new_item(1);
+        items.extend_from_slice(&resource_rep_item(1));
+        section(sec::CANON, &wasm_vec(2, &items))
+    });
+    let heap_exports = {
+        let mut ex: Vec<(&str, u32)> = imports
+            .iter()
+            .enumerate()
+            .map(|(i, op)| (op.name, i as u32))
+            .collect();
+        ex.push((RESOURCE_NEW, (k + 1) as u32));
+        ex.push((RESOURCE_REP, (k + 2) as u32));
+        ex
+    };
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_export_instance_item(&heap_exports)),
+    ));
+    out.extend_from_slice(&core_module_section(main_core));
+    out.extend_from_slice(&section(
+        sec::CORE_INSTANCE,
+        &wasm_vec(1, &core_instantiate_item(1, &[(HEAP_MODULE, 2)])),
+    ));
+    // sec 6: alias `make` (k+3), `call` (k+4), `memory`, `cabi_realloc` (k+5) off the program instance
+    // (core instance 3). UNLIKE the scalar path, the compound `call` needs the memory + realloc.
+    out.extend_from_slice(&{
+        let mut items = Vec::new();
+        items.extend_from_slice(&core_alias_item(3, MAKE_CORE_EXPORT));
+        items.extend_from_slice(&core_alias_item(3, CALL_CORE_EXPORT));
+        items.extend_from_slice(&memory_alias_item(3, MEMORY_EXPORT));
+        items.extend_from_slice(&core_alias_item(3, REALLOC_EXPORT));
+        section(sec::ALIAS, &wasm_vec(4, &items))
+    });
+    // sec 7: `own<t>` (type 2) + `make` functype `(export-params…) -> own<t>` (type 3).
+    out.extend_from_slice(&{
+        let mut items = own_item(1);
+        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(2)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    });
+    // sec 8: lift `make` (core func k+3) against functype type 3 → component func k.
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(1, &canon_lift_item((k + 3) as u32, 3)),
+    ));
+    // sec 7: `own<t>` (type 4), `list<u8>` (type 5), then the `call` functype `(self: own<t>, args…) ->
+    // list<u8>` (type 6).
+    out.extend_from_slice(&{
+        let mut items = own_item(1);
+        items.extend_from_slice(&list_u8_defined_type());
+        items.extend_from_slice(&closure_call_list_functype(4, arg_bytes, 5));
+        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+    });
+    // sec 8: lift `call` (core func k+4) against functype type 6 WITH Memory 0 + Realloc (core func k+5) →
+    // component func k+1. The compound result crosses through linear memory by the canonical ABI.
+    out.extend_from_slice(&section(
+        sec::CANON,
+        &wasm_vec(
+            1,
+            &canon_lift_list_item((k + 4) as u32, 0, (k + 5) as u32, 6),
+        ),
+    ));
+    // sec 4/5/11: nested re-export component; instantiate (comp type 1 + comp funcs k, k+1); export.
+    out.extend_from_slice(&component_section(&resource_inner_component_closure_bytes(
+        make_param_bytes,
+        arg_bytes,
+    )));
+    out.extend_from_slice(&section(
+        sec::COMPONENT_INSTANCE,
+        &wasm_vec(
+            1,
+            &component_instantiate_call_item(1, k as u32, (k + 1) as u32),
+        ),
+    ));
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_instance_item(CLOSURE_INTERFACE, 1)),
+    ));
+    out
+}
+
 /// One closure export's boundary `make`, for the multi-export envelope: the name the host reaches it by
 /// (`make-<def-name>`) + the core-module export name the program core exposes it under (the SAME string —
 /// the serializer names the core export identically) + the export's parameter component bytes (`make`
@@ -2732,6 +2894,71 @@ fn resource_inner_component_closure(
     out
 }
 
+/// The inner re-export component for a COMPOUND-RESULT (`Bytes`→`list<u8>`) closure: like
+/// [`resource_inner_component_closure`] but `call`'s result is a `list<u8>` defined type instead of a scalar
+/// byte. Each `list<u8>` type is minted on both the import and export side (independent type spaces). Type
+/// indices (import side): resource 0; make `own<0>` 1, make-ft 2; call `own<0>` 3, `list<u8>` 4, call-ft 5.
+/// Export side: re-exported resource 6; make `own<6>` 7, make-ft 8; call `own<6>` 9, `list<u8>` 10, call-ft
+/// 11. Imported funcs: make 0, call 1.
+fn resource_inner_component_closure_bytes(make_param_bytes: &[u8], arg_bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+    // sec 10: import the abstract resource → type 0.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_subresource_item("import-type-t")),
+    ));
+    // sec 7: `own<0>` (type 1) + imported `make` functype `(export-params…) -> own<0>` (type 2).
+    out.extend_from_slice(&{
+        let mut items = own_item(0);
+        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(1)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    });
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_func_item("import-func-make", 2)),
+    ));
+    // sec 7: `own<0>` (type 3), `list<u8>` (type 4), imported `call` functype `(self: own<3>, args…) ->
+    // list<u8>` (type 5).
+    out.extend_from_slice(&{
+        let mut items = own_item(0);
+        items.extend_from_slice(&list_u8_defined_type());
+        items.extend_from_slice(&closure_call_list_functype(3, arg_bytes, 4));
+        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+    });
+    out.extend_from_slice(&section(
+        sec::COMPONENT_IMPORT,
+        &wasm_vec(1, &import_func_item("import-func-call", 5)),
+    ));
+    // sec 11: RE-EXPORT the resource type 0 DIRECTLY as `t` → exported type 6.
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_type_direct_item(RESOURCE_TYPE_NAME, 0)),
+    ));
+    // sec 7: `own<6>` (type 7) + `make` functype re-typed against the exported resource (type 8).
+    out.extend_from_slice(&{
+        let mut items = own_item(6);
+        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(7)));
+        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+    });
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_func_ascribed_item(MAKE_BOUNDARY_NAME, 0, 8)),
+    ));
+    // sec 7: `own<6>` (type 9), `list<u8>` (type 10), `call` functype re-typed (type 11).
+    out.extend_from_slice(&{
+        let mut items = own_item(6);
+        items.extend_from_slice(&list_u8_defined_type());
+        items.extend_from_slice(&closure_call_list_functype(9, arg_bytes, 10));
+        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+    });
+    out.extend_from_slice(&section(
+        sec::COMPONENT_EXPORT,
+        &wasm_vec(1, &export_func_ascribed_item(CALL_BOUNDARY_NAME, 1, 11)),
+    ));
+    out
+}
+
 /// The MULTI-EXPORT inner re-export component: imports the abstract resource + N `import-func-make-<i>`
 /// (each `(export-params…) -> own<t>`) + one shared `import-func-call`, then re-exports the resource type
 /// directly + each make under its boundary name (`makes[i].name`) + the shared `call`, all ascribed
@@ -3655,6 +3882,33 @@ fn closure_call_functype(self_handle_type_idx: u32, arg_bytes: &[u8], result_byt
     item.extend_from_slice(&wasm_vec(1 + arg_bytes.len(), &param_items));
     // One result — the closure's return valtype (a scalar boundary byte).
     item.extend_from_slice(&[0x00, result_byte]);
+    item
+}
+
+/// The `call` functype for a COMPOUND-RESULT closure: `(self: own<t>, args…) -> list<u8>` — like
+/// [`closure_call_functype`] but the result references the `list<u8>` DEFINED type by index (not an inline
+/// scalar byte). `self_handle_type_idx` is the `own<t>` defined type; `list_type_idx` the `list<u8>` type
+/// laid just before this functype. Its lift carries Memory/Realloc (the caller uses `canon_lift_list_item`).
+fn closure_call_list_functype(
+    self_handle_type_idx: u32,
+    arg_bytes: &[u8],
+    list_type_idx: u32,
+) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    let mut param_items = Vec::new();
+    param_items.extend_from_slice(&uleb_bytes("self".len() as u64));
+    param_items.extend_from_slice(b"self");
+    param_items.extend_from_slice(&owned_valtype(self_handle_type_idx));
+    for (i, &vt) in arg_bytes.iter().enumerate() {
+        let pname = format!("p{i}");
+        param_items.extend_from_slice(&uleb_bytes(pname.len() as u64));
+        param_items.extend_from_slice(pname.as_bytes());
+        param_items.push(vt);
+    }
+    item.extend_from_slice(&wasm_vec(1 + arg_bytes.len(), &param_items));
+    // One result — the `list<u8>` defined type, referenced by index.
+    item.push(0x00); // result form: one result
+    uleb128(list_type_idx as u64, &mut item);
     item
 }
 

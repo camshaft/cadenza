@@ -23,6 +23,7 @@ pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
+pass	a Bytes-returning closure on a different argument
 pass	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
 pass	a CBOR atom decodes each scalar major type to its value
 pass	a CBOR head decodes its major type and big-endian argument from the input bytes
@@ -98,6 +99,7 @@ pass	a camelCase same-signature multi-export normalizes each make-<name>
 pass	a capturing 32-bit-integer closure crosses and is called
 pass	a capturing closure export tracks both the captured value and the call argument
 pass	a capturing closure is applied through a recursive higher-order function
+pass	a capturing closure returning Bytes
 pass	a capturing closure returning a nominal-over-scalar
 pass	a capturing closure stored in a tuple is extracted and applied
 pass	a capturing closure whose body uses the capture after an inner computation
@@ -129,6 +131,7 @@ pass	a closure export alongside a plain scalar export — the plain export runs
 pass	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
+pass	a closure returning Bytes crosses to the host as list<u8>
 pass	a closure returning a boolean is called by the host
 pass	a closure returning a nominal-over-Bool erases to bool at the boundary
 pass	a closure returning a nominal-over-scalar crosses as the underlying scalar

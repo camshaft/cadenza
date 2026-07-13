@@ -1338,15 +1338,24 @@ fn emit_closure_resource(
             ));
         }
     }
-    // Boundary bytes (component valtypes) for the `call` method's args + result — aliased scalar widths.
+    // Boundary bytes (component valtypes) for the `call` method's ARGS — always aliased scalar widths (a
+    // compound closure arg is the host→guest DECODE direction, not yet supported).
     let arg_bytes: Vec<u8> = arg_tys
         .iter()
         .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
         .collect::<Result<_, _>>()?;
-    let result_byte =
-        closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
+    // The RESULT: either a scalar (crosses by value) OR a runtime `Bytes` (crosses as `list<u8>` through
+    // linear memory — the compound-result path, reusing the value-escape's list machinery). A `Bytes`
+    // result peels its nominal like any other. Other compounds (String/tuple/list) are a later widening
+    // (they need the escape's `encode` walker; `Bytes` IS the raw payload, so it lands first).
+    let ret_is_bytes = matches!(ret_ty.strip_nominal(), crate::ty::Ty::Bytes);
+    let result_byte = if ret_is_bytes {
+        0 // unused by the bytes path; the `call` returns list<u8>, not a scalar byte
+    } else {
+        closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
+    };
     // Core valtypes for the `call` method's args + result (used to build the core `call` signature +
-    // the `call_indirect` lifted functype shape).
+    // the `call_indirect` lifted functype shape). A `Bytes` result is an i32 heap handle.
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
         .iter()
         .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
@@ -1397,6 +1406,11 @@ fn emit_closure_resource(
         used.insert("arr-get");
         used.insert("get-int");
         used.insert("drop");
+        // A `Bytes`-result `call` copies the closure's returned Bytes handle into linear memory.
+        if ret_is_bytes {
+            used.insert("bytes-len");
+            used.insert("bytes-get");
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     let export_abs = layout
@@ -1423,6 +1437,30 @@ fn emit_closure_resource(
         }
     }
     let lifted_type_idx = layout.lifted_type_index(0, layout.import_base);
+    let dtor_core = serialize::resource_dtor_module_with_drop();
+    let import_name = runtime_import_name();
+    // A `Bytes`-result closure crosses `call` as `list<u8>` (through linear memory): the bytes-result core
+    // serializer + the memory/realloc-lifting envelope. A scalar result takes the by-value path.
+    if ret_is_bytes {
+        let main_core = serialize::closure_bytes_resource_core_module(
+            &funcs,
+            &imports,
+            export_abs,
+            &arg_vts,
+            &make_param_vts,
+            lifted_type_idx,
+            &layout,
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_closure_bytes_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &make_param_bytes,
+            &arg_bytes,
+        ));
+    }
     let main_core = serialize::closure_resource_core_module(
         &funcs,
         &imports,
@@ -1434,8 +1472,6 @@ fn emit_closure_resource(
         &layout,
     )
     .map_err(Reject::decline)?;
-    let dtor_core = serialize::resource_dtor_module_with_drop();
-    let import_name = runtime_import_name();
     Ok(envelope::assemble_closure_resource(
         &main_core,
         &dtor_core,
