@@ -364,7 +364,7 @@ fn collect_closure_codes(db: &mut Db, id: StructId, out: &mut std::collections::
         | Core::Not { operand }
         | Core::ListLen { operand }
         | Core::BytesLen { operand } => collect_closure_codes(db, operand, out),
-        Core::Call { args, .. } => {
+        Core::Call { args, .. } | Core::HostCall { args, .. } => {
             for a in args {
                 collect_closure_codes(db, a, out);
             }
@@ -558,6 +558,13 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         // (`call_indirect`), so no static callee to add — the lifted functions are already in the set.
         crate::core::Core::CallClosure { closure, args } => {
             collect_call_callees(db, closure, out);
+            for arg in args {
+                collect_call_callees(db, arg, out);
+            }
+        }
+        // A host call dispatches to a component IMPORT (not a `db.defs` function), so no static callee to
+        // add; its arguments may still reach callees.
+        crate::core::Core::HostCall { args, .. } => {
             for arg in args {
                 collect_call_callees(db, arg, out);
             }

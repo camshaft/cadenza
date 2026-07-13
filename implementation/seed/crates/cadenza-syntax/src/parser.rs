@@ -1295,11 +1295,40 @@ mod tests {
             "match e with | Some(n) => n | None => 0 | _ => neg",
             "match n with | x if x < 0 => neg | _ => pos",
             "List.at(xs, 0)",
+            "x |> f",
+            "x |> f(a) |> g",
+            "total + tax |> round",
             "`{ x + 1 }",
             "#[a, b, c]",
         ] {
             let _ = parse_ok(src);
         }
+    }
+
+    #[test]
+    fn pipeline_operator_builds_a_real_node() {
+        // `|>` is a REAL infix operator, not parse-time sugar: it builds an arena node `(|> L R)`.
+        // The rewrite into an application happens later (in the resolver), so the surface tree keeps
+        // the operator and round-trips.
+        let a = parse_ok("x |> f");
+        assert_eq!(a.head_name(a.root), Some("|>"));
+        let pipe = a.as_form(a.root, "|>").unwrap();
+        assert_eq!(pipe.len(), 2);
+        assert_eq!(a.as_name(pipe[0]), Some("x"));
+        assert_eq!(a.as_name(pipe[1]), Some("f"));
+
+        // Left-associative: `x |> f |> g` -> (|> (|> x f) g), a left-to-right pipeline.
+        let a = parse_ok("x |> f |> g");
+        let outer = a.as_form(a.root, "|>").unwrap();
+        assert_eq!(a.head_name(outer[0]), Some("|>")); // the left operand is the inner pipe
+        assert_eq!(a.as_name(outer[1]), Some("g"));
+
+        // Looser than arithmetic: `total + tax |> round` -> (|> (+ total tax) round). The whole left
+        // expression is the value threaded into the right.
+        let a = parse_ok("total + tax |> round");
+        let pipe = a.as_form(a.root, "|>").unwrap();
+        assert_eq!(a.head_name(pipe[0]), Some("+"));
+        assert_eq!(a.as_name(pipe[1]), Some("round"));
     }
 
     #[test]

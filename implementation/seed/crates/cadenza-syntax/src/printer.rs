@@ -1324,6 +1324,23 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_operator_round_trips() {
+        // `|>` prints and re-parses like any infix operator; the minimal-paren split keeps a bare
+        // chain bare and drops the parens `(+ total tax)` needs only when precedence demands them.
+        assert_eq!(assert_roundtrip("x |> f", 80), "x |> f");
+        assert_eq!(assert_roundtrip("x |> f(a)", 80), "x |> f(a)");
+        assert_eq!(assert_roundtrip("x |> f |> g", 80), "x |> f |> g");
+        // Looser than `+`, so the left sum needs no parens; the pipe as a whole is the value.
+        assert_eq!(
+            assert_roundtrip("total + tax |> round", 80),
+            "total + tax |> round"
+        );
+        // The independent s-expr reader is the oracle: `(|> x f)` prints as the ML pipeline.
+        let a = sexpr::read("(|> x f)").unwrap();
+        assert_eq!(print(&a, 80), "x |> f");
+    }
+
+    #[test]
     fn function_definition() {
         // a named def uses `def`; an anonymous lambda uses `fn` — distinct surfaces.
         assert_eq!(

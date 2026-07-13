@@ -35,6 +35,7 @@ pub enum Kind {
     Gt,       // `>`
     Le,       // `<=`
     Ge,       // `>=`
+    PipeGt,   // `|>` — the pipeline operator: `x |> f(a)` threads `x` as `f`'s FIRST argument
     Pipe,     // `|`
     Caret,    // `^`
     Amp,      // `&`
@@ -93,6 +94,7 @@ impl Kind {
             Kind::Gt => ">",
             Kind::Le => "<=",
             Kind::Ge => ">=",
+            Kind::PipeGt => "|>",
             Kind::Pipe => "|",
             Kind::Caret => "^",
             Kind::Amp => "&",
@@ -174,30 +176,38 @@ pub fn is_reserved(text: &str) -> bool {
 }
 
 /// Member access and application bind tightest.
-pub const PREC_MEMBER: u8 = 10;
+pub const PREC_MEMBER: u8 = 11;
 
 /// Type ascription `e : T` binds loosest of all — looser than every arithmetic/logical operator — so
 /// `2 + 2 : Int64` groups as `(: (+ 2 2) Int64)`: the ascription wraps the whole expression.
 pub const PREC_ASCRIPTION: u8 = 1;
+
+/// The pipeline operator `|>` binds looser than every binary operator EXCEPT ascription, so
+/// `total + tax |> round` groups as `(|> (+ total tax) round)` — the whole left expression is the
+/// value threaded into the right — matching the F#/Elm/OCaml convention. Left-associative like every
+/// operator, so `a |> f |> g` is `(|> (|> a f) g)` — a left-to-right pipeline.
+pub const PREC_PIPELINE: u8 = 2;
 
 /// The precedence (binding power) of a binary operator NAME (the ARENA head — `=` is equality here,
 /// spelled `==` on the surface; `:` is ascription), or `None` if it is not infix. The single source
 /// of truth shared by the parser (Pratt `min_prec`) and printer (minimal-paren `prec`/`prec+1`
 /// split). All operators are left-associative.
 ///
-/// Ordering (low→high): `: < or < and < (== < > <= >=) < (| ^) < & < (<< >>) < (+ -) < (* / %) <
-/// member/app`. Ascription is loosest; equality (`==`, arena head `=`) sits with the comparisons.
+/// Ordering (low→high): `: < |> < or < and < (== < > <= >=) < (| ^) < & < (<< >>) < (+ -) < (* / %) <
+/// member/app`. Ascription is loosest; the pipeline sits just above it; equality (`==`, arena head
+/// `=`) sits with the comparisons.
 pub fn infix_prec(op: &str) -> Option<u8> {
     Some(match op {
         ":" => PREC_ASCRIPTION, // 1 — loosest
-        "or" => 2,
-        "and" => 3,
-        "=" | "<" | ">" | "<=" | ">=" => 4, // `=` = equality (surface `==`)
-        "|" | "^" => 5,
-        "&" => 6,
-        "<<" | ">>" => 7,
-        "+" | "-" | "+%" | "-%" => 8,
-        "*" | "/" | "%" | "*%" => 9,
+        "|>" => PREC_PIPELINE,  // 2 — looser than every operator but ascription
+        "or" => 3,
+        "and" => 4,
+        "=" | "<" | ">" | "<=" | ">=" => 5, // `=` = equality (surface `==`)
+        "|" | "^" => 6,
+        "&" => 7,
+        "<<" | ">>" => 8,
+        "+" | "-" | "+%" | "-%" => 9,
+        "*" | "/" | "%" | "*%" => 10,
         _ => return None,
     })
 }
@@ -217,6 +227,7 @@ mod tests {
             Kind::Gt,
             Kind::Le,
             Kind::Ge,
+            Kind::PipeGt,
             Kind::Pipe,
             Kind::Caret,
             Kind::Amp,
@@ -245,8 +256,11 @@ mod tests {
     #[test]
     fn precedence_orders_as_documented() {
         // Ascription is loosest of all.
-        assert!(infix_prec(":") < infix_prec("or"));
+        assert!(infix_prec(":") < infix_prec("|>"));
         assert_eq!(infix_prec(":"), Some(PREC_ASCRIPTION));
+        // The pipeline sits just above ascription — looser than every other operator.
+        assert_eq!(infix_prec("|>"), Some(PREC_PIPELINE));
+        assert!(infix_prec("|>") < infix_prec("or"));
         assert!(infix_prec("or") < infix_prec("and"));
         assert!(infix_prec("and") < infix_prec("=")); // `=` here = equality (surface `==`)
         assert!(infix_prec("=") < infix_prec("|"));

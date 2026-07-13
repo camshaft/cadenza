@@ -114,7 +114,7 @@ impl<'a> Lexer<'a> {
             '%' => Kind::Percent,
             '&' => Kind::Amp,
             '^' => Kind::Caret,
-            '|' => Kind::Pipe,
+            '|' => return Some(self.two(a, Kind::Pipe, &[('>', Kind::PipeGt)])),
             '/' => return Some(self.slash(a)),
             '-' => return Some(self.minus(a)),
             c if c.is_ascii_digit() => return Some(self.number(a)),

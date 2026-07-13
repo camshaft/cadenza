@@ -386,24 +386,30 @@ fn dwarf_funcs_for(
         // at the function entry. Empty `stmt_lines` (a single-construct body) leaves `rows` empty → the
         // line program falls back to one function-entry row (the function-granularity behavior).
         let instr_offs = serialize::instr_offsets(f, imports);
-        let mut rows: Vec<(u32, u32)> = f
+        let mut rows: Vec<(u32, u32, u32)> = f
             .stmt_lines
             .iter()
             .filter_map(|&(lir_ix, node)| {
                 let byte_off = *instr_offs.get(lir_ix as usize)?;
-                let row_line = span_data.range(node).map(|(s, _)| span_data.line_at(s))?;
-                Some((code_base + r.code_start + byte_off, row_line))
+                let (start, _) = span_data.range(node)?;
+                Some((
+                    code_base + r.code_start + byte_off,
+                    span_data.line_at(start),
+                    span_data.col_at(start),
+                ))
             })
             .collect();
         // Ascending by offset (the line program emits rows in address order); dedup an offset two
-        // constructs share (keep the first), then collapse consecutive same-LINE rows to keep only line
-        // TRANSITIONS — so the table has one row per source line the code visits, not per sub-expression.
-        rows.sort_by_key(|&(off, _)| off);
-        rows.dedup_by_key(|&mut (off, _)| off);
-        let mut prev_line = 0u32;
-        rows.retain(|&(_, line)| {
-            let keep = line != prev_line;
-            prev_line = line;
+        // constructs share (keep the first), then collapse consecutive rows at the SAME (line, column)
+        // to keep only position TRANSITIONS — so the table has one row per distinct source position the
+        // code visits (a column lets several constructs on one line stay distinct, the payoff over the
+        // prior line-only collapse that folded a whole `(if c a b)` into a single row).
+        rows.sort_by_key(|&(off, _, _)| off);
+        rows.dedup_by_key(|&mut (off, _, _)| off);
+        let mut prev_pos = (0u32, 0u32);
+        rows.retain(|&(_, line, col)| {
+            let keep = (line, col) != prev_pos;
+            prev_pos = (line, col);
             keep
         });
         out.push(dwarf::DwarfFunc {

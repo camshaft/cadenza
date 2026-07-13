@@ -71,8 +71,9 @@ export const cadenzaLanguage = StreamLanguage.define<State>({
       return "number";
     }
 
-    // Punctuation that reads as an operator.
-    if (stream.match(/^(->|=>|::|[-+*/<>=(){}\[\].,:|])/)) {
+    // Punctuation that reads as an operator. Multi-char operators (`|>`, `->`, `=>`, `::`) come first
+    // so the greedy alternation matches them before their single-char prefixes.
+    if (stream.match(/^(\|>|->|=>|::|[-+*/<>=(){}\[\].,:|])/)) {
       return "operator";
     }
 

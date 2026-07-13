@@ -24,7 +24,8 @@
 //!
 //! ## Scope
 //! The LINEAR self-recursion `f p… = (if COND base-or-combine …)` where:
-//!  - `OP` is an ASSOCIATIVE binary op with a known identity — `+`/`*`/`+%`/`*%` (identity `0`/`1`);
+//!  - `OP` is an ASSOCIATIVE binary op with a known identity — the checked `+`/`*` OR the two's-complement
+//!    wrapping ops spelled as a member access `(. T wrapping-add)`/`(. T wrapping-mul)` (identity `0`/`1`);
 //!  - one `if` branch is the base value (`= OP`'s identity), the other the combine `(OP g (f REC…))`;
 //!  - exactly ONE self-recursive call, in one operand of `OP`; the OTHER operand `g` does not itself
 //!    recurse (it is the per-step term folded into the accumulator);
@@ -40,8 +41,9 @@
 //! Reassociating a CHECKED `+`/`*` can move WHERE an overflow traps (a partial sum overflows at a
 //! different step under a left vs right fold). The transform preserves the FINAL value exactly; only the
 //! overflow-trap TIMING for an already-overflowing input may differ. For the all-non-negative sums the
-//! guide shows, the partials are monotonic and the trap point coincides. The `+%`/`*%` wrapping variants
-//! never trap, so their reassociation is fully transparent.
+//! guide shows, the partials are monotonic and the trap point coincides. The `(. T wrapping-add)`/
+//! `wrapping-mul` variants never trap, so their reassociation is fully transparent — value-exact with no
+//! trap-timing caveat at all.
 
 use crate::ast::{Arenas, IntValue, Leaf, Radix, Struct, StructId};
 use crate::db::Def;
@@ -83,8 +85,10 @@ struct Match {
     /// the guide's shape), `false` = ELSE (a FLIPPED `(if (> n 0) combine base)`). `apply` places the
     /// accumulator's branches in the SAME order so the reused condition still selects correctly.
     base_is_then: bool,
-    /// The associative op's spelling (`+`/`*`/`Int64.wrapping-add`/…) and its identity value.
-    op_name: String,
+    /// The associative op's OCCURRENCE — a bare `Name` (`+`/`*`) or a member access `(. T wrapping-add)`.
+    /// `apply` CLONES it (via `copy_subtree`) into the accumulator, so either spelling reconstructs
+    /// correctly (a bare name rebuild couldn't represent the dotted form).
+    op_occ: StructId,
     identity: i64,
     /// The per-step TERM occurrence `g` (the `+`'s non-recursive operand, e.g. `n` or `(* n k)`).
     term: StructId,
@@ -127,7 +131,7 @@ fn match_linear_recursion(ast: &Arenas, d: &Def) -> Option<Match> {
     // condition `(if (> n 0) combine base)` — base in ELSE). Try ELSE as the combine first (guide shape),
     // then THEN (flipped). `base_is_then` records which slot holds the base, so `apply` places the
     // accumulator's branches in the matching order (the condition is reused verbatim).
-    let (base_is_then, base_val, op_name, identity, term, rec_args) = if let Some((op, id, t, r)) =
+    let (base_is_then, base_val, op_occ, identity, term, rec_args) = if let Some((op, id, t, r)) =
         match_combine(ast, *else_, &d.name, param_names.len())
     {
         (true, *then_, op, id, t, r)
@@ -145,7 +149,7 @@ fn match_linear_recursion(ast: &Arenas, d: &Def) -> Option<Match> {
         param_names,
         base_cond: *cond,
         base_is_then,
-        op_name,
+        op_occ,
         identity,
         term,
         rec_args,
@@ -161,13 +165,12 @@ fn match_combine(
     combine: StructId,
     name: &str,
     param_count: usize,
-) -> Option<(String, i64, StructId, Vec<StructId>)> {
+) -> Option<(StructId, i64, StructId, Vec<StructId>)> {
     let combine_tail = list_children(ast, combine)?;
     let [op_occ, a, b] = combine_tail.as_slice() else {
         return None;
     };
-    let op_name = ast.as_name(*op_occ)?.to_string();
-    let identity = associative_identity(&op_name)?;
+    let identity = associative_op_identity(ast, *op_occ)?;
     // Exactly one operand is the self-call `(f REC…)` (an application of the def's own name with one
     // argument PER PARAMETER); the other is the per-step term.
     let a_rec = self_call_args(ast, *a, name, param_count);
@@ -181,7 +184,7 @@ fn match_combine(
     if mentions_name(ast, term, name) || rec_args.iter().any(|&r| mentions_name(ast, r, name)) {
         return None;
     }
-    Some((op_name, identity, term, rec_args))
+    Some((*op_occ, identity, term, rec_args))
 }
 
 /// Synthesize the accumulator def and rewrite the original def to seed it.
@@ -213,8 +216,9 @@ fn apply(ast: &mut Arenas, defs: &mut Vec<Def>, def_ix: usize, m: Match) {
     // The recursive branch: `(acc_name rec_arg… (OP acc term))` — the tail self-call, passing every
     // original recursion argument unchanged plus the folded accumulator.
     // The combine `(OP acc term)`: LEFT-fold order — acc first. Reuse the ORIGINAL `term` occurrence
-    // (it references the params, which bind to this def's params).
-    let op_ref = push_name(ast, &m.op_name);
+    // (it references the params, which bind to this def's params). CLONE the op occurrence so a member
+    // access like `(. Int64 wrapping-add)` reconstructs correctly (not just a bare-name `+`/`*`).
+    let op_ref = copy_subtree(ast, m.op_occ);
     let acc_ref_in_op = push_name(ast, acc_var);
     let combined = push_list(ast, vec![op_ref, acc_ref_in_op, m.term]);
     let mut rec_call_children = vec![push_name(ast, &acc_name)];
@@ -296,15 +300,31 @@ fn find_def_form(ast: &Arenas, sig_occ: StructId) -> Option<StructId> {
         .find(|&item| ast.as_form(item, "def").and_then(|t| t.first().copied()) == Some(sig_occ))
 }
 
-/// The associative binary ops the transform reassociates, with their identity element. Bare-name
-/// operators only — `+`/`*`. The WRAPPING ops (`Int64.wrapping-add`/`-mul`) are spelled as a member
-/// access `(. Int64 wrapping-add)` (a list form, not a `Name`), so they do not reach here yet; matching
-/// that dotted spelling is a follow-up increment (the transform is fully sound for them — wrapping never
-/// traps — just not yet wired to the member-access syntax).
-fn associative_identity(op: &str) -> Option<i64> {
-    match op {
-        "+" => Some(0),
-        "*" => Some(1),
+/// The identity element of an associative binary op the transform reassociates, recognizing BOTH
+/// spellings of an operand occurrence:
+///  - a bare `Name` — the checked `+` (identity `0`) / `*` (identity `1`);
+///  - a member access `(. T wrapping-add)` / `(. T wrapping-mul)` for any numeric type `T` — the
+///    two's-complement WRAPPING ops (identity `0` / `1`). These NEVER trap, so their reassociation is
+///    fully transparent (not even a trap-timing shift — the transform is unconditionally value-exact).
+///
+/// Returns `None` for any other op (subtraction, division, a non-associative or unknown member op).
+fn associative_op_identity(ast: &Arenas, op_occ: StructId) -> Option<i64> {
+    if let Some(name) = ast.as_name(op_occ) {
+        return match name {
+            "+" => Some(0),
+            "*" => Some(1),
+            _ => None,
+        };
+    }
+    // A member access `(. T method)` — read the method name (the third child) and match the wrapping ops.
+    // The receiver type `T` is irrelevant to the identity (every numeric width shares `0`/`1`).
+    let dot = ast.as_form(op_occ, ".")?;
+    let [_ty, method] = dot else {
+        return None;
+    };
+    match ast.as_name(*method)? {
+        "wrapping-add" => Some(0),
+        "wrapping-mul" => Some(1),
         _ => None,
     }
 }
@@ -471,6 +491,37 @@ mod tests {
         assert!(
             db.def_by_name("f$acc").is_none(),
             "a non-identity base value must NOT be reassociated"
+        );
+    }
+
+    /// A WRAPPING op spelled as a member access `(. Int64 wrapping-add)` — a list form, not a `Name` atom
+    /// — is also transformed (identity `0`, and wrapping never traps so reassociation is value-exact). The
+    /// op occurrence is cloned into the accumulator, so the dotted spelling reconstructs correctly.
+    #[test]
+    fn introduce_handles_a_wrapping_op_member_access() {
+        let ast = crate::testkit::parse(
+            "(module m (def (sm (: n Int64)) \
+               (if (= n 0) 0 ((. Int64 wrapping-add) n (sm (- n 1))))) (export sm))",
+        );
+        let db = Db::load(ast);
+        assert!(
+            db.def_by_name("sm$acc").is_some(),
+            "a wrapping-add member-access recursion is accumulator-transformed"
+        );
+    }
+
+    /// A member-access op that is NOT one of the recognized associative ops (`(. Int64 min)`) must NOT
+    /// match as the combine operator — only `wrapping-add`/`wrapping-mul` (and bare `+`/`*`) reassociate.
+    #[test]
+    fn introduce_declines_a_non_associative_member_op() {
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) \
+               (if (= n 0) 0 ((. Int64 min) n (f (- n 1))))) (export f))",
+        );
+        let db = Db::load(ast);
+        assert!(
+            db.def_by_name("f$acc").is_none(),
+            "a non-associative member op must NOT be reassociated"
         );
     }
 }

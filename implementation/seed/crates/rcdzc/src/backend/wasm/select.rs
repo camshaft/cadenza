@@ -236,8 +236,10 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::ListUpdate { list, elem, .. } => {
             binding_escapes(db, list, binder, false) || binding_escapes(db, elem, binder, false)
         }
-        // A call CONSUMES its arguments.
-        Core::Call { args, .. } => args.iter().any(|&a| binding_escapes(db, a, binder, false)),
+        // A call CONSUMES its arguments; a host call likewise consumes its arguments across the boundary.
+        Core::Call { args, .. } | Core::HostCall { args, .. } => {
+            args.iter().any(|&a| binding_escapes(db, a, binder, false))
+        }
         // Control flow: the binding escapes if it escapes any reachable sub-position.
         Core::If { cond, then_, else_ } => {
             binding_escapes(db, cond, binder, false)
@@ -655,7 +657,7 @@ pub fn collect_used_ops(
             collect_used_ops(db, rhs, out);
         }
         Core::Convert { operand, .. } | Core::Not { operand } => collect_used_ops(db, operand, out),
-        Core::Call { args, .. } => {
+        Core::Call { args, .. } | Core::HostCall { args, .. } => {
             for arg in args {
                 collect_used_ops(db, arg, out);
             }
@@ -3066,6 +3068,13 @@ fn emit(
             }
             Ok(())
         }
+        // A HOST CALL — a perform delegated to the component boundary. The scalar emit (args + a call to
+        // the imported function) arrives in the next increment (E2h-2), once the host-import set is laid
+        // out and the serializer can resolve the (effect, op) pair to a core-func index. For now the IR
+        // node exists (E2h-1) but declines to emit — a Todo, never a miscompile.
+        Core::HostCall { .. } => Err(Reject::decline(
+            "a host call's boundary import is not yet emitted (E2h-2)",
+        )),
         // A poison that reached selection is an unconditionally-reached fault; the poison collector
         // surfaces it before emission, so reaching here is a decline rather than emitted code.
         Core::Poison(reject) => Err(reject),

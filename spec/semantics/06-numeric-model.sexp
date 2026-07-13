@@ -96,10 +96,10 @@
 
 (case "an explicit conversion makes the operation well-typed"
   (doc    "Witnesses numeric-model.md #Exact Arithmetic Is Exact (2nd sentence): the conversion
-           Float64.of-int is written explicitly. Needs the numeric-model capability (conversions +
-           float arithmetic), which the seed does not realize.")
-  (needs numeric-model)
-  (input  (+ (Float64.of-int 1) 2.0))
+           Float64.of-int is written explicitly, then the two Float64 operands are added with the FLOAT
+           operator `+.` (numeric-model.md #A Floating-Point Operation Uses A Floating-Point Operator) —
+           the integer `+` would reject even two Float64 operands, since `+` is int-only.")
+  (input  (+. (Float64.of-int 1) 2.0))
   (output (: 3.0 Float64)))
 
 (case "wrapping arithmetic uses the distinct wrapping type"
@@ -345,11 +345,107 @@
 
 (case "floating-point uses the fixed rounding mode"
   (doc    "The round-to-nearest-even sum under the pinned deterministic float mode
-           (contracts/determinism-and-fuel.md); byte-identical on every conforming runtime. The seed
-           realizes Float64 literals and equality, not floating-point arithmetic.")
-  (needs numeric-model)
-  (input  (+ 0.1 0.2))
+           (contracts/determinism-and-fuel.md); byte-identical on every conforming runtime. Written with
+           the FLOAT operator `+.` — 0.1 and 0.2 are Float64, and `+.` is the float addition distinct
+           from the integer `+` (numeric-model.md #A Floating-Point Operation Uses A Floating-Point
+           Operator). The famous non-exact sum: 0.1 + 0.2 rounds to 0.30000000000000004, not 0.3.")
+  (input  (+. 0.1 0.2))
   (output (: 0.30000000000000004 Float64)))
+
+; --- Float arithmetic uses the DISTINCT float operators `+.` `-.` `*.` `/.` --------------------------
+; numeric-model.md #A Floating-Point Operation Uses A Floating-Point Operator: float arithmetic is
+; spelled distinctly from integer arithmetic, so no operator silently mixes an integer and a float
+; operand. The integer `+`/`-`/`*`/`/` are int-only (a float operand → CDZ0301, the mixing cases above);
+; the float `+.`/`-.`/`*.`/`/.` are float-only (an integer operand → CDZ0301). These pin the float
+; operators over Float64 operands, and that an integer operand to a float operator is rejected.
+
+(case "float multiplication uses the float operator"
+  (doc    "`(*. 6.0 7.0)` = 42.0 : Float64 — float multiplication under `*.`, the float companion of the
+           integer `*`. Result is a Float64 (42.0), not the Int64 42 the integer `(* 6 7)` gives.")
+  (input  (*. 6.0 7.0))
+  (output (: 42.0 Float64)))
+
+(case "float subtraction uses the float operator"
+  (doc    "`(-. 5.5 2.0)` = 3.5 : Float64 — float subtraction under `-.`.")
+  (input  (-. 5.5 2.0))
+  (output (: 3.5 Float64)))
+
+(case "float division rounds under the fixed mode"
+  (doc    "`(/. 1.0 4.0)` = 0.25 : Float64 — float division under `/.`, which ROUNDS (unlike integer `/`
+           which truncates and rational `/` which is exact). 1/4 is exactly representable, so 0.25.")
+  (input  (/. 1.0 4.0))
+  (output (: 0.25 Float64)))
+
+(case "float division that does not divide evenly rounds to nearest"
+  (doc    "`(/. 1.0 3.0)` = 0.3333333333333333 : Float64 — 1/3 is not exactly representable in binary64,
+           so the quotient rounds to the nearest representable value under the fixed round-to-nearest-even
+           mode. Pins that float `/.` rounds deterministically.")
+  (input  (/. 1.0 3.0))
+  (output (: 0.3333333333333333 Float64)))
+
+(case "the float operator rejects an integer operand and does not promote it"
+  (doc    "`(+. 2 2.0)` supplies an Int64 `2` where the float `+.` wants a Float64 — the operand types do
+           not unify, so it is rejected (CDZ0301), NOT promoted to `2.0` (numeric-model.md #Numeric Types
+           Do Not Silently Promote, and #A Floating-Point Operation Uses A Floating-Point Operator). The
+           dual of `(+ 2 2.0)` (an int operator rejecting a float operand): neither operator coerces.")
+  (input  (+. 2 2.0))
+  (error  CDZ0301))
+
+; --- Float is WIDTH-INDEXED: (Float N) over N in {32, 64}, with Float32/Float64 aliases -------------
+; numeric-model.md #A Floating-Point Type Is Indexed By A Compile-Time Width: a float type is the
+; width-indexed constructor `Float` applied to a compile-time width, and Float32/Float64 alias
+; (Float 32)/(Float 64) — the exact machinery Int/UInt use (options/numeric-model/). The admitted set is
+; {32, 64} (the widths the backend provides as f32/f64); a width outside it is CDZ0302, exactly as an
+; out-of-range integer width is. These pin the parametric surface, the alias equivalence, and the
+; width constraint.
+
+(case "a float annotation reaches the 32-bit width"
+  (doc    "`(: 3.5 Float32)` is the binary32 value 3.5 — an annotation reaches a float width other than
+           the default Float64 (numeric-model.md #A Floating-Point Type Is Indexed By A Compile-Time
+           Width). 3.5 is exactly representable in binary32, so its value is 3.5 at type Float32; the
+           boundary maps Float32 to the component model's f32.")
+  (input  (: 3.5 Float32))
+  (output (: 3.5 Float32)))
+
+(case "a named float width alias and its width-indexed expansion name the same type"
+  (doc    "`(: 3.5 (Float 32))` is the same binary32 value 3.5 as `(: 3.5 Float32)` — `Float32` is the
+           alias `(Float 32)`, exactly as `UInt8` aliases `(UInt 8)`. The width-indexed constructor
+           applied to 32 is the same type the alias names, not a distinct one.")
+  (input  (: 3.5 (Float 32)))
+  (output (: 3.5 Float32)))
+
+(case "the width-indexed and aliased float annotations of one value do not conflict"
+  (doc    "`(: (: 1.5 (Float 64)) Float64)` annotates a value first as `(Float 64)` then as `Float64` —
+           the same type under two names, so the annotations agree (NOT a CDZ0203 conflict). The float
+           analogue of the integer alias-equivalence-through-the-annotation-checker case.")
+  (input  (: (: 1.5 (Float 64)) Float64))
+  (output (: 1.5 Float64)))
+
+(case "mixing two float widths without a conversion does not silently promote"
+  (doc    "`(+. (: 1.5 Float32) (: 2.0 Float64))` mixes a Float32 and a Float64 — two distinct float
+           types — so it is rejected (CDZ0301) rather than silently widening the Float32 to Float64
+           (numeric-model.md #Numeric Types Do Not Silently Promote; #A Conversion Involving A
+           Floating-Point Type Is Explicit). The float-width analogue of the integer-width no-promotion
+           case; to add them a program converts one side (`(Float64.of …)`).")
+  (input  (+. (: 1.5 Float32) (: 2.0 Float64)))
+  (error  CDZ0301))
+
+(case "a float width outside the admitted set is rejected"
+  (doc    "`(: 1.5 (Float 16))` names a 16-bit float, which is not in the admitted set {32, 64} — the
+           widths the backend provides — so the type is rejected at compile time (CDZ0302), the float
+           analogue of `(UInt 65)` / `(UInt 0)` failing the integer width constraint. Not a runtime
+           trap: the type itself is ill-formed. `(Float 16)` (binary16) is reserved to a later increment,
+           exactly as `(UInt 128)` is reserved above the 64-bit ceiling.")
+  (input  (: 1.5 (Float 16)))
+  (error  CDZ0302))
+
+(case "a non-power-of-two float width is rejected"
+  (doc    "`(: 1.5 (Float 48))` names a 48-bit float — not an IEEE binary format the model admits — so it
+           is rejected (CDZ0302). Unlike integers (where every width in 1..=64 is a first-class type),
+           float widths are drawn from the fixed IEEE set {32, 64}; an arbitrary width is not a float
+           type. Pins that the float width constraint is set-membership, not a range.")
+  (input  (: 1.5 (Float 48)))
+  (error  CDZ0302))
 
 (case "subtraction"
   (input  (- 10 3))

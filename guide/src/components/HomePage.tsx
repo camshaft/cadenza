@@ -13,14 +13,18 @@ export default function HomePage() {
       <header className="sticky top-0 z-20 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
           <span className="text-lg font-bold tracking-tight text-slate-100">Cadenza</span>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 sm:gap-4">
             <Link to={`/${firstChapter}`} className="text-sm text-slate-400 transition hover:text-slate-200">
               Guide
             </Link>
             <Link to="/playground" className="text-sm text-slate-400 transition hover:text-slate-200">
               Playground
             </Link>
-            <SyntaxToggle />
+            {/* The syntax toggle is a nicety here (the guide/playground carry their own); hide it on
+                the narrowest screens so the landing header never overflows. */}
+            <div className="hidden sm:block">
+              <SyntaxToggle />
+            </div>
           </div>
         </div>
       </header>

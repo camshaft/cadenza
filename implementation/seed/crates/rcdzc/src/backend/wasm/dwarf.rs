@@ -25,10 +25,12 @@
 //! tree-relative module path from the `spans` sidecar. No wall-clock. Everything is emitted in
 //! source-determined (emission) order, so two derivations byte-match.
 //!
-//! Scope: FUNCTION-granularity line rows (one row per function at its entry, from D1b's
-//! `FuncCodeRange`). Per-statement rows are a later refinement. This is DWARF v4 (address size 4 — a
-//! wasm32 code offset is 32-bit), the version GDB/LLDB/`wasmtime -D debug-info` and the Chrome DWARF
-//! extension all accept.
+//! Scope: PER-POSITION line rows — one row per distinct `(line, column)` the function's code visits
+//! (from the `stmt_lines` markers; `DwarfFunc.rows`), so a debugger steps construct-by-construct and
+//! highlights the exact sub-expression on a line (the payoff for s-expression Cadenza). A body with no
+//! sub-construct markers falls back to a single row at the function entry (function granularity). This
+//! is DWARF v4 (address size 4 — a wasm32 code offset is 32-bit), the version GDB/LLDB/`wasmtime -D
+//! debug-info` and the Chrome DWARF extension all accept.
 
 use crate::backend::wasm::encode::{section, sleb128, uleb128};
 
@@ -82,6 +84,7 @@ mod dw {
     pub const LNS_COPY: u8 = 0x01;
     pub const LNS_ADVANCE_LINE: u8 = 0x03;
     pub const LNS_SET_FILE: u8 = 0x04;
+    pub const LNS_SET_COLUMN: u8 = 0x05;
     pub const LNE_END_SEQUENCE: u8 = 0x01;
     pub const LNE_SET_ADDRESS: u8 = 0x02;
     // Our abbreviation codes (arbitrary, must match between .debug_abbrev and .debug_info).
@@ -119,11 +122,13 @@ pub struct DwarfFunc {
     pub high_pc: u32,
     pub line: u32,
     pub vars: Vec<DwarfVar>,
-    /// Per-construct `(absolute code offset, 1-based source line)` rows, ascending by offset — one per
-    /// source LINE the function's code visits (`DESIGN-debug-line-granularity-rcdzc.md`). The line
-    /// program emits a row at each, so a debugger steps line-by-line. Empty → one row at `low_pc`/`line`
-    /// (the function-granularity fallback for a single-construct body).
-    pub rows: Vec<(u32, u32)>,
+    /// Per-construct `(absolute code offset, 1-based source line, 1-based source column)` rows,
+    /// ascending by offset — one per source POSITION the function's code visits
+    /// (`DESIGN-debug-line-granularity-rcdzc.md`). The line program emits a row at each, so a debugger
+    /// steps position-by-position; the column lets a debugger highlight the exact sub-expression on a
+    /// line (the payoff for s-expression Cadenza, where several constructs share a line). Empty → one
+    /// row at `low_pc`/`line`/column 0 (the function-granularity fallback for a single-construct body).
+    pub rows: Vec<(u32, u32, u32)>,
 }
 
 /// A named scalar local to describe (D3): its source name, wasm local slot, base type, and whether it
@@ -532,25 +537,28 @@ fn build_info(
 fn build_line_program(module_path: &str, funcs: &[DwarfFunc]) -> Vec<u8> {
     // ── The line-number program body ──
     let mut prog = Vec::new();
-    // The line register starts at 1 (DWARF initial state); track it to emit minimal advances.
+    // The line register starts at 1 and the column register at 0 (DWARF initial state); track both to
+    // emit minimal advances/sets.
     let mut cur_line: i64 = 1;
+    let mut cur_col: u32 = 0;
     let mut ordered: Vec<&DwarfFunc> = funcs.iter().collect();
     ordered.sort_by_key(|f| f.low_pc);
     // Ensure file register is 1 (our single file) — explicit for clarity.
     prog.push(dw::LNS_SET_FILE);
     uleb128(1, &mut prog);
     for f in &ordered {
-        // The rows for this function: its per-construct `(offset, line)` rows if present, else a single
-        // row at the function entry (function-granularity fallback for a single-construct body). Each
-        // row sets the address (an absolute code offset — simplest, no `advance_pc` arithmetic) then
-        // advances the line register, then `copy` emits the row.
-        let fallback = [(f.low_pc, f.line.max(1))];
-        let rows: &[(u32, u32)] = if f.rows.is_empty() {
+        // The rows for this function: its per-construct `(offset, line, col)` rows if present, else a
+        // single row at the function entry, column 0 (function-granularity fallback for a
+        // single-construct body). Each row sets the address (an absolute code offset — simplest, no
+        // `advance_pc` arithmetic), advances the line register + sets the column register, then `copy`
+        // emits the row.
+        let fallback = [(f.low_pc, f.line.max(1), 0u32)];
+        let rows: &[(u32, u32, u32)] = if f.rows.is_empty() {
             &fallback
         } else {
             &f.rows
         };
-        for &(offset, line) in rows {
+        for &(offset, line, col) in rows {
             // DW_LNE_set_address <addr> — an extended opcode: 0x00 <len-uleb> <sub-opcode> <operand>.
             prog.push(0x00);
             uleb128(1 + 4, &mut prog); // 1 (sub-opcode) + 4 (a 4-byte address)
@@ -562,6 +570,12 @@ fn build_line_program(module_path: &str, funcs: &[DwarfFunc]) -> Vec<u8> {
                 prog.push(dw::LNS_ADVANCE_LINE);
                 sleb128(target - cur_line, &mut prog);
                 cur_line = target;
+            }
+            // Set the column register to this row's column (a debugger highlights the sub-expression).
+            if col != cur_col {
+                prog.push(dw::LNS_SET_COLUMN);
+                uleb128(col as u64, &mut prog);
+                cur_col = col;
             }
             // Emit a row (DW_LNS_copy).
             prog.push(dw::LNS_COPY);
