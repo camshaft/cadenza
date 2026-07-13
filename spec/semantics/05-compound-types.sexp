@@ -3386,6 +3386,24 @@
             (export main)))
   (output (: 11 Int64)))
 
+(case "a runtime-built generic user sum escapes with its parametric type frame"
+  (doc    "A GENERIC user sum whose value is BUILT AT RUNTIME (so it lives on the value heap, not folded)
+           and returned as the program result escapes with its full PARAMETRIC type frame `(Box Int64)` —
+           the instantiation's type argument OBSERVABLE, the sum analogue of a runtime `(List Int64)`
+           escaping `(: (list …) (List Int64))`. `(mk 42)` is `(Box.W 42)` at `(Box Int64)`; the escape
+           renders `(: (W 42) (Box Int64))`, the variant BARE with the type frame naming both the sum and
+           its argument. The generic cases above fold to scalars; this pins the escape-render descriptor
+           carries a user generic sum's instantiation to the host, distinct from a monomorphic sum (whose
+           frame is a bare name) and matching the parametric frame a runtime List/Map/Set already gets.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Box (W a) (E))
+            (def (mk (: b Int64)) (if (> b 0) (Box.W b) (Box.E)))
+            (def (main) (: (mk 42) (Box Int64)))
+            (export main)))
+  (call   main)
+  (output (: (W 42) (Box Int64))))
+
 (case "an all-nullary enum dispatches its runtime-selected variant and escapes"
   (doc    "An enum whose variants are ALL nullary — `(type Color Red Green Blue)` — each variant is the
            inline-unit CONSTANT (no arr-alloc(0) payload). A function selects one at runtime via nested

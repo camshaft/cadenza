@@ -28,6 +28,7 @@ pass	a Bytes-returning closure alongside a plain export — the closure runs
 pass	a Bytes-returning closure alongside a plain export — the plain runs
 pass	a Bytes-returning closure on a different argument
 pass	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
+pass	a CAPTURING closure returning a tuple
 pass	a CBOR atom decodes each scalar major type to its value
 pass	a CBOR head decodes its major type and big-endian argument from the input bytes
 pass	a CBOR reader walks a variable-length array using its decoded length as the element count
@@ -139,11 +140,16 @@ pass	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
 pass	a closure returning Bytes crosses to the host as list<u8>
+pass	a closure returning a NESTED tuple
 pass	a closure returning a boolean is called by the host
 pass	a closure returning a constant String crosses as its UTF-8 bytes
 pass	a closure returning a nominal-over-Bool erases to bool at the boundary
 pass	a closure returning a nominal-over-scalar crosses as the underlying scalar
+pass	a closure returning a record crosses as the typed value form
 pass	a closure returning a runtime String (concat) crosses as its bytes
+pass	a closure returning a tuple crosses as the typed value form
+pass	a closure returning a tuple with a Bool leaf
+pass	a closure returning a tuple with a negative int leaf
 pass	a closure returning an empty Bytes crosses as the empty list
 pass	a closure returning an empty String crosses as the empty list
 pass	a closure taking a nominal-over-scalar argument receives the underlying scalar
@@ -692,6 +698,7 @@ pass	a runtime value is constructed into a fixed-width segment and its length re
 pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
+pass	a runtime-built generic user sum escapes with its parametric type frame
 pass	a runtime-built string crosses the boundary as its value form
 pass	a runtime-magnitude quantity raised to a negative power emits the reciprocal
 pass	a runtime-magnitude quantity raised to a power emits the repeated multiply
@@ -1069,6 +1076,10 @@ pass	distinct-sig byte-rope closure alongside a plain export — the closure
 pass	distinct-sig byte-rope closure alongside a plain export — the plain
 pass	distinct-sig byte-rope closures — the Bool→Bytes one
 pass	distinct-sig byte-rope closures — the Int64→Bytes one
+pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one
+pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Int64 one
+pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one
+pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the scalar one
 pass	distinct-sig: a String closure + a Bytes closure of different signatures — the String one
 pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one
 pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one
