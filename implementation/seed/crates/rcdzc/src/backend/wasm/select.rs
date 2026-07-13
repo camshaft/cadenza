@@ -4246,6 +4246,23 @@ impl Machine {
             (false, false) => Lir::I64ShrU,
         }
     }
+    /// An ARITHMETIC (sign-propagating) shift-right at this slot width, regardless of the type's own
+    /// signedness — used by the signed div-by-2^k bias sequence, which needs both shift kinds explicitly.
+    fn shr_s_forced(self) -> Lir {
+        if self.slot32 {
+            Lir::I32ShrS
+        } else {
+            Lir::I64ShrS
+        }
+    }
+    /// A LOGICAL (zero-filling) shift-right at this slot width, regardless of the type's own signedness.
+    fn shr_u_forced(self) -> Lir {
+        if self.slot32 {
+            Lir::I32ShrU
+        } else {
+            Lir::I64ShrU
+        }
+    }
     fn div(self) -> Lir {
         match (self.slot32, self.signed) {
             (true, true) => Lir::I32DivS,
@@ -5118,6 +5135,62 @@ fn emit_div_rem(
         } else {
             out.push(m.konst(d - 1));
             out.push(m.and());
+        }
+        return Ok(());
+    }
+    // STRENGTH REDUCTION: a SIGNED `/`/`%` by a constant POWER OF TWO `2^k` also becomes shifts, but a
+    // plain arithmetic shift rounds toward −∞ while `div_s`/`rem_s` truncate toward ZERO — they disagree
+    // for negatives. The textbook fix (Hacker's Delight) BIASES the dividend by `2^k − 1` when it is
+    // negative, so the truncation matches, and it is BRANCHLESS:
+    //
+    //   bias = (x >>ₛ (W−1)) >>ᵤ (W−k)      ; W = slot bits. `x >>ₛ (W−1)` = all-ones iff x<0, else 0;
+    //                                        ; `>>ᵤ (W−k)` turns that into `2^k − 1` iff x<0, else 0.
+    //   q    = (x + bias) >>ₛ k             ; arithmetic shift — now truncates toward zero, = `x / 2^k`.
+    //   r    = x − (q << k)                 ; `% 2^k` from the reduced quotient (`= x − q·2^k`).
+    //
+    // The divisor is a positive power of two, so ÷0 never applies and `MIN/−1` (the only `div_s` overflow)
+    // cannot arise — no trap, no range-check even when narrow (`|q| ≤ |x|` stays in the slot; a narrow
+    // dividend is already sign-extended, so `>>ₛ (W−1)` reads its true sign). Verified value-exact vs
+    // `div_s`/`rem_s` for every `k ∈ 1..=W−2` and all sign/boundary inputs (`k = W−1` would need divisor
+    // `2^(W−1)`, unrepresentable as a positive slot constant, so it never reaches here). The value operand
+    // is read three times, so it is stashed in a scratch local `$a` once.
+    if m.signed
+        && let Core::ConstInt(v) = core_of(db, rhs)
+        && let Some(d) = v.to_i64()
+        && d > 1
+        && (d & (d - 1)) == 0
+    {
+        let k = d.trailing_zeros() as i64;
+        let w = m.slot_bits() as i64;
+        let sa = base;
+        if sa + 1 > *high {
+            *high = sa + 1;
+        }
+        scratch_ty.insert(sa, m.slot());
+        // `$a = x` (emit the dividend once; later reads are cheap `local.get`s).
+        emit_operand(db, lhs, ot, slots, base + 1, high, scratch_ty, layout, out)?;
+        out.push(Lir::LocalSet(sa));
+        // `q = (x + bias) >>ₛ k`, bias = `(x >>ₛ (W−1)) >>ᵤ (W−k)`.
+        let emit_quotient = |out: &mut Emit| {
+            out.push(Lir::LocalGet(sa)); // x
+            out.push(Lir::LocalGet(sa)); // x  (for the sign replicate)
+            out.push(m.konst(w - 1));
+            out.push(m.shr_s_forced());
+            out.push(m.konst(w - k));
+            out.push(m.shr_u_forced());
+            out.push(m.add()); // x + bias
+            out.push(m.konst(k));
+            out.push(m.shr_s_forced()); // >>ₛ k
+        };
+        if matches!(op, Prim::Div) {
+            emit_quotient(out);
+        } else {
+            // `r = x − (q << k)`.
+            out.push(Lir::LocalGet(sa)); // x
+            emit_quotient(out);
+            out.push(m.konst(k));
+            out.push(m.shl()); // q << k
+            out.push(m.sub()); // x − q·2^k
         }
         return Ok(());
     }
@@ -6057,6 +6130,80 @@ mod tests {
         assert!(
             f.code.contains(&Lir::I64DivS),
             "a runtime-operand multiply keeps the div_s guard, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn signed_divide_by_power_of_two_strength_reduces_to_the_bias_shift_sequence() {
+        // (def (f (: n Int64)) (/ n 8)) — a SIGNED `/ 2^k` (k=3) becomes the branchless round-toward-zero
+        // bias sequence, no `i64.div_s`: stash n in $a, then `(n + ((n >>ₛ 63) >>ᵤ 61)) >>ₛ 3`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (/ n 8)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code,
+            vec![
+                Lir::LocalGet(0),
+                Lir::LocalTee(1), // $a = n, keeping n on the stack as the first quotient read.
+                Lir::LocalGet(1),
+                Lir::ConstI64(63),
+                Lir::I64ShrS, // n >>ₛ 63 — all-ones iff n<0.
+                Lir::ConstI64(61),
+                Lir::I64ShrU, // >>ᵤ (64−3) — 2^3−1 iff n<0, else 0.
+                Lir::I64Add,  // n + bias.
+                Lir::ConstI64(3),
+                Lir::I64ShrS, // >>ₛ 3.
+            ]
+        );
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I64DivS)),
+            "the signed divide is strength-reduced away, no i64.div_s"
+        );
+    }
+
+    #[test]
+    fn signed_remainder_by_power_of_two_strength_reduces_without_rem_s() {
+        // (def (f (: n Int64)) (% n 8)) — a SIGNED `% 2^k` reduces to `n − (q << k)` over the same bias
+        // quotient, no `i64.rem_s`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (% n 8)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            !f.code.iter().any(|i| matches!(i, Lir::I64RemS)),
+            "the signed remainder is strength-reduced away, no i64.rem_s, got: {:?}",
+            f.code
+        );
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::I64Sub))
+                && f.code.iter().any(|i| matches!(i, Lir::I64Shl)),
+            "remainder is n − (q << k), so a sub over a shifted quotient, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn divide_by_a_non_power_of_two_keeps_the_machine_divide() {
+        // (/ n 3) — 3 is not a power of two, so the strength reduction does NOT fire and the machine
+        // `i64.div_s` stays.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (/ n 3)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            f.code.iter().any(|i| matches!(i, Lir::I64DivS)),
+            "a non-power-of-two divide keeps i64.div_s, got: {:?}",
             f.code
         );
     }

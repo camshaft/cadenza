@@ -2602,9 +2602,19 @@ mod runtime_ops {
             remc.contains(&Lir::I64And) && !remc.contains(&Lir::I64RemU),
             "unsigned %2^k must be an and-mask, not rem_u; got: {remc:?}"
         );
-        // A non-power-of-two divisor keeps div_u; a SIGNED divide keeps div_s.
+        // A non-power-of-two divisor keeps div_u; a SIGNED power-of-two divide is ALSO reduced (the
+        // round-toward-zero bias sequence), so no div_s either.
         assert!(lir("(: a UInt64)", "(/ a 3)").contains(&Lir::I64DivU));
-        assert!(lir("(: a Int64)", "(/ a 4)").contains(&Lir::I64DivS));
+        assert!(
+            !lir("(: a Int64)", "(/ a 4)").contains(&Lir::I64DivS),
+            "a signed /2^k is strength-reduced (bias + shift), no div_s"
+        );
+        assert!(
+            !lir("(: a Int64)", "(% a 4)").contains(&Lir::I64RemS),
+            "a signed %2^k is strength-reduced (n − (q<<k)), no rem_s"
+        );
+        // A non-power-of-two signed divide keeps div_s.
+        assert!(lir("(: a Int64)", "(/ a 3)").contains(&Lir::I64DivS));
 
         // Value parity: the shift/mask computes the same unsigned quotient/remainder as the divide.
         assert_eq!(run::<u64>("(: a UInt64)", "(/ a 4)", &[Val::U64(17)]), 4);
@@ -2616,6 +2626,23 @@ mod runtime_ops {
         );
         assert_eq!(run::<u32>("(: a UInt32)", "(/ a 8)", &[Val::U32(100)]), 12);
         assert_eq!(run::<u32>("(: a UInt32)", "(% a 8)", &[Val::U32(100)]), 4);
+
+        // SIGNED value parity — the bias sequence must truncate toward ZERO like `div_s`/`rem_s`, and
+        // agree for negatives (where a bare arithmetic shift would round toward −∞). `-17/4 = -4` (not
+        // -5), `-17%4 = -1`; positives and exact multiples too.
+        assert_eq!(run::<i64>("(: a Int64)", "(/ a 4)", &[Val::S64(17)]), 4);
+        assert_eq!(run::<i64>("(: a Int64)", "(/ a 4)", &[Val::S64(-17)]), -4);
+        assert_eq!(run::<i64>("(: a Int64)", "(% a 4)", &[Val::S64(17)]), 1);
+        assert_eq!(run::<i64>("(: a Int64)", "(% a 4)", &[Val::S64(-17)]), -1);
+        assert_eq!(run::<i64>("(: a Int64)", "(/ a 8)", &[Val::S64(-8)]), -1);
+        assert_eq!(run::<i64>("(: a Int64)", "(% a 8)", &[Val::S64(-8)]), 0);
+        assert_eq!(
+            run::<i64>("(: a Int64)", "(/ a 2)", &[Val::S64(i64::MIN)]),
+            i64::MIN / 2,
+            "the bias sequence is exact at the signed MIN boundary"
+        );
+        assert_eq!(run::<i32>("(: a Int32)", "(/ a 8)", &[Val::S32(-100)]), -12);
+        assert_eq!(run::<i32>("(: a Int32)", "(% a 8)", &[Val::S32(-100)]), -4);
     }
 
     // ── shifts: count guarded to [0,N); << checked for overflow; >> arithmetic/logical by sign ─────
