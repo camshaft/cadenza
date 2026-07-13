@@ -7291,6 +7291,27 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0101")
         );
+        // A nullary export is `Unit -> T`, so applying it to a NON-UNIT argument is a type error CDZ0203 —
+        // the synthesized ignored param is ANNOTATED `Unit`, not a bare (free-type-variable) param that
+        // would silently accept the wrong argument (`((. m answer) 5)` → 42, an accept-ill-formed hole).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (def (answer) 42)) ((. m answer) 5))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0203"),
+            "a non-unit argument to a nullary export is a Unit-vs-Int64 type error"
+        );
+        // And the wrong argument's OWN fault is not swallowed: `(/ 1 0)` disagrees with Unit (CDZ0203)
+        // rather than being dropped by a free-variable param that would run the program to 42.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (def (answer) 42)) ((. m answer) (/ 1 0)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0203"),
+            "a non-unit argument is rejected, not silently dropped"
+        );
     }
 
     #[test]
@@ -24516,14 +24537,16 @@ mod closure_host_resource {
         // not the misleading "a closure argument of type Any has no scalar representation" (which reads
         // as if a real type is unsupported). Internal partial application still WORKS (a separate test);
         // only escaping one as the export result declines.
+        // M15 moved the detection into `collect_faults` (so `cdz check` reports it too, not only
+        // `compile`), coded CDZ0201, explaining the partial-application cause.
         let src = "(do (def (f x y) (+ x y)) (def (main) (f 1)) (export main))";
         let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
             .expect_err("a partial application escaping as the export result must decline");
+        assert_eq!(err.code.as_deref(), Some("CDZ0201"), "got: {}", err.message);
         assert!(
-            err.message.contains("unconstrained")
-                && err.message.contains("partial application")
-                && !err.message.contains("of type Any"),
-            "expected the partial-application explanation, not the raw `type Any` phrasing, got: {}",
+            err.message.contains("partial application")
+                && err.message.contains("cannot cross the component boundary"),
+            "expected the partial-application explanation, got: {}",
             err.message
         );
     }

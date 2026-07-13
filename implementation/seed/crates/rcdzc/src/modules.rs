@@ -71,15 +71,22 @@ fn def_field(ast: &mut Arenas, member: StructId) -> Option<StructId> {
     let k = push_atom(ast, Leaf::Name(name));
     let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     if params.is_empty() {
-        // Nullary FUNCTION `(def (answer) V)` — a `() → T` export INVOKED by applying it to the unit value
+        // Nullary FUNCTION `(def (answer) V)` — a `Unit → T` export INVOKED by applying it to the unit value
         // `((. m answer) unit)` (core-semantics.md §A Nullary Function's Argument Type Is Unit; the module
         // cases write `((. m answer) unit)`). Distinct from a bare-name VALUE `(def v V)` (handled above,
         // whose field IS the value, projected `(. m v)` with no application). Field value is the lambda
-        // `(fn (_$u) V)` over ONE ignored unit param — a fresh `_`-prefixed name that never collides with
-        // a user binder (unused-binding-suppressed) — so `((. m answer) unit)` β-reduces to `V` by the
-        // ordinary application path, and the body (which references no param) is unchanged.
+        // `(fn ((: _$u Unit)) V)` over ONE ignored param — a fresh `_`-prefixed name that never collides
+        // with a user binder (unused-binding-suppressed) — so `((. m answer) unit)` β-reduces to `V` by the
+        // ordinary application path, and the body (which references no param) is unchanged. The param is
+        // ANNOTATED `Unit` (not bare): a bare param would get a FRESH TYPE VARIABLE from HM, typing the
+        // export as `∀a. a → T` and silently accepting a NON-unit argument (`((. m answer) 5)` → V, an
+        // accept-ill-formed type hole); annotating it `Unit` makes a non-unit argument fail CDZ0203, exactly
+        // as a written `(def (f (: u Unit)) …)` does — the behavior the nullary-arg-is-Unit rule requires.
         let unit_param = push_atom(ast, Leaf::Name("_$u".to_string()));
-        let params_list = push_list(ast, vec![unit_param]);
+        let colon = push_atom(ast, Leaf::Name(":".to_string()));
+        let unit_ty = push_atom(ast, Leaf::Name("Unit".to_string()));
+        let annotated = push_list(ast, vec![colon, unit_param, unit_ty]);
+        let params_list = push_list(ast, vec![annotated]);
         let lambda = push_list(ast, vec![fn_head, params_list, body]);
         return Some(push_list(ast, vec![k, lambda]));
     }

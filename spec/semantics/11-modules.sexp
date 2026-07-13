@@ -38,6 +38,31 @@
             ((. m answer) unit)))
   (output (: 42 Int64)))
 
+(case "a nullary module export applied to a non-unit argument is rejected"
+  (doc    "A nullary export `(def (answer) 42)` is a `Unit -> Int64` function (core-semantics.md §A Nullary
+           Function's Argument Type Is Unit), INVOKED by applying it to `unit`. Applying it to a non-unit
+           argument — `((. m answer) 5)`, `5 : Int64` — is a type error and MUST be rejected CDZ0203
+           (cannot unify Unit with Int64), exactly as a written `(def (f (: u Unit)) 42)` applied to `(f 5)`
+           is. The module synthesizes the field as a lambda over one ignored param; that param is ANNOTATED
+           `Unit`, not bare — a bare param would take a fresh type variable (typing the export `∀a. a ->
+           Int64`) and SILENTLY ACCEPT the wrong argument, running the ill-typed program to 42.")
+  (input  (do
+            (def (main)
+              (do (module m (def (answer) 42))
+                  ((. m answer) 5))) (export main)))
+  (error  CDZ0203))
+
+(case "a nullary module export's non-unit argument does not swallow the argument's own fault"
+  (doc    "The companion of the reject above: because the synthesized param is `Unit`-typed rather than a
+           free type variable, a non-unit argument is not silently dropped — so its OWN fault surfaces too.
+           `((. m answer) (/ 1 0))` is rejected rather than running to 42 with the `(/ 1 0)` discarded (a
+           bare-param free variable would accept and drop it). The argument disagrees with Unit → CDZ0203.")
+  (input  (do
+            (def (main)
+              (do (module m (def (answer) 42))
+                  ((. m answer) (/ 1 0)))) (export main)))
+  (error  CDZ0203))
+
 (case "each definition in a module registers a reachable export field"
   (doc    "Witnesses core-semantics.md #A Module Evaluates To A Record Of Its Exports (2nd sentence:
            each definition registers its name and value as a field of the module's record): a module
