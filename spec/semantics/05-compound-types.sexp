@@ -1808,7 +1808,6 @@
            `[3, 7, 2]` is 7 — pins that a GENERIC-sum accumulator whose parameter is fixed by its folded-in
            values (not by an annotation) type-checks, the accumulator analogue of the anchored branching
            fold above.")
-  (needs  sum-type-declaration)
   (input  (do
             (type L (Nil) (Cons Int64 L))
             (def (mx l acc)
