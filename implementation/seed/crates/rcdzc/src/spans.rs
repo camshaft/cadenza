@@ -26,6 +26,13 @@
 //! module's tree-relative path), never an absolute filesystem path — the reproducibility contract
 //! (design §4) records this path in the DWARF file entry, so an absolute path would leak the build
 //! directory. A malformed span artifact is a DECLINE (a diagnostic), never a panic or a silent drop.
+//!
+//! A span is keyed by `StructId` — an index into the canonical structure arena — so the source
+//! location a debugger recovers is a range over the CANONICAL representation, stable under any textual
+//! rendering rather than tied to one textual syntax:
+//!
+//= spec/capabilities/debug-information.md#a-source-location-is-a-span-over-the-canonical-representation
+//# A source location recorded in debug information MUST be a source span over the canonical representation, so that the location is stable under any textual rendering rather than tied to one textual syntax.
 
 use crate::ast::StructId;
 use crate::leb128::{self, Reader};
@@ -41,6 +48,8 @@ pub const KIND_SPANS: &str = "spans";
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct SpanData {
     /// The tree-relative module path — the DWARF file-table name. Never absolute (design §4).
+    //= spec/capabilities/debug-information.md#a-file-reference-is-a-tree-relative-module-path
+    //# A file reference recorded in debug information MUST be the tree-relative module path fixed by the source-tree-encoding contract rather than an absolute filesystem path, so that debug information names a source module the same way the canonical source tree does and carries no build-host path.
     pub module_path: String,
     /// `(start, len)` byte ranges, indexed positionally by `StructId`.
     pub spans: Vec<(u32, u32)>,
@@ -65,7 +74,10 @@ impl SpanData {
     /// The 1-based source LINE a byte offset falls on — a one-pass newline count over `source` up to
     /// `byte_off` (design §2.1a: "a one-pass newline index over the module's source text"). Falls back
     /// to line 1 when the source text is absent or the offset is past its end (total — never panics).
-    /// Line/col derivation lives here so both a DWARF line row and a diagnostic can share it.
+    /// Line/col derivation lives here so both a DWARF line row and a diagnostic can share it — the
+    /// projection of a canonical byte-span to the textual `(line, col)` a debug view presents.
+    //= spec/capabilities/debug-information.md#a-source-location-is-a-span-over-the-canonical-representation
+    //# A source span recorded in debug information MUST be renderable to a textual source location by the printer, so that a textual debug view is a projection of the canonical form through the same printer any textual syntax uses rather than a second authority over where a construct is.
     pub fn line_at(&self, byte_off: u32) -> u32 {
         if self.source.is_empty() {
             return 1;

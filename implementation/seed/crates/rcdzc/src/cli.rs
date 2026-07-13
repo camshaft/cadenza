@@ -69,6 +69,11 @@ enum TargetArg {
     /// A WebAssembly component carrying EMBEDDED DWARF debug info (Mode E) — steps through Cadenza
     /// source and inspects scalar arguments in GDB/LLDB/Chrome. Needs a `spans` input (supply it as
     /// `spans:NAME=path.spans`); without it the compile declines. Debug sections are inert + strippable.
+    ///
+    /// Selecting a debug-carrying target is a `--target` choice the caller makes, not a specification
+    /// ambiguity — it changes which artifact a deployer wants, not what the program means.
+    //= spec/capabilities/debug-information.md#whether-to-emit-debug-information-is-a-user-facing-choice
+    //# Whether a derivation emits debug information MUST be treated as a user-facing build choice rather than a specification ambiguity, because it changes which artifact a deployer wants rather than what the program means.
     WasmDebug,
     /// A DETACHED DWARF sidecar (Mode S) — a `<name>.dwarf` file carrying only the debug sections, for a
     /// debugger to load alongside a lean (undecorated) component. Also needs a `spans` input.
@@ -211,6 +216,10 @@ pub fn run_prepared(
     // Apply the target default here (so both `run` and an external driver get the same rule): explicit
     // targets win; else `[Wasm]` UNLESS a `sidecar` input drives the run (then its Emit requests name
     // the targets, and a default `wasm` would force an unwanted component for a query-only sidecar).
+    // The default is the UNDECORATED `Wasm` component (debug excluded), so a non-interactive build that
+    // names no debug target proceeds without asking whether to emit debug information.
+    //= spec/capabilities/debug-information.md#whether-to-emit-debug-information-is-a-user-facing-choice
+    //# Whether a derivation emits debug information MUST carry a declared default so that a non-interactive or autonomous build proceeds without asking.
     let has_sidecar = inputs
         .iter()
         .any(|a| a.kind == crate::sidecar::KIND_SIDECAR);
