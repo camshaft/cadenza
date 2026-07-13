@@ -5761,13 +5761,47 @@ mod runtime_ops {
         );
 
         // VALUE PARITY (both signednesses; then + else).
-        assert_eq!(run::<i64>("(: x Int64)", "(if (= x 5) (+ x 1) 0)", &[Val::S64(5)]), 6);
-        assert_eq!(run::<i64>("(: x Int64)", "(if (= x 5) (+ x 1) 0)", &[Val::S64(3)]), 0);
-        assert_eq!(run::<i64>("(: x Int64)", "(if (= x 5) (if (> x 3) 1 2) 0)", &[Val::S64(5)]), 1);
-        assert_eq!(run::<i64>("(: x Int64)", "(if (= x 5) (if (> x 3) 1 2) 0)", &[Val::S64(9)]), 0);
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(if (= x 5) (+ x 1) 0)", &[Val::S64(5)]),
+            6
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(if (= x 5) (+ x 1) 0)", &[Val::S64(3)]),
+            0
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (= x 5) (if (> x 3) 1 2) 0)",
+                &[Val::S64(5)]
+            ),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (= x 5) (if (> x 3) 1 2) 0)",
+                &[Val::S64(9)]
+            ),
+            0
+        );
         // Unsigned equality guard refines too.
-        assert_eq!(run::<u8>("(: x UInt8)", "(: (if (= x 200) (: (+ x 1) UInt8) 0) UInt8)", &[Val::U8(200)]), 201);
-        assert_eq!(run::<u8>("(: x UInt8)", "(: (if (= x 200) (: (+ x 1) UInt8) 0) UInt8)", &[Val::U8(50)]), 0);
+        assert_eq!(
+            run::<u8>(
+                "(: x UInt8)",
+                "(: (if (= x 200) (: (+ x 1) UInt8) 0) UInt8)",
+                &[Val::U8(200)]
+            ),
+            201
+        );
+        assert_eq!(
+            run::<u8>(
+                "(: x UInt8)",
+                "(: (if (= x 200) (: (+ x 1) UInt8) 0) UInt8)",
+                &[Val::U8(50)]
+            ),
+            0
+        );
     }
 
     #[test]

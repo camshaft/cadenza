@@ -6122,7 +6122,10 @@ fn refine_from_comparison(
         // Pin `x` to the exact `[c, c]` — but only when `c` lies WITHIN any prior frame bound for `x`. If it
         // does not, the guard is unsatisfiable (a contradiction the branch never reaches), so leave the
         // prior frame rather than fabricate an inverted `[c,c]` a downstream consumer might misread.
-        let (plo, phi) = frame.get(&var).copied().unwrap_or((i64::MIN, Some(i64::MAX)));
+        let (plo, phi) = frame
+            .get(&var)
+            .copied()
+            .unwrap_or((i64::MIN, Some(i64::MAX)));
         if plo <= ec && phi.is_none_or(|h| ec <= h) {
             frame.insert(var, (ec, Some(ec)));
         }
