@@ -1545,6 +1545,7 @@ fn ty_contains_sum(ty: &Ty) -> bool {
         Ty::Record(fields) => fields.values().any(ty_contains_sum),
         Ty::List(elem) => ty_contains_sum(elem),
         Ty::Map(k, v) => ty_contains_sum(k) || ty_contains_sum(v),
+        Ty::Set(elem) => ty_contains_sum(elem),
         Ty::Qty { inner, .. } => ty_contains_sum(inner),
         Ty::Fn(p, r) => ty_contains_sum(p) || ty_contains_sum(r),
         Ty::Int(_)
@@ -1858,6 +1859,49 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
             // scheme-unify, which would ALSO report the same mismatch as a CDZ0203 duplicate).
             for &a in args {
                 collect(db, a, out);
+            }
+            return;
+        }
+    }
+    // `Set.of list` — the set is HOMOGENEOUS: its elements (the list's) must share one type
+    // (collections-and-text.md §A Set Is A Collection Of Unique Elements — elements of ONE type). A
+    // mismatch is CDZ0201 (a SET homogeneity violation — the corpus codes it like the map homogeneity
+    // cases), NOT the CDZ0203 the list-element unify would give on its own. So check the list argument's
+    // element types HERE and, on a mismatch, report CDZ0201 + descend into the elements, stopping before
+    // the generic path lets the inner list emit CDZ0203. (A homogeneous list flows through unchanged.)
+    if args.len() == 1 && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::SetOf)
+    {
+        // Read the list argument's element occurrences — the `(list …)` string-head form, the `list`
+        // name-alias application, or a `Resolved::List`.
+        let list = args[0];
+        let elems: Vec<StructId> = match resolved_of(db, list) {
+            Resolved::List { elems } => elems.to_vec(),
+            Resolved::Apply { head: lh, args: la }
+                if crate::eval::meta_apply_of(db, lh) == Some(crate::resolved::Prim::ListNew) =>
+            {
+                la.to_vec()
+            }
+            _ => Vec::new(), // not a visible list literal — the generic path handles it
+        };
+        let mut subst = Subst::new();
+        let mut mixed = false;
+        if let Some(&first) = elems.first() {
+            let first_ty = type_of(db, first);
+            for &e in elems.iter().skip(1) {
+                let et = type_of(db, e);
+                if crate::unify::unify(&mut subst, &first_ty, &et).is_err() {
+                    mixed = true;
+                }
+            }
+        }
+        if mixed {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: Set.of elements do not share one type (CDZ0201)");
+            out.push(Reject::coded(
+                Code::Malformed,
+                "a set contains elements of one type (its elements do not share a type)",
+            ));
+            for &e in &elems {
+                collect(db, e, out);
             }
             return;
         }
@@ -2844,6 +2888,33 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // `type_of` adds another factor). Skip it. A DEAD argument (one the body never uses, so it
                 // is NOT in the reduced body) still needs checking — `check_application` descends those
                 // (only the un-substituted args) so their faults are not lost.
+            } else if matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(crate::resolved::Prim::SetOf)
+            ) {
+                // `Set.of list` — `check_application` above already checked the list's element HOMOGENEITY
+                // as a SET fault (CDZ0201) and, on a mismatch, descended into the elements + returned. So
+                // descending into the list ARG here would RE-derive the list's own CDZ0203 (a redundant,
+                // wrong-coded duplicate of the fault already reported). Instead descend into each ELEMENT
+                // directly (a nested per-element fault still surfaces), never the list node as a whole.
+                let list = args[0];
+                let elems: Vec<StructId> = match resolved_of(db, list) {
+                    Resolved::List { elems } => elems.to_vec(),
+                    Resolved::Apply { head: lh, args: la }
+                        if crate::eval::meta_apply_of(db, lh)
+                            == Some(crate::resolved::Prim::ListNew) =>
+                    {
+                        la.to_vec()
+                    }
+                    // Not a visible list literal (a runtime list operand) — collect it normally.
+                    _ => {
+                        collect(db, list, out);
+                        Vec::new()
+                    }
+                };
+                for &e in &elems {
+                    collect(db, e, out);
+                }
             } else {
                 for &arg in args.iter() {
                     collect(db, arg, out);

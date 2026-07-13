@@ -65,6 +65,16 @@ pub struct BinBitsField {
     pub value: StructId,
 }
 
+/// Which binary set-algebra op a `Core::SetAlgebra` node performs — union / intersection / difference.
+/// One `Core` variant serves all three (they share the `(Set a) -> (Set a) -> (Set a)` shape and a single
+/// consuming-both-operands emit), the runtime op selected by this discriminant.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum SetAlgebraOp {
+    Union,
+    Intersection,
+    Difference,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PathStep {
     /// Descend into a sum variant's PAYLOAD — `sum-payload(handle)`. (A single-payload variant; a
@@ -390,6 +400,49 @@ pub enum Core {
     /// The backend emits `map-size(map)` (BORROWS; O(1) from the CHAMP root) + an i32→i64 extend to `Int64`.
     /// The map companion of `ListLen`.
     MapSize { map: StructId },
+    /// A SET value construction — `(Set.of (list …))`. `elems` are the element occurrences (in source
+    /// order; DUPLICATES collapse at build). The backend builds it on the persistent CHAMP `set-*` heap:
+    /// `set-empty` then a `set-insert(elem)` per element (each boxed by `elem_ty`, which `set-insert`
+    /// CONSUMES along with the set). `elem_ty` is the solved element type (choosing the box op). An empty
+    /// `(Set.of (list))` has no elements. The set analogue of `MapNew`, one axis.
+    SetOf {
+        elems: Vec<StructId>,
+        elem_ty: crate::ty::Ty,
+    },
+    /// `Set.contains` — the TOTAL membership predicate, present when the set is a RUNTIME value. The backend
+    /// emits `set-contains(set, elem)` (BORROWS both; the boxed element is dropped after) — a `bool`
+    /// directly (UNLIKE `Map.lookup`'s NULL-or-handle → Option). `elem_ty` chooses the element box.
+    SetContains {
+        set: StructId,
+        elem: StructId,
+        elem_ty: crate::ty::Ty,
+    },
+    /// `Set.insert` — add `elem` to `set`, returning the new set (runtime `set-insert`; persistent, CONSUMES
+    /// the set handle + the boxed element). Inserting a present element is a no-op value. The set analogue
+    /// of `MapInsert` (no value column).
+    SetInsert {
+        set: StructId,
+        elem: StructId,
+        elem_ty: crate::ty::Ty,
+    },
+    /// `Set.remove` — drop `elem` from `set`, returning the new set (runtime `set-remove`; CONSUMES the set,
+    /// BORROWS the boxed element). Removing an absent element yields an equal set (total).
+    SetRemove {
+        set: StructId,
+        elem: StructId,
+        elem_ty: crate::ty::Ty,
+    },
+    /// `Set.len` — the count of distinct elements, present when the set is a RUNTIME value. The backend
+    /// emits `set-size(set)` (BORROWS; O(1)) + an i32→i64 extend to `Int64`. The set analogue of `MapSize`.
+    SetLen { set: StructId },
+    /// `Set.union`/`Set.intersection`/`Set.difference` — the binary set-algebra ops, present when an
+    /// operand is a RUNTIME value. The backend emits the runtime `set-union`/`set-intersection`/
+    /// `set-difference` op (each CONSUMES both operands, returns the result set). `op` names which.
+    SetAlgebra {
+        op: SetAlgebraOp,
+        lhs: StructId,
+        rhs: StructId,
+    },
     /// A SUM VALUE CONSTRUCTION — `(Option.Some 5)` or a bare nullary `None`. `disc` is the variant's
     /// discriminant (read off the ctor's `(meta variant)` at lowering); `payloads` are the argument
     /// occurrences (empty for a nullary variant). The backend builds `sum-new(disc, payload)` where the
