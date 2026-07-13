@@ -410,8 +410,27 @@ pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, Struc
     // residual's scope, where the captured name is unbound (the CDZ0101 the partial-application copy hit).
     // A body-internal `let`-local is NEVER pinned (it resolves lazily, after the copy), so it still falls
     // to `copy_structural` below and correctly re-resolves against the copied scope.
+    //
+    // EXCEPTION — a MATCH-ARM (or tuple-pattern) BINDER whose SCRUTINEE IS BEING SUBSTITUTED: such a
+    // binder resolves to a `SumPayload` READING THE SCRUTINEE (Case 5/6 in `resolve`). If `resolve_subtree`
+    // pinned it (it pins the whole lambda body before an application) AND the scrutinee it reads is a
+    // parameter THIS reduction is substituting, sharing the binder as-is keeps a `SumPayload` pointing at
+    // the ORIGINAL scrutinee node — which β-reduction is replacing in this same copy (a lambda whose param
+    // IS the match scrutinee, applied through a nested inline). The shared binder would then read a
+    // now-orphaned scrutinee (lowered standalone as a slot-less `Core::Param` — the "no local slot"
+    // decline). So such a binder must COPY and re-resolve against the copied match's substituted scrutinee.
+    // NARROW to exactly that case: only when the `SumPayload`'s scrutinee resolves to a param in `arg_of`.
+    // A binder over an EXTERNAL scrutinee (a genuine capture — an enclosing match's binder captured by an
+    // inner lambda) is NOT being substituted, so it keeps sharing (copying it would break its resolution
+    // and, on a deep nested-call chain, re-resolve exponentially — the stack-overflow regression).
     if db.ast.as_name(body).is_some() && db.resolved_subtrees.contains(&body) {
-        return body;
+        if let Resolved::SumPayload { scrutinee, .. } = resolved_of(db, body)
+            && scrutinee_is_substituted(db, scrutinee, arg_of)
+        {
+            // Fall through to `copy_structural` — re-resolve against the copied, substituted scrutinee.
+        } else {
+            return body;
+        }
     }
     // Otherwise structurally copy. A CONSTANT atom (int/bool/float/string leaf) is self-contained — it
     // resolves to its own value regardless of scope, so SHARE it (cheap, no re-resolution needed). A
@@ -425,6 +444,36 @@ pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, Struc
     // never reaches here (the substitution branches above return the arg first); a prelude/free name
     // re-resolves to the same global, harmlessly.
     copy_structural(db, body, arg_of)
+}
+
+/// Whether the match scrutinee at `scrutinee` reads a PARAMETER that THIS β-reduction is substituting —
+/// i.e. its (transitive `Ref`-chased) binder is a key in `arg_of`. When true, a pattern binder reading
+/// this scrutinee must be COPIED (so it re-resolves against the substituted scrutinee in the copy) rather
+/// than shared as a capture; when false (the scrutinee is external — a genuine capture), the binder keeps
+/// sharing. This is the exact test that distinguishes "the scrutinee is being replaced here" from "the
+/// scrutinee is an outer value the closure captured" (see the capture-share exception in `beta_reduce`).
+fn scrutinee_is_substituted(
+    db: &mut Db,
+    scrutinee: StructId,
+    arg_of: &HashMap<StructId, StructId>,
+) -> bool {
+    // The scrutinee is a value reference — a bare param (`Param { binder }`) or a `Ref` chain ending at
+    // one. Chase it the same way `beta_reduce`'s substitution branches do; if any link is a substituted
+    // key, the scrutinee is being replaced.
+    if let Resolved::Param { binder } = resolved_of(db, scrutinee) {
+        return arg_of.contains_key(&binder);
+    }
+    let mut target = scrutinee;
+    loop {
+        if arg_of.contains_key(&target) {
+            return true;
+        }
+        match resolved_of(db, target) {
+            Resolved::Ref { value } => target = value,
+            Resolved::Param { binder } => return arg_of.contains_key(&binder),
+            _ => return false,
+        }
+    }
 }
 
 /// Structurally copy `body` (no substitution at THIS node — the caller decided it is not a

@@ -21,6 +21,8 @@ pass	a CBOR reader walks a variable-length array using its decoded length as the
 pass	a CBOR simple value that is not a known boolean is classified as not-a-boolean
 pass	a CBOR skip steps over a tagged item to the value it wraps
 pass	a CBOR skip walks past a whole nested item to the next offset
+pass	a HOF callback matching a tuple argument computes through the nested reduction
+pass	a HOF callback matching its sum argument reaches the nullary arm
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
 pass	a NaN nested in a list compares equal under the canonical byte form
@@ -260,6 +262,7 @@ pass	a hexadecimal integer literal
 pass	a hexadecimal literal is case-insensitive
 pass	a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern
 pass	a hexadecimal literal with digit separators
+pass	a higher-order function applies a callback that matches its own sum argument
 pass	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 pass	a host-called closure applied to a different argument tracks the input

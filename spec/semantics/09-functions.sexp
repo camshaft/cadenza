@@ -266,6 +266,55 @@
               (def (main) (app (fn (n) (+ n 1)))) (export main)))
   (output (: 6 Int8)))
 
+; --- A lambda that MATCHES ITS OWN PARAMETER, passed through a higher-order function -------------
+; core-semantics.md §A Function Is A First-Class Value + §Applying A Function Binds Its Parameter To Its
+; Argument: a callback that DESTRUCTURES its argument (`(fn (c) (match c …))`) is an ordinary first-class
+; value — passed to a HOF that applies it to the HOF's own argument. When the HOF is itself inlined, the
+; callback is applied through a NESTED β-reduction: the callback's parameter IS the match scrutinee, and
+; the reduction substitutes the argument for it. A pattern binder in the callback body reads the scrutinee
+; via a `SumPayload` (resolve Case 6); the reduction must re-resolve that binder against the SUBSTITUTED
+; scrutinee, not share its pre-substitution occurrence (which, lowered standalone, is a slot-less
+; parameter — the "no local slot" decline this pins closed). Distinct from a callback that only RETURNS
+; or PROJECTS its parameter (no scrutinee materialization); the destructuring match is the exercised path.
+
+(case "a higher-order function applies a callback that matches its own sum argument"
+  (doc    "`apply-to` takes a callback `f` and a `C` value `c`, applying `(f c)`. The callback `(fn (p)
+           (match p ((C.A n) n) ((C.B) 0)))` destructures its OWN parameter. Because `apply-to` inlines,
+           the callback is applied to `c` through a nested β-reduction where `p` — the match scrutinee — is
+           substituted; the `n` binder must re-resolve against the substituted scrutinee. `apply-to`
+           applied to `(C.A 9)` yields 9. Was 'parameter reference has no local slot' when the substituted
+           scrutinee's pattern binder kept its pre-substitution occurrence.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C (A Int64) B)
+            (def (apply-to f (: c C)) (f c))
+            (def (main) (apply-to (fn ((: p C)) (match p ((C.A n) n) ((C.B) 0))) (C.A 9)))
+            (export main)))
+  (output (: 9 Int64)))
+
+(case "a HOF callback matching its sum argument reaches the nullary arm"
+  (doc    "The companion selecting the OTHER variant: the same callback applied (through the inlined HOF)
+           to `(C.B)` takes the nullary arm → 0. Pins that the through-a-HOF nested reduction dispatches
+           correctly across variants, not just the payload one.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C (A Int64) B)
+            (def (apply-to f (: c C)) (f c))
+            (def (main) (apply-to (fn ((: p C)) (match p ((C.A n) n) ((C.B) 0))) (C.B)))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "a HOF callback matching a tuple argument computes through the nested reduction"
+  (doc    "The same shape with a TUPLE-destructuring callback — `(fn (p) (match p ((tuple a b) (+ a b))))`
+           — passed to a HOF. The tuple-pattern binders `a`/`b` read the substituted scrutinee just as a
+           sum-variant binder does, so this pins the fix is over any compound-match scrutinee, not sums
+           alone. `(tuple 3 4)` → 3 + 4 = 7.")
+  (input  (do
+            (def (apply-to f (: t (Tuple Int64 Int64))) (f t))
+            (def (main) (apply-to (fn ((: p (Tuple Int64 Int64))) (match p ((tuple a b) (+ a b)))) (tuple 3 4)))
+            (export main)))
+  (output (: 7 Int64)))
+
 (case "a closure capturing two enclosing bindings folds through nested arithmetic"
   (doc    "`(fn (x) (+ (* x a) b))` captures BOTH `a` and `b` from enclosing lets; applied to 5 with
            a = 2, b = 3 → (5·2)+3 = 13. Pins that MULTIPLE distinct captures from different enclosing
