@@ -7374,6 +7374,63 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_xor_by_the_same_value_twice_cancels_to_the_operand() {
+        // XOR CANCELLATION: `(^ (^ v w) w)` → `v` — the two XORs by the SAME `w` cancel (`w ^ w == 0`).
+        // Covers a CONSTANT `w` (`(^ (^ x 5) 5)` → x, which the nested-collapse alone left as `(^ x 0)`) and
+        // a RUNTIME `w` (`(^ (^ x y) y)` → x), both operand orders, and a commuted inner XOR. Pins the fold
+        // at the Lir level (no `xor`) AND value parity; a TRAPPING `w` (`(/ 100 z)`) must NOT fold.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let xors = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Xor | Lir::I32Xor)).count();
+        // Runtime `w`, constant `w`, commuted inner, and outer order — ALL cancel to zero xors.
+        assert_eq!(xors(&lir("(: x Int64) (: y Int64)", "(: (^ (: (^ x y) Int64) y) Int64)")), 0, "runtime w cancels");
+        assert_eq!(xors(&lir("(: x Int64)", "(: (^ (: (^ x 5) Int64) 5) Int64)")), 0, "constant w cancels");
+        assert_eq!(xors(&lir("(: x Int64) (: y Int64)", "(: (^ (: (^ y x) Int64) y) Int64)")), 0, "commuted inner cancels");
+        assert_eq!(xors(&lir("(: x Int64) (: y Int64)", "(: (^ y (: (^ x y) Int64)) Int64)")), 0, "outer order cancels");
+        // A masked (trap-free, non-constant) `w` cancels too — the whole `(& y 15)` drops.
+        let masked = lir("(: x Int64) (: y Int64)", "(: (^ (: (^ x (: (& y 15) Int64)) Int64) (: (& y 15) Int64)) Int64)");
+        assert_eq!(xors(&masked), 0, "masked w cancels");
+        assert!(!masked.iter().any(|i| matches!(i, Lir::I64And)), "the discarded masked w drops entirely");
+        // A DIFFERENT second operand does NOT cancel: `(^ (^ x y) z)` keeps both xors.
+        assert_eq!(xors(&lir("(: x Int64) (: y Int64) (: z Int64)", "(: (^ (: (^ x y) Int64) z) Int64)")), 2, "distinct w does not cancel");
+
+        // VALUE PARITY.
+        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (^ (: (^ x y) Int64) y) Int64)", &[Val::S64(12345), Val::S64(6789)]), 12345);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (^ (: (^ x 5) Int64) 5) Int64)", &[Val::S64(999)]), 999);
+        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (^ y (: (^ x y) Int64)) Int64)", &[Val::S64(-7), Val::S64(42)]), -7);
+        // TRAP SAFETY: a trapping `w = (/ 100 z)` is discarded by the fold — must NOT be dropped, still ÷0.
+        assert!(
+            traps("(: x Int64) (: z Int64)", "(^ (: (^ x (: (/ 100 z) Int64)) Int64) (: (/ 100 z) Int64))", &[Val::S64(5), Val::S64(0)]),
+            "a trapping xor operand must keep its trap (not cancelled)"
+        );
+    }
+
+    #[test]
     fn nested_right_shifts_collapse_to_a_single_shift() {
         // `(>> (>> v A) B)` → `(>> v (A+B))` when A+B < width — a right shift is total, and the inner and
         // outer `>>` are the same kind, so composing drops the same low A+B bits as one shift. Bounded by

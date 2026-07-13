@@ -6414,6 +6414,17 @@ fn arith_identity(
         // the `&` fold, so it too fires on an emit-refined range via the emit-time sibling.
         Prim::BitOr if is_full_mask_for(db, lhs, rc) && is_trap_free(db, lhs) => Some(rc.clone()),
         Prim::BitOr if is_full_mask_for(db, rhs, lc) && is_trap_free(db, rhs) => Some(lc.clone()),
+        // XOR CANCELLATION: `(^ (^ v w) w)` → `v` — the two XORs by the SAME `w` (constant OR runtime)
+        // cancel (`w ^ w == 0`, and `v ^ 0 == v`). Handled BEFORE the nested-bitwise collapse so the
+        // constant case produces `v` DIRECTLY rather than a residual `(^ v 0)` the collapse would leave
+        // (which does not re-simplify). DISCARDS `w`, so gated on `is_trap_free(w)`. `v` stays, traps kept.
+        Prim::BitXor
+            if let Some((v, w)) = xor_cancels(db, lhs, rhs)
+                && is_trap_free(db, w) =>
+        {
+            trace!(target: "rcdzc::fold", node = v.0, "XOR cancellation (^ (^ v w) w) → v");
+            Some(core_of(db, v))
+        }
         // NESTED-BITWISE COLLAPSE: `(OP (OP v C1) C2)` → `(OP v (C1 ⊙ C2))` for a TOTAL, ASSOCIATIVE
         // bitwise op — `&`/`|`/`^`. Two constant operations on the same value collapse to ONE by folding
         // the constants (`(& (& x 255) 15)`→`(& x 15)`, `(| (| x 5) 3)`→`(| x 7)`, `(^ (^ x 5) 3)`→`(^ x
@@ -6611,6 +6622,37 @@ fn nested_bitwise_collapse(
         return Some(folded);
     }
     None
+}
+
+/// XOR CANCELLATION for an outer `(^ lhs rhs)`: when one operand is `(^ v w)` and the OTHER is
+/// `core_equiv` to `w`, the two XORs by `w` cancel — `(v ^ w) ^ w == v ^ (w ^ w) == v ^ 0 == v` (XOR is
+/// associative/commutative and self-inverse). Returns `v`. Covers a CONSTANT `w` (`(^ (^ x 5) 5)` → x —
+/// which `nested_bitwise_collapse` would leave as a residual `(^ x 0)`) AND a RUNTIME `w` (`(^ (^ x y) y)`
+/// → x, the involution `nested_bitwise_collapse` cannot see). Both operand orders of the outer `^`, and
+/// `w` on either side of the inner `^`, are tried. The result is `v` (its own traps preserved); `w` is
+/// DISCARDED, so the caller gates on `is_trap_free(w)` — a trapping `w` (`(^ (^ v (/ a b)) (/ a b))` at
+/// b==0) must still trap. Returns `(v, w)` so the caller can trap-check `w`.
+fn xor_cancels(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<(StructId, StructId)> {
+    // Try: `lhs` is the inner `(^ v w)`, `rhs` is the matching `w`.
+    let check = |db: &mut Db, inner: StructId, outer_w: StructId| -> Option<(StructId, StructId)> {
+        let Core::Arith {
+            op: Prim::BitXor,
+            lhs: il,
+            rhs: ir,
+        } = core_of(db, inner)
+        else {
+            return None;
+        };
+        // The outer operand `outer_w` must equal ONE side of the inner XOR; the OTHER side is `v`.
+        if core_equiv(db, ir, outer_w) {
+            Some((il, ir)) // (v, w)
+        } else if core_equiv(db, il, outer_w) {
+            Some((ir, il)) // (v, w) — inner XOR is commutative
+        } else {
+            None
+        }
+    };
+    check(db, lhs, rhs).or_else(|| check(db, rhs, lhs))
 }
 
 /// The NESTED SHIFT COLLAPSE for `(SH lhs rhs)` where `SH` is `Shr` OR `Shl`: when `lhs` is itself
