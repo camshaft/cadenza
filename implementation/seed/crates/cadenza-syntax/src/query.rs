@@ -2039,11 +2039,30 @@ pub mod textedit {
         span_of: &dyn Fn(&Tree) -> Option<(usize, usize)>,
         surface: Format,
     ) -> TextRewrite {
-        let mut edits = Vec::new();
-        diff_edits(src, old, new, span_of, surface, &mut edits);
+        let mut edits = edits_preserving(src, old, new, span_of, surface);
         let n = edits.len();
         let output = apply_edits(src, &mut edits);
         TextRewrite { output, edits: n }
+    }
+
+    /// The primitive byte edits turning `src` (tree `old`) into `new`, in ascending `(start, end)` order —
+    /// the STRUCTURAL patch as span-anchored text edits. This is what [`rewrite_preserving`] applies; exposed
+    /// so a machine consumer (the `cdz check --json` fix channel) can HAND an agent the exact edits to apply
+    /// (`src[start..end] := text`) rather than a hand-derived kind/prefix/suffix. Each edit is minimal and
+    /// surface-correct (only changed subtrees; a wrap preserves the wrapped bytes and splices only the
+    /// wrapper; an insert lands at the right child position) because it comes from the same alignment
+    /// `rewrite_preserving` uses — no separate text logic to drift.
+    pub fn edits_preserving(
+        src: &str,
+        old: &Tree,
+        new: &Tree,
+        span_of: &dyn Fn(&Tree) -> Option<(usize, usize)>,
+        surface: Format,
+    ) -> Vec<Edit> {
+        let mut edits = Vec::new();
+        diff_edits(src, old, new, span_of, surface, &mut edits);
+        edits.sort_by_key(|ed| (ed.start, ed.end));
+        edits
     }
 
     /// Render `t` as source text in `surface` (a single node, one line). Used for the replacement
