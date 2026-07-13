@@ -2901,6 +2901,12 @@ fn encode_sum_walk_body(
 /// accepting an incoming wider value the guest cannot verify fits the narrower width. A non-aliased
 /// RESULT, by contrast, crosses WIDENED to the next aliased width — that value-preserving relaxation lives
 /// in [`export_result`], not here (it is unsound for a parameter).
+///
+/// Returning `Err` for a type with no boundary form is how the compiler keeps such a type out of an
+/// emitted signature — it declines rather than emit an interface naming an unrepresentable type:
+///
+//= spec/contracts/component-abi.md#every-exported-type-has-a-stable-boundary-representation
+//# A type that has no defined boundary representation MUST NOT appear in an exported or imported signature.
 pub fn export_result_valtype(ret: &Ty) -> Result<Option<u8>, String> {
     // A NOMINAL newtype's boundary form is its ERASED underlying type (the tag adds nothing to the
     // representation): peel it so a nominal-over-scalar crosses as its scalar, and a nominal-over-compound

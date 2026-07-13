@@ -375,12 +375,25 @@ fn int_valtype(it: IntTy) -> ValType {
 /// CORE function signature is separate (`valtype_of` — a ≤32-bit value occupies an i32 slot regardless),
 /// and the canonical ABI lifts/lowers the primitive↔core representation.
 ///
-/// ONLY THE EIGHT ALIASED WIDTHS (8/16/32/64, each signedness) have a boundary representation
-/// (`numeric-model.md` §The named widths are aliases; only they have a boundary form). A NON-ALIASED
-/// width — `(UInt 7)`, `(UInt 48)`, … — is internal-only: it returns `None` here, so exporting or taking
-/// it as a boundary parameter DECLINES rather than inventing a wider primitive that would misreport the
-/// value's type at the edge. (Its constant bounds still fold and its arithmetic is correct; it simply
-/// cannot cross the component boundary.)
+/// The component-model boundary valtype of a type, or `None` for a type with no boundary form. The
+/// scalars that cross are: `Bool`; a `Float` (f32/f64); and — of the integers — ONLY THE EIGHT ALIASED
+/// WIDTHS (8/16/32/64, each signedness) (`numeric-model.md` §The named widths are aliases; only they have
+/// a boundary form). A tuple threaded internally maps to a `u32` handle (see below). A NON-ALIASED
+/// integer width — `(UInt 7)`, `(UInt 48)`, … — is internal-only: it returns `None` here, so exporting or
+/// taking it as a boundary parameter DECLINES rather than inventing a wider primitive that would misreport
+/// the value's type at the edge. (Its constant bounds still fold and its arithmetic is correct; it simply
+/// cannot cross the component boundary.) A record/sum/list/map/set/string/bytes value returns `None` too:
+/// it escapes as the canonical binary value form via the resource `encode()` path, not a primitive valtype.
+///
+/// The mapping is a pure function of the type — each representable type has exactly ONE component-model
+/// valtype, read from the generated `wasm_abi` table, so it does not vary with the compiler generation
+/// that emits it:
+///
+//= spec/contracts/component-abi.md#every-exported-type-has-a-stable-boundary-representation
+//# Each Cadenza type that may appear in an exported or imported signature MUST have a single stable representation in the host interface's type system.
+///
+//= spec/contracts/component-abi.md#every-exported-type-has-a-stable-boundary-representation
+//# The boundary representation of a type MUST be a function of the type alone, independent of the compiler generation that emits it.
 pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
     match ty {
         Ty::Int(it) => {
