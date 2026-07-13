@@ -355,6 +355,19 @@
               (handle Amb 0 ((flip (u) s (not (resume 10 s)))) (and (< (Amb.flip) 5) true))) (export main)))
   (output (: true Bool)))
 
+(case "a handler arm that resumes NON-tail folds when the perform is in a let init"
+  (doc    "The pure one-hole continuation extends into a `let` INIT — a `let` runs its inits and its body
+           UNCONDITIONALLY, in sequence, so an init is a strict-spine position and the continuation
+           `C = (let ((x [])) (+ x x))` is uniform. `(resume 10 s)` returns into it: `C[10] = (let ((x 10))
+           (+ x x))` = 20, and the arm `(+ 1 (resume 10 s))` evaluates to `(+ 1 20)` = 21. The whole `let` is
+           copied per resume, so the binder re-binds independently in each copy — a multi-shot resume is
+           safe. A second perform elsewhere in the `let` (a two-hole context) still declines.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip))) (+ x x)))) (export main)))
+  (output (: 21 Int64)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the

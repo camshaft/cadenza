@@ -2908,12 +2908,25 @@ fn pure_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> PureHole {
             }
             pure_hole(db, lhs, ctx)
         }
-        // A `let` / nested handle / resume: if a discharged perform is anywhere inside, the continuation is
-        // non-uniform (sequenced through a binding, or a nested control effect) → Impure; else the whole
-        // form is pure and admissible as opaque context (the strongly-pure fall-through). (A `let` INIT is a
-        // strict-first position too, but a hole there binds a name a multi-shot resume would re-bind per
-        // splice — deferred; it conservatively declines now, an over-decline, never a mis-fold.)
-        Resolved::Let { .. } | Resolved::Handle { .. } | Resolved::Resume { .. } => {
+        // A `let ((n0 i0) …) body`: the inits and the body all run UNCONDITIONALLY, in sequence (an init,
+        // then later inits/the body see it) — so every INIT and the BODY is a strict-spine position, and a
+        // hole in exactly one of them has a uniform continuation `C = (let ((n0 i0[□?]) …) body[□?])`. The
+        // binder NAMES are label positions (never a value hole). `splice_context` copies the WHOLE `let` per
+        // resume, so each copy gets a fresh independent binder (the same re-parenting that makes a match
+        // binder-arm re-resolve) — a multi-shot resume is safe. Find ≤1 hole across the init VALUES then the
+        // body; two holes or a hole beside an impure sibling → Impure (via `pure_hole_seq`).
+        Resolved::Let {
+            bindings,
+            body: let_body,
+        } => {
+            let mut positions: Vec<StructId> = bindings.iter().map(|&(_n, i)| i).collect();
+            positions.push(let_body);
+            pure_hole_seq(db, positions.into_iter(), ctx)
+        }
+        // A nested handle / resume: if a discharged perform is anywhere inside, the continuation is
+        // non-uniform (a nested control effect) → Impure; else the whole form is pure and admissible as
+        // opaque context (the strongly-pure fall-through).
+        Resolved::Handle { .. } | Resolved::Resume { .. } => {
             if strongly_pure(db, node, ctx) {
                 PureHole::Pure
             } else {

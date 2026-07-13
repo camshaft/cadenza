@@ -21324,6 +21324,62 @@ mod stage1 {
     }
 
     #[test]
+    fn a_pure_one_hole_in_a_let_init_or_body_folds() {
+        // A `let` runs its inits and body UNCONDITIONALLY in sequence, so a hole in an INIT or the BODY is a
+        // strict-spine position with a uniform continuation. `splice_context` copies the whole `let` per
+        // resume, so the binder re-resolves in each copy (safe for a multi-shot resume).
+        // INIT hole, binder used TWICE: `C = (let ((x □)) (+ x x))`, resume 10 → `(let ((x 10)) (+ x x))` =
+        // 20, arm `(+ 1 (resume 10 s))` → `(+ 1 20)` = 21.
+        let init_hole = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip))) (+ x x)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(init_hole)))
+                    .expect("a hole in a let init folds"),
+                "main"
+            ),
+            21
+        );
+        // BODY hole (init pure): `C = (let ((x 5)) (+ x □))`, resume 10 → `(+ 5 10)` = 15, arm → `(+ 1 15)`
+        // = 16.
+        let body_hole = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x 5)) (+ x (Amb.flip))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(body_hole)))
+                    .expect("a hole in a let body folds"),
+                "main"
+            ),
+            16
+        );
+        // FIRST-init hole, a LATER init uses the binder: `C = (let ((x □) (y (+ x 1))) (+ x y))`, resume 10
+        // → x=10, y=11 → 21, arm → `(+ 1 21)` = 22.
+        let chained = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip)) (y (+ x 1))) (+ x y)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(chained)))
+                    .expect("a hole in the first let init, a later init using its binder, folds"),
+                "main"
+            ),
+            22
+        );
+    }
+
+    #[test]
+    fn two_performs_across_a_let_decline_the_pure_one_hole_fold() {
+        // ADVERSARIAL: a hole in a let INIT and another in the BODY is a TWO-hole context — `pure_hole_seq`
+        // over the init values + body finds a second hole → Impure → decline (needs sequential threading /
+        // real continuations, not a single splice).
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip))) (+ x (Amb.flip))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "two performs across a let must decline the single-hole fold"
+        );
+    }
+
+    #[test]
     fn a_pure_one_hole_in_a_match_scrutinee_folds() {
         // The perform may sit in a `match` SCRUTINEE — a STRICT, always-evaluated-first position (like an
         // `if` condition), so its continuation `C = (match [] (0 100) (_ 2))` is uniform (the arms run only

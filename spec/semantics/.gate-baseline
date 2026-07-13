@@ -287,6 +287,7 @@ pass	a handle body reads an enclosing function parameter
 pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm for an operation the effect does not declare is rejected
 pass	a handler arm that resumes NON-tail folds through a PURE one-hole continuation
+pass	a handler arm that resumes NON-tail folds when the perform is in a let init
 pass	a handler arm that resumes NON-tail folds when the perform is in a match scrutinee
 pass	a handler arm that resumes NON-tail folds when the perform is in an and lhs
 pass	a handler arm that resumes NON-tail folds when the perform is in an if condition
