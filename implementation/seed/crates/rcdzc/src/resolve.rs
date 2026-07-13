@@ -2511,6 +2511,13 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             "Unit" => Some(Ty::Unit),
             "Bytes" => Some(Ty::Bytes),
             "String" => Some(Ty::String),
+            // `Char`/`Symbol` — the other monomorphic leaf types (like `Bytes`/`String`). Without these
+            // arms the bare name decoded to `None`, so a `Char`/`Symbol` NESTED in a compound type-value
+            // (a `(Tuple Char …)` element or a variant payload — which boxes as a tuple) round-tripped to
+            // `Unit` and mis-typed ("Char and Unit must be the same type"). Paired with `encode_ty`'s
+            // `Char`/`Symbol` arms so the round-trip is faithful, exactly as the `Bytes`/`String` arms are.
+            "Char" => Some(Ty::Char),
+            "Symbol" => Some(Ty::Symbol),
             "Float32" => Some(Ty::Float(crate::ty::FloatTy::fixed(32))),
             "Float64" => Some(Ty::Float(crate::ty::FloatTy::fixed(64))),
             _ => None,

@@ -778,7 +778,9 @@ pass	a value definition may carry a leading doc, like a function definition
 pass	a value-eq guard on a LITERAL-probe arm drives a tail-recursive loop
 pass	a value-eq guard on a SUM-match arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
+pass	a variant carrying a Char payload constructs, matches, and binds it
 pass	a variant carrying a RECORD payload constructs and matches
+pass	a variant carrying a Symbol payload constructs, matches, and binds it
 pass	a variant carrying a record payload escapes to the host
 pass	a variant pattern over a Bool scrutinee is a type error
 pass	a variant pattern over a scalar scrutinee is a type error
