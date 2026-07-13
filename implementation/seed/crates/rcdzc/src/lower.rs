@@ -564,6 +564,15 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // needed (`lhs` runs exactly as it would as the condition; `rhs`, a re-evaluation of the
                 // same pure value, is dropped). Mirrors the bitwise `(& a a)`/`(| a a)` same-operand fold.
                 _ if core_equiv(db, lhs, rhs) => lc,
+                // COMPLEMENT LAW: `(and a (not a))` → `false` and `(or a (not a))` → `true` — a boolean and
+                // its negation are exhaustive+exclusive, so `and` is always false and `or` always true. The
+                // boolean analogue of the bitwise `x & ~x`/`x | ~x` fold (c119). DISCARDS both operands (the
+                // result is a constant), so gated on `is_trap_free(lhs)` — a trapping `a` must still trap
+                // (`core_equiv` matches only pure cores, so `a` is pure anyway, but keep the guard explicit).
+                // Both operand orders (`a`&`!a` / `!a`&`a`) are handled by `bool_complement_pair`.
+                _ if bool_complement_pair(db, lhs, rhs) && is_trap_free(db, lhs) => {
+                    Core::ConstBool(!is_and) // and → false ; or → true
+                }
                 _ => Core::And { lhs, rhs, is_and },
             },
         },
@@ -4601,7 +4610,9 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
 // caught by the runtime's byte-exact `value_encode_form_matches_the_codec` cross-check + the corpus).
 //
 // Shape tags: 0 Int, 1 Bool, 2 Float, 3 Str, 4 Bytes, 5 Unit, 6 Tuple[n][idx…], 7 List[idx],
-// 8 Record[n](name,idx)…, 9 Sum[n](head,idx)…, 10 Named(name,idx), 11 Ref(idx).
+// 8 Record[n](name,idx)…, 9 Sum[n](head,idx)…, 10 Named(name,idx), 11 Ref(idx), 12 Set[idx],
+// 13 Map(k,v), 14 Float32, 15 Framed(head,[arg…],idx), 16 Spread[n][idx…] (a multi-payload variant's
+// tuple payload, rendered FLAT under the variant head).
 
 /// Build the shape descriptor bytes for a `Ty::Sum` result, wrapped in the outer `(: <value> <Type>)`
 /// frame — the input to the runtime `value-encode` op. Handles a RECURSIVE sum: a sum decl already in
@@ -4707,6 +4718,12 @@ enum ShapeNode {
     /// bare type name. The runtime `value-encode` decodes this as descriptor tag 15 and renders the
     /// parametric type node, so a runtime List result crosses as `(: (list …) (List Int64))`.
     Framed(String, Vec<String>, u32),
+    /// A MULTI-payload variant's payload — a tuple handle at run time whose elements render FLATTENED
+    /// under the variant head (`(Cons h t)`, NOT `(Cons (tuple h t))`). The runtime (descriptor tag 16)
+    /// reads it exactly like a `Tuple` (each element via `arr-get`) but renders the elements DIRECTLY as
+    /// the variant's children rather than wrapping them in a `tuple` form. Only a `Sum` variant references
+    /// a `Spread` (it is the multi-payload variant payload); a genuine tuple VALUE stays a `Tuple`.
+    Spread(Vec<u32>),
 }
 
 /// Builds the shape table, memoizing each `Ty::Sum` by its declaration occurrence so a recursive
@@ -4801,7 +4818,15 @@ impl ShapeTableBuilder {
                 let variants = sum_variant_payload_types(db, ty)?;
                 let mut out = Vec::with_capacity(variants.len());
                 for (head, payload_tys) in variants {
-                    // A variant's payload shape: no payload → Unit; one → that type; many → a Tuple.
+                    // A variant's payload shape: no payload → Unit; one → that type; MANY → a SPREAD.
+                    // A MULTI-payload variant `(Cons Int64 L)` boxes its payloads as a tuple handle at run
+                    // time, but its CANONICAL value form is FLAT — `(Cons h t)`, matching both the surface
+                    // construction `(L.Cons h t)` and the non-recursive `sum_form_template` render
+                    // (`(Variant p0 p1 …)`). So it uses `Spread` (the runtime renders the variant head
+                    // followed by each tuple ELEMENT, no `tuple` wrapper) — NOT `Tuple` (which would render
+                    // `(Cons (tuple h t))`, exposing the internal boxing). A SINGLE tuple-typed payload
+                    // `(Cons (Tuple Int64 L))` is a genuine one-payload variant whose payload IS a tuple, so
+                    // it takes the `1 =>` arm and renders `(Cons (tuple h t))` correctly.
                     let payload_ix = match payload_tys.len() {
                         0 => self.push(ShapeNode::Unit),
                         1 => self.shape_of(db, &payload_tys[0])?,
@@ -4810,7 +4835,7 @@ impl ShapeTableBuilder {
                             for pt in &payload_tys {
                                 idxs.push(self.shape_of(db, pt)?);
                             }
-                            self.push(ShapeNode::Tuple(idxs))
+                            self.push(ShapeNode::Spread(idxs))
                         }
                     };
                     out.push((head, payload_ix));
@@ -4926,6 +4951,13 @@ impl ShapeTableBuilder {
                         name(&mut d, a);
                     }
                     leb(&mut d, *i as u64);
+                }
+                ShapeNode::Spread(idxs) => {
+                    d.push(16); // matches the runtime `decode_shape` tag 16 = Spread
+                    leb(&mut d, idxs.len() as u64);
+                    for &i in idxs {
+                        leb(&mut d, i as u64);
+                    }
                 }
             }
         }
@@ -6772,6 +6804,18 @@ fn complement_pair(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<StructId
     }
 }
 
+/// Whether `lhs`/`rhs` are BOOLEAN complements — one is `v` and the other is `(not v)` (`Core::Not` whose
+/// operand is `core_equiv` to the first). The `and`/`or` analogue of the bitwise `complement_pair`; drives
+/// the boolean complement laws `(and a (not a))` → false, `(or a (not a))` → true. Both operand orders are
+/// tried. (`Core::Not` is `lower`'s canonical boolean negation — a `(not (not a))` already cancelled in the
+/// `Resolved::Not` fold, so a `Not` here wraps a non-`Not` operand.)
+fn bool_complement_pair(db: &mut Db, lhs: StructId, rhs: StructId) -> bool {
+    let is_not_of = |db: &mut Db, maybe_not: StructId, other: StructId| -> bool {
+        matches!(core_of(db, maybe_not), Core::Not { operand } if core_equiv(db, operand, other))
+    };
+    is_not_of(db, rhs, lhs) || is_not_of(db, lhs, rhs)
+}
+
 /// The NESTED-BITWISE COLLAPSE for an outer TOTAL, ASSOCIATIVE bitwise op (`&`/`|`/`^`) whose operands
 /// are `(lhs, rhs)` (cores `lc`/`rc`): when one operand is `(OP v C1)` — the SAME op — and the OTHER is a
 /// constant `C2`, returns `(OP v (C1 ⊙ C2))` where `⊙` is that op's constant fold — one op instead of
@@ -7169,6 +7213,10 @@ fn is_trap_free(db: &mut Db, id: StructId) -> bool {
             rhs,
         }
         | Core::Compare { lhs, rhs, .. } => is_trap_free(db, lhs) && is_trap_free(db, rhs),
+        // Boolean negation `not` is a single `i32.eqz` — total (never traps) — so trap-free if its operand
+        // is. (Lets `(not a)` participate in a discarding fold, e.g. the boolean complement law
+        // `(and (not a) a)` → false, whose `is_trap_free(lhs)` guard sees the `(not a)` lhs.)
+        Core::Not { operand } => is_trap_free(db, operand),
         // `wrap` is total (never traps) — trap-free if its operand is.
         Core::Convert {
             op: Prim::Wrap,

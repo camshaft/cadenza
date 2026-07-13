@@ -1080,6 +1080,12 @@ enum Shape {
     /// parametric result type whose arguments are type names) so a runtime List renders `(: (list …)
     /// (List Int64))` — the element type is OBSERVABLE, matching the constant-List value form.
     Framed(String, Vec<String>, u32),
+    /// A MULTI-payload sum variant's payload — a tuple handle at run time (`arr` of the boxed payloads)
+    /// whose elements render FLATTENED as the variant's children: `(Cons h t)`, NOT `(Cons (tuple h t))`.
+    /// Read exactly like a `Tuple` (each element via `arr-get`) but the enclosing `Sum` walk splices the
+    /// elements directly under the variant head instead of emitting a `tuple` form. Only a `Sum` variant's
+    /// payload references a `Spread`; a genuine tuple VALUE stays a `Tuple`.
+    Spread(Vec<u32>),
 }
 
 /// The decoded descriptor: the shape table + the root index. A child index into `table` is followed by
@@ -1171,6 +1177,16 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
                 args.push(desc_name(d, pos)?);
             }
             Shape::Framed(head, args, desc_leb(d, pos)? as u32)
+        }
+        16 => {
+            // Spread: [ n ]( idx )*n — same wire shape as Tuple (tag 6), a distinct tag so the Sum walk
+            // knows to splice the elements FLAT under the variant head rather than wrap them in `tuple`.
+            let n = desc_leb(d, pos)?;
+            let mut elems = Vec::with_capacity(n as usize);
+            for _ in 0..n {
+                elems.push(desc_leb(d, pos)? as u32);
+            }
+            Shape::Spread(elems)
         }
         _ => return None,
     })
@@ -1717,15 +1733,37 @@ fn encode_value(
                         let (head, payload_shape) = variants.get(disc)?;
                         let head_leaf = b.name_leaf(head);
                         let head_s = b.atom(head_leaf);
-                        // A nullary variant's payload shape is `Unit` → the bare `unit` atom (the
-                        // `(Variant unit)` form); a payload variant reaches its payload via `sum-payload`
-                        // — a DIFFERENT heap node → progress → reset `refs`.
-                        work.push(EncodeWork::List { head_s, nkids: 1 });
-                        work.push(EncodeWork::Visit {
-                            h: op_sum_payload(h),
-                            shape_ix: *payload_shape,
-                            refs: 0,
-                        });
+                        let payload_shape = *payload_shape;
+                        let payload_h = op_sum_payload(h);
+                        // A MULTI-payload variant's payload is a `Spread`: the payload handle is the tuple
+                        // arr of the boxed payloads, and the variant renders `(Variant p0 p1 …)` — the
+                        // elements FLATTENED directly under the head, NOT wrapped in a `tuple` form. So
+                        // splice the tuple's elements as the variant's children (one `arr-get` per element,
+                        // like the `Tuple` walk) rather than visiting the single tuple shape.
+                        if let Some(Shape::Spread(elems)) = desc.table.get(payload_shape as usize) {
+                            let elems = elems.clone();
+                            work.push(EncodeWork::List {
+                                head_s,
+                                nkids: elems.len(),
+                            });
+                            for (i, &es) in elems.iter().enumerate().rev() {
+                                work.push(EncodeWork::Visit {
+                                    h: op_arr_get(payload_h, i as u32),
+                                    shape_ix: es,
+                                    refs: 0,
+                                });
+                            }
+                        } else {
+                            // A nullary variant's payload shape is `Unit` → the bare `unit` atom (the
+                            // `(Variant unit)` form); a single-payload variant reaches its payload via
+                            // `sum-payload` — a DIFFERENT heap node → progress → reset `refs`.
+                            work.push(EncodeWork::List { head_s, nkids: 1 });
+                            work.push(EncodeWork::Visit {
+                                h: payload_h,
+                                shape_ix: payload_shape,
+                                refs: 0,
+                            });
+                        }
                     }
                     Shape::Named(name, inner) => {
                         // The `(: <value> <Type>)` value-form frame — same `h`, no node consumed → count.
@@ -1794,6 +1832,31 @@ fn encode_value(
                             work.push(EncodeWork::MapPair);
                             work.push(EncodeWork::Visit { h: v, shape_ix: val, refs: 0 });
                             work.push(EncodeWork::Visit { h: k, shape_ix: key, refs: 0 });
+                        }
+                    }
+                    Shape::Spread(elems) => {
+                        // A `Spread` is ONLY reached inline by the `Sum` walk (which splices its elements
+                        // under the variant head). Visited DIRECTLY (a malformed descriptor that roots or
+                        // nests a Spread outside a Sum variant), render it as an ordinary `tuple` — a safe
+                        // fallback that never traps, matching the `Tuple` walk.
+                        if elems.is_empty() {
+                            let l = b.name_leaf("unit");
+                            out.push(b.atom(l));
+                        } else {
+                            let elems = elems.clone();
+                            let head = b.name_leaf("tuple");
+                            let head_s = b.atom(head);
+                            work.push(EncodeWork::List {
+                                head_s,
+                                nkids: elems.len(),
+                            });
+                            for (i, &es) in elems.iter().enumerate().rev() {
+                                work.push(EncodeWork::Visit {
+                                    h: op_arr_get(h, i as u32),
+                                    shape_ix: es,
+                                    refs: 0,
+                                });
+                            }
                         }
                     }
                 }
@@ -6274,9 +6337,28 @@ mod tests {
                 let (head, payload_shape) = (head.clone(), *payload_shape);
                 let head_leaf = b.name_leaf(&head);
                 let head_s = b.atom(head_leaf);
-                let payload =
-                    encode_value_recursive(desc, b, op_sum_payload(h), payload_shape, depth + 1)?;
-                b.list(&[head_s, payload])
+                let payload_h = op_sum_payload(h);
+                // A MULTI-payload variant's payload is a `Spread` — splice its tuple elements FLAT under the
+                // variant head (`(Cons h t)`), mirroring the iterative walk. A single/nullary payload
+                // recurses into the one payload shape (`(Cons (tuple h t))` / `(None unit)`).
+                if let Some(S::Spread(elems)) = desc.table.get(payload_shape as usize) {
+                    let elems = elems.clone();
+                    let mut children = vec![head_s];
+                    for (i, &es) in elems.iter().enumerate() {
+                        children.push(encode_value_recursive(
+                            desc,
+                            b,
+                            op_arr_get(payload_h, i as u32),
+                            es,
+                            depth + 1,
+                        )?);
+                    }
+                    b.list(&children)
+                } else {
+                    let payload =
+                        encode_value_recursive(desc, b, payload_h, payload_shape, depth + 1)?;
+                    b.list(&[head_s, payload])
+                }
             }
             S::Named(name, inner) => {
                 let (name, inner) = (name.clone(), *inner);
@@ -6332,6 +6414,28 @@ mod tests {
                     let ks = encode_value_recursive(desc, b, k, key, depth + 1)?;
                     let vs = encode_value_recursive(desc, b, v, val, depth + 1)?;
                     children.push(b.list(&[ks, vs]));
+                }
+                b.list(&children)
+            }
+            S::Spread(elems) => {
+                // Reached DIRECTLY (not via a Sum variant) only by a malformed descriptor — render as an
+                // ordinary `tuple`, the safe fallback the iterative walk uses.
+                if elems.is_empty() {
+                    let l = b.name_leaf("unit");
+                    return Some(b.atom(l));
+                }
+                let elems = elems.clone();
+                let head = b.name_leaf("tuple");
+                let head_s = b.atom(head);
+                let mut children = vec![head_s];
+                for (i, &es) in elems.iter().enumerate() {
+                    children.push(encode_value_recursive(
+                        desc,
+                        b,
+                        op_arr_get(h, i as u32),
+                        es,
+                        depth + 1,
+                    )?);
                 }
                 b.list(&children)
             }
@@ -7037,6 +7141,55 @@ mod tests {
         );
         op_drop(m);
         assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    /// value-encode of EMPTY collections — the zero-element assembler edge (`SetOf`/`MapOf`/`List` with
+    /// 0 children, `list_head_tail` with an empty tail, the `checked_sub(0)` in the assemblers). An empty
+    /// collection returned to the host is common; a zero-element bug (underflow, dropped head, wrong form)
+    /// would be a silent miscompile. Empty set → `((. Set of) (list))`, empty map → `(map)`, empty list
+    /// → `(list)`. Verified byte-identical to the recursive oracle + the concrete forms.
+    #[test]
+    fn value_encode_empty_collections() {
+        reset();
+        let before = live_nodes();
+
+        // Helper: encode `v` under descriptor `d`, assert iterative==recursive oracle, return the doc.
+        let check = |v: Handle, d: &[u8]| -> Vec<u8> {
+            let doc = op_value_encode_form(v, d).expect("encode empty collection");
+            let descriptor = decode_descriptor(d).expect("descriptor");
+            let mut b = DocBuilder::default();
+            let root = encode_value_recursive(&descriptor, &mut b, v, descriptor.root, 0).expect("recursive");
+            assert_eq!(doc, b.finish(root), "iterative and recursive empty-collection encode must agree");
+            doc
+        };
+
+        // Empty SET → `((. Set of) (list))`. desc: [0]=Int, [1]=Set(→0), root=1.
+        let es = op_set_empty();
+        let sd: &[u8] = &[0x02, 0x00, 0x0c, 0x00, 0x01];
+        let sdoc = check(es, sd);
+        // Names in order: `list` (inner, emitted eagerly), then `.`,`Set`,`of` (the head, post-order). No ints.
+        assert!(sdoc.windows(4).any(|w| w == b"list"), "empty set has a `list` head");
+        assert!(sdoc.windows(3).any(|w| w == b"Set"), "empty set has the `Set` head");
+        op_drop(es);
+
+        // Empty MAP → `(map)`. desc: [0]=Int, [1]=Int, [2]=Map(→0,→1), root=2.
+        let em = op_map_empty();
+        let md: &[u8] = &[0x03, 0x00, 0x00, 0x0d, 0x00, 0x01, 0x02];
+        let mdoc = check(em, md);
+        // A `(map)` with no entries: exactly one leaf (the `map` name), one atom, one list-of-1 struct.
+        assert_eq!(mdoc[8], 1, "empty map document has ONE leaf (the `map` name)");
+        assert!(mdoc.windows(3).any(|w| w == b"map"), "empty map renders the bare `map` head");
+        op_drop(em);
+
+        // Empty LIST → `(list)`. desc: [0]=Int, [1]=List(→0), root=1.
+        let el = op_vec_empty();
+        let ld: &[u8] = &[0x02, 0x00, 0x07, 0x00, 0x01];
+        let ldoc = check(el, ld);
+        assert_eq!(ldoc[8], 1, "empty list document has ONE leaf (the `list` name)");
+        assert!(ldoc.windows(4).any(|w| w == b"list"), "empty list renders the bare `list` head");
+        op_drop(el);
+
+        assert_eq!(live_nodes(), before, "no leak: every empty collection dropped");
     }
 
     /// `value-encode` renders a `Shape::Framed` (descriptor tag 15) as the `(: value (head arg…))`

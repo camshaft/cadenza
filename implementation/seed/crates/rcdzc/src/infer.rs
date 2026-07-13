@@ -2445,6 +2445,59 @@ fn int_coercion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, Stri
     None
 }
 
+/// The coercion [`Fix`] that repairs a NUMERIC/TEXT mismatch between an `expected` type and the value
+/// `arg` (of type `actual`), or `None` when no total one-shot conversion applies. Consolidates the four
+/// coercions the argument-unify chain offers — int→float (`of-int`, width-aware), int-width (`.of`),
+/// int-valued-float-literal drop (`3.0`→`3`), and String→Bytes (`to-bytes`) — so EVERY site the same
+/// mismatch surfaces (an operator/ctor argument AND a VARIANT-CONSTRUCTOR PAYLOAD) offers the identical
+/// repair. Does NOT include the sum-wrap ("wrap in `Some`", `wrap_variant_for`) — that is a distinct
+/// structural repair a caller adds separately. Every fix is heuristic (`.of` is checked, drop-`.0` and
+/// to-bytes are intent guesses); the wrap text is a resolver-generic member-access spelling, not a
+/// hard-coded name.
+fn numeric_text_coercion_fix(
+    db: &mut Db,
+    expected: &Ty,
+    actual: &Ty,
+    arg: StructId,
+) -> Option<Fix> {
+    // int → float: `(<Float>.of-int …)`, widening a narrower int to Int64 first (`of-int : Int64 → Float`).
+    if let (Ty::Float(_), Ty::Int(actual_int)) = (expected, actual) {
+        let float_name = expected.render_name();
+        let (prefix, suffix, verb) =
+            if actual_int.ground_width() == 64 && actual_int.ground_signed() {
+                (
+                    format!("({float_name}.of-int "),
+                    ")".to_string(),
+                    format!("convert the integer to {float_name} with `{float_name}.of-int`"),
+                )
+            } else {
+                (
+                    format!("({float_name}.of-int (Int64.of "),
+                    "))".to_string(),
+                    format!("convert to {float_name} with `{float_name}.of-int (Int64.of …)`"),
+                )
+            };
+        return Some(Fix::wrap_heuristic(arg, prefix, suffix, verb));
+    }
+    // two integers / two floats of different width → `(<Expected>.of …)`.
+    if let Some((prefix, suffix, verb)) = int_coercion_wrap(expected, actual) {
+        return Some(Fix::wrap_heuristic(arg, prefix, suffix, verb));
+    }
+    // integer-valued float LITERAL where an int is expected → drop the `.0`.
+    if let Ty::Int(exp) = expected
+        && let crate::ast::Struct::Atom(lid) = db.ast.get(arg)
+        && let crate::ast::Leaf::Float(dec) = db.ast.leaf(*lid).clone()
+        && let Some(int_text) = integer_text_of_float_literal(&dec, *exp)
+    {
+        return Some(Fix::replace_heuristic(arg, int_text));
+    }
+    // a total prelude conversion (`String` → `Bytes` via `String.to-bytes`).
+    if let Some((prefix, suffix, verb)) = total_conversion_wrap(expected, actual) {
+        return Some(Fix::wrap_heuristic(arg, prefix, suffix, verb));
+    }
+    None
+}
+
 /// The UNDERLYING structural type of the nominal NEWTYPE declared at `decl`, or `None` if `decl` is not
 /// an erasable newtype (so it stays an ordinary boxed `Ty::Sum`). A newtype is a SINGLE-variant sum
 /// whose runtime box is erased — the realization of `type-system.md §Nominal Is An Orthogonal Modifier`
@@ -3623,7 +3676,13 @@ fn check_application(
                     let sparam = subst.apply(&param);
                     let sat = subst.apply(&at);
                     if crate::eval::variant_disc_of(db, head).is_some() {
-                        out.push(Reject::coded(
+                        // A wrong-type payload to a VARIANT CONSTRUCTOR (CDZ0201). When the mismatch is a
+                        // NUMERIC/TEXT one a total conversion repairs — `(Mk a)` with `a:Int8`, payload
+                        // Int64 → `(Int64.of a)`; `(Mk 3.0)`, payload Int64 → `3`; `(Mk s)` s:String,
+                        // payload Bytes → `(String.to-bytes s)` — offer the SAME coercion fix the operator/
+                        // argument position does (the D33 lesson: the same repair wherever the same mismatch
+                        // surfaces). No coercion (e.g. Bool payload) → the bare reject.
+                        let mut reject = Reject::coded(
                             Code::Malformed,
                             format!(
                                 "a variant constructor's payload has declared type {}, but a value of \
@@ -3631,7 +3690,11 @@ fn check_application(
                                 sparam.render_name(),
                                 sat.render_name()
                             ),
-                        ));
+                        );
+                        if let Some(fix) = numeric_text_coercion_fix(db, &sparam, &sat, arg) {
+                            reject = reject.with_fix(fix);
+                        }
+                        out.push(reject);
                     } else if let (Some(da), Some(db_)) =
                         (nominal_or_sum_decl(&sparam), nominal_or_sum_decl(&sat))
                         && da != db_
@@ -3655,78 +3718,14 @@ fn check_application(
                                 sat.render_name()
                             ),
                         ));
-                    } else if let (Ty::Float(_), Ty::Int(actual_int)) = (&sparam, &sat) {
-                        // An INTEGER operand where a FLOAT is expected (`(+. x 2.0)` with `x : Int64`) —
-                        // the numeric model has NO silent promotion, so this is CDZ0301. But it has a
-                        // mechanical repair: the corpus-blessed `(<FloatType>.of-int …)` conversion
-                        // (`06-numeric-model.sexp` — `(+. (Float64.of-int 1) 2.0)`). The float type's own
-                        // rendered name gives the module (`Float64`/`Float32`), so the ctor is derived, not
-                        // hard-coded (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
-                        // Fix). The reject KEEPS its unify-produced message + code; the fix rides alongside.
-                        //
-                        // ⚠ `of-int : Int64 → Float` — it takes EXACTLY `Int64`. So a bare
-                        // `(Float64.of-int x)` is correct ONLY when the operand is already `Int64`; for a
-                        // NARROWER int (`x : Int32`) it must first widen `(Int64.of x)`, giving the nested
-                        // `(Float64.of-int (Int64.of x))`. Emit the operand-width-aware form so the
-                        // suggested fix actually type-checks in one shot (verified by test), not a fix that
-                        // just cascades to the next mismatch.
-                        let float_name = sparam.render_name();
-                        let (prefix, suffix, verb) = if actual_int.ground_width() == 64
-                            && actual_int.ground_signed()
-                        {
-                            (
-                                format!("({float_name}.of-int "),
-                                ")".to_string(),
-                                format!(
-                                    "convert the integer to {float_name} with `{float_name}.of-int`"
-                                ),
-                            )
-                        } else {
-                            // Non-Int64 operand: widen to Int64 first, then to the float.
-                            (
-                                format!("({float_name}.of-int (Int64.of "),
-                                "))".to_string(),
-                                format!(
-                                    "convert to {float_name} with `{float_name}.of-int (Int64.of …)`"
-                                ),
-                            )
-                        };
-                        out.push(reject.with_fix(Fix::wrap_heuristic(arg, prefix, suffix, verb)));
-                    } else if let Some((prefix, suffix, verb)) = int_coercion_wrap(&sparam, &sat) {
-                        // Two INTEGER types of different width/sign (`(+ a b)` with `a:Int32`, `b:Int64`)
-                        // — CDZ0301, no silent promotion. The repair is the corpus-blessed CHECKED
-                        // conversion `(<TargetInt>.of operand)` converting the mis-typed operand to the
-                        // EXPECTED type (`int_coercion_wrap` gates the aliased-width / bound-name logic).
-                        out.push(reject.with_fix(Fix::wrap_heuristic(arg, prefix, suffix, verb)));
-                    } else if let (Ty::Int(expected), Ty::Float(_)) = (&sparam, &sat)
-                        && let crate::ast::Struct::Atom(lid) = db.ast.get(arg)
-                        && let crate::ast::Leaf::Float(dec) = db.ast.leaf(*lid).clone()
-                        && let Some(int_text) = integer_text_of_float_literal(&dec, *expected)
-                    {
-                        // The MIRROR of the `of-int` coercion above: an INTEGER is expected but a FLOAT
-                        // LITERAL is supplied (`(+ 2 2.0)`) — CDZ0301, no silent promotion. Unlike the
-                        // int→float direction there is NO prelude float→int conversion op to wrap with, so
-                        // a fix is possible ONLY for an integer-VALUED literal (`2.0`, `300.0`), whose
-                        // clean repair is to drop the fractional form: REPLACE `2.0` with `2`. A
-                        // non-integer literal (`2.5`) or an out-of-range one yields no `int_text` and falls
-                        // through to the plain reject — honest, since truncating/rounding is a semantic
-                        // choice the compiler must not make for the author (`spec/capabilities/
-                        // diagnostics.md` §A Diagnostic Carries A Route To A Fix). The replacement is
-                        // integer-valued and range-checked against the expected width, so it type-checks in
-                        // ONE shot. HEURISTIC, not verified — like the sibling `of-int` wrap: the edit
-                        // resolves the mismatch, but WHICH way the author meant to resolve it is a guess
-                        // (drop `.0` to keep integers, vs. make the whole expression float `(+. 2.0 2.0)`).
-                        // `--verify-fixes` upgrades it to verified on the recompile, so an agent still gets
-                        // the machine-applicable signal without the compiler claiming intent it can't know.
-                        out.push(reject.with_fix(Fix::replace_heuristic(arg, int_text)));
-                    } else if let Some((prefix, suffix, verb)) =
-                        total_conversion_wrap(&sparam, &sat)
-                    {
-                        // A total prelude CONVERSION bridges the mismatch — `String` where `Bytes` is
-                        // expected → wrap in `(String.to-bytes …)`. Same coercion-wrap shape as the numeric
-                        // `of-int`/`.of` arms above; heuristic (the author might have meant a different
-                        // encoding boundary), `--verify-fixes` upgrades it.
-                        out.push(reject.with_fix(Fix::wrap_heuristic(arg, prefix, suffix, verb)));
+                    } else if let Some(fix) = numeric_text_coercion_fix(db, &sparam, &sat, arg) {
+                        // A NUMERIC/TEXT mismatch a total conversion repairs — int→float (`of-int`),
+                        // int-width (`.of`), int-valued-float-literal drop (`2.0`→`2`), or String→Bytes
+                        // (`to-bytes`). The reject KEEPS its unify-produced message + code (CDZ0301/0203);
+                        // the coercion fix rides alongside. Shared with the variant-ctor payload position
+                        // via `numeric_text_coercion_fix` so the SAME mismatch offers the SAME repair
+                        // everywhere (the D33 lesson, consolidated D40).
+                        out.push(reject.with_fix(fix));
                     } else if let Some(variant) = wrap_variant_for(db, &sparam, &sat) {
                         // A value of the sum's PAYLOAD type where the SUM itself is expected — `5 : Int64`
                         // where `(Option Int64)` is required, in an OPERATOR/ctor argument position. The

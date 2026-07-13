@@ -2,8 +2,23 @@
 
 *2026-07-13. Operator directive: "we need to build a bigint arbitrary precision type in the runtime as a
 prerequisite. do deep research on the best way to do that and write up a document for design and impl
-plan."* This is the design + increment plan. **No code is written yet** — this document is the
-deliverable.
+plan."* This is the design + increment plan.
+
+> **STATUS (2026-07-13):** B0 (`Ty::BigInt` through the closed universe) and B1 (`BigInt.of` +
+> constant folding + checked `Int64.of`-back) are LANDED on `spec`. The RUNTIME limb library
+> (`cdz-runtime/src/bigint.rs`: add/sub/mul/divmod/gcd/cmp + boundary encodings) is being built in
+> PARALLEL by separate cron-driven agents (landed `05dbcc46`/`cbda83a0`/`4e577d7c`).
+>
+> ⚠ **B2 (`Ty::Rational`) is PAUSED pending a cross-track sync (operator-directed).** Rationals need
+> bignum, and there are TWO bignum layers with DIFFERENT owners: the RUNTIME `Big` (the crons' crate,
+> for runtime-valued rationals) and a COMPILER-SIDE bignum for constant folding. `rcdzc`'s own
+> `IntValue` (`ast.rs`) has NO mul/div/gcd — so B2's normalization needs either (a) reach-through to
+> `num_bigint::BigInt` (already a transitive dep via `cadenza-syntax`) or (b) new arithmetic on
+> `IntValue`. Building the compile-time-fold layer now risks DUPLICATING / conflicting with whatever the
+> BigInt track intends to provide compiler-side. **Open question for the sync: does the BigInt track
+> plan a shared compiler-side rational/bignum-arithmetic surface, or should the units track build B2's
+> `num-bigint`-backed constant fold independently?** Resolve before resuming B2. (There is NO live
+> channel between the tracks — coordination is via `spec` commits + this doc.)
 
 ## §0 — Why, and what this unblocks
 

@@ -584,6 +584,7 @@ pass	a recursive sum consumer whose arguments are recursive sum producers compil
 pass	a recursive sum type works with pattern matching
 pass	a recursive user sum built in a lib is folded by the entry's structural copy
 pass	a recursive user sum type is built at run time and renders its variant names
+pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
 pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a recursively-built linked list renders its full runtime spine
@@ -1049,6 +1050,13 @@ pass	disjunction shields a trapping right operand when the left is true
 pass	distinct large floats are not equal
 pass	distinct names bound to the same string key the same map entry
 pass	distinct signatures sharing a core valtype shape dispatch distinct bodies
+pass	distinct-sig byte-rope closure alongside a plain export — the closure
+pass	distinct-sig byte-rope closure alongside a plain export — the plain
+pass	distinct-sig byte-rope closures — the Bool→Bytes one
+pass	distinct-sig byte-rope closures — the Int64→Bytes one
+pass	distinct-sig: a String closure + a Bytes closure of different signatures — the String one
+pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one
+pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one
 pass	distinct-signature capturing closures alongside a parameterized plain export
 pass	distinct-signature capturing closures alongside a parameterized plain export — the plain runs
 pass	distinct-signature capturing producers

@@ -504,11 +504,14 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
 /// is CDZ0203.
 fn mismatch(a: &Ty, b: &Ty) -> Reject {
     trace!(target: "rcdzc::unify", lhs = %a.render_name(), rhs = %b.render_name(), "unify FAILED (conflicting use)");
-    // Both sides NUMERIC (an integer of any width/sign, or a float) but DIFFERENT — the no-silent-
-    // promotion rule (CDZ0301, `numeric-model.md` §Numeric Types Do Not Silently Promote). Covers a
-    // width/sign mismatch (`Int32` vs `Int64`) AND an integer↔float mix (`Int64` vs `Float64`, i.e.
-    // `(+ 2 2.0)`). A non-numeric conflict (`Bool` vs `Int64`) stays the general CDZ0203.
-    let is_numeric = |t: &Ty| matches!(t, Ty::Int(_) | Ty::Float(_));
+    // Both sides NUMERIC (an integer of any width/sign, a float, or a BigInt) but DIFFERENT — the
+    // no-silent-promotion rule (CDZ0301, `numeric-model.md` §Numeric Types Do Not Silently Promote).
+    // Covers a width/sign mismatch (`Int32` vs `Int64`), an integer↔float mix (`Int64` vs `Float64`,
+    // `(+ 2 2.0)`), AND a `BigInt`↔fixed-int mix (`(+ (BigInt.of n) 1)`) — the `unify` arm for `BigInt`
+    // states it "falls to `mismatch` … CDZ0301", so `BigInt` must count as numeric here (else it fell to
+    // the generic CDZ0203, missing the "convert explicitly with `BigInt.of`" story). A non-numeric
+    // conflict (`Bool` vs `Int64`) stays the general CDZ0203.
+    let is_numeric = |t: &Ty| matches!(t, Ty::Int(_) | Ty::Float(_) | Ty::BigInt);
     let both_numeric = is_numeric(a) && is_numeric(b);
     if both_numeric {
         // Two different numeric types — the no-silent-promotion rule (CDZ0301). Name the RULE and point
