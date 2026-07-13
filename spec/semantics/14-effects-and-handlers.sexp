@@ -368,6 +368,51 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip))) (+ x x)))) (export main)))
   (output (: 21 Int64)))
 
+(case "a handler arm that resumes NON-tail folds a perform in an if branch by handler distribution"
+  (doc    "A perform in an `if` BRANCH (a CONDITIONALLY-run position) folds when the CONDITION is pure, by
+           HANDLER DISTRIBUTION — a commuting conversion: `(handle E s arms (if c t e))` is equivalent to
+           `(if c (handle E s arms t) (handle E s arms e))`. The condition runs exactly once (it is pure, so
+           it advances no handler state), and each branch becomes a smaller handle body the pure one-hole
+           fold already serves — only the taken branch runs, seeing the seed state. Here `(if (< 3 5) (+ 1
+           (Amb.flip)) 0)` distributes: the true branch `(handle … (+ 1 (Amb.flip)))` has `C = (+ 1 [])`, so
+           `(resume 10 s)` = `C[10]` = 11 and the arm `(+ 1 (resume 10 s))` = `(+ 1 11)` = 12; the false
+           branch is a pure body. `(< 3 5)` is true → 12. A perform in the CONDITION itself (not a pure
+           condition) still declines — distributing it would need the frame machinery.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (+ 1 (Amb.flip)) 0))) (export main)))
+  (output (: 12 Int64)))
+
+(case "a handler arm that resumes NON-tail folds a perform in a match arm body by handler distribution"
+  (doc    "The commuting conversion of the preceding case, over a `match` with a pure SCRUTINEE:
+           `(handle E s arms (match k (p b)…))` is equivalent to `(match k (p (handle E s arms b))…)`. The
+           scrutinee runs exactly once (pure, evaluated before any arm, advancing no state), and each arm
+           body becomes a smaller handle body the pure one-hole fold serves — only the matched arm runs. A
+           pattern binder still scopes its (reduced) arm body. Here `(match 1 (0 5) (_ (+ 1 (Amb.flip))))`
+           distributes: scrutinee `1` selects the `_` arm → `(handle … (+ 1 (Amb.flip)))` has `C = (+ 1 [])`,
+           so `(resume 10 s)` = 11 and the arm `(+ 1 (resume 10 s))` = 12. A perform in the SCRUTINEE itself
+           (not pure) still declines — that needs the frame machinery.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match 1 (0 5) (_ (+ 1 (Amb.flip)))))) (export main)))
+  (output (: 12 Int64)))
+
+(case "a handler arm that resumes NON-tail folds a perform in a short-circuit connective right operand"
+  (doc    "A perform in an `and`/`or` RIGHT operand (a conditionally-run position) folds by composition: the
+           connective desugars to `if` — `(and l r)` is `(if l r false)`, `(or l r)` is `(if l true r)` —
+           and the `if`-branch perform then distributes (the pure-conditioned tail conditional case). The
+           short-circuit is preserved because the right operand becomes a conditionally-taken branch: it runs
+           only when the left operand selects it. Here `(and (< 3 5) (< (Amb.flip) 5))` with arm `(not (resume
+           10 s))`: the left `(< 3 5)` is true, so the right runs — `C = (< [] 5)`, `(resume 10 s)` = `(< 10
+           5)` = false, and `(not false)` = true.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (not (resume 10 s)))) (and (< 3 5) (< (Amb.flip) 5)))) (export main)))
+  (output (: true Bool)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the
@@ -1110,3 +1155,21 @@
             (def (main) (+ 20 22)) (export main)))
   (output (: 42 Int64))
   (host-calls))
+
+(case "two effects declared with the same name are distinct, not one merged effect"
+  (doc    "Two `(effect Log …)` declarations name the SAME bare `Log` but declare DIFFERENT operation
+           sets — the first only `emit`, the second only `record`. They are two DISTINCT effects
+           (capabilities-and-effects.md #An Effect's Operations Are A Closed Set: an effect's identity is
+           its declaration, not its name), NOT one effect merging both operation sets. A bare `Log`
+           reference resolves the first-declared, whose closed operation set is `{emit}`; so a handler arm
+           naming `record` — the SECOND Log's operation — names an operation the first Log does not
+           declare, rejected CDZ0403. Pins that a same-name second declaration never leaks its operations
+           into the first (were the two conflated into one effect declaring `{emit, record}`, the `record`
+           arm would be accepted). This is the effect twin of the duplicate-definition rule (11-modules):
+           a name resolves to one declaration, never a silent union across same-named declarations.")
+  (input  (do
+            (effect Log (op emit (-> Int64 Int64)))
+            (effect Log (op record (-> Int64 Int64)))
+            (def (main)
+              (handle Log 0 ((record (n) s (resume n s))) 0)) (export main)))
+  (error  CDZ0403))

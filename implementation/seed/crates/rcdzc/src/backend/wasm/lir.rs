@@ -59,6 +59,12 @@ impl BlockType {
 }
 
 /// One flat wasm instruction. Frozen for the Stage-0 slice.
+///
+/// This is the dedicated instruction sum: emitted instructions are values of a typed Rust `enum`
+/// deconstructed by pattern matching (see `serialize::instr`), never string-tagged pseudo-structures —
+/// so an instruction is inspected variant-by-variant like any other value, not by matching a string tag.
+//= spec/capabilities/compiler-pipeline.md#the-compiler-operates-on-ast-values
+//# The compiler MUST represent the instructions it emits as values of a typed sum type — the AST sum or a dedicated instruction sum — deconstructible by pattern matching, not as string-tagged pseudo-structures, so that an instruction is inspected like any other Cadenza value rather than by matching on a string tag.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Lir {
     /// `i64.const N` — a signed 64-bit constant (emitted via SLEB128).
@@ -289,6 +295,16 @@ pub enum Lir {
 /// type that occupies no runtime slot (unit). An integer's width chooses i32 vs i64 (a width ≤ 32 uses
 /// i32, wider uses i64); a boolean is an i32. This is the wasm backend's read-off of the solved type
 /// (`reference-compiler.md` §A Value's Machine Representation Follows Its Solved Type At Selection).
+///
+/// This read-off is where TYPES ARE ERASED: only a value's machine shape survives — a nominal tag, a
+/// record's field NAMES, a quantity's unit, and a type-value itself all map THROUGH to (or to no) slot,
+/// so the emitted component carries no runtime type reflection. A type that is not itself a runtime
+/// value (`Ty::Type`) has no representation at all, and the runnable behavior reads only these erased
+/// machine slots — never any type information, so nothing the compiler could not erase can affect it.
+//= spec/capabilities/type-system.md#types-are-erased-from-the-component
+//# The compiler MUST erase types from the emitted component so that the runnable form carries no runtime type reflection.
+//= spec/capabilities/type-system.md#types-are-erased-from-the-component
+//# The behavior of an emitted component MUST NOT depend on any type information the compiler could not erase.
 pub fn valtype_of(ty: &Ty) -> Option<ValType> {
     match ty {
         Ty::Int(it) => Some(int_valtype(*it)),

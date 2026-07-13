@@ -85,20 +85,49 @@ export default function Bytes() {
       <H2>Your turn</H2>
       <Exercise
         id="bytes:1"
-        prompt={<>Build the three bytes <C>7, 8, 9</C> and report the length — it should be <C>3</C>.</>}
-        starter={`(Bytes.len (Bytes.of ?))`}
-        solution={`(Bytes.len (Bytes.of (list 7 8 9)))`}
-        expected="3"
-        hint={<><C>Bytes.of</C> takes a <C>(list …)</C> of byte values.</>}
+        prompt={
+          <>
+            Read the byte at index <C>2</C> of the literal <C>b"ABC"</C>. Indexing is safe, so it comes
+            back as an <C>Option</C> — matched here — and the byte for <C>C</C> is <C>67</C>.
+          </>
+        }
+        starter={`(def (main)
+  (match (Bytes.at b"ABC" ?)
+    ((Some x) x)
+    ((None _) (- 0 1))))`}
+        solution={`(def (main)
+  (match (Bytes.at b"ABC" 2)
+    ((Some x) x)
+    ((None _) (- 0 1))))`}
+        expected="67"
+        hint={
+          <>
+            Bytes are indexed from 0, so the third byte (<C>C</C>) is index <C>2</C>. Its ASCII code is{" "}
+            <C>67</C>.
+          </>
+        }
       />
 
       <Exercise
         id="bytes:2"
-        prompt={<>How many bytes does <C>"€"</C> (the euro sign) take in UTF-8? Measure it — the answer is <C>3</C>.</>}
-        starter={`(Bytes.len (String.to-bytes ?))`}
-        solution={`(Bytes.len (String.to-bytes "€"))`}
-        expected="3"
-        hint={<>Pass the string <C>"€"</C> to <C>String.to-bytes</C>, then take its <C>Bytes.len</C>.</>}
+        prompt={
+          <>
+            A byte literal and a built sequence are equal when their bytes match. Fill in the two byte
+            values so <C>b"Hi"</C> equals your <C>Bytes.of</C> — the codes are <C>H</C>=72 and{" "}
+            <C>i</C>=105, and a match gives <C>1</C>.
+          </>
+        }
+        starter={`(def (main)
+  (if (= b"Hi" (Bytes.of (list 72 ?))) 1 0))`}
+        solution={`(def (main)
+  (if (= b"Hi" (Bytes.of (list 72 105))) 1 0))`}
+        expected="1"
+        hint={
+          <>
+            <C>H</C> is 72 (already filled) and <C>i</C> is <C>105</C> — the two bytes of <C>b"Hi"</C>. With
+            both right, the comparison is true → <C>1</C>.
+          </>
+        }
       />
     </article>
   );

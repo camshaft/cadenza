@@ -5707,6 +5707,104 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_equality_guard_pins_the_variable_to_the_exact_value_in_the_then_branch() {
+        // FLOW REFINEMENT through an EQUALITY guard: `(if (= x c) THEN …)` — in THEN, `x == c`, so `x` pins
+        // to `[c, c]`. That lets the body shed a guard (`(+ x 1)` under `x == 5` cannot overflow → no
+        // round-trip) and fold a range-comparison (`(> x 3)` under `x == 5` → true). The `if`-guard analogue
+        // of the match-arm exact-value refinement. The ELSE branch (`x != c`) gets no refinement. Sound for
+        // both signednesses. Pins the elisions at the Lir level AND value parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // `(if (= x 5) (+ x 1) 0)` — the `+ x 1` under `x == 5` cannot overflow → its guard (an
+        // `IfUnreachableEnd` round-trip) is elided.
+        let guard = select(
+            "(module m (def (f (: x Int64)) (if (= x 5) (+ x 1) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !guard.iter().any(|i| matches!(i, Lir::IfUnreachableEnd)),
+            "(+ x 1) under x==5 sheds its overflow guard, got: {guard:?}"
+        );
+        // `(if (= x 5) (if (> x 3) 1 2) 0)` — the inner `(> x 3)` is decided true by `x == 5`: only the
+        // outer `= 5` comparison remains (the inner `> 3` folds away, no `Select`).
+        let cmp = select(
+            "(module m (def (f (: x Int64)) (if (= x 5) (if (> x 3) 1 2) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmp.iter().filter(|i| matches!(i, Lir::I64GtS)).count(),
+            0,
+            "the inner (> x 3) under x==5 folds away, got: {cmp:?}"
+        );
+
+        // VALUE PARITY (both signednesses; then + else).
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(if (= x 5) (+ x 1) 0)", &[Val::S64(5)]),
+            6
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(if (= x 5) (+ x 1) 0)", &[Val::S64(3)]),
+            0
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (= x 5) (if (> x 3) 1 2) 0)",
+                &[Val::S64(5)]
+            ),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (= x 5) (if (> x 3) 1 2) 0)",
+                &[Val::S64(9)]
+            ),
+            0
+        );
+        // Unsigned equality guard refines too.
+        assert_eq!(
+            run::<u8>(
+                "(: x UInt8)",
+                "(: (if (= x 200) (: (+ x 1) UInt8) 0) UInt8)",
+                &[Val::U8(200)]
+            ),
+            201
+        );
+        assert_eq!(
+            run::<u8>(
+                "(: x UInt8)",
+                "(: (if (= x 200) (: (+ x 1) UInt8) 0) UInt8)",
+                &[Val::U8(50)]
+            ),
+            0
+        );
+    }
+
+    #[test]
     fn a_branch_refinement_elides_a_redundant_and_mask() {
         // FLOW-SENSITIVE REDUNDANT-MASK ELISION: inside `(if (and (>= x 0) (< x 256)) (& x 255) …)` the
         // then-branch KNOWS `x ∈ [0,255]`, so `x & 255 == x` — the mask covers x's whole refined range and
@@ -10325,6 +10423,10 @@ mod match_engine {
         );
         // NO OVER-ACCEPTANCE: a bare literal past i64 with NO integer-operand context is still CDZ0201; a
         // value too big even for the contextual UInt64 (2^64) is still rejected (now naming UInt64).
+        // A bare over-i64 literal that STILL FITS UNSIGNED 64 (`18446744073709551615` = 2^64-1) is
+        // malformed as a bare (signed-default) literal, but has a concrete fixed type — so it names its
+        // range AND offers the "annotate `UInt64`" repair (its range holds the value), NOT the
+        // "widest fixed-size integer" dead-end.
         let d = reject_full("(module m (def (main) 18446744073709551615) (export main))")
             .expect("a bare literal past i64 is rejected");
         assert_eq!(
@@ -10332,13 +10434,26 @@ mod match_engine {
             Some("CDZ0201"),
             "a bare literal past i64 with no context is still malformed"
         );
-        // The message names the valid RANGE it overflowed AND that Int64 is the widest fixed integer
-        // (the honest current story — no wider fixed type / BigInt is not yet constructible).
         assert!(
-            d.message.contains("the valid range is")
-                && d.message.contains("widest fixed-size integer"),
-            "a bare over-Int64 literal names its range + the widest-fixed note; got {}",
+            d.message.contains("the valid range is") && d.message.contains("UInt64"),
+            "a fits-u64 bare literal names its range + the UInt64 route; got {}",
             d.message
+        );
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!("(: {} UInt64)", crate::abi::WRAP_HOLE)).as_deref(),
+            "it carries the annotate-`UInt64` wrap fix: {}",
+            d.message
+        );
+        // A value past UInt64.max (2^64) has NO fixed type — it gets the bare range message with the
+        // "widest fixed-size integer" note and NO fix (BigInt is not literal-spellable).
+        let past = reject_full("(module m (def (main) 99999999999999999999) (export main))")
+            .expect("a value past u64 is rejected");
+        assert!(
+            past.message.contains("widest fixed-size integer") && past.fix.is_none(),
+            "a past-u64 bare literal keeps the widest-fixed note, no fix; got {} fix={:?}",
+            past.message,
+            past.fix
         );
         let d = reject_full(
             "(module m (def (main (: x UInt64)) (& x 18446744073709551616)) (export main))",
@@ -11561,6 +11676,49 @@ mod match_engine {
     }
 
     #[test]
+    fn accessing_through_an_empty_side_split_at_folds_like_the_literal() {
+        // 15-rows "accessing through an empty-side split-at is usable, like the equivalent literal": a
+        // split at k=0 (or k=arity) has a `Unit` empty side, yielding `(Tuple Unit (Tuple …))`. Reading
+        // THROUGH it (`.1 .0`) used to DECLINE "a tuple element of type Unit needs the value heap" — the
+        // projection stayed a runtime read whose Unit element hit the not-yet-built heap path — where the
+        // BYTE-IDENTICAL literal `(tuple unit (tuple 10 20))` folds through and runs. The projection now
+        // folds through the constant tuple the split-at operation produces (its `core_of` is `Core::Tuple`),
+        // reaching the same representation the literal does. main => 10.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (. (. (Tuple.split-at (tuple 10 20) 0) 1) 0)) (export main))"
+                ),
+                "main"
+            ),
+            10,
+            "an empty-prefix split-at, accessed through, folds to the projected element"
+        );
+        // k=arity (empty SUFFIX) reading through the prefix, likewise.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (. (. (Tuple.split-at (tuple 10 20) 2) 0) 0)) (export main))"
+                ),
+                "main"
+            ),
+            10,
+            "an empty-suffix split-at, accessed through the prefix, folds too"
+        );
+        // INTERIOR split (both sides non-empty) still works — this is not an empty-side-only fix.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) (. (. (Tuple.split-at (tuple 10 20 30) 2) 1) 0)) (export main))"
+                ),
+                "main"
+            ),
+            30,
+            "an interior split's suffix element is read correctly"
+        );
+    }
+
+    #[test]
     fn a_list_homogeneity_violation_is_cdz0201_by_shape() {
         // 05-compound-types §A List Is An Ordered Homogeneous Sequence — the same taxonomy line the numeric
         // operators and `if`-branches draw. A homogeneity violation between two DISTINCT NUMERIC types, or
@@ -11590,6 +11748,49 @@ mod match_engine {
                 "main"
             ),
             3
+        );
+    }
+
+    #[test]
+    fn a_list_int_literal_vs_float_offers_a_float_literal_retype_fix() {
+        // A list-homogeneity clash between an INTEGER LITERAL and a FLOAT type has the SAME one-shot repair
+        // the annotation site's `(: 3 Float64)` gives: rewrite the integer literal `n` as a float literal
+        // `n.0`, so the list unifies at the float type rather than staying a no-silent-promotion reject
+        // (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). The literal may be on
+        // EITHER side — the first element (`(list 1 2.0)`) or a later one (`(list 1.0 2)`).
+        let d = reject_full("(module m (def (main) (list 1 2.0)) (export main))")
+            .expect("a list-homogeneity violation must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("1.0"),
+            "retypes the first element's int literal as a float: {}",
+            d.message
+        );
+        // Symmetric: the mismatched literal is a LATER element → `2` becomes `2.0`.
+        let d2 = reject_full("(module m (def (main) (list 1.0 2)) (export main))").expect("reject");
+        assert_eq!(
+            d2.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("2.0"),
+            "retypes the later element's int literal: {}",
+            d2.message
+        );
+        // A negative int literal keeps its sign (`-1` → `-1.0`).
+        let d3 =
+            reject_full("(module m (def (main) (list -1 2.0)) (export main))").expect("reject");
+        assert_eq!(
+            d3.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("-1.0"),
+            "message: {}",
+            d3.message
+        );
+        // A cross-KIND clash (Int64 vs Bool) is NOT coercible — no float-retype fix is offered.
+        let d4 =
+            reject_full("(module m (def (main) (list 1 true)) (export main))").expect("reject");
+        assert!(
+            d4.fix.is_none(),
+            "an int-vs-bool clash has no literal-retype fix: {:?}",
+            d4.fix
         );
     }
 
@@ -13870,6 +14071,81 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_list_of_lists_escapes_with_its_nested_element_type() {
+        // The `Framed` type node is now RECURSIVE, so a runtime `(List (List Int64))` — a list whose
+        // elements are themselves lists — crosses with the FULL nested element type rendered, not flattened
+        // to a bare `List`. The value-encode walker already recurses over the nested-list element VALUES
+        // (`shape_of` builds a nested `List` shape); the descriptor's `Framed` frame now carries the nested
+        // `TypeNode` too, so the annotation is `(List (List Int64))`. `build i n` pushes `(list i)` for i in
+        // 0..n → `[[0] [1] [2]]`.
+        let Some(out) = escape_render(
+            "(module m (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (list i))) out)) \
+                       (def (main) (build 0 3 (list))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime nested-List escape run");
+            return;
+        };
+        assert_eq!(
+            out, "(: (list (list 0) (list 1) (list 2)) (List (List Int64)))",
+            "runtime list-of-lists renders the nested element type"
+        );
+
+        // A runtime `(Map Int64 (List Int64))` — a map whose VALUES are lists — exercises a nested type node
+        // in the value position of a Map frame. Insert (k=n v=(list n)) for n in {2,1} → sorted entries.
+        let out = escape_render(
+            "(module m (def (build m n) (if (< n 1) m (build ((. Map insert) m n (list n)) (- n 1)))) \
+                       (def (main) (build (. Map empty) 2)) (export main))",
+        )
+        .expect("runtime present");
+        assert_eq!(
+            out, "(: (map (1 (list 1)) (2 (list 2))) (Map Int64 (List Int64)))",
+            "runtime map-of-lists renders the nested value type"
+        );
+    }
+
+    #[test]
+    fn a_recursive_list_consumer_infers_its_element_via_list_at() {
+        // A recursive function whose list PARAMETER is touched ONLY through `List.at` (never a direct
+        // operator on the list itself) now infers its element type — before, the `(Some x)` payload binder
+        // read `Any` mid-solve (the scrutinee `(List.at xs i)` is a CALL RESULT, not a param, so its
+        // `(Option a)` result never linked to `xs`'s element), and the compiler DECLINED "projecting a
+        // tuple element of type ?N needs the value heap". `type_scheme_apply_into` now types the scheme
+        // call INTO the outer subst (`(Option a)` with `a` == `xs`'s element), the arm pattern binds `x` to
+        // `a`, and the sibling `(None _) → 0` arm pins `a = Int64`.
+        //
+        // ITERATE-BY-INDEX: build [0 1 2] by a push-loop, then sum via `List.at` in an index loop → 3.
+        let Some(sum) = run_heap_value(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (sum-at xs i n) (if (< i n) (+ (match ((. List at) xs i) ((Some x) x) ((None _) 0)) \
+                                                   (sum-at xs (+ i 1) n)) 0)) \
+               (def (main) (let ((xs (build 0 3 (list)))) (sum-at xs 0 ((. List len) xs)))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping recursive list-consumer run");
+            return;
+        };
+        assert_eq!(sum, "3", "sum of [0 1 2] indexed via List.at");
+
+        // DOUBLE-CONSUME: the same list `e` feeds two `use` calls in one function — the Perceus dup must
+        // fire so the first consumer does not free it early. `scan` reads via `List.at`; `both` = 10*use(1)
+        // + use(2). With e=(list), each `use` pushes one element and scans it → use(1)=1, use(2)=2 → 12.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (scan xs k) (match ((. List at) xs k) ((None _) 0) ((Some h) (+ h (scan xs (+ k 1)))))) \
+                   (def (use e n) (scan ((. List push) e n) 0)) \
+                   (def (both e) (+ (* 10 (use e 1)) (use e 2))) \
+                   (def (main) (both (list))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "12",
+            "a list consumed by two operations is not freed early"
+        );
+    }
+
+    #[test]
     fn a_runtime_built_map_and_set_escape_via_value_encode() {
         // A RUNTIME `(Map Int64 Int64)` / `(Set Int64)` (insert-built, not constant-foldable) now crosses
         // the host boundary, where before they declined "needs a value-form walker". Both escape via the
@@ -15037,6 +15313,102 @@ mod match_engine {
     }
 
     #[test]
+    fn a_short_circuit_connective_absorbs_a_repeated_conjunct() {
+        // NESTED IDEMPOTENCE: `(and (and a b) a)` → `(and a b)`, `(or (or a b) b)` → `(or a b)` — one operand
+        // is a nested SAME-connective node already containing the other, so re-applying it is redundant. The
+        // nested node is KEPT (all operands stay evaluated → trap-safe). Only the SAME connective; a MIXED
+        // connective or a DISTINCT operand is not folded.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let conn = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I32And | Lir::I32Or))
+                .count()
+        };
+        // Both nested positions and both connectives collapse to ONE connective op.
+        assert_eq!(
+            conn(&lir("(: a Bool) (: b Bool)", "(: (and (and a b) a) Bool)")),
+            1,
+            "(and (and a b) a) → (and a b)"
+        );
+        assert_eq!(
+            conn(&lir("(: a Bool) (: b Bool)", "(: (and a (and a b)) Bool)")),
+            1,
+            "outer order"
+        );
+        assert_eq!(
+            conn(&lir("(: a Bool) (: b Bool)", "(: (or (or a b) b) Bool)")),
+            1,
+            "(or (or a b) b) → (or a b)"
+        );
+        // A DISTINCT third operand does NOT fold.
+        assert_eq!(
+            conn(&lir(
+                "(: a Bool) (: b Bool) (: c Bool)",
+                "(: (and (and a b) c) Bool)"
+            )),
+            2,
+            "distinct c kept"
+        );
+
+        // VALUE PARITY over all truth combinations.
+        use wasmtime::component::Val;
+        let f = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: a Bool) (: b Bool)) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
+        let andn = f("(and (and a b) a)");
+        let orn = f("(or (or a b) b)");
+        for (a, b) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(
+                run_returns_with::<bool>(&andn, "f", &[Val::Bool(a), Val::Bool(b)]),
+                a && b,
+                "and @{a},{b}"
+            );
+            assert_eq!(
+                run_returns_with::<bool>(&orn, "f", &[Val::Bool(a), Val::Bool(b)]),
+                a || b,
+                "or @{a},{b}"
+            );
+        }
+        // TRAP SAFETY: the nested node is retained, so a trapping operand in it still traps.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: n Int64) (: b Bool)) (if (and (and (> (/ 10 n) 0) b) (> (/ 10 n) 0)) 1 0)) (export f))"
+        ))).expect("compile");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0), Val::Bool(true)]),
+            "a trapping nested operand keeps its trap"
+        );
+    }
+
+    #[test]
     fn a_short_circuit_connective_with_a_value_and_its_negation_folds_to_a_constant() {
         // BOOLEAN COMPLEMENT LAWS: `(and a (not a))` → false, `(or a (not a))` → true — a boolean and its
         // negation are exclusive+exhaustive. The `and`/`or` analogue of the bitwise `x & ~x`/`x | ~x` fold.
@@ -15132,6 +15504,363 @@ mod match_engine {
             "a trapping operand in the complement-law fold keeps its trap"
         );
         assert_eq!(run_returns_with::<i64>(&gb, "f", &[Val::S64(2)]), 0);
+    }
+
+    #[test]
+    fn complementary_comparisons_fold_to_a_constant() {
+        // COMPLEMENTARY-COMPARISON LAW: two comparisons on the SAME operand pair with COMPLEMENT operators
+        // (`<`/`>=`, `<=`/`>`) partition the total order, so `(or (< a b) (>= a b))` → true (exhaustive) and
+        // `(and (< a b) (>= a b))` → false (disjoint). DISCARDS both, so gated on `is_trap_free`. Pins the
+        // fold at the Lir level (no comparison) AND value/trap parity; a NON-complement pair and a SWAPPED
+        // operand pair must NOT fold.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64LtS | Lir::I64GeS | Lir::I64LeS | Lir::I64GtS))
+                .count()
+        };
+        // `<`/`>=` and `<=`/`>` complements fold (both connectives). No comparison remains.
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (< x 5) (>= x 5)) Bool)")),
+            0,
+            "or (<5)(>=5) → true"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (< x 5) (>= x 5)) Bool)")),
+            0,
+            "and (<5)(>=5) → false"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (<= x 5) (> x 5)) Bool)")),
+            0,
+            "or (<=5)(>5) → true"
+        );
+        // Two-variable operands fold too.
+        assert_eq!(
+            cmps(&lir(
+                "(: a Int64) (: b Int64)",
+                "(: (or (< a b) (>= a b)) Bool)"
+            )),
+            0,
+            "or (<ab)(>=ab) → true"
+        );
+        // A NON-complement pair (`<`/`<=`) does NOT fold — both compares stay.
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (< x 5) (<= x 5)) Bool)")),
+            2,
+            "non-complement kept"
+        );
+        // A SWAPPED operand pair (`(< a b)` vs `(>= b a)`) is NOT a complement — kept (and NOT a tautology).
+        assert_eq!(
+            cmps(&lir(
+                "(: a Int64) (: b Int64)",
+                "(: (or (< a b) (>= b a)) Bool)"
+            )),
+            2,
+            "swapped operands kept"
+        );
+
+        // VALUE PARITY: the tautology holds across the boundary; the false-law never fires; the swapped
+        // non-fold computes its real (non-tautology) result.
+        use wasmtime::component::Val;
+        let orfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (or (< x 5) (>= x 5))) (export f))",
+        )))
+        .expect("compile");
+        for v in [3, 5, 10, -1] {
+            assert!(
+                run_returns_with::<bool>(&orfn, "f", &[Val::S64(v)]),
+                "or complement @{v}"
+            );
+        }
+        let andfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (and (< x 5) (>= x 5))) (export f))",
+        )))
+        .expect("compile");
+        for v in [3, 5, 10] {
+            assert!(
+                !run_returns_with::<bool>(&andfn, "f", &[Val::S64(v)]),
+                "and complement @{v}"
+            );
+        }
+        let swfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (or (< a b) (>= b a))) (export f))",
+        )))
+        .expect("compile");
+        assert!(
+            !run_returns_with::<bool>(&swfn, "f", &[Val::S64(5), Val::S64(3)]),
+            "swapped a=5 b=3 is false, not a tautology"
+        );
+        // TRAP SAFETY: a trapping comparison operand keeps the runtime form and traps.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: z Int64)) (if (or (< (/ 100 z) 5) (>= (/ 100 z) 5)) 1 0)) (export f))"
+        ))).expect("compile");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0)]),
+            "a trapping comparison operand keeps its trap"
+        );
+    }
+
+    #[test]
+    fn a_same_direction_comparison_pair_subsumes_to_one() {
+        // SUBSUMPTION: two comparisons on the SAME operand `v` vs constants with the SAME operator — one
+        // implies the other. `(and (< v 5) (< v 10))` → `(< v 5)` (and keeps the tighter bound), `(or …)` →
+        // `(< v 10)` (or keeps the looser). Restricted to IDENTICAL operators. Pins one comparison at the Lir
+        // level + value parity; a distinct variable / different operator / different side is NOT folded.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS))
+                .count()
+        };
+        // Same-op pairs subsume to ONE comparison (and/or, `<`/`>`, mirrored operand).
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (< x 5) (< x 10)) Bool)")),
+            1,
+            "and (<5)(<10) → (<5)"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (< x 5) (< x 10)) Bool)")),
+            1,
+            "or (<5)(<10) → (<10)"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (> x 5) (> x 10)) Bool)")),
+            1,
+            "and (>5)(>10) → (>10)"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (< 5 x) (< 10 x)) Bool)")),
+            1,
+            "mirrored operand"
+        );
+        // NON-subsumable: distinct variable, different operator, different side — all kept (2 compares).
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (and (< x 5) (< y 10)) Bool)"
+            )),
+            2,
+            "distinct var kept"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (< x 5) (<= x 4)) Bool)")),
+            2,
+            "different op kept"
+        );
+        // A DIFFERENT operand on the other side is not subsumable — `(< x 5)` and `(< 10 y)` share no
+        // variable, so neither the same-side subsumption nor the disjoint-interval fold applies: both
+        // compares stay. (`(and (< x 5) (< 10 x))` — same var, opposite direction — is NOT tested here: it
+        // is `x<5 && x>10`, a disjoint pair the interval fold correctly collapses to `false`.)
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (and (< x 5) (< 10 y)) Bool)"
+            )),
+            2,
+            "different variable kept"
+        );
+
+        // VALUE PARITY: `and` keeps the tighter, `or` the looser — verified across the two bounds.
+        use wasmtime::component::Val;
+        let andfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (and (< x 5) (< x 10))) (export f))",
+        )))
+        .expect("compile");
+        assert!(run_returns_with::<bool>(&andfn, "f", &[Val::S64(3)])); // < 5 & < 10
+        assert!(!run_returns_with::<bool>(&andfn, "f", &[Val::S64(7)])); // 7 not < 5
+        assert!(!run_returns_with::<bool>(&andfn, "f", &[Val::S64(12)]));
+        let orfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (or (< x 5) (< x 10))) (export f))",
+        )))
+        .expect("compile");
+        assert!(run_returns_with::<bool>(&orfn, "f", &[Val::S64(3)]));
+        assert!(run_returns_with::<bool>(&orfn, "f", &[Val::S64(7)])); // 7 < 10
+        assert!(!run_returns_with::<bool>(&orfn, "f", &[Val::S64(12)]));
+        // TRAP SAFETY: the kept comparison still evaluates the operand, so a trapping `(/ 100 z)` traps.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: z Int64)) (if (and (< (/ 100 z) 5) (< (/ 100 z) 10)) 1 0)) (export f))"
+        ))).expect("compile");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0)]),
+            "the kept comparison preserves the operand's trap"
+        );
+    }
+
+    #[test]
+    fn opposite_direction_comparisons_fold_when_disjoint_or_covering() {
+        // DISJOINT/COVERING INTERVAL: two OPPOSITE-direction comparisons on the same operand `v` form an
+        // upper half-line `v <= U` and a lower one `v >= L`. `and` (∩ `L <= v <= U`) is EMPTY iff `L > U` →
+        // false; `or` (∪) COVERS everything iff the pieces touch/overlap (`L <= U+1`) → true. Only the
+        // constant verdicts fold; a non-empty ∩ / gapped ∪ is kept. DISCARDS both, gated on `is_trap_free`.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS))
+                .count()
+        };
+        // Disjoint `and` → false (0 cmp); covering `or` → true (0 cmp).
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (< x 5) (> x 10)) Bool)")),
+            0,
+            "disjoint and → false"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (< x 5) (> x 3)) Bool)")),
+            0,
+            "covering or → true"
+        );
+        // Boundary: touching `or` (`<= 5` / `>= 6`, `6 <= 5+1`) → true; empty `and` (`<= 5` / `>= 6`) → false.
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (<= x 5) (>= x 6)) Bool)")),
+            0,
+            "touching or → true"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (<= x 5) (>= x 6)) Bool)")),
+            0,
+            "empty and → false"
+        );
+        // NON-fold: non-empty ∩ (`< 10` / `> 5`) and gapped ∪ (`< 3` / `> 10`) keep both compares; a
+        // singleton ∩ (`<= 6` / `>= 6`, non-empty at 6) is kept.
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (< x 10) (> x 5)) Bool)")),
+            2,
+            "non-empty and kept"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (or (< x 3) (> x 10)) Bool)")),
+            2,
+            "gapped or kept"
+        );
+        assert_eq!(
+            cmps(&lir("(: x Int64)", "(: (and (<= x 6) (>= x 6)) Bool)")),
+            2,
+            "singleton and kept"
+        );
+
+        // VALUE PARITY across the boundary.
+        use wasmtime::component::Val;
+        let f = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: x Int64)) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
+        for x in [0, 3, 5, 12] {
+            assert!(
+                !run_returns_with::<bool>(&f("(and (< x 5) (> x 10))"), "f", &[Val::S64(x)]),
+                "disjoint and @{x}"
+            );
+        }
+        for x in [0, 4, 100, -5] {
+            assert!(
+                run_returns_with::<bool>(&f("(or (< x 5) (> x 3))"), "f", &[Val::S64(x)]),
+                "covering or @{x}"
+            );
+        }
+        // The gapped-or computes its real (non-constant) value: x=5 is in the gap [3,10] → false.
+        assert!(
+            !run_returns_with::<bool>(&f("(or (< x 3) (> x 10))"), "f", &[Val::S64(5)]),
+            "gapped or @5 = false"
+        );
+        // The non-empty-and computes correctly: 5 < x < 10.
+        assert!(run_returns_with::<bool>(
+            &f("(and (< x 10) (> x 5))"),
+            "f",
+            &[Val::S64(7)]
+        ));
+        assert!(!run_returns_with::<bool>(
+            &f("(and (< x 10) (> x 5))"),
+            "f",
+            &[Val::S64(3)]
+        ));
+        // TRAP SAFETY: a trapping operand in a disjoint-and keeps its trap.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: z Int64)) (if (and (< (/ 100 z) 5) (> (/ 100 z) 10)) 1 0)) (export f))"
+        ))).expect("compile");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0)]),
+            "a trapping operand keeps its trap"
+        );
     }
 
     #[test]
@@ -15376,6 +16105,59 @@ mod match_engine {
             )
             .is_none(),
             "a payload variant applied to its declared payload must still construct"
+        );
+    }
+
+    #[test]
+    fn a_variant_name_colliding_with_a_prelude_name_does_not_shadow_it() {
+        // A bare variant name resolves BEFORE the prelude (`resolve` step 3c precedes step 4), so a variant
+        // whose name COLLIDES with a built-in prelude entry (`Int`/`List`/`Name` — a type constructor, a
+        // collection module) must NOT shadow it — else that name breaks everywhere it is used as a
+        // type/module. The `variant_ctor_index` build skips a prelude-colliding variant name; the variant
+        // stays reachable QUALIFIED (`(. T Int)`) via the sum record's field. Regression: declaring `(type
+        // T (Int Int64))` made bare `Int` the variant ctor, so an unrelated `(: x Int64)` failed to reduce
+        // (`Int` was no longer the width constructor) — a global corruption from one declaration.
+        // The unrelated `Int64` annotation still reduces even with a `(type T (Int Int64))` in scope.
+        assert!(
+            reject_code(
+                "(module m (type T (Int Int64)) (def (g (: x Int64)) x) (def (main) (g 5)) (export main))"
+            )
+            .is_none(),
+            "a variant named `Int` must not shadow the prelude `Int` type constructor"
+        );
+        // The colliding variant is still reachable QUALIFIED and checks its payload: `(. T Int)` applied
+        // to a String is the wrong-payload CDZ0201, exactly as a non-colliding variant is.
+        assert_eq!(
+            reject_code(
+                "(module m (type T (Int Int64)) (def (main) ((. T Int) \"x\")) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201"),
+            "a qualified colliding-variant ctor still type-checks its payload"
+        );
+    }
+
+    #[test]
+    fn the_builtin_ast_sum_type_checks_its_variant_payloads() {
+        // 12-metaprogramming "a built-in Ast constructor applied to a wrong-type payload is a type error":
+        // the built-in `Ast` is an ordinary MONOMORPHIC prelude sum (Int:Int64, Name:String, List:(List
+        // Ast)) — a variant per syntactic form (type-system.md §The Abstract Syntax Tree Type Is An
+        // Ordinary Sum Type). Its variants are reached ONLY QUALIFIED (`Ast.Int`), their names colliding
+        // with prelude `Int`/`List` so they don't bind bare. `Ast.Int`'s payload is Int64, so `(Ast.Int
+        // "x")` applies it to a String — the wrong-payload CDZ0201, exactly as a user sum variant is.
+        assert_eq!(
+            reject_code("(module m (def (main) (Ast.Int \"x\")) (export main))").as_deref(),
+            Some("CDZ0201"),
+            "the built-in Ast.Int checks its Int64 payload"
+        );
+        // The correct payload types (no fault); a String payload to `Ast.Name` is likewise well-typed.
+        assert!(
+            reject_code("(module m (def (main) (Ast.Int 42)) (export main))").is_none(),
+            "Ast.Int applied to Int64 is well-typed"
+        );
+        assert!(
+            reject_code("(module m (def (main) (Ast.Name \"x\")) (export main))").is_none(),
+            "Ast.Name applied to String is well-typed"
         );
     }
 
@@ -16844,6 +17626,50 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix() {
+        // The remaining duplicate-name family members (siblings of dup-field/dup-export D32) now carry a
+        // DELETE fix removing the redundant clause: a repeated sum VARIANT (payload form), a repeated
+        // effect OPERATION, and a repeated literal MAP KEY. Search ALL diagnostics for the target fault
+        // (a program may carry other, unrelated diagnostics ahead of it — `first_error` is order-dependent).
+        let find = |src: &str, needle: &str| -> crate::abi::Diagnostic {
+            crate::diagnostics(&mut Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains(needle))
+                .unwrap_or_else(|| panic!("no diagnostic containing {needle:?} for {src}"))
+        };
+        let variant = find(
+            "(module m (type C (Mk Int64) (Mk Int64) (Other)) (def (main) 0) (export main))",
+            "variant `Mk`",
+        );
+        assert_eq!(
+            variant.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "dup variant carries a delete fix: {:?}",
+            variant.fix
+        );
+        let op = find(
+            "(module m (effect E (op a (-> Int64 Unit)) (op a (-> Int64 Unit))) (def (main) 5) (export main))",
+            "operation `a`",
+        );
+        assert_eq!(
+            op.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "dup op carries a delete fix: {:?}",
+            op.fix
+        );
+        let map = find(
+            "(module m (def (f) (Map.size (map (1 10) (1 20) (2 30)))) (def (main) 0) (export main))",
+            "map contains each key",
+        );
+        assert_eq!(
+            map.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "dup map key carries a delete fix: {:?}",
+            map.fix
+        );
+    }
+
+    #[test]
     fn an_integer_operand_to_a_float_operator_offers_an_of_int_coercion_fix() {
         // The numeric-mismatch fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
         // A Fix): `(+. x 2.0)` with `x : Int64` is CDZ0301 (no silent promotion), but the repair is the
@@ -17052,6 +17878,39 @@ mod diagnostics {
             no.fix.is_none(),
             "no coercion Bool→Int64 payload: {:?}",
             no.fix
+        );
+    }
+
+    #[test]
+    fn a_bare_literal_over_int64_that_fits_uint64_offers_an_annotate_uint64_fix() {
+        // A bare integer literal overflowing the signed-Int64 default (`18446744073709551615` = 2^64-1)
+        // still has a concrete fixed type — `UInt64` — so it is malformed only as a bare (signed-default)
+        // literal. Offer the ANNOTATE fix: `(: <lit> UInt64)` (whose range holds the value). Just past
+        // i64.max (2^63) is the boundary case; a value past 2^64-1 has NO fixed type → no fix.
+        for src in [
+            "(module m (def (main) 18446744073709551615) (export main))",
+            "(module m (def (main) 9223372036854775808) (export main))",
+        ] {
+            let d = first_error(src);
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            let fix = d.fix.expect("an annotate-UInt64 fix is carried");
+            assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+            assert_eq!(
+                fix.replacement,
+                format!("(: {} UInt64)", crate::abi::WRAP_HOLE),
+                "annotates the literal UInt64: {src}"
+            );
+            assert!(
+                !fix.verified,
+                "the author may want a different width → heuristic"
+            );
+        }
+        // Past UInt64.max → no fixed type holds it → no fix (honest, not BigInt-guessing).
+        let past = first_error("(module m (def (main) 99999999999999999999) (export main))");
+        assert!(
+            past.fix.is_none(),
+            "no fix for a value past UInt64.max: {:?}",
+            past.fix
         );
     }
 
@@ -17519,6 +18378,44 @@ mod diagnostics {
         let u = unused_of(with_unused);
         assert_eq!(u.len(), 1, "the truly-unused param z warns: {u:?}");
         assert!(u[0].contains("`z`"), "{u:?}");
+    }
+
+    #[test]
+    fn a_wide_parameter_list_flags_exactly_the_unused_parameters() {
+        // The unused-parameter check collects the SET of body-referenced parameter names in ONE walk (was
+        // one full-body walk PER parameter → O(params × body) = O(N²) for a wide signature). This locks in
+        // the set-membership verdict at width: a 12-param def whose body references only the EVEN-indexed
+        // params must warn for EXACTLY the 6 odd-indexed ones — no false positives on the used ones, no
+        // misses on the unused ones. Guards that the O(N)→set rewrite preserves the per-parameter verdict.
+        let params = (0..12)
+            .map(|i| format!("x{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        // Body sums the even-indexed params (x0 + x2 + … + x10) — a balanced-ish chain of references.
+        let body = (0..12)
+            .filter(|i| i % 2 == 0)
+            .map(|i| format!("x{i}"))
+            .reduce(|a, b| format!("(+ {a} {b})"))
+            .unwrap();
+        let src = format!("(module m (def (f {params}) {body}) (export f))");
+        let u = unused_of(&src);
+        assert_eq!(
+            u.len(),
+            6,
+            "exactly the 6 odd-indexed params are unused: {u:?}"
+        );
+        for odd in [1, 3, 5, 7, 9, 11] {
+            assert!(
+                u.iter().any(|m| m.contains(&format!("`x{odd}`"))),
+                "x{odd} (never referenced) must warn: {u:?}"
+            );
+        }
+        for even in [0, 2, 4, 6, 8, 10] {
+            assert!(
+                !u.iter().any(|m| m.contains(&format!("`x{even}`"))),
+                "x{even} (referenced) must NOT warn: {u:?}"
+            );
+        }
     }
 
     #[test]
@@ -18046,13 +18943,18 @@ mod stage1 {
 
     #[test]
     fn an_unbound_name_close_to_a_prelude_builtin_suggests_it() {
-        // The prelude's names are candidates — `List` misspelled `Lst` (a module head).
+        // The prelude's names are candidates — `List` misspelled `Lst` (a module head). `Lst` is
+        // distance-1 from BOTH `List` (insert `i`) and the built-in `Ast` (substitute `L`→`A`), so the
+        // nearest-name search returns one of the two tied candidates — either is a valid prelude module.
+        // (Before the built-in `Ast` prelude sum existed this was unambiguously `List`; `Ast` joining the
+        // pool made it a legitimate tie — the point of the test is that a near-miss to a prelude name
+        // GETS a suggestion, not which of two equidistant prelude names wins the tie-break.)
         let d = expect_error("(Lst.push (list 1 2) 3)");
         assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
-        assert_eq!(
-            d.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("List"),
-            "message: {}",
+        let suggested = d.fix.as_ref().map(|f| f.replacement.as_str());
+        assert!(
+            matches!(suggested, Some("List") | Some("Ast")),
+            "a near-miss to a prelude module suggests a distance-1 prelude name (List or Ast): {}",
             d.message
         );
     }
@@ -20713,6 +21615,29 @@ mod stage1 {
     }
 
     #[test]
+    fn two_same_named_effects_are_distinct_not_conflated() {
+        // Two top-level effects declared with the SAME name `Log` but DIFFERENT operations. A bare `Log`
+        // reference resolves FIRST-declared (op `emit`), so a handler arm naming the OTHER's op `record`
+        // is an undeclared-operation violation (CDZ0403) — proving the two are NOT conflated into one
+        // effect. This is the invariant `db::effect_decl_by_name`'s NAME index must preserve: the index is
+        // FIRST-wins over `effect_decls` in declaration order, byte-identical to the linear `.iter().find`
+        // it replaced (the O(1) accelerator that fixed the N-sum-types O(N²) `resolve_name` scan) — it must
+        // NOT start returning the second `Log` or merging their op sets.
+        let src = "(do (effect Log (op emit (-> Int64 Int64))) \
+                   (effect Log (op record (-> Int64 Int64))) \
+                   (def (main) (handle Log 0 ((record (n) s (resume n s))) 0)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a `record` arm on the first `Log` (which declares only `emit`) must be rejected",
+        );
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0403"),
+            "the arm names an operation the FIRST Log does not declare — the two Logs are distinct: {}",
+            err.message
+        );
+    }
+
+    #[test]
     fn an_effect_reached_with_no_handler_or_delegation_is_cdz0401() {
         // E1d: an effect operation performed with NEITHER an enclosing handler NOR a host delegation has
         // no home — CDZ0401 (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error).
@@ -20850,6 +21775,56 @@ mod stage1 {
                 .iter()
                 .any(|d| d.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE),
             "the not-reducible decline must not accompany the coded handler reject"
+        );
+    }
+
+    #[test]
+    fn a_mistyped_resume_reports_one_error_with_a_coercion_fix_when_applicable() {
+        // A resume value whose type mismatches the op result (CDZ0201) ALSO makes the handler unfoldable,
+        // so `lower` emits the "not yet reducible" decline alongside — a CONSEQUENCE. `dedup_faults` drops
+        // that decline (like it does for a malformed handler), so a mistyped resume is ONE primary error.
+        // And when the mismatch is a numeric COERCION (`(resume x s)` with x:Int8, op result Int64), it
+        // carries the `(Int64.of …)` fix — the resume position joins arg/annotation/let-binder/ctor-payload.
+        let errors_of = |src: &str| -> Vec<crate::abi::Diagnostic> {
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .into_iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .collect()
+        };
+        let errs = errors_of(
+            "(do (effect E (op a (-> Int64 Int64))) \
+               (def (main (: x Int8)) (handle E unit ((a (n) s (resume x s))) (E.a 1))) (export main))",
+        );
+        assert_eq!(errs.len(), 1, "a mistyped resume = one error: {errs:?}");
+        assert_eq!(errs[0].code.as_deref(), Some("CDZ0201"));
+        assert_eq!(
+            errs[0].fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!("(Int64.of {})", crate::abi::WRAP_HOLE)).as_deref(),
+            "the coercible resume carries the `.of` fix: {}",
+            errs[0].message
+        );
+        // A NON-coercible resume (Bool where Int64) is still ONE error, but no fix (no conversion applies).
+        let be = errors_of(
+            "(do (effect E (op a (-> Int64 Int64))) \
+               (def (main) (handle E unit ((a (n) s (resume true s))) (E.a 1))) (export main))",
+        );
+        assert_eq!(
+            be.len(),
+            1,
+            "a Bool resume = one error (no cascade): {be:?}"
+        );
+        assert!(
+            be[0].fix.is_none(),
+            "no coercion Bool→Int64: {:?}",
+            be[0].fix
         );
     }
 
@@ -21142,6 +22117,47 @@ mod stage1 {
             Some(fix.node),
             err.node,
             "delete targets the effect-name node"
+        );
+    }
+
+    #[test]
+    fn a_wide_delegation_with_every_effect_reached_reports_no_latent_authority() {
+        // The CDZ0404 latent-authority check computes the SET of effects the body reaches in ONE walk and
+        // tests each delegated effect by membership (was one full body walk PER delegated effect → O(N²)).
+        // This locks in the SET semantics: a host delegating many effects that are ALL reached must report
+        // ZERO CDZ0404 — the reached-set contains every delegated decl. (Checked via `diagnostics`, the
+        // fault path, so the separate emit-time "one interface per envelope" decline does not mask it.)
+        let src = "(do (effect A (op a (-> String Unit))) (effect B (op b (-> String Unit))) \
+                   (effect C (op c (-> String Unit))) \
+                   (def (main) (host (A B C) (do (A.a \"x\") (B.b \"y\") (C.c \"z\")))) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let codes: Vec<String> = crate::diagnostics(&mut db)
+            .into_iter()
+            .filter_map(|d| d.code)
+            .collect();
+        assert!(
+            !codes.iter().any(|c| c == "CDZ0404"),
+            "every delegated effect is reached — no latent authority; got {codes:?}"
+        );
+    }
+
+    #[test]
+    fn a_wide_delegation_flags_only_the_unreached_effect_as_latent_authority() {
+        // The set-membership latent-authority check must still flag a GENUINELY unreached effect: a host
+        // delegating A, B, C whose body reaches only A and B leaves C ∉ the reached set → exactly one
+        // CDZ0404 (for C), not zero and not one-per-effect. Guards that the O(N)→set rewrite did not lose
+        // the per-effect verdict (the `body_reached_effects` twin agrees with the old per-effect probe).
+        let src = "(do (effect A (op a (-> String Unit))) (effect B (op b (-> String Unit))) \
+                   (effect C (op c (-> String Unit))) \
+                   (def (main) (host (A B C) (do (A.a \"x\") (B.b \"y\")))) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let n404 = crate::diagnostics(&mut db)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0404"))
+            .count();
+        assert_eq!(
+            n404, 1,
+            "only the unreached effect C is latent authority — exactly one CDZ0404"
         );
     }
 
@@ -21856,6 +22872,140 @@ mod stage1 {
     }
 
     #[test]
+    fn a_runtime_conditioned_if_branch_perform_distributes_per_branch() {
+        // The distribution handles a RUNTIME condition (a genuine PHI, not const-folded): a handle body
+        // conditioned on main's PARAMETER `x`. `(if (< x 5) (+ 1 (Amb.flip)) (* 2 (Amb.flip)))` distributes
+        // to `(if (< x 5) (handle … (+ 1 (Amb.flip))) (handle … (* 2 (Amb.flip))))`; each sub-handle folds.
+        // x=3 → then `C=(+ 1 □)`, arm `(+ 1 (+ 1 10))` = 12; x=9 → else `C=(* 2 □)`, arm `(+ 1 (* 2 10))` =
+        // 21. Pins that the condition is evaluated once at runtime and only the taken branch's fold runs.
+        use wasmtime::component::Val;
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main (: x Int64)) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< x 5) (+ 1 (Amb.flip)) (* 2 (Amb.flip))))) (export main))";
+        let c = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a runtime-conditioned branch perform distributes");
+        assert_eq!(run_returns_with::<i64>(&c, "main", &[Val::S64(3)]), 12);
+        assert_eq!(run_returns_with::<i64>(&c, "main", &[Val::S64(9)]), 21);
+    }
+
+    #[test]
+    fn a_perform_in_the_condition_and_a_branch_declines_the_distribution() {
+        // ADVERSARIAL: distribution requires a STRONGLY-PURE condition (it runs once, before either branch).
+        // `(if (< (Amb.flip) 5) (+ 1 (Amb.flip)) 0)` performs in BOTH the condition and a branch — a
+        // two-hole shape distribution must not touch (a performing condition would need its own frame). It
+        // declines cleanly (the pure-one-hole fold also declines: the condition hole makes the branch
+        // perform a SECOND hole). Never a mis-fold.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 5) (+ 1 (Amb.flip)) 0))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a perform in the condition AND a branch must decline (distribution needs a pure condition)"
+        );
+    }
+
+    #[test]
+    fn a_pure_one_hole_continuation_body_reads_an_enclosing_parameter() {
+        // The E5 pure one-hole fold synthesizes the folded body with `push_list` (root parent `None`), and
+        // its type-consistency guard re-runs `type_errors` on that body BEFORE the lowering site re-parents
+        // it. So an outer name in the body — an enclosing function PARAMETER — must be re-anchored to the
+        // handle's site FIRST, else the guard reads it unbound and OVER-DECLINES. `(handle … (+ x
+        // (Amb.flip)))` with x=main's param: C=(+ x □), arm `(+ 1 (resume 10 s))` → `(+ 1 (+ x 10))`. x=100
+        // → `(+ 1 (+ 100 10))` = 111. Pins the reparent-before-guard so a param-referencing body folds.
+        use wasmtime::component::Val;
+        let direct = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main (: x Int64)) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ x (Amb.flip)))) (export main))";
+        let c = compile_component(&crate::codec::encode(&parse(direct)))
+            .expect("a pure one-hole body reading an enclosing param folds");
+        assert_eq!(run_returns_with::<i64>(&c, "main", &[Val::S64(100)]), 111);
+        // The SAME re-anchoring makes a distributed if-branch reading the param fold too: `(if (< 3 5) (+ x
+        // (Amb.flip)) 0)`, x=100 → the true branch `(+ 1 (+ 100 10))` = 111.
+        let branch = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main (: x Int64)) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (+ x (Amb.flip)) 0))) (export main))";
+        let cb = compile_component(&crate::codec::encode(&parse(branch)))
+            .expect("a distributed if-branch reading an enclosing param folds");
+        assert_eq!(run_returns_with::<i64>(&cb, "main", &[Val::S64(100)]), 111);
+    }
+
+    #[test]
+    fn a_perform_in_a_match_scrutinee_and_an_arm_declines_the_distribution() {
+        // ADVERSARIAL: match distribution needs a STRONGLY-PURE scrutinee. `(match (Amb.flip) (0 5) (_ (+ 1
+        // (Amb.flip))))` performs in BOTH the scrutinee and an arm — distribution must not fire (a two-hole
+        // shape); declines cleanly (never a mis-fold).
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (Amb.flip) (0 5) (_ (+ 1 (Amb.flip)))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a perform in the scrutinee AND an arm must decline (distribution needs a pure scrutinee)"
+        );
+    }
+
+    #[test]
+    fn a_multishot_arm_over_a_match_arm_body_hole_folds() {
+        // A MULTI-shot arm (resumes TWICE) over a match-arm-body hole — each distributed arm's sub-handle
+        // duplicates its pure continuation safely. `(match 1 (0 5) (_ (Amb.flip)))` → arm `_` is the identity
+        // slice; arm `(* (resume 1 s) (resume 2 s))` dups → `(* 1 2)` = 2.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (* (resume 1 s) (resume 2 s)))) (match 1 (0 5) (_ (Amb.flip))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a multi-shot arm over a distributed match-arm hole folds"),
+                "main"
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn a_non_tail_resume_in_a_connective_rhs_folds_via_the_if_desugar_and_distribution() {
+        // A perform in an `and`/`or` RIGHT operand (a conditionally-run position) folds: `and`/`or` desugars
+        // to `if` (`(and l r)` ≡ `(if l r false)`), and the resulting `if`-branch perform then distributes
+        // (the branch is the pure-conditioned tail conditional case). `(and (< 3 5) (< (Amb.flip) 5))` with
+        // arm `(not (resume 10 s))`: lhs `(< 3 5)`=true → rhs runs → C=(< □ 5), resume 10 → (< 10 5)=false →
+        // (not false)=true.
+        let and_rhs = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (not (resume 10 s)))) (and (< 3 5) (< (Amb.flip) 5)))) (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(and_rhs)))
+                    .expect("a perform in an and rhs folds via the if desugar + distribution"),
+                "main"
+            ),
+            "lhs true → rhs runs → (< 10 5)=false → (not false)=true"
+        );
+        // SHORT-CIRCUIT preserved: `(or true (< (Amb.flip) 5))` — lhs true, so the rhs `(Amb.flip)` must NOT
+        // run. `(or l r)` ≡ `(if l true r)`; lhs true selects the `true` branch, the rhs branch (with the
+        // perform) is DEAD, so no perform fires and the whole handle is `true` (its body). If the perform
+        // wrongly ran it would still be `true` here, but the point is the elided branch's perform must not
+        // execute — witnessed by the value being the body's `true`, not the arm's `(not …)`.
+        let or_short = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (not (resume 10 s)))) (or true (< (Amb.flip) 5)))) (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(or_short)))
+                    .expect("an or with a performing rhs folds, short-circuit preserved"),
+                "main"
+            ),
+            "lhs true short-circuits → the rhs perform is elided → the handle is its body value true"
+        );
+    }
+
+    #[test]
+    fn a_distributed_branch_type_mismatch_declines_not_miscompiles() {
+        // ADVERSARIAL (from a distribution soundness sweep): the type-consistency guard must still fire on a
+        // DISTRIBUTED branch. `(if (< 3 5) (< (Amb.flip) 5) false)` — the true branch folds to `(< 10 5)` =
+        // Bool, but the arm `(+ 1 (resume 10 s))` (an Int64 `+`) consumes the resume result at Int64. The
+        // arm-over-Bool composition is ill-typed; the fold's re-run `type_errors` on the distributed branch
+        // catches it and DECLINES (rather than emit invalid wasm). Pins that distribution does not bypass
+        // the type guard.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (< (Amb.flip) 5) false))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "an ill-typed distributed branch must decline, never miscompile"
+        );
+    }
+
+    #[test]
     fn two_performs_across_a_let_decline_the_pure_one_hole_fold() {
         // ADVERSARIAL: a hole in a let INIT and another in the BODY is a TWO-hole context — `pure_hole_seq`
         // over the init values + body finds a second hole → Impure → decline (needs sequential threading /
@@ -21915,16 +23065,21 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_tail_resume_in_a_match_arm_body_declines() {
-        // The E5 BOUNDARY (still): a perform in a `match` ARM BODY — `(match c (true (Amb.flip)) (false 2))`
-        // — is a NON-UNIFORM continuation (the perform runs only on the taken arm, its continuation differs
-        // by arm), so `pure_hole` returns Impure and the fold declines. Contrast the scrutinee-hole case
-        // above, which folds. (Needs the captured-continuation frame machinery, a later increment.)
+    fn a_non_tail_resume_in_a_match_arm_body_folds_by_distribution() {
+        // A perform in a `match` ARM BODY under a PURE scrutinee folds by HANDLER DISTRIBUTION (the `match`
+        // analogue of the `if`-branch distribution): `(handle E s arms (match k (p b)…))` ≡ `(match k (p
+        // (handle E s arms b))…)`. `(match (< 3 5) (true (Amb.flip)) (false 2))` — scrutinee `(< 3 5)` is
+        // pure → true, arm `true` → sub-handle `(handle … (Amb.flip))` = identity slice → `(resume 10 s)` =
+        // 10, arm `(+ 1 (resume 10 s))` = `(+ 1 10)` = 11. (Was declined before distribution.)
         let src = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (< 3 5) (true (Amb.flip)) (false 2)))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a non-tail resume in a match arm body must decline (needs E5 frame capture)"
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a non-tail resume in a match arm body folds by distribution"),
+                "main"
+            ),
+            11
         );
     }
 
@@ -21961,17 +23116,76 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_tail_resume_in_an_if_branch_declines() {
-        // The E5 BOUNDARY (still): a non-tail resume whose perform sits in an `if` BRANCH —
-        // `(if c (+ 1 (Amb.flip)) 0)` — has a NON-UNIFORM continuation (the perform runs only on the taken
-        // branch, and its continuation differs by branch), so `pure_hole` returns Impure and the fold
-        // declines rather than mis-fold. Realizing it needs the captured-continuation machinery
-        // (defunctionalized frames), a later increment. Contrast the condition-hole case above, which folds.
+    fn a_non_tail_resume_in_an_if_branch_folds_by_handler_distribution() {
+        // A non-tail resume whose perform sits in an `if` BRANCH under a PURE condition folds by HANDLER
+        // DISTRIBUTION (a commuting conversion): `(handle E s arms (if c t e))` ≡ `(if c (handle E s arms t)
+        // (handle E s arms e))`. The condition runs once (pure, advances no state); each branch is a smaller
+        // handle body the pure one-hole fold serves. `(if (< 3 5) (+ 1 (Amb.flip)) 0)` distributes so the
+        // TRUE branch is `(handle … (+ 1 (Amb.flip)))` → C=(+ 1 □), arm `(+ 1 (resume 10 s))` → `(+ 1 (+ 1
+        // 10))` = 12; the FALSE branch `(handle … 0)` is a pure body → 0. c true → 12. (No frame machinery.)
         let src = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (+ 1 (Amb.flip)) 0))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a non-tail resume in an if branch must decline (needs E5 frame capture)"
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a non-tail resume in an if branch folds by handler distribution"),
+                "main"
+            ),
+            12
+        );
+        // The FALSE branch taken (c false), and the PERFORM in the else branch: `(if (< 5 3) 0 (+ 1
+        // (Amb.flip)))` → false → the else sub-handle `(+ 1 (+ 1 10))` = 12.
+        let else_src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 5 3) 0 (+ 1 (Amb.flip))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(else_src)))
+                    .expect("a perform in the else branch distributes too"),
+                "main"
+            ),
+            12
+        );
+        // BOTH branches perform: `(if (< 3 5) (+ 1 (Amb.flip)) (* 2 (Amb.flip)))` → true → then sub-handle
+        // `(+ 1 (+ 1 10))` = 12 (the else sub-handle folds too — `(+ 1 (* 2 10))` = 21 — but is dead).
+        let both = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (+ 1 (Amb.flip)) (* 2 (Amb.flip))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(both)))
+                    .expect("both branches perform — each distributes"),
+                "main"
+            ),
+            12
+        );
+    }
+
+    #[test]
+    fn a_non_tail_resume_in_a_match_arm_body_folds_by_handler_distribution() {
+        // The same commuting conversion over a `match` with a pure SCRUTINEE: `(handle E s arms (match k (p
+        // b)…))` ≡ `(match k (p (handle E s arms b))…)`. The scrutinee runs once (pure); each arm body is a
+        // smaller handle body. `(match 1 (0 5) (_ (+ 1 (Amb.flip))))` → scrutinee 1 selects `_` → sub-handle
+        // `(+ 1 (+ 1 10))` = 12.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match 1 (0 5) (_ (+ 1 (Amb.flip)))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a perform in a match arm body folds by handler distribution"),
+                "main"
+            ),
+            12
+        );
+        // A PATTERN BINDER used in the performing arm body must re-resolve inside the pushed handle: `(match
+        // 7 (n (+ n (Amb.flip))))` → `n` binds 7, sub-handle `C = (+ 7 □)`, arm `(+ 1 (+ 7 10))` = 18.
+        let binder = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match 7 (n (+ n (Amb.flip)))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(binder)))
+                    .expect("a match arm binder re-resolves inside the distributed handle"),
+                "main"
+            ),
+            18
         );
     }
 
@@ -22299,7 +23513,7 @@ mod stage1 {
     #[test]
     fn a_delegated_effect_reached_through_a_recursive_callee_compiles() {
         // E2h-rec: `main` delegates `log` and calls a RECURSIVE `go` that performs `log.emit` on each
-        // step. Two coupled fixes: (1) `body_reaches_effect` (the CDZ0404 latent-authority check) now
+        // step. Two coupled fixes: (1) `body_reached_effects` (the CDZ0404 latent-authority check) now
         // FOLLOWS a recursive callee (visited-set guarded), so `log` is seen as reached — no false
         // "latent authority"; (2) `go`'s `log.emit` lowers to a `Core::HostCall` via
         // `perform_host_target`'s program-delegation fallback (the enclosing entrypoint delegates `log`),
@@ -25409,6 +26623,39 @@ mod stage1 {
             "got: {} / {:?}",
             reject.message,
             reject.code
+        );
+    }
+
+    #[test]
+    fn a_self_applying_term_declines_at_the_reduction_budget_not_hangs() {
+        // A self-application whose argument applies itself — `((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))`
+        // — has NO normal form (each β-reduction produces a larger term). It is NOT statically recursive
+        // (the lambdas call a PARAMETER, so `is_recursive` finds no call-graph cycle) and each reduction
+        // stays within `REDUCE_DEPTH_LIMIT`, so the DEPTH guard alone does not stop it — the term roughly
+        // DOUBLES each step and the type/fault walk would attempt an EXPONENTIAL number of reductions and
+        // HANG (the `cdz-smith` timeout finding). The TOTAL-work budget (`REDUCE_NODE_BUDGET`, enforced in
+        // `Db::enter_reduction`) bounds cumulative reduction attempts: past it the reduction DECLINES at
+        // the resource bound (CDZ0999, "declined not crashed"), so a non-normalizing term is a prompt,
+        // diagnosed decline — never a compiler hang. Regression for the self-application timeout. The test
+        // TERMINATING at all (returning an `Err` quickly) is the property; the code pins the diagnosis.
+        let src =
+            "(module m (def (main) ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))) (export main))";
+        let reject = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a non-normalizing self-application must decline, not hang");
+        assert_eq!(
+            reject.code.as_deref(),
+            Some("CDZ0999"),
+            "a diverging reduction declines at the resource bound (CDZ0999): {} / {:?}",
+            reject.message,
+            reject.code
+        );
+        // The original cdz-smith reproducer (a self-applier inside a match/list) likewise TERMINATES —
+        // here it surfaces a genuine type error (`(v0 16.32)` applies a non-function) before the blowup,
+        // which is fine: the point is it produces a diagnostic promptly rather than hanging.
+        let smith = "(module m (def (main) (list ((fn (v0) (match (v0 16.32) (0 (v0 v0)) (_ (v0 144)))) (fn (v1) (v1 (v1 v1)))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(smith))).is_err(),
+            "the cdz-smith self-application reproducer must decline, not hang"
         );
     }
 
@@ -32631,6 +33878,7 @@ mod closure_host_resource {
             consume_abs: import_base + 1, // consumer body at emission position 1
             params: vec![ConsumeParam::Closure, ConsumeParam::Scalar(ValType::I64)],
             ret_vt: ValType::I64,
+            ret_is_bytes: false,
         }];
 
         let core = crate::backend::wasm::serialize::roundtrip_resource_core_module(
@@ -32939,6 +34187,7 @@ mod closure_host_resource {
                     consume_abs: import_base + 1,
                     params: vec![ConsumeParam::Closure, ConsumeParam::Scalar(ValType::I64)],
                     ret_vt: ValType::I64,
+                    ret_is_bytes: false,
                 }],
             },
             RtSigGroup {
@@ -32952,6 +34201,7 @@ mod closure_host_resource {
                     consume_abs: import_base + 3,
                     params: vec![ConsumeParam::Closure, ConsumeParam::Scalar(ValType::I64)],
                     ret_vt: ValType::I32,
+                    ret_is_bytes: false,
                 }],
             },
         ];

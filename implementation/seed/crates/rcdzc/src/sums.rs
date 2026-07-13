@@ -87,10 +87,57 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
         "Ordering",
         &[("Less", &[]), ("Equal", &[]), ("Greater", &[])],
     );
-    [option, result, sign, ordering]
+    // `(type Ast (Int Int64) (Name String) (List (List Ast)))` — THE abstract-syntax-tree type
+    // (`metaprogramming.md` §Quote Produces An AST Value; type-system.md §The Abstract Syntax Tree Type
+    // Is An Ordinary Sum Type). A RECURSIVE, MONOMORPHIC prelude sum: a variant per syntactic form, each
+    // with a CONCRETE or COMPOUND payload (`Int64`, `String`, `(List Ast)`) — richer than the bare
+    // type-parameter payloads `type_form` builds, so its variants are built with explicit payload
+    // type-expression nodes. `quote`/`Ast.*` produce this value; a program reaches its variants ONLY
+    // QUALIFIED (`Ast.Int` = `(. Ast Int)`), NOT bare — its variant names `Int`/`Name`/`List` collide with
+    // prelude type/module names, and the `variant_ctor_index` build (`db.rs`) skips a prelude-colliding
+    // variant so it never shadows the built-in. Nothing privileged — the same `scan_type_decl` +
+    // `synthesize` path as Option/Result/Sign/Ordering.
+    let ast_decl = {
+        let int_pay = push_atom(ast, Leaf::Name("Int64".to_string()));
+        let name_pay = push_atom(ast, Leaf::Name("String".to_string()));
+        // `(List Ast)` — the recursive list-of-Ast payload for the `List` variant.
+        let list_head = push_atom(ast, Leaf::Name("List".to_string()));
+        let ast_ref = push_atom(ast, Leaf::Name("Ast".to_string()));
+        let list_ast = push_list(ast, vec![list_head, ast_ref]);
+        type_form_payloads(
+            ast,
+            "Ast",
+            &[
+                ("Int", &[int_pay]),
+                ("Name", &[name_pay]),
+                ("List", &[list_ast]),
+            ],
+        )
+    };
+    [option, result, sign, ordering, ast_decl]
         .into_iter()
         .filter_map(|item| crate::db::scan_type_decl(ast, item))
         .collect()
+}
+
+/// Build a `(type NAME (V payload-node…)…)` declaration form from PRE-BUILT payload TYPE-EXPRESSION nodes
+/// — the variant of [`type_form`] for a sum whose payloads are concrete or compound types (`Int64`,
+/// `(List Ast)`), not bare type-parameter names. Each variant is `(vname payload-node…)`; a nullary
+/// variant (`&[]`) is a bare `vname`.
+fn type_form_payloads(ast: &mut Arenas, name: &str, variants: &[(&str, &[StructId])]) -> StructId {
+    let head = push_atom(ast, Leaf::Name("type".to_string()));
+    let name_occ = push_atom(ast, Leaf::Name(name.to_string()));
+    let mut children = vec![head, name_occ];
+    for (vname, payloads) in variants {
+        if payloads.is_empty() {
+            children.push(push_atom(ast, Leaf::Name(vname.to_string())));
+        } else {
+            let mut vlist = vec![push_atom(ast, Leaf::Name(vname.to_string()))];
+            vlist.extend_from_slice(payloads);
+            children.push(push_list(ast, vlist));
+        }
+    }
+    push_list(ast, children)
 }
 
 /// The occurrence of the variant-constructor field named `vname` inside a synthesized sum `record` —

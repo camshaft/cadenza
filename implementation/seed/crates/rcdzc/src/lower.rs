@@ -431,6 +431,30 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                                 format!("tuple index {index} is out of range"),
                             )),
                         }
+                    } else if let Core::Tuple { elems } = core_of(db, operand) {
+                        // The RESOLVED fold (`reduce_to_tuple_elems`) sees through a `(tuple …)` literal
+                        // but NOT an operand whose tuple is produced by a tuple OPERATION — `Tuple.split-at`
+                        // / `Tuple.pop`, which `lower_tuple_split_at`/`lower_tuple_pop` FOLD to a constant
+                        // `Core::Tuple` but which resolve as a `Prim` application, not a `Resolved::Tuple`.
+                        // Fold the projection through that constant tuple's CORE, exactly as the literal
+                        // path does: `(. (Tuple.split-at (tuple 10 20) 0) 1)` → element 1 = the suffix tuple
+                        // `(tuple 10 20)`, with NO heap build. This is what makes `Tuple.split-at` at the
+                        // k=0 / k=arity boundary — whose empty side is a `Unit` element — usable: the
+                        // constant fold reaches the same representation the byte-identical literal `(tuple
+                        // unit (tuple 10 20))` does, instead of a runtime `Core::Proj` whose `Unit` element
+                        // hits the not-yet-built value-heap path. Only fires when the resolved fold failed
+                        // AND the operand still lowered to a constant tuple (a runtime tuple's `core_of` is
+                        // not `Core::Tuple`, so it correctly stays a runtime `Core::Proj` below).
+                        match elems.get(index) {
+                            Some(&elem) => {
+                                trace!(target: "rcdzc::fold", node = id.0, index, "tuple projection folds through a constant-tuple operation result (no heap build)");
+                                core_of(db, elem)
+                            }
+                            None => Core::Poison(Reject::coded(
+                                Code::Malformed,
+                                format!("tuple index {index} is out of range"),
+                            )),
+                        }
                     } else {
                         trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, index, "tuple projection stays runtime (operand is a runtime tuple)");
                         Core::Proj { operand, index }
@@ -564,6 +588,15 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // needed (`lhs` runs exactly as it would as the condition; `rhs`, a re-evaluation of the
                 // same pure value, is dropped). Mirrors the bitwise `(& a a)`/`(| a a)` same-operand fold.
                 _ if core_equiv(db, lhs, rhs) => lc,
+                // NESTED IDEMPOTENCE / ABSORPTION: `(and (and a b) a)` → `(and a b)` and `(or (or a b) a)` →
+                // `(or a b)` — one operand is a nested SAME-connective `(and/or p q)` that already CONTAINS
+                // the other operand (`p` or `q` is `core_equiv` to it), so re-conjoining/disjoining it is
+                // redundant. Returns the nested node (all operands stay evaluated → trap-safe, like the
+                // bitwise idempotent collapse c117). Only the SAME connective (`is_and` matches). Both outer
+                // orders are tried by `bool_nested_idempotent`.
+                _ if let Some(keep) = bool_nested_idempotent(db, lhs, rhs, is_and) => {
+                    core_of(db, keep)
+                }
                 // COMPLEMENT LAW: `(and a (not a))` → `false` and `(or a (not a))` → `true` — a boolean and
                 // its negation are exhaustive+exclusive, so `and` is always false and `or` always true. The
                 // boolean analogue of the bitwise `x & ~x`/`x | ~x` fold (c119). DISCARDS both operands (the
@@ -572,6 +605,41 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // Both operand orders (`a`&`!a` / `!a`&`a`) are handled by `bool_complement_pair`.
                 _ if bool_complement_pair(db, lhs, rhs) && is_trap_free(db, lhs) => {
                     Core::ConstBool(!is_and) // and → false ; or → true
+                }
+                // COMPLEMENTARY-COMPARISON LAW: `(or (< a b) (>= a b))` → true, `(and (< a b) (>= a b))` →
+                // false — two comparisons on the SAME operand PAIR whose operators are exact COMPLEMENTS
+                // (`< `↔`>=`, `<=`↔`>`) partition the total order, so their `or` is exhaustive (always true)
+                // and their `and` is exclusive (always false). A redundant range guard (`(or (< x c) (>= x
+                // c))`). DISCARDS both operands, so gated on `is_trap_free` for each (a comparison is
+                // trap-free iff its operands are; a `(< (/ a b) 5)` with a trapping `/` keeps the runtime
+                // form). `complementary_comparisons` checks same-pair + complement-op.
+                _ if complementary_comparisons(db, lhs, rhs)
+                    && is_trap_free(db, lhs)
+                    && is_trap_free(db, rhs) =>
+                {
+                    Core::ConstBool(!is_and) // or → true ; and → false
+                }
+                // SUBSUMPTION: two comparisons on the SAME runtime operand `v` against constants with the
+                // SAME operator (both `<`, both `<=`, both `>`, or both `>=`) — one implies the other, so
+                // the redundant one drops. `and` keeps the STRONGER (tighter bound), `or` the WEAKER
+                // (looser): `(and (< v 5) (< v 10))` → `(< v 5)`, `(or (< v 5) (< v 10))` → `(< v 10)`. The
+                // kept comparison still evaluates `v` (its trap, if any, is preserved) — no operand is
+                // dropped, only the redundant second bound. `subsuming_comparison` returns the occurrence to
+                // keep (`lhs` or `rhs`).
+                _ if let Some(keep) = subsuming_comparison(db, lhs, rhs, is_and) => {
+                    core_of(db, keep)
+                }
+                // DISJOINT/COVERING INTERVAL: two comparisons on the SAME operand `v` vs constants forming
+                // OPPOSITE-direction half-lines (one an upper bound `v ≤ U`, the other a lower bound `v ≥
+                // L`). `and` (intersection `L ≤ v ≤ U`) is EMPTY iff `L > U` → `false`; `or` (union) COVERS
+                // everything iff the half-lines touch/overlap (`L ≤ U+1`) → `true`. `(and (< x 5) (> x 10))`
+                // → false, `(or (< x 5) (> x 3))` → true. Only the constant verdicts (a non-empty `and` /
+                // gapped `or` is not a constant — kept). DISCARDS both operands, so gated on `is_trap_free`.
+                _ if let Some(v) = disjoint_or_covering(db, lhs, rhs, is_and)
+                    && is_trap_free(db, lhs)
+                    && is_trap_free(db, rhs) =>
+                {
+                    Core::ConstBool(v)
                 }
                 _ => Core::And { lhs, rhs, is_and },
             },
@@ -797,9 +865,15 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         // nest, which since inlining became linear is now reachable on a well-formed
                         // program). This does NOT route through `lower_recursive_call_or_decline` (that is
                         // only for an `is_recursive`-origin decline), so the wording is free to be exact.
-                        trace!(target: "rcdzc::lower", node = id.0, "apply: reduction depth limit hit → decline (resource limit)");
-                        return Core::Poison(Reject::decline(
-                            "a call chain nested deeper than the inliner reduces (a resource limit was reached)",
+                        // A resource-limit rejection — the "declined at a bound, not crashed" class, coded
+                        // CDZ0999 like the unproductive-recursion decline. Reached either by a call chain
+                        // nested past `REDUCE_DEPTH_LIMIT`, or by the TOTAL-work budget (`REDUCE_NODE_BUDGET`)
+                        // that `enter_reduction` enforces to stop an explosively-growing (non-normalizing)
+                        // term — a self-applying lambda whose reduction would otherwise hang the compiler.
+                        trace!(target: "rcdzc::lower", node = id.0, "apply: reduction limit hit → decline (resource limit, CDZ0999)");
+                        return Core::Poison(Reject::coded(
+                            Code::RecursionBound,
+                            "an expression does not reduce to a value within the compiler's reduction limits (a call chain nested too deeply, or a non-terminating / explosively-growing reduction)",
                         ));
                     }
                 }
@@ -2545,6 +2619,12 @@ pub(crate) fn check_binding_pattern(
     }
     // A compound pattern `(head arg…)`. A `tuple` head is the one accepted destructuring shape in
     // Increment A; a constructor head is classified by variant count; a record/list head declines.
+    //
+    // This is where a tuple is DECONSTRUCTED by pattern matching: `(tuple a b)` in pattern position binds
+    // its positional elements to `a`/`b` (each element sub-pattern recursed below), so a tuple's elements
+    // are reachable by destructuring, not only by positional projection.
+    //= spec/capabilities/core-semantics.md#a-tuple-is-a-fixed-size-positional-product
+    //# A tuple MUST be deconstructible by pattern matching, so that `(tuple a b)` in pattern position binds the elements.
     if is_tuple_pattern(db, pat) {
         // Linearity across the WHOLE pattern (CDZ0102).
         check_pattern_linear(db, pat)?;
@@ -2753,6 +2833,14 @@ fn collect_pattern_binders(
 /// A variant name is distinguished from a binder by RESOLVING it against `ty`'s variant set: `None`
 /// against `Option` is the nullary variant (a constraint), `x` is a binder (none). Errs (declines) on a
 /// pattern this increment does not compile — a tuple/record destructure, a literal, a wrong-arity ctor.
+///
+/// A nullary variant pattern (`None`) and a unary+ one (`(Some x)`) are handled by the SAME arm — each
+/// adds its discriminant test and descends into one payload position — so the matcher never branches on
+/// a constructor's arity: every constructor pattern is treated uniformly as a single-arity application.
+//= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
+//# The pattern matcher MUST NOT special-case "nullary" vs "unary+" constructors by arity.
+//= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
+//# The pattern matcher MUST handle all constructor patterns uniformly as single-arity applications.
 fn pattern_constraints(
     db: &mut Db,
     pat: StructId,
@@ -2963,6 +3051,19 @@ fn pattern_constraints(
         };
     }
     let Some(disc) = crate::eval::variant_disc_of(db, head) else {
+        // The head names no variant. A `(. Sum Q)` head where `Q` is not a variant of the sum
+        // (`((V.Q) …)` on a `(type V (A …) (B))`) lowers as a MEMBER ACCESS that already carries the
+        // precise coded fault — `CDZ0201: record has no field \`Q\`` (a sum record's variants ARE its
+        // fields), the SAME code the value position `(V.Q)` gets. Propagate that coded poison rather than
+        // the generic UNCODED "not a variant constructor" decline, so a mistyped variant in a match
+        // pattern NAMES the offending variant and is graded a rejection (not a to-do). (The infer-side
+        // `no_field_reject` adds a "did you mean?" suggestion at the value position; this lowering path
+        // emits the bare coded message — the code + named variant are the load-bearing improvement.)
+        if let Core::Poison(reject) = core_of(db, head)
+            && reject.code.is_some()
+        {
+            return Err(reject);
+        }
         return Err(Reject::decline(
             "a sum match pattern head is not a variant constructor",
         ));
@@ -4104,6 +4205,13 @@ fn lower_recursive_call_or_decline(
     args: &[StructId],
     msg: String,
 ) -> Core {
+    // A REDUCTION-BUDGET decline (a non-normalizing / explosively-growing term — a self-applying lambda
+    // whose reduction the total-work budget stopped) is a resource-limit rejection, the SAME "declined at
+    // a bound, not crashed" class as the unproductive-recursion CDZ0999. Code it so, so it is a diagnosed
+    // reject rather than a bare uncoded decline (the compiler stops and reports, never hangs).
+    if msg.contains("reduction budget") {
+        return Core::Poison(Reject::coded(Code::RecursionBound, msg));
+    }
     // Only a RECURSION decline becomes a call; every other decline (partial application, over-arity)
     // propagates as-is. The recursion decline is the one `apply_lambda` raises via `is_recursive`.
     let is_recursion_decline = msg.contains("recursive function needs runtime specialization");
@@ -4636,65 +4744,99 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
             let root = builder.shape_of(db, ty)?;
             Some(builder.encode(root))
         }
-        // A LIST result: build the List shape, then wrap in a PARAMETRIC `Framed("List", [<elem>], …)`
-        // frame so the value form renders `(: (list …) (List <elem>))` — the element type OBSERVABLE,
-        // matching the constant-List value form. The element must be a scalar type-NAME (`Int64`/`Bool`/
-        // `String`/a nominal) so it splices as one type atom; a NESTED-element list (`(List (List Int64))`)
-        // would need a compound type-arg node — a later refinement, decline for now.
-        crate::ty::Ty::List(elem) => {
-            if !is_scalar_type_arg(elem) {
-                return None; // nested/compound-element list type node not yet built
-            }
+        // A LIST/SET/MAP result: build the value shape, then wrap in a PARAMETRIC `Framed(<type-node>, …)`
+        // frame so the value form renders `(: (list …) (List <elem>))` etc. — the element/key/value types
+        // OBSERVABLE, matching the constant-collection value form. The type node is built RECURSIVELY from
+        // the full type (`type_node_of`), so a nested element type crosses too: `(List (List Int64))`,
+        // `(Map Int64 (Set Int64))`, `(Set (Tuple Int64 Int64))`. The inner VALUE shape (`shape_of`) already
+        // recurses over nested collections, so the walker renders them; only the type node needed lifting.
+        crate::ty::Ty::List(_) | crate::ty::Ty::Set(_) | crate::ty::Ty::Map(_, _) => {
+            let type_node = type_node_of(ty)?;
             let inner = builder.shape_of(db, ty)?;
-            let framed = builder.push(ShapeNode::Framed(
-                "List".to_string(),
-                vec![elem.render_name()],
-                inner,
-            ));
-            Some(builder.encode(framed))
-        }
-        // A SET result: `(: ((. Set of) (list …)) (Set <elem>))`. Parametric `Framed("Set", [<elem>], …)`;
-        // the element must be a scalar type NAME (it splices as one type-arg atom).
-        crate::ty::Ty::Set(elem) => {
-            if !is_scalar_type_arg(elem) {
-                return None;
-            }
-            let inner = builder.shape_of(db, ty)?;
-            let framed = builder.push(ShapeNode::Framed(
-                "Set".to_string(),
-                vec![elem.render_name()],
-                inner,
-            ));
-            Some(builder.encode(framed))
-        }
-        // A MAP result: `(: (map (k v) …) (Map <k> <v>))`. Parametric `Framed("Map", [<k>, <v>], …)`; BOTH
-        // the key AND value must be scalar type NAMES (each splices as one type-arg atom — a compound
-        // value or key type-node is a later refinement, decline).
-        crate::ty::Ty::Map(k, v) => {
-            if !is_scalar_type_arg(k) || !is_scalar_type_arg(v) {
-                return None;
-            }
-            let inner = builder.shape_of(db, ty)?;
-            let framed = builder.push(ShapeNode::Framed(
-                "Map".to_string(),
-                vec![k.render_name(), v.render_name()],
-                inner,
-            ));
+            let framed = builder.push(ShapeNode::Framed(type_node, inner));
             Some(builder.encode(framed))
         }
         _ => None,
     }
 }
 
-/// Whether a type is a SCALAR whose name splices as a single bare type-arg atom in a parametric value-form
-/// type node (`(List <t>)`/`(Set <t>)`/`(Map <k> <v>)`). Int/Bool/String/Unit qualify; a compound
-/// (List/Map/Set/Tuple/Sum) `render_name` is a parenthesized NODE, not a bare atom — those need a compound
-/// type-arg node (a later refinement), so they decline here.
-fn is_scalar_type_arg(ty: &crate::ty::Ty) -> bool {
-    matches!(
-        ty,
-        crate::ty::Ty::Int(_) | crate::ty::Ty::Bool | crate::ty::Ty::String | crate::ty::Ty::Unit
-    )
+/// The RECURSIVE type node for a `Framed` frame's type position — mirrors `Ty::render_name` structurally
+/// so the runtime's `render_type_node` reproduces the same written type. A leaf (a scalar/nominal/nullary
+/// sum) is a bare-name node with no children; a parametric type (`List`/`Set`/`Map`/`Tuple`/`Record`/a
+/// generic sum) is a head plus child type nodes, nested to any depth. `None` for a type that never appears
+/// as an escaping collection element (Fn/Qty/Var/Any/Type) — the escape declines rather than misrender it.
+fn type_node_of(ty: &crate::ty::Ty) -> Option<TypeNode> {
+    use crate::ty::Ty;
+    let leaf = |s: String| TypeNode {
+        head: s,
+        children: vec![],
+    };
+    Some(match ty {
+        Ty::Int(_)
+        | Ty::Bool
+        | Ty::Unit
+        | Ty::String
+        | Ty::Char
+        | Ty::Symbol
+        | Ty::BigInt
+        | Ty::Float(_)
+        | Ty::Bytes => leaf(ty.render_name()),
+        Ty::List(e) => TypeNode {
+            head: "List".to_string(),
+            children: vec![type_node_of(e)?],
+        },
+        Ty::Set(e) => TypeNode {
+            head: "Set".to_string(),
+            children: vec![type_node_of(e)?],
+        },
+        Ty::Map(k, v) => TypeNode {
+            head: "Map".to_string(),
+            children: vec![type_node_of(k)?, type_node_of(v)?],
+        },
+        Ty::Tuple(elems) => {
+            let mut children = Vec::with_capacity(elems.len());
+            for e in elems.iter() {
+                children.push(type_node_of(e)?);
+            }
+            TypeNode {
+                head: "Tuple".to_string(),
+                children,
+            }
+        }
+        // A record renders as `(record (name Type) …)`: each field is itself a node `(name <type>)` — head
+        // = the field name, one child = the field's type node. `render_type_node` reproduces `(name Type)`.
+        Ty::Record(fields) => {
+            let mut children = Vec::with_capacity(fields.len());
+            for (k, t) in fields.iter() {
+                children.push(TypeNode {
+                    head: k.name.clone(),
+                    children: vec![type_node_of(t)?],
+                });
+            }
+            TypeNode {
+                head: "record".to_string(),
+                children,
+            }
+        }
+        // A monomorphic sum renders as its bare name; a generic sum as `(Name arg…)`.
+        Ty::Sum { name, args, .. } => {
+            if args.is_empty() {
+                leaf(name.clone())
+            } else {
+                let mut children = Vec::with_capacity(args.len());
+                for a in args {
+                    children.push(type_node_of(a)?);
+                }
+                TypeNode {
+                    head: name.clone(),
+                    children,
+                }
+            }
+        }
+        Ty::Nominal { name, .. } => leaf(name.clone()),
+        // Qty/Fn/Var/Any/Type: not an escaping collection element/arg — decline rather than misrender.
+        _ => return None,
+    })
 }
 
 /// A shape-table entry (indices reference other entries — recursion closes via `Ref`).
@@ -4714,16 +4856,24 @@ enum ShapeNode {
     Ref(u32),
     Set(u32),
     Map(u32, u32),
-    /// A `(: <value> (<head> <arg>…))` frame — a PARAMETRIC type node (e.g. `(List Int64)`), each `arg` a
-    /// bare type name. The runtime `value-encode` decodes this as descriptor tag 15 and renders the
-    /// parametric type node, so a runtime List result crosses as `(: (list …) (List Int64))`.
-    Framed(String, Vec<String>, u32),
+    /// A `(: <value> <type-node>)` frame — an arbitrary (possibly NESTED) type node. The runtime
+    /// `value-encode` decodes this as descriptor tag 15 and renders the type node RECURSIVELY, so a runtime
+    /// collection crosses as `(: (list …) (List Int64))` — or, with nesting, `(: … (List (List Int64)))`.
+    Framed(TypeNode, u32),
     /// A MULTI-payload variant's payload — a tuple handle at run time whose elements render FLATTENED
     /// under the variant head (`(Cons h t)`, NOT `(Cons (tuple h t))`). The runtime (descriptor tag 16)
     /// reads it exactly like a `Tuple` (each element via `arr-get`) but renders the elements DIRECTLY as
     /// the variant's children rather than wrapping them in a `tuple` form. Only a `Sum` variant references
     /// a `Spread` (it is the multi-payload variant payload); a genuine tuple VALUE stays a `Tuple`.
     Spread(Vec<u32>),
+}
+
+/// A compile-time-built TYPE node for a `Framed` frame's type position, written to the descriptor wire as
+/// `[ head ][ n_children ]( TypeNode )*n` and rebuilt+rendered by the runtime's `render_type_node`. A leaf
+/// (a scalar/nominal) has no children; `(List Int64)` = head `List`, one child `Int64`; nests arbitrarily.
+struct TypeNode {
+    head: String,
+    children: Vec<TypeNode>,
 }
 
 /// Builds the shape table, memoizing each `Ty::Sum` by its declaration occurrence so a recursive
@@ -4943,13 +5093,32 @@ impl ShapeTableBuilder {
                     leb(&mut d, *k as u64);
                     leb(&mut d, *v as u64);
                 }
-                ShapeNode::Framed(head, args, i) => {
-                    d.push(15); // matches the runtime `decode_shape` tag 15 = Framed (14 = Float32)
-                    name(&mut d, head);
-                    leb(&mut d, args.len() as u64);
-                    for a in args {
-                        name(&mut d, a);
+                ShapeNode::Framed(type_node, i) => {
+                    // recursive TypeNode wire: [ head ][ n_children ]( TypeNode )*n — the runtime's
+                    // `decode_type_node` mirrors this depth-first walk.
+                    fn write_type_node(out: &mut Vec<u8>, tn: &TypeNode) {
+                        fn leb(out: &mut Vec<u8>, mut v: u64) {
+                            loop {
+                                let mut b = (v & 0x7f) as u8;
+                                v >>= 7;
+                                if v != 0 {
+                                    b |= 0x80;
+                                }
+                                out.push(b);
+                                if v == 0 {
+                                    break;
+                                }
+                            }
+                        }
+                        leb(out, tn.head.len() as u64);
+                        out.extend_from_slice(tn.head.as_bytes());
+                        leb(out, tn.children.len() as u64);
+                        for c in &tn.children {
+                            write_type_node(out, c);
+                        }
                     }
+                    d.push(15); // matches the runtime `decode_shape` tag 15 = Framed (14 = Float32)
+                    write_type_node(&mut d, type_node);
                     leb(&mut d, *i as u64);
                 }
                 ShapeNode::Spread(idxs) => {
@@ -6816,6 +6985,199 @@ fn bool_complement_pair(db: &mut Db, lhs: StructId, rhs: StructId) -> bool {
     is_not_of(db, rhs, lhs) || is_not_of(db, lhs, rhs)
 }
 
+/// NESTED IDEMPOTENCE for a short-circuit `and`/`or`: when one outer operand is a nested `Core::And` of the
+/// SAME connective (`is_and`) that already CONTAINS the other outer operand (one of its sides is
+/// `core_equiv` to it), the outer re-application is redundant — `(and (and a b) a)` == `(and a b)`. Returns
+/// the NESTED node to keep (all its operands stay evaluated → trap-safe, no operand dropped). Both outer
+/// operand orders and both nested-operand positions are tried. `None` when the shape does not match.
+fn bool_nested_idempotent(
+    db: &mut Db,
+    lhs: StructId,
+    rhs: StructId,
+    is_and: bool,
+) -> Option<StructId> {
+    // `nested` is `(op p q)` with the SAME connective; `outer` must be `core_equiv` to `p` or `q`.
+    let check = |db: &mut Db, nested: StructId, outer: StructId| -> Option<StructId> {
+        let Core::And {
+            lhs: p,
+            rhs: q,
+            is_and: nested_is_and,
+        } = core_of(db, nested)
+        else {
+            return None;
+        };
+        if nested_is_and != is_and {
+            return None;
+        }
+        (core_equiv(db, p, outer) || core_equiv(db, q, outer)).then_some(nested)
+    };
+    check(db, lhs, rhs).or_else(|| check(db, rhs, lhs))
+}
+
+/// Whether `lhs`/`rhs` are two comparisons on the SAME operand pair whose operators are exact COMPLEMENTS
+/// over the total order — `< `/`>=` or `<=`/`>` — so together they partition every value: their `or` is
+/// always TRUE (exhaustive) and their `and` always FALSE (disjoint). `(or (< a b) (>= a b))` → true,
+/// `(and (< a b) (>= a b))` → false. Requires BOTH to be `Core::Compare` with `core_equiv` operand pairs
+/// (same order — `< a b` complements `>= a b`, NOT `>= b a`) and complementary ops. `=`/`Compare` are not
+/// ordering complements and never match. Drives the complementary-comparison fold (caller trap-guards).
+fn complementary_comparisons(db: &mut Db, lhs: StructId, rhs: StructId) -> bool {
+    let Core::Compare {
+        op: lop,
+        lhs: la,
+        rhs: lb,
+    } = core_of(db, lhs)
+    else {
+        return false;
+    };
+    let Core::Compare {
+        op: rop,
+        lhs: ra,
+        rhs: rb,
+    } = core_of(db, rhs)
+    else {
+        return false;
+    };
+    // Exact ordering complements: `<` ↔ `>=`, `<=` ↔ `>` (either assignment to lhs/rhs).
+    let complement = matches!(
+        (lop, rop),
+        (Prim::Lt, Prim::Ge) | (Prim::Ge, Prim::Lt) | (Prim::Le, Prim::Gt) | (Prim::Gt, Prim::Le)
+    );
+    // Same operand pair in the SAME order (the operators already encode the direction).
+    complement && core_equiv(db, la, ra) && core_equiv(db, lb, rb)
+}
+
+/// SUBSUMPTION between two comparisons on the SAME runtime operand `v` against CONSTANTS with the SAME
+/// operator — one implies the other, so `(and …)`/`(or …)` keeps just one. Returns the occurrence to KEEP
+/// (`lhs` or `rhs`), or `None` when the shape does not match. `is_and` selects which survives: `and` keeps
+/// the STRONGER (tighter) bound, `or` the WEAKER (looser). Restricted to IDENTICAL operators so no
+/// off-by-one bound arithmetic is needed — `< c` is stronger than `< d` iff `c <= d` (smaller upper bound);
+/// `> c` is stronger iff `c >= d` (larger lower bound); `<=`/`>=` compare the same way. The runtime operand
+/// `v` must be `core_equiv` on both sides and on the SAME side (both `(cmp v const)` or both `(cmp const v)`
+/// — a mirrored pair would flip the direction). The kept comparison still evaluates `v`, so no trap drops.
+fn subsuming_comparison(
+    db: &mut Db,
+    lhs: StructId,
+    rhs: StructId,
+    is_and: bool,
+) -> Option<StructId> {
+    let Core::Compare {
+        op: lop,
+        lhs: la,
+        rhs: lb,
+    } = core_of(db, lhs)
+    else {
+        return None;
+    };
+    let Core::Compare {
+        op: rop,
+        lhs: ra,
+        rhs: rb,
+    } = core_of(db, rhs)
+    else {
+        return None;
+    };
+    if lop != rop {
+        return None; // identical operator only (avoids `<`/`<=` bound normalization edge cases)
+    }
+    let as_int = |db: &mut Db, id: StructId| match core_of(db, id) {
+        Core::ConstInt(v) => v.to_i64(),
+        _ => None,
+    };
+    // Identify `(v, c)` for each side with the runtime operand `v` on the SAME side (both left, both right).
+    // `v_left` = the compare is `(cmp v c)`; else `(cmp c v)` — a mixed arrangement flips the effective
+    // direction, so require the same arrangement on both.
+    let (lv, lc, l_v_left) = match (as_int(db, lb), as_int(db, la)) {
+        (Some(c), _) => (la, c, true),  // `(cmp v c)`
+        (_, Some(c)) => (lb, c, false), // `(cmp c v)`
+        _ => return None,
+    };
+    let (rv, rc, r_v_left) = match (as_int(db, rb), as_int(db, ra)) {
+        (Some(c), _) => (ra, c, true),
+        (_, Some(c)) => (rb, c, false),
+        _ => return None,
+    };
+    if l_v_left != r_v_left || !core_equiv(db, lv, rv) {
+        return None; // same operand on the same side
+    }
+    // With `v` on the left: `< `/`<=` are UPPER bounds (stronger = smaller c), `>`/`>=` LOWER bounds
+    // (stronger = larger c). With `v` on the RIGHT (`c < v` ≡ `v > c`), the sense flips. Compute whether
+    // the LHS comparison is the stronger (tighter) one.
+    let upper_bound_on_v = matches!(
+        (lop, l_v_left),
+        (Prim::Lt | Prim::Le, true) | (Prim::Gt | Prim::Ge, false)
+    );
+    // For an upper bound on `v`, smaller constant ⇒ stronger; for a lower bound, larger ⇒ stronger.
+    let lhs_stronger = if upper_bound_on_v { lc <= rc } else { lc >= rc };
+    // `and` keeps the stronger; `or` keeps the weaker.
+    let keep_lhs = if is_and { lhs_stronger } else { !lhs_stronger };
+    Some(if keep_lhs { lhs } else { rhs })
+}
+
+/// Normalize a `Core::Compare` on a runtime operand `v` against a constant into an INCLUSIVE half-line
+/// bound on `v`, as `(v, is_upper, bound)` — `is_upper` means `v <= bound`, else `v >= bound`. Handles all
+/// four ops on either operand side (`(< v c)` → `v <= c-1`; `(> v c)` → `v >= c+1`; `(< c v)` = `v > c` →
+/// `v >= c+1`; etc). Bound arithmetic is `i128` so `c±1` never overflows at the i64 extremes. `None` when
+/// the node is not a comparison of a runtime value against a constant. Used by `disjoint_or_covering`.
+fn comparison_halfline(db: &mut Db, id: StructId) -> Option<(StructId, bool, i128)> {
+    let Core::Compare { op, lhs, rhs } = core_of(db, id) else {
+        return None;
+    };
+    let as_int = |db: &mut Db, id: StructId| match core_of(db, id) {
+        Core::ConstInt(v) => v.to_i64().map(|v| v as i128),
+        _ => None,
+    };
+    // `(op v c)` (v on the left) or `(op c v)` (v on the right, which flips the operator's sense).
+    let (v, c, v_left) = match (as_int(db, rhs), as_int(db, lhs)) {
+        (Some(c), _) => (lhs, c, true),
+        (_, Some(c)) => (rhs, c, false),
+        _ => return None,
+    };
+    // Effective operator with `v` on the left (`(op c v)` mirrors: `<`↔`>`, `<=`↔`>=`).
+    let eff = if v_left {
+        op
+    } else {
+        match op {
+            Prim::Lt => Prim::Gt,
+            Prim::Gt => Prim::Lt,
+            Prim::Le => Prim::Ge,
+            Prim::Ge => Prim::Le,
+            other => other,
+        }
+    };
+    // To an inclusive bound: `v < c` ⇒ `v <= c-1`; `v <= c` ⇒ `v <= c`; `v > c` ⇒ `v >= c+1`; `v >= c` ⇒
+    // `v >= c`. (`=`/`Compare` are not half-lines.)
+    match eff {
+        Prim::Lt => Some((v, true, c - 1)),
+        Prim::Le => Some((v, true, c)),
+        Prim::Gt => Some((v, false, c + 1)),
+        Prim::Ge => Some((v, false, c)),
+        _ => None,
+    }
+}
+
+/// For two comparisons forming OPPOSITE-direction half-lines on the SAME operand `v` — one `v <= U`, the
+/// other `v >= L` — decide whether their `and`/`or` is a CONSTANT. `and` (intersection `L <= v <= U`) is
+/// EMPTY iff `L > U` → `Some(false)`; `or` (union) COVERS every value iff the half-lines touch or overlap
+/// (`L <= U + 1`) → `Some(true)`. `None` when the pair is not opposite half-lines on the same `v`, or the
+/// intersection is non-empty (`and`) / the union has a gap (`or`) — those stay runtime. `(and (< x 5) (> x
+/// 10))` → false; `(or (< x 5) (> x 3))` → true. All bound math is `i128` (no overflow at i64 extremes).
+fn disjoint_or_covering(db: &mut Db, lhs: StructId, rhs: StructId, is_and: bool) -> Option<bool> {
+    let (lv, l_upper, lb) = comparison_halfline(db, lhs)?;
+    let (rv, r_upper, rb) = comparison_halfline(db, rhs)?;
+    if l_upper == r_upper || !core_equiv(db, lv, rv) {
+        return None; // need OPPOSITE directions on the SAME operand
+    }
+    // Order them: `u` = the upper bound `v <= U`, `l` = the lower bound `v >= L`.
+    let (upper, lower) = if l_upper { (lb, rb) } else { (rb, lb) };
+    if is_and {
+        // Intersection `lower <= v <= upper` is empty iff `lower > upper`.
+        (lower > upper).then_some(false)
+    } else {
+        // Union `v <= upper || v >= lower` covers all iff the pieces touch/overlap: `lower <= upper + 1`.
+        (lower <= upper + 1).then_some(true)
+    }
+}
+
 /// The NESTED-BITWISE COLLAPSE for an outer TOTAL, ASSOCIATIVE bitwise op (`&`/`|`/`^`) whose operands
 /// are `(lhs, rhs)` (cores `lc`/`rc`): when one operand is `(OP v C1)` — the SAME op — and the OTHER is a
 /// constant `C2`, returns `(OP v (C1 ⊙ C2))` where `⊙` is that op's constant fold — one op instead of
@@ -7796,6 +8158,11 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
             // needs the heap walk (`value-eq`/`champ_eq`, deferred to the backend).
             //= spec/capabilities/core-semantics.md#equality-is-structural
             //# Two values MUST be equal when they have the same type and their contents are equal component-wise.
+            // This component-wise fold agrees with the canonical byte form: two constant compounds are equal
+            // exactly when their canonical forms coincide (a scalar leaf compares by its canonical value, a
+            // nested compound recurses), so structural equality and byte-form identity never disagree.
+            //= spec/capabilities/core-semantics.md#equality-is-structural
+            //# Value equality MUST agree with the canonical byte form, so that two values are equal exactly when their canonical byte forms are identical.
             // `(= (Some 1) (Some 1))` → true, `(= (Some 1) (Some 2))` → false, `(= None None)` → true,
             // `(= (tuple 1 2) (tuple 1 2))` → true. A nested compound compares recursively (a payload/
             // element that is itself a compound). Returns `None` when either side is not a constant

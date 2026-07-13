@@ -219,6 +219,19 @@
   (input  (Tuple.split-at (tuple 1 2) 5))
   (error  CDZ0201))
 
+(case "accessing through an empty-side split-at is usable, like the equivalent literal"
+  (doc    "The empty-prefix split `(Tuple.split-at (tuple 10 20) 0)` yields `(tuple unit (tuple 10 20))` —
+           the SAME type and value as the hand-written literal, which is directly accessible. Reading
+           through the result — the suffix `.1` then its element 0 — gives 10, matching what
+           `(. (. (tuple unit (tuple 10 20)) 1) 0)` gives. The empty side is a `Unit` element; the
+           projection through it FOLDS through the constant tuple the operation produced (no runtime
+           value-heap build), so a split-at at the k=0 / k=arity boundary is usable, not just renderable.
+           Pins that the empty-side result reaches the same representation the byte-identical literal does.")
+  (input  (do
+            (def (main) (. (. (Tuple.split-at (tuple 10 20) 0) 1) 0))
+            (export main)))
+  (output (: 10 Int64)))
+
 (case "popping a tuple yields element zero and the remaining tuple"
   (doc    "Witnesses type-system.md #A Tuple Is Reshaped Positionally: `Tuple.pop` takes element 0 off,
            `(tuple (. t 0) <rest>)` — the positional analogue of `Record.pop`. `(Tuple.pop (tuple 1 2

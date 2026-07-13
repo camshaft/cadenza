@@ -1305,6 +1305,20 @@
   (input  (do (def (f) (f)) (def (main) (f)) (export main)))
   (error  CDZ0999))
 
+(case "a self-applying term is declined at the reduction budget, not hung on"
+  (doc    "`((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))` — a self-application whose argument applies itself
+           — has NO normal form: each β-reduction produces a larger term. It is NOT statically recursive
+           (the lambdas call a PARAMETER, not a named def, so the call-graph recursion check finds no
+           cycle) and each reduction stays within the depth limit, so the depth guard alone does not stop
+           it — the term roughly DOUBLES each step and the compiler's reduction/type walk would attempt an
+           exponential number of reductions and appear to HANG. The evaluator bounds its TOTAL reduction
+           work (`enter_reduction` counts attempts against a budget): past it the reduction DECLINES (a
+           resource-limit rejection), so a non-normalizing term is a clean decline in a fraction of a
+           second, never a compiler hang. The point of the case is 'never hang' — a compiler completes or
+           declines on any input.")
+  (input  (do (def (main) ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))) (export main)))
+  (error  CDZ0999))
+
 (case "a deeply nested constant expression compiles or declines without crashing"
   (doc    "A 64-deep nest of `(+ 1 …)` folds to 65 — well within any reasonable bound. The point is the
            companion the gate cannot record: the SAME shape thousands deep must DECLINE (a

@@ -15,6 +15,12 @@
 //! conversions, a `match` as a probe chain, a runtime `Core::Call`, and value-heap construction/
 //! projection for tuples, records, and sums. A construct without a machine form here declines (e.g. a
 //! runtime compound of a type that cannot yet cross the boundary).
+//!
+//! Selection reads an ALREADY-RESOLVED representation: it consumes the core form (`core_of`, itself a
+//! read of the resolved column `resolved_of`), where every name reference is already resolved to the
+//! binding it denotes — so this pass reads a resolved binding rather than searching a scope.
+//= spec/capabilities/compiler-pipeline.md#the-compiler-resolves-names-before-it-selects-instructions
+//# The compiler MUST lower the AST to an intermediate representation in which every name reference is resolved to the binding it denotes before it selects the instructions to emit, so that instruction selection reads a resolved binding rather than searching a scope.
 
 use crate::ast::StructId;
 use crate::backend::wasm::lir::{BlockType, Lir, ValType, valtype_of};
@@ -186,6 +192,15 @@ const OP_VEC_OF_ARR: &str = "vec-of-arr";
 /// `drop` — release a reference to a heap handle (the Perceus calling convention). At refcount 0 the
 /// runtime frees the node and recursively releases its children (the boxed elements), so a single
 /// `drop` of a dead tuple reclaims the whole value.
+///
+/// Reclamation is this emitted reference-count discipline — the compiler places `drop`/`dup` at the
+/// source-determined points its escape analysis fixes — NOT a tracing garbage collector the runnable
+/// form depends on, and because the release points are a static function of the source, the timing of
+/// reclamation is not a source of observable nondeterminism.
+//= spec/capabilities/memory-and-resource-model.md#the-runnable-form-needs-no-collector
+//# The runnable form of a program MUST NOT depend on a tracing garbage collector for correctness.
+//= spec/capabilities/memory-and-resource-model.md#the-runnable-form-needs-no-collector
+//# The timing of memory reclamation MUST NOT be a source of nondeterminism in a program's observable behavior.
 const OP_DROP: &str = "drop";
 /// `dup(handle)` — increment a heap handle's refcount (the Perceus retain). Emitted where a construct
 /// takes ownership of a handle it only BORROWED — `List.at` `dup`s the `vec-get` element before the
@@ -229,6 +244,16 @@ const NULL_HANDLE: i32 = 0;
 /// ill-formed). A `Ty::List` is an owned `vec-*` handle exactly like a tuple/record/sum — it MUST be
 /// listed here, and `valtype_of` already agrees it is an i32 handle; omitting it let an `if` over a
 /// list take the scalar `select` path and emit a module that failed wasm validation (i64/i32 mismatch).
+///
+/// This predicate is where the reference-count reclamation the emitted component CARRIES is decided: a
+/// heap-typed `let` binding gets a `drop` emitted after the body (see `emit`), so the runnable form
+/// releases each value's storage after its last use — the release point being a static consequence of
+/// the source, not a later collector sweep — and the runtime it targets need supply only raw memory
+/// (the `alloc`/`drop`/`dup` refcount discipline is emitted BY the component, imported by name).
+//= spec/capabilities/memory-and-resource-model.md#reclamation-is-carried-by-the-runnable-form
+//# The runnable form of a program MUST carry its own allocation and reclamation of values, so that the runtime it targets need provide only raw memory rather than a memory manager.
+//= spec/capabilities/memory-and-resource-model.md#cleanup-is-source-determined
+//# A value's storage MUST be released after its last use in a way the executable semantics defines, rather than at an unspecified later time.
 fn is_heap_type(ty: &Ty) -> bool {
     match ty {
         Ty::Tuple(_)
@@ -255,6 +280,17 @@ fn is_heap_type(ty: &Ty) -> bool {
 /// value is never wrongly reclaimed (a false "escapes" only leaks in a case we do not yet emit; a false
 /// "does not escape" would be a use-after-free, which this avoids). `tail` marks whether `id` is in the
 /// body's TAIL (result) position — a bare `LocalRef` in tail position is the return, an escape.
+///
+/// This is the aliasing discipline the compiler applies INTERNALLY: the escape/borrow classification is
+/// computed here from the source, deciding where a `dup` retains and where a `drop` reclaims — the
+/// program's author writes no use-count and no aliasing annotation to be memory-safe. Because the
+/// analysis is conservative (only a provable borrow is treated as non-escaping), a live value is never
+/// reclaimed under one reference while another still reads it, so the emitted component has no
+/// unspecified aliasing behavior.
+//= spec/capabilities/memory-and-resource-model.md#aliasing-is-statically-disciplined
+//# The aliasing discipline MUST be one the compiler applies internally to reclaim and reuse storage, rather than a use-counting obligation the program's author writes, so that a program's author states no aliasing annotation to be memory-safe.
+//= spec/capabilities/memory-and-resource-model.md#aliasing-is-statically-disciplined
+//# A value MUST NOT be observably mutated through one reference while it is read through another in a way the executable semantics leaves unspecified.
 fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: bool) -> bool {
     match core_of(db, id) {
         // A reference to the binding: it escapes UNLESS this occurrence is a borrow (the operand of a
@@ -2717,7 +2753,13 @@ fn emit(
                 let bits = w * 8;
                 // Materialize the segment value in the i64 slot (a narrow int emits an i32 → extend by
                 // its OWN signedness; an Int64 is already i64). Stack still just `[buf]` after the set.
-                emit(db, s.value, slots, base + 1, high, scratch_ty, layout, out)?; // [buf, val:i32|i64]
+                // The value sub-expression's transient scratch must FLOAT above the high-water mark, not
+                // reuse a fixed `base + 1`: two segments each with a `(g x)` closure application (or any
+                // slot-typed temp) would otherwise alias one wasm local at two widths — segment 1 an i32
+                // closure cell, segment 2 an i64 arith stash — re-typing it → "expected i64, found i32"
+                // (the disjoint-slot discipline `emit_checked_arith`/`emit_call_args` follow for siblings).
+                let seg_base = (val_slot + 1).max(*high);
+                emit(db, s.value, slots, seg_base, high, scratch_ty, layout, out)?; // [buf, val:i32|i64]
                 emit_box_i32_to_i64_extend(db, s.value, out);
                 out.push(Lir::LocalSet(val_slot)); // val := value:i64  → [buf]
                 // RANGE CHECK: the value must fit the segment's (signed, bits) width, else trap. Width 8
@@ -6064,6 +6106,31 @@ fn refine_from_comparison(
     } else {
         return base;
     };
+    // EQUALITY guard: `(if (= x c) THEN ELSE)` — in the THEN branch `x == c`, so pin `x` to the EXACT
+    // range `[c, c]` (the `if`-guard analogue of a match arm's exact-value refinement). This lets the body
+    // fold a guard/comparison on `x` (`(if (= x 5) (+ x 1) …)` — the `+ 1` under `x == 5` cannot overflow;
+    // a range-comparison on `x` decides). The ELSE branch gives only `x != c` — no interval — so skip it.
+    // Sound for BOTH signednesses: equality does not depend on the order's wraparound. Intersects with any
+    // existing frame bound for `x` (a `[c,c]` is the tightest, so it wins).
+    if matches!(cmp, Prim::Eq) {
+        if !then_branch {
+            return base; // `x != c` — no single interval
+        }
+        // `c` came from `to_i64()`, so it is already an i64 — no clamp needed.
+        let ec = c;
+        let mut frame = base;
+        // Pin `x` to the exact `[c, c]` — but only when `c` lies WITHIN any prior frame bound for `x`. If it
+        // does not, the guard is unsatisfiable (a contradiction the branch never reaches), so leave the
+        // prior frame rather than fabricate an inverted `[c,c]` a downstream consumer might misread.
+        let (plo, phi) = frame
+            .get(&var)
+            .copied()
+            .unwrap_or((i64::MIN, Some(i64::MAX)));
+        if plo <= ec && phi.is_none_or(|h| ec <= h) {
+            frame.insert(var, (ec, Some(ec)));
+        }
+        return frame;
+    }
     // SIGNED integer variable only — an unsigned comparison's order wraps differently.
     let signed = matches!(type_of(db, var), Ty::Int(it) if it.ground_signed());
     if !signed {
@@ -6672,7 +6739,14 @@ fn emit_checked_arith_to(
     // Step 1: the machine-slot overflow guard (only where the machine op can overflow its slot). This is
     // the DEFINED outcome of the trapping default — an overflowing `+`/`-`/`*` traps rather than yielding
     // an undefined value; the guard is emitted (or provably elided) at EVERY reachable overflow, so no
-    // integer op with undefined overflow behavior is ever emitted:
+    // integer op with undefined overflow behavior is ever emitted. This is the general partial-operation
+    // discipline for arithmetic: an operation with no in-type result for its inputs (an overflowing add,
+    // a `MIN/-1` divide) raises a trap of a defined kind here rather than producing an unspecified value —
+    // the total-or-trap alternative to the fallible ops that instead return an `Option` (e.g. `List.at`):
+    //= spec/capabilities/core-semantics.md#partial-operations-have-a-defined-outcome
+    //# An operation that has no result for some inputs MUST, on those inputs, either evaluate to a value the executable semantics defines or raise a trap of a defined kind.
+    //= spec/capabilities/core-semantics.md#partial-operations-have-a-defined-outcome
+    //# An operation that has no result for some inputs MUST NOT produce an unspecified value.
     //= spec/capabilities/numeric-model.md#overflow-is-defined
     //# An integer operation that overflows its type MUST have a defined, deterministic outcome fixed by the numeric model, whether that outcome is a value or a trap.
     //= spec/capabilities/numeric-model.md#overflow-is-defined

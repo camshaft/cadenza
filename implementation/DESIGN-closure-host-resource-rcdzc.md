@@ -537,13 +537,84 @@ the component type. The new work:
   check; `bytes-len`/`bytes-get` added to the used-op set). The instantiate item is index-by-name so it was
   unchanged. +7 corpus (Int64/Bool/String distinct sigs; a byte-rope group coexisting with a scalar group both
   driven; byte-rope distinct-sig + a plain export). Gate 102p/1todo on 21-host-closures.
-- **REMAINING (all optional, none blocking):** a tuple/list/record closure RESULT (needs the escape's
-  `encode` walker + value-form framing instead of the raw byte copy — the render would then be the typed
-  `(: … T)` form, not a bare byte list); a byte-rope result on the DISTINCT-sig ROUND-TRIP path (a produced
-  closure handed back to a consumer that returns Bytes/String — the round-trip envelopes not yet extended); a
-  compound closure ARG (host→guest decode — harder); a compound-RESULT plain export alongside a closure; a
-  closure TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>`
-  repeated-call handle. Everything else DONE.
+- **✅ ROUND-TRIP byte-rope-result consumer COMPLETE `@48c814d4`.** A round-trip CONSUMER (an export that
+  takes a produced closure resource back and applies it) can now RETURN a `Bytes`/`String` — it crosses as
+  `(own<t>, args…) -> list<u8>` (shared memory + `cabi_realloc`, lifted with Memory/Realloc), completing the
+  byte-rope compound `call` across ALL closure shapes (single/multi/mixed/distinct-sig/round-trip). A byte-rope
+  consumer coexists with a SCALAR consumer of the same closure and with a plain export. Pieces: (1)
+  `serialize::ClosureConsume.ret_is_bytes` + `roundtrip_resource_core_module` — any byte-rope consumer adds a
+  shared memory + `cabi_realloc`; the consumer wrapper copies the body's returned Bytes/String handle out as a
+  `list<u8>` `(ptr,len)` return area (the `bytes-len`/`bytes-get` loop) AFTER dropping the closure cells. (2)
+  `envelope::ClosureConsumeAbi.ret_is_bytes` + `assemble_roundtrip_resource_mixed` — alias the shared
+  memory/realloc, lift each byte-rope consumer with Memory/Realloc against `(…) -> list<u8>` (own<t> +
+  list<u8> + functype = 3 comp types); `consumer_list_functype` helper. (3)
+  `resource_inner_component_roundtrip` converted to a RUNNING type counter (a byte-rope consumer consumes 3
+  types, not 2, in both import + export phases). (4) `emit_roundtrip_resource` per-consumer `ret_is_bytes`
+  (byte-rope skips the scalar-boundary-byte check; `bytes-len`/`bytes-get` added to the used-op set). `cdz-run`
+  unchanged (a `list<u8>` result is a `Val::List` rendered as `(5 6)`). 🔑 ALSO fixed a LATENT `BinBuild`
+  slot-typing MISCOMPILE: two `(g x)` closure applications across two `bin` segments aliased one wasm local at
+  two widths (i32 cell vs i64 arith stash) → invalid module; each segment's value emit now floats above the
+  high-water mark (the disjoint-slot discipline `emit_checked_arith` already uses). +7 corpus.
+- **✅ DISTINCT-SIG ROUND-TRIP byte-rope-result consumer COMPLETE `@60e14737` — the byte-rope story is now
+  CLOSED.** Closures of DIFFERENT signatures each cross as their own resource type, and a round-trip CONSUMER
+  of one signature can RETURN a `Bytes`/`String` — crossing as `(own<t_g>, args…) -> list<u8>` (shared memory +
+  `cabi_realloc`, lifted with Memory/Realloc). This was the LAST byte-rope gap: the compound `call`/consumer
+  now works across EVERY closure shape (single/multi/mixed/distinct-sig/round-trip/distinct-sig-round-trip). A
+  byte-rope consumer coexists with a scalar consumer of ANOTHER signature, and two byte-rope consumers of
+  different signatures coexist. Pieces mirror the single-sig round-trip byte-rope work, per-group: (1)
+  `serialize::distinct_sig_roundtrip_core_module` — any byte-rope consumer adds a shared memory +
+  `cabi_realloc`; the byte-rope consumer wrapper copies the body's returned handle out as `list<u8>`. (2)
+  `envelope::assemble_distinct_sig_roundtrip_resource_mixed` — alias the shared memory/realloc, lift each
+  byte-rope consumer with Memory/Realloc against `(…) -> list<u8>` (own<t> + list<u8> + functype = 3 comp
+  types). (3) `resource_inner_component_distinct_sig_rt` converted to a RUNNING type counter (byte-rope
+  consumer = 3 types). (4) `emit_distinct_sig_roundtrip_resource` per-consumer `ret_is_bytes`. `cdz-run`
+  unchanged. +4 corpus (byte-rope + scalar consumer of another sig; two byte-rope consumers of different sigs).
+- **✅ COMPOUND (tuple/record) closure RESULT COMPLETE `@48adec10`.** A closure whose result is a fixed-shape
+  compound (tuple/record/sum) now crosses: the `call` returns `list<u8>` carrying the canonical VALUE FORM,
+  and the host decodes + pretty-prints the typed `(: value T)` document (the full structure + type, not the
+  bare byte sequence a byte-rope renders). Pieces: (1) `serialize::closure_value_resource_core_module` —
+  structurally the bytes core (memory + `cabi_realloc`, `list<u8>` `call`), but the `call` body WALKS the
+  closure's returned compound handle to fill the value-form TEMPLATE (`lower::runtime_value_form_template` +
+  `emit_hole_fill`, the value-heap escape's machinery keyed on the dispatch-result handle instead of a
+  resource rep), then returns the `(ptr,len)` retarea. Reuses `assemble_closure_bytes_resource` (same
+  `list<u8>` boundary); the data section (11) lays the template + comes AFTER code (10). (2)
+  `emit_closure_resource` — a non-byte-rope, non-scalar result consults `runtime_value_form_template`:
+  `Some(t)` → the value core, `None` → the scalar decline (a variable-length LIST/MAP/SET has no fixed
+  template, still declines cleanly); imports `get-bool` for a Bool leaf's hole fill. (3)
+  `cdz-run::render_closure_call_result` — a `list<u8>` `call` result is TRY-DECODED as a value form
+  (`codec::decode` is total + 8-byte-schema-header-guarded), else rendered as a raw byte-rope; the header
+  disambiguates the two unambiguously (no flag), applied at ALL closure-call result sites. +6 corpus (tuple,
+  record, Bool leaf, nested tuple, capturing→tuple, negative int leaf), each rendering the full typed form.
+  🔑 SCOPE: single-export, fixed-shape compound. Multi/mixed/distinct-sig/round-trip compound results + a
+  variable-length list/map/set result are later widenings.
+- **✅ COMPOUND closure RESULT on the MULTI-EXPORT path COMPLETE `@2f8ec34e`.** N same-signature closures
+  each returning a fixed-shape compound (tuple/record/sum) now share ONE `call` that returns the value form
+  as `list<u8>`. The shared `call` recovers each closure's code slot from the resource rep, dispatches it,
+  and walks the returned compound handle into the ONE value-form template (all exports share the result type
+  → one template). Pieces: (1) `serialize::multi_closure_value_resource_core_module` — combines the
+  multi-bytes core (N makes + shared `list<u8>` `call` + memory/`cabi_realloc` + plain-export slots) with the
+  single-export value core's value-form body (a data-section template walked from the dispatched compound
+  handle via `emit_hole_fill`). (2) `emit_multi_closure_resource` — a non-byte-rope, non-scalar shared result
+  consults `runtime_value_form_template`; `Some(t)` → the value core (reusing
+  `assemble_multi_closure_bytes_resource`, same `list<u8>` envelope), `None` → the scalar decline; imports
+  `get-bool` for a Bool leaf. `cdz-run` already try-decodes. +5 corpus (two tuple closures both driven, two
+  record closures in canonical field order, three capturing closures sharing one call). Record fields render
+  in CANONICAL sorted-name order (same as single-export + the escape).
+- **✅ COMPOUND closure RESULT on the MIXED path COMPLETE `@dae1e7e0`.** A compound-returning closure
+  exported ALONGSIDE a plain non-closure export now crosses: the closure's shared `call` returns the value
+  form as `list<u8>` (walking the returned handle into the value-form template), and each plain export rides
+  as an ordinary top-level component func. NO new serializer/envelope — `emit_mixed_closure_resource`
+  consults `runtime_value_form_template` for the shared result: `Some(t)` → `multi_closure_value_resource_
+  core_module` (which already threads plain exports) reusing `assemble_multi_closure_bytes_resource` (the same
+  `list<u8>` envelope with plain slots), `None` → the byte-rope/scalar paths; imports `get-bool`. `cdz-run`
+  already try-decodes. +4 corpus (tuple closure + plain `two`; record closure + parameterized plain `inc`).
+- **REMAINING (all optional, none blocking):** a compound closure RESULT on the distinct-sig/round-trip
+  paths (single/multi/mixed tuple/record are done; the remaining shared-`call`/consumer paths would thread
+  the per-result template through their serializers); a VARIABLE-LENGTH list/map/set closure result (needs a
+  runtime looping value-form walker, like the runtime-Bytes escape but recursing over elements); a compound
+  closure ARG (host→guest decode — harder); a closure TRANSFORMER (`own<t>` both directions — cleanly
+  declined); the wasmtime-blocked `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`)
+  result surface is DONE across all shapes; a fixed-shape compound result is DONE on the single-export path.**
 
 ## Risks / open questions
 

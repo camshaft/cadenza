@@ -473,6 +473,12 @@ pub enum Core {
     //# A sum type constructor MUST be represented as a single-arity function that, when applied to exactly one argument, produces a Sum value tagged with the constructor's variant name.
     //= spec/capabilities/type-system.md#sum-types-are-constructed-and-deconstructed
     //# A value of a sum type MUST be constructed through one of its variants.
+    ///
+    /// A NULLARY variant is a constructor whose ARGUMENT is the unit value — `None` builds `sum-new(disc,
+    /// arr-alloc(0))`, the empty array standing for the unit payload — NOT a value pre-constructed at the
+    /// prelude; `(None unit)` is the application that produces it, uniform with `(Some 5)`.
+    //= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
+    //# A "nullary" variant MUST be a constructor whose argument type is Unit, not a pre-constructed Sum value.
     SumNew { disc: u32, payloads: Vec<StructId> },
     /// A MATCH over a SUM scrutinee, compiled to a DECISION TREE. The ROOT switch dispatches on
     /// `sum-disc(scrutinee)` (`path` is empty — the scrutinee itself); each arm's continuation is a leaf
@@ -628,6 +634,13 @@ pub enum Core {
     /// callee (a non-recursive call still inlines, so it never becomes a `Call`; this is the one path
     /// that forces a real wasm call). The callee is emitted as its own wasm function (reachability adds
     /// it to the layout's emission order); the backend emits each arg then `call <callee's abs index>`.
+    ///
+    /// Recursion is realized HERE as a STATIC reference to code — the callee's definition index resolved
+    /// to a wasm function index — never as a heap value that points back at a value created earlier. So a
+    /// recursive definition introduces no cycle into the value heap, and the compiler emits no construct
+    /// that would form one, which is what lets the reference-count reclamation leave no value uncollected.
+    //= spec/capabilities/memory-and-resource-model.md#the-value-heap-is-acyclic
+    //# The compiler MUST NOT emit a construct that forms a cycle among heap values, so that a reference-count reclamation discipline leaves no value uncollected.
     Call { callee: usize, args: Vec<StructId> },
     /// A reference to a FUNCTION PARAMETER — the `binder` is the parameter's name occurrence (its
     /// identity, matching what `resolve` binds a reference to). The backend maps it to a `local.get` of
@@ -709,6 +722,12 @@ pub enum Core {
     /// contribute nothing), so this node is produced ONLY when a statement reaches a side effect that
     /// selection must emit. The backend emits each stmt (a Unit-returning host call leaves nothing on the
     /// stack; a value-returning stmt would need a `drop`, not yet produced here) then the tail.
+    ///
+    /// Because the statements are emitted in written order and each host call is a straight-line boundary
+    /// call, the host calls a program makes are observed in exactly the order the program made them —
+    /// host-call order is part of the program's observable behavior, fixed by this emission order.
+    //= spec/capabilities/core-semantics.md#host-calls-are-ordered-and-part-of-observable-behavior
+    //# The sequence of host calls a program makes MUST be observed in the order the program made them.
     Seq {
         stmts: Vec<StructId>,
         tail: StructId,

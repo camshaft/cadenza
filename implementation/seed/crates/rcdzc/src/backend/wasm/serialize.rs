@@ -92,6 +92,16 @@ fn host_import_item(op_name: &str, type_idx: u32) -> Vec<u8> {
 /// Serialize one flat instruction, appending its bytes to `out`. `import_index` maps a runtime op's
 /// name to its core function index (its position `0..k` in the import section), so a `CallImport`
 /// resolves by name to the same index the import section assigned. Exhaustive over `Lir`.
+///
+/// This is the recursive instruction serializer: a `match` over every `Lir` variant, no wildcard arm —
+/// so a new instruction variant the serializer does not handle is a compile-time non-exhaustiveness
+/// error, never a silent fall-through. It consumes an already-selected `Lir` and only writes bytes: it
+/// resolves no name, decides no type, and chooses no effect handler — those decisions were all made by
+/// earlier phases, so emission is the pure serialization of decisions already made.
+//= spec/capabilities/compiler-pipeline.md#the-compiler-operates-on-ast-values
+//# The compiler MUST serialize instruction values to bytes through a recursive function that pattern-matches the instruction sum type exhaustively over its variants, so that an instruction variant the serializer does not handle is a compile-time error rather than a silent fall-through.
+//= spec/capabilities/compiler-pipeline.md#emission-serializes-a-lowered-representation
+//# The step that emits instruction bytes MUST consume an already-lowered representation and MUST NOT itself resolve a name, decide a type, or choose an effect's handler, so that emission is the serialization of decisions already made.
 fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut Vec<u8>) {
     match i {
         Lir::ConstI64(n) => {
@@ -1631,6 +1641,293 @@ pub fn closure_bytes_resource_core_module(
     Ok(core)
 }
 
+/// The single-export COMPOUND-VALUE-result closure core module: the closure's `call` returns a
+/// tuple/record/sum whose CANONICAL VALUE FORM crosses as `list<u8>` (the host decodes + pretty-prints the
+/// `(: value T)` document). Structurally [`closure_bytes_resource_core_module`], but the `call` body writes
+/// the value-form TEMPLATE into linear memory + walks each runtime leaf hole from the closure's returned
+/// heap handle (the escape's [`encode_walk_body`] machinery), instead of the raw `bytes-*` copy loop. The
+/// template's static bytes (structure, names, type node, leaf framing) are laid in the DATA section at
+/// `byte_off`; its `(ptr,len)` return area at `ret_off`; only the leaf VALUES are filled at run time by
+/// walking `arr-get`/`get-int` paths from the dispatched compound handle. The closure's compound result is
+/// a plain heap rep (the `call_indirect` result), so `emit_hole_fill` walks it exactly as the escape walks
+/// a resource rep — the ONLY difference is the rep is a local (the dispatch result), not `resource.rep`'d.
+#[allow(clippy::too_many_arguments)]
+pub fn closure_value_resource_core_module(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    export_abs: u32,
+    arg_vts: &[ValType],
+    make_param_vts: &[ValType],
+    lifted_type_idx: u32,
+    template: &crate::lower::ValueFormTemplate,
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    use crate::backend::wasm::wasm_abi::op;
+    let k = imports.len();
+    let n = funcs.len();
+    let vt_byte = |v: ValType| match v {
+        ValType::I32 => wasm_abi::CORE_I32,
+        ValType::I64 => wasm_abi::CORE_I64,
+        ValType::F32 => wasm_abi::CORE_F32,
+        ValType::F64 => wasm_abi::CORE_F64,
+    };
+
+    // ── Type section ── identical shape to the bytes core: imports 0..k; resource-new/rep; defined bodies;
+    // make `(make-params…)->i32`; call `(i32 self, args…)->i32 retptr`; cabi_realloc `(i32×4)->i32`.
+    let mut type_items = Vec::new();
+    for o in imports {
+        type_items.extend_from_slice(&import_functype(o));
+    }
+    let i32_to_i32 = {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        t
+    };
+    type_items.extend_from_slice(&i32_to_i32); // resource-new (k)
+    type_items.extend_from_slice(&i32_to_i32); // resource-rep (k+1)
+    let defined_type_base = k + 2;
+    for f in funcs {
+        type_items.extend_from_slice(&functype(f)?);
+    }
+    let make_type_idx = defined_type_base + n;
+    {
+        let params: Vec<u8> = make_param_vts.iter().map(|v| vt_byte(*v)).collect();
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(params.len(), &params));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let call_type_idx = make_type_idx + 1;
+    {
+        let mut params = vec![wasm_abi::CORE_I32];
+        params.extend(arg_vts.iter().map(|v| vt_byte(*v)));
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(params.len(), &params));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let realloc_type_idx = call_type_idx + 1;
+    {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let total_types = defined_type_base + n + 3;
+    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
+
+    // ── Import section ──
+    let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut import_items = Vec::new();
+    for (i, o) in imports.iter().enumerate() {
+        import_items.extend_from_slice(&import_item(o.name, i as u32));
+        import_index.insert(o.name, i as u32);
+    }
+    import_items.extend_from_slice(&import_item("resource-new", k as u32));
+    import_items.extend_from_slice(&import_item("resource-rep", (k + 1) as u32));
+    let import_sec = section(2, &wasm_vec(k + 2, &import_items));
+    let f_rnew = k as u32;
+    let f_rrep = (k + 1) as u32;
+
+    // ── Function section ──
+    let mut func_items = Vec::new();
+    for i in 0..n {
+        uleb128((defined_type_base + i) as u64, &mut func_items);
+    }
+    uleb128(make_type_idx as u64, &mut func_items);
+    uleb128(call_type_idx as u64, &mut func_items);
+    uleb128(realloc_type_idx as u64, &mut func_items);
+    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n + 3, &func_items));
+    let make_abs = (defined_type_base + n) as u32;
+    let call_abs = make_abs + 1;
+    let realloc_abs = call_abs + 1;
+
+    // ── Table + Memory ──
+    let n_lifted = layout.lifted.len();
+    let mut table_entry = vec![0x70u8, 0x01];
+    uleb128(n_lifted as u64, &mut table_entry);
+    uleb128(n_lifted as u64, &mut table_entry);
+    let table_sec = section(wasm_abi::CORE_SEC_TABLE, &wasm_vec(1, &table_entry));
+    let mem_sec = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]));
+
+    // ── Export section ── memory, make, call, cabi_realloc.
+    let export_sec = {
+        let export = |name: &str, kind: u8, idx: u32| {
+            let mut item = uleb_bytes(name.len() as u64);
+            item.extend_from_slice(name.as_bytes());
+            item.push(kind);
+            uleb128(idx as u64, &mut item);
+            item
+        };
+        let mut items = Vec::new();
+        items.extend_from_slice(&export("memory", wasm_abi::EXPORT_KIND_MEMORY, 0));
+        items.extend_from_slice(&export("make", wasm_abi::EXPORT_KIND_FUNC, make_abs));
+        items.extend_from_slice(&export("call", wasm_abi::EXPORT_KIND_FUNC, call_abs));
+        items.extend_from_slice(&export(
+            "cabi_realloc",
+            wasm_abi::EXPORT_KIND_FUNC,
+            realloc_abs,
+        ));
+        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(4, &items))
+    };
+
+    // ── Element ──
+    let elem_sec = {
+        let mut seg = Vec::new();
+        seg.push(0x00);
+        seg.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut seg);
+        seg.push(op::END);
+        let mut idxs = Vec::new();
+        for slot in 0..n_lifted {
+            uleb128(layout.lifted_abs(slot) as u64, &mut idxs);
+        }
+        seg.extend_from_slice(&wasm_vec(n_lifted, &idxs));
+        section(wasm_abi::CORE_SEC_ELEMENT, &wasm_vec(1, &seg))
+    };
+
+    // ── Data section ── the value-form template bytes at `byte_off`, its `(ptr,len)` return area at
+    // `ret_off` (both 4-aligned, mirroring the escape's runtime resource layout). The template holes are
+    // filled at run time by the `call` body walking the dispatched compound handle.
+    let byte_off = 0usize;
+    let mut data_bytes: Vec<u8> = template.bytes.clone();
+    let ret_off = (data_bytes.len() + 3) & !3;
+    data_bytes.resize(ret_off, 0);
+    data_bytes.extend_from_slice(&(byte_off as u32).to_le_bytes());
+    data_bytes.extend_from_slice(&(template.bytes.len() as u32).to_le_bytes());
+    let data_sec = {
+        let mut item = vec![0x00];
+        item.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut item);
+        item.push(op::END);
+        item.extend_from_slice(&uleb_bytes(data_bytes.len() as u64));
+        item.extend_from_slice(&data_bytes);
+        section(wasm_abi::CORE_SEC_DATA, &wasm_vec(1, &item))
+    };
+
+    // ── Code section ── defined bodies, then make, call, cabi_realloc.
+    let imp = |name: &str| {
+        *import_index
+            .get(name)
+            .unwrap_or_else(|| panic!("`{name}` imported")) as u64
+    };
+    let mut code_items = Vec::new();
+    for f in funcs {
+        code_items.extend_from_slice(&code_entry(f, &import_index));
+    }
+    // make: forward the export params, `call <export body>` (builds the cell), `resource.new`.
+    {
+        let mut inner = uleb_bytes(0);
+        for p in 0..make_param_vts.len() {
+            inner.push(op::LOCAL_GET);
+            uleb128(p as u64, &mut inner);
+        }
+        inner.push(op::CALL);
+        uleb128(export_abs as u64, &mut inner);
+        inner.push(op::CALL);
+        uleb128(f_rnew as u64, &mut inner);
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    // call(self, args…): dispatch the lifted closure → a COMPOUND heap handle, drop the cell, then walk the
+    // handle to fill the value-form template holes in memory, drop the handle, return the retptr.
+    {
+        // Params: 0 = self, 1..1+arity = args. Locals: cell(i32), rep(i32 = the compound handle), scratch(i64).
+        let arity = arg_vts.len() as u32;
+        let cell = 1 + arity;
+        let rep = cell + 1;
+        let scratch = rep + 1;
+        let mut inner = Vec::new();
+        // two local groups: 2 × i32 (cell, rep) then 1 × i64 (scratch).
+        inner.extend_from_slice(&wasm_vec(2, &{
+            let mut g = uleb_bytes(2);
+            g.push(wasm_abi::CORE_I32);
+            let mut g2 = uleb_bytes(1);
+            g2.push(wasm_abi::CORE_I64);
+            g.extend_from_slice(&g2);
+            g
+        }));
+        let get = |l: u32, out: &mut Vec<u8>| {
+            out.push(op::LOCAL_GET);
+            uleb128(l as u64, out);
+        };
+        let set = |l: u32, out: &mut Vec<u8>| {
+            out.push(op::LOCAL_SET);
+            uleb128(l as u64, out);
+        };
+        // cell = resource.rep(self)
+        get(0, &mut inner);
+        inner.push(op::CALL);
+        uleb128(f_rrep as u64, &mut inner);
+        set(cell, &mut inner);
+        // dispatch: push env(cell) + args, read the code slot, call_indirect → the compound handle.
+        get(cell, &mut inner);
+        for a in 0..arity {
+            get(1 + a, &mut inner);
+        }
+        get(cell, &mut inner);
+        inner.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut inner);
+        inner.push(op::CALL);
+        uleb128(imp("arr-get"), &mut inner);
+        inner.push(op::CALL);
+        uleb128(imp("get-int"), &mut inner);
+        inner.push(op::I32_WRAP_I64);
+        inner.push(op::CALL_INDIRECT);
+        uleb128(lifted_type_idx as u64, &mut inner);
+        uleb128(0, &mut inner); // table 0
+        set(rep, &mut inner); // the closure's compound-handle result
+        // DROP the closure cell (own<t> release — balances make's alloc).
+        get(cell, &mut inner);
+        inner.push(op::CALL);
+        uleb128(imp("drop"), &mut inner);
+        // Fill each template hole by walking the compound handle (`rep`). `emit_hole_fill` reads
+        // `arr-get`/`get-int` from `rep` and stores each leaf's bytes into the template at `byte_off`.
+        for hole in &template.leaves {
+            emit_hole_fill(hole, byte_off, rep, scratch, &import_index, &mut inner);
+        }
+        // DROP the compound handle (the walk is done — the guest owns this transient result).
+        get(rep, &mut inner);
+        inner.push(op::CALL);
+        uleb128(imp("drop"), &mut inner);
+        // return the (ptr,len) retarea pointer.
+        inner.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(ret_off as i64, &mut inner);
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    // cabi_realloc stub.
+    {
+        let mut inner = uleb_bytes(0);
+        inner.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut inner);
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + 3, &code_items));
+
+    let mut core = Vec::new();
+    core.extend_from_slice(CORE_MAGIC);
+    core.extend_from_slice(&type_sec);
+    core.extend_from_slice(&import_sec);
+    core.extend_from_slice(&func_sec);
+    core.extend_from_slice(&table_sec);
+    core.extend_from_slice(&mem_sec);
+    core.extend_from_slice(&export_sec);
+    core.extend_from_slice(&elem_sec);
+    // Core section order: elem(9), code(10), data(11) — the data section comes AFTER code.
+    core.extend_from_slice(&code_sec);
+    core.extend_from_slice(&data_sec);
+    Ok(core)
+}
+
 /// The MULTI-EXPORT BYTE-ROPE-result closure core module: N `make-<name>` functions sharing ONE `call`
 /// that returns `list<u8>` (a `Bytes`/`String` closure result). Combines [`multi_closure_resource_core_module`]
 /// (N makes + shared `call`) with [`closure_bytes_resource_core_module`] (the memory + `cabi_realloc` + the
@@ -1947,6 +2244,299 @@ pub fn multi_closure_bytes_resource_core_module(
     core.extend_from_slice(&export_sec);
     core.extend_from_slice(&elem_sec);
     core.extend_from_slice(&code_sec);
+    Ok(core)
+}
+
+/// The MULTI-EXPORT COMPOUND-VALUE-result closure core module: N `make-<name>` functions sharing ONE
+/// `call` that returns `list<u8>` carrying the canonical VALUE FORM of a tuple/record/sum result. Combines
+/// [`multi_closure_bytes_resource_core_module`] (N makes + shared list-`call` + memory/cabi_realloc + plain
+/// exports) with [`closure_value_resource_core_module`]'s value-form body (a data-section template walked
+/// from the closure's returned handle). Every export shares the closure SIGNATURE — hence the SAME result
+/// type + the ONE value-form `template` — so a single shared `call` dispatches whichever closure a handle
+/// names (the code slot travels in the rep), then walks its compound result into the template.
+#[allow(clippy::too_many_arguments)]
+pub fn multi_closure_value_resource_core_module(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    makes: &[ClosureMake],
+    plain: &[PlainExport],
+    arg_vts: &[ValType],
+    lifted_type_idx: u32,
+    template: &crate::lower::ValueFormTemplate,
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    use crate::backend::wasm::wasm_abi::op;
+    let k = imports.len();
+    let n = funcs.len();
+    let nmk = makes.len();
+    let vt_byte = |v: ValType| match v {
+        ValType::I32 => wasm_abi::CORE_I32,
+        ValType::I64 => wasm_abi::CORE_I64,
+        ValType::F32 => wasm_abi::CORE_F32,
+        ValType::F64 => wasm_abi::CORE_F64,
+    };
+
+    // ── Type section ── imports 0..k; resource-new/rep; defined bodies; N make functypes; shared call
+    // `(i32 self, args…)->i32 retptr`; cabi_realloc `(i32×4)->i32`.
+    let mut type_items = Vec::new();
+    for o in imports {
+        type_items.extend_from_slice(&import_functype(o));
+    }
+    let i32_to_i32 = {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        t
+    };
+    type_items.extend_from_slice(&i32_to_i32); // resource-new (k)
+    type_items.extend_from_slice(&i32_to_i32); // resource-rep (k+1)
+    let defined_type_base = k + 2;
+    for f in funcs {
+        type_items.extend_from_slice(&functype(f)?);
+    }
+    let make_type_base = defined_type_base + n;
+    for mk in makes {
+        let params: Vec<u8> = mk.param_vts.iter().map(|v| vt_byte(*v)).collect();
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(params.len(), &params));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let call_type_idx = make_type_base + nmk;
+    {
+        let mut params = vec![wasm_abi::CORE_I32];
+        params.extend(arg_vts.iter().map(|v| vt_byte(*v)));
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(params.len(), &params));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let realloc_type_idx = call_type_idx + 1;
+    {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let total_types = defined_type_base + n + nmk + 2;
+    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
+
+    // ── Import section ──
+    let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut import_items = Vec::new();
+    for (i, o) in imports.iter().enumerate() {
+        import_items.extend_from_slice(&import_item(o.name, i as u32));
+        import_index.insert(o.name, i as u32);
+    }
+    import_items.extend_from_slice(&import_item("resource-new", k as u32));
+    import_items.extend_from_slice(&import_item("resource-rep", (k + 1) as u32));
+    let import_sec = section(2, &wasm_vec(k + 2, &import_items));
+    let f_rnew = k as u32;
+    let f_rrep = (k + 1) as u32;
+
+    // ── Function section ── defined bodies, N makes, call, cabi_realloc.
+    let mut func_items = Vec::new();
+    for i in 0..n {
+        uleb128((defined_type_base + i) as u64, &mut func_items);
+    }
+    for i in 0..nmk {
+        uleb128((make_type_base + i) as u64, &mut func_items);
+    }
+    uleb128(call_type_idx as u64, &mut func_items);
+    uleb128(realloc_type_idx as u64, &mut func_items);
+    let func_sec = section(
+        wasm_abi::CORE_SEC_FUNCTION,
+        &wasm_vec(n + nmk + 2, &func_items),
+    );
+    let make_abs_base = (defined_type_base + n) as u32;
+    let call_abs = make_abs_base + nmk as u32;
+    let realloc_abs = call_abs + 1;
+
+    // ── Table + Memory ──
+    let n_lifted = layout.lifted.len();
+    let mut table_entry = vec![0x70u8, 0x01];
+    uleb128(n_lifted as u64, &mut table_entry);
+    uleb128(n_lifted as u64, &mut table_entry);
+    let table_sec = section(wasm_abi::CORE_SEC_TABLE, &wasm_vec(1, &table_entry));
+    let mem_sec = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]));
+
+    // ── Export section ── memory, N make-<name>, call, cabi_realloc, then plain exports.
+    let export_sec = {
+        let export = |name: &str, kind: u8, idx: u32| {
+            let mut item = uleb_bytes(name.len() as u64);
+            item.extend_from_slice(name.as_bytes());
+            item.push(kind);
+            uleb128(idx as u64, &mut item);
+            item
+        };
+        let mut items = Vec::new();
+        items.extend_from_slice(&export("memory", wasm_abi::EXPORT_KIND_MEMORY, 0));
+        for (i, mk) in makes.iter().enumerate() {
+            items.extend_from_slice(&export(
+                &mk.export_name,
+                wasm_abi::EXPORT_KIND_FUNC,
+                make_abs_base + i as u32,
+            ));
+        }
+        items.extend_from_slice(&export("call", wasm_abi::EXPORT_KIND_FUNC, call_abs));
+        items.extend_from_slice(&export(
+            "cabi_realloc",
+            wasm_abi::EXPORT_KIND_FUNC,
+            realloc_abs,
+        ));
+        for p in plain {
+            items.extend_from_slice(&export(
+                &p.export_name,
+                wasm_abi::EXPORT_KIND_FUNC,
+                p.body_abs,
+            ));
+        }
+        section(
+            wasm_abi::CORE_SEC_EXPORT,
+            &wasm_vec(nmk + 3 + plain.len(), &items),
+        )
+    };
+
+    // ── Element ──
+    let elem_sec = {
+        let mut seg = Vec::new();
+        seg.push(0x00);
+        seg.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut seg);
+        seg.push(op::END);
+        let mut idxs = Vec::new();
+        for slot in 0..n_lifted {
+            uleb128(layout.lifted_abs(slot) as u64, &mut idxs);
+        }
+        seg.extend_from_slice(&wasm_vec(n_lifted, &idxs));
+        section(wasm_abi::CORE_SEC_ELEMENT, &wasm_vec(1, &seg))
+    };
+
+    // ── Data section ── the value-form template at `byte_off=0`, its `(ptr,len)` return area at `ret_off`.
+    let byte_off = 0usize;
+    let mut data_bytes: Vec<u8> = template.bytes.clone();
+    let ret_off = (data_bytes.len() + 3) & !3;
+    data_bytes.resize(ret_off, 0);
+    data_bytes.extend_from_slice(&(byte_off as u32).to_le_bytes());
+    data_bytes.extend_from_slice(&(template.bytes.len() as u32).to_le_bytes());
+    let data_sec = {
+        let mut item = vec![0x00];
+        item.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut item);
+        item.push(op::END);
+        item.extend_from_slice(&uleb_bytes(data_bytes.len() as u64));
+        item.extend_from_slice(&data_bytes);
+        section(wasm_abi::CORE_SEC_DATA, &wasm_vec(1, &item))
+    };
+
+    // ── Code section ── defined bodies, N makes, shared value-form call, cabi_realloc.
+    let imp = |name: &str| {
+        *import_index
+            .get(name)
+            .unwrap_or_else(|| panic!("`{name}` imported")) as u64
+    };
+    let mut code_items = Vec::new();
+    for f in funcs {
+        code_items.extend_from_slice(&code_entry(f, &import_index));
+    }
+    for mk in makes {
+        let mut inner = uleb_bytes(0);
+        for p in 0..mk.param_vts.len() {
+            inner.push(op::LOCAL_GET);
+            uleb128(p as u64, &mut inner);
+        }
+        inner.push(op::CALL);
+        uleb128(mk.export_abs as u64, &mut inner);
+        inner.push(op::CALL);
+        uleb128(f_rnew as u64, &mut inner);
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    // The shared value-form `call` — identical body to the single-export value core (the code slot is
+    // recovered from the rep, so ONE `call` serves all makes; the value form is the same for every export
+    // since they share the result type).
+    {
+        let arity = arg_vts.len() as u32;
+        let cell = 1 + arity;
+        let rep = cell + 1;
+        let scratch = rep + 1;
+        let mut inner = Vec::new();
+        inner.extend_from_slice(&wasm_vec(2, &{
+            let mut g = uleb_bytes(2);
+            g.push(wasm_abi::CORE_I32);
+            let mut g2 = uleb_bytes(1);
+            g2.push(wasm_abi::CORE_I64);
+            g.extend_from_slice(&g2);
+            g
+        }));
+        let get = |l: u32, out: &mut Vec<u8>| {
+            out.push(op::LOCAL_GET);
+            uleb128(l as u64, out);
+        };
+        let set = |l: u32, out: &mut Vec<u8>| {
+            out.push(op::LOCAL_SET);
+            uleb128(l as u64, out);
+        };
+        get(0, &mut inner);
+        inner.push(op::CALL);
+        uleb128(f_rrep as u64, &mut inner);
+        set(cell, &mut inner);
+        get(cell, &mut inner);
+        for a in 0..arity {
+            get(1 + a, &mut inner);
+        }
+        get(cell, &mut inner);
+        inner.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut inner);
+        inner.push(op::CALL);
+        uleb128(imp("arr-get"), &mut inner);
+        inner.push(op::CALL);
+        uleb128(imp("get-int"), &mut inner);
+        inner.push(op::I32_WRAP_I64);
+        inner.push(op::CALL_INDIRECT);
+        uleb128(lifted_type_idx as u64, &mut inner);
+        uleb128(0, &mut inner);
+        set(rep, &mut inner);
+        get(cell, &mut inner);
+        inner.push(op::CALL);
+        uleb128(imp("drop"), &mut inner);
+        for hole in &template.leaves {
+            emit_hole_fill(hole, byte_off, rep, scratch, &import_index, &mut inner);
+        }
+        get(rep, &mut inner);
+        inner.push(op::CALL);
+        uleb128(imp("drop"), &mut inner);
+        inner.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(ret_off as i64, &mut inner);
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    {
+        let mut inner = uleb_bytes(0);
+        inner.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut inner);
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + nmk + 2, &code_items));
+
+    let mut core = Vec::new();
+    core.extend_from_slice(CORE_MAGIC);
+    core.extend_from_slice(&type_sec);
+    core.extend_from_slice(&import_sec);
+    core.extend_from_slice(&func_sec);
+    core.extend_from_slice(&table_sec);
+    core.extend_from_slice(&mem_sec);
+    core.extend_from_slice(&export_sec);
+    core.extend_from_slice(&elem_sec);
+    core.extend_from_slice(&code_sec);
+    core.extend_from_slice(&data_sec);
     Ok(core)
 }
 
@@ -2660,6 +3250,12 @@ pub struct ClosureConsume {
     pub params: Vec<ConsumeParam>,
     /// The consumer's result valtype.
     pub ret_vt: ValType,
+    /// True when the consumer's result is a byte-rope (`Bytes`/`String`) — the wrapper copies the body's
+    /// returned handle out as a `list<u8>` `(ptr,len)` return area (via `bytes-len`/`bytes-get`) instead of
+    /// returning the scalar value. `ret_vt` is `I32` either way (a bytes handle IS an i32) so the core
+    /// consumer functype's result stays `i32`; only the BODY differs. When any consumer is byte-rope the
+    /// module gains a shared memory + `cabi_realloc`.
+    pub ret_is_bytes: bool,
 }
 
 /// The ROUND-TRIP closure-resource core module (C-HOST-4): N producer `make-<name>` functions (as in
@@ -2685,6 +3281,10 @@ pub fn roundtrip_resource_core_module(
     let n = funcs.len();
     let nmk = makes.len();
     let ncons = consumers.len();
+    // A byte-rope consumer result crosses as `list<u8>` → the module needs a shared memory + `cabi_realloc`
+    // (the consumer wrapper writes its `list<u8>` payload + `(ptr,len)` return area into linear memory, then
+    // the envelope lifts that consumer with the Memory/Realloc canon options).
+    let any_bytes = consumers.iter().any(|c| c.ret_is_bytes);
     let vt_byte = |v: ValType| match v {
         ValType::I32 => wasm_abi::CORE_I32,
         ValType::I64 => wasm_abi::CORE_I64,
@@ -2736,7 +3336,15 @@ pub fn roundtrip_resource_core_module(
         t.extend_from_slice(&wasm_vec(1, &[vt_byte(c.ret_vt)]));
         type_items.extend_from_slice(&t);
     }
-    let total_types = defined_type_base + n + nmk + ncons;
+    // If any consumer is byte-rope, one shared `cabi_realloc` functype `(i32×4)->i32` after the consumers.
+    let realloc_type_idx = (defined_type_base + n + nmk + ncons) as u32;
+    if any_bytes {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let total_types = defined_type_base + n + nmk + ncons + usize::from(any_bytes);
     let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
 
     // ── Import section ── k ops + resource-new + resource-rep.
@@ -2763,12 +3371,16 @@ pub fn roundtrip_resource_core_module(
     for i in 0..ncons {
         uleb128((consume_type_base + i) as u64, &mut func_items);
     }
+    if any_bytes {
+        uleb128(realloc_type_idx as u64, &mut func_items);
+    }
     let func_sec = section(
         wasm_abi::CORE_SEC_FUNCTION,
-        &wasm_vec(n + nmk + ncons, &func_items),
+        &wasm_vec(n + nmk + ncons + usize::from(any_bytes), &func_items),
     );
     let make_abs_base = (defined_type_base + n) as u32;
     let consume_abs_base = make_abs_base + nmk as u32;
+    let realloc_abs = consume_abs_base + ncons as u32; // valid only when any_bytes
 
     // ── Table + Element ── the funcref table from `layout.lifted` (a consumer's call_indirect dispatches
     // over it; the closure the host handed back was lifted in this module).
@@ -2794,7 +3406,15 @@ pub fn roundtrip_resource_core_module(
         (table_sec, elem_sec)
     };
 
-    // ── Export section ── each make + each consumer, under its boundary name.
+    // ── Memory ── only when a byte-rope consumer must write its `list<u8>` payload.
+    let mem_sec = if any_bytes {
+        section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]))
+    } else {
+        Vec::new()
+    };
+
+    // ── Export section ── each make + each consumer, under its boundary name; plus (when byte-rope) `memory`
+    // + `cabi_realloc` for the compound consumer's canon lift.
     let export_sec = {
         let export = |name: &str, kind: u8, idx: u32| {
             let mut item = uleb_bytes(name.len() as u64);
@@ -2827,9 +3447,20 @@ pub fn roundtrip_resource_core_module(
                 p.body_abs,
             ));
         }
+        if any_bytes {
+            items.extend_from_slice(&export("memory", wasm_abi::EXPORT_KIND_MEMORY, 0));
+            items.extend_from_slice(&export(
+                "cabi_realloc",
+                wasm_abi::EXPORT_KIND_FUNC,
+                realloc_abs,
+            ));
+        }
         section(
             wasm_abi::CORE_SEC_EXPORT,
-            &wasm_vec(nmk + ncons + plain.len(), &items),
+            &wasm_vec(
+                nmk + ncons + plain.len() + if any_bytes { 2 } else { 0 },
+                &items,
+            ),
         )
     };
 
@@ -2856,23 +3487,27 @@ pub fn roundtrip_resource_core_module(
     // consumer[i](params…) = consume_body(<rep'd closures / passthrough scalars>…). A CLOSURE param's
     // boundary handle is `resource.rep`'d to the guest cell (in a scratch local), then that cell is passed
     // to the body; a scalar param is forwarded straight. The consumer body treats its closure param(s) as
-    // plain cell handles (a normal `Core::CallClosure`), so this wrapper is the boundary→cell bridge.
+    // plain cell handles (a normal `Core::CallClosure`), so this wrapper is the boundary→cell bridge. A
+    // SCALAR-result consumer leaves the body's value R on the stack; a BYTE-ROPE-result consumer instead
+    // copies the body's returned Bytes/String handle out as a `list<u8>` `(ptr,len)` return area.
+    let imp = |name: &str| import_index[name] as u64;
     for c in consumers {
         let nparams = c.params.len() as u32;
-        // One i32 scratch local per closure param (holding the rep'd cell). Scratch slots start past the
-        // params (0..nparams).
+        // One i32 scratch local per closure param (holding the rep'd cell). A byte-rope consumer needs 3
+        // MORE i32 scratch locals (the returned Bytes handle, its length, the copy index).
         let n_closures = c
             .params
             .iter()
             .filter(|p| matches!(p, ConsumeParam::Closure))
             .count();
+        let n_scratch = n_closures + if c.ret_is_bytes { 3 } else { 0 };
         let mut inner = Vec::new();
         inner.extend_from_slice(&wasm_vec(
-            if n_closures == 0 { 0 } else { 1 },
-            &if n_closures == 0 {
+            if n_scratch == 0 { 0 } else { 1 },
+            &if n_scratch == 0 {
                 Vec::new()
             } else {
-                let mut g = uleb_bytes(n_closures as u64);
+                let mut g = uleb_bytes(n_scratch as u64);
                 g.push(wasm_abi::CORE_I32);
                 g
             },
@@ -2902,22 +3537,103 @@ pub fn roundtrip_resource_core_module(
         }
         inner.push(op::CALL);
         uleb128(c.consume_abs as u64, &mut inner);
-        // C-HOST-5: each closure param crossed as `own<t>` (ownership transferred INTO the consumer), so
-        // the wrapper owns each handed-back cell's last reference — RELEASE each now (`heap.drop(rep)`),
-        // after the consumer BODY returned (it finished borrowing the cell for every `(g x)` application,
-        // including a body that applies the closure more than once). The body's result R is on the stack;
-        // each `drop` takes a rep (a separate push) and returns nothing, leaving R on top.
-        for (_, cell) in cell_of.iter() {
-            inner.push(op::LOCAL_GET);
-            uleb128(*cell as u64, &mut inner);
+        if c.ret_is_bytes {
+            // The body returned a Bytes/String HANDLE (on the stack). Save it, drop the closure cells
+            // (own<t> release), then copy the byte-rope out as a `list<u8>` `(ptr,len)` return area — the
+            // same copy loop the byte-rope `call` uses. `cell_slot` is past the params + closure cells.
+            const OUT: i64 = 8;
+            let bh = cell_slot;
+            let nlen = cell_slot + 1;
+            let iv = cell_slot + 2;
+            let get = |l: u32, out: &mut Vec<u8>| {
+                out.push(op::LOCAL_GET);
+                uleb128(l as u64, out);
+            };
+            let set = |l: u32, out: &mut Vec<u8>| {
+                out.push(op::LOCAL_SET);
+                uleb128(l as u64, out);
+            };
+            let ci32 = |v: i64, out: &mut Vec<u8>| {
+                out.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128(v, out);
+            };
+            set(bh, &mut inner);
+            // release the closure cells now that the body is done borrowing them.
+            for cell in cell_of.values() {
+                get(*cell, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner);
+            }
+            get(bh, &mut inner);
             inner.push(op::CALL);
-            uleb128(
-                *import_index
-                    .get("drop")
-                    .expect("drop imported for the closure-cell release") as u64,
-                &mut inner,
-            );
+            uleb128(imp("bytes-len"), &mut inner);
+            set(nlen, &mut inner);
+            ci32(0, &mut inner);
+            set(iv, &mut inner);
+            inner.push(op::BLOCK);
+            inner.push(wasm_abi::BLOCK_EMPTY);
+            inner.push(op::LOOP);
+            inner.push(wasm_abi::BLOCK_EMPTY);
+            get(iv, &mut inner);
+            get(nlen, &mut inner);
+            inner.push(op::I32_GE_U);
+            inner.push(op::BR_IF);
+            uleb128(1, &mut inner);
+            ci32(OUT, &mut inner);
+            get(iv, &mut inner);
+            inner.push(op::I32_ADD);
+            get(bh, &mut inner);
+            get(iv, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("bytes-get"), &mut inner);
+            inner.push(op::I32_STORE8);
+            inner.push(0x00);
+            inner.push(0x00);
+            get(iv, &mut inner);
+            ci32(1, &mut inner);
+            inner.push(op::I32_ADD);
+            set(iv, &mut inner);
+            inner.push(op::BR);
+            uleb128(0, &mut inner);
+            inner.push(op::END);
+            inner.push(op::END);
+            ci32(0, &mut inner);
+            ci32(OUT, &mut inner);
+            inner.push(op::I32_STORE);
+            inner.push(0x02);
+            inner.push(0x00);
+            ci32(4, &mut inner);
+            get(nlen, &mut inner);
+            inner.push(op::I32_STORE);
+            inner.push(0x02);
+            inner.push(0x00);
+            get(bh, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+            ci32(0, &mut inner);
+        } else {
+            // C-HOST-5: each closure param crossed as `own<t>` (ownership transferred INTO the consumer), so
+            // the wrapper owns each handed-back cell's last reference — RELEASE each now (`heap.drop(rep)`),
+            // after the consumer BODY returned (it finished borrowing the cell for every `(g x)`
+            // application, including a body that applies the closure more than once). The body's result R is
+            // on the stack; each `drop` takes a rep (a separate push) and returns nothing, leaving R on top.
+            for cell in cell_of.values() {
+                inner.push(op::LOCAL_GET);
+                uleb128(*cell as u64, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner);
+            }
         }
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    // cabi_realloc stub (only when a byte-rope consumer needs it).
+    if any_bytes {
+        let mut inner = uleb_bytes(0);
+        inner.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut inner);
         inner.push(op::END);
         let mut e = uleb_bytes(inner.len() as u64);
         e.extend_from_slice(&inner);
@@ -2925,7 +3641,7 @@ pub fn roundtrip_resource_core_module(
     }
     let code_sec = section(
         wasm_abi::CORE_SEC_CODE,
-        &wasm_vec(n + nmk + ncons, &code_items),
+        &wasm_vec(n + nmk + ncons + usize::from(any_bytes), &code_items),
     );
 
     let mut core = Vec::new();
@@ -2934,6 +3650,7 @@ pub fn roundtrip_resource_core_module(
     core.extend_from_slice(&import_sec);
     core.extend_from_slice(&func_sec);
     core.extend_from_slice(&table_sec);
+    core.extend_from_slice(&mem_sec);
     core.extend_from_slice(&export_sec);
     core.extend_from_slice(&elem_sec);
     core.extend_from_slice(&code_sec);
@@ -2973,6 +3690,11 @@ pub fn distinct_sig_roundtrip_core_module(
     let g = groups.len();
     let total_makes: usize = groups.iter().map(|gr| gr.makes.len()).sum();
     let total_cons: usize = groups.iter().map(|gr| gr.consumers.len()).sum();
+    // Any byte-rope consumer makes the module need a shared memory + `cabi_realloc` (its wrapper copies the
+    // returned Bytes/String out as a `list<u8>` `(ptr,len)` area; the envelope lifts it with Memory/Realloc).
+    let any_bytes = groups
+        .iter()
+        .any(|gr| gr.consumers.iter().any(|c| c.ret_is_bytes));
     let vt_byte = |v: ValType| match v {
         ValType::I32 => wasm_abi::CORE_I32,
         ValType::I64 => wasm_abi::CORE_I64,
@@ -3041,7 +3763,15 @@ pub fn distinct_sig_roundtrip_core_module(
             next_type += 1;
         }
     }
-    let total_types = defined_type_base + n + total_makes + total_cons;
+    // If any consumer is byte-rope, one shared `cabi_realloc` functype `(i32×4)->i32` after the group fns.
+    let realloc_type_idx = next_type as u32;
+    if any_bytes {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let total_types = defined_type_base + n + total_makes + total_cons + usize::from(any_bytes);
     let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
 
     // ── Import section ── k ops + per group `resource-new-<g>`/`resource-rep-<g>`.
@@ -3064,7 +3794,8 @@ pub fn distinct_sig_roundtrip_core_module(
     }
     let import_sec = section(2, &wasm_vec(k + 2 * g, &import_items));
 
-    // ── Function section ── defined bodies, then the group functions in per-group order (`fn_type_idx`).
+    // ── Function section ── defined bodies, then the group functions in per-group order (`fn_type_idx`),
+    // then (when byte-rope) the shared cabi_realloc.
     let mut func_items = Vec::new();
     for i in 0..n {
         uleb128((defined_type_base + i) as u64, &mut func_items);
@@ -3072,13 +3803,27 @@ pub fn distinct_sig_roundtrip_core_module(
     for &ti in &fn_type_idx {
         uleb128(ti as u64, &mut func_items);
     }
+    if any_bytes {
+        uleb128(realloc_type_idx as u64, &mut func_items);
+    }
     let func_sec = section(
         wasm_abi::CORE_SEC_FUNCTION,
-        &wasm_vec(n + total_makes + total_cons, &func_items),
+        &wasm_vec(
+            n + total_makes + total_cons + usize::from(any_bytes),
+            &func_items,
+        ),
     );
     let import_count = k + 2 * g;
     // The group functions start at core-func `import_count + n`, in per-group (makes then consumers) order.
     let group_fn_abs_base = (import_count + n) as u32;
+    let realloc_abs = group_fn_abs_base + (total_makes + total_cons) as u32; // valid only when any_bytes
+
+    // ── Memory ── only when a byte-rope consumer must write its `list<u8>` payload.
+    let mem_sec = if any_bytes {
+        section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]))
+    } else {
+        Vec::new()
+    };
 
     // ── Table + Element ── the ONE funcref table (all groups' lifteds share it).
     let n_lifted = layout.lifted.len();
@@ -3103,35 +3848,44 @@ pub fn distinct_sig_roundtrip_core_module(
         (table_sec, elem_sec)
     };
 
-    // ── Export section ── per group: each make (`make-<name>`) then each consumer (its export name).
+    // ── Export section ── per group: each make (`make-<name>`) then each consumer (its export name); plus
+    // (when byte-rope) `memory` + `cabi_realloc` for the compound consumer's canon lift.
     let export_sec = {
-        let export = |name: &str, idx: u32| {
+        let export = |name: &str, kind: u8, idx: u32| {
             let mut item = uleb_bytes(name.len() as u64);
             item.extend_from_slice(name.as_bytes());
-            item.push(wasm_abi::EXPORT_KIND_FUNC);
+            item.push(kind);
             let mut b = item;
             uleb128(idx as u64, &mut b);
             b
         };
+        let func_export = |name: &str, idx: u32| export(name, wasm_abi::EXPORT_KIND_FUNC, idx);
         let mut items = Vec::new();
         let mut fi = 0u32; // running per-group function index (makes then consumers per group)
         for gr in groups {
             for mk in &gr.makes {
-                items.extend_from_slice(&export(&mk.export_name, group_fn_abs_base + fi));
+                items.extend_from_slice(&func_export(&mk.export_name, group_fn_abs_base + fi));
                 fi += 1;
             }
             for c in &gr.consumers {
-                items.extend_from_slice(&export(&c.export_name, group_fn_abs_base + fi));
+                items.extend_from_slice(&func_export(&c.export_name, group_fn_abs_base + fi));
                 fi += 1;
             }
         }
         // PLAIN (non-closure) exports ride along: their bodies are already defined funcs, exported by index.
         for p in plain {
-            items.extend_from_slice(&export(&p.export_name, p.body_abs));
+            items.extend_from_slice(&func_export(&p.export_name, p.body_abs));
+        }
+        if any_bytes {
+            items.extend_from_slice(&export("memory", wasm_abi::EXPORT_KIND_MEMORY, 0));
+            items.extend_from_slice(&func_export("cabi_realloc", realloc_abs));
         }
         section(
             wasm_abi::CORE_SEC_EXPORT,
-            &wasm_vec(total_makes + total_cons + plain.len(), &items),
+            &wasm_vec(
+                total_makes + total_cons + plain.len() + if any_bytes { 2 } else { 0 },
+                &items,
+            ),
         )
     };
 
@@ -3158,7 +3912,10 @@ pub fn distinct_sig_roundtrip_core_module(
             e.extend_from_slice(&inner);
             code_items.extend_from_slice(&e);
         }
-        // this group's consumers — each closure param rep'd via THIS group's rrep, then dropped.
+        // this group's consumers — each closure param rep'd via THIS group's rrep, then dropped. A SCALAR
+        // consumer leaves the body's value on the stack; a BYTE-ROPE consumer copies the body's returned
+        // Bytes/String handle out as a `list<u8>` `(ptr,len)` area (same body as the single-sig round-trip).
+        let imp = |name: &str| import_index[name] as u64;
         for c in &gr.consumers {
             let nparams = c.params.len() as u32;
             let n_closures = c
@@ -3166,13 +3923,14 @@ pub fn distinct_sig_roundtrip_core_module(
                 .iter()
                 .filter(|p| matches!(p, ConsumeParam::Closure))
                 .count();
+            let n_scratch = n_closures + if c.ret_is_bytes { 3 } else { 0 };
             let mut inner = Vec::new();
             inner.extend_from_slice(&wasm_vec(
-                if n_closures == 0 { 0 } else { 1 },
-                &if n_closures == 0 {
+                if n_scratch == 0 { 0 } else { 1 },
+                &if n_scratch == 0 {
                     Vec::new()
                 } else {
-                    let mut gl = uleb_bytes(n_closures as u64);
+                    let mut gl = uleb_bytes(n_scratch as u64);
                     gl.push(wasm_abi::CORE_I32);
                     gl
                 },
@@ -3200,11 +3958,83 @@ pub fn distinct_sig_roundtrip_core_module(
             }
             inner.push(op::CALL);
             uleb128(c.consume_abs as u64, &mut inner);
-            for (_, cell) in cell_of.iter() {
-                inner.push(op::LOCAL_GET);
-                uleb128(*cell as u64, &mut inner);
+            if c.ret_is_bytes {
+                const OUT: i64 = 8;
+                let bh = cell_slot;
+                let nlen = cell_slot + 1;
+                let iv = cell_slot + 2;
+                let get = |l: u32, out: &mut Vec<u8>| {
+                    out.push(op::LOCAL_GET);
+                    uleb128(l as u64, out);
+                };
+                let set = |l: u32, out: &mut Vec<u8>| {
+                    out.push(op::LOCAL_SET);
+                    uleb128(l as u64, out);
+                };
+                let ci32 = |v: i64, out: &mut Vec<u8>| {
+                    out.push(op::I32_CONST);
+                    crate::backend::wasm::encode::sleb128(v, out);
+                };
+                set(bh, &mut inner);
+                for cell in cell_of.values() {
+                    get(*cell, &mut inner);
+                    inner.push(op::CALL);
+                    uleb128(imp("drop"), &mut inner);
+                }
+                get(bh, &mut inner);
                 inner.push(op::CALL);
-                uleb128(import_index["drop"] as u64, &mut inner);
+                uleb128(imp("bytes-len"), &mut inner);
+                set(nlen, &mut inner);
+                ci32(0, &mut inner);
+                set(iv, &mut inner);
+                inner.push(op::BLOCK);
+                inner.push(wasm_abi::BLOCK_EMPTY);
+                inner.push(op::LOOP);
+                inner.push(wasm_abi::BLOCK_EMPTY);
+                get(iv, &mut inner);
+                get(nlen, &mut inner);
+                inner.push(op::I32_GE_U);
+                inner.push(op::BR_IF);
+                uleb128(1, &mut inner);
+                ci32(OUT, &mut inner);
+                get(iv, &mut inner);
+                inner.push(op::I32_ADD);
+                get(bh, &mut inner);
+                get(iv, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("bytes-get"), &mut inner);
+                inner.push(op::I32_STORE8);
+                inner.push(0x00);
+                inner.push(0x00);
+                get(iv, &mut inner);
+                ci32(1, &mut inner);
+                inner.push(op::I32_ADD);
+                set(iv, &mut inner);
+                inner.push(op::BR);
+                uleb128(0, &mut inner);
+                inner.push(op::END);
+                inner.push(op::END);
+                ci32(0, &mut inner);
+                ci32(OUT, &mut inner);
+                inner.push(op::I32_STORE);
+                inner.push(0x02);
+                inner.push(0x00);
+                ci32(4, &mut inner);
+                get(nlen, &mut inner);
+                inner.push(op::I32_STORE);
+                inner.push(0x02);
+                inner.push(0x00);
+                get(bh, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner);
+                ci32(0, &mut inner);
+            } else {
+                for cell in cell_of.values() {
+                    inner.push(op::LOCAL_GET);
+                    uleb128(*cell as u64, &mut inner);
+                    inner.push(op::CALL);
+                    uleb128(imp("drop"), &mut inner);
+                }
             }
             inner.push(op::END);
             let mut e = uleb_bytes(inner.len() as u64);
@@ -3212,9 +4042,22 @@ pub fn distinct_sig_roundtrip_core_module(
             code_items.extend_from_slice(&e);
         }
     }
+    // cabi_realloc stub (only when a byte-rope consumer needs it).
+    if any_bytes {
+        let mut inner = uleb_bytes(0);
+        inner.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut inner);
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
     let code_sec = section(
         wasm_abi::CORE_SEC_CODE,
-        &wasm_vec(n + total_makes + total_cons, &code_items),
+        &wasm_vec(
+            n + total_makes + total_cons + usize::from(any_bytes),
+            &code_items,
+        ),
     );
 
     let mut core = Vec::new();
@@ -3223,6 +4066,7 @@ pub fn distinct_sig_roundtrip_core_module(
     core.extend_from_slice(&import_sec);
     core.extend_from_slice(&func_sec);
     core.extend_from_slice(&table_sec);
+    core.extend_from_slice(&mem_sec);
     core.extend_from_slice(&export_sec);
     core.extend_from_slice(&elem_sec);
     core.extend_from_slice(&code_sec);

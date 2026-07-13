@@ -34,10 +34,33 @@ use tracing::trace;
 /// a `Db`; each target's backend fills its artifact from the shared columns. Targets default to
 /// `[Wasm]` at the CLI, not here — this entry emits exactly what it is asked for.
 ///
+/// The program arrives as the `ast`-kinded artifact — the canonical binary form — which this entry
+/// decodes (`codec::decode`) into the AST arena the whole pipeline reads; the compiler never receives
+/// source text, only an AST value obtained by decoding the binary form.
+///
+//= spec/capabilities/compiler-pipeline.md#the-compiler-operates-on-ast-values
+//# The compiler MUST receive the program as an AST value obtained via quote or decode from the binary form.
+///
 /// A program compiles on the CORE guarantees alone — static typing (`collect_faults`), determinism, and
 /// capability-safety (the no-home effect check) — with NO verification layer as a precondition; the seed
 /// realizes no contract/refinement/proof layer, so engaging one is not something a program can (or must)
 /// opt into here.
+///
+/// The pipeline this drives is a sequence of phases each with a defined input and output — decode → layout
+/// → the demand-driven `Db` columns (resolve → infer → lower → select) → backend emission — and each phase
+/// is a deterministic function of its input (the `Db` is a pure memoized column store; no phase reads a
+/// clock, the environment, or iteration order). Faults are collected across the whole program, not raised
+/// at the first: `collect_faults` returns EVERY reached fault and `compile` reports one diagnostic per
+/// fault, so an error in one definition does not abort typing of its well-formed siblings.
+///
+//= spec/capabilities/compiler-pipeline.md#the-pipeline-has-defined-phases
+//# The compiler MUST proceed through phases each of which has a defined input and a defined output.
+///
+//= spec/capabilities/compiler-pipeline.md#the-pipeline-has-defined-phases
+//# Each phase MUST produce output that is a deterministic function of its input.
+///
+//= spec/capabilities/compiler-pipeline.md#phases-recover-from-errors
+//# The compiler MUST report all diagnostics it can produce for a program rather than stop at the first.
 ///
 //= constitution.md#viii-verification-is-progressive-and-meaning-preserving
 //# A program MUST be compilable when only the core guarantees — static typing, determinism, and capability-safety — are satisfied.
@@ -380,6 +403,11 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
     if matches!(ty, crate::ty::Ty::Int(_) | crate::ty::Ty::BigInt) {
         return None;
     }
+    // No mechanical fix is offered here even though the domain error is clear: the `default-integer`
+    // pragma's EFFECT is not yet modeled, so EVERY `(pragma default-integer <T>)` — even a well-formed
+    // `Int64` one — declines downstream as an unmodeled top-level form. Suggesting `Int64` would merely
+    // trade CDZ0303 for that decline (a cascade), which `--verify-fixes` rightly refuses. Honest-no-fix:
+    // the prose already says "must name an integer type"; a fix waits until the pragma actually compiles.
     Some(
         Reject::coded(
             Code::NonIntegerDefault,
@@ -403,6 +431,16 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
 /// Every reachable expression is typed by inference before emission, and any type fault this collects
 /// DENIES the component (`compile` returns the faults with no artifact) — so a program that is not
 /// well-typed is rejected at compile time rather than emitted carrying a deferred type error:
+///
+/// This walk records a `Reject` for every faulting definition and keeps going over the well-formed
+/// remainder rather than aborting at the first fault, so the maximal set of diagnostics is produced in
+/// one pass (each `Reject` becomes one error diagnostic in `compile`'s output):
+///
+//= spec/capabilities/compiler-pipeline.md#phases-recover-from-errors
+//# A phase that encounters an error in one part of a program MUST record a diagnostic for that error.
+///
+//= spec/capabilities/compiler-pipeline.md#phases-recover-from-errors
+//# A phase that encounters an error in one part of a program MUST continue processing the well-formed remainder rather than abort the whole compilation.
 ///
 //= spec/capabilities/type-system.md#every-expression-has-a-static-type
 //# Every expression in a well-formed program MUST have a type determined before the program is compiled to a component.
@@ -432,10 +470,10 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // so the OUTCOME is unchanged; only the message stops misleading.
     let defined_names: Vec<String> = db.defs.iter().map(|d| d.name.clone()).collect();
     for (head, occ) in db.unknown_top_forms() {
-        let hint = match crate::diag::suggest::nearest(&head, &defined_names) {
-            Some(near) => format!(" — did you mean `{near}`?"),
-            None => String::new(),
-        };
+        // A two-tier "did you mean?": a confident single suggestion for a plausible typo, else the closest
+        // few defined names (never nothing when defs exist) — a message-only hint (no fix here, unlike the
+        // export-name site which carries a single-replace fix and so keeps the confident-only `nearest`).
+        let hint = crate::diag::suggest::did_you_mean(&head, &defined_names, 3);
         faults.push(
             Reject::decline(format!(
                 "unbound name `{head}` at the top level{hint} (if `{head}` is meant as a declaration, \
@@ -590,23 +628,47 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // duplicate export are rejected for (CDZ0201) — the fourth closed name-set. Each variant after the
     // first with a given name (WITHIN one type declaration) is reported, anchored at its name
     // occurrence. (Two different types may reuse a variant name — the set is per-declaration.)
-    for ty in &db.type_decls {
-        let mut seen_variants: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for variant in &ty.variants {
-            if !seen_variants.insert(variant.name.as_str()) {
-                faults.push(
-                    Reject::coded(
-                        Code::Malformed,
-                        format!(
-                            "variant `{}` is declared more than once in sum `{}` (a sum has a \
-                             fixed set of variant names)",
-                            variant.name, ty.name
-                        ),
-                    )
-                    .at(variant.name_occ),
-                );
-            }
-        }
+    // Collect (name, ty_name, name_occ) for each REDUNDANT variant first (the immutable `type_decls`
+    // borrow), then resolve the delete-clause + push (which needs `&db`, a separate borrow). The clause is
+    // the whole variant syntax to DELETE. A variant is written either as a BARE atom (`(type C A B)` — the
+    // atom IS the clause, directly in the type form) or PARENTHESIZED (`(A)` / `(A Int64)` — the enclosing
+    // list is the clause, so the fix removes the name AND any payloads). Distinguish by whether
+    // `name_occ`'s parent is a list HEADED by `name_occ` (a `(name …)` wrapper) vs the `(type …)` form.
+    let dup_variants: Vec<(String, String, StructId)> = db
+        .type_decls
+        .iter()
+        .flat_map(|ty| {
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            ty.variants
+                .iter()
+                .filter(move |v| !seen.insert(v.name.as_str()))
+                .map(|v| (v.name.clone(), ty.name.clone(), v.name_occ))
+        })
+        .collect();
+    for (name, ty_name, name_occ) in dup_variants {
+        // The clause is `name_occ`'s parent when that parent is a `(name …)` wrapper (head == name_occ),
+        // else `name_occ` itself (a bare-atom variant sitting directly in the `(type …)` form).
+        let wraps_name = |parent: StructId| matches!(db.ast.get(parent), crate::ast::Struct::List(items) if items.first() == Some(&name_occ));
+        let clause = match db.parent_of(name_occ) {
+            Some(parent) if wraps_name(parent) => parent,
+            _ => name_occ,
+        };
+        // Each variant after the first with a given name is a REDUNDANT declaration — delete it (the first
+        // already binds the name; a sum's variant names are a fixed set). Anchor at the name occurrence.
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                format!(
+                    "variant `{name}` is declared more than once in sum `{ty_name}` (a sum has a \
+                     fixed set of variant names)"
+                ),
+            )
+            .at(name_occ)
+            .with_fix(crate::diag::Fix::delete_heuristic(
+                clause,
+                format!("remove the duplicate `{name}` variant"),
+            )),
+        );
     }
     // DUPLICATE EFFECT OPERATION. An effect `(effect E (op f …) (op f …))` declares its operation NAMES
     // as a fixed SET (capabilities-and-effects.md §An Effect Declaration Names The Effect And Types Its
@@ -616,23 +678,40 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // name (WITHIN one effect declaration) is reported, anchored at its name occurrence. (Two different
     // effects may reuse an operation name — the set is per-declaration, since an operation is reached
     // through its declaring effect.)
-    for eff in &db.effect_decls {
-        let mut seen_ops: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for op in &eff.ops {
-            if !seen_ops.insert(op.name.as_str()) {
-                faults.push(
-                    Reject::coded(
-                        Code::Malformed,
-                        format!(
-                            "operation `{}` is declared more than once in effect `{}` (an effect has \
-                             a fixed set of operation names)",
-                            op.name, eff.name
-                        ),
-                    )
-                    .at(op.name_occ),
-                );
-            }
+    // Collect (name, eff_name, name_occ) for each redundant op first (immutable `effect_decls` borrow),
+    // then resolve the clause + push. An op is ALWAYS parenthesized `(op NAME (-> …))`, so `name_occ` (the
+    // NAME atom) is nested one level below the `(op …)` clause AND below the `op` head — the clause to
+    // DELETE is the enclosing `(op …)` list, i.e. `parent_of(name_occ)` (whose head is `op`, not `name_occ`).
+    let dup_ops: Vec<(String, String, StructId)> = db
+        .effect_decls
+        .iter()
+        .flat_map(|eff| {
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            eff.ops
+                .iter()
+                .filter(move |o| !seen.insert(o.name.as_str()))
+                .map(|o| (o.name.clone(), eff.name.clone(), o.name_occ))
+        })
+        .collect();
+    for (name, eff_name, name_occ) in dup_ops {
+        let mut reject = Reject::coded(
+            Code::Malformed,
+            format!(
+                "operation `{name}` is declared more than once in effect `{eff_name}` (an effect has \
+                 a fixed set of operation names)"
+            ),
+        )
+        .at(name_occ);
+        // The `(op NAME …)` clause is `name_occ`'s parent (a list headed by `op`). Delete it.
+        if let Some(clause) = db.parent_of(name_occ)
+            && matches!(db.ast.get(clause), crate::ast::Struct::List(_))
+        {
+            reject = reject.with_fix(crate::diag::Fix::delete_heuristic(
+                clause,
+                format!("remove the duplicate `{name}` operation"),
+            ));
         }
+        faults.push(reject);
     }
     // Validate every definition's PARAMETER ANNOTATIONS — a garbage type in a `(: name T)` parameter
     // (an unbound name, a value, a malformed type application) is rejected, not silently typed `Any`.
@@ -988,6 +1067,14 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             Some(Code::HandlerUndeclaredOp) | Some(Code::HandlerNotExhaustive)
         )
     });
+    // A resume-value/result-type mismatch (CDZ0201) ALSO makes the handler unfoldable — same relationship
+    // the malformed-handler rejects have with the "not yet reducible" decline. Suppress the decline when
+    // such a reject is present so a mistyped resume reports ONE primary error (with its coercion fix).
+    let has_resume_result_reject = faults.iter().any(|r| {
+        r.code == Some(Code::Malformed)
+            && r.message
+                .contains(crate::diag::RESUME_RESULT_MISMATCH_MARKER)
+    });
     // Likewise: a NON-CANONICAL handle (the retired effect-name-less shape) is rejected at resolve time
     // (`resolve_noncanonical_handle`, a CDZ0201). Because the handle never resolved as a handler, its
     // body's perform is seen by the entrypoint no-home walk as reached with NO enclosing handler → a
@@ -1114,7 +1201,7 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             {
                 return false;
             }
-            if has_malformed_handler_reject
+            if (has_malformed_handler_reject || has_resume_result_reject)
                 && r.is_decline()
                 && r.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE
             {
@@ -1847,6 +1934,16 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
     for di in 0..db.defs.len() {
         let params = db.defs[di].params.clone();
         let body = db.defs[di].body;
+        // The SET of parameter NAMES the body references — collected in ONE walk of the body, not one
+        // per-parameter walk (which was O(params × body) = O(N²) for a wide-param def). `param_is_used`'s
+        // verdict is purely NAME-based (`resolves_to_param` accepts ANY param, so a body reference marks
+        // its parameter used by matching NAME), and a def's parameter names are unique (CDZ0102 rejects a
+        // repeated one), so a name-keyed set reproduces the per-parameter check EXACTLY. Skipped entirely
+        // when the def has no user parameters to check.
+        let referenced: std::collections::HashSet<String> = match body {
+            Some(b) if !params.is_empty() => used_param_names(db, b),
+            _ => std::collections::HashSet::new(),
+        };
         for p in params {
             // The parameter's NAME occurrence (a bare `a` or the inner name of `(: a T)`).
             let name_occ = param_name_occ(db, p);
@@ -1858,14 +1955,13 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
             if name.starts_with('_') {
                 continue;
             }
-            let used_in_body = body.is_some_and(|b| param_is_used(db, b, name_occ, &name));
-            if !used_in_body {
+            if !referenced.contains(&name) {
                 binders.push(Binder {
                     name_occ,
                     target: name_occ,
                     name,
                     kind: "parameter",
-                    precomputed_unused: true, // decided by `param_is_used`, not the `used` set
+                    precomputed_unused: true, // decided by the reference-name set, not the `used` set
                 });
             }
         }
@@ -1957,34 +2053,36 @@ fn param_name_occ(db: &Db, param: StructId) -> StructId {
 /// use OF THIS parameter, not a same-named inner binding that shadows it. This is synthesis-INDEPENDENT
 /// (it keys on the reference's own resolution kind, not the resolved-to occurrence id), so it is not
 /// fooled by a recursive function freshening the parameter binder into a synthesized copy.
-fn param_is_used(db: &mut Db, body: StructId, param_occ: StructId, name: &str) -> bool {
-    // The body subtree's node range: a def body and everything under it. The arena is built so a
-    // subtree's descendants are not contiguous by id, so walk structurally.
-    fn walk(db: &mut Db, id: StructId, param_occ: StructId, name: &str) -> bool {
-        // A matching name occurrence (not the declaration) that is a genuine REFERENCE — not itself a
-        // BINDER position (a `let` binding's name resolves to the outer param too, but it is a
-        // declaration, not a use — so a param shadowed by a same-named inner `let` is NOT "used"). A
-        // reference resolves to a `Param` (its own) or a `Ref`-to-`Param` (recursion may freshen the
-        // binder → the KIND, not the target occ, is the signal).
-        if id != param_occ
-            && db.ast.as_name(id) == Some(name)
+/// The SET of parameter NAMES that the def body subtree at `body` references — ONE structural walk
+/// collecting every name occurrence that resolves to a parameter, so the wide-param unused check is O(body)
+/// once, not O(body) per parameter (which was O(params × body) = O(N²) for a def with many parameters). A
+/// name is collected iff it is a genuine REFERENCE resolving to a parameter — NOT a `let` binding's name
+/// position (a same-named inner `let` binder resolves to the outer param but is a declaration, not a use,
+/// so a param shadowed by it is NOT used). `resolves_to_param` accepts a `Param` or a `Ref`-to-`Param`
+/// (recursion may freshen the binder → the resolution KIND is the signal, not the target occ). This
+/// reproduces the old per-parameter `param_is_used` verdict EXACTLY: it was name-based (matched a param's
+/// NAME anywhere in the body), and a def's parameter names are unique (CDZ0102). The old `id != param_occ`
+/// declaration guard is subsumed — a parameter's own declaration occurrence lives in the SIGNATURE, not in
+/// the body walked here.
+fn used_param_names(db: &mut Db, body: StructId) -> std::collections::HashSet<String> {
+    fn walk(db: &mut Db, id: StructId, out: &mut std::collections::HashSet<String>) {
+        if let Some(name) = db.ast.as_name(id).map(str::to_string)
             && !is_let_binding_name(db, id)
             && resolves_to_param(db, id)
         {
-            return true;
+            out.insert(name);
         }
         // Recurse into children (a user node's subtree). Clone the child list to avoid holding a
         // borrow across the recursive `&mut` call.
         if let crate::ast::Struct::List(kids) = db.ast.get(id) {
             for c in kids.clone() {
-                if walk(db, c, param_occ, name) {
-                    return true;
-                }
+                walk(db, c, out);
             }
         }
-        false
     }
-    walk(db, body, param_occ, name)
+    let mut out = std::collections::HashSet::new();
+    walk(db, body, &mut out);
+    out
 }
 
 /// Whether `id` resolves to a parameter — its own `Param`, or a `Ref` to one (a body reference is a

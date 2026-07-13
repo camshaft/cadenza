@@ -99,6 +99,8 @@ pub enum Code {
     /// value a shared field takes and `extend` never silently overwrites (the author means `Record.with`
     /// to replace). The row-operation companion of the duplicate-field literal `(record (a 1) (a 2))`
     /// (CDZ0201); in the CDZ021x types-and-patterns band with its dual, `AbsentField`.
+    //= spec/capabilities/type-system.md#two-records-are-combined-only-when-their-field-sets-are-disjoint
+    //# A combination of two records whose field sets share a name MUST be rejected at compile time with the machine-readable code for a field that is already present, so that a combined record never has to choose which operand's value a shared field takes and the fixed-field-set invariant is preserved.
     PresentField,
     /// A record ROW operation names a field the operand record DOES NOT CONTAIN — `Record.project` /
     /// `Record.without` / `Record.with` / `Record.pop` restricting to, dropping, updating, or popping a
@@ -109,6 +111,12 @@ pub enum Code {
     /// of an absent field stays distinct from `extend`. A record field name is a STATIC label (not a
     /// runtime index), so an absent one is this compile-time rejection, never a runtime `None`. The dual of
     /// `PresentField`.
+    //= spec/capabilities/type-system.md#a-record-is-restricted-to-a-named-set-of-its-fields
+    //# A projection that names a field the operand record does not contain MUST be rejected at compile time with the machine-readable code for a required field that is absent, so that a projection cannot silently produce a field the operand never held.
+    //= spec/capabilities/type-system.md#a-record-is-reduced-by-dropping-a-named-set-of-its-fields
+    //# A drop that names a field the operand record does not contain MUST be rejected at compile time with the machine-readable code for a required field that is absent, so that dropping a field the record never held is a static error rather than a no-op.
+    //= spec/capabilities/type-system.md#a-field-is-added-to-or-replaced-in-a-record-by-a-derived-operation
+    //# A field update whose named field is absent from the operand record MUST be rejected at compile time with the machine-readable code for a required field that is absent, so that updating a field the record never held is a static error rather than an addition.
     AbsentField,
     /// A `match` ARM that can never be reached because an EARLIER arm already covers every value it would
     /// — a duplicate variant/literal arm, or any arm after a catch-all binder/wildcard. The DUAL of
@@ -592,6 +600,14 @@ pub const OVER_APPLICATION_DECLINE: &str = "applied more arguments than the func
 /// without pinning the count-bearing text.
 pub const OVER_APPLICATION_MARKER: &str = "arguments to a function of arity";
 
+/// A stable SUBSTRING unique to the coded CDZ0201 resume-value/result-type mismatch (`a handler resumes
+/// with a value of type X but the operation's result type is Y`). An ill-typed resume ALSO makes the
+/// handler unfoldable, so `lower` emits the uncoded [`HANDLER_NOT_REDUCIBLE_DECLINE`] alongside — a
+/// CONSEQUENCE, not an independent limit. `dedup_faults` matches this to drop that decline, like it does
+/// for a malformed handler (CDZ0403/0405), so a mistyped resume is ONE primary error (carrying its
+/// coercion fix when applicable).
+pub const RESUME_RESULT_MISMATCH_MARKER: &str = "a handler resumes with a value of type";
+
 /// The stable PREFIX of the coded CDZ0201 "this handle is not in canonical form" reject — a source
 /// `handle` still headed `handle` after `effects::desugar_handles` (the retired effect-name-less shape,
 /// or a too-short handle). Shared as a const so `compile::dedup_faults` can recognize it and drop the
@@ -749,6 +765,65 @@ pub mod suggest {
         best.map(|(_, n)| n)
     }
 
+    /// The `limit` candidates CLOSEST to `name` by edit distance, nearest first — the FALLBACK tier for a
+    /// "did you mean?" when [`nearest`] finds no confident typo (the query is too far off the strict
+    /// cutoff). Unlike `nearest` this applies NO distance cutoff: it always returns the available
+    /// candidates (up to `limit`) so a diagnostic can offer "the closest options" rather than nothing when
+    /// a name is wrong but no single candidate is a plausible typo. Sorted by (distance, then
+    /// lexicographic name) so the result is a DETERMINISTIC function of the candidate SET, independent of
+    /// supply order — the same determinism `nearest` guarantees (diagnostics.md §A Fix Is A Deterministic
+    /// Function Of The Source). The name itself, `_`, and the empty name are never offered (same as
+    /// `nearest`); duplicates collapse (a candidate appearing twice is listed once). Returns an empty Vec
+    /// when there are no usable candidates.
+    pub fn closest_matches<I, S>(name: &str, candidates: I, limit: usize) -> Vec<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut scored: Vec<(usize, String)> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for cand in candidates {
+            let cand = cand.as_ref();
+            if cand == name || cand == "_" || cand.is_empty() || !seen.insert(cand.to_string()) {
+                continue;
+            }
+            scored.push((edit_distance(name, cand), cand.to_string()));
+        }
+        // Nearest first; ties break lexicographically for determinism.
+        scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        scored.truncate(limit);
+        scored.into_iter().map(|(_, n)| n).collect()
+    }
+
+    /// A "did you mean?" HINT suffix for a wrong `name`, two-tiered: a CONFIDENT single suggestion when a
+    /// candidate is a plausible typo (`nearest`, within the edit-distance cutoff — "` — did you mean
+    /// \`X\`?`"), else the CLOSEST few candidates without a cutoff ("` — closest matches: \`a\`, \`b\`,
+    /// \`c\``) so a diagnostic never shows NOTHING when candidates exist. Empty string only when there are
+    /// no usable candidates at all. `limit` bounds the fallback list. A deterministic function of the
+    /// candidate set (both tiers are), so the message is reproducible like every compiler output.
+    pub fn did_you_mean<I, S>(name: &str, candidates: I, limit: usize) -> String
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str> + Clone,
+    {
+        // Collect once so both tiers see the same set (an iterator is single-pass).
+        let cands: Vec<String> = candidates
+            .into_iter()
+            .map(|c| c.as_ref().to_string())
+            .collect();
+        if let Some(near) = nearest(name, cands.iter()) {
+            return format!(" — did you mean `{near}`?");
+        }
+        let close = closest_matches(name, cands.iter(), limit);
+        match close.as_slice() {
+            [] => String::new(),
+            names => {
+                let quoted: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
+                format!(" — closest matches: {}", quoted.join(", "))
+            }
+        }
+    }
+
     /// Levenshtein–Damerau edit distance (insertions, deletions, substitutions, and ADJACENT
     /// TRANSPOSITIONS) between two names, in Unicode scalar values. Transpositions count as one edit so a
     /// `fodl`→`fold` swap reads as a single typo. O(a·b) time, O(b) space — names are short, so this is
@@ -847,6 +922,38 @@ pub mod suggest {
                     "prefilter changed the result for {q:?}"
                 );
             }
+        }
+
+        #[test]
+        fn closest_matches_always_offers_the_nearest_even_beyond_the_typo_cutoff() {
+            use super::closest_matches;
+            let cands = ["fold", "map", "length", "value", "compute"];
+            // A query too far off for a confident `nearest` typo still gets the closest few, nearest first.
+            let got = closest_matches("fxld", cands, 3);
+            assert_eq!(got.first().map(String::as_str), Some("fold")); // distance 2, the nearest
+            assert_eq!(got.len(), 3); // limited to 3
+            // The name itself, `_`, empty, and duplicates are never offered.
+            let dedup = closest_matches("fold", ["fold", "map", "map", "_", ""], 5);
+            assert_eq!(dedup, vec!["map".to_string()]); // "fold" (self), dup "map", "_", "" all dropped
+            // No candidates → empty.
+            assert!(closest_matches("x", Vec::<&str>::new(), 3).is_empty());
+        }
+
+        #[test]
+        fn did_you_mean_is_two_tiered() {
+            use super::did_you_mean;
+            let cands = ["compute", "fold", "length"];
+            // A plausible typo → the CONFIDENT single suggestion.
+            assert_eq!(
+                did_you_mean("computee", cands, 3),
+                " — did you mean `compute`?"
+            );
+            // Too far for a confident typo → the FALLBACK closest-matches list (never nothing here).
+            let hint = did_you_mean("xyzzy", cands, 3);
+            assert!(hint.starts_with(" — closest matches: "), "got {hint:?}");
+            assert!(hint.contains('`'), "lists candidates: {hint:?}");
+            // No candidates at all → empty string (nothing to suggest).
+            assert_eq!(did_you_mean("xyzzy", Vec::<&str>::new(), 3), "");
         }
     }
 }

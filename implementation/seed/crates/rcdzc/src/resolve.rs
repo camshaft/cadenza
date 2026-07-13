@@ -1954,6 +1954,12 @@ fn resolve_if(db: &Db, id: StructId) -> Resolved {
 /// two operands; a wrong arity is malformed (CDZ0201). The operands stay AST occurrences resolved on
 /// demand — the RIGHT one only reached on the non-short-circuit branch at emit, so a trapping `B` is
 /// shielded (core-semantics.md §Boolean Connectives Short-Circuit).
+///
+/// This arm (with `resolve_not` below) is where the language offers the three boolean connectives —
+/// conjunction `(and …)`, disjunction `(or …)`, and negation `(not …)` — so a program composes
+/// conditions directly rather than nesting one conditional per condition.
+//= spec/capabilities/core-semantics.md#boolean-connectives-short-circuit
+//# The language MUST offer a logical conjunction, a logical disjunction, and a logical negation over boolean values, so that a program composes conditions without nesting a conditional per condition.
 fn resolve_connective(db: &Db, id: StructId, is_and: bool) -> Resolved {
     let head = if is_and { "and" } else { "or" };
     let tail = db.ast.as_form(id, head).unwrap_or(&[]);

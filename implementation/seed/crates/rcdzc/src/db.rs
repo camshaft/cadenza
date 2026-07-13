@@ -26,6 +26,14 @@
 //! Finds Absence Declines). Every negative *decision* (a decline, a reject, a poison) is itself a
 //! filled value — a `Resolved::Poison` / `Core::Poison` — so it is distinguished from "not yet
 //! determined".
+//!
+//! Because name resolution (`resolve`), type checking (`infer`), and lowering (`lower`) each fill a
+//! COLUMN over the IR, every such transformation is applied to the intermediate representation, never
+//! as a side effect of emitting instruction bytes — the backend runs only after these columns are
+//! filled and reads them, so a transformation is a fact about the IR rather than something that happens
+//! during serialization.
+//= spec/capabilities/compiler-pipeline.md#emission-serializes-a-lowered-representation
+//# The compiler MUST perform name resolution, type checking, and each transformation it applies to a program as a transformation of its intermediate representation rather than as an effect of emitting instruction bytes.
 
 use crate::arena::Column;
 use crate::ast::{Arenas, Leaf, LeafId, Struct, StructId};
@@ -260,6 +268,20 @@ pub struct ModuleDecl {
 /// cheap safety net. No legitimate compile-time fold nests this deep.
 pub(crate) const REDUCE_DEPTH_LIMIT: u32 = 32;
 
+/// The bound on the TOTAL number of β-reductions the evaluator may ATTEMPT in one compile — the
+/// cumulative-WORK budget that complements [`REDUCE_DEPTH_LIMIT`]'s per-fold DEPTH budget. A term can
+/// stay within the depth limit yet drive an EXPONENTIAL number of bounded reductions: a self-applying
+/// lambda `(fn (v) (v (v v)))` applied to itself is not statically recursive (it calls a PARAMETER, so
+/// `is_recursive` finds no call-graph cycle) and each reduction stays shallow, but the type/fault walk
+/// over the shared, doubling term attempts ~2^depth reductions — the compiler does unbounded work and
+/// appears to hang (the `cdz-smith` timeout). Every reduction funnels through [`Db::enter_reduction`],
+/// which counts entries against this budget and denies past it, so the reduction DECLINES rather than
+/// diverges — the same decline a too-deep fold gets. Set FAR above any legitimate compile (no corpus
+/// program attempts even 20 000 reductions — a real fold's total is linear in its inlined size), yet an
+/// explosive term crosses it in a fraction of a second, so a valid program never hits it and a diverging
+/// one declines promptly instead of hanging. Reset per `Db` (a fresh compile); never decremented.
+pub(crate) const REDUCE_NODE_BUDGET: u64 = 1_000_000;
+
 /// The bound on RECURSIVE-DESCENT depth across the demand queries (`type_of`, the fault `collect`, and
 /// `core_of`) — a backstop against a native stack overflow on pathologically deep input. Each query is
 /// recursive descent (a node's answer re-enters the query for its sub-expressions), so a deeply NESTED
@@ -422,6 +444,20 @@ pub struct Db {
     /// ACCELERATOR over `type_decls`, never a source of truth — the ctor's identity is its occurrence.
     variant_ctor_index: crate::fxhash::FxHashMap<String, StructId>,
 
+    /// For each user-sum TYPE NAME, its synthesized RECORD occurrence (first-declared wins). Built once at
+    /// load from `type_decls[].{name,synth}`. `type_decl_by_name` consults it for a name reference that
+    /// falls through scope + defs in `resolve_name` (step 3) — and `resolve_name` reaches step 3 for MANY
+    /// references (a bare variant, a type annotation, any non-local non-def name), so the old linear
+    /// `type_decls.iter().find(|t| t.name == name)` was O(types) per resolution → O(N²) for a program with
+    /// N sum types (measured: 3200 sum types ≈ 590ms, `resolve_name`+`memcmp` ~50% self). O(1) lookup;
+    /// first-wins matches the old scan. A pure accelerator over `type_decls`, never a source of truth.
+    type_decl_index: crate::fxhash::FxHashMap<String, StructId>,
+
+    /// For each EFFECT NAME, its synthesized record occurrence (first-declared wins) — the effect analogue
+    /// of [`type_decl_index`], for `effect_decl_by_name`'s step-3b resolve lookup (was a linear
+    /// `effect_decls.iter().find`). Built once at load.
+    effect_decl_index: crate::fxhash::FxHashMap<String, StructId>,
+
     /// Per-SCOPE-FORM parameter binder index: `(scope_form_occ, param_name) → the param's NAME
     /// occurrence`. Covers the two forms whose parameters bind by a signature scan — a `fn`'s param
     /// list and a `def`'s signature. Built once at load ([`build_scope_binders`]).
@@ -504,6 +540,18 @@ pub struct Db {
     /// legitimately nests the same body twice while both calls terminate; only the depth distinguishes
     /// a terminating nest from an unbounded one.)
     pub(crate) reduce_depth: u32,
+
+    /// The running COUNT of nodes β-reduction has synthesized this compile — the WORK budget the depth
+    /// counter cannot provide. `reduce_depth` bounds how DEEPLY reductions nest, but a term can grow
+    /// EXPONENTIALLY in SIZE across a bounded depth: a self-applying lambda `(fn (v) (v (v v)))` bound to
+    /// `x` and applied `(x x)` roughly DOUBLES its application count each reduction, so even 32 bounded
+    /// levels synthesize ~2^32 nodes — the depth guard is satisfied while the compiler does unbounded
+    /// work and appears to hang (the `cdz-smith` timeout). A monotonic node budget over the whole compile
+    /// is the sound second guard: past [`REDUCE_NODE_BUDGET`] the evaluator declines the reduction (a
+    /// non-normalizing / explosively-growing term) rather than diverging, exactly as the depth guard
+    /// declines a too-deep one. Reset to 0 per `Db` (a fresh compile); never decremented (it measures
+    /// total synthesis work, not current depth).
+    pub(crate) reduce_nodes: u64,
 
     /// The current RECURSIVE-DESCENT depth across the demand queries (`type_of`, `collect`, `core_of`)
     /// — the recursive-descent backstop. Bumped on entering a query's recursion and restored on exit;
@@ -597,14 +645,14 @@ pub struct Db {
     /// depth/reduction limit is cached (a limit-clipped partial walk is not a node's true fault set).
     pub(crate) collect_cache: crate::fxhash::FxHashMap<StructId, Vec<crate::diag::Reject>>,
 
-    /// For an effect DECLARATION occurrence, whether ANY entrypoint (`export`) body delegates it to the
-    /// host — the program-wide delegation set (`effects::program_delegates_effect`). This is a pure
-    /// function of `decl` (a walk of every export body for a matching `(host (E…) …)`), consulted once
-    /// per RESIDUAL host-perform as a routing fallback. A program with N host performs (or N ops whose
-    /// lowering probes it) recomputed the O(export-body) walk N times → O(N²); a wide effect (N ops) hit
-    /// exactly this (`body_has_host_delegating` ~86% self on a 800-op handler compile). Memoized per
-    /// decl, the walk runs once.
-    pub(crate) delegates_effect_cache: crate::fxhash::FxHashMap<StructId, bool>,
+    /// The program-wide host-delegation SET: every effect-declaration occurrence some entrypoint (`export`)
+    /// body delegates to the host via a `(host (E…) …)` — consulted once per RESIDUAL host-perform as a
+    /// routing fallback (`effects::program_delegates_effect`). Computed by ONE walk of every export body
+    /// collecting all delegated decls, then each query is an O(1) set membership test. Keying a cache by
+    /// `decl` instead was still O(N²) for N DISTINCT delegated effects: each decl missed once → N full
+    /// export-body walks (`body_has_host_delegating` ~86% self on an 800-effect delegation). `None` until
+    /// the first query materializes it; the set is a pure function of the export bodies.
+    pub(crate) delegated_effects: Option<crate::fxhash::FxHashSet<StructId>>,
 
     /// Reusable SCRATCH buffers for the recursion walk (`eval::is_recursive`) — the visited set and the
     /// worklist of its iterative call-graph DFS. Held here (not allocated per call) so the walk churns
@@ -751,6 +799,14 @@ impl Db {
         // program's — no program id shifts) and the parent index covers them too. A built-in module is
         // just a record in the arena; the prelude map is `name → its occurrence`.
         let mut prelude = crate::prelude::install(&mut ast);
+        // The prelude's TYPE-CONSTRUCTOR / MODULE names (`Int`/`List`/`String`/…) — captured BEFORE the
+        // built-in sums inject their DATA-CONSTRUCTOR names (`Some`/`None`/`Ok`/`Err`/…) into `prelude`
+        // below. A user variant may legitimately shadow a data constructor (redeclaring `type Option =
+        // Some(Int64) | None` rebinds bare `Some`/`None` to the user's ctor), but must NOT shadow a
+        // type/module name — see the `variant_ctor_index` guard. Guarding against this pre-injection
+        // snapshot, not the polluted map, is what keeps the two cases distinct.
+        let prelude_type_module_names: crate::fxhash::FxHashSet<String> =
+            prelude.keys().cloned().collect();
         let (defs, exports, mut type_decls, effect_decls, mut modules) = scan_top_level(&ast);
         // Append the BUILT-IN sum declarations (generic `Option`/`Result`) as ordinary `TypeDecl`s, so a
         // program uses bare `Some`/`None`/`Ok`/`Err` + `Option`/`Result` without declaring them (the
@@ -854,11 +910,41 @@ impl Db {
         // O(variants) scan per bare-variant reference — an N-arm match over an N-variant sum was O(N²).
         let mut variant_ctor_index: crate::fxhash::FxHashMap<String, StructId> =
             crate::fxhash::FxHashMap::default();
+        // Index each sum TYPE NAME → its synthesized record (first-declared wins) — `type_decl_by_name`'s
+        // O(1) lookup, replacing an O(types) `find` per name resolution (O(N²) for N sum types).
+        let mut type_decl_index: crate::fxhash::FxHashMap<String, StructId> =
+            crate::fxhash::FxHashMap::default();
         for decl in &type_decls {
             for v in &decl.variants {
+                // A variant's bare name resolves BEFORE the prelude (`resolve` step 3c precedes step 4), so
+                // a variant whose name COLLIDES with a built-in prelude TYPE-CONSTRUCTOR / MODULE name
+                // (`Int`/`List`/`Name`) would SHADOW it, breaking that name everywhere it is used as a
+                // type/module (a payload `(Int Int64)`, an annotation `(: x Int64)` whose reduction touches
+                // `Int`). Such a colliding variant is reached ONLY qualified — `(. T Int)` / the built-in
+                // `(. Ast Int)` — via the sum RECORD's field, never the bare-name index; so DON'T index it.
+                // Guard against the PRE-INJECTION snapshot (`prelude_type_module_names`), NOT the current
+                // `prelude` map: by now the built-in sums have injected their DATA-CONSTRUCTOR names
+                // (`Some`/`None`/`Ok`/`Err`/…) into `prelude`, and a user variant MAY shadow those — a
+                // redeclared `(type Option (Some Int64) None)` rebinds bare `Some`/`None` to the user's ctor
+                // (the common case). Checking the polluted map would wrongly skip those, so bare `Some`/`None`
+                // would fall through to the built-in generic Option — a silent miscompile.
+                if prelude_type_module_names.contains(&v.name) {
+                    continue;
+                }
                 if let Some(ctor) = v.ctor {
                     variant_ctor_index.entry(v.name.clone()).or_insert(ctor);
                 }
+            }
+            if let Some(synth) = decl.synth {
+                type_decl_index.entry(decl.name.clone()).or_insert(synth);
+            }
+        }
+        // Effect NAME → synthesized record (first-declared wins) — `effect_decl_by_name`'s O(1) lookup.
+        let mut effect_decl_index: crate::fxhash::FxHashMap<String, StructId> =
+            crate::fxhash::FxHashMap::default();
+        for e in &effect_decls {
+            if let Some(synth) = e.synth {
+                effect_decl_index.entry(e.name.clone()).or_insert(synth);
             }
         }
         // Derive the file-scoped resolution table from the package linkage (`Some` only for a >1-file
@@ -885,6 +971,8 @@ impl Db {
             def_by_body,
             def_name_index: def_by_name,
             variant_ctor_index,
+            type_decl_index,
+            effect_decl_index,
             scope_binders,
             prelude,
             unit_families: crate::prelude::unit_families(),
@@ -892,6 +980,7 @@ impl Db {
             file_scope,
             user_node_count,
             reduce_depth: 0,
+            reduce_nodes: 0,
             descent_depth: 0,
             collect_limited: false,
             build_cache: crate::fxhash::FxHashMap::default(),
@@ -901,7 +990,7 @@ impl Db {
             mutual_loop_cache: crate::fxhash::FxHashMap::default(),
             reduce_cache: crate::fxhash::FxHashMap::default(),
             collect_cache: crate::fxhash::FxHashMap::default(),
-            delegates_effect_cache: crate::fxhash::FxHashMap::default(),
+            delegated_effects: None,
             rec_visited: crate::fxhash::FxHashSet::default(),
             rec_worklist: Vec::new(),
             kept_bindings: crate::fxhash::FxHashSet::default(),
@@ -968,6 +1057,20 @@ impl Db {
         if self.reduce_depth >= REDUCE_DEPTH_LIMIT {
             return None;
         }
+        // TOTAL-WORK budget across the whole compile — the guard the per-reduction DEPTH counter cannot
+        // give. A term can stay within the depth limit yet drive an EXPONENTIAL number of bounded
+        // reductions: a self-applying lambda `(fn (v) (v (v v)))` applied to itself is not statically
+        // recursive (it calls a PARAMETER, so `is_recursive` finds no cycle) and each reduction stays
+        // shallow, but the type/fault walk over the shared, doubling term attempts ~2^depth reductions —
+        // the compiler does unbounded work and appears to hang (the `cdz-smith` timeout). Every reduction
+        // attempt funnels through here, so counting entries bounds that total work: past
+        // [`REDUCE_NODE_BUDGET`] deny entry (like the depth limit), so the reduction DECLINES rather than
+        // diverges. `reduce_nodes` is monotonic per compile (never decremented — it measures cumulative
+        // work, not current depth); a real program's total reductions are far below the budget.
+        if self.reduce_nodes >= REDUCE_NODE_BUDGET {
+            return None;
+        }
+        self.reduce_nodes += 1;
         self.reduce_depth += 1;
         Some(ReductionGuard { db: self })
     }
@@ -1396,10 +1499,10 @@ impl Db {
     /// still distinct types (unlike a name-keyed map, which would clobber). A duplicate type NAME in one
     /// scope is a well-formedness concern for the checker, not this index.
     pub fn type_decl_by_name(&self, name: &str) -> Option<StructId> {
-        self.type_decls
-            .iter()
-            .find(|t| t.name == name)
-            .and_then(|t| t.synth)
+        // O(1) via `type_decl_index` (built at load). This was a linear `type_decls.iter().find` per call
+        // — O(types) — and `resolve_name` calls it for MANY references, so a program with N sum types was
+        // O(N²). First-declared-wins matches the old scan; the returned synth record is identical.
+        self.type_decl_index.get(name).copied()
     }
 
     /// The synthesized RECORD occurrence of the nested `(module …)` at declaration occurrence `occ`, if
@@ -1474,10 +1577,8 @@ impl Db {
     /// `type_decl_by_name`. `E` in value position denotes its record (fields = operation values), so
     /// `E.op` is ordinary member access. `None` if no effect of that name is declared.
     pub fn effect_decl_by_name(&self, name: &str) -> Option<StructId> {
-        self.effect_decls
-            .iter()
-            .find(|e| e.name == name)
-            .and_then(|e| e.synth)
+        // O(1) via `effect_decl_index` (built at load) — was a linear `effect_decls.iter().find`.
+        self.effect_decl_index.get(name).copied()
     }
 
     /// The [`EffectDecl`] whose DECLARATION OCCURRENCE is `occ` — the reverse of the identity an
