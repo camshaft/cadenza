@@ -3992,6 +3992,30 @@ mod recursion {
     }
 
     #[test]
+    fn a_pass_through_parameter_loop_computes_correctly() {
+        // `go(n, k, acc)` re-passes `k` UNCHANGED each iteration — the loop back-edge elides the `k ← k`
+        // self-move. Confirm the VALUE is right (the elision must not corrupt `k`, which `(+ acc k)`
+        // reads every step): starting acc=0, add k=2 for n=100 steps → 200; a different k=7 over 5 → 35.
+        let bytes = component(
+            "(module m (def (go (: n Int64) (: k Int64) (: acc Int64)) \
+               (if (= n 0) acc (go (- n 1) k (+ acc k)))) (def (main) (go 100 2 0)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 200);
+        let b2 = component(
+            "(module m (def (go (: n Int64) (: k Int64) (: acc Int64)) \
+               (if (= n 0) acc (go (- n 1) k (+ acc k)))) (def (main) (go 5 7 0)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&b2, "main"), 35);
+        // Two pass-through params either side of the recursion variable — both self-moves elided.
+        let b3 = component(
+            "(module m (def (go (: a Int64) (: n Int64) (: b Int64) (: acc Int64)) \
+               (if (= n 0) acc (go a (- n 1) b (+ acc (+ a b))))) \
+             (def (main) (go 3 10 4 0)) (export main))",
+        );
+        assert_eq!(run_returns::<i64>(&b3, "main"), 70); // (3+4) added 10 times
+    }
+
+    #[test]
     fn a_recursive_bool_predicate_runs_in_both_branch_orders() {
         // all-lt: the self-call is the THEN branch, `false` the ELSE — must type as Bool regardless of
         // order. all-lt(0,3,5) over 0,1,2 (<5) is true → 1.
