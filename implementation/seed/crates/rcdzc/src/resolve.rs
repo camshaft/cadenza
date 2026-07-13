@@ -2074,38 +2074,64 @@ fn resolve_pipeline(db: &Db, id: StructId) -> Resolved {
 /// arm body finds its binder), so here we only record the shape. A malformed arm or a missing
 /// init/body is a `Poison`.
 fn resolve_handle(db: &Db, id: StructId) -> Resolved {
+    // Every malformed-handle message shows the FULL canonical SURFACE shape, so a truncated form teaches
+    // the author every part it needs. Vocab is the surface's: the state the handler establishes is the
+    // "seed" (`capabilities-and-effects.md` §A Handler Discharges Its Effect / the corpus header), never
+    // the internal "init state". A too-short tail reaches here UN-desugared (the effect-promotion rewrite
+    // fires only on the well-formed 5-child form), so its children are shifted by one versus the well-
+    // formed post-desugar tail — meaning we CANNOT reliably name WHICH part is missing (tail[0] might be
+    // the effect or the seed). So a too-short handle is reported as incomplete, not mis-enumerated; the
+    // shape carries the fix.
+    const SHAPE: &str =
+        "a handle is `(handle <effect> <seed> ((<op> (params…) <state> <body>)…) <body>)`";
     let tail = db.ast.as_form(id, "handle").unwrap_or(&[]);
     let init = match tail.first() {
         Some(&s) => s,
         None => {
-            return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no init state"));
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this handle is empty — {SHAPE}"),
+            ));
         }
     };
     let arms_occ = match tail.get(1) {
         Some(&a) => a,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no arms")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this handle is incomplete — {SHAPE}"),
+            ));
+        }
     };
     let body = match tail.get(2) {
         Some(&b) => b,
-        None => return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no body")),
+        None => {
+            return Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                format!("this handle is incomplete — {SHAPE}"),
+            ));
+        }
     };
     // The arms list `((E.op (p…) s body) …)`. Each arm has FOUR parts: op projection, param list, state
     // binder, arm body.
     let Struct::List(arm_nodes) = db.ast.get(arms_occ) else {
-        return Resolved::Poison(Reject::coded(Code::Malformed, "handle arms must be a list"));
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            format!("this handle's arms must be a list of arms — {SHAPE}"),
+        ));
     };
     let mut arms = Vec::new();
     for &arm in arm_nodes {
         let Struct::List(parts) = db.ast.get(arm) else {
             return Resolved::Poison(Reject::coded(
                 Code::Malformed,
-                "a handle arm must be (op (params…) state body)",
+                "a handle arm must be `(<op> (params…) <state> <body>)`",
             ));
         };
         if parts.len() != 4 {
             return Resolved::Poison(Reject::coded(
                 Code::Malformed,
-                "a handle arm must be (op (params…) state body)",
+                "a handle arm must be `(<op> (params…) <state> <body>)`",
             ));
         }
         let op = parts[0];
@@ -2122,7 +2148,12 @@ fn resolve_handle(db: &Db, id: StructId) -> Resolved {
         });
     }
     if arms.is_empty() {
-        return Resolved::Poison(Reject::coded(Code::Malformed, "handle has no arms"));
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            format!(
+                "this handle has an empty arm list — a handler must bind every operation its effect declares. {SHAPE}"
+            ),
+        ));
     }
     Resolved::Handle { init, arms, body }
 }
