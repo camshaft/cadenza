@@ -301,6 +301,9 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // A list is a value-heap compound too — at run time an OPAQUE u32 HANDLE into the persistent
         // `vec-*` store, so it lives in an i32 local like a tuple/record/sum.
         Ty::List(_) => Some(ValType::I32),
+        // A map is a value-heap compound too — at run time an OPAQUE u32 HANDLE into the persistent
+        // CHAMP `map-*` store, so it lives in an i32 local like a list/tuple/record/sum.
+        Ty::Map(_, _) => Some(ValType::I32),
         // A bytes sequence is a value-heap leaf — at run time an OPAQUE u32 HANDLE into the persistent
         // rope `bytes-*` store, so it lives in an i32 local like a list/tuple/record/sum.
         Ty::Bytes => Some(ValType::I32),
@@ -389,6 +392,9 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // A list escapes as the canonical binary value form via the resource `encode()` path, not a
         // primitive handle valtype (like a record/sum).
         Ty::List(_) => None,
+        // A map escapes as the canonical binary value form via the resource `encode()` path (rendering
+        // `(map (k v) …)` in sorted key order), not a primitive handle valtype (like a list/record/sum).
+        Ty::Map(_, _) => None,
         // Bytes escapes as the canonical binary value form via the resource `encode()` path (rendering
         // `b"…"`), not a primitive handle valtype (like a list/record/sum).
         Ty::Bytes => None,

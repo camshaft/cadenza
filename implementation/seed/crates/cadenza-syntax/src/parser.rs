@@ -27,7 +27,7 @@ use crate::lexer::{Lexer, Token};
 use crate::literal;
 use crate::span::Span;
 use crate::spans::{FileId, SpanTable};
-use crate::token::{Keyword, Kind, infix_prec, keyword, word_op};
+use crate::token::{Keyword, Kind, infix_prec, is_right_assoc, keyword, word_op};
 
 /// A parse error: a message anchored to a source span.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -443,7 +443,15 @@ impl<'a> Parser<'a> {
             let op_span = self.cur_span();
             self.bump(); // operator
             let head = self.name(op_name, op_span);
-            let right = self.expr(prec + 1); // left-assoc: right binds one tighter
+            // Left-assoc: the right operand binds one tighter (`prec + 1`), so a same-precedence run
+            // groups left. The type arrow `->` is right-associative — it recurses at `prec`, so
+            // `A -> B -> C` groups as `A -> (B -> C)` (the curried reading).
+            let right_min = if is_right_assoc(op_name) {
+                prec
+            } else {
+                prec + 1
+            };
+            let right = self.expr(right_min);
             let span = start.merge(self.prev_span());
             left = self.list(vec![head, left, right], span);
         }
@@ -715,17 +723,49 @@ impl<'a> Parser<'a> {
         self.list(vec![head, c, t, e], span)
     }
 
-    /// `fn(p, …) => body`  ->  `(fn (p …) body)`. `fn` is ALWAYS an anonymous lambda now; a named
-    /// definition uses `def` (see [`Self::def_expr`]).
+    /// `fn(p, …) => body`  ->  `(fn (p …) body)`, or with a return type `fn(p, …) -> R => body` ->
+    /// `(fn (p …) (: body R))`. `fn` is ALWAYS an anonymous lambda now; a named definition uses `def`
+    /// (see [`Self::def_expr`]). The return type desugars to a body ascription, exactly as a `def`'s
+    /// return type does.
     fn fn_expr(&mut self) -> StructId {
         let start = self.cur_span();
         let head = self.keyword_head("fn", start);
         self.bump(); // `fn`
         let param_list = self.param_list();
+        let ret_ty = self.opt_return_type();
         self.expect(Kind::FatArrow, "`=>`");
         let body = self.expr(0);
+        let body = self.ascribe(body, ret_ty);
         let span = start.merge(self.prev_span());
         self.list(vec![head, param_list, body], span)
+    }
+
+    /// After a function's parameter list, an optional return-type annotation `-> R`. Returns the type
+    /// occurrence (`R`) when a `->` follows, else `None`. Shared by `def` and `fn`; the caller wraps
+    /// the body in `(: body R)` via [`Self::ascribe`].
+    fn opt_return_type(&mut self) -> Option<StructId> {
+        if self.at(Kind::Arrow) {
+            self.bump(); // `->`
+            Some(self.type_ref())
+        } else {
+            None
+        }
+    }
+
+    /// Wrap `body` in a type ascription `(: body ty)` when a return type is present, else return `body`
+    /// unchanged. The wrapper reuses the ascription form the value/parameter annotations already use,
+    /// so a return type needs no dedicated IR node — it is the body constrained to the declared type.
+    fn ascribe(&mut self, body: StructId, ty: Option<StructId>) -> StructId {
+        match ty {
+            Some(ty) => {
+                let body_span = self.spans.get(body).unwrap_or_else(|| Span::new(0, 0));
+                let ty_span = self.spans.get(ty).unwrap_or_else(|| Span::new(0, 0));
+                let span = body_span.merge(ty_span);
+                let colon = self.name(":", span);
+                self.list(vec![colon, body, ty], span)
+            }
+            None => body,
+        }
     }
 
     /// A named definition (a hoisting declaration), in two shapes:
@@ -774,8 +814,13 @@ impl<'a> Parser<'a> {
         self.expect(Kind::RParen, "`)`");
         let sig_span = sig_start.merge(self.prev_span());
         let signature = self.list(sig, sig_span);
+        // Optional return-type annotation `-> R` between the signature and `=`. It desugars to a body
+        // ascription: `def f(x) -> R = e` becomes `(def (f x) (: e R))`, reusing the annotation form —
+        // no dedicated return-type node. The printer recovers the `-> R` from that body shape.
+        let ret_ty = self.opt_return_type();
         self.expect(Kind::Eq, "`=`");
         let body = self.expr(0);
+        let body = self.ascribe(body, ret_ty);
         let span = start.merge(self.prev_span());
         // (def signature doc… body) — docs precede the body form, matching the spec's
         // `(def (f) (doc "…") body)` shape.
@@ -831,14 +876,12 @@ impl<'a> Parser<'a> {
         if !self.at(Kind::RParen) {
             loop {
                 let before = self.pos;
-                let ty_start = self.cur_span();
-                let ty = self.prefix();
-                items.push(self.postfix(ty, ty_start));
+                items.push(self.type_ref());
                 if !self.sep_continue(Kind::RParen) {
                     break;
                 }
-                // `prefix` at a stop token records an error without consuming; skip it so the
-                // missing-`,` branch cannot loop forever.
+                // `type_ref`'s `prefix` at a stop token records an error without consuming; skip it so
+                // the missing-`,` branch cannot loop forever.
                 if self.pos == before {
                     self.bump();
                 }
@@ -1244,22 +1287,42 @@ impl<'a> Parser<'a> {
 
     /// A parameter binder, optionally type-annotated: `name` or `name: Type`. An annotated parameter
     /// lowers to the binder-position annotation form `(: name Type)` — the same shape the s-expr
-    /// surface writes — so the two surfaces agree. The `Type` is parsed as a postfix expression
-    /// (a name, a dotted/qualified name, or an application like `Option(Int64)`), which covers the
-    /// type forms a parameter annotation uses.
+    /// surface writes — so the two surfaces agree. The `Type` is parsed by [`Self::type_ref`], which
+    /// covers a name, a dotted/qualified name, an application like `Option(Int64)`, and a function
+    /// type `A -> B`.
     fn param(&mut self) -> StructId {
         let start = self.cur_span();
         let binder = self.binder();
         if self.at(Kind::Colon) {
             self.bump(); // `:`
             let colon = self.name(":", start);
-            let ty_start = self.cur_span();
-            let ty = self.prefix();
-            let ty = self.postfix(ty, ty_start);
+            let ty = self.type_ref();
             let span = start.merge(self.prev_span());
             self.list(vec![colon, binder, ty], span)
         } else {
             binder
+        }
+    }
+
+    /// A type reference in a binder/return/payload position (a parameter annotation, a function's
+    /// return type, a sum-variant payload). A type is a postfix expression — a name, a dotted or
+    /// qualified name, or an application like `Option(Int64)` — extended with the RIGHT-associative
+    /// function arrow `A -> B` -> `(-> A B)`, so a parameter/return type may itself be a function type
+    /// (`f: Int64 -> Bool`, `-> Int64 -> Int64`). The arrow is parsed here (not via the general Pratt
+    /// `expr`) so a type position admits `->` and application without also admitting arithmetic or a
+    /// bare `:` re-ascription. `A -> B -> C` right-associates to `(-> A (-> B C))`.
+    fn type_ref(&mut self) -> StructId {
+        let start = self.cur_span();
+        let head = self.prefix();
+        let left = self.postfix(head, start);
+        if self.at(Kind::Arrow) {
+            self.bump(); // `->`
+            let arrow = self.name("->", start);
+            let right = self.type_ref(); // right-associative
+            let span = start.merge(self.prev_span());
+            self.list(vec![arrow, left, right], span)
+        } else {
+            left
         }
     }
 

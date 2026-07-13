@@ -170,6 +170,8 @@ pass	a function stored in a record field is called after extraction
 pass	a function stored in a tuple element is called after extraction
 pass	a function takes a boolean parameter and branches on it
 pass	a function whose name is capitalized is called, not treated as a constructor
+pass	a function's return type ascription agreeing with the body is transparent
+pass	a function's return type contradicting the body is rejected
 pass	a function-typed parameter annotation is not silently discarded in the body
 pass	a function-typed parameter annotation's result type is checked against the argument
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
@@ -199,6 +201,7 @@ pass	a hexadecimal literal past Int64.max is a malformed literal, not a bit patt
 pass	a hexadecimal literal with digit separators
 pass	a lambda applied in the scope of the binding it captures observes that binding
 pass	a lambda captures an enclosing function parameter and is applied in its body
+pass	a lambda's return type ascription agreeing with the body is transparent
 pass	a large whole-valued float renders its full value, not an integer saturation
 pass	a later declaration in a do block sees an earlier one
 pass	a later let binding sees an earlier one in the same let
