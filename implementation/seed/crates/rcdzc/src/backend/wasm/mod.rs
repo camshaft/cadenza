@@ -168,6 +168,26 @@ pub fn emit(
         return emit_closure_resource(db, layout, e.def, &e.result, spans);
     }
 
+    // DIRECTION 2 (host hands a closure BACK — not yet built): an export whose PARAMETER is a closure
+    // type `(-> …)` — the host would pass a closure resource in, and the body applies it. This needs a
+    // signature-derived `call_indirect` type (a host-origin closure has no in-program lifted lambda for
+    // `closure_type_index` to match) + the `own<closure>` param ABI (recover the cell via `resource.rep`).
+    // Until then, DECLINE with a message that names the feature (rather than the internal "no matching
+    // function type" the select-time `Core::CallClosure` would surface). Applies to any export with a
+    // closure-typed parameter (single- or multi-export). Reject-don't-miscompile: a clean Todo.
+    if layout
+        .exports
+        .iter()
+        .flat_map(|e| e.params.iter())
+        .any(|(_, t)| matches!(t, crate::ty::Ty::Fn(_, _)))
+    {
+        return Err(Reject::decline(
+            "a closure passed AS A PARAMETER to an export (the host handing a closure back) is not yet \
+             supported — it needs a signature-derived indirect-call type and the own<closure> parameter \
+             ABI (DESIGN-closure-host-resource-rcdzc.md, Direction 2 / C-HOST-4)",
+        ));
+    }
+
     // The per-program runtime IMPORT SET must be fixed BEFORE selection, because it determines both
     // `layout.import_base` (the shift a defined func's index takes) and the index a `CallImport`
     // resolves to. Walk every reachable body's core for the value-heap ops it will emit

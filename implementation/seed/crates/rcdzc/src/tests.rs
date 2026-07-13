@@ -20369,4 +20369,22 @@ mod closure_host_resource {
             Val::S64(107)
         );
     }
+
+    /// DIRECTION 2 (host hands a closure BACK) is NOT YET SUPPORTED — an export whose PARAMETER is a
+    /// closure declines cleanly (reject-don't-miscompile) with a message naming the feature, rather than
+    /// the internal "no matching function type" the select-time `Core::CallClosure` would otherwise
+    /// surface (a host-origin closure has no in-program lifted lambda to match). Pins the honest Todo
+    /// until the round-trip (C-HOST-4: signature-derived indirect-call type + `own<closure>` param ABI).
+    #[test]
+    fn a_closure_export_parameter_declines_with_a_clear_message() {
+        use crate::testkit::parse;
+        let src = "(module m (def (invoke (: g (-> Int64 Int64)) (: x Int64)) (g x)) (export invoke))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a closure-typed export parameter must DECLINE (Direction 2 not yet built)");
+        assert!(
+            err.message.contains("passed AS A PARAMETER"),
+            "expected the Direction-2 not-yet-supported message, got: {}",
+            err.message
+        );
+    }
 }
