@@ -1009,7 +1009,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // the build, so this core is never emitted). A poison operand / non-record / non-constant
                 // record declines (the runtime row op is a later increment).
                 Some(Prim::RecordProject) if args.len() == 2 => {
-                    lower_record_project(db, id, args[0], args[1])
+                    lower_record_project(db, id, args[0], args[1], false)
+                }
+                Some(Prim::RecordWithout) if args.len() == 2 => {
+                    lower_record_project(db, id, args[0], args[1], true)
+                }
+                Some(Prim::RecordMerge) if args.len() == 2 => {
+                    lower_record_merge(db, id, args[0], args[1])
                 }
                 // `vec-len`). One operand: the list.
                 Some(Prim::ListLen) if args.len() == 1 => {
@@ -7163,6 +7169,8 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::TupleNew
         | Prim::RecordNew
         | Prim::RecordProject
+        | Prim::RecordWithout
+        | Prim::RecordMerge
         | Prim::ListNew
         | Prim::ListLen
         | Prim::ListPush
@@ -9554,30 +9562,63 @@ fn lower_str_from_bytes(db: &mut Db, id: StructId, bytes: StructId) -> Core {
 /// reports; here the fold simply omits it (the reject denies the build, so this core is never emitted). A
 /// poison operand propagates; a non-record / non-constant record declines (the runtime row op is a later
 /// increment). A malformed label list is CDZ0201.
-fn lower_record_project(db: &mut Db, id: StructId, record: StructId, labels: StructId) -> Core {
+fn lower_record_project(
+    db: &mut Db,
+    id: StructId,
+    record: StructId,
+    labels: StructId,
+    drop: bool,
+) -> Core {
     let Core::Record { fields } = core_of(db, record) else {
         return match core_of(db, record) {
             Core::Poison(r) => Core::Poison(r),
             _ => Core::Poison(Reject::decline(
-                "Record.project over a runtime record is not yet built",
+                "a record row operation over a runtime record is not yet built",
             )),
         };
     };
     let Some(labels) = crate::resolve::record_op_labels(db, labels) else {
         return Core::Poison(Reject::coded(
             Code::Malformed,
-            "Record.project's second operand is a list of field names, e.g. `(a c)`",
+            "the second operand is a list of field names, e.g. `(a c)`",
         ));
     };
-    let mut kept = std::collections::BTreeMap::new();
-    for label in &labels {
-        if let Some(&v) = fields.get(label) {
-            kept.insert(label.clone(), v);
-        }
-    }
-    trace!(target: "rcdzc::fold", node = id.0, n = kept.len(), "Record.project folds a constant record to its named fields");
+    // `project` KEEPS the named fields; `without` keeps every field NOT named (the complement). Each
+    // result field carries the operand's own value occurrence (the immutable heap shares them).
+    let named: std::collections::BTreeSet<_> = labels.iter().cloned().collect();
+    let kept: std::collections::BTreeMap<_, _> = fields
+        .iter()
+        .filter(|(k, _)| named.contains(*k) != drop)
+        .map(|(k, &v)| (k.clone(), v))
+        .collect();
+    trace!(target: "rcdzc::fold", node = id.0, n = kept.len(), drop, "record project/without folds a constant record to its result fields");
     Core::Record {
         fields: std::sync::Arc::new(kept),
+    }
+}
+
+/// Lower `(Record.merge a b)` — the UNION of two records' fields (`type-system.md` §Two Records Are
+/// Combined Only When Their Field Sets Are Disjoint). FOLD two constant `Core::Record`s to a new one
+/// holding every field of both (each carrying its source's value occurrence). The disjointness CDZ0211 is
+/// `infer`'s; here a shared field would be silently overwritten by `b`, but the reject denies the build so
+/// this core is never emitted. A poison operand propagates; a non-constant/non-record operand declines.
+fn lower_record_merge(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Core {
+    match (core_of(db, a), core_of(db, b)) {
+        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+        (Core::Record { fields: fa }, Core::Record { fields: fb }) => {
+            let mut union: std::collections::BTreeMap<_, _> =
+                fa.iter().map(|(k, &v)| (k.clone(), v)).collect();
+            for (k, &v) in fb.iter() {
+                union.insert(k.clone(), v);
+            }
+            trace!(target: "rcdzc::fold", node = id.0, n = union.len(), "Record.merge folds two constant records to their union");
+            Core::Record {
+                fields: std::sync::Arc::new(union),
+            }
+        }
+        _ => Core::Poison(Reject::decline(
+            "Record.merge over a runtime record is not yet built",
+        )),
     }
 }
 
@@ -10809,6 +10850,8 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::TupleNew => "tuple-new",
         Prim::RecordNew => "record-new",
         Prim::RecordProject => "record-project",
+        Prim::RecordWithout => "record-without",
+        Prim::RecordMerge => "record-merge",
         Prim::ListNew => "list-new",
         Prim::ListLen => "list-len",
         Prim::ListPush => "list-push",

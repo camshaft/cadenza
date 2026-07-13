@@ -1763,6 +1763,37 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         }
         return Ty::Record(std::sync::Arc::new(kept));
     }
+    // `Record.without r (b)` — `r` MINUS the named fields (the complement of `project`). The result is a
+    // NEW record type keeping every field of `r` whose label is NOT named. Same literal field-name list;
+    // an absent named field is CDZ0212 (`check_application`), not reflected in the shape.
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordWithout)
+        && args.len() == 2
+        && let Ty::Record(fields) = type_of(db, args[0])
+        && let Some(labels) = crate::resolve::record_op_labels(db, args[1])
+    {
+        let drop: std::collections::BTreeSet<_> = labels.into_iter().collect();
+        let kept: std::collections::BTreeMap<_, _> = fields
+            .iter()
+            .filter(|(k, _)| !drop.contains(*k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        return Ty::Record(std::sync::Arc::new(kept));
+    }
+    // `Record.merge a b` — the UNION of two records' fields. The result is a NEW record type with every
+    // field of BOTH operands. The field sets MUST be disjoint (a shared name is CDZ0211, reported by
+    // `check_application`); the type here is the union regardless (a shared field's fault fires there, and
+    // last-writer here keeps the shape sane). A non-record operand → the generic path (Any).
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordMerge)
+        && args.len() == 2
+        && let (Ty::Record(a), Ty::Record(b)) = (type_of(db, args[0]), type_of(db, args[1]))
+    {
+        let mut union: std::collections::BTreeMap<_, _> =
+            a.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for (k, v) in b.iter() {
+            union.insert(k.clone(), v.clone());
+        }
+        return Ty::Record(std::sync::Arc::new(union));
+    }
     // `Type.of e` — compile-time type reflection. The application itself has type `Type` (it IS a
     // type-value, like `(Qty T u)` / `(-> A B)` in type position); the type-value it REDUCES to (via
     // `eval::typeval_of` → the `reduce_ctor` arm) is `e`'s inferred type, consumed only in a type
@@ -2746,12 +2777,19 @@ fn check_application(
         collect(db, args[1], out);
         return;
     }
-    // `Record.project r (a c)` — has NO HM scheme (the label-list operand is not a typed value, and the
-    // result shape is computed row-polymorphically by `apply_type`), so SKIP the generic scheme-unify (it
-    // would fault the label list against a scheme). The absent-field CDZ0212 + operand descent are done in
-    // `collect_node`'s Apply arm; nothing to add here beyond stopping the generic path.
+    // The RECORD ROW OPERATIONS have NO HM scheme (a label-list operand is not a typed value; a result
+    // shape is row-polymorphic), so SKIP the generic scheme-unify (it would fault the label list). The
+    // per-op faults (CDZ0212 absent / CDZ0211 shared) + operand descent are done in `collect_node`'s Apply
+    // arm; nothing to add here beyond stopping the generic path.
     if args.len() == 2
-        && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordProject)
+        && matches!(
+            crate::eval::meta_apply_of(db, head),
+            Some(
+                crate::resolved::Prim::RecordProject
+                    | crate::resolved::Prim::RecordWithout
+                    | crate::resolved::Prim::RecordMerge
+            )
+        )
     {
         return;
     }
@@ -4471,15 +4509,16 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 }
             } else if matches!(
                 crate::eval::meta_apply_of(db, head),
-                Some(crate::resolved::Prim::RecordProject)
+                Some(crate::resolved::Prim::RecordProject | crate::resolved::Prim::RecordWithout)
             ) && args.len() == 2
             {
-                // `Record.project r (a c)` — the FIRST operand `r` is an ordinary expression (descend it);
-                // the SECOND is a LITERAL field-name list `(a c)` — LABELS, not an expression, so descending
-                // it would resolve `a` as applied to `c`. Instead read its labels and check each names a
-                // field the operand record HOLDS: a named field ABSENT from `r`'s record type is CDZ0212
-                // (`type-system.md` §A Record Is Restricted To A Named Set Of Its Fields, 2nd sentence). A
-                // malformed label list (not a list, a non-label element) is CDZ0201.
+                // `Record.project r (a c)` / `Record.without r (b)` — the FIRST operand `r` is an ordinary
+                // expression (descend it); the SECOND is a LITERAL field-name list `(a c)` — LABELS, not an
+                // expression, so descending it would resolve `a` as applied to `c`. Instead read its labels
+                // and check each names a field the operand record HOLDS: a named field ABSENT from `r`'s
+                // record type is CDZ0212 — for `project` (§A Record Is Restricted To A Named Set Of Its
+                // Fields, 2nd sentence) AND `without` (§A Record Is Reduced By Dropping A Named Set …, 2nd
+                // sentence), the same absent-field check. A malformed label list is CDZ0201.
                 collect(db, args[0], out);
                 match (
                     type_of(db, args[0]),
@@ -4491,10 +4530,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 out.push(
                                     Reject::coded(
                                         Code::AbsentField,
-                                        format!(
-                                            "record has no field `{}` to project onto",
-                                            label.name
-                                        ),
+                                        format!("record has no field `{}`", label.name),
                                     )
                                     .at(args[1]),
                                 );
@@ -4505,9 +4541,35 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     // type) surfaces via the `collect(args[0])` above; a malformed label list is CDZ0201.
                     (_, None) => out.push(Reject::coded(
                         Code::Malformed,
-                        "Record.project's second operand is a list of field names, e.g. `(a c)`",
+                        "the second operand is a list of field names, e.g. `(a c)`",
                     )),
                     _ => {}
+                }
+            } else if matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(crate::resolved::Prim::RecordMerge)
+            ) && args.len() == 2
+            {
+                // `Record.merge a b` — BOTH operands are ordinary record expressions (descend each). Their
+                // field sets MUST be DISJOINT: a name present in BOTH is CDZ0211 (`type-system.md` §Two
+                // Records Are Combined Only When Their Field Sets Are Disjoint, 2nd sentence) — the combined
+                // record never chooses which operand's value a shared field takes. A non-record operand's
+                // own fault surfaces via the descent.
+                collect(db, args[0], out);
+                collect(db, args[1], out);
+                if let (Ty::Record(a), Ty::Record(b)) = (type_of(db, args[0]), type_of(db, args[1]))
+                {
+                    for k in a.keys() {
+                        if b.contains_key(k) {
+                            out.push(
+                                Reject::coded(
+                                    Code::PresentField,
+                                    format!("both records share the field `{}`", k.name),
+                                )
+                                .at(id),
+                            );
+                        }
+                    }
                 }
             } else if crate::eval::lambda_body(db, head).is_some() {
                 // A LAMBDA head — `check_application` already collected the REDUCED body (step 2), which

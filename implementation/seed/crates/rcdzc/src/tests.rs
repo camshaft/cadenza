@@ -10687,6 +10687,49 @@ mod match_engine {
     }
 
     #[test]
+    fn record_without_and_merge_reshape_records_with_field_set_checks() {
+        // 15-rows "dropping fields from a record leaves the remaining fields" / "...an absent field is
+        // rejected" / "merging two records with disjoint fields unions their fields" / "merging records
+        // that share a field name is rejected". `Record.without r (b)` drops the named fields (complement
+        // of `project`); `Record.merge a b` unions two records' field sets, requiring DISJOINTNESS.
+        // `without` of a PRESENT field is well-formed.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.without (record (a 1) (b 2) (c 3)) (b))) (export main))"
+            ),
+            None,
+            "dropping a present field is well-formed"
+        );
+        // `without` of an ABSENT field → CDZ0212 (a drop of a field never held is a static error).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.without (record (a 1)) (z))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0212"),
+            "dropping an absent field is CDZ0212"
+        );
+        // `merge` of DISJOINT field sets is well-formed.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.merge (record (a 1)) (record (b 2)))) (export main))"
+            ),
+            None,
+            "merging disjoint records is well-formed"
+        );
+        // `merge` of records SHARING a field → CDZ0211 (no silent clobber — the combined record cannot
+        // choose which operand's value the shared field takes).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.merge (record (a 1)) (record (a 2)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0211"),
+            "merging records that share a field is CDZ0211"
+        );
+    }
+
+    #[test]
     fn a_list_homogeneity_violation_is_cdz0201_by_shape() {
         // 05-compound-types §A List Is An Ordered Homogeneous Sequence — the same taxonomy line the numeric
         // operators and `if`-branches draw. A homogeneity violation between two DISTINCT NUMERIC types, or

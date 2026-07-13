@@ -1049,6 +1049,8 @@ pass	dividing quantities divides their dimensions
 pass	division by zero traps
 pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
+pass	dropping an absent field from a record is rejected
+pass	dropping fields from a record leaves the remaining fields
 pass	each definition in a module registers a reachable export field
 pass	encoding a decoded string round-trips to the same bytes
 pass	equality across incompatible dimensions is a compile-time error
@@ -1132,6 +1134,8 @@ pass	member access on a tuple is a type error
 pass	membership of a present element is true
 pass	membership of an absent element in the empty set is false
 pass	membership of an absent element is false, not a trap
+pass	merging records that share a field name is rejected
+pass	merging two records with disjoint fields unions their fields
 pass	mixing a prefixed unit across DIFFERENT dimensions is still a compile-time error
 pass	mixing nullary and unary constructors in one match
 pass	mixing signed and unsigned of the same width does not silently promote
@@ -1464,8 +1468,6 @@ todo	converting a fixed-width integer to BigInt is explicit
 todo	converting a unit to another unit of the same dimension is an exact rational scale
 todo	decoding bytes that are not a canonical AST yields the error case, not a trap
 todo	decoding canonical bytes followed by a trailing byte yields the error case
-todo	dropping an absent field from a record is rejected
-todo	dropping fields from a record leaves the remaining fields
 todo	encoding and decoding a constructor-built AST round-trips to an equal value
 todo	encoding and decoding a constructor-built compound AST round-trips
 todo	eval is optional for macros and interactive use
@@ -1476,8 +1478,6 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	extending a record adds a new field
 todo	extending a record with an already-present field is rejected
-todo	merging records that share a field name is rejected
-todo	merging two records with disjoint fields unions their fields
 todo	negating a runtime Int64 overflows at Int64.min
 todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 todo	pattern matching over AST distinguishes forms

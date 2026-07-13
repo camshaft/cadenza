@@ -241,6 +241,18 @@ pub enum Prim {
     /// `Core::Record` with only the named fields; a named field absent from the operand is CDZ0212. The
     /// narrowing member of the record row-operation surface (`without`/`merge`/`with`/`pop`/`extend` follow).
     RecordProject,
+    /// The RECORD ROW-DROP operation — `(Record.without r (b))` derives `r` MINUS the named fields, i.e.
+    /// the complement of `project` (`type-system.md` §A Record Is Reduced By Dropping A Named Set Of Its
+    /// Fields). Same LITERAL field-name-list second operand as `project`; folds a constant `Core::Record`
+    /// to a new one with the named fields removed. A named field absent from the operand is CDZ0212 (a
+    /// drop of a field never held is a static error, not a silent no-op).
+    RecordWithout,
+    /// The RECORD ROW-MERGE operation — `(Record.merge a b)` combines two records into one whose field set
+    /// is the UNION (`type-system.md` §Two Records Are Combined Only When Their Field Sets Are Disjoint).
+    /// UNLIKE `project`/`without`, BOTH operands are ordinary record VALUES (no label list). The field sets
+    /// MUST be DISJOINT: a shared field name is CDZ0211 (the combined record never chooses which operand's
+    /// value a shared field takes). Folds two constant `Core::Record`s to their union.
+    RecordMerge,
     /// A LIST VALUE CONSTRUCTOR — the `(meta apply)` of the prelude `list` alias. Applying it (`(list 1 2
     /// 3)`) builds the list value, exactly as the STRING-head primitive `("list" 1 2 3)` does. VARIADIC,
     /// but HOMOGENEOUS: every element unifies to ONE element type (a mixed list is ill-typed), so its
@@ -603,6 +615,8 @@ impl Prim {
             "tuple-new" => Some(Prim::TupleNew),
             "record-new" => Some(Prim::RecordNew),
             "record-project" => Some(Prim::RecordProject),
+            "record-without" => Some(Prim::RecordWithout),
+            "record-merge" => Some(Prim::RecordMerge),
             "list-new" => Some(Prim::ListNew),
             "list-len" => Some(Prim::ListLen),
             "list-push" => Some(Prim::ListPush),
