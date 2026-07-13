@@ -166,3 +166,15 @@
            list `Set.of` consumes.")
   (input  (Set.of (list 1 true)))
   (error  CDZ0201))
+
+(case "a set built at run time escapes to the host as its value form"
+  (doc    "A Set built at RUN TIME (an insert-loop, not a constant `Set.of`) crosses the host boundary.
+           A runtime collection has no fixed value-form template (its size is dynamic), so it escapes via
+           the runtime value-encode walker guided by a compiler-baked shape descriptor whose PARAMETRIC
+           frame renders the element type — the value form is `((. Set of) (list …))` with elements in
+           CANONICAL key order under `(Set Int64)`. `build` inserts 3,2,1 onto an empty set → the sorted
+           `(list 1 2 3)`. This declined before as needing a value-form walker.")
+  (input  (do
+            (def (build s n) (if (< n 1) s (build (Set.insert s n) (- n 1))))
+            (def (main) (build (Set.of (list)) 3)) (export main)))
+  (output (: ((. Set of) (list 1 2 3)) (Set Int64))))

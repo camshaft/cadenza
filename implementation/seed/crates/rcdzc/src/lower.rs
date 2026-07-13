@@ -1009,7 +1009,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // the build, so this core is never emitted). A poison operand / non-record / non-constant
                 // record declines (the runtime row op is a later increment).
                 Some(Prim::RecordProject) if args.len() == 2 => {
-                    lower_record_project(db, id, args[0], args[1])
+                    lower_record_project(db, id, args[0], args[1], false)
+                }
+                Some(Prim::RecordWithout) if args.len() == 2 => {
+                    lower_record_project(db, id, args[0], args[1], true)
+                }
+                Some(Prim::RecordMerge) if args.len() == 2 => {
+                    lower_record_merge(db, id, args[0], args[1])
                 }
                 // `vec-len`). One operand: the list.
                 Some(Prim::ListLen) if args.len() == 1 => {
@@ -2119,6 +2125,8 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
 /// CDZ0210. A constant sum FOLDS to the selected body (like a scalar match); a runtime sum emits a
 /// `Core::MatchSum` tree. A payload binder resolves to a `SumPayload` on its own (resolve Case 6), so an
 /// arm carries only its discriminant + continuation.
+//= spec/capabilities/type-system.md#a-match-is-exhaustive-against-the-sum-type-s-variant-set
+//# The exhaustiveness rule governing a match MUST be checked against the scrutinee sum type's variant set, so that a match covering fewer than all variants is a compile-time rejection determined by that variant set rather than a runtime outcome.
 /// Lower a `match` over a BYTES scrutinee whose arms include `(bin …)` binary patterns (BN3, constant
 /// scrutinee). Each arm is either a `(bin <seg>…)` pattern or a CATCH-ALL (a bare binder / `_`). A `bin`
 /// arm MATCHES iff the segment automaton (`bin_match_decode`) consumes the whole scrutinee AND every
@@ -4576,8 +4584,65 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
             let root = builder.shape_of(db, ty)?;
             Some(builder.encode(root))
         }
+        // A LIST result: build the List shape, then wrap in a PARAMETRIC `Framed("List", [<elem>], …)`
+        // frame so the value form renders `(: (list …) (List <elem>))` — the element type OBSERVABLE,
+        // matching the constant-List value form. The element must be a scalar type-NAME (`Int64`/`Bool`/
+        // `String`/a nominal) so it splices as one type atom; a NESTED-element list (`(List (List Int64))`)
+        // would need a compound type-arg node — a later refinement, decline for now.
+        crate::ty::Ty::List(elem) => {
+            if !is_scalar_type_arg(elem) {
+                return None; // nested/compound-element list type node not yet built
+            }
+            let inner = builder.shape_of(db, ty)?;
+            let framed = builder.push(ShapeNode::Framed(
+                "List".to_string(),
+                vec![elem.render_name()],
+                inner,
+            ));
+            Some(builder.encode(framed))
+        }
+        // A SET result: `(: ((. Set of) (list …)) (Set <elem>))`. Parametric `Framed("Set", [<elem>], …)`;
+        // the element must be a scalar type NAME (it splices as one type-arg atom).
+        crate::ty::Ty::Set(elem) => {
+            if !is_scalar_type_arg(elem) {
+                return None;
+            }
+            let inner = builder.shape_of(db, ty)?;
+            let framed = builder.push(ShapeNode::Framed(
+                "Set".to_string(),
+                vec![elem.render_name()],
+                inner,
+            ));
+            Some(builder.encode(framed))
+        }
+        // A MAP result: `(: (map (k v) …) (Map <k> <v>))`. Parametric `Framed("Map", [<k>, <v>], …)`; BOTH
+        // the key AND value must be scalar type NAMES (each splices as one type-arg atom — a compound
+        // value or key type-node is a later refinement, decline).
+        crate::ty::Ty::Map(k, v) => {
+            if !is_scalar_type_arg(k) || !is_scalar_type_arg(v) {
+                return None;
+            }
+            let inner = builder.shape_of(db, ty)?;
+            let framed = builder.push(ShapeNode::Framed(
+                "Map".to_string(),
+                vec![k.render_name(), v.render_name()],
+                inner,
+            ));
+            Some(builder.encode(framed))
+        }
         _ => None,
     }
+}
+
+/// Whether a type is a SCALAR whose name splices as a single bare type-arg atom in a parametric value-form
+/// type node (`(List <t>)`/`(Set <t>)`/`(Map <k> <v>)`). Int/Bool/String/Unit qualify; a compound
+/// (List/Map/Set/Tuple/Sum) `render_name` is a parenthesized NODE, not a bare atom — those need a compound
+/// type-arg node (a later refinement), so they decline here.
+fn is_scalar_type_arg(ty: &crate::ty::Ty) -> bool {
+    matches!(
+        ty,
+        crate::ty::Ty::Int(_) | crate::ty::Ty::Bool | crate::ty::Ty::String | crate::ty::Ty::Unit
+    )
 }
 
 /// A shape-table entry (indices reference other entries — recursion closes via `Ref`).
@@ -4597,6 +4662,10 @@ enum ShapeNode {
     Ref(u32),
     Set(u32),
     Map(u32, u32),
+    /// A `(: <value> (<head> <arg>…))` frame — a PARAMETRIC type node (e.g. `(List Int64)`), each `arg` a
+    /// bare type name. The runtime `value-encode` decodes this as descriptor tag 15 and renders the
+    /// parametric type node, so a runtime List result crosses as `(: (list …) (List Int64))`.
+    Framed(String, Vec<String>, u32),
 }
 
 /// Builds the shape table, memoizing each `Ty::Sum` by its declaration occurrence so a recursive
@@ -4807,6 +4876,15 @@ impl ShapeTableBuilder {
                     d.push(13); // matches the runtime `decode_shape` tag 13 = Map
                     leb(&mut d, *k as u64);
                     leb(&mut d, *v as u64);
+                }
+                ShapeNode::Framed(head, args, i) => {
+                    d.push(15); // matches the runtime `decode_shape` tag 15 = Framed (14 = Float32)
+                    name(&mut d, head);
+                    leb(&mut d, args.len() as u64);
+                    for a in args {
+                        name(&mut d, a);
+                    }
+                    leb(&mut d, *i as u64);
                 }
             }
         }
@@ -5444,9 +5522,10 @@ fn member_access(b: &mut crate::ast::Builder, operand: &str, key: &str) -> Struc
 fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId> {
     use crate::ty::Ty;
     match ty {
-        // A scalar's type surface is its name atom. `String`/`Char`/`Symbol` are monomorphic named types
-        // too, so their surface is the bare `String`/`Char`/`Symbol` atom (`render_name`).
-        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Char | Ty::Symbol => {
+        // A scalar's type surface is its name atom. `String`/`Char`/`Symbol`/`BigInt` are monomorphic
+        // named types too, so their surface is the bare `String`/`Char`/`Symbol`/`BigInt` atom
+        // (`render_name`).
+        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Char | Ty::Symbol | Ty::BigInt => {
             Some(b.name(ty.render_name()))
         }
         // A sum's type surface: the bare NAME for a monomorphic sum (`(: (Neg unit) Sign)`), or the
@@ -5656,7 +5735,7 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
             body,
         } => {
             let mut n = uses_in(db, seed, init);
-            for arm in &arms {
+            for arm in arms.iter() {
                 n += uses_in(db, arm.body, init);
             }
             n + uses_in(db, body, init)
@@ -6437,6 +6516,33 @@ fn arith_identity(
             trace!(target: "rcdzc::fold", node = v.0, "XOR cancellation (^ (^ v w) w) → v");
             Some(core_of(db, v))
         }
+        // IDEMPOTENT-BITWISE COLLAPSE: `(OP (OP v w) w)` → `(OP v w)` for `&`/`|` (idempotent: `w OP w == w`,
+        // so re-applying `OP w` changes nothing), where the outer operand is `core_equiv` to `w` in the
+        // inner op. Covers a RUNTIME `w` (`(| (| x y) y)` → `(| x y)`); the CONSTANT case already collapses
+        // via `nested_bitwise_collapse` (`(| x (w|w))` = `(| x w)`). Unlike XOR-cancel, this KEEPS the inner
+        // `(OP v w)` node — BOTH operands survive — so NO `is_trap_free` guard is needed (any trap in `v`/`w`
+        // is still evaluated). Returns the inner node's core. `nested_shift_combine` — not `nested_bitwise_
+        // collapse` — placement before it is fine (the collapse only fires on a CONSTANT operand, distinct
+        // from this same-runtime-operand shape). `idempotent_bitwise_collapse` returns the inner node.
+        Prim::BitAnd | Prim::BitOr
+            if let Some(inner) = idempotent_bitwise_collapse(db, op, lhs, rhs) =>
+        {
+            trace!(target: "rcdzc::fold", node = inner.0, ?op, "idempotent bitwise (OP (OP v w) w) → (OP v w)");
+            Some(core_of(db, inner))
+        }
+        // ABSORPTION LAW: `x & (x | y)` → `x` and `x | (x & y)` → `x` — a value combined with the DUAL op of
+        // itself-with-anything absorbs to itself. The outer op is `&`/`|` and one operand is an inner op of
+        // the DUAL kind (`| ` under `&`, `&` under `|`) that CONTAINS `x` (either side); the OTHER outer
+        // operand is `x` (`core_equiv`). Result is `x`. DISCARDS the inner op's OTHER operand `y`, so gated
+        // on `is_trap_free(y)` (a trapping `y` must still trap). `x` is returned so its own traps stay. Both
+        // outer orders and both inner-operand positions are tried by `absorption_operand`.
+        Prim::BitAnd | Prim::BitOr
+            if let Some((x, y)) = absorption_operand(db, op, lhs, rhs)
+                && is_trap_free(db, y) =>
+        {
+            trace!(target: "rcdzc::fold", node = x.0, ?op, "absorption law (x OP (x DUAL y)) → x");
+            Some(core_of(db, x))
+        }
         // NESTED-BITWISE COLLAPSE: `(OP (OP v C1) C2)` → `(OP v (C1 ⊙ C2))` for a TOTAL, ASSOCIATIVE
         // bitwise op — `&`/`|`/`^`. Two constant operations on the same value collapse to ONE by folding
         // the constants (`(& (& x 255) 15)`→`(& x 15)`, `(| (| x 5) 3)`→`(| x 7)`, `(^ (^ x 5) 3)`→`(^ x
@@ -6545,6 +6651,28 @@ fn arith_identity(
             })
         }
 
+        // COMPLEMENT LAWS: `x & ~x` → 0 and `x | ~x` → -1 (all-ones), where `~x` is `(^ x -1)` (there is no
+        // dedicated bit-NOT prim). A value AND its bitwise complement share NO set bit, so `&` is 0 and `|`
+        // is every bit set. Both DISCARD `x` (the result does not depend on it), so gated on
+        // `is_trap_free(x)` — a trapping `x` must still trap. `complement_pair` matches `v` against
+        // `(^ v -1)` on either operand order.
+        //
+        // The `&` result 0 is valid at EVERY width/sign. But the `|` all-ones result is `-1` only for a
+        // SIGNED type; an UNSIGNED width-N all-ones is `2^N − 1`, and a literal `-1` is OUT OF RANGE there
+        // (`(: -1 UInt8)` is a CDZ0302 reject) — `arith_identity` has no width to synthesize `2^N−1`. So the
+        // `|` fold is restricted to a SIGNED operand type, where `-1` IS the all-ones and representable;
+        // an unsigned `x | ~x` keeps the runtime `or` (correct, just not folded).
+        Prim::BitAnd if complement_pair(db, lhs, rhs).is_some_and(|v| is_trap_free(db, v)) => {
+            trace!(target: "rcdzc::fold", "complement law x & ~x → 0");
+            Some(zero())
+        }
+        Prim::BitOr
+            if matches!(crate::infer::type_of(db, lhs), crate::ty::Ty::Int(it) if it.ground_signed())
+                && complement_pair(db, lhs, rhs).is_some_and(|v| is_trap_free(db, v)) =>
+        {
+            trace!(target: "rcdzc::fold", "complement law x | ~x → -1 (all ones, signed)");
+            Some(Core::ConstInt(IntValue::from_i64(-1)))
+        }
         // SAME-OPERAND identities: the two operands are the SAME value (`core_equiv`), so the result is
         // determined regardless of that value. `core_equiv` matches only pure scalar cores, but the
         // operand may still be a checked op that TRAPS (`(- (/ a b) (/ a b))` — the `/` traps on b==0),
@@ -6558,6 +6686,36 @@ fn arith_identity(
         }
         Prim::BitAnd | Prim::BitOr if core_equiv(db, lhs, rhs) => Some(lc.clone()),
         _ => None,
+    }
+}
+
+/// For an outer bitwise op with operands `(lhs, rhs)`, whether one operand is the bitwise COMPLEMENT of
+/// the other — i.e. one is `v` and the other is `(^ v -1)` (`~v`). Returns the un-complemented value `v`
+/// (so the caller can trap-check it, since the complement laws `x & ~x = 0` / `x | ~x = -1` DISCARD `x`).
+/// Both operand orders are tried, and the `-1` may be on either side of the inner XOR. `None` otherwise.
+fn complement_pair(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<StructId> {
+    // Whether `maybe_not` is `(^ v -1)` for a `v` that is `core_equiv` to `other`.
+    let is_not_of = |db: &mut Db, maybe_not: StructId, other: StructId| -> bool {
+        let Core::Arith {
+            op: Prim::BitXor,
+            lhs: il,
+            rhs: ir,
+        } = core_of(db, maybe_not)
+        else {
+            return false;
+        };
+        let is_neg1 =
+            |c: &Core| matches!(c, Core::ConstInt(v) if v.eq_value(&IntValue::from_i64(-1)));
+        // `(^ v -1)` — the `-1` on the right (`v` = il) or left (`v` = ir), and `v` matches `other`.
+        (is_neg1(&core_of(db, ir)) && core_equiv(db, il, other))
+            || (is_neg1(&core_of(db, il)) && core_equiv(db, ir, other))
+    };
+    if is_not_of(db, rhs, lhs) {
+        Some(lhs) // `(op v (^ v -1))`
+    } else if is_not_of(db, lhs, rhs) {
+        Some(rhs) // `(op (^ v -1) v)`
+    } else {
+        None
     }
 }
 
@@ -6660,6 +6818,82 @@ fn xor_cancels(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<(StructId, S
             Some((il, ir)) // (v, w)
         } else if core_equiv(db, il, outer_w) {
             Some((ir, il)) // (v, w) — inner XOR is commutative
+        } else {
+            None
+        }
+    };
+    check(db, lhs, rhs).or_else(|| check(db, rhs, lhs))
+}
+
+/// IDEMPOTENT-BITWISE COLLAPSE for an outer `(op lhs rhs)` where `op` is `&` or `|`: when one operand is
+/// an inner `(op v w)` (the SAME op) and the OTHER outer operand is `core_equiv` to `w`, return the inner
+/// node — `(op (op v w) w) == (op v w)` because `&`/`|` are idempotent (`w op w == w`) and associative.
+/// Covers a RUNTIME `w` the constant-folding `nested_bitwise_collapse` cannot (`(| (| x y) y)` → `(| x
+/// y)`). Both outer orders and `w` on either side of the inner op are tried. The inner `(op v w)` node is
+/// RETAINED, so both `v` and `w` are still evaluated — no trap is dropped (no `is_trap_free` needed).
+fn idempotent_bitwise_collapse(
+    db: &mut Db,
+    op: Prim,
+    lhs: StructId,
+    rhs: StructId,
+) -> Option<StructId> {
+    // `inner` must be `(op v w)` with the SAME op; `outer_w` must match one of its operands.
+    let check = |db: &mut Db, inner: StructId, outer_w: StructId| -> Option<StructId> {
+        let Core::Arith {
+            op: inner_op,
+            lhs: il,
+            rhs: ir,
+        } = core_of(db, inner)
+        else {
+            return None;
+        };
+        if inner_op != op {
+            return None;
+        }
+        // The outer operand equals ONE side of the inner op → re-applying `op` by it is a no-op.
+        if core_equiv(db, il, outer_w) || core_equiv(db, ir, outer_w) {
+            Some(inner)
+        } else {
+            None
+        }
+    };
+    check(db, lhs, rhs).or_else(|| check(db, rhs, lhs))
+}
+
+/// ABSORPTION LAW for an outer `(op lhs rhs)` where `op` is `&` or `|`: when one operand is an inner op of
+/// the DUAL kind (`|` under `&`, `&` under `|`) that contains `x`, and the OTHER outer operand IS `x`
+/// (`core_equiv`), the whole expression absorbs to `x` — `x & (x | y) == x`, `x | (x & y) == x`. Returns
+/// `(x, y)` where `y` is the inner op's OTHER operand (the one absorbed away), so the caller can trap-check
+/// `y` (it is DISCARDED). Both outer orders and both inner-operand positions are tried. `None` when the
+/// shape does not match.
+fn absorption_operand(
+    db: &mut Db,
+    op: Prim,
+    lhs: StructId,
+    rhs: StructId,
+) -> Option<(StructId, StructId)> {
+    let dual = match op {
+        Prim::BitAnd => Prim::BitOr,
+        Prim::BitOr => Prim::BitAnd,
+        _ => return None,
+    };
+    // `inner` must be `(dual p q)`; `outer_x` must equal one of `p`/`q` (that side is `x`, the other `y`).
+    let check = |db: &mut Db, inner: StructId, outer_x: StructId| -> Option<(StructId, StructId)> {
+        let Core::Arith {
+            op: inner_op,
+            lhs: ip,
+            rhs: iq,
+        } = core_of(db, inner)
+        else {
+            return None;
+        };
+        if inner_op != dual {
+            return None;
+        }
+        if core_equiv(db, ip, outer_x) {
+            Some((outer_x, iq)) // (x, y) — x matched ip, y is iq
+        } else if core_equiv(db, iq, outer_x) {
+            Some((outer_x, ip)) // (x, y) — x matched iq, y is ip
         } else {
             None
         }
@@ -7081,6 +7315,8 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::TupleNew
         | Prim::RecordNew
         | Prim::RecordProject
+        | Prim::RecordWithout
+        | Prim::RecordMerge
         | Prim::ListNew
         | Prim::ListLen
         | Prim::ListPush
@@ -7142,6 +7378,9 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::SymbolTy
         | Prim::SymbolOf
         | Prim::SymbolToString
+        // `BigIntTy` is a ground type-value builder (bare `BigInt` in type position → `Ty::BigInt`),
+        // never an integer binary operation — like `StringTy`/`SymbolTy`.
+        | Prim::BigIntTy
         // The unit/quantity prims are compile-time unit builders / erasing quantity ops — never an
         // integer binary operation (a `Qty.of`/`Qty.value` lowers to its value argument, a unit builder
         // is reduced away by `eval`), so they never reach this integer fold.
@@ -8580,9 +8819,17 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         // runtime value that reaches a compound equality — `Ty::Type`/`Ty::Any`/`Ty::Fn` never cross `=`).
         // A `Char` has no runtime machine rep yet (its equality folds at compile time). `Bytes` can be a
         // non-canonical rope (see the `String` note above), so it declines until `bytes-compact`-on-compare.
-        Ty::List(_) | Ty::Bytes | Ty::Char | Ty::Float(_) | Ty::Fn(_, _) | Ty::Type | Ty::Any => {
-            false
-        }
+        // A `BigInt` will be canonical-byte-form-walkable once its runtime leaf exists (B3) — B0 adds the
+        // type only and constructs none, so it declines here for now (a constant `BigInt` `=` folds in the
+        // compiler at B1; a runtime `BigInt` `=` is wired with the runtime limb library).
+        Ty::List(_)
+        | Ty::Bytes
+        | Ty::Char
+        | Ty::BigInt
+        | Ty::Float(_)
+        | Ty::Fn(_, _)
+        | Ty::Type
+        | Ty::Any => false,
     }
 }
 
@@ -9475,30 +9722,63 @@ fn lower_str_from_bytes(db: &mut Db, id: StructId, bytes: StructId) -> Core {
 /// reports; here the fold simply omits it (the reject denies the build, so this core is never emitted). A
 /// poison operand propagates; a non-record / non-constant record declines (the runtime row op is a later
 /// increment). A malformed label list is CDZ0201.
-fn lower_record_project(db: &mut Db, id: StructId, record: StructId, labels: StructId) -> Core {
+fn lower_record_project(
+    db: &mut Db,
+    id: StructId,
+    record: StructId,
+    labels: StructId,
+    drop: bool,
+) -> Core {
     let Core::Record { fields } = core_of(db, record) else {
         return match core_of(db, record) {
             Core::Poison(r) => Core::Poison(r),
             _ => Core::Poison(Reject::decline(
-                "Record.project over a runtime record is not yet built",
+                "a record row operation over a runtime record is not yet built",
             )),
         };
     };
     let Some(labels) = crate::resolve::record_op_labels(db, labels) else {
         return Core::Poison(Reject::coded(
             Code::Malformed,
-            "Record.project's second operand is a list of field names, e.g. `(a c)`",
+            "the second operand is a list of field names, e.g. `(a c)`",
         ));
     };
-    let mut kept = std::collections::BTreeMap::new();
-    for label in &labels {
-        if let Some(&v) = fields.get(label) {
-            kept.insert(label.clone(), v);
-        }
-    }
-    trace!(target: "rcdzc::fold", node = id.0, n = kept.len(), "Record.project folds a constant record to its named fields");
+    // `project` KEEPS the named fields; `without` keeps every field NOT named (the complement). Each
+    // result field carries the operand's own value occurrence (the immutable heap shares them).
+    let named: std::collections::BTreeSet<_> = labels.iter().cloned().collect();
+    let kept: std::collections::BTreeMap<_, _> = fields
+        .iter()
+        .filter(|(k, _)| named.contains(*k) != drop)
+        .map(|(k, &v)| (k.clone(), v))
+        .collect();
+    trace!(target: "rcdzc::fold", node = id.0, n = kept.len(), drop, "record project/without folds a constant record to its result fields");
     Core::Record {
         fields: std::sync::Arc::new(kept),
+    }
+}
+
+/// Lower `(Record.merge a b)` — the UNION of two records' fields (`type-system.md` §Two Records Are
+/// Combined Only When Their Field Sets Are Disjoint). FOLD two constant `Core::Record`s to a new one
+/// holding every field of both (each carrying its source's value occurrence). The disjointness CDZ0211 is
+/// `infer`'s; here a shared field would be silently overwritten by `b`, but the reject denies the build so
+/// this core is never emitted. A poison operand propagates; a non-constant/non-record operand declines.
+fn lower_record_merge(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Core {
+    match (core_of(db, a), core_of(db, b)) {
+        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+        (Core::Record { fields: fa }, Core::Record { fields: fb }) => {
+            let mut union: std::collections::BTreeMap<_, _> =
+                fa.iter().map(|(k, &v)| (k.clone(), v)).collect();
+            for (k, &v) in fb.iter() {
+                union.insert(k.clone(), v);
+            }
+            trace!(target: "rcdzc::fold", node = id.0, n = union.len(), "Record.merge folds two constant records to their union");
+            Core::Record {
+                fields: std::sync::Arc::new(union),
+            }
+        }
+        _ => Core::Poison(Reject::decline(
+            "Record.merge over a runtime record is not yet built",
+        )),
     }
 }
 
@@ -10719,6 +10999,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::BoolTy => "Bool",
         Prim::UnitTy => "Unit",
         Prim::StringTy => "String",
+        Prim::BigIntTy => "BigInt",
         Prim::CharTy => "Char",
         Prim::CharToInt => "char-to-int",
         Prim::CharFromInt => "char-from-int",
@@ -10730,6 +11011,8 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::TupleNew => "tuple-new",
         Prim::RecordNew => "record-new",
         Prim::RecordProject => "record-project",
+        Prim::RecordWithout => "record-without",
+        Prim::RecordMerge => "record-merge",
         Prim::ListNew => "list-new",
         Prim::ListLen => "list-len",
         Prim::ListPush => "list-push",

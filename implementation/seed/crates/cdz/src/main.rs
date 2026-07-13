@@ -90,6 +90,10 @@ enum Cmd {
     /// The module's exported interface: each `(export …)` name and its type, as
     /// `file:line:col: name : type`.
     Exports(ExportsArgs),
+    /// SEMANTIC SYNTAX HIGHLIGHTING for FILE: every token CLASSIFIED by the role it plays (type vs
+    /// constructor vs local vs call vs unbound), as `file:line:col: kind` — the LSP `semanticTokens`
+    /// analogue, coloured by MEANING (the compiler's columns) rather than by spelling.
+    Highlight(HighlightArgs),
 }
 
 fn main() -> ExitCode {
@@ -119,6 +123,7 @@ fn main() -> ExitCode {
         Cmd::Def(a) => run_def(&a),
         Cmd::Scope(a) => run_scope(&a),
         Cmd::Exports(a) => run_exports(&a),
+        Cmd::Highlight(a) => run_highlight(&a),
     }
 }
 
@@ -433,6 +438,12 @@ struct ScopeArgs {
 
 #[derive(clap::Args)]
 struct ExportsArgs {
+    /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
+    file: String,
+}
+
+#[derive(clap::Args)]
+struct HighlightArgs {
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
 }
@@ -1444,6 +1455,46 @@ fn run_exports(args: &ExportsArgs) -> ExitCode {
             None => args.file.clone(),
         };
         println!("{loc}: {name} : {ty}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// `cdz highlight FILE` — semantic syntax highlighting: every classified token as `file:line:col: kind`.
+/// Rides the `Highlight` sidecar query (the same one the browser IDE's `semantic_tokens` calls), then
+/// maps each node id to a source location through the span table. A token whose node has no span is
+/// skipped (should not happen for a user leaf).
+fn run_highlight(args: &HighlightArgs) -> ExitCode {
+    let (source, arenas, spans) = match load_program_spanned(&args.file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::Highlight),
+    );
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_HIGHLIGHT) else {
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    let text = String::from_utf8_lossy(bytes);
+    // Each line is `node-id<TAB>kind`. Map the node to a `file:line:col`, skipping a span-less node.
+    for line in text.lines() {
+        let mut cols = line.splitn(2, '\t');
+        let (node, kind) = match (cols.next(), cols.next()) {
+            (Some(n), Some(k)) => (n, k),
+            _ => continue,
+        };
+        if let Some(span) = node
+            .parse::<u32>()
+            .ok()
+            .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
+        {
+            let (l, c) = cadenza_syntax::query::driver::line_col(&source, span.start);
+            println!("{}:{l}:{c}: {kind}", args.file);
+        }
     }
     ExitCode::SUCCESS
 }

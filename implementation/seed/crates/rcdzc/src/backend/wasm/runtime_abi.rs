@@ -63,14 +63,14 @@ pub const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
 /// against — the runtime a program built with this compiler requires. Regenerated from the
 /// built runtime bytes, so it tracks a runtime-code change automatically.
 pub const REQUIRED_RUNTIME_HASH: &str =
-    "e6580964f5002aa27c5d2588414c9e317dbd912deb94ac6b9d0178e5b80c8438";
+    "bbc14bd96ed7595b039f3fa9bc741f656db5e27e2cc3a345ef10b77e8767d148";
 /// The SHA-256 content address of the DEBUG-COUNTERS runtime build — the same runtime code
 /// with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped
 /// program pins `REQUIRED_RUNTIME_HASH` (the release build); a Perceus leak-check harness
 /// composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness
 /// locates the debug runtime by content address (from the store), never by rebuilding it.
 pub const DEBUG_RUNTIME_HASH: &str =
-    "d5aa65a9f85e48cffb33e07bfa1c18897436fd0546519c41aa7dcd99eda87c27";
+    "d516dbede4da8d58ecfd8ce4a04b40521e46fc6e8a0de74971b46d6507c591bb";
 /// The runtime's INLINE-UNIT handle — the value `arr-alloc(0)` returns (a compile-time-known
 /// handle carrying the empty tuple/unit, no heap node). DERIVED from the runtime's `cdz-abi`
 /// custom section (read at codegen, then stripped), so the compiler can push it as a constant

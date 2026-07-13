@@ -993,6 +993,58 @@ pub fn required_runtime_hash() -> String {
     rcdzc::backend::wasm::runtime_abi::REQUIRED_RUNTIME_HASH.to_string()
 }
 
+/// One SEMANTIC token — a source byte range plus the ROLE the compiler classified it as (`type`,
+/// `constructor`, `function`, `param`, `variable`, `effect`, `label`, `keyword`, `number`, `string`,
+/// `char`, `bytes`, `symbol`, `literal`, `unbound`). The editor maps `kind` to a colour. Byte offsets
+/// (UTF-8), resolved through the span table in Rust — the JS only converts byte↔UTF-16.
+#[wasm_bindgen(getter_with_clone)]
+pub struct SemanticToken {
+    pub from: u32,
+    pub to: u32,
+    pub kind: String,
+}
+
+/// SEMANTIC SYNTAX HIGHLIGHTING for `text` — every token CLASSIFIED by the role it plays, so the editor
+/// can colour a name by what it MEANS (a type vs a constructor vs a local vs a call vs an unbound typo)
+/// rather than by its spelling. Rides the `Highlight` sidecar query (the same one `cdz highlight` runs):
+/// the compiler classifies each user leaf off the resolved column + the meta channels a value carries,
+/// so a token's colour equals what a compile determines — never a second lexical guess. Each classified
+/// node id is mapped to its `[from, to)` byte range here through the span table (canonicalized for both
+/// surfaces by `parse_spanned`, so the ranges are correct in ML as well as s-expr).
+///
+/// Total: a buffer that doesn't parse (or a surface with no span table) yields the empty list, so an
+/// editor simply keeps its cheap lexical colours until the next well-parsed edit — the compiler overlay
+/// REFINES the lexical pass, it does not replace it.
+#[wasm_bindgen]
+pub fn semantic_tokens(text: &str, from: &str) -> Result<Vec<SemanticToken>, JsError> {
+    let from = parse_format(from)?;
+    let Ok((ast_bytes, Some(spans))) = parse_spanned(text, from) else {
+        return Ok(Vec::new()); // unparseable / span-less — leave it to the lexical fallback
+    };
+    // Ride the `Highlight` query — one `node-id<TAB>kind` line per classified leaf, ascending id order.
+    let text_out = run_query_text(&ast_bytes, &rcdzc::Query::Highlight)?;
+    let mut out = Vec::new();
+    for line in text_out.lines() {
+        let mut cols = line.splitn(2, '\t');
+        let (Some(node), Some(kind)) = (cols.next(), cols.next()) else {
+            continue;
+        };
+        // Map the node id to a byte span; skip a span-less node (should not happen for a user leaf).
+        if let Some(span) = node
+            .parse::<u32>()
+            .ok()
+            .and_then(|n| spans.get(cadenza_syntax::ast::StructId(n)))
+        {
+            out.push(SemanticToken {
+                from: span.start as u32,
+                to: span.end as u32,
+                kind: kind.to_string(),
+            });
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

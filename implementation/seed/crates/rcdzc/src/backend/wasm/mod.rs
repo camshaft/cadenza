@@ -258,6 +258,20 @@ pub fn emit(
             if let Some(form) = form {
                 return emit_runtime_bytes_resource(db, layout, e.def, &form, spans);
             }
+        } else if matches!(
+            result,
+            crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
+        ) && let Some(desc) = crate::lower::sum_shape_descriptor(db, &result)
+        {
+            // A RUNTIME `List`/`Map`/`Set` (a push/insert/recursion-built collection — not constant-
+            // foldable) has a VARIABLE size, so it escapes via the runtime `value-encode` op (the same
+            // walker a recursive sum uses): the encode body bakes the compiler's shape descriptor as a heap
+            // Bytes, calls `value-encode(rep, desc)` to render the value form (`(: (list …) (List <e>))` /
+            // `(: (map (k v) …) (Map <k> <v>))` / `(: ((. Set of) (list …)) (Set <e>))`, entries in
+            // canonical key order), and copies it out. `sum_shape_descriptor`'s List/Map/Set arms build a
+            // parametric `Framed(<head>, [<type-args>], …)` frame so the element/key/value types are
+            // observable (scalar element/key/value only — a compound type-arg node is a later refinement).
+            return emit_recursive_sum_resource(db, layout, e.def, &desc, spans);
         } else if let Some(tpl) = crate::lower::runtime_value_form_template(&result) {
             // A RUNTIME compound (not constant-foldable — a recursive return, a call whose result is
             // built on the heap) crosses through the SAME resource shape, but its `encode()` WALKS the
@@ -1653,12 +1667,14 @@ fn emit_multi_closure_resource(
             make_param_bytes: m.param_bytes.clone(),
         })
         .collect();
-    // A byte-rope shared result → the N-makes-one-list-`call` bytes core + memory/realloc envelope.
+    // A byte-rope shared result → the N-makes-one-list-`call` bytes core + memory/realloc envelope. No plain
+    // (non-closure) exports on the pure multi-export path.
     if ret_is_bytes {
         let main_core = serialize::multi_closure_bytes_resource_core_module(
             &funcs,
             &imports,
             &ser_makes,
+            &[],
             &arg_vts,
             lifted_type_idx,
             &layout,
@@ -1671,6 +1687,7 @@ fn emit_multi_closure_resource(
             &import_name,
             &abi_makes,
             &arg_bytes,
+            &[],
         ));
     }
     let main_core = serialize::multi_closure_resource_core_module(
@@ -1770,8 +1787,17 @@ fn emit_mixed_closure_resource(
         .iter()
         .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
         .collect::<Result<_, _>>()?;
-    let result_byte =
-        closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?;
+    // A byte-rope (`Bytes`/`String`) shared closure result crosses as `list<u8>` (the mixed bytes envelope);
+    // a scalar result takes the by-value shared `call`. All closure exports share the signature.
+    let ret_is_bytes = matches!(
+        ret_ty.strip_nominal(),
+        crate::ty::Ty::Bytes | crate::ty::Ty::String
+    );
+    let result_byte = if ret_is_bytes {
+        0 // unused by the bytes path; `call` returns list<u8>
+    } else {
+        closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
+    };
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
         .iter()
         .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
@@ -1867,6 +1893,10 @@ fn emit_mixed_closure_resource(
         used.insert("arr-get");
         used.insert("get-int");
         used.insert("drop");
+        if ret_is_bytes {
+            used.insert("bytes-len");
+            used.insert("bytes-get");
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -1913,17 +1943,6 @@ fn emit_mixed_closure_resource(
             })
         })
         .collect::<Result<_, Reject>>()?;
-    let main_core = serialize::multi_closure_resource_core_module(
-        &funcs,
-        &imports,
-        &ser_makes,
-        &ser_plain,
-        &arg_vts,
-        ret_vt,
-        lifted_type_idx,
-        &layout,
-    )
-    .map_err(Reject::decline)?;
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
     let abi_makes: Vec<envelope::ClosureMakeAbi> = make_specs
@@ -1942,6 +1961,40 @@ fn emit_mixed_closure_resource(
             result_byte: p.result_byte,
         })
         .collect();
+    // A byte-rope shared closure result → the mixed BYTES envelope (N makes + shared list-`call` + the plain
+    // exports as top-level funcs). A scalar result takes the by-value mixed envelope.
+    if ret_is_bytes {
+        let main_core = serialize::multi_closure_bytes_resource_core_module(
+            &funcs,
+            &imports,
+            &ser_makes,
+            &ser_plain,
+            &arg_vts,
+            lifted_type_idx,
+            &layout,
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_multi_closure_bytes_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &abi_makes,
+            &arg_bytes,
+            &abi_plain,
+        ));
+    }
+    let main_core = serialize::multi_closure_resource_core_module(
+        &funcs,
+        &imports,
+        &ser_makes,
+        &ser_plain,
+        &arg_vts,
+        ret_vt,
+        lifted_type_idx,
+        &layout,
+    )
+    .map_err(Reject::decline)?;
     Ok(envelope::assemble_mixed_closure_resource(
         &main_core,
         &dtor_core,

@@ -53,6 +53,18 @@
   (input  (Record.project (record (a 1) (b 2)) (a z)))
   (error  CDZ0212))
 
+(case "projecting a record with a duplicate label is rejected"
+  (doc    "A record's fields are a fixed SET of statically-known names (type-system.md #A Record Is
+           Restricted To A Named Set Of Its Fields), so a projection label list that names a field TWICE
+           — `(Record.project (record (a 1) (b 2)) (a a))` — is the same malformedness a record LITERAL
+           with a duplicate field `(record (a 1) (a 2))` is rejected for (CDZ0201), not silently
+           deduplicated to a single field. A duplicate label is almost always an author error (a typo, a
+           copy-paste); the projection label-list check matches the record-literal duplicate-field check.")
+  (input  (do
+            (def (main) (. (Record.project (record (a 1) (b 2)) (a a)) a))
+            (export main)))
+  (error  CDZ0201))
+
 (case "dropping fields from a record leaves the remaining fields"
   (doc    "Witnesses type-system.md #A Record Is Reduced By Dropping A Named Set Of Its Fields:
            `Record.without` derives the record of the operand's fields EXCEPT those named. `(Record.without

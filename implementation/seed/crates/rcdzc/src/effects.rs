@@ -963,7 +963,7 @@ fn check_no_home_walk(
         Resolved::Handle { init, arms, body } => {
             check_no_home_walk(db, init, entrypoint, handled, out, depth);
             // Arm bodies: outer context (a re-performed op forwards to the next-outer handler).
-            for arm in &arms {
+            for arm in arms.iter() {
                 check_no_home_walk(db, arm.body, entrypoint, handled, out, depth);
             }
             // Body: this handle's effects are now handled.

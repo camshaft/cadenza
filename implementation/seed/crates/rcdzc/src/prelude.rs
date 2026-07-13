@@ -49,6 +49,11 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // type position projects `(meta t)`; it is not applyable (no `(meta apply)`).
     names.insert("Bool".to_string(), ground_type_record(ast, "Bool"));
     names.insert("Unit".to_string(), ground_type_record(ast, "Unit"));
+    // `BigInt` — the arbitrary-precision integer ground type (a NULLARY type like `String`/`Symbol`).
+    // B0 binds it as a bare ground-type record so `BigInt` in type position reduces to `Ty::BigInt`
+    // (via `(meta t) = (intrinsic "BigInt")` → `Prim::BigIntTy` → `ground_type`). Its `of` conversion
+    // field + arithmetic arrive in B1 (constant folding) — B0 is byte-neutral, nothing constructs one.
+    names.insert("BigInt".to_string(), ground_type_record(ast, "BigInt"));
 
     // The unit VALUE, bound to the bare name `unit` — an alias for the empty list `()`, the other
     // spelling of the same value (core-semantics.md #Unit And The Empty Tuple Are The Same Value;
@@ -332,12 +337,22 @@ fn record_module(ast: &mut Arenas) -> StructId {
     // `(meta apply)` = the `Record` TYPE constructor (`(Record (a Int64) …)` builds the record type-value).
     let builder = intrinsic_node(ast, "Record");
     let apply_field = meta_field(ast, "apply", builder);
-    // `project` — the narrowing op. Its `(meta t)` is the permissive `∀a. a → a` placeholder (bypassed).
-    let project_lambda = row_op_placeholder_type(ast);
-    let project = list_op_record(ast, "record-project", project_lambda);
-    let project_key = push_atom(ast, Leaf::Name("project".to_string()));
-    let project_field = push_list(ast, vec![project_key, project]);
-    push_list(ast, vec![head, apply_field, project_field])
+    // The row operations, each an operator record whose `(meta t)` is the permissive `∀a. a → a`
+    // placeholder (bypassed — `infer::apply_type` computes the result type, `check_application` skips the
+    // scheme-unify). `project`/`without` take a record + a LITERAL field-name list; `merge` takes two
+    // record VALUES (no label list).
+    let mut children = vec![head, apply_field];
+    for (name, prim) in [
+        ("project", "record-project"),
+        ("without", "record-without"),
+        ("merge", "record-merge"),
+    ] {
+        let lambda = row_op_placeholder_type(ast);
+        let op = list_op_record(ast, prim, lambda);
+        let key = push_atom(ast, Leaf::Name(name.to_string()));
+        children.push(push_list(ast, vec![key, op]));
+    }
+    push_list(ast, children)
 }
 
 /// The permissive placeholder type-lambda `(fn (a) (-> a a))` a record row operation carries as its
