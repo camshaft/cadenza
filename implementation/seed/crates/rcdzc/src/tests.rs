@@ -1355,6 +1355,71 @@ fn a_narrowing_wrap_of_a_wider_wrap_elides_the_inner_wrap() {
     }
 }
 
+/// `T.wrap x` where the OPERAND'S VALUE (not just its type) provably fits the target width — the
+/// truncation mask / sign-extend is redundant and elided, even when the operand's TYPE is wider.
+/// `UInt8.wrap(& x 255)`: the operand is Int64-typed but its value ∈ [0,255], so the trailing `& 255`
+/// is a no-op. Consults the value-range lattice (a mask, a flow-refinement). VALUE parity preserved.
+#[test]
+fn a_wrap_of_an_in_range_value_elides_the_truncation() {
+    use crate::backend::wasm::lir::Lir;
+    use crate::backend::wasm::select::select_function;
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let code_of = |src: &str| -> Vec<Lir> {
+        let full = format!("(module m (def (f {}) {}) (def (main) 0) (export main))", "(: x Int64)", src);
+        let mut db = crate::db::Db::load(parse(&full));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("f");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let bb = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (bb, crate::infer::type_of(&mut db, bb))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        select_function(&mut db, body, &ps, &layout).expect("select").code
+    };
+    // UInt8.wrap of a [0,255] value: the operand's `& 255` is at the i64 source width (`I64And`); the
+    // wrap's OWN truncation mask would be an `i32.and` AFTER `i32.wrap_i64` — and it is ELIDED (zero
+    // `I32And`). (A bare `UInt8.wrap x` DOES emit that `i32.and`; see `bare` below.)
+    let masked = code_of("(: ((. UInt8 wrap) (& x 255)) UInt8)");
+    assert!(
+        !masked.iter().any(|i| matches!(i, Lir::I32And)),
+        "the wrap's redundant i32 truncation mask is elided; got {masked:?}"
+    );
+    // Int8.wrap of a [0,7] value (fits [-128,127]): the sign-extend pair (shl/shr_s) is elided.
+    let signed = code_of("(: ((. Int8 wrap) (& x 7)) Int8)");
+    assert!(
+        !signed.iter().any(|i| matches!(i, Lir::I32Shl)),
+        "a value in [0,7] fits Int8 — no sign-extend reshape; got {signed:?}"
+    );
+    // SAFETY: a wrap of a NOT-in-range value keeps the truncation — the `i32.and` after `i32.wrap_i64`.
+    let bare = code_of("(: ((. UInt8 wrap) x) UInt8)");
+    assert!(
+        bare.iter().any(|i| matches!(i, Lir::I32And)),
+        "a bare narrowing wrap keeps its i32 truncation mask; got {bare:?}"
+    );
+    // VALUE PARITY — the elided-mask wrap computes the same as the full one.
+    let mk = |src: &str| {
+        let full = format!("(module m (def (f (: x Int64)) {src}) (export f))");
+        compile_component(&crate::codec::encode(&parse(&full))).expect("compile")
+    };
+    let b = mk("(: ((. UInt8 wrap) (& x 255)) UInt8)");
+    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::S64(300)]), 44); // 300 & 255 = 44
+    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::S64(255)]), 255);
+    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::S64(-1)]), 255); // -1 & 255 = 255
+    let s = mk("(: ((. Int8 wrap) (& x 7)) Int8)");
+    assert_eq!(run_returns_with::<i8>(&s, "f", &[Val::S64(5)]), 5);
+    assert_eq!(run_returns_with::<i8>(&s, "f", &[Val::S64(7)]), 7);
+}
+
 /// A reference buried under many NON-binding forms still resolves to its outer binder — the
 /// correctness guard for the lexical-scope SKIP index (`Db::scope_skip`) that hops over the non-binding
 /// spine (record/`if`/application) instead of visiting every enclosing form. A wrong skip pointer (or

@@ -6997,6 +6997,16 @@ pub(crate) fn value_provably_nonneg(db: &mut Db, id: StructId) -> bool {
     matches!(value_range(db, id), Some((lo, _)) if lo >= 0)
 }
 
+/// Whether the value at `id` provably lies within the inclusive `[lo, hi]` — its `value_range` is known
+/// AND fully contained. Consults the same lattice as the guard-elision checks (a mask, an unsigned type,
+/// a flow-refinement). Used by `emit_wrap`'s truncation-elision: a `wrap` to width N is a no-op when the
+/// operand already lies in the target's `[min_N, max_N]` (an unsigned target's `[0, 2^N-1]`), even when
+/// the operand's TYPE is wider — `UInt8.wrap(& x 255)` needs no re-mask. Conservative: an unknown range,
+/// or one that exceeds either bound, → `false` (keep the truncation).
+pub(crate) fn value_range_within(db: &mut Db, id: StructId, lo: i64, hi: i64) -> bool {
+    matches!(value_range(db, id), Some((vlo, Some(vhi))) if vlo >= lo && vhi <= hi)
+}
+
 /// Structurally compare two CONSTANT compound values at `a`/`b`, returning `Some(true/false)` if BOTH are
 /// compile-time-visible constants (a `SumNew`/`Tuple`/`Record`/`ListNew`, or a scalar leaf), else `None`
 /// (a runtime operand — the caller declines, deferring to the heap walk). Equality is STRUCTURAL
