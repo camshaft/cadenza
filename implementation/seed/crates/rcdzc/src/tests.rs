@@ -13195,19 +13195,41 @@ mod stage1 {
     }
 
     #[test]
-    fn an_abortive_perform_in_a_short_circuit_operand_declines() {
-        // E4 soundness guard, the short-circuit variant: `(or true (Bail.bail 7))` evaluates its right
-        // operand only when `true` is false — a CONDITIONAL abort. Unlike an `if`, the threading path folds
-        // `and`/`or` as a STRICT `Apply` (both operands, no per-branch abort capture), so an abort in the
-        // right operand would set the abort cell and collapse the whole handle — the wrong value. The guard
-        // marks a short-circuit right operand `under_cond`, so the abort is flagged and `reduce_handle`
-        // DECLINES (a short-circuit conditional abort needs the `if`-style per-branch fold, a later step).
-        // `Bail.bail` returns `Bool` here so it can sit in an `or`.
+    fn an_abortive_perform_in_a_short_circuit_operand_desugars_and_folds() {
+        // E4 short-circuit desugar: a connective is a conditional in disguise — `(and lhs rhs)` runs `rhs`
+        // only when `lhs` is true, `(or lhs rhs)` only when `lhs` is false. `hoist_conditional_abort`
+        // desugars a connective whose RIGHT operand carries an abort to the equivalent `if` — `(and lhs
+        // rhs)` → `(if lhs rhs false)`, `(or lhs rhs)` → `(if lhs true rhs)` — so the abort lands in a
+        // branch tail the per-branch capture folds. `Bail.bail : Int64 -> Bool` here and the arm yields a
+        // Bool (`(< n 0)`), so the abort value is Bool — consistent with the connective's Bool branches.
+        // `(and true (Bail.bail 7))`: lhs true → rhs runs → abort → `(< 7 0)` = false.
         let src = "(do (effect Bail (op bail (-> Int64 Bool))) \
-                   (def (main) (handle false ((Bail.bail (n) s n)) (or true (Bail.bail 7)))) (export main))";
+                   (def (main) (handle true ((Bail.bail (n) s (< n 0))) (and true (Bail.bail 7)))) (export main))";
+        assert_eq!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a short-circuit abort desugars and compiles"),
+                "main"
+            ),
+            false,
+            "the abort yields (< 7 0) = false"
+        );
+    }
+
+    #[test]
+    fn an_abortive_arm_whose_value_type_mismatches_the_op_result_declines() {
+        // E4 type-consistency guard: an abortive arm materializes its BODY as the abort value, which lands
+        // in the position the perform occupied — a position typed by the op's declared RESULT type (the
+        // type checker types a perform by its result, never by the arm value). If the arm body's type
+        // differs — `bail : Int64 -> Bool` but the arm yields `n : Int64` — the abort value does not fit
+        // (in `(if c (Bail.bail 7) false)` it disagrees with the `false` sibling, emitting an ill-typed
+        // `if` = invalid wasm). The checker misses this gap, so the fold declines. Regression guard for a
+        // latent miscompile the branch-tail/hoist folds would otherwise have emitted.
+        let src = "(do (effect Bail (op bail (-> Int64 Bool))) \
+                   (def (main (: x Int64)) (handle false ((Bail.bail (n) s n)) (if (< x 5) (Bail.bail 7) false))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "an abortive perform in a short-circuit right operand must decline, not miscompile"
+            "an abortive arm whose value type mismatches the op result must decline, not emit invalid wasm"
         );
     }
 

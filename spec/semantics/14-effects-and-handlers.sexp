@@ -259,6 +259,25 @@
   (call   main (: 3 Int64))
   (output (: 7 Int64)))
 
+(case "an abortive perform in a short-circuit connective's right operand abandons the computation"
+  (doc    "A short-circuit connective is a conditional in disguise — `(and lhs rhs)` evaluates `rhs` only
+           when `lhs` is true — so an abort in the right operand is a conditional abort, equivalent to
+           `(if lhs rhs false)`. `(and (< x 5) (Bail.bail 7))`: when `x < 5` the right operand runs and the
+           abort fires, abandoning the computation and yielding the arm value; when `x >= 5` the connective
+           short-circuits to false without performing. Here `Bail.bail : Int64 -> Bool` and the arm yields a
+           Bool (`(< n 100)`), so the abort value is Bool — consistent with the connective's Bool result.
+           Called with `x = 3` (< 5) the abort fires → `(< 7 100)` = true. Witnesses that the abortive fold
+           reaches a short-circuit operand by desugaring it to the `if` form (`DESIGN-effects-rcdzc.md`
+           §4.2).")
+  (needs  effects)
+  (input  (do
+            (effect Bail (op bail (-> Int64 Bool)))
+            (def (main (: x Int64))
+              (handle false ((Bail.bail (n) s (< n 100)))
+                (and (< x 5) (Bail.bail 7)))) (export main)))
+  (call   main (: 3 Int64))
+  (output (: true Bool)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the
