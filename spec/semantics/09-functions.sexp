@@ -243,6 +243,29 @@
   (call   main (: 100 Int64))
   (output (: 107 Int64)))
 
+(case "an unannotated closure typed Int8 from context overflows a constant like an explicit Int8 param"
+  (doc    "The NARROW-WIDTH edge of context typing: `app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n)
+           (+ n 1)))`, where `g` is applied to the constant 127. The unannotated `n` is typed Int8 from
+           app's declared `(-> Int8 Int8)` arrow, so `(+ n 1)` with n=127 is `127 + 1 = 128`, which
+           OVERFLOWS Int8 (max 127) — the SAME CDZ0302 the explicit `(fn ((: n Int8)) (+ n 1))` gives on
+           the same constant. The recovered narrow width must reach the body's CONST-FOLD, not only the
+           runtime path: without it the fold ran at the default Int64 and returned 128 (a wrong value where
+           an overflow is due). A RUNTIME argument traps for both the annotated and unannotated forms; this
+           pins that the compile-time const-fold carries the context width too.")
+  (input  (do (def (app (: g (-> Int8 Int8))) (g 127))
+              (def (main) (app (fn (n) (+ n 1)))) (export main)))
+  (error  CDZ0302))
+
+(case "an unannotated closure typed Int8 from context computes an in-range constant"
+  (doc    "The value companion: the SAME `(app (fn (n) (+ n 1)))` but `g` applied to 5 — `5 + 1 = 6` fits
+           Int8, so the context-Int8 closure computes 6 rather than over-rejecting. Together with the
+           overflow case above this pins that the recovered narrow width is applied to the const-fold in
+           BOTH directions — an out-of-range constant rejects, an in-range one computes — exactly as an
+           explicit Int8 param does.")
+  (input  (do (def (app (: g (-> Int8 Int8))) (g 5))
+              (def (main) (app (fn (n) (+ n 1)))) (export main)))
+  (output (: 6 Int8)))
+
 (case "a closure capturing two enclosing bindings folds through nested arithmetic"
   (doc    "`(fn (x) (+ (* x a) b))` captures BOTH `a` and `b` from enclosing lets; applied to 5 with
            a = 2, b = 3 → (5·2)+3 = 13. Pins that MULTIPLE distinct captures from different enclosing

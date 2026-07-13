@@ -788,6 +788,31 @@ fn substituted_arg(db: &mut Db, param: StructId, arg: StructId) -> StructId {
         .as_form(param, ":")
         .and_then(|tail| tail.get(1).copied())
     else {
+        // A BARE parameter with NO written annotation — but if its type was RECOVERED from the lambda's
+        // storage context (a `(fn (n) …)` passed where a `(-> Int8 Int8)` is declared), that narrow width
+        // must ALSO check the argument, exactly as a written `(: n Int8)` would. Without this, a const arg
+        // into the body's arithmetic folds at the default Int64 and MISSES the narrow overflow (`(+ n 1)`
+        // with n=127 → 128 instead of an Int8 overflow-reject). Synthesize the SAME `(: arg (Int/UInt N))`
+        // wrap the annotated path builds, from the recovered NARROW integer type — so the fit-check fires
+        // on the substituted argument and travels with it through any later β-copy. Only a bare param whose
+        // context recovers a concrete NARROW int (a wide Int64/UInt64 needs no width fit-check; a non-int
+        // or unrecovered type substitutes the arg raw, unchanged).
+        let name_occ = param_name_occ(db, param);
+        if let crate::ty::Ty::Int(it) = crate::infer::type_of(db, name_occ) {
+            let (signed, width) = (it.ground_signed(), it.ground_width());
+            // Only a NARROW width (< 64) needs the fit-check wrap; a full-width int fits its own slot.
+            if width < 64 {
+                let ctor = db.push_name(if signed { "Int" } else { "UInt" });
+                let w = db.push_atom(Leaf::Int {
+                    value: IntValue::from_i64(width as i64),
+                    radix: crate::ast::Radix::Dec,
+                });
+                let ty_node = db.push_list(vec![ctor, w]);
+                crate::resolve::resolve_subtree(db, ty_node);
+                let colon = db.push_name(":");
+                return db.push_list(vec![colon, arg, ty_node]);
+            }
+        }
         return arg;
     };
     // Pin the annotation type before it is shared into the synthesized `(: arg T)` — its names resolve

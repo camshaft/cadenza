@@ -360,6 +360,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Param { binder } => param_annot_ty(db, binder)
             .or_else(|| crate::effects::handle_arm_param_ty(db, binder))
             .or_else(|| solved_param_ty(db, binder))
+            .or_else(|| lambda_param_ty_from_context(db, binder))
             .unwrap_or(Ty::Any),
         // A TYPE value is a value, so it has a type — `Type` (the type of types). A bare type value
         // (a `(typeval …)` node, OR a value the evaluator reduces to a type) types as `Type`; this is
@@ -763,7 +764,65 @@ pub(crate) fn expected_arrow_for_lambda(db: &mut Db, lambda: StructId) -> Option
             return Some(*p);
         }
     }
+    // (3) A FUNCTION-ARGUMENT position — the parent is an application `(f … lambda …)` whose head `f` is a
+    //     FUNCTION (a lambda / a top-level def) that DECLARES an arrow at the lambda's parameter slot: a
+    //     `(def (app (: g (-> Int8 Int8))) …)` applied `(app (fn (n) …))` types the lambda from `app`'s
+    //     `g` param. Read `f`'s parameter occurrences and take the type of the one at the lambda's index;
+    //     if it is itself an arrow, that is the lambda's expected type. This is the argument-position
+    //     analogue of the constructor-payload case above — a declared higher-order parameter is exactly
+    //     the "storage context declares an arrow" the recovery serves, so an unannotated closure argument's
+    //     narrow param width reaches the body's const-fold (a const arg then overflows at the declared
+    //     width, matching an explicit `(fn ((: n Int8)) …)` — else the const-fold runs at the default Int64
+    //     and MISSES the narrow overflow). A non-function head, or a param slot that is not an arrow, yields
+    //     no expected arrow (the HOF call's own unification, or a genuinely unconstrained position).
+    if let Some(params) = crate::eval::lambda_params_of(db, head)
+        && let Some(&param_occ) = params.get(arg_ix)
+        && let t @ Ty::Fn(_, _) = type_of(db, param_occ)
+    {
+        return Some(t);
+    }
     None
+}
+
+/// The type of an UNANNOTATED lambda PARAMETER recovered from the lambda's storage-context arrow — the
+/// per-parameter analogue of [`expected_arrow_for_lambda`], read at the PARAMETER's own `type_of`. A
+/// bare `(fn (n) …)` param types `Any` bottom-up (no annotation, no def entry), but when the lambda sits
+/// where an arrow is DECLARED — a `(: g (-> Int8 Int8))` higher-order parameter it is passed to, a
+/// variant payload, an annotation — that arrow fixes the param's type. Recovering it HERE (not only at
+/// `lower_lambda_value`, which runs at LOWERING) is what makes the body's type-check / const-fold see the
+/// narrow width: `(+ n 1)` over a context-Int8 `n` then overflows a const arg exactly as an explicit
+/// `(fn ((: n Int8)) …)` does, instead of folding at the default Int64 and missing the overflow. `None`
+/// unless `binder` is a bare lambda param whose lambda has a recoverable arrow with a concrete type at
+/// this param's index (so an annotated param, a non-lambda binder, or an unconstrained position is
+/// unaffected — no invented width, no over-reject).
+fn lambda_param_ty_from_context(db: &mut Db, binder: StructId) -> Option<Ty> {
+    // The binder of a bare lambda param IS the param node, sitting in the lambda's `(fn (p0 p1 …) body)`
+    // parameter list. Find that params list (the binder's parent) and the lambda (its grandparent), and
+    // the binder's index within the list.
+    let params_list = db.parent_of(binder)?;
+    let lambda = db.parent_of(params_list)?;
+    let crate::resolved::Resolved::Lambda { params, .. } = resolved_of(db, lambda) else {
+        return None;
+    };
+    // The index of THIS binder among the lambda's params (compare against each param's name occurrence,
+    // so an annotated sibling `(: m T)` is matched through its `:` form too — though an annotated binder
+    // never reaches here, since `param_annot_ty` handled it before this fallback).
+    let idx = params
+        .iter()
+        .position(|&p| crate::eval::param_name_occ(db, p) == binder)?;
+    // Peel the lambda's expected arrow to its idx-th parameter type; use it only if concrete (an arrow
+    // that runs out of parameters, or an `Any` at this slot, recovers nothing).
+    let mut cur = expected_arrow_for_lambda(db, lambda)?;
+    for _ in 0..idx {
+        match cur {
+            Ty::Fn(_, r) => cur = *r,
+            _ => return None,
+        }
+    }
+    match cur {
+        Ty::Fn(p, _) if !matches!(*p, Ty::Any) => Some(*p),
+        _ => None,
+    }
 }
 
 /// The `db.defs` index whose signature declares the parameter name-occurrence `binder`, or `None` if

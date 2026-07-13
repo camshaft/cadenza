@@ -7863,6 +7863,48 @@ mod match_engine {
         );
     }
 
+    #[test]
+    fn an_unannotated_context_typed_closure_param_carries_its_narrow_width_to_the_const_fold() {
+        // WRONG-VALUE regression: an UNANNOTATED closure param typed narrow from its storage context's
+        // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param
+        // type for the runtime path, but the body's CONST-FOLD ran on the still-`Any` param → a const arg
+        // folded at Int64, MISSING the Int8 overflow. `(app (fn (n) (+ n 1)))` @ (g 127) yielded 128 (Int64)
+        // instead of the CDZ0302 the explicit `(fn ((: n Int8)) …)` gives. Fixed by recovering the param's
+        // context arrow at `type_of` (so the body types narrow) AND wrapping the substituted arg in the
+        // recovered `(: arg (Int N))` at β-reduction (so the fit-check fires + travels through copies).
+        let overflows =
+            "(module m (def (app (: g (-> Int8 Int8))) (g 127)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
+        assert_eq!(
+            reject_code(overflows).as_deref(),
+            Some("CDZ0302"),
+            "an unannotated context-Int8 param overflows a const arg like an explicit Int8 param"
+        );
+        // The `*` variant: 12*12 = 144 > Int8.max 127.
+        let mul =
+            "(module m (def (app (: g (-> Int8 Int8))) (g 12)) (def (main) (app (fn (n) (* n n)))) (export main))";
+        assert_eq!(reject_code(mul).as_deref(), Some("CDZ0302"));
+        // UInt8: 255 + 1 = 256 overflows.
+        let uint =
+            "(module m (def (app (: g (-> UInt8 UInt8))) (g 255)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
+        assert_eq!(reject_code(uint).as_deref(), Some("CDZ0302"));
+        // NO OVER-REJECTION: an IN-RANGE const still compiles + runs (g 5 → 5+1 = 6, fits Int8).
+        let in_range =
+            "(module m (def (app (: g (-> Int8 Int8))) (g 5)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
+        assert_eq!(
+            reject_code(in_range),
+            None,
+            "an in-range const through a context-Int8 param must still compile"
+        );
+        // A WIDE (Int64) context param must NOT be false-rejected — 128 fits Int64.
+        let wide =
+            "(module m (def (app (: g (-> Int64 Int64))) (g 127)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
+        assert_eq!(
+            reject_code(wide),
+            None,
+            "a wide-Int64 context param has no narrow width to overflow"
+        );
+    }
+
     /// Run a program whose RESULT escapes to the host as a resource (no bare func export), returning its
     /// rendered value form, or `None` if the runtime wasm is absent.
     fn run_heap_value_escape(src: &str) -> Option<String> {
