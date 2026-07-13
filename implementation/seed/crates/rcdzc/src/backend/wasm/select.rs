@@ -6263,7 +6263,24 @@ fn emit_operand_into(
     if let Core::Arith { op, lhs, rhs } = core_of(db, id)
         && matches!(op, Prim::Add | Prim::Sub | Prim::Mul)
     {
-        let m = Machine::of(int_ty_of(db, id));
+        // WIDTH from the CONSUMING op when this nested arith has NO width anchor of its own. A nested
+        // `+`/`-`/`*` whose operands are all deferred-width (bare literals, or `if`/`match` branches of
+        // bare literals) types as `Int(Deferred)` — which `int_ty_of` would ground to the i64 DEFAULT,
+        // storing an i64 result into the i32 slot the enclosing narrow op declared → INVALID WASM
+        // (`(+ (+ (if c 1 2) (if d 3 4)) 5) : Int8`). It also computed the inner op at the WRONG width, so
+        // its overflow range-check checked i64 not the narrow type. Emit it at the consuming width `ot`
+        // instead: the inner op then computes AND range-checks at the right width, and a bare-literal
+        // branch is grounded (and `fits_width`-checked) to `ot`, so an out-of-range branch literal is
+        // REJECTED rather than silently truncated. SOUND: a genuine FIXED inner width differing from `ot`
+        // is a CDZ0301 fault that aborts before emit, so a deferred-width inner arith reaching here has no
+        // anchor and correctly takes its context's width. A fixed inner width (a real Int64 sub-result) is
+        // kept as-is.
+        let own = int_ty_of(db, id);
+        let m = if own.width_is_fixed() {
+            Machine::of(own)
+        } else {
+            Machine::of(ot)
+        };
         return emit_checked_arith_to(
             db,
             op,
