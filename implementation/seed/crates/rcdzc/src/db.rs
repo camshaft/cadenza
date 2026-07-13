@@ -1347,11 +1347,20 @@ fn scan_top_level(ast: &Arenas) -> (Vec<Def>, Vec<Export>, Vec<TypeDecl>, Vec<Ef
 
     for item in top_items(ast) {
         if let Some(tail) = ast.as_form(item, "def") {
-            // `(def (NAME param…) BODY)`.
+            // Two def SHAPES share the top-level scan (the same two `resolve::do_def_binds` reads inside a
+            // `do`): a FUNCTION/nullary def `(def (NAME param…) BODY)` whose signature is a LIST, and a
+            // VALUE def `(def NAME VALUE)` whose signature is a bare NAME atom (`(def answer 42)` — the
+            // name-plus-value form a module/top-level uses for a constant binding). A value def has NO
+            // parameters; its `VALUE` is the body. Distinguished by whether the first element is a list
+            // (a signature) or an atom (a value-def name).
             let (name, params) = match tail.first().map(|&s| (s, ast.get(s))) {
                 Some((_, Struct::List(children))) if !children.is_empty() => {
                     let name = ast.as_name(children[0]).unwrap_or("").to_string();
                     (name, children[1..].to_vec())
+                }
+                // `(def NAME VALUE)` — a bare-name VALUE definition (no parameters).
+                Some((sig, Struct::Atom(_))) => {
+                    (ast.as_name(sig).unwrap_or("").to_string(), Vec::new())
                 }
                 _ => (String::new(), Vec::new()),
             };

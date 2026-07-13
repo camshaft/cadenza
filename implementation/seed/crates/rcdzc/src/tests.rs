@@ -7170,6 +7170,26 @@ mod stage1 {
     }
 
     #[test]
+    fn a_top_level_value_definition_binds_a_name() {
+        // 11-modules "a top-level value definition binds a name usable by the program's functions": a
+        // bare-name `(def NAME VALUE)` at the top level (signature is a NAME atom, not a `(sig param…)`
+        // list) is a VALUE definition — `answer` binds to `42`, resolvable by name in a sibling function,
+        // the same shape a nullary `(def (answer) 42)` denotes but written as name-plus-value.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def answer 42) (def (main) answer) (export main))",
+        )))
+        .expect("a top-level value def binds its name");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
+        // A value def may bind a COMPOUND (a record), projected by a sibling function — the value def's
+        // body is an arbitrary expression, not only a scalar.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def tbl (record (a 7) (b 8))) (def (main) (. tbl b)) (export main))",
+        )))
+        .expect("a top-level value def may bind a record");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 8);
+    }
+
+    #[test]
     fn a_do_local_declaration_scope_is_backward_only() {
         // Sequential scope: a form sees only the declarations BEFORE it. A FORWARD reference (`y`'s value
         // `(+ x 1)` references `x` declared AFTER it) is unbound — a declaration does not see later ones.
@@ -14481,6 +14501,45 @@ mod debug_info {
         assert!(
             lines.contains(&3) && lines.contains(&4) && lines.contains(&5),
             "expected rows for lines 3/4/5, got {lines:?}\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn a_runtime_bytes_returning_program_carries_dwarf() {
+        // A program returning a RUNTIME `Bytes` (a recursion + `Bytes.concat` result) crosses via the
+        // looping-walker escape path (`emit_runtime_bytes_resource`) — a THIRD resource core beyond the
+        // flat/sum ones. Its user bodies lead the code section, so the `.debug_*` + `name` sections
+        // attribute correctly; a compound/bytes-returning program is debuggable too.
+        let src = "(module m \
+                     (def (uleb n) (if (< n 128) \
+                        ((. Bytes of) (list ((. UInt8 wrap) n))) \
+                        ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7))))) \
+                     (def (main) (uleb 624485)) \
+                     (export main))";
+        let debug = component_of(src, Target::WasmDebug);
+        let has = |needle: &[u8]| debug.windows(needle.len()).any(|w| w == needle);
+        for want in [
+            b".debug_info".as_slice(),
+            b".debug_line".as_slice(),
+            b"\x04name".as_slice(),
+        ] {
+            assert!(
+                has(want),
+                "a runtime-Bytes program must carry {:?}",
+                std::str::from_utf8(want).unwrap_or("<name>")
+            );
+        }
+        assert!(
+            has(b"uleb") && has(b"main"),
+            "DWARF must name the source functions"
+        );
+        // A plain build embeds no DWARF (debug-only sections).
+        let plain = component_of(src, Target::Wasm);
+        assert!(
+            !plain
+                .windows(b".debug_info".len())
+                .any(|w| w == b".debug_info"),
+            "a plain runtime-Bytes component must carry no DWARF"
         );
     }
 }
