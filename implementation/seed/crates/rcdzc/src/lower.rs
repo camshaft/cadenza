@@ -710,16 +710,16 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // is already handled; only a non-lambda head reaches here.) Without this, `(g)` fell through
             // to `meta_apply_of` — which, finding no `(meta apply)` on the scalar 7, rejected it as
             // "value is not applyable", breaking every nullary-function call.
-            // An EMPTY compound-VALUE constructor — `(list)` / `(tuple)` / `(record)` written with the
-            // alias name at zero args — BUILDS the empty compound, it is NOT the ctor value. Route it
-            // through `reduce_ctor` (which rewrites `(list)` → `("list")` → the symbol form) before the
-            // zero-arg identity short-circuit below (which would return the ctor record and then decline
-            // it as a bare built-in value). A NON-empty alias application reaches `reduce_ctor` via the
-            // `Some(prim)` arm; this is only the nullary case the short-circuit would otherwise capture.
+            // An EMPTY compound-VALUE constructor — `(list)` / `(tuple)` / `(record)` / `(map)` written
+            // with the alias name at zero args — BUILDS the empty compound, it is NOT the ctor value.
+            // Route it through `reduce_ctor` (which rewrites `(map)` → `("map")` → the symbol form) before
+            // the zero-arg identity short-circuit below (which would return the ctor record and then
+            // decline it as a bare built-in value). A NON-empty alias application reaches `reduce_ctor` via
+            // the `Some(prim)` arm; this is only the nullary case the short-circuit would otherwise capture.
             if args.is_empty()
                 && matches!(
                     crate::eval::meta_apply_of(db, head),
-                    Some(Prim::TupleNew | Prim::RecordNew | Prim::ListNew)
+                    Some(Prim::TupleNew | Prim::RecordNew | Prim::ListNew | Prim::MapNew)
                 )
             {
                 let prim = crate::eval::meta_apply_of(db, head).unwrap();
@@ -5618,9 +5618,27 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         // NOT a rejection. A key/value whose canonical form needs machinery not yet emitted (Bytes rope,
         // String, a nested collection) makes the map decline, deferring to that increment.
         Ty::Map(k, v) => {
+            // An `Any` key/value is a DEFERRED type of an EMPTY map (`(map)` — no entries, so its key/
+            // value never determined), a PHANTOM exactly like a `Var`: an empty map carries no key or
+            // value to compare, so the walk never reaches a concrete non-canonical leaf through it. Treat
+            // it as walkable (else `(= (map) (map (1 10)))` — comparing an empty map to a one-entry one,
+            // which MUST yield `false` — would decline). A CONCRETE key/value (Int/String/…) is checked
+            // normally; a genuinely non-canonical one (a nested collection, a Bytes rope) still declines.
             let (k, v) = ((**k).clone(), (**v).clone());
-            ty_heap_walkable(db, &k, seen) && ty_heap_walkable(db, &v, seen)
+            let key_ok = matches!(k, Ty::Any) || ty_heap_walkable(db, &k, seen);
+            let val_ok = matches!(v, Ty::Any) || ty_heap_walkable(db, &v, seen);
+            key_ok && val_ok
         }
+        // A STRING is a flat UTF-8 byte LEAF, CANONICAL by construction — every runtime String rep is a
+        // flat leaf (`str-new`, or the compiler's `bytes-alloc`+`bytes-set` build, both `alloc(Vec::new(),
+        // bytes)`), NEVER a rope: `String.concat` declines for a runtime/non-ASCII operand (only a constant
+        // ASCII pair folds), so no non-canonical string reaches here. So two runtime strings (and two
+        // String-keyed maps) compare correctly by `value-eq`'s raw-byte walk (`champ_eq`). The type checker
+        // unifies both `=` operands to `String` before lowering, so a String is only ever compared against
+        // a String (never a Bytes of the same bytes). CONTRAST `Ty::Bytes` below (NON-walkable): a
+        // `Bytes.concat` DOES emit a non-canonical rope (`bytes-concat`), whose byte form is canonical only
+        // after a `bytes-compact` the compiler would first have to emit — so a runtime Bytes still declines.
+        Ty::String => true,
         // A nominal — walkable iff its underlying value is (the tag is erased at run time, so the walk
         // compares the underlying values directly). A recursive nominal is impossible here (a recursive
         // single-variant sum is never erased — it stays a `Ty::Sum`, handled above).
@@ -5635,13 +5653,13 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
             let inner = (**inner).clone();
             ty_heap_walkable(db, &inner, seen)
         }
-        // A collection / text / char / float / function / type-value / unresolved leaf is NOT walkable
-        // here (its canonical form needs machinery this increment does not emit, or it is not a runtime
-        // value that reaches a compound equality — a `Ty::Type`/`Ty::Any`/`Ty::Fn` never crosses `=` at
-        // run time). A `Char` has no runtime machine rep yet (its equality folds at compile time).
+        // A collection / bytes-rope / char / float / function / type-value / unresolved leaf is NOT
+        // walkable here (its canonical form needs machinery this increment does not emit, or it is not a
+        // runtime value that reaches a compound equality — `Ty::Type`/`Ty::Any`/`Ty::Fn` never cross `=`).
+        // A `Char` has no runtime machine rep yet (its equality folds at compile time). `Bytes` can be a
+        // non-canonical rope (see the `String` note above), so it declines until `bytes-compact`-on-compare.
         Ty::List(_)
         | Ty::Bytes
-        | Ty::String
         | Ty::Char
         | Ty::Float(_)
         | Ty::Fn(_, _)

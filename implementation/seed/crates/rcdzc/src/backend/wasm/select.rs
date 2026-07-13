@@ -446,14 +446,18 @@ fn box_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
     match ty {
         Ty::Int(_) => Ok(Some(OP_BOX_INT)),
         Ty::Bool => Ok(Some(OP_BOX_BOOL)),
-        // A nested compound — a tuple/record, a SUM (its `sum-new` handle), a LIST (`vec-*` handle), or a
-        // BYTES sequence (`bytes-*` handle) — is already a u32 handle, so it is `arr-set` into the parent
-        // array (or used as a sum payload) as-is, no box op. A CLOSURE (`Ty::Fn`) is likewise a u32 cell
-        // handle (`valtype_of(Ty::Fn) = I32`) — a closure captured BY another closure (a fn-typed capture,
-        // e.g. a partial application capturing the function it partially applies) is stored as-is.
-        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes | Ty::Fn(_, _) => {
-            Ok(None)
-        }
+        // A nested compound — a tuple/record, a SUM (its `sum-new` handle), a LIST (`vec-*` handle), a
+        // BYTES sequence (`bytes-*` handle), or a STRING (a UTF-8 byte-leaf handle) — is already a u32
+        // handle, so it is `arr-set` into the parent array (or used as a sum payload) as-is, no box op. A
+        // CLOSURE (`Ty::Fn`) is likewise a u32 cell handle (`valtype_of(Ty::Fn) = I32`) — a closure
+        // captured BY another closure (a fn-typed capture) is stored as-is.
+        Ty::Tuple(_)
+        | Ty::Record(_)
+        | Ty::Sum { .. }
+        | Ty::List(_)
+        | Ty::Bytes
+        | Ty::String
+        | Ty::Fn(_, _) => Ok(None),
         // A quantity erases to its inner numeric type (`lower` strips the `Qty`), so box it by that inner
         // type — a `(Qty Int64 u)` element boxes exactly as an `Int64` element.
         Ty::Qty { inner, .. } => box_op_ty(inner),
@@ -479,12 +483,16 @@ fn get_op_ty(ty: &Ty) -> Result<Option<&'static str>, Reject> {
     match ty {
         Ty::Int(_) => Ok(Some(OP_GET_INT)),
         Ty::Bool => Ok(Some(OP_GET_BOOL)),
-        // A nested compound / SUM / LIST / BYTES handle `arr-get` (or `sum-payload`) yields is used
-        // as-is — no unbox. A CLOSURE (`Ty::Fn`) is a u32 cell handle too — a captured fn-typed value
+        // A nested compound / SUM / LIST / BYTES / STRING handle `arr-get` (or `sum-payload`) yields is
+        // used as-is — no unbox. A CLOSURE (`Ty::Fn`) is a u32 cell handle too — a captured fn-typed value
         // (`Core::Captured` of a closure) reads back the handle directly, ready for a `call_indirect`.
-        Ty::Tuple(_) | Ty::Record(_) | Ty::Sum { .. } | Ty::List(_) | Ty::Bytes | Ty::Fn(_, _) => {
-            Ok(None)
-        }
+        Ty::Tuple(_)
+        | Ty::Record(_)
+        | Ty::Sum { .. }
+        | Ty::List(_)
+        | Ty::Bytes
+        | Ty::String
+        | Ty::Fn(_, _) => Ok(None),
         // A quantity erases to its inner numeric type — unbox by that inner type (the dual of `box_op_ty`).
         Ty::Qty { inner, .. } => get_op_ty(inner),
         other => Err(Reject::decline(format!(
@@ -868,9 +876,24 @@ pub fn collect_used_ops(
             collect_used_ops(db, rhs, out);
         }
         Core::Convert { operand, .. } | Core::Not { operand } => collect_used_ops(db, operand, out),
-        Core::Call { args, .. } | Core::HostCall { args, .. } => {
+        Core::Call { args, .. } => {
             for arg in args {
                 collect_used_ops(db, arg, out);
+            }
+        }
+        // A HOST CALL: mirror the `emit` arm's arg handling EXACTLY. A `Ty::String` argument is marshalled
+        // as `(ptr, len)` into the data segment (the emit arm consumes the `Core::ConstStr` there) — it is
+        // NOT built as a runtime byte-leaf, so it uses NO runtime op; descending into it via the generic
+        // walk would wrongly import `bytes-alloc`/`bytes-set` (the ConstStr arm), making the runtime-import
+        // set non-empty and tripping the "host + runtime imports don't yet compose" decline for what is a
+        // host-ONLY program. A `Unit` arg likewise carries no value. So skip a String/Unit host arg; a
+        // scalar/compound host arg (a later increment) recurses as before.
+        Core::HostCall { args, .. } => {
+            for arg in args {
+                match crate::infer::type_of(db, arg) {
+                    Ty::String | Ty::Unit => {}
+                    _ => collect_used_ops(db, arg, out),
+                }
             }
         }
         Core::Seq { stmts, tail } => {
@@ -983,11 +1006,19 @@ pub fn collect_used_ops(
                 out.insert(op);
             }
         }
-        // Leaves and references emit no runtime op. (A constant string CROSSES only via the escape
-        // path's baked bytes — it emits no in-body op; a runtime string handle op arrives later.)
+        // A constant STRING used as an in-body runtime value builds a flat UTF-8 byte leaf via
+        // `bytes-alloc` + a `bytes-set` per byte (byte-identical to `str-new`'s rep — see the `emit`
+        // arm). So it imports those two ops. (A constant string that only FOLDS — its equality, or an
+        // escape's baked bytes — never reaches the emit path, so this is a superset that is harmless if
+        // the string folds away; `collect_used_ops` mirrors `emit`'s op choices for the values that DO
+        // reach emission.)
+        Core::ConstStr(_) => {
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+        }
+        // Leaves and references emit no runtime op.
         Core::ConstInt(_)
         | Core::ConstBool(_)
-        | Core::ConstStr(_)
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::Unit
@@ -2116,14 +2147,29 @@ fn emit(
             out.push(Lir::ConstI32(if b { 1 } else { 0 }));
             Ok(())
         }
-        // A constant string reaching `emit` as an in-body VALUE has no runtime slot form yet — a string
-        // crosses only via the escape path (its bytes baked into the resource module), not through a
-        // function body. Its constant equality FOLDS in `lower` (never reaching here). So a string value
-        // used inside a body (returned to a scalar boundary, stored) declines cleanly — the runtime
-        // string handle (a byte-rope alloc) is a later increment.
-        Core::ConstStr(_) => Err(Reject::decline(
-            "a runtime string value is not yet built (only a constant string escapes / folds)",
-        )),
+        // A constant string reaching `emit` as an in-body runtime VALUE — a string used where a heap
+        // handle is needed (a map KEY/VALUE, a boxed element, a value threaded to a consumer), NOT folded
+        // away. Build it as a FLAT UTF-8 BYTE LEAF, exactly as `Core::BytesOf` builds a byte sequence:
+        // `bytes-alloc(len)` then a `bytes-set` per byte. This is BYTE-IDENTICAL to the runtime `str-new`
+        // op (`op_str_new(s) = alloc(Vec::new(), s.into_bytes())` — a flat arity-0 leaf whose raw is the
+        // UTF-8 bytes), so a String value built here is CANONICAL and `champ_eq`/`value-eq` compares two
+        // equal strings correctly (raw-byte compare). We build via the lowerable `bytes-*` ops rather than
+        // `str-new` because `str-new` takes a component-model `string` (canonical-ABI ptr+len+realloc), so
+        // it is NOT callable from a core function body (`lowerable: false`); the byte-leaf build reaches the
+        // identical rep with core-scalar ops. The reader already NFC-normalized the string, so the bytes
+        // are canonical. (A CONSTANT string still folds in `lower` — a `= "a" "a"` never reaches here; this
+        // is the path for a string that must become a runtime handle, e.g. `(map ("a" 1))`'s key.)
+        Core::ConstStr(s) => {
+            let bytes = s.as_bytes();
+            out.push(Lir::ConstI32(bytes.len() as i32)); // [len]
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [buf]
+            for (i, &byte) in bytes.iter().enumerate() {
+                out.push(Lir::ConstI32(i as i32)); // [buf, index]
+                out.push(Lir::ConstI32(byte as i32)); // [buf, index, byte]
+                out.push(Lir::CallImport(OP_BYTES_SET)); // → [buf] (bytes-set returns the buffer)
+            }
+            Ok(()) // leaves [buf] — the string's flat UTF-8 byte-leaf handle (== str-new's rep)
+        }
         // A constant char reaching `emit` as an in-body VALUE has no runtime slot form yet — its
         // equality/ordering FOLD in `lower` (never reaching here), and it does not yet cross the boundary.
         // So a char value used inside a body declines cleanly (the scalar runtime rep is a later increment).
