@@ -257,6 +257,23 @@ pub enum Prim {
     /// MUST be DISJOINT: a shared field name is CDZ0211 (the combined record never chooses which operand's
     /// value a shared field takes). Folds two constant `Core::Record`s to their union.
     RecordMerge,
+    /// The RECORD ROW-EXTEND operation — `(Record.extend r (z v))` adds a field ABSENT from `r`
+    /// (`type-system.md` §A Field Is Added To Or Replaced In A Record By A Derived Operation, 1st
+    /// sentence), the meaning-preserving rewrite of `(Record.merge r (record (z v)))`. Its second operand
+    /// is a SINGLE `(name value)` PAIR (the value IS evaluated, unlike `project`/`without`'s label list).
+    /// An already-present field is CDZ0211 (never a silent overwrite — the author means `with`).
+    RecordExtend,
+    /// The RECORD ROW-UPDATE operation — `(Record.with r (z v))` REPLACES a field PRESENT in `r` with a
+    /// new value of a possibly-different type (`type-system.md` §…2nd sentence), the rewrite of
+    /// `(Record.merge (Record.without r (z)) (record (z v)))`. Same `(name value)` pair operand as
+    /// `extend`. An absent field is CDZ0212 (stays distinct from `extend`, which ADDS).
+    RecordWith,
+    /// The RECORD ROW-POP operation — `(Record.pop r z)` takes a field OFF `r`, yielding `(tuple (. r z)
+    /// (Record.without r (z)))` — the field's value paired with the record of the remaining fields
+    /// (`type-system.md` §A Record Is Reduced By Dropping A Named Set Of Its Fields). Its second operand
+    /// is a BARE field NAME (a label). An absent field is CDZ0212 — a record field name is a static label,
+    /// never a runtime `None` (contrast `List.at` on a runtime index).
+    RecordPop,
     /// A LIST VALUE CONSTRUCTOR — the `(meta apply)` of the prelude `list` alias. Applying it (`(list 1 2
     /// 3)`) builds the list value, exactly as the STRING-head primitive `("list" 1 2 3)` does. VARIADIC,
     /// but HOMOGENEOUS: every element unifies to ONE element type (a mixed list is ill-typed), so its
@@ -622,6 +639,9 @@ impl Prim {
             "record-project" => Some(Prim::RecordProject),
             "record-without" => Some(Prim::RecordWithout),
             "record-merge" => Some(Prim::RecordMerge),
+            "record-extend" => Some(Prim::RecordExtend),
+            "record-with" => Some(Prim::RecordWith),
+            "record-pop" => Some(Prim::RecordPop),
             "list-new" => Some(Prim::ListNew),
             "list-len" => Some(Prim::ListLen),
             "list-push" => Some(Prim::ListPush),

@@ -350,12 +350,15 @@ fn record_module(ast: &mut Arenas) -> StructId {
     // The row operations, each an operator record whose `(meta t)` is the permissive `∀a. a → a`
     // placeholder (bypassed — `infer::apply_type` computes the result type, `check_application` skips the
     // scheme-unify). `project`/`without` take a record + a LITERAL field-name list; `merge` takes two
-    // record VALUES (no label list).
+    // record VALUES; `extend`/`with` a record + a `(name value)` pair; `pop` a record + a bare field name.
     let mut children = vec![head, apply_field];
     for (name, prim) in [
         ("project", "record-project"),
         ("without", "record-without"),
         ("merge", "record-merge"),
+        ("extend", "record-extend"),
+        ("with", "record-with"),
+        ("pop", "record-pop"),
     ] {
         let lambda = row_op_placeholder_type(ast);
         let op = list_op_record(ast, prim, lambda);

@@ -11332,6 +11332,59 @@ mod match_engine {
     }
 
     #[test]
+    fn record_extend_with_pop_are_derived_row_ops_with_presence_checks() {
+        // 15-rows extend/with/pop — the DERIVED row ops (rewrites of merge/without). `Record.extend r
+        // (z v)` ADDS an absent field (present → CDZ0211); `Record.with r (z v)` REPLACES a present field
+        // (absent → CDZ0212), retyping to the new value's type; `Record.pop r z` yields `(value,
+        // remaining-record)` (absent → CDZ0212). Each second operand is a `(name value)` pair (extend/with)
+        // or a bare name (pop), NOT a label list.
+        // extend adds an ABSENT field (well-formed); a PRESENT field is CDZ0211.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.extend (record (a 1)) (b 2))) (export main))"
+            ),
+            None,
+            "extend of an absent field is well-formed"
+        );
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.extend (record (a 1)) (a 2))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0211"),
+            "extend of a present field is CDZ0211 (use with)"
+        );
+        // with replaces a PRESENT field (well-formed, may retype); an ABSENT field is CDZ0212.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.with (record (a 1) (b 2)) (b true))) (export main))"
+            ),
+            None,
+            "with of a present field (even retyping) is well-formed"
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (Record.with (record (a 1)) (z 5))) (export main))")
+                .as_deref(),
+            Some("CDZ0212"),
+            "with of an absent field is CDZ0212 (use extend)"
+        );
+        // pop of a PRESENT field is well-formed; an ABSENT field is CDZ0212.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (Record.pop (record (a 1) (b 2)) a)) (export main))"
+            ),
+            None,
+            "pop of a present field is well-formed"
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (Record.pop (record (a 1)) z)) (export main))")
+                .as_deref(),
+            Some("CDZ0212"),
+            "pop of an absent field is CDZ0212"
+        );
+    }
+
+    #[test]
     fn a_list_homogeneity_violation_is_cdz0201_by_shape() {
         // 05-compound-types §A List Is An Ordered Homogeneous Sequence — the same taxonomy line the numeric
         // operators and `if`-branches draw. A homogeneity violation between two DISTINCT NUMERIC types, or

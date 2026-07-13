@@ -1794,6 +1794,44 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         }
         return Ty::Record(std::sync::Arc::new(union));
     }
+    // `Record.extend r (z v)` / `Record.with r (z v)` — ADD (extend) or REPLACE (with) field `z` with the
+    // VALUE `v`'s type. Both yield a NEW record type = `r`'s fields with `z ↦ typeof(v)` inserted (an
+    // insert covers both: for `extend` z is new, for `with` it overwrites the old entry with the possibly-
+    // DIFFERENT new type — §A Field Is Added To Or Replaced …, 'a new value of a possibly different type').
+    // The presence/absence fault (extend→CDZ0211 if present, with→CDZ0212 if absent) is `check_application`'s;
+    // the shape here is the same insert for both. The second operand is a `(name value)` pair read by
+    // `record_op_pair`; `v` IS an evaluated value (its type is `typeof(v)`), unlike a label list.
+    if matches!(
+        crate::eval::meta_apply_of(db, head),
+        Some(crate::resolved::Prim::RecordExtend | crate::resolved::Prim::RecordWith)
+    ) && args.len() == 2
+        && let Ty::Record(fields) = type_of(db, args[0])
+        && let Some((label, value)) = crate::resolve::record_op_pair(db, args[1])
+    {
+        let mut out: std::collections::BTreeMap<_, _> =
+            fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        out.insert(label, type_of(db, value));
+        return Ty::Record(std::sync::Arc::new(out));
+    }
+    // `Record.pop r z` — yields `(tuple (. r z) (r without z))`: the field's value paired with the record
+    // of the remaining fields (`type-system.md` §A Record Is Reduced By Dropping A Named Set Of Its
+    // Fields). Result type `(Tuple <typeof field z> (Record <r minus z>))`. The absent-field CDZ0212 is
+    // `check_application`'s; here an absent field would leave the tuple's first element `Any` (faulted
+    // there). The second operand is a BARE field NAME (a label via `read_key`).
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordPop)
+        && args.len() == 2
+        && let Ty::Record(fields) = type_of(db, args[0])
+        && let Some(label) = crate::resolve::read_label(db, args[1])
+    {
+        let field_ty = fields.get(&label).cloned().unwrap_or(Ty::Any);
+        let rest: std::collections::BTreeMap<_, _> = fields
+            .iter()
+            .filter(|(k, _)| **k != label)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let rest_ty = Ty::Record(std::sync::Arc::new(rest));
+        return Ty::Tuple(std::sync::Arc::from([field_ty, rest_ty]));
+    }
     // `Type.of e` — compile-time type reflection. The application itself has type `Type` (it IS a
     // type-value, like `(Qty T u)` / `(-> A B)` in type position); the type-value it REDUCES to (via
     // `eval::typeval_of` → the `reduce_ctor` arm) is `e`'s inferred type, consumed only in a type
@@ -2802,6 +2840,9 @@ fn check_application(
                 crate::resolved::Prim::RecordProject
                     | crate::resolved::Prim::RecordWithout
                     | crate::resolved::Prim::RecordMerge
+                    | crate::resolved::Prim::RecordExtend
+                    | crate::resolved::Prim::RecordWith
+                    | crate::resolved::Prim::RecordPop
             )
         )
     {
@@ -4616,6 +4657,83 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             );
                         }
                     }
+                }
+            } else if matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(crate::resolved::Prim::RecordExtend | crate::resolved::Prim::RecordWith)
+            ) && args.len() == 2
+            {
+                // `Record.extend r (z v)` / `Record.with r (z v)` — the FIRST operand `r` is a record
+                // expression (descend it); the SECOND is a `(z v)` pair whose NAME is a label and whose
+                // VALUE is an ordinary expression (descend the value, NOT the whole pair — descending it
+                // would resolve `z` as applied to `v`). `extend` REQUIRES `z` ABSENT (a present field →
+                // CDZ0211, never a silent overwrite); `with` REQUIRES `z` PRESENT (an absent field →
+                // CDZ0212, stays distinct from `extend`). A malformed pair is CDZ0201.
+                let is_extend = crate::eval::meta_apply_of(db, head)
+                    == Some(crate::resolved::Prim::RecordExtend);
+                collect(db, args[0], out);
+                match (
+                    type_of(db, args[0]),
+                    crate::resolve::record_op_pair(db, args[1]),
+                ) {
+                    (Ty::Record(fields), Some((label, value))) => {
+                        collect(db, value, out);
+                        let present = fields.contains_key(&label);
+                        if is_extend && present {
+                            out.push(
+                                Reject::coded(
+                                    Code::PresentField,
+                                    format!(
+                                        "record already has field `{}` (use `Record.with` to replace)",
+                                        label.name
+                                    ),
+                                )
+                                .at(args[1]),
+                            );
+                        } else if !is_extend && !present {
+                            out.push(
+                                Reject::coded(
+                                    Code::AbsentField,
+                                    format!(
+                                        "record has no field `{}` to update (use `Record.extend` to add)",
+                                        label.name
+                                    ),
+                                )
+                                .at(args[1]),
+                            );
+                        }
+                    }
+                    (_, None) => out.push(Reject::coded(
+                        Code::Malformed,
+                        "the second operand is a `(name value)` field pair, e.g. `(z 5)`",
+                    )),
+                    _ => {}
+                }
+            } else if matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(crate::resolved::Prim::RecordPop)
+            ) && args.len() == 2
+            {
+                // `Record.pop r z` — the FIRST operand `r` is a record expression (descend it); the SECOND
+                // is a BARE field NAME (a label, not an expression). An absent field is CDZ0212 (a static
+                // label, never a runtime None). A non-label second operand is CDZ0201.
+                collect(db, args[0], out);
+                let label = crate::resolve::read_label(db, args[1]);
+                match (type_of(db, args[0]), label) {
+                    (Ty::Record(fields), Some(label)) if !fields.contains_key(&label) => {
+                        out.push(
+                            Reject::coded(
+                                Code::AbsentField,
+                                format!("record has no field `{}` to pop", label.name),
+                            )
+                            .at(args[1]),
+                        );
+                    }
+                    (_, None) => out.push(Reject::coded(
+                        Code::Malformed,
+                        "the second operand is a field name, e.g. `z`",
+                    )),
+                    _ => {}
                 }
             } else if crate::eval::lambda_body(db, head).is_some() {
                 // A LAMBDA head — `check_application` already collected the REDUCED body (step 2), which

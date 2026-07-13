@@ -1017,6 +1017,18 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::RecordMerge) if args.len() == 2 => {
                     lower_record_merge(db, id, args[0], args[1])
                 }
+                // `Record.extend r (z v)` / `Record.with r (z v)` — both INSERT field `z ↦ v` into a
+                // constant `Core::Record` (extend adds an absent field, with replaces a present one; the
+                // presence/absence CDZ0211/0212 is `infer`'s, so the fold is the same insert). The `(z v)`
+                // pair's value occurrence carries into the field.
+                Some(Prim::RecordExtend | Prim::RecordWith) if args.len() == 2 => {
+                    lower_record_insert(db, id, args[0], args[1])
+                }
+                // `Record.pop r z` — `(tuple (. r z) (r without z))`: the popped field's value paired with
+                // the remaining record. Folds a constant `Core::Record` to a `Core::Tuple`.
+                Some(Prim::RecordPop) if args.len() == 2 => {
+                    lower_record_pop(db, id, args[0], args[1])
+                }
                 // `vec-len`). One operand: the list.
                 Some(Prim::ListLen) if args.len() == 1 => {
                     let operand = args[0];
@@ -7311,6 +7323,9 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::RecordProject
         | Prim::RecordWithout
         | Prim::RecordMerge
+        | Prim::RecordExtend
+        | Prim::RecordWith
+        | Prim::RecordPop
         | Prim::ListNew
         | Prim::ListLen
         | Prim::ListPush
@@ -9776,6 +9791,85 @@ fn lower_record_merge(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Co
     }
 }
 
+/// Lower `(Record.extend r (z v))` / `(Record.with r (z v))` — INSERT field `z ↦ v` into a constant
+/// `Core::Record` (extend adds an absent field, with replaces a present one; the presence/absence
+/// CDZ0211/0212 is `infer`'s, so the fold is one insert for both). The `(z v)` pair's value occurrence
+/// carries into the new field. A poison operand propagates; a non-constant/non-record operand, or a
+/// malformed pair, declines/rejects.
+fn lower_record_insert(db: &mut Db, id: StructId, record: StructId, pair: StructId) -> Core {
+    let Core::Record { fields } = core_of(db, record) else {
+        return match core_of(db, record) {
+            Core::Poison(r) => Core::Poison(r),
+            _ => Core::Poison(Reject::decline(
+                "a record row operation over a runtime record is not yet built",
+            )),
+        };
+    };
+    let Some((label, value)) = crate::resolve::record_op_pair(db, pair) else {
+        return Core::Poison(Reject::coded(
+            Code::Malformed,
+            "the second operand is a `(name value)` field pair, e.g. `(z 5)`",
+        ));
+    };
+    let mut out: std::collections::BTreeMap<_, _> =
+        fields.iter().map(|(k, &v)| (k.clone(), v)).collect();
+    out.insert(label, value);
+    trace!(target: "rcdzc::fold", node = id.0, n = out.len(), "Record.extend/with folds an insert into a constant record");
+    Core::Record {
+        fields: std::sync::Arc::new(out),
+    }
+}
+
+/// Lower `(Record.pop r z)` — `(tuple (. r z) (r without z))`: the popped field's value paired with the
+/// record of the remaining fields. Folds a constant `Core::Record` to a `Core::Tuple{elems: [value,
+/// rest-record]}`. The absent-field CDZ0212 is `infer`'s (this fold assumes the field present — an absent
+/// one leaves no value occurrence, so it declines defensively). A poison/non-constant operand
+/// propagates/declines.
+fn lower_record_pop(db: &mut Db, id: StructId, record: StructId, name: StructId) -> Core {
+    let Core::Record { fields } = core_of(db, record) else {
+        return match core_of(db, record) {
+            Core::Poison(r) => Core::Poison(r),
+            _ => Core::Poison(Reject::decline(
+                "Record.pop over a runtime record is not yet built",
+            )),
+        };
+    };
+    let Some(label) = crate::resolve::read_label(db, name) else {
+        return Core::Poison(Reject::coded(
+            Code::Malformed,
+            "the second operand is a field name, e.g. `z`",
+        ));
+    };
+    let Some(&value) = fields.get(&label) else {
+        return Core::Poison(Reject::decline(
+            "Record.pop of an absent field (reported CDZ0212 by inference)",
+        ));
+    };
+    // The remaining record — every field EXCEPT the popped one, each carrying its value occurrence. It is
+    // synthesized as its own occurrence (`synth_core`, `Core::Record` + its `Ty::Record`) so it can be the
+    // tuple's second element (a `Core::Tuple`'s elements are node ids).
+    let rest: std::collections::BTreeMap<_, _> = fields
+        .iter()
+        .filter(|(k, _)| **k != label)
+        .map(|(k, &v)| (k.clone(), v))
+        .collect();
+    let rest_ty: std::collections::BTreeMap<_, _> = rest
+        .keys()
+        .map(|k| (k.clone(), crate::infer::type_of(db, rest[k])))
+        .collect();
+    let rest_record = synth_core(
+        db,
+        Core::Record {
+            fields: std::sync::Arc::new(rest),
+        },
+        crate::ty::Ty::Record(std::sync::Arc::new(rest_ty)),
+    );
+    trace!(target: "rcdzc::fold", node = id.0, "Record.pop folds to a (value, remaining-record) tuple");
+    Core::Tuple {
+        elems: vec![value, rest_record],
+    }
+}
+
 fn lower_sum_expect(db: &mut Db, id: StructId, sum: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, sum) {
         return Core::Poison(r);
@@ -11007,6 +11101,9 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::RecordProject => "record-project",
         Prim::RecordWithout => "record-without",
         Prim::RecordMerge => "record-merge",
+        Prim::RecordExtend => "record-extend",
+        Prim::RecordWith => "record-with",
+        Prim::RecordPop => "record-pop",
         Prim::ListNew => "list-new",
         Prim::ListLen => "list-len",
         Prim::ListPush => "list-push",

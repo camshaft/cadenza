@@ -1065,6 +1065,8 @@ pass	every not-a-number value is equal to every not-a-number value
 pass	expect makes a checked-arithmetic result trap on overflow
 pass	expect unwraps the ok case of a runtime result
 pass	expect unwraps the present case of a runtime optional
+pass	extending a record adds a new field
+pass	extending a record with an already-present field is rejected
 pass	extracting a high byte composes shift and mask
 pass	false is less than true
 pass	float division rounds under the fixed mode
@@ -1186,6 +1188,8 @@ pass	partial application captures a runtime parameter in the residual lambda
 pass	performing a string-parameter operation with a non-string argument is a type error
 pass	performing an operation with a wrong-type argument for a compound parameter is a type error
 pass	performing an operation with an argument of the wrong type is a type error
+pass	popping a field yields its value and the remaining record
+pass	popping an absent field is rejected
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a record onto an absent field is rejected
@@ -1385,6 +1389,9 @@ pass	unquote with more than one operand inside a quasiquote is malformed
 pass	unsigned comparison orders by magnitude, not by signed interpretation
 pass	updating a list index replaces that element, leaving others
 pass	updating a list slot with an element of a different type is a type error
+pass	updating a record field changes its type to the new value's
+pass	updating a record field replaces its value
+pass	updating an absent record field is rejected
 pass	wrapping addition of in-range operands is ordinary addition
 pass	wrapping addition wraps modulo two to the sixty-fourth on overflow
 pass	wrapping arithmetic algebraic identities hold at the range boundaries
@@ -1483,14 +1490,10 @@ todo	exact rational arithmetic is exact and normalized
 todo	exact rational division is total and exact for a nonzero divisor
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-todo	extending a record adds a new field
-todo	extending a record with an already-present field is rejected
 todo	negating a runtime Int64 overflows at Int64.min
 todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 todo	pattern matching over AST distinguishes forms
-todo	popping a field yields its value and the remaining record
 todo	popping a tuple yields element zero and the remaining tuple
-todo	popping an absent field is rejected
 todo	projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs
 todo	projecting the result of a function that threads a tuple parameter must not trap
 todo	quasiquote constructs AST with selective evaluation
@@ -1513,7 +1516,4 @@ todo	unquote in quasiquote evaluates normally and embeds
 todo	unquote-splicing splices list elements into parent
 todo	unsigned 8-bit addition that overflows its width traps
 todo	unsigned subtraction below zero traps rather than wrapping
-todo	updating a record field changes its type to the new value's
-todo	updating a record field replaces its value
-todo	updating an absent record field is rejected
 todo	wrapping arithmetic uses the distinct wrapping type
