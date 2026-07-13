@@ -333,6 +333,7 @@ pass	a match whose only arm is guarded is non-exhaustive
 pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a member access with no field operand is rejected, not a crash
+pass	a module declaration binds its name in the enclosing scope
 pass	a module value definition registers a reachable export field
 pass	a module with two definitions of the same name is rejected
 pass	a multi-export set of parameterized capturing closures is driven per export
@@ -891,6 +892,7 @@ pass	dividing quantities divides their dimensions
 pass	division by zero traps
 pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
+pass	each definition in a module registers a reachable export field
 pass	encoding a decoded string round-trips to the same bytes
 pass	equality across incompatible dimensions is a compile-time error
 pass	equality applied to one operand is rejected, not a crash
@@ -1222,7 +1224,6 @@ todo	a literal subterm in a quote pattern matches by equality
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a match on an uninhabited scrutinee is exhaustive with zero arms
-todo	a module declaration binds its name in the enclosing scope
 todo	a module function calls a sibling export by name
 todo	a module function is recursive
 todo	a module's delegated capability is reachable as metadata, not as an export
@@ -1296,7 +1297,6 @@ todo	decoding bytes that are not a canonical AST yields the error case, not a tr
 todo	decoding canonical bytes followed by a trailing byte yields the error case
 todo	dropping an absent field from a record is rejected
 todo	dropping fields from a record leaves the remaining fields
-todo	each definition in a module registers a reachable export field
 todo	encoding and decoding a constructor-built AST round-trips to an equal value
 todo	encoding and decoding a constructor-built compound AST round-trips
 todo	eval is optional for macros and interactive use

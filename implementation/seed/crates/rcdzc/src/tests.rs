@@ -23892,6 +23892,120 @@ mod closure_host_resource {
             .expect("round-trip closure-resource core module validates");
     }
 
+    /// DISTINCT-SIGNATURE compiler serializer: `serialize::distinct_sig_resource_core_module` — the core a
+    /// program with TWO signature groups emits — is structurally valid. Group 0 = `inc : (-> Int64 Int64)`
+    /// (lifted `(i64)->i64`), group 1 = `isz : (-> Int64 Bool)` (lifted `(i64)->i32`). Each group gets its
+    /// own `resource-new-<g>`/`resource-rep-<g>` intrinsics + its own make + call. Pins the N-resource-type
+    /// core index layout the distinct-signature oracle proved runnable.
+    #[test]
+    fn distinct_sig_resource_core_module_is_structurally_valid() {
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::backend::wasm::serialize::{ClosureMake, SigGroup};
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        let boolt = Ty::Bool;
+        let imports = vec![
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.drop,
+            OPS.get_int,
+        ];
+        let fn_ii = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone())); // (-> Int64 Int64)
+        let fn_ib = Ty::Fn(Box::new(s64.clone()), Box::new(boolt.clone())); // (-> Int64 Bool)
+        // Two export bodies, each `() -> own<closure>`: build a 1-slot cell holding box-int(slot).
+        let export_body = |slot: i64, ret: Ty| SelectedFunc {
+            params: vec![],
+            ret,
+            code: vec![
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0),
+                Lir::ConstI64(slot),
+                Lir::CallImport("box-int"),
+                Lir::CallImport("arr-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        // lifted-inc `(env, x) -> i64` = x + 1; lifted-isz `(env, x) -> i32` = (x == 0).
+        let lifted_inc = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: s64.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(1), Lir::I64Add],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let lifted_isz = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: boolt.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(0), Lir::I64Eq],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let funcs = vec![
+            export_body(0, fn_ii.clone()),
+            export_body(1, fn_ib.clone()),
+            lifted_inc,
+            lifted_isz,
+        ];
+
+        let import_base = imports.len() as u32 + 2 * 2; // k + 2 intrinsics per group × 2 groups
+        let layout = Layout::with_lifted(
+            vec![
+                ExportPlan { name: "inc".into(), def: 0, body: crate::ast::StructId(0), params: vec![], result: fn_ii.clone() },
+                ExportPlan { name: "isz".into(), def: 1, body: crate::ast::StructId(0), params: vec![], result: fn_ib.clone() },
+            ],
+            vec![0, 1],
+            import_base,
+            vec![
+                LiftedLambda { body: crate::ast::StructId(0), params: vec![(crate::ast::StructId(0), s64.clone())], ret_ty: s64.clone(), captures: vec![] },
+                LiftedLambda { body: crate::ast::StructId(0), params: vec![(crate::ast::StructId(0), s64.clone())], ret_ty: boolt.clone(), captures: vec![] },
+            ],
+            vec![true, true],
+        );
+        let groups = vec![
+            SigGroup {
+                makes: vec![ClosureMake { export_name: "make-inc".into(), export_abs: import_base, param_vts: vec![] }],
+                arg_vts: vec![ValType::I64],
+                ret_vt: ValType::I64,
+                lifted_slot: 0, // lifted-inc is table slot 0
+            },
+            SigGroup {
+                makes: vec![ClosureMake { export_name: "make-isz".into(), export_abs: import_base + 1, param_vts: vec![] }],
+                arg_vts: vec![ValType::I64],
+                ret_vt: ValType::I32, // Bool → i32
+                lifted_slot: 1, // lifted-isz is table slot 1
+            },
+        ];
+
+        let core = crate::backend::wasm::serialize::distinct_sig_resource_core_module(
+            &funcs, &imports, &groups, &layout,
+        )
+        .expect("distinct-signature closure-resource core serializes");
+
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&core)
+            .expect("distinct-signature closure-resource core module validates");
+    }
+
     /// C-HOST-1 END-TO-END (the whole COMPILER pipeline): a real `(def (main) (fn (x) (+ x 1)))` program
     /// compiles to a closure-resource component (`emit_closure_resource` → `closure_resource_core_module`
     /// → `assemble_closure_resource`), and the HOST calls it — `make()` → closure handle, `call(handle, 5)`
