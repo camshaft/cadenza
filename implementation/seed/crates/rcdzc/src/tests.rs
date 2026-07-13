@@ -8854,6 +8854,26 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_narrower_int_operand_to_a_float_operator_nests_the_int64_widening() {
+        // `of-int : Int64 → Float` — it takes EXACTLY Int64. For a NARROWER operand (`x : Int32`) a bare
+        // `(Float64.of-int x)` would ITSELF fail (Int32 ≠ Int64), so the fix must first widen:
+        // `(Float64.of-int (Int64.of x))`. This is the correctness fix for the D7 gap — a suggested fix
+        // must resolve the fault in ONE shot, not cascade to the next mismatch.
+        let d = first_error("(module m (def (f (: x Int32)) (+. x 2.0)) (export f))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!(
+                "(Float64.of-int (Int64.of {}))",
+                crate::abi::WRAP_HOLE
+            ))
+            .as_deref(),
+            "a narrower int nests the Int64 widening: {}",
+            d.message
+        );
+    }
+
+    #[test]
     fn a_non_numeric_mismatch_to_a_float_operator_carries_no_coercion_fix() {
         // The coercion fix fires ONLY for an Int→Float mismatch — a Bool operand to `+.` is a plain
         // CDZ0203/CDZ0301 with no `of-int` repair (converting a Bool to a float is not the fix).

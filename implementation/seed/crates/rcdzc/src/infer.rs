@@ -1884,24 +1884,43 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                                 sat.render_name()
                             ),
                         ));
-                    } else if let (Ty::Float(_), Ty::Int(_)) = (&sparam, &sat) {
+                    } else if let (Ty::Float(_), Ty::Int(actual_int)) = (&sparam, &sat) {
                         // An INTEGER operand where a FLOAT is expected (`(+. x 2.0)` with `x : Int64`) —
                         // the numeric model has NO silent promotion, so this is CDZ0301. But it has a
                         // mechanical repair: the corpus-blessed `(<FloatType>.of-int …)` conversion
-                        // (`06-numeric-model.sexp` — `(+. (Float64.of-int 1) 2.0)`). Suggest wrapping the
-                        // integer operand in the EXPECTED float type's `of-int` op — the float type's own
+                        // (`06-numeric-model.sexp` — `(+. (Float64.of-int 1) 2.0)`). The float type's own
                         // rendered name gives the module (`Float64`/`Float32`), so the ctor is derived, not
                         // hard-coded (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
                         // Fix). The reject KEEPS its unify-produced message + code; the fix rides alongside.
+                        //
+                        // ⚠ `of-int : Int64 → Float` — it takes EXACTLY `Int64`. So a bare
+                        // `(Float64.of-int x)` is correct ONLY when the operand is already `Int64`; for a
+                        // NARROWER int (`x : Int32`) it must first widen `(Int64.of x)`, giving the nested
+                        // `(Float64.of-int (Int64.of x))`. Emit the operand-width-aware form so the
+                        // suggested fix actually type-checks in one shot (verified by test), not a fix that
+                        // just cascades to the next mismatch.
                         let float_name = sparam.render_name();
-                        out.push(reject.with_fix(Fix::wrap_heuristic(
-                            arg,
-                            format!("({float_name}.of-int "),
-                            ")",
-                            format!(
-                                "convert the integer to {float_name} with `{float_name}.of-int`"
-                            ),
-                        )));
+                        let (prefix, suffix, verb) = if actual_int.ground_width() == 64
+                            && actual_int.ground_signed()
+                        {
+                            (
+                                format!("({float_name}.of-int "),
+                                ")".to_string(),
+                                format!(
+                                    "convert the integer to {float_name} with `{float_name}.of-int`"
+                                ),
+                            )
+                        } else {
+                            // Non-Int64 operand: widen to Int64 first, then to the float.
+                            (
+                                format!("({float_name}.of-int (Int64.of "),
+                                "))".to_string(),
+                                format!(
+                                    "convert to {float_name} with `{float_name}.of-int (Int64.of …)`"
+                                ),
+                            )
+                        };
+                        out.push(reject.with_fix(Fix::wrap_heuristic(arg, prefix, suffix, verb)));
                     } else if let (Ty::Int(expected), Ty::Int(_)) = (&sparam, &sat)
                         && crate::ty::ALIASED_INT_WIDTHS.contains(&expected.ground_width())
                     {
