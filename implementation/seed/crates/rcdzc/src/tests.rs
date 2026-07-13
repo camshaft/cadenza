@@ -13541,6 +13541,35 @@ mod stage1 {
     }
 
     #[test]
+    fn a_definition_may_carry_a_leading_doc_ignored_for_the_value() {
+        // 11-modules "a value definition may carry a leading doc, like a function definition": a `(doc …)`
+        // form right after the name/signature documents the def and is NOT part of the value — a
+        // definition is "a value, function, type" (glossary), so the doc affordance is uniform across
+        // kinds. `strip_def_docs` removes it at load, so every def-body reader (`tail.get(1)`) sees the
+        // real body. (Before, the doc was mis-read AS the body → "unbound name doc".)
+        // VALUE def with a doc → the value, doc ignored.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def answer (doc \"the answer\") 42) (def (main) answer) (export main))",
+        )))
+        .expect("a value def may carry a leading doc");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
+        // FUNCTION def (with params) + a doc → the function computes, doc ignored. Pins the symmetry the
+        // spec requires (the doc cannot depend on which def kind).
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (dbl x) (doc \"doubles x\") (* x 2)) (def (main) (dbl 3)) (export main))",
+        )))
+        .expect("a function def may carry a leading doc");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 6);
+        // The compiler-table idiom the spec cites: a documented value def binding a record, projected by a
+        // sibling — `(def op (doc "opcode bytes") (record …))`.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def op (doc \"opcode bytes\") (record (add 1) (sub 2))) (def (main) (. op sub)) (export main))",
+        )))
+        .expect("a documented value def may bind a record");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 2);
+    }
+
+    #[test]
     fn a_do_local_declaration_scope_is_backward_only() {
         // Sequential scope: a form sees only the declarations BEFORE it. A FORWARD reference (`y`'s value
         // `(+ x 1)` references `x` declared AFTER it) is unbound — a declaration does not see later ones.

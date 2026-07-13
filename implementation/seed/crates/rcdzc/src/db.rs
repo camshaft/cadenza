@@ -709,6 +709,11 @@ impl Db {
     /// linked package is just one bigger arena with a resolution overlay.
     pub fn load_linked(ast: Arenas, linkage: Option<crate::link::Linkage>) -> Db {
         let mut ast = ast;
+        // Normalize away a leading `(doc …)` on every `(def …)` BEFORE anything reads a def body: a
+        // documentation form after the signature is metadata, not the value, and every body reader takes
+        // `tail.get(1)` — so an un-stripped doc would be mis-read as the body. Done once here, in place
+        // (no new nodes, ids unchanged), so every def kind is fixed uniformly (`strip_def_docs`).
+        strip_def_docs(&mut ast);
         // The program's node count, captured BEFORE the prelude appends — the boundary between user
         // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
         // are the user program; ids at/above are prelude or evaluator-synthesized.
@@ -1679,6 +1684,55 @@ type TopScan = (
     Vec<EffectDecl>,
     Vec<ModuleDecl>,
 );
+
+/// Strip a LEADING `(doc …)` form from every `(def …)` in the arena, IN PLACE. A definition — value,
+/// function, or nullary — may carry a documentation form immediately after its name/signature that
+/// documents it and is NOT part of the value (`glossary`: a definition is "a value, function, type", so
+/// the doc affordance cannot depend on which — `(def (f) (doc "…") body)` AND `(def answer (doc "…")
+/// 42)` both bind ignoring the doc). Every consumer reads a def's body as `tail.get(1)` (the element right
+/// after the signature), so an un-stripped `(doc …)` would be mis-read AS the body ("unbound name doc").
+/// This normalizes every `(def sig (doc …)… body)` to `(def sig body)` at load — one place, so every def
+/// KIND (top-level, do-local, module member) is fixed uniformly. The def keeps its `StructId` (only its
+/// child list shrinks); the orphaned doc node stays in the arena, unreferenced.
+///
+/// Conservative: only a `(doc …)`-HEADED form BETWEEN the signature and the LAST tail element is dropped
+/// (the body is always last). A def with ≤1 tail element, or whose only post-sig element is the body, is
+/// untouched — byte-identical to before for every doc-less program.
+fn strip_def_docs(ast: &mut Arenas) {
+    for i in 0..ast.structure.len() {
+        let id = StructId(i as u32);
+        if ast.as_form(id, "def").is_none() {
+            continue;
+        }
+        // The full child list `[def-head, sig, middle…, body]` — need the head to rebuild it. Nothing to
+        // strip unless there is a middle region (a def of `[head, sig, body]` = 3 children is minimal).
+        let Struct::List(children) = ast.get(id) else {
+            continue;
+        };
+        if children.len() <= 3 {
+            continue;
+        }
+        // Keep the head + signature and the body (last); drop any `(doc …)`-headed form between them. A
+        // non-doc middle element is left in place (defensive — a malformed multi-body def is diagnosed
+        // elsewhere, not silently reshaped here).
+        let head = children[0];
+        let sig = children[1];
+        let body = children[children.len() - 1];
+        let middle = &children[2..children.len() - 1];
+        let middle_kept: Vec<StructId> = middle
+            .iter()
+            .copied()
+            .filter(|&m| ast.head_name(m) != Some("doc"))
+            .collect();
+        if middle_kept.len() == middle.len() {
+            continue; // no doc form found — leave the def untouched
+        }
+        let mut kept = vec![head, sig];
+        kept.extend(middle_kept);
+        kept.push(body);
+        ast.structure[i] = Struct::List(kept);
+    }
+}
 
 /// The one cheap top-level scan: gather the definitions, export requests, and `(type …)` declarations
 /// from the top form only, without entering any body. Recognizes `(module NAME item…)`, a bare
