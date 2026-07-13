@@ -4393,14 +4393,25 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
 /// the table is referenced by index (`Ref`), closing the cycle. `None` if any payload type has no
 /// renderable shape yet (a Float/Str/Bytes payload — a later slice; the escape then declines cleanly).
 pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
-    let crate::ty::Ty::Sum { name, .. } = ty else {
-        return None;
-    };
     let mut builder = ShapeTableBuilder::default();
-    let inner = builder.shape_of(db, ty)?;
-    // The outermost shape is `Named(<type name>, inner)` — the `(: <value> <Type>)` value-form frame.
-    let named = builder.push(ShapeNode::Named(name.clone(), inner));
-    Some(builder.encode(named))
+    match ty {
+        // A boxed sum: build its shape, then wrap in `Named(<type name>, …)` — the `(: <value> <Type>)`
+        // value-form frame.
+        crate::ty::Ty::Sum { name, .. } => {
+            let inner = builder.shape_of(db, ty)?;
+            let named = builder.push(ShapeNode::Named(name.clone(), inner));
+            Some(builder.encode(named))
+        }
+        // A NOMINAL newtype (a recursive one that escapes): its `shape_of` ALREADY produces a
+        // `Named(<type name>, …)` root (the erased-tag frame), so encode it directly — wrapping again
+        // would double-name it. This is what carries the recursive newtype's OWN name to the host
+        // (`(: … Lst)`), where routing on the stripped inner sum would have named it `Option`.
+        crate::ty::Ty::Nominal { .. } => {
+            let root = builder.shape_of(db, ty)?;
+            Some(builder.encode(root))
+        }
+        _ => None,
+    }
 }
 
 /// A shape-table entry (indices reference other entries — recursion closes via `Ref`).
@@ -4489,6 +4500,25 @@ impl ShapeTableBuilder {
                     out.push((head, payload_ix));
                 }
                 self.table[self_ix as usize] = ShapeNode::Sum(out);
+                self_ix
+            }
+            // A NOMINAL newtype is ERASED at run time — the value IS its underlying value — so its shape
+            // is its inner's shape, wrapped in `Named(<type name>, …)` so the host renders `(: <underlying>
+            // <TypeName>)`. Recursion closes on the nominal's OWN `decl` (a RECURSIVE newtype's inner
+            // re-references it): reserve the entry keyed by `decl` BEFORE building the inner (a
+            // self-reference resolves to a `Ref`), then fill it. The inner's `Ty::Sum{decl}` back-edge (the
+            // erased-newtype μ-binder) resolves to this same reserved entry via `sums`, so the shape table
+            // is finite. Reuses `Named`, which the runtime `value-encode` walker already renders.
+            Ty::Nominal {
+                decl, name, inner, ..
+            } => {
+                if let Some(&existing) = self.sums.get(decl) {
+                    return Some(self.push(ShapeNode::Ref(existing)));
+                }
+                let self_ix = self.push(ShapeNode::Unit); // placeholder, filled below
+                self.sums.insert(*decl, self_ix);
+                let inner_ix = self.shape_of(db, inner)?;
+                self.table[self_ix as usize] = ShapeNode::Named(name.clone(), inner_ix);
                 self_ix
             }
             // Float/Str/Bytes payload rendering is a later slice — decline (the escape falls through).

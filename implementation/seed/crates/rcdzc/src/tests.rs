@@ -3687,25 +3687,65 @@ mod runtime_ops {
                 .filter(|i| matches!(i, Lir::I64Eq | Lir::I32Eq | Lir::I64Eqz | Lir::I32Eqz))
                 .count()
         };
-        let ands = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64And | Lir::I32And)).count();
+        let ands = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64And | Lir::I32And))
+                .count()
+        };
         // `(= (& x 15) 100)` — masked value ∈ [0,15], `100` outside → folds to a constant: no eq, no and.
         let outside = lir("(: x Int64)", "(= (: (& x 15) Int64) 100)");
         assert_eq!(eqs(&outside), 0, "outside-range equality drops the eq");
-        assert_eq!(ands(&outside), 0, "outside-range equality drops the mask too (whole expr constant)");
+        assert_eq!(
+            ands(&outside),
+            0,
+            "outside-range equality drops the mask too (whole expr constant)"
+        );
         // A NEGATIVE constant below the nonneg range folds the same way (`x & 15 ∈ [0,15]`, `-1` below).
-        assert_eq!(eqs(&lir("(: x Int64)", "(= (: (& x 15) Int64) -1)")), 0, "below-range → const");
+        assert_eq!(
+            eqs(&lir("(: x Int64)", "(= (: (& x 15) Int64) -1)")),
+            0,
+            "below-range → const"
+        );
         // An IN-RANGE constant is NOT decidable — the compare stays.
-        assert!(eqs(&lir("(: x Int64)", "(= (: (& x 15) Int64) 8)")) >= 1, "in-range equality stays runtime");
+        assert!(
+            eqs(&lir("(: x Int64)", "(= (: (& x 15) Int64) 8)")) >= 1,
+            "in-range equality stays runtime"
+        );
 
         // VALUE PARITY: outside-range folds to false; in-range computes the real answer.
-        assert_eq!(run::<i64>("(: x Int64)", "(if (= (: (& x 15) Int64) 100) 1 0)", &[Val::S64(200)]), 0);
-        assert_eq!(run::<i64>("(: x Int64)", "(if (= (: (& x 15) Int64) 8) 1 0)", &[Val::S64(200)]), 1); // 200&15=8
-        assert_eq!(run::<i64>("(: x Int64)", "(if (= (: (& x 15) Int64) 8) 1 0)", &[Val::S64(199)]), 0); // 199&15=7
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (= (: (& x 15) Int64) 100) 1 0)",
+                &[Val::S64(200)]
+            ),
+            0
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (= (: (& x 15) Int64) 8) 1 0)",
+                &[Val::S64(200)]
+            ),
+            1
+        ); // 200&15=8
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (= (: (& x 15) Int64) 8) 1 0)",
+                &[Val::S64(199)]
+            ),
+            0
+        ); // 199&15=7
 
         // TRAP PRESERVATION: `(% (/ 100 z) 3) ∈ [-2,2]`, `== 5` is unsatisfiable, but the operand divides
         // by zero — the fold must NOT discard that trap.
         assert!(
-            traps("(: z Int64)", "(= (: (% (: (/ 100 z) Int64) 3) Int64) 5)", &[Val::S64(0)]),
+            traps(
+                "(: z Int64)",
+                "(= (: (% (: (/ 100 z) Int64) 3) Int64) 5)",
+                &[Val::S64(0)]
+            ),
             "an unsatisfiable equality must still trap on a div-by-zero operand"
         );
     }
@@ -7944,6 +7984,22 @@ mod match_engine {
     }
 
     #[test]
+    fn a_recursive_newtype_escapes_to_the_host() {
+        // Phase 3: a RECURSIVE newtype RETURNED to the host escapes via the recursive-sum shape walker,
+        // routed on the un-stripped nominal so its OWN name tags the value (`Lst`, not the inner
+        // `Option`). The recursion point (the nested `Mk None`) is tagged `Lst` too. Was a clean DECLINE
+        // pre-Phase-3.
+        let Some(v) = run_heap_value_escape(
+            "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) \
+               (def (main) (Mk (Some (tuple 7 (Mk None))))) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping recursive newtype escape");
+            return;
+        };
+        assert_eq!(v, "(: (Some (tuple 7 (: (None unit) Lst))) Lst)");
+    }
+
+    #[test]
     fn a_newtype_over_a_record_reads_a_field_at_runtime() {
         // The RUNTIME path: a field whose value is behind an `if` can't fold, so `.y` reads the inner
         // record's sorted slot off the (erased) handle — `erase_nominal_steps` / `runtime_member_index`
@@ -8089,32 +8145,27 @@ mod match_engine {
         // instead of the CDZ0302 the explicit `(fn ((: n Int8)) …)` gives. Fixed by recovering the param's
         // context arrow at `type_of` (so the body types narrow) AND wrapping the substituted arg in the
         // recovered `(: arg (Int N))` at β-reduction (so the fit-check fires + travels through copies).
-        let overflows =
-            "(module m (def (app (: g (-> Int8 Int8))) (g 127)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
+        let overflows = "(module m (def (app (: g (-> Int8 Int8))) (g 127)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
         assert_eq!(
             reject_code(overflows).as_deref(),
             Some("CDZ0302"),
             "an unannotated context-Int8 param overflows a const arg like an explicit Int8 param"
         );
         // The `*` variant: 12*12 = 144 > Int8.max 127.
-        let mul =
-            "(module m (def (app (: g (-> Int8 Int8))) (g 12)) (def (main) (app (fn (n) (* n n)))) (export main))";
+        let mul = "(module m (def (app (: g (-> Int8 Int8))) (g 12)) (def (main) (app (fn (n) (* n n)))) (export main))";
         assert_eq!(reject_code(mul).as_deref(), Some("CDZ0302"));
         // UInt8: 255 + 1 = 256 overflows.
-        let uint =
-            "(module m (def (app (: g (-> UInt8 UInt8))) (g 255)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
+        let uint = "(module m (def (app (: g (-> UInt8 UInt8))) (g 255)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
         assert_eq!(reject_code(uint).as_deref(), Some("CDZ0302"));
         // NO OVER-REJECTION: an IN-RANGE const still compiles + runs (g 5 → 5+1 = 6, fits Int8).
-        let in_range =
-            "(module m (def (app (: g (-> Int8 Int8))) (g 5)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
+        let in_range = "(module m (def (app (: g (-> Int8 Int8))) (g 5)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
         assert_eq!(
             reject_code(in_range),
             None,
             "an in-range const through a context-Int8 param must still compile"
         );
         // A WIDE (Int64) context param must NOT be false-rejected — 128 fits Int64.
-        let wide =
-            "(module m (def (app (: g (-> Int64 Int64))) (g 127)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
+        let wide = "(module m (def (app (: g (-> Int64 Int64))) (g 127)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
         assert_eq!(
             reject_code(wide),
             None,
@@ -28520,8 +28571,9 @@ mod closure_host_resource {
         // closure crosses via make/call, the plain export as an ordinary top-level func).
         let mixed = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
                      (def (two) 2) (export inc) (export two))";
-        crate::compile::compile_component(&crate::codec::encode(&parse(mixed)))
-            .expect("a same-signature closure alongside a plain export compiles (mixed-export path)");
+        crate::compile::compile_component(&crate::codec::encode(&parse(mixed))).expect(
+            "a same-signature closure alongside a plain export compiles (mixed-export path)",
+        );
 
         // DISTINCT closure signatures ALONGSIDE a non-closure export → still declines (the distinct-sig
         // resource envelope has no plain-export slot; that composition is a later widening).
