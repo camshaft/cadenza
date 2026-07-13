@@ -23,6 +23,7 @@ pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 holds a value above the signed 64-bit maximum
 pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare conditional keyword is rejected, not a crash
+pass	a bare nullary constructor is the nullary sum value
 pass	a binary integer literal
 pass	a binary literal with digit separators
 pass	a binding form with bindings but no body is rejected, not a crash
@@ -55,6 +56,7 @@ pass	a chained access through an if-of-records composes and shields the untaken 
 pass	a checked result is consumed by matching its Option at run time
 pass	a closure captures the binding in scope where it was created
 pass	a comparison-predicate function returns its boolean result
+pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
@@ -120,6 +122,7 @@ pass	a function binding the same parameter name twice is rejected
 pass	a function bound to a name and then applied
 pass	a function chosen by a runtime condition is applied (false branch)
 pass	a function chosen by a runtime condition is applied (true branch)
+pass	a function declaration in a do block calls an earlier sibling declaration
 pass	a function declaration in a do block is callable by the following forms
 pass	a function is passed as an argument (higher-order)
 pass	a function is returned as a result
@@ -156,6 +159,8 @@ pass	a helper sums two fields of a record parameter
 pass	a hexadecimal integer literal
 pass	a hexadecimal literal is case-insensitive
 pass	a hexadecimal literal with digit separators
+pass	a lambda applied in the scope of the binding it captures observes that binding
+pass	a lambda captures an enclosing function parameter and is applied in its body
 pass	a large whole-valued float renders its full value, not an integer saturation
 pass	a later declaration in a do block sees an earlier one
 pass	a later let binding sees an earlier one in the same let
@@ -279,6 +284,7 @@ pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a program that delegates no effect is pure and never suspends
+pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
 pass	a radix literal with a bad digit is a malformed literal, not an unbound name
 pass	a radix literal with an empty body is a malformed literal, not an unbound name
@@ -366,6 +372,7 @@ pass	a runtime-selected function chosen directly at the application head is appl
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a function's runtime tuple result
+pass	a scalar element is projected from a let-bound runtime tuple
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
 pass	a self-tail call passing a heap-match argument compiles to valid wasm
 pass	a sequencing block discards a pure compound intermediate
@@ -400,6 +407,8 @@ pass	a tail-recursive accumulator over a large runtime count iterates in constan
 pass	a tail-recursive function returning a tuple is tuple-valued
 pass	a three-element runtime tuple is returned as a result
 pass	a trailing digit separator is a malformed literal, not the digits with it dropped
+pass	a transformation maps a syntax tree to a syntax tree and preserves meaning
+pass	a transformation observably rewrites the tree, not just its value
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
 pass	a tuple access out of arity on a function-returned tuple is a type error, not a trap
@@ -786,7 +795,6 @@ todo	a NaN nested in a tuple compares equal under the canonical byte form
 todo	a UInt32 addition that overflows the 32-bit width traps
 todo	a bare arithmetic keyword is rejected, not a crash
 todo	a bare equality keyword is rejected, not a crash
-todo	a bare nullary constructor is the nullary sum value
 todo	a bin arm whose fixed-width segment overruns the input falls through
 todo	a bin pattern binds an integer read from a fixed-width segment
 todo	a bin pattern must consume the whole scrutinee or it does not match
@@ -803,7 +811,6 @@ todo	a char order agrees with its scalar value
 todo	a checked conversion of a negative value into an unsigned type traps
 todo	a checked integer conversion that does not fit traps
 todo	a checked integer conversion that fits succeeds
-todo	a compound element projected from a let-bound runtime tuple is matched
 todo	a conditional with integer and floating-point branches is a type error
 todo	a constructor pattern nested under Some matches a runtime list element
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
@@ -820,7 +827,6 @@ todo	a diverging expression unifies with an integer position
 todo	a factorial that overflows the integer type traps through the recursion
 todo	a final bytes segment binds the remainder after the sized segments
 todo	a final unquote-splice binds the remaining elements as a list
-todo	a function declaration in a do block calls an earlier sibling declaration
 todo	a function deriving a velocity from a distance and a time
 todo	a function whose body always diverges has result type Never
 todo	a header of packed nibbles and a length-prefixed body round-trips
@@ -874,7 +880,6 @@ todo	a plain quote does not evaluate a quasiquote's unquote nested inside it
 todo	a plain record compared to a nominal record of the same shape is a type error
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
-todo	a program's syntax tree is an ordinary value walked recursively across calls
 todo	a projected tuple element IS observed, so its trap occurs (the anchor)
 todo	a quantity is constructed from a numeric value and a unit
 todo	a quantity over an exact rational magnitude divides exactly and derives its dimension
@@ -913,7 +918,6 @@ todo	a runtime string returned across the run boundary renders as its quoted tex
 todo	a runtime string slice addresses scalar values, not bytes
 todo	a runtime symbol compared to an interned constant matches by content
 todo	a runtime symbol that differs from the interned constant does not match
-todo	a scalar element is projected from a let-bound runtime tuple
 todo	a set collapses a duplicate element
 todo	a set is constructed from a list of its elements
 todo	a set with elements of two different types is a type error
@@ -934,8 +938,6 @@ todo	a tail-recursive string accumulator builds a runtime string and its length 
 todo	a top-level value definition binds a name usable by the program's functions
 todo	a top-level value definition binds a record projected by the program's functions
 todo	a trailing bytes segment accepts the leftover the fixed segments leave
-todo	a transformation maps a syntax tree to a syntax tree and preserves meaning
-todo	a transformation observably rewrites the tree, not just its value
 todo	a transformation over the built-in Ast composes across a function call
 todo	a truncating conversion to an unusual width keeps that width's low bits
 todo	a u16 segment encodes an integer big-endian by default

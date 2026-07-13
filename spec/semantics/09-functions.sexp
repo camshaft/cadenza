@@ -28,6 +28,32 @@
               (add-y 4))))
   (output (: 7 Int64)))
 
+; A lambda that references an ENCLOSING binding and is applied INSIDE that binding's scope — the capture
+; is a free variable bound further out, not inside the lambda's own body. core-semantics.md §A Function
+; Value Captures The Bindings In Scope Where It Is Created: `(+ x k)` reads `k` from the enclosing `let`.
+; Applying the lambda β-reduces `(+ 5 k)` and `k` must still resolve to that enclosing `k` — the free
+; variable is PRESERVED across the reduction, not lost. (A generation that copied the free name into an
+; orphan scope would report `k` unbound; this pins that a captured enclosing binding survives.)
+
+(case "a lambda applied in the scope of the binding it captures observes that binding"
+  (doc    "`(let ((k 10)) ((fn (x) (+ x k)) 5))` — the lambda captures `k` from the enclosing `let` and is
+           applied to 5 inside that `let`. The application reduces to `(+ 5 k)` with `k = 10`, yielding
+           15. The captured free variable `k` binds OUTSIDE the lambda body, so β-reducing the application
+           must preserve its resolution to the enclosing `let`, not lose it.")
+  (input  (let ((k 10)) ((fn ((: x Int64)) (+ x k)) 5)))
+  (output (: 15 Int64)))
+
+(case "a lambda captures an enclosing function parameter and is applied in its body"
+  (doc    "The same capture over a def PARAMETER rather than a `let`: `(def (f k) ((fn (x) (+ x k)) 5))`
+           — the lambda captures `f`'s parameter `k` and is applied inside `f`'s body. `f(10)` reduces
+           `(+ 5 k)` with `k = 10` = 15. Pins that an enclosing PARAMETER is captured and preserved
+           across the β-reduction exactly as an enclosing `let` binding is.")
+  (input  (do
+            (def (f (: k Int64)) ((fn ((: x Int64)) (+ x k)) 5))
+            (def (main (: k Int64)) (f k)) (export main)))
+  (call   main (: 10 Int64))
+  (output (: 15 Int64)))
+
 (case "a function is passed as an argument (higher-order)"
   (doc    "Witnesses core-semantics.md §A Function Is A First-Class Value: apply-twice takes a function
            f and a value v and applies f to the result of applying f to v.")

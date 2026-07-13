@@ -10371,6 +10371,37 @@ mod stage1 {
     }
 
     #[test]
+    fn a_lambda_captures_an_enclosing_binding_across_reduction() {
+        // A lambda that references an ENCLOSING binding (a free variable bound further out, NOT inside
+        // its own body) and is applied INSIDE that binding's scope. β-reducing the application must
+        // PRESERVE the free variable's resolution to the enclosing binding — `pin_free_vars` pins it so
+        // `beta_reduce` shares the occurrence rather than copying it into the orphan reduced node (where
+        // it would re-resolve unbound → a spurious CDZ0101, the bug this fixes). `core-semantics.md`
+        // §A Function Value Captures The Bindings In Scope Where It Is Created.
+        // Over an enclosing `let`: `(let ((k 10)) ((fn (x) (+ x k)) 5))` = 15.
+        assert_eq!(
+            run_main("(let ((k 10)) ((fn ((: x Int64)) (+ x k)) 5))"),
+            15
+        );
+        // Two enclosing captures + a nested let: `(+ x a b)` reads `a`,`b` from the enclosing lets.
+        assert_eq!(
+            run_main("(let ((a 2)) (let ((b 3)) ((fn ((: x Int64)) (+ (+ x a) b)) 10)))"),
+            15
+        );
+        // Over an enclosing DEF PARAMETER: `(def (f k) ((fn (x) (+ x k)) 5))`, `f(10)` = 15.
+        let src = "(module m (def (f (: k Int64)) ((fn ((: x Int64)) (+ x k)) 5)) \
+             (def (main (: k Int64)) (f k)) (export main))";
+        assert_eq!(
+            run_returns_with::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
+                "main",
+                &[wasmtime::component::Val::S64(10)]
+            ),
+            15
+        );
+    }
+
+    #[test]
     fn a_runtime_selected_function_applies_via_case_of_case() {
         use wasmtime::component::Val;
         // `((if c f g) x)` with a RUNTIME condition — the function is chosen at run time. The
