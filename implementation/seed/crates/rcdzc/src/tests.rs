@@ -15519,10 +15519,14 @@ mod match_engine {
             2,
             "different op kept"
         );
+        // A DIFFERENT operand on the other side is not subsumable — `(< x 5)` and `(< 10 y)` share no
+        // variable, so neither the same-side subsumption nor the disjoint-interval fold applies: both
+        // compares stay. (`(and (< x 5) (< 10 x))` — same var, opposite direction — is NOT tested here: it
+        // is `x<5 && x>10`, a disjoint pair the interval fold correctly collapses to `false`.)
         assert_eq!(
-            cmps(&lir("(: x Int64)", "(: (and (< x 5) (< 10 x)) Bool)")),
+            cmps(&lir("(: x Int64) (: y Int64)", "(: (and (< x 5) (< 10 y)) Bool)")),
             2,
-            "different side kept"
+            "different variable kept"
         );
 
         // VALUE PARITY: `and` keeps the tighter, `or` the looser — verified across the two bounds.
@@ -15549,6 +15553,79 @@ mod match_engine {
             call_traps(&tb, "f", &[Val::S64(0)]),
             "the kept comparison preserves the operand's trap"
         );
+    }
+
+    #[test]
+    fn opposite_direction_comparisons_fold_when_disjoint_or_covering() {
+        // DISJOINT/COVERING INTERVAL: two OPPOSITE-direction comparisons on the same operand `v` form an
+        // upper half-line `v <= U` and a lower one `v >= L`. `and` (∩ `L <= v <= U`) is EMPTY iff `L > U` →
+        // false; `or` (∪) COVERS everything iff the pieces touch/overlap (`L <= U+1`) → true. Only the
+        // constant verdicts fold; a non-empty ∩ / gapped ∪ is kept. DISCARDS both, gated on `is_trap_free`.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS))
+                .count()
+        };
+        // Disjoint `and` → false (0 cmp); covering `or` → true (0 cmp).
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (< x 5) (> x 10)) Bool)")), 0, "disjoint and → false");
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (< x 5) (> x 3)) Bool)")), 0, "covering or → true");
+        // Boundary: touching `or` (`<= 5` / `>= 6`, `6 <= 5+1`) → true; empty `and` (`<= 5` / `>= 6`) → false.
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (<= x 5) (>= x 6)) Bool)")), 0, "touching or → true");
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (<= x 5) (>= x 6)) Bool)")), 0, "empty and → false");
+        // NON-fold: non-empty ∩ (`< 10` / `> 5`) and gapped ∪ (`< 3` / `> 10`) keep both compares; a
+        // singleton ∩ (`<= 6` / `>= 6`, non-empty at 6) is kept.
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (< x 10) (> x 5)) Bool)")), 2, "non-empty and kept");
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (< x 3) (> x 10)) Bool)")), 2, "gapped or kept");
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (<= x 6) (>= x 6)) Bool)")), 2, "singleton and kept");
+
+        // VALUE PARITY across the boundary.
+        use wasmtime::component::Val;
+        let f = |body: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+            "(module m (def (f (: x Int64)) {body}) (export f))"
+        )))).expect("compile");
+        for x in [0, 3, 5, 12] {
+            assert!(!run_returns_with::<bool>(&f("(and (< x 5) (> x 10))"), "f", &[Val::S64(x)]), "disjoint and @{x}");
+        }
+        for x in [0, 4, 100, -5] {
+            assert!(run_returns_with::<bool>(&f("(or (< x 5) (> x 3))"), "f", &[Val::S64(x)]), "covering or @{x}");
+        }
+        // The gapped-or computes its real (non-constant) value: x=5 is in the gap [3,10] → false.
+        assert!(!run_returns_with::<bool>(&f("(or (< x 3) (> x 10))"), "f", &[Val::S64(5)]), "gapped or @5 = false");
+        // The non-empty-and computes correctly: 5 < x < 10.
+        assert!(run_returns_with::<bool>(&f("(and (< x 10) (> x 5))"), "f", &[Val::S64(7)]));
+        assert!(!run_returns_with::<bool>(&f("(and (< x 10) (> x 5))"), "f", &[Val::S64(3)]));
+        // TRAP SAFETY: a trapping operand in a disjoint-and keeps its trap.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: z Int64)) (if (and (< (/ 100 z) 5) (> (/ 100 z) 10)) 1 0)) (export f))"
+        ))).expect("compile");
+        assert!(call_traps(&tb, "f", &[Val::S64(0)]), "a trapping operand keeps its trap");
     }
 
     #[test]

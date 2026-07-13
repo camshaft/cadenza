@@ -620,6 +620,18 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 _ if let Some(keep) = subsuming_comparison(db, lhs, rhs, is_and) => {
                     core_of(db, keep)
                 }
+                // DISJOINT/COVERING INTERVAL: two comparisons on the SAME operand `v` vs constants forming
+                // OPPOSITE-direction half-lines (one an upper bound `v ≤ U`, the other a lower bound `v ≥
+                // L`). `and` (intersection `L ≤ v ≤ U`) is EMPTY iff `L > U` → `false`; `or` (union) COVERS
+                // everything iff the half-lines touch/overlap (`L ≤ U+1`) → `true`. `(and (< x 5) (> x 10))`
+                // → false, `(or (< x 5) (> x 3))` → true. Only the constant verdicts (a non-empty `and` /
+                // gapped `or` is not a constant — kept). DISCARDS both operands, so gated on `is_trap_free`.
+                _ if let Some(v) = disjoint_or_covering(db, lhs, rhs, is_and)
+                    && is_trap_free(db, lhs)
+                    && is_trap_free(db, rhs) =>
+                {
+                    Core::ConstBool(v)
+                }
                 _ => Core::And { lhs, rhs, is_and },
             },
         },
@@ -7048,6 +7060,71 @@ fn subsuming_comparison(
     // `and` keeps the stronger; `or` keeps the weaker.
     let keep_lhs = if is_and { lhs_stronger } else { !lhs_stronger };
     Some(if keep_lhs { lhs } else { rhs })
+}
+
+/// Normalize a `Core::Compare` on a runtime operand `v` against a constant into an INCLUSIVE half-line
+/// bound on `v`, as `(v, is_upper, bound)` — `is_upper` means `v <= bound`, else `v >= bound`. Handles all
+/// four ops on either operand side (`(< v c)` → `v <= c-1`; `(> v c)` → `v >= c+1`; `(< c v)` = `v > c` →
+/// `v >= c+1`; etc). Bound arithmetic is `i128` so `c±1` never overflows at the i64 extremes. `None` when
+/// the node is not a comparison of a runtime value against a constant. Used by `disjoint_or_covering`.
+fn comparison_halfline(db: &mut Db, id: StructId) -> Option<(StructId, bool, i128)> {
+    let Core::Compare { op, lhs, rhs } = core_of(db, id) else {
+        return None;
+    };
+    let as_int = |db: &mut Db, id: StructId| match core_of(db, id) {
+        Core::ConstInt(v) => v.to_i64().map(|v| v as i128),
+        _ => None,
+    };
+    // `(op v c)` (v on the left) or `(op c v)` (v on the right, which flips the operator's sense).
+    let (v, c, v_left) = match (as_int(db, rhs), as_int(db, lhs)) {
+        (Some(c), _) => (lhs, c, true),
+        (_, Some(c)) => (rhs, c, false),
+        _ => return None,
+    };
+    // Effective operator with `v` on the left (`(op c v)` mirrors: `<`↔`>`, `<=`↔`>=`).
+    let eff = if v_left {
+        op
+    } else {
+        match op {
+            Prim::Lt => Prim::Gt,
+            Prim::Gt => Prim::Lt,
+            Prim::Le => Prim::Ge,
+            Prim::Ge => Prim::Le,
+            other => other,
+        }
+    };
+    // To an inclusive bound: `v < c` ⇒ `v <= c-1`; `v <= c` ⇒ `v <= c`; `v > c` ⇒ `v >= c+1`; `v >= c` ⇒
+    // `v >= c`. (`=`/`Compare` are not half-lines.)
+    match eff {
+        Prim::Lt => Some((v, true, c - 1)),
+        Prim::Le => Some((v, true, c)),
+        Prim::Gt => Some((v, false, c + 1)),
+        Prim::Ge => Some((v, false, c)),
+        _ => None,
+    }
+}
+
+/// For two comparisons forming OPPOSITE-direction half-lines on the SAME operand `v` — one `v <= U`, the
+/// other `v >= L` — decide whether their `and`/`or` is a CONSTANT. `and` (intersection `L <= v <= U`) is
+/// EMPTY iff `L > U` → `Some(false)`; `or` (union) COVERS every value iff the half-lines touch or overlap
+/// (`L <= U + 1`) → `Some(true)`. `None` when the pair is not opposite half-lines on the same `v`, or the
+/// intersection is non-empty (`and`) / the union has a gap (`or`) — those stay runtime. `(and (< x 5) (> x
+/// 10))` → false; `(or (< x 5) (> x 3))` → true. All bound math is `i128` (no overflow at i64 extremes).
+fn disjoint_or_covering(db: &mut Db, lhs: StructId, rhs: StructId, is_and: bool) -> Option<bool> {
+    let (lv, l_upper, lb) = comparison_halfline(db, lhs)?;
+    let (rv, r_upper, rb) = comparison_halfline(db, rhs)?;
+    if l_upper == r_upper || !core_equiv(db, lv, rv) {
+        return None; // need OPPOSITE directions on the SAME operand
+    }
+    // Order them: `u` = the upper bound `v <= U`, `l` = the lower bound `v >= L`.
+    let (upper, lower) = if l_upper { (lb, rb) } else { (rb, lb) };
+    if is_and {
+        // Intersection `lower <= v <= upper` is empty iff `lower > upper`.
+        (lower > upper).then_some(false)
+    } else {
+        // Union `v <= upper || v >= lower` covers all iff the pieces touch/overlap: `lower <= upper + 1`.
+        (lower <= upper + 1).then_some(true)
+    }
 }
 
 /// The NESTED-BITWISE COLLAPSE for an outer TOTAL, ASSOCIATIVE bitwise op (`&`/`|`/`^`) whose operands
