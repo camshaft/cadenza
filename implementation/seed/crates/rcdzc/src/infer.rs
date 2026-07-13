@@ -1173,7 +1173,30 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             if a_qty || b_qty {
                 match prim {
                     crate::resolved::Prim::Add | crate::resolved::Prim::Sub => {
-                        // Keep the (shared) unit; the inner is the operands' joined numeric type.
+                        // The result unit: when both operands are at the SAME unit (scale), keep it (the
+                        // common Layer-1 case — no conversion); when they share a dimension but DIFFER in
+                        // scale (`metre` + `kilometre`), the result is the dimension's REFERENCE unit (the
+                        // deterministic common unit each operand converts to — units-of-measure.md
+                        // §Combining Units Of One Dimension Is Well-Formed). The inner numeric type is the
+                        // lhs quantity's (both share it; the fault check enforces agreement).
+                        if let (
+                            Ty::Qty {
+                                inner: ia,
+                                unit: ua,
+                            },
+                            Ty::Qty { unit: ub, .. },
+                        ) = (&a, &b)
+                        {
+                            let unit = if ua == ub {
+                                ua.clone()
+                            } else {
+                                ua.at_reference()
+                            };
+                            return Ty::Qty {
+                                inner: Box::new((**ia).clone()),
+                                unit,
+                            };
+                        }
                         if let Ty::Qty { inner, unit } = &a {
                             return Ty::Qty {
                                 inner: Box::new((**inner).clone()),
@@ -1890,7 +1913,13 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                             unit: ub,
                         },
                     ) => {
-                        if ua != ub {
+                        // COMPATIBILITY is DIMENSIONAL, not by-unit: two units of one dimension at
+                        // DIFFERENT scales (`metre` + `kilometre`) are well-formed and auto-convert; only
+                        // a DIMENSION mismatch (`metre` + `second`) is CDZ0501 (units-of-measure.md §A
+                        // Dimensional Mismatch Is An Error / §Combining Units Of One Dimension Is
+                        // Well-Formed). So gate on `same_dimension` (the exponent map), NOT `==` (which
+                        // also compares scale — that distinction is TYPE identity, checked at annotation).
+                        if !ua.same_dimension(ub) {
                             trace!(target: "rcdzc::infer", head = head.0, "fault: combining quantities of incompatible dimension (CDZ0501)");
                             out.push(Reject::coded(
                                 Code::DimensionMismatch,

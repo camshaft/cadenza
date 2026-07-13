@@ -9321,6 +9321,62 @@ mod match_engine {
     }
 
     #[test]
+    fn a_unit_scale_distinguishes_type_identity_from_dimensional_compatibility() {
+        // F2-0: a unit carries a compile-time SCALE (num/den) alongside its dimension (exponent map).
+        // `same_dimension` compares the MAP alone (gates `+`/`compare` compatibility — `metre` and
+        // `kilometre` are the SAME dimension, so combinable); `==` compares MAP + SCALE (type identity —
+        // `metre` and `kilometre` are DISTINCT types). `scaled` applies a prefix; the scales multiply
+        // under `mul`/`pow`.
+        use crate::ty::Unit;
+        let metre = Unit::base("metre");
+        let km = metre.scaled(1000, 1).expect("kilo scales");
+        // Same dimension (both length), different type identity (different scale).
+        assert!(
+            metre.same_dimension(&km),
+            "metre and kilometre share the length dimension"
+        );
+        assert_ne!(
+            metre, km,
+            "metre and kilometre are DISTINCT units (different scale)"
+        );
+        assert_eq!(
+            metre.scale(),
+            (1, 1),
+            "a base unit is the scale-1 reference"
+        );
+        assert_eq!(
+            km.scale(),
+            (1000, 1),
+            "a kilo-prefixed unit scales the reference by 1000"
+        );
+        // A different DIMENSION is not compatible.
+        let second = Unit::base("second");
+        assert!(
+            !metre.same_dimension(&second),
+            "metre and second are different dimensions"
+        );
+        // `at_reference` drops the scale (the common unit a conversion lands at).
+        assert_eq!(
+            km.at_reference(),
+            metre,
+            "km at its reference scale IS metre"
+        );
+        // Prefix scales MULTIPLY under `pow`: (km)² has scale 10⁶.
+        assert_eq!(km.pow(2).scale(), (1_000_000, 1), "(km)² scales by 10^6");
+        // A milli prefix is an exact rational scale 1/1000 (a machine-int ratio, no bignum).
+        let mm = metre.scaled(1, 1000).expect("milli scales");
+        assert_eq!(
+            mm.scale(),
+            (1, 1000),
+            "millimetre scales the reference by 1/1000"
+        );
+        assert!(
+            metre.same_dimension(&mm) && metre != mm,
+            "mm: same dimension, distinct unit"
+        );
+    }
+
+    #[test]
     fn a_quantity_erases_to_its_inner_numeric_value() {
         // L1-1b: `Qty.value (Qty.of 5.0 metre)` recovers the erased inner `5.0` — a quantity is CHECKED
         // THEN ERASED, so `Qty.of`/`Qty.value` are runtime no-ops and the compiled program is plain
