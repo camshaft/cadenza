@@ -165,7 +165,10 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             // selection), but its TYPE may be a record carrying the field — a RUNTIME record. Its
             // field type is that field's type in the record type (the runtime read's result type),
             // mirroring how a tuple projection reads its element type off `Ty::Tuple`.
-            _ => match type_of(db, operand) {
+            // A NOMINAL newtype over a record is erased at run time to that record, so a field read sees
+            // through the tag (`strip_nominal`) to the inner record's field type — `(. u x)` on `u :
+            // UserId` (a `(type UserId (Mk (Record (x Int64) …)))`) types as the inner `x`'s type.
+            _ => match type_of(db, operand).strip_nominal() {
                 Ty::Record(fields) => fields.get(&key).cloned().unwrap_or(Ty::Any),
                 _ => Ty::Any,
             },
@@ -2521,7 +2524,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // an `arr-get` at the field's sorted index (mirrors a tuple projection on a runtime
                 // tuple). Only a genuine non-record operand, or a record type lacking the field, faults.
                 crate::eval::Member::NotRecord if !operand_is_poison => {
-                    match type_of(db, operand) {
+                    // A NOMINAL newtype over a record is erased to that record at run time, so member
+                    // access sees through the tag (`strip_nominal`): the access is well-formed iff the
+                    // inner record type has the field. A nominal over a NON-record stays a non-record
+                    // fault (the `other` arm).
+                    match type_of(db, operand).strip_nominal() {
                         Ty::Record(fields) if fields.contains_key(&key) => {}
                         Ty::Record(_) => {
                             trace!(target: "rcdzc::infer", node = id.0, key = %key.name, "fault: runtime record has no such field (CDZ0201)");

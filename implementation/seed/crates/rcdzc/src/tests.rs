@@ -5375,6 +5375,55 @@ mod match_engine {
     }
 
     #[test]
+    fn a_newtype_over_a_record_reads_a_field_through_the_tag() {
+        // A newtype wrapping a record (a "struct") supports `.field` DIRECTLY through the tag: `(. (Mk
+        // rec) x)` sees through the erased nominal to the payload record — the runtime value IS the record
+        // handle, so member access reads the inner field with NO unwrap ceremony. Constant fold.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type UserId (Mk (Record (x Int64) (y Int64)))) \
+                       (def (main) (. (UserId.Mk (record (x 1) (y 2))) x)) (export main))"
+                ),
+                "main"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn a_newtype_over_a_record_reads_a_field_at_runtime() {
+        // The RUNTIME path: a field whose value is behind an `if` can't fold, so `.y` reads the inner
+        // record's sorted slot off the (erased) handle — `erase_nominal_steps` / `runtime_member_index`
+        // see through the tag.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type UserId (Mk (Record (x Int64) (y Int64)))) \
+                       (def (main) (. (UserId.Mk (record (x 5) (y (if true 9 0)))) y)) (export main))"
+                ),
+                "main"
+            ),
+            9
+        );
+    }
+
+    #[test]
+    fn a_newtype_over_a_record_still_rejects_a_missing_field() {
+        // The tag does NOT swallow the closed-record check: `.z` on a newtype over `(Record (x …))`
+        // rejects (CDZ0201) exactly as it would on the bare record — seeing through the tag reaches the
+        // SAME field-set validation.
+        assert_eq!(
+            reject_code(
+                "(module m (type UserId (Mk (Record (x Int64)))) \
+                   (def (main) (. (UserId.Mk (record (x 1))) z)) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201")
+        );
+    }
+
+    #[test]
     fn a_newtype_wrong_constructor_pattern_is_a_type_error() {
         // A `(Some x)` pattern over a `UserId` scrutinee names a constructor of ANOTHER type — a type
         // confusion the matcher must REJECT (CDZ0203), the nominal analogue of the boxed-sum
