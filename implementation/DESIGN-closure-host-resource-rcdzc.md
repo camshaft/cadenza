@@ -313,14 +313,25 @@ the component type. The new work:
   +3 corpus cases (→21p/1todo: make-adder→apply-it, capture-tracking, a consumer applying the closure TWICE)
   + e2e compiler test (`a_produced_closure_round_trips_through_a_consumer_export`) + a consumer-only decline
   test. Gate 1167p/0f, baseline 1329. ⚠ scalar closure args/result still; ONE closure param per consumer.
-- **C-HOST-5 — the `borrow<t>` / dtor fix (shared with the escape).** Root-cause the
-  wasmtime-37 borrow trap; switch `call` to `borrow<t>` and the export result to a properly
-  dtor'd `own<t>`; retire the deliberate leak. Also fixes the value-heap `encode` leak
-  (`envelope.rs:1052`). One fix, two beneficiaries.
-- **C-HOST-5 — the `borrow<t>` / dtor fix (shared with the escape).** Root-cause the
-  wasmtime-37 borrow trap; switch `call` to `borrow<t>` and the export result to a properly
-  dtor'd `own<t>`; retire the deliberate leak. Also fixes the value-heap `encode` leak
-  (`envelope.rs:1052`). One fix, two beneficiaries.
+- **✅ C-HOST-5 (the LEAK FIX) COMPLETE `@e10fef1b` — own-owns-and-drops.** A closure make+call and a
+  produce→consume round trip now leave NO live heap cell. `make`/a producer allocates the closure cell;
+  `call` and a round-trip consumer take the closure as `own<t>` (the canonical ABI transfers ownership
+  INTO them), so each owns the cell's last reference — each RELEASES it (`heap.drop(rep)`) AFTER the
+  dispatch returns (the lifted body finished BORROWING the env for its captures), balancing `make`'s
+  alloc. The consumer wrapper drops each closure param ONCE, after the body — verified against a
+  `twice-plus` consumer applying the closure twice (`(+ (g x) (g x))`). 🔑 This is the value-heap
+  escape's own-owns-and-drops fix reused: `resource.rep` on a BORROWED self TRAPS in wasmtime 37, so
+  `call`/consumers keep `own<t>` and drop the rep themselves rather than a `borrow<t>` + host-drop dtor
+  (the dead end the escape root-caused, [[rcdzc-r1-resource-encode-linking-findings]]). +2 leak probes
+  (`a_closure_call_leaves_no_live_objects`, `a_round_trip_leaves_no_live_objects`, #[ignore] — need the
+  debug-counters runtime; live-objects==0). Gate 1174p/0f. ⚠ A genuine `borrow<t>` handle for
+  REPEATED-call callbacks stays blocked upstream (wasmtime-37 borrow trap); own-per-call + self-drop is
+  the sound leak-free posture today — a stored host callback is single-use per handle.
+- **REMAINING (post-C-HOST-5, all optional widenings):** (1) genuine `borrow<t>` repeated-call handle
+  (blocked on the wasmtime-37 borrow trap — an upstream fix or a workaround); (2) widen closure
+  args/result beyond aliased scalar widths; (3) distinct-signature multi-export (N resource types); (4) a
+  consumer with MORE than one closure param; (5) a compound/closure-typed closure ARG. The core vertical
+  (Direction 1 + the round-trip + leak-free) is COMPLETE.
 
 ## Risks / open questions
 
