@@ -6506,6 +6506,62 @@ mod runtime_ops {
     }
 
     #[test]
+    fn nested_or_and_xor_by_constants_collapse_to_a_single_op() {
+        // `(| (| v C1) C2)` → `(| v (C1|C2))` and `(^ (^ v C1) C2)` → `(^ v (C1^C2))` — the OR/XOR
+        // analogues of the AND collapse: all three are total + associative. One op instead of two; the
+        // same-operand fold (`| a a`→a, `^ a a`→0) is not shadowed; a MIXED op pair (`(| (& …) …)`) is
+        // left intact.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let ors = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Or | Lir::I32Or)).count();
+        let xors = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Xor | Lir::I32Xor)).count();
+        let ands = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64And | Lir::I32And)).count();
+        // `(| (| x 5) 3)` → one `or`; `(^ (^ x 5) 3)` → one `xor`; constant-left too.
+        assert_eq!(ors(&lir("(: x Int64)", "(: (| (| x 5) 3) Int64)")), 1, "two ors → one");
+        assert_eq!(ors(&lir("(: x Int64)", "(: (| 5 (| x 3)) Int64)")), 1, "left-const or → one");
+        assert_eq!(xors(&lir("(: x Int64)", "(: (^ (^ x 5) 3) Int64)")), 1, "two xors → one");
+        // Same-operand folds are NOT shadowed: `(^ x x)` → 0 (no xor), `(| x x)` → x (no or).
+        assert_eq!(xors(&lir("(: x Int64)", "(: (^ x x) Int64)")), 0, "^ a a → 0");
+        assert_eq!(ors(&lir("(: x Int64)", "(: (| x x) Int64)")), 0, "| a a → a");
+        // A MIXED op pair (`(| (& x 240) 15)`) is NOT collapsed — keeps both.
+        let mixed = lir("(: x Int64)", "(: (| (& x 240) 15) Int64)");
+        assert_eq!(ors(&mixed) + ands(&mixed), 2, "and-then-or keeps both ops");
+
+        // VALUE PARITY.
+        assert_eq!(run::<i64>("(: x Int64)", "(: (| (| x 5) 3) Int64)", &[Val::S64(8)]), 15); // 8|7
+        assert_eq!(run::<i64>("(: x Int64)", "(: (| (| x 5) 3) Int64)", &[Val::S64(16)]), 23);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (^ (^ x 5) 3) Int64)", &[Val::S64(10)]), 12); // 10^6
+        assert_eq!(run::<i64>("(: x Int64)", "(: (^ (^ x 5) 3) Int64)", &[Val::S64(6)]), 0); // 6^6
+        // Double complement `(^ (^ x -1) -1)` = `x ^ 0` = x.
+        assert_eq!(run::<i64>("(: x Int64)", "(: (^ (^ x -1) -1) Int64)", &[Val::S64(42)]), 42);
+    }
+
+    #[test]
     fn nested_right_shifts_collapse_to_a_single_shift() {
         // `(>> (>> v A) B)` → `(>> v (A+B))` when A+B < width — a right shift is total, and the inner and
         // outer `>>` are the same kind, so composing drops the same low A+B bits as one shift. Bounded by
