@@ -7484,6 +7484,63 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_idempotent_bitwise_op_by_the_same_value_twice_collapses_to_one() {
+        // IDEMPOTENT-BITWISE COLLAPSE: `(& (& v w) w)` → `(& v w)` and `(| (| v w) w)` → `(| v w)` — `&`/`|`
+        // are idempotent (`w op w == w`), so re-applying `op w` is a no-op. Covers a RUNTIME `w` the
+        // constant `nested_bitwise_collapse` cannot. Both operands are KEPT (the inner node is retained), so
+        // no trap is dropped. A DISTINCT third operand does NOT collapse. Pins one op at the Lir level +
+        // value parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let ors = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Or)).count();
+        let ands = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64And)).count();
+        // Runtime `w`, commuted inner, outer order — all collapse to ONE op.
+        assert_eq!(ors(&lir("(: x Int64) (: y Int64)", "(: (| (: (| x y) Int64) y) Int64)")), 1, "| (| x y) y → one");
+        assert_eq!(ors(&lir("(: x Int64) (: y Int64)", "(: (| (: (| y x) Int64) y) Int64)")), 1, "commuted inner");
+        assert_eq!(ors(&lir("(: x Int64) (: y Int64)", "(: (| y (: (| x y) Int64)) Int64)")), 1, "outer order");
+        assert_eq!(ands(&lir("(: x Int64) (: y Int64)", "(: (& (: (& x y) Int64) y) Int64)")), 1, "& (& x y) y → one");
+        // A DISTINCT third operand does NOT collapse — both ops stay.
+        assert_eq!(ors(&lir("(: x Int64) (: y Int64) (: z Int64)", "(: (| (: (| x y) Int64) z) Int64)")), 2, "distinct z kept");
+
+        // VALUE PARITY.
+        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (| (: (| x y) Int64) y) Int64)", &[Val::S64(12), Val::S64(10)]), 14);
+        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (& (: (& x y) Int64) y) Int64)", &[Val::S64(14), Val::S64(10)]), 10);
+        assert_eq!(run::<i64>("(: x Int64) (: y Int64)", "(: (| y (: (| x y) Int64)) Int64)", &[Val::S64(12), Val::S64(10)]), 14);
+        // The same-operand `(| a a)` → a fold is NOT shadowed.
+        assert_eq!(run::<i64>("(: a Int64)", "(: (| a a) Int64)", &[Val::S64(7)]), 7);
+        // TRAP SAFETY: both operands are retained, so a trapping `v = (/ 100 z)` still ÷0-traps.
+        assert!(
+            traps("(: z Int64) (: y Int64)", "(| (: (| (: (/ 100 z) Int64) y) Int64) y)", &[Val::S64(0), Val::S64(5)]),
+            "the idempotent collapse retains both operands — a trapping operand keeps its trap"
+        );
+    }
+
+    #[test]
     fn nested_right_shifts_collapse_to_a_single_shift() {
         // `(>> (>> v A) B)` → `(>> v (A+B))` when A+B < width — a right shift is total, and the inner and
         // outer `>>` are the same kind, so composing drops the same low A+B bits as one shift. Bounded by

@@ -6475,6 +6475,20 @@ fn arith_identity(
             trace!(target: "rcdzc::fold", node = v.0, "XOR cancellation (^ (^ v w) w) → v");
             Some(core_of(db, v))
         }
+        // IDEMPOTENT-BITWISE COLLAPSE: `(OP (OP v w) w)` → `(OP v w)` for `&`/`|` (idempotent: `w OP w == w`,
+        // so re-applying `OP w` changes nothing), where the outer operand is `core_equiv` to `w` in the
+        // inner op. Covers a RUNTIME `w` (`(| (| x y) y)` → `(| x y)`); the CONSTANT case already collapses
+        // via `nested_bitwise_collapse` (`(| x (w|w))` = `(| x w)`). Unlike XOR-cancel, this KEEPS the inner
+        // `(OP v w)` node — BOTH operands survive — so NO `is_trap_free` guard is needed (any trap in `v`/`w`
+        // is still evaluated). Returns the inner node's core. `nested_shift_combine` — not `nested_bitwise_
+        // collapse` — placement before it is fine (the collapse only fires on a CONSTANT operand, distinct
+        // from this same-runtime-operand shape). `idempotent_bitwise_collapse` returns the inner node.
+        Prim::BitAnd | Prim::BitOr
+            if let Some(inner) = idempotent_bitwise_collapse(db, op, lhs, rhs) =>
+        {
+            trace!(target: "rcdzc::fold", node = inner.0, ?op, "idempotent bitwise (OP (OP v w) w) → (OP v w)");
+            Some(core_of(db, inner))
+        }
         // NESTED-BITWISE COLLAPSE: `(OP (OP v C1) C2)` → `(OP v (C1 ⊙ C2))` for a TOTAL, ASSOCIATIVE
         // bitwise op — `&`/`|`/`^`. Two constant operations on the same value collapse to ONE by folding
         // the constants (`(& (& x 255) 15)`→`(& x 15)`, `(| (| x 5) 3)`→`(| x 7)`, `(^ (^ x 5) 3)`→`(^ x
@@ -6698,6 +6712,36 @@ fn xor_cancels(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<(StructId, S
             Some((il, ir)) // (v, w)
         } else if core_equiv(db, il, outer_w) {
             Some((ir, il)) // (v, w) — inner XOR is commutative
+        } else {
+            None
+        }
+    };
+    check(db, lhs, rhs).or_else(|| check(db, rhs, lhs))
+}
+
+/// IDEMPOTENT-BITWISE COLLAPSE for an outer `(op lhs rhs)` where `op` is `&` or `|`: when one operand is
+/// an inner `(op v w)` (the SAME op) and the OTHER outer operand is `core_equiv` to `w`, return the inner
+/// node — `(op (op v w) w) == (op v w)` because `&`/`|` are idempotent (`w op w == w`) and associative.
+/// Covers a RUNTIME `w` the constant-folding `nested_bitwise_collapse` cannot (`(| (| x y) y)` → `(| x
+/// y)`). Both outer orders and `w` on either side of the inner op are tried. The inner `(op v w)` node is
+/// RETAINED, so both `v` and `w` are still evaluated — no trap is dropped (no `is_trap_free` needed).
+fn idempotent_bitwise_collapse(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<StructId> {
+    // `inner` must be `(op v w)` with the SAME op; `outer_w` must match one of its operands.
+    let check = |db: &mut Db, inner: StructId, outer_w: StructId| -> Option<StructId> {
+        let Core::Arith {
+            op: inner_op,
+            lhs: il,
+            rhs: ir,
+        } = core_of(db, inner)
+        else {
+            return None;
+        };
+        if inner_op != op {
+            return None;
+        }
+        // The outer operand equals ONE side of the inner op → re-applying `op` by it is a no-op.
+        if core_equiv(db, il, outer_w) || core_equiv(db, ir, outer_w) {
+            Some(inner)
         } else {
             None
         }
