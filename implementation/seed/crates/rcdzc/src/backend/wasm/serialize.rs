@@ -1432,6 +1432,285 @@ pub fn multi_closure_resource_core_module(
     Ok(core)
 }
 
+/// One parameter of a round-trip CONSUMER export ([`ClosureConsume`]): either the closure RESOURCE being
+/// handed back (its boundary handle is `resource.rep`'d to the guest cell before the consumer body runs)
+/// or an ordinary SCALAR passed straight through.
+#[derive(Clone, Copy)]
+pub enum ConsumeParam {
+    /// The closure resource — its core param is an i32 resource handle; the wrapper `resource.rep`s it to
+    /// the guest cell the consumer body expects (which treats the closure as a plain cell handle).
+    Closure,
+    /// A scalar param — passed through unchanged.
+    Scalar(ValType),
+}
+
+/// One CONSUMER export for the round-trip (C-HOST-4): a Cadenza export whose PARAMETER is a closure the
+/// host hands back (`(def (apply-it (: g (-> Int64 Int64)) (: x Int64)) (g x))`). The consumer BODY is
+/// selected normally (its closure param is a plain cell handle, applied via `Core::CallClosure`); the
+/// serializer emits a WRAPPER that `resource.rep`s each closure param (boundary handle → guest cell)
+/// before calling the body — the exact mirror of how `make` wraps a producer body with `resource.new`.
+#[derive(Clone)]
+pub struct ClosureConsume {
+    /// The boundary export name (verbatim source name, e.g. `apply-it`).
+    pub export_name: String,
+    /// The consumer BODY's core function index — the wrapper calls it with the rep'd cells + scalars.
+    pub consume_abs: u32,
+    /// The params in order — a `Closure` gets a `resource.rep`, a `Scalar` passes through.
+    pub params: Vec<ConsumeParam>,
+    /// The consumer's result valtype.
+    pub ret_vt: ValType,
+}
+
+/// The ROUND-TRIP closure-resource core module (C-HOST-4): N producer `make-<name>` functions (as in
+/// [`multi_closure_resource_core_module`]) PLUS M consumer exports that take a closure resource back and
+/// apply it. Producers and consumers share the ONE resource type + funcref table (the closure the host
+/// holds was lifted in THIS module, so a consumer's `call_indirect` resolves against the same in-program
+/// lifted lambda by signature). Each consumer wrapper `resource.rep`s its closure param(s) to the guest
+/// cell, then calls the consumer body. Layout: imports 0..k+2, n defined bodies, then N makes, then M
+/// consumer wrappers (no shared `call` method — a round-trip program applies the closure via its OWN
+/// consumer export, not a resource method).
+#[allow(clippy::too_many_arguments)]
+pub fn roundtrip_resource_core_module(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    makes: &[ClosureMake],
+    consumers: &[ClosureConsume],
+    lifted_type_idx: u32,
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    use crate::backend::wasm::wasm_abi::op;
+    let k = imports.len();
+    let n = funcs.len();
+    let nmk = makes.len();
+    let ncons = consumers.len();
+    let vt_byte = |v: ValType| match v {
+        ValType::I32 => wasm_abi::CORE_I32,
+        ValType::I64 => wasm_abi::CORE_I64,
+        ValType::F32 => wasm_abi::CORE_F32,
+        ValType::F64 => wasm_abi::CORE_F64,
+    };
+    // A consumer's boundary/core param valtype: a closure param crosses as an i32 resource handle; a
+    // scalar as its own valtype.
+    let consume_param_vt = |p: &ConsumeParam| match p {
+        ConsumeParam::Closure => ValType::I32,
+        ConsumeParam::Scalar(v) => *v,
+    };
+
+    // ── Type section ── import functypes 0..k, resource-new/rep (k, k+1), one per defined body, then one
+    // make functype per make, then one consumer functype per consumer.
+    let mut type_items = Vec::new();
+    for o in imports {
+        type_items.extend_from_slice(&import_functype(o));
+    }
+    let i32_to_i32 = {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        t
+    };
+    type_items.extend_from_slice(&i32_to_i32); // resource-new (k)
+    type_items.extend_from_slice(&i32_to_i32); // resource-rep (k+1)
+    let defined_type_base = k + 2;
+    for f in funcs {
+        type_items.extend_from_slice(&functype(f)?);
+    }
+    let make_type_base = defined_type_base + n;
+    for mk in makes {
+        let params: Vec<u8> = mk.param_vts.iter().map(|v| vt_byte(*v)).collect();
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(params.len(), &params));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        type_items.extend_from_slice(&t);
+    }
+    let consume_type_base = make_type_base + nmk;
+    for c in consumers {
+        let params: Vec<u8> = c
+            .params
+            .iter()
+            .map(|p| vt_byte(consume_param_vt(p)))
+            .collect();
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(params.len(), &params));
+        t.extend_from_slice(&wasm_vec(1, &[vt_byte(c.ret_vt)]));
+        type_items.extend_from_slice(&t);
+    }
+    let total_types = defined_type_base + n + nmk + ncons;
+    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
+
+    // ── Import section ── k ops + resource-new + resource-rep.
+    let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut import_items = Vec::new();
+    for (i, o) in imports.iter().enumerate() {
+        import_items.extend_from_slice(&import_item(o.name, i as u32));
+        import_index.insert(o.name, i as u32);
+    }
+    import_items.extend_from_slice(&import_item("resource-new", k as u32));
+    import_items.extend_from_slice(&import_item("resource-rep", (k + 1) as u32));
+    let import_sec = section(2, &wasm_vec(k + 2, &import_items));
+    let f_rnew = k as u32;
+    let f_rrep = (k + 1) as u32;
+
+    // ── Function section ── defined bodies, then makes, then consumer wrappers.
+    let mut func_items = Vec::new();
+    for i in 0..n {
+        uleb128((defined_type_base + i) as u64, &mut func_items);
+    }
+    for i in 0..nmk {
+        uleb128((make_type_base + i) as u64, &mut func_items);
+    }
+    for i in 0..ncons {
+        uleb128((consume_type_base + i) as u64, &mut func_items);
+    }
+    let func_sec = section(
+        wasm_abi::CORE_SEC_FUNCTION,
+        &wasm_vec(n + nmk + ncons, &func_items),
+    );
+    let make_abs_base = (defined_type_base + n) as u32;
+    let consume_abs_base = make_abs_base + nmk as u32;
+
+    // ── Table + Element ── the funcref table from `layout.lifted` (a consumer's call_indirect dispatches
+    // over it; the closure the host handed back was lifted in this module).
+    let n_lifted = layout.lifted.len();
+    let (table_sec, elem_sec) = if n_lifted == 0 {
+        (Vec::new(), Vec::new())
+    } else {
+        let mut table_entry = vec![0x70u8, 0x01];
+        uleb128(n_lifted as u64, &mut table_entry);
+        uleb128(n_lifted as u64, &mut table_entry);
+        let table_sec = section(wasm_abi::CORE_SEC_TABLE, &wasm_vec(1, &table_entry));
+        let mut seg = Vec::new();
+        seg.push(0x00);
+        seg.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut seg);
+        seg.push(op::END);
+        let mut idxs = Vec::new();
+        for slot in 0..n_lifted {
+            uleb128(layout.lifted_abs(slot) as u64, &mut idxs);
+        }
+        seg.extend_from_slice(&wasm_vec(n_lifted, &idxs));
+        let elem_sec = section(wasm_abi::CORE_SEC_ELEMENT, &wasm_vec(1, &seg));
+        (table_sec, elem_sec)
+    };
+
+    // ── Export section ── each make + each consumer, under its boundary name.
+    let export_sec = {
+        let export = |name: &str, kind: u8, idx: u32| {
+            let mut item = uleb_bytes(name.len() as u64);
+            item.extend_from_slice(name.as_bytes());
+            item.push(kind);
+            uleb128(idx as u64, &mut item);
+            item
+        };
+        let mut items = Vec::new();
+        for (i, mk) in makes.iter().enumerate() {
+            items.extend_from_slice(&export(
+                &mk.export_name,
+                wasm_abi::EXPORT_KIND_FUNC,
+                make_abs_base + i as u32,
+            ));
+        }
+        for (i, c) in consumers.iter().enumerate() {
+            items.extend_from_slice(&export(
+                &c.export_name,
+                wasm_abi::EXPORT_KIND_FUNC,
+                consume_abs_base + i as u32,
+            ));
+        }
+        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(nmk + ncons, &items))
+    };
+
+    // ── Code section ── defined bodies, then make wrappers, then consumer wrappers.
+    let mut code_items = Vec::new();
+    for f in funcs {
+        code_items.extend_from_slice(&code_entry(f, &import_index));
+    }
+    for mk in makes {
+        let mut inner = uleb_bytes(0);
+        for p in 0..mk.param_vts.len() {
+            inner.push(op::LOCAL_GET);
+            uleb128(p as u64, &mut inner);
+        }
+        inner.push(op::CALL);
+        uleb128(mk.export_abs as u64, &mut inner);
+        inner.push(op::CALL);
+        uleb128(f_rnew as u64, &mut inner);
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    // consumer[i](params…) = consume_body(<rep'd closures / passthrough scalars>…). A CLOSURE param's
+    // boundary handle is `resource.rep`'d to the guest cell (in a scratch local), then that cell is passed
+    // to the body; a scalar param is forwarded straight. The consumer body treats its closure param(s) as
+    // plain cell handles (a normal `Core::CallClosure`), so this wrapper is the boundary→cell bridge.
+    for c in consumers {
+        let nparams = c.params.len() as u32;
+        // One i32 scratch local per closure param (holding the rep'd cell). Scratch slots start past the
+        // params (0..nparams).
+        let n_closures = c
+            .params
+            .iter()
+            .filter(|p| matches!(p, ConsumeParam::Closure))
+            .count();
+        let mut inner = Vec::new();
+        inner.extend_from_slice(&wasm_vec(
+            if n_closures == 0 { 0 } else { 1 },
+            &if n_closures == 0 {
+                Vec::new()
+            } else {
+                let mut g = uleb_bytes(n_closures as u64);
+                g.push(wasm_abi::CORE_I32);
+                g
+            },
+        ));
+        // resource.rep each closure param into its scratch cell.
+        let mut cell_slot = nparams;
+        let mut cell_of: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        for (i, p) in c.params.iter().enumerate() {
+            if matches!(p, ConsumeParam::Closure) {
+                inner.push(op::LOCAL_GET);
+                uleb128(i as u64, &mut inner);
+                inner.push(op::CALL);
+                uleb128(f_rrep as u64, &mut inner);
+                inner.push(op::LOCAL_SET);
+                uleb128(cell_slot as u64, &mut inner);
+                cell_of.insert(i as u32, cell_slot);
+                cell_slot += 1;
+            }
+        }
+        // push args in order: a closure param → its rep'd cell scratch; a scalar → its param local.
+        for (i, p) in c.params.iter().enumerate() {
+            inner.push(op::LOCAL_GET);
+            match p {
+                ConsumeParam::Closure => uleb128(cell_of[&(i as u32)] as u64, &mut inner),
+                ConsumeParam::Scalar(_) => uleb128(i as u64, &mut inner),
+            }
+        }
+        inner.push(op::CALL);
+        uleb128(c.consume_abs as u64, &mut inner);
+        inner.push(op::END);
+        let mut e = uleb_bytes(inner.len() as u64);
+        e.extend_from_slice(&inner);
+        code_items.extend_from_slice(&e);
+    }
+    let code_sec = section(
+        wasm_abi::CORE_SEC_CODE,
+        &wasm_vec(n + nmk + ncons, &code_items),
+    );
+
+    let mut core = Vec::new();
+    core.extend_from_slice(CORE_MAGIC);
+    core.extend_from_slice(&type_sec);
+    core.extend_from_slice(&import_sec);
+    core.extend_from_slice(&func_sec);
+    core.extend_from_slice(&table_sec);
+    core.extend_from_slice(&export_sec);
+    core.extend_from_slice(&elem_sec);
+    core.extend_from_slice(&code_sec);
+    let _ = lifted_type_idx; // reserved: a consumer's call_indirect type resolves in its selected body
+    Ok(core)
+}
+
 /// The `t-encode(handle) -> i32` code-section entry (the R2 walker). Locals: 0 = the resource-table
 /// handle param, 1 = the recovered i32 heap rep, 2 = i64 scratch. Recovers the rep via
 /// `resource.rep(handle)` (core func `f_rrep`), then for each template hole walks its `arr-get` path

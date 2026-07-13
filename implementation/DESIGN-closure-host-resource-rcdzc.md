@@ -289,14 +289,25 @@ the component type. The new work:
   `closure_type_index` CAN match it by signature (given the producer created a lambda of that
   signature). Test fns: `roundtrip_core`, `roundtrip_inner_component`, `oracle_roundtrip_component`,
   `a_closure_handle_round_trips_through_a_consumer_export`.
-- **C-HOST-4 HAND-EMIT (next).** The `own<closure>` export-PARAMETER ABI: (1) lower `(g x)` where `g` is
-  a closure-typed param — `Core::CallClosure` with a `Core::Param` closure operand; the param's wasm
-  local is the resource handle, so insert `resource.rep` to recover the cell before the existing
-  `arr-get(cell,0)`→`get-int`→`call_indirect` (the type index resolves against the in-program lifted
-  lambda by signature — no host-origin lambda needed since producer+consumer share the core module);
-  (2) a producer+consumer envelope (`make` + a consumer export taking `own<t>`); (3) `cdz-run` threads a
-  `ResourceAny` returned by one export call into a second export call. mod.rs still DECLINES any
-  closure-typed export param ("passed AS A PARAMETER") — that guard is what the hand-emit replaces.
+- **✅ C-HOST-4 SERIALIZER SEAM LANDED `@53b5d747`.** `serialize::roundtrip_resource_core_module` emits N
+  producer `make-<name>` funcs (as multi-export) PLUS M CONSUMER exports. A `ClosureConsume` names a
+  consumer export + its selected body's core func idx + its params (`ConsumeParam::Closure|Scalar`) +
+  result. 🔑 The consumer WRAPPER `resource.rep`s each closure param (boundary handle → guest cell) into a
+  scratch local, then calls the consumer BODY — the exact mirror of `make` wrapping a producer body with
+  `resource.new`. The consumer body is selected NORMALLY (its closure param is a plain CELL handle, applied
+  via `Core::CallClosure`), so the wrapper is the ONLY boundary→cell bridge — NO change to `select.rs`'s
+  `CallClosure` emit or `closure_type_index` (the closure was lifted in this module; the type index
+  resolves by signature). +1 serializer unit test. Gate 1151p/0f.
+- **C-HOST-4 REMAINING (next): emit routing + envelope + host.** (1) `emit_roundtrip_resource` in mod.rs:
+  route a producer(closure-RESULT) + consumer(closure-PARAM) export set; select each consumer body with
+  its closure params typed as Ty::Fn (→ i32 CELL locals — the wrapper reps the handle first), build the
+  `ClosureConsume`/`ClosureMake` specs, call the serializer + a new envelope. The mod.rs:178 guard
+  ("passed AS A PARAMETER") is what this REPLACES. (2) `envelope::assemble_roundtrip_resource` — like the
+  multi-export envelope but each CONSUMER is a plain component FUNC export (not a resource method) whose
+  first param is `own<t>` (model = the oracle's `roundtrip_inner_component`: `apply : (g: own<t>, x) -> R`,
+  re-exported ascribed). (3) `cdz-run` threads a `ResourceAny` returned by a `make` call into a second
+  consumer export call (a NEW driver shape — the corpus needs a `(call producer …)`-then-`(call consumer
+  <handle> …)` form, or a dedicated round-trip fixture). ⚠ scalar closure args/result still.
 - **C-HOST-5 — the `borrow<t>` / dtor fix (shared with the escape).** Root-cause the
   wasmtime-37 borrow trap; switch `call` to `borrow<t>` and the export result to a properly
   dtor'd `own<t>`; retire the deliberate leak. Also fixes the value-heap `encode` leak
