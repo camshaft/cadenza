@@ -6480,6 +6480,28 @@ mod stage1 {
     }
 
     #[test]
+    fn a_do_sequencing_block_yields_its_last_form() {
+        // 02-binding-and-control: `(do f1 … fn)` in EXPRESSION position is a sequencing block — its value
+        // is the LAST form, the non-final (pure) forms evaluated for their discarded value. `(do 1 2 3)` =
+        // 3; a discarded compound intermediate `(do (tuple 1 2) 42)` = 42; nested in a `let` body works.
+        assert_eq!(run_main("(do 1 2 3)"), 3);
+        assert_eq!(run_main("(do (tuple 1 2) 42)"), 42);
+        assert_eq!(run_main("(let ((x 4)) (do (+ x 1) x))"), 4);
+    }
+
+    #[test]
+    fn a_do_block_with_an_ill_typed_intermediate_is_still_caught() {
+        // A non-final `do` form is EVALUATED (value discarded), so an ill-typed intermediate must still be
+        // rejected — the fault walk descends into EVERY form, not only the last. `(if 5 1 2)` (a non-Bool
+        // condition) in a non-final position is caught even though its value is discarded.
+        let msg = expect_decline("(do (if 5 1 2) 42)");
+        assert!(
+            msg.contains("condition must be Bool"),
+            "an ill-typed do intermediate must be caught though discarded; got: {msg}"
+        );
+    }
+
+    #[test]
     fn a_local_binding_shadows_a_same_named_top_level_def() {
         // A `let` binding named `f` shadows a top-level `(def (f) …)` of the same name for the extent
         // of its scope: `resolve_name` consults the lexical scope FIRST and the top-level def index

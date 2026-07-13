@@ -347,7 +347,23 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
 ///   - a bare expression `E` → `(do (def (main) E) (export main))`
 fn normalize_program(a: &Arenas, input: StructId) -> String {
     match a.head_name(input) {
-        Some("do") => sexpr::print_from(a, input),
+        // A `(do …)` input is EITHER a full program (it already declares `(export …)`) — passed verbatim
+        // — OR a bare SEQUENCING-block VALUE (`(do 1 2 3)`, `(do (record …) 42)`), which is an expression
+        // whose value is the program result: wrap it as `(do (def (main) <the-do>) (export main))`, the
+        // same wrapping a bare expression gets (a `do` value-block is just an expression with a `do` head).
+        Some("do") if do_block_has_export(a, input) => sexpr::print_from(a, input),
+        Some("do") => {
+            let mut b = Builder::new();
+            let do_head = b.name("do");
+            let def_head = b.name("def");
+            let main_name = b.name("main");
+            let main_sig = b.list(vec![main_name]);
+            let e = clone_into(a, input, &mut b);
+            let def_main = b.list(vec![def_head, main_sig, e]);
+            let export = export_main(&mut b);
+            let root = b.list(vec![do_head, def_main, export]);
+            sexpr::print(&b.finish(root))
+        }
         Some("module") => {
             // Rebuild `(do <module's forms after the name> (export main))` in a fresh arena.
             let forms = match a.get(input) {
@@ -377,6 +393,18 @@ fn normalize_program(a: &Arenas, input: StructId) -> String {
             let root = b.list(vec![do_head, def_main, export]);
             sexpr::print(&b.finish(root))
         }
+    }
+}
+
+/// Whether a `(do …)` form declares an `(export …)` among its top-level forms — the tell that it is a
+/// FULL PROGRAM (module body) rather than a bare sequencing-block VALUE. A full program is passed
+/// verbatim; a value-block is wrapped as `main`'s body (see [`normalize_program`]).
+fn do_block_has_export(a: &Arenas, do_form: StructId) -> bool {
+    match a.get(do_form) {
+        cadenza_syntax::ast::Struct::List(items) => {
+            items.iter().any(|&f| a.head_name(f) == Some("export"))
+        }
+        _ => false,
     }
 }
 

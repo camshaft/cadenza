@@ -508,6 +508,19 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
 /// unconditionally used (an `if` CONDITION), but NOT into a conditional's branches — a poison shielded
 /// by an untaken branch is not a build failure. Reads the core column on demand.
 fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
+    // A `do` SEQUENCING block resolves to a `Ref` to its LAST form, so `core_of` follows only that. But
+    // every INTERMEDIATE form is UNCONDITIONALLY evaluated (its value discarded), so a provable trap in
+    // one is a build failure — descend into every form here (the raw AST head, since the core collapsed
+    // to the last form's ref). The last form is also covered, harmlessly.
+    if db.ast.head_name(id) == Some("do")
+        && let Some(forms) = db.ast.as_form(id, "do")
+    {
+        let forms: Vec<StructId> = forms.to_vec();
+        for f in forms {
+            collect_reached_poisons(db, f, out);
+        }
+        return;
+    }
     match core_of(db, id) {
         // Stamp the poison's origin with this node if it carries none — a poison produced without a
         // precise anchor is at least attributed to the node it was reached at. (`sanitize_origin` at
