@@ -97,6 +97,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Lists.tsx")),
   },
   {
+    slug: "maps-sets",
+    title: "Maps & sets",
+    blurb: "Membership and key→value association, without duplicates.",
+    section: "Fundamentals",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/MapsSets.tsx")),
+  },
+  {
     slug: "strings",
     title: "Strings & text",
     blurb: "Unicode text, joining, and character vs byte length.",
