@@ -3142,42 +3142,79 @@ fn no_field_reject(
     }
 }
 
-/// Whether a key occurrence is a DIRECT LITERAL — a constant written IN the map literal (an int/string/
-/// bool/float/unit atom), NOT a name reference. The duplicate-key reject compares only these: a repeated
-/// WRITTEN literal (`(map ("a" 1) ("a" 2))`) is the ambiguous duplicate the spec forbids, whereas two
-/// distinct NAMES that merely fold to the same value (`(let ((a 5)) (let ((b 5)) (map (a 1) (b 2))))`)
-/// are a RUNTIME overwrite (size 1, keys compared by value), NOT a compile-time reject. Reading the key
-/// through a name binding would conflate the two, so a name key (`Resolved::Ref`) is NOT a direct literal.
-fn is_direct_literal_key(db: &mut Db, key: StructId) -> bool {
-    matches!(
-        resolved_of(db, key),
-        Resolved::Int(_)
-            | Resolved::Str(_)
-            | Resolved::Bool(_)
-            | Resolved::Float(_)
-            | Resolved::Unit
-    )
+/// The canonical, HASHABLE identity of a DIRECT-LITERAL map key — a scalar written in the map literal.
+/// Two keys are the duplicate the spec forbids exactly when their tokens are EQUAL, and this token is
+/// built to reproduce `const_compound_eq`'s scalar equality precisely: an integer by its VALUE (leading
+/// zero bytes trimmed and a zero sign-normalized, so `1`/`0x1` and `0`/`-0` collide exactly as
+/// `IntValue::eq_value` decides), a float by its canonical `Float64` bits (so `-0.0` and `0.0` are
+/// DISTINCT keys), a string/bool by value, unit a singleton. Only the five direct-literal scalar kinds
+/// (int/string/bool/float/unit) produce a token; every other key (crucially a NAME reference, even one
+/// that folds to a literal value) yields `None` so it is never compared — a runtime overwrite, not a
+/// compile-time duplicate.
+#[derive(PartialEq, Eq, Hash)]
+enum LitKey {
+    Int { negative: bool, magnitude: Vec<u8> },
+    Str(String),
+    Bool(bool),
+    FloatBits(u64),
+    Unit,
+}
+
+/// The [`LitKey`] token for a DIRECT-LITERAL key at `id`, or `None` for any non-literal key (a name
+/// reference, a compound). Reads `resolved_of` ONCE per key — the O(1)-per-key basis of the linear
+/// duplicate scan. A NAME key resolves to `Resolved::Ref`
+/// (not one of these arms) → `None`, preserving the "two distinct names bound to the same value are a
+/// runtime overwrite, not a reject" rule. For a direct literal the resolved value equals its lowered
+/// `core_of` constant, so a token match is exactly `const_compound_eq == Some(true)` on that pair.
+fn literal_key_token(db: &mut Db, id: StructId) -> Option<LitKey> {
+    match resolved_of(db, id) {
+        // Trim leading zero bytes and normalize a zero's sign to non-negative — the SAME canonicalization
+        // `IntValue::eq_value` applies, so equal tokens ⟺ `eq_value` is true (magnitude representation and
+        // a signed zero do not create spurious distinctions).
+        Resolved::Int(v) => {
+            let start = v.magnitude.iter().take_while(|&&b| b == 0).count();
+            let magnitude = v.magnitude[start..].to_vec();
+            let negative = !magnitude.is_empty() && v.negative;
+            Some(LitKey::Int {
+                negative,
+                magnitude,
+            })
+        }
+        Resolved::Str(s) => Some(LitKey::Str(s)),
+        Resolved::Bool(b) => Some(LitKey::Bool(b)),
+        // A written float literal is always finite (`Decimal` holds no NaN), and its canonical `Float64`
+        // bits are what `const_compound_eq` compares — so `-0.0` ≠ `0.0` and two spellings of one value
+        // (`2.0`/`2.00`) collide, matching the scalar `=` fold.
+        Resolved::Float(d) => Some(LitKey::FloatBits(d.to_f64_bits())),
+        Resolved::Unit => Some(LitKey::Unit),
+        _ => None,
+    }
 }
 
 /// A map literal has a DUPLICATE WRITTEN-LITERAL key → CDZ0201 (the association is ambiguous — which
 /// value does the key hold? collections-and-text.md §A Map Associates Keys With Values: each key at most
-/// once). Only DIRECT LITERAL keys are checked (see `is_direct_literal_key`): two literal keys that
-/// compare structurally equal (`const_compound_eq`) are a duplicate. A NAME key — even two distinct
-/// names bound to the same value — is a runtime overwrite (size 1), never a reject. `None` if no duplicate.
+/// once). Only DIRECT LITERAL keys are checked (see `literal_key_token`): two
+/// literal keys that compare structurally equal are a duplicate. A NAME key — even two distinct names
+/// bound to the same value — is a runtime overwrite (size 1), never a reject. `None` if no duplicate.
+///
+/// LINEAR in the entry count: each direct-literal key is canonicalized to a hashable [`LitKey`] ONCE and
+/// inserted into a set; a collision is the duplicate. This replaced an O(entries²) pairwise
+/// `const_compound_eq` scan — which additionally re-derived and deep-cloned each key's `Core` on every
+/// one of the ~N²/2 comparisons (a `(map (0 0) (1 1) …)` literal of N distinct integer keys was
+/// quadratic: N=1600 spent ~72% of the whole compile in `const_compound_eq`). The verdict is IDENTICAL —
+/// a duplicate exists iff two direct-literal keys share a token, iff two of them are `const_compound_eq`-
+/// equal — and the reject is anchored to the map node with no pair-specific data, so reporting the FIRST
+/// collision (insertion order) rather than the first pair (scan order) yields byte-identical output.
 fn map_duplicate_const_key(db: &mut Db, entries: &[(StructId, StructId)]) -> Option<Reject> {
-    for i in 0..entries.len() {
-        if !is_direct_literal_key(db, entries[i].0) {
-            continue;
-        }
-        for j in (i + 1)..entries.len() {
-            if is_direct_literal_key(db, entries[j].0)
-                && crate::lower::const_compound_eq(db, entries[i].0, entries[j].0) == Some(true)
-            {
-                return Some(Reject::coded(
-                    Code::Malformed,
-                    "a map contains each key at most once (a duplicate literal key)",
-                ));
-            }
+    let mut seen: crate::fxhash::FxHashSet<LitKey> = crate::fxhash::FxHashSet::default();
+    for &(key, _) in entries {
+        if let Some(token) = literal_key_token(db, key)
+            && !seen.insert(token)
+        {
+            return Some(Reject::coded(
+                Code::Malformed,
+                "a map contains each key at most once (a duplicate literal key)",
+            ));
         }
     }
     None

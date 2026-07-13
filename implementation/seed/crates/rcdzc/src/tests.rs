@@ -14215,6 +14215,57 @@ mod stage1 {
     }
 
     #[test]
+    fn a_duplicate_written_literal_map_key_is_rejected() {
+        // collections-and-text.md §A Map Associates Keys With Values — each key at most once. A repeated
+        // WRITTEN literal is the ambiguous duplicate the spec forbids, across every direct-literal key
+        // kind (int, string, bool, unit) and independent of magnitude representation (`1` == `0x1`). The
+        // reject is CDZ0201 anchored at the map node. This LOCKS IN the semantics the O(N) hash-set
+        // duplicate scan (`map_duplicate_const_key` / `literal_key_token`) replaced the O(entries²)
+        // pairwise `const_compound_eq` scan under — a `(map (0 0) (1 1) …)` of N distinct integer keys
+        // was quadratic (N=1600 spent ~72% of the whole compile in `const_compound_eq`, re-deriving and
+        // deep-cloning each key's `Core` on every one of the ~N²/2 comparisons).
+        let dup = "a map contains each key at most once";
+        // Int keys — the same value twice, including two spellings of one value (dec `1` and hex `0x1`).
+        assert!(expect_decline("(map (1 10) (1 20))").contains(dup));
+        assert!(expect_decline("(map (1 10) (2 20) (0x1 30))").contains(dup));
+        // String keys.
+        assert!(expect_decline("(map (\"a\" 1) (\"a\" 2))").contains(dup));
+        // Bool keys.
+        assert!(expect_decline("(map (true 1) (true 2))").contains(dup));
+        // Unit keys.
+        assert!(expect_decline("(map (() 1) (() 2))").contains(dup));
+    }
+
+    /// Whether the program shape `(module m (def (main) BODY) (export main))` COMPILES (no decline/reject)
+    /// — a compile-time verdict, no runtime needed. The complement of `expect_decline` for this module.
+    fn compiles_ok(body: &str) -> bool {
+        let src = format!("(module m (def (main) {body}) (export main))");
+        compile_component(&crate::codec::encode(&parse(&src))).is_ok()
+    }
+
+    #[test]
+    fn distinct_literal_map_keys_are_not_a_duplicate() {
+        // The negative direction the O(N) scan must preserve: distinct written literals are NOT a
+        // duplicate, so the map literal compiles clean (no CDZ0201). Distinct ints (incl. one dec + one
+        // hex that are DIFFERENT values), distinct strings, distinct bools.
+        assert!(compiles_ok("(map (1 10) (2 20))"));
+        assert!(compiles_ok("(map (1 10) (0x2 20) (3 30))"));
+        assert!(compiles_ok("(map (\"a\" 1) (\"b\" 2))"));
+        assert!(compiles_ok("(map (true 1) (false 2))"));
+    }
+
+    #[test]
+    fn two_distinct_names_bound_to_the_same_value_are_a_runtime_overwrite_not_a_duplicate() {
+        // The crucial subtlety `literal_key_token` preserves by returning `None` for a NAME key: two
+        // DISTINCT names that merely FOLD to the same value are a RUNTIME overwrite (the map holds one
+        // entry at run time, keys compared BY VALUE), NOT a compile-time duplicate reject. Reading the
+        // key THROUGH its binding — as a pairwise `const_compound_eq` on the folded values would —
+        // conflates the two; the direct-literal gate keeps them apart, so the program COMPILES (the
+        // overwrite is a runtime fact, checked by the 05-compound-types §2510 corpus case's `Map.size`).
+        assert!(compiles_ok("(let ((a 5)) (let ((b 5)) (map (a 1) (b 2))))"));
+    }
+
+    #[test]
     fn member_access_on_a_non_record_is_a_type_error() {
         // 05-compound-types: (. 5 x) — member access requires a record → CDZ0201.
         assert!(expect_decline("(. 5 x)").contains("requires a record"));
