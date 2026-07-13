@@ -564,3 +564,17 @@
               (export main)))
   (call   main (: 2 Int64) (: 300 Int64))
   (output (: 1300 Int64)))
+
+(case "a runtime bytes value is spliced into a length-prefixed frame"
+  (doc    "`(bin (u16 3) (bytes b))` with `b` a RUNTIME `Bytes` value splices `b` after a two-byte header,
+           building the frame at run time (a `bytes-concat` of the emitted header and the runtime body).
+           `mk` builds a three-byte body from a runtime `n`; the frame's length is 2 (header) + 3 (body) =
+           5. Pins the length-prefixed-frame builder — a fixed header composed with a runtime-length body,
+           the construction companion of the dependent-size MATCH.")
+  (needs  binary-matching)
+  (input  (do (def (frame (: b Bytes)) (Bytes.len (bin (u16 3) (bytes b))))
+              (def (mk (: n Int64)) (Bytes.of (list (UInt8.wrap n) 20 30)))
+              (def (main (: n Int64)) (frame (mk n)))
+              (export main)))
+  (call   main (: 7 Int64))
+  (output (: 5 Int64)))

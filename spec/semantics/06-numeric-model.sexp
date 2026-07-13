@@ -1082,22 +1082,26 @@
   (output (: true Bool)))
 
 (case "integer to byte (truncate to 0-255)"
-  (doc    "The compiler needs to convert integers to single bytes for wasm encoding.
-           Int.to-byte truncates to the low 8 bits (0-255).")
-  (input  (Int.to-byte 200))
-  (output (: 200 Int64)))
+  (doc    "The compiler converts integers to single bytes for wasm encoding by TRUNCATING to a UInt8 with
+           `UInt8.wrap` — the width-indexed truncating conversion (numeric-model.md #Truncation Is
+           Explicit And Total): it keeps the low 8 bits and reinterprets at the target width, never traps,
+           and its result type is `UInt8` (the byte type) — the width read from the type, no dedicated
+           byte-conversion op needed. `(UInt8.wrap 200)` = 200.")
+  (input  ((. UInt8 wrap) 200))
+  (output (: 200 UInt8)))
 
 (case "integer to byte wraps on overflow"
-  (doc    "Values > 255 wrap to low 8 bits. The compiler uses this for byte encoding.")
-  (input  (Int.to-byte 256))
-  (output (: 0 Int64)))
+  (doc    "Values > 255 wrap to the low 8 bits: `UInt8.wrap` keeps the low 8 bits, so 256 = 0x100 → 0.")
+  (input  ((. UInt8 wrap) 256))
+  (output (: 0 UInt8)))
 
 (case "negative integer to byte uses two's complement"
-  (input  (Int.to-byte -1))
-  (output (: 255 Int64)))
+  (doc    "`UInt8.wrap` reinterprets the low 8 bits at the target width, so -1 (…11111111) → 255.")
+  (input  ((. UInt8 wrap) -1))
+  (output (: 255 UInt8)))
 
-; --- The bitwise/shift/to-byte primitives COMPOSE into the LEB128 encoding step ----------
-; The cases above exercise `&`, `|`, `>>`, and `Int.to-byte` INDIVIDUALLY on constant operands. The
+; --- The bitwise/shift/truncation primitives COMPOSE into the LEB128 encoding step ----------
+; The cases above exercise `&`, `|`, `>>`, and `UInt8.wrap` INDIVIDUALLY on constant operands. The
 ; compiler's actual use is to COMPOSE them: one LEB128 byte is `(| (& n 127) 128)` when a continuation
 ; byte follows (the low 7 bits of n, with bit 7 set), or `(& n 127)` for the final byte, and the next
 ; group is `(>> n 7)`. Composing the operators exercises their interaction — each intermediate is an
@@ -1107,14 +1111,14 @@
 ; (numeric-model.md #Overflow Is Defined for the exact bit operations; compiler-pipeline.md relies on
 ; LEB128 for wasm section sizes).
 
-(case "a LEB128 non-final byte composes mask, continuation bit, and to-byte"
+(case "a LEB128 non-final byte composes mask, continuation bit, and truncation"
   (doc    "One LEB128 continuation byte of 300: `(& 300 127)` = 44 (low 7 bits), `(| 44 128)` = 172 (set
-           bit 7), `Int.to-byte` leaves it (already in 0..=255). The composed
-           `(Int.to-byte (| (& 300 127) 128))` = 172 — the exact byte a LEB128 encoder emits for the
-           first group of 300. Pins that the three operators compose to the encoder's non-final byte,
-           not just that each works alone.")
-  (input  (Int.to-byte (| (& 300 127) 128)))
-  (output (: 172 Int64)))
+           bit 7), `UInt8.wrap` truncates it to a byte (already in 0..=255, so it is left). The composed
+           `(UInt8.wrap (| (& 300 127) 128))` = 172 — the exact byte a LEB128 encoder emits for the first
+           group of 300. Pins that the three operators compose to the encoder's non-final byte, not just
+           that each works alone. The Int64 intermediate `(| (& 300 127) 128)` truncates to a UInt8.")
+  (input  ((. UInt8 wrap) (| (& 300 127) 128)))
+  (output (: 172 UInt8)))
 
 (case "a LEB128 final byte is the shifted remainder masked to seven bits"
   (doc    "The final group of 300: `(>> 300 7)` = 2 (the remaining bits after the low 7), and
@@ -1125,19 +1129,19 @@
   (output (: 2 Int64)))
 
 (case "the LEB128 byte composition runs on a runtime operand"
-  (doc    "The composition above on a RUNTIME operand, not a constant: `(leb-byte n)` = `(Int.to-byte (|
-           (& n 127) 128))` with `n` a function parameter, so the mask, continuation-bit OR, and to-byte
-           are EMITTED (not const-folded). `(leb-byte 300)` = 172, the same non-final byte the constant
-           case produces — but reached through the runtime `i64.and`/`i64.or` the encoder actually
+  (doc    "The composition above on a RUNTIME operand, not a constant: `(leb-byte n)` = `(UInt8.wrap (|
+           (& n 127) 128))` with `n` a function parameter, so the mask, continuation-bit OR, and the
+           truncation are EMITTED (not const-folded). `(leb-byte 300)` = 172, the same non-final byte the
+           constant case produces — but reached through the runtime `i64.and`/`i64.or` the encoder actually
            executes when it encodes a value computed at run time (a section length, an operand). Pins
            that runtime bitwise `&`/`|` (and their composition) are emitted and agree with the const
            fold — a self-hosted LEB128 encoder works on the runtime values it is fed, not only on
            literals. The const cases above fold and so cannot witness the emitted bitwise path; this
            one, taking `n` through a parameter, does.")
   (input  (do
-            (def (leb-byte n) (Int.to-byte (| (& n 127) 128)))
+            (def (leb-byte n) ((. UInt8 wrap) (| (& n 127) 128)))
             (def (main)       (leb-byte 300)) (export main)))
-  (output (: 172 Int64)))
+  (output (: 172 UInt8)))
 
 (case "extracting a high byte composes shift and mask"
   (doc    "`(& (>> 65535 8) 255)` shifts 0xFFFF right by 8 (yielding 0xFF = 255) then masks the low 8
@@ -1336,8 +1340,8 @@
 ; --- Explicit conversions: T.of is checked, T.wrap truncates (options/numeric-model/) --------
 ; A conversion between integer types is always explicit (numeric-model.md #Integer Types Have Fixed
 ; Widths). `T.of x` is range-CHECKED — it traps when x does not fit T. `T.wrap x` TRUNCATES — it keeps
-; the low bits under T's two's-complement representation. These systematize the seed's `Int.to-byte`
-; (which is exactly UInt8.wrap) under one naming rule.
+; the low bits under T's two's-complement representation. `UInt8.wrap` is the byte-truncation the
+; compiler's own LEB128 encoder uses; there is no separate byte-conversion op.
 
 (case "a checked integer conversion that fits succeeds"
   (doc    "`(UInt8.of (: 200 Int32))` converts the Int32 200 to UInt8 — 200 is within 0..=255, so the
@@ -1366,8 +1370,8 @@
 
 (case "a truncating conversion keeps the low bits rather than trapping"
   (doc    "`(UInt8.wrap (: 256 Int32))` = 0: the truncating conversion keeps the low 8 bits of 256
-           (0x100 -> 0x00), so it yields 0 rather than trapping. This is exactly the seed's
-           `Int.to-byte` on 256 (06-numeric #integer to byte wraps on overflow), now typed as UInt8.
+           (0x100 -> 0x00), so it yields 0 rather than trapping. This is the byte-truncation
+           the LEB128 encoder uses (06-numeric #integer to byte wraps on overflow).
            Pins T.wrap as the low-bits conversion distinct from the checked T.of.")
   (needs  numeric-model)
   (input  (UInt8.wrap (: 256 Int32)))
@@ -1375,8 +1379,8 @@
 
 (case "a truncating conversion of a negative value uses two's complement"
   (doc    "`(UInt8.wrap (: -1 Int32))` = 255: truncating keeps the low 8 bits of -1's two's-complement
-           representation (all ones), so it yields 255 — exactly the seed's `(Int.to-byte -1)` = 255
-           (06-numeric #negative integer to byte uses two's complement), now the typed UInt8.wrap.
+           representation (all ones), so it yields 255
+           (06-numeric #negative integer to byte uses two's complement).
            Pins that T.wrap reinterprets the low bits, where T.of would trap on the negative value.")
   (needs  numeric-model)
   (input  (UInt8.wrap (: -1 Int32)))

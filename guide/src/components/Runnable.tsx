@@ -17,10 +17,10 @@ import { StatusIcon } from "./StatusIcon.tsx";
 import { OpenInPlayground } from "./OpenInPlayground.tsx";
 import type { Surface } from "../syntax/SyntaxContext.tsx";
 
-/// Wrap the editor text into a compilable module for diagnostics/hover, AND report the UTF-8 byte
+/// Wrap the editor text into a compilable program for diagnostics/hover, AND report the UTF-8 byte
 /// length of the wrapper prefix so spans map back to the editor text. `wrapModule` trims the snippet,
 /// so we locate the trimmed body within the wrapped output for an exact prefix. When the text is
-/// already a full module (wrap is a no-op) the prefix is 0.
+/// already complete (wrap is a no-op) the prefix is 0.
 function prepareWrapped(editorText: string, surface: Surface, wrap: boolean) {
   if (!wrap) return { compiled: editorText, wrapPrefixBytes: 0 };
   const compiled = wrapModule(editorText, surface);
@@ -31,11 +31,11 @@ function prepareWrapped(editorText: string, surface: Surface, wrap: boolean) {
 }
 
 interface Props {
-  /** The snippet source, in `authoredIn` surface. Wrapped in a module automatically if `wrap`. */
+  /** The snippet source, in `authoredIn` surface. Made runnable (export/main supplied) if `wrap`. */
   source: string;
   /** Surface the `source` prop is written in. Default s-expr (the corpus form). */
   authoredIn?: Surface;
-  /** Wrap a bare expression as `(module m (def (main) <expr>) (export main))`. Default true. */
+  /** Supply the `export`/`main` a bare snippet needs (`(do (def (main) <expr>) (export main))`). Default true. */
   wrap?: boolean;
   /** What this example is meant to do — tunes the status pane. */
   expect?: "value" | "error";
