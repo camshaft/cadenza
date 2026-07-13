@@ -16,7 +16,9 @@ export default function Effects() {
         Most languages bake the answers in: a function that needs a random number calls the global
         random generator; one that needs to give up throws an exception. Cadenza splits the two apart. A
         function <em>performs</em> an operation — it names what it needs — and a <C>handle</C> around it
-        decides what performing means. The performing code doesn't know or care who's listening.
+        decides what performing means. The performing code doesn't know or care who's listening. We'll
+        build up from a handler right next to the performance to the real payoff: a function that performs
+        an operation some <em>other</em> function, further out, decides how to answer.
       </P>
 
       <H2>Declaring and performing an operation</H2>
@@ -82,6 +84,69 @@ export default function Effects() {
         handler — the performing code just sees a sequence of numbers.
       </P>
 
+      <H2>The performer and the handler can be far apart</H2>
+      <P>
+        So far the <C>handle</C> has wrapped the performance directly. But nothing says they have to sit
+        in the same function — and this is where effects earn their keep. A function can perform an
+        operation it never handles; the handler is supplied by whoever <em>calls</em> it. Here <C>gen</C>{" "}
+        just performs <C>Bump.by</C> — it has no handler at all — and <C>main</C> decides what performing
+        means, wrapped around its <em>call</em> to <C>gen</C>:
+      </P>
+      <Runnable
+        source={`(effect Bump (op by (-> Int64 Int64)))
+(def (gen) (Bump.by 41))
+(def (main)
+  (handle Bump unit
+    ((by (n) s (resume (+ n 1) s)))
+    (gen)))`}
+      />
+      <P>
+        <C>gen</C> reads as an ordinary function, yet it reaches out to a handler installed one level up
+        the call stack. Resolution follows the <em>calls</em>, not the source layout: the performance in{" "}
+        <C>gen</C> searches outward along the chain that led to it until it finds a <C>Bump</C> handler —{" "}
+        <C>main</C>'s. That's what lets a leaf function deep in a program name what it needs and let the
+        edge of the program decide how.
+      </P>
+
+      <Why tenet="A function says what it needs, not how it's met">
+        This is dependency injection without the plumbing. <C>gen</C> doesn't take the answer as a
+        parameter, doesn't import a global, doesn't know a handler exists — it just performs. The same{" "}
+        <C>gen</C>, unchanged, behaves differently under a different caller's handler: one caller resumes
+        with <C>n + 1</C>, another could resume with <C>0</C> for a test, another could count the calls.
+        The dependency is threaded implicitly along the call chain and resolved at the nearest handler —
+        the useful half of a global variable with none of the "who set this?" mystery.
+      </Why>
+
+      <H2>A getter/setter, shared across functions</H2>
+      <P>
+        Give an effect <em>two</em> operations and let the handler's state be real mutable state — a{" "}
+        <C>get</C> and a <C>set</C> — and you have a store that any function can read and write, without a
+        single one of them holding the data. Here <C>deposit</C> and <C>balance</C> are ordinary helpers;
+        neither owns the balance. The <C>State</C> handler in <C>main</C> is the only thing that does, and
+        it threads it through <C>s</C>:
+      </P>
+      <Runnable
+        source={`(effect State
+  (op get (-> Unit Int64))
+  (op set (-> Int64 Unit)))
+(def (deposit (: n Int64))
+  (State.set (+ (State.get) n)))
+(def (balance) (State.get))
+(def (main)
+  (handle State 100
+    ((get (u) s (resume s s))
+     (set (v) s (resume unit v)))
+    (do (deposit 20) (deposit 5) (balance))))`}
+      />
+      <P>
+        The account starts at <C>100</C>; two deposits push it to <C>125</C>. Read the arms as the store's
+        implementation: <C>get</C> resumes with the current state and leaves it unchanged; <C>set</C>{" "}
+        resumes with <C>unit</C> and makes its argument the new state. <C>deposit</C> and <C>balance</C>{" "}
+        talk to that store through <C>State.get</C> / <C>State.set</C> as if it were ambient — but it isn't
+        ambient at all. Swap in a handler that logs every <C>set</C>, or seeds a different opening balance,
+        and not one line of <C>deposit</C> changes.
+      </P>
+
       <H2>A handler that doesn't resume: bailing out</H2>
       <P>
         A handler doesn't have to <C>resume</C>. If an arm just returns a value, the whole <C>handle</C>{" "}
@@ -142,6 +207,31 @@ export default function Effects() {
     (+ (Bail.bail 5) 10)))`}
         expected="5"
         hint={<>Return <C>n</C> from the arm without <C>resume</C> — that bails out, skipping the <C>+ 10</C>.</>}
+      />
+
+      <Exercise
+        id="effects:3"
+        prompt={<>
+          <C>helper</C> performs <C>Ask.ask</C> and adds <C>10</C>; the handler lives up in <C>main</C>.
+          Resume <C>ask</C> so the whole thing is <C>42</C>.
+        </>}
+        starter={`(effect Ask (op ask (-> Unit Int64)))
+(def (helper) (+ (Ask.ask) 10))
+(def (main)
+  (handle Ask unit
+    ((ask () s (resume ? s)))
+    (helper)))`}
+        solution={`(effect Ask (op ask (-> Unit Int64)))
+(def (helper) (+ (Ask.ask) 10))
+(def (main)
+  (handle Ask unit
+    ((ask () s (resume 32 s)))
+    (helper)))`}
+        expected="42"
+        hint={<>
+          The performance is in <C>helper</C>, but <C>main</C>'s handler answers it. You need{" "}
+          <C>helper</C> to see <C>32</C>, so it computes <C>32 + 10</C>.
+        </>}
       />
     </article>
   );
