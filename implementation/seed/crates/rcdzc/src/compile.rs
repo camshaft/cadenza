@@ -687,6 +687,12 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect_reached_poisons(db, e, out);
             }
         }
+        // A runtime `(bin …)` unconditionally evaluates every segment value.
+        Core::BinBuild { segs } => {
+            for s in segs {
+                collect_reached_poisons(db, s.value, out);
+            }
+        }
         Core::Proj { operand, .. } | Core::ListLen { operand } | Core::BytesLen { operand } => {
             collect_reached_poisons(db, operand, out)
         }

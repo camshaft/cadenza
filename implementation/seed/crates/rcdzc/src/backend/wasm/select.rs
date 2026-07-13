@@ -271,6 +271,10 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
             elems.iter().any(|&e| binding_escapes(db, e, binder, false))
         }
+        // A runtime `(bin …)` construction consumes each segment's scalar int value into the built bytes.
+        Core::BinBuild { segs } => segs
+            .iter()
+            .any(|s| binding_escapes(db, s.value, binder, false)),
         // `List.push`/`concat` CONSUME both operands (the persistent op takes ownership of the list and
         // the pushed/concatenated value into the result).
         Core::ListPush { list, elem } => {
@@ -637,6 +641,14 @@ pub fn collect_used_ops(
             out.insert(OP_BYTES_SET);
             for elem in &elems {
                 collect_used_ops(db, *elem, out);
+            }
+        }
+        // A runtime `(bin …)` build allocs the byte buffer + writes each segment byte with `bytes-set`.
+        Core::BinBuild { segs } => {
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+            for s in &segs {
+                collect_used_ops(db, s.value, out);
             }
         }
         // `Bytes.len` uses `bytes-len` and evaluates its operand.
@@ -2231,6 +2243,90 @@ fn emit(
                     }
                 }
                 out.push(Lir::CallImport(OP_BYTES_SET)); // → [buf]  (bytes-set returns the buffer)
+            }
+            Ok(()) // leaves [buf] — the bytes handle
+        }
+        // A runtime `(bin …)` construction of fixed-width INTEGER segments. Alloc a buffer of the total
+        // static width, then per segment: materialize its int value in an i64 scratch slot, RANGE-CHECK it
+        // against the segment (trap "binary value does not fit segment" if out of range — the runtime
+        // companion of the constant CDZ0304), and write its `w` bytes big-endian (`le` reversed) via
+        // `bytes-set` (which returns the buffer, so it threads on the stack). Uses TWO scratch slots: `buf`
+        // (the byte buffer handle) and `val` (the current segment's i64 value); both above `base`.
+        Core::BinBuild { segs } => {
+            let total: u32 = segs.iter().map(|s| s.width as u32).sum();
+            // The current segment's value lives in an i64 scratch slot (range-checked, then its bytes
+            // extracted by shift/mask). The byte buffer handle is THREADED ON THE STACK: `bytes-set`
+            // returns the buffer, so each write leaves `[buf]` for the next — exactly like `BytesOf`.
+            let val_slot = base;
+            if base + 1 > *high {
+                *high = base + 1;
+            }
+            scratch_ty.insert(val_slot, ValType::I64);
+            out.push(Lir::ConstI32(total as i32)); // [total]
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [buf]
+            let mut offset: u32 = 0;
+            for s in &segs {
+                let w = s.width as u32;
+                let bits = w * 8;
+                // Materialize the segment value in the i64 slot (a narrow int emits an i32 → extend by
+                // its OWN signedness; an Int64 is already i64). Stack still just `[buf]` after the set.
+                emit(db, s.value, slots, base + 1, high, scratch_ty, layout, out)?; // [buf, val:i32|i64]
+                if let Some(m) = is_narrow_int(db, s.value) {
+                    out.push(if m.signed {
+                        Lir::I64ExtendI32S
+                    } else {
+                        Lir::I64ExtendI32U
+                    });
+                }
+                out.push(Lir::LocalSet(val_slot)); // val := value:i64  → [buf]
+                // RANGE CHECK: the value must fit the segment's (signed, bits) width, else trap. Width 8
+                // (an i64 holds every i64) needs no check. Signed: `-(2^(bits-1)) <= val < 2^(bits-1)`;
+                // unsigned: `0 <= val < 2^bits`. Emitted as `(low-fail | high-fail) → trap`.
+                if bits < 64 {
+                    if s.signed {
+                        let hi = (1i64 << (bits - 1)) - 1;
+                        let lo = -(1i64 << (bits - 1));
+                        out.push(Lir::LocalGet(val_slot));
+                        out.push(Lir::ConstI64(hi));
+                        out.push(Lir::I64GtS); // val > hi
+                        out.push(Lir::LocalGet(val_slot));
+                        out.push(Lir::ConstI64(lo));
+                        out.push(Lir::I64LtS); // val < lo
+                        out.push(Lir::I32Or);
+                        out.push(Lir::IfUnreachableEnd); // → trap "binary value does not fit segment"
+                    } else {
+                        out.push(Lir::LocalGet(val_slot));
+                        out.push(Lir::ConstI64(0));
+                        out.push(Lir::I64LtS); // val < 0
+                        out.push(Lir::LocalGet(val_slot));
+                        out.push(Lir::ConstI64(1i64 << bits)); // 2^bits
+                        out.push(Lir::I64GeS); // val >= 2^bits (val < 2^63 since bits<64, so signed cmp ok)
+                        out.push(Lir::I32Or);
+                        out.push(Lir::IfUnreachableEnd); // → trap
+                    }
+                }
+                // Write the `w` bytes MSB-first; `le` reverses the buffer position. Each `bytes-set`
+                // consumes `[buf, pos, byte]` and returns `[buf]`, threading the buffer.
+                for p in 0..w {
+                    let shift = (w - 1 - p) * 8;
+                    let pos = if s.little_endian {
+                        offset + (w - 1 - p)
+                    } else {
+                        offset + p
+                    };
+                    // stack is [buf]
+                    out.push(Lir::ConstI32(pos as i32)); // [buf, pos]
+                    out.push(Lir::LocalGet(val_slot)); // [buf, pos, val:i64]
+                    if shift > 0 {
+                        out.push(Lir::ConstI64(shift as i64));
+                        out.push(Lir::I64ShrU);
+                    }
+                    out.push(Lir::I32WrapI64);
+                    out.push(Lir::ConstI32(0xff));
+                    out.push(Lir::I32And); // [buf, pos, byte:i32]
+                    out.push(Lir::CallImport(OP_BYTES_SET)); // → [buf]
+                }
+                offset += w;
             }
             Ok(()) // leaves [buf] — the bytes handle
         }

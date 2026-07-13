@@ -458,6 +458,11 @@ fn collect_closure_codes(db: &mut Db, id: StructId, out: &mut std::collections::
                 collect_closure_codes(db, e, out);
             }
         }
+        Core::BinBuild { segs } => {
+            for s in segs {
+                collect_closure_codes(db, s.value, out);
+            }
+        }
         Core::Proj { operand, .. } => collect_closure_codes(db, operand, out),
         Core::SumNew { payloads, .. } => {
             for p in payloads {
@@ -610,6 +615,11 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         | crate::core::Core::BytesOf { elems } => {
             for e in elems {
                 collect_call_callees(db, e, out);
+            }
+        }
+        crate::core::Core::BinBuild { segs } => {
+            for s in segs {
+                collect_call_callees(db, s.value, out);
             }
         }
         crate::core::Core::Proj { operand, .. }

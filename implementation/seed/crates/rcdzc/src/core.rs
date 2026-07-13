@@ -39,6 +39,20 @@ use std::collections::BTreeMap;
 /// step (into an array cell). A path is a `Vec<PathStep>` from the scrutinee root; the empty path is the
 /// scrutinee itself. This is what lets the decision-tree matcher share a prefix (one outer `sum-disc`
 /// switch) AND reach a binder at any depth (`type-system.md §Patterns Compose`).
+/// One fixed-width INTEGER segment of a runtime [`Core::BinBuild`] — the lean core form of a `(uNN v)`/
+/// `(iNN v)` segment: its byte `width` (1/2/4/8), `signed` (two's-complement `iNN`), `little_endian` (the
+/// `le` modifier), and the `value` occurrence to encode (a runtime int emitted at select). BN4b/runtime
+/// construction handles only integer segments so far; bit-fields + `(bytes …)` splices with a runtime
+/// value are later slices, so a `Core::BinBuild` carries only int segments (a `bin` mixing them with a
+/// runtime bytes/bits segment still declines at `lower`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct BinSeg {
+    pub width: u8,
+    pub signed: bool,
+    pub little_endian: bool,
+    pub value: StructId,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PathStep {
     /// Descend into a sum variant's PAYLOAD — `sum-payload(handle)`. (A single-payload variant; a
@@ -250,6 +264,13 @@ pub enum Core {
     /// both, empty is the identity). Present when the pair is not both compile-time-visible constants (a
     /// constant pair folds to a `Core::BytesOf` in `lower`). The byte companion of `Core::ListConcat`.
     BytesConcat { lhs: StructId, rhs: StructId },
+    /// A `(bin <seg>…)` CONSTRUCTION with at least one RUNTIME segment value (an all-constant `(bin …)`
+    /// folds to a `Core::BytesOf` in `lower`). Builds a `Bytes` on the rope heap at run time: each
+    /// fixed-width integer segment range-checks its value against the segment (trap "binary value does not
+    /// fit segment" if out of range — the runtime companion of the constant CDZ0304) and writes its `w`
+    /// bytes big-endian (`le` reversed). The segments are the LEAN [`BinSeg`] form (width/signedness/
+    /// endianness + the value occurrence), so `Core` does not depend on the resolver's `Segment`.
+    BinBuild { segs: Vec<BinSeg> },
     /// `Bytes.slice` — the FALLIBLE sub-range read, present when the operand is a RUNTIME value (a
     /// constant `Bytes.of` + constant `start`/`len` FOLDS to a `SumNew` in `lower`). The backend
     /// bounds-checks (`start >= 0 && len >= 0 && start + len <= bytes-len`), and in range builds

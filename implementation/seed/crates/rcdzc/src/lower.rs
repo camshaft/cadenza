@@ -5499,6 +5499,50 @@ fn lower_bytes_slice(
 /// dependent-bytes + the runtime path).
 fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment]) -> Core {
     use crate::resolved::SegKind;
+    // RUNTIME construction: if ANY segment's value is not a compile-time constant, the `bin` can't fold to
+    // a baked `Core::BytesOf` — it builds at run time. This slice handles a `bin` of ONLY fixed-width
+    // INTEGER segments (a runtime `bits`/`bytes` segment is a later increment); such a `bin` lowers to a
+    // `Core::BinBuild` the backend emits (alloc + per-segment range-check-and-write). A constant segment
+    // still range-checks here (a provable trap fails the build even alongside a runtime sibling). A `bin`
+    // mixing a runtime value with a `bits`/`bytes` segment declines (not yet built).
+    let any_runtime = segs.iter().any(|s| {
+        matches!(&s.kind, SegKind::Int { .. })
+            && !matches!(core_of(db, s.slot), Core::ConstInt(_) | Core::Poison(_))
+    });
+    if any_runtime {
+        let mut bsegs = Vec::with_capacity(segs.len());
+        for seg in segs {
+            match &seg.kind {
+                SegKind::Int { width, signed } => {
+                    if let Core::Poison(r) = core_of(db, seg.slot) {
+                        return Core::Poison(r);
+                    }
+                    // A CONSTANT sibling still range-checks (a provable misfit fails the build).
+                    if let Core::ConstInt(v) = core_of(db, seg.slot)
+                        && !v.fits_width(*signed, (*width as u32) * 8)
+                    {
+                        return Core::Poison(Reject::coded(
+                            Code::ConstTrap,
+                            "binary value does not fit segment",
+                        ));
+                    }
+                    bsegs.push(crate::core::BinSeg {
+                        width: *width,
+                        signed: *signed,
+                        little_endian: seg.little_endian,
+                        value: seg.slot,
+                    });
+                }
+                // A runtime bit-field / bytes-splice is not built yet — decline the whole `bin`.
+                SegKind::Bits { .. } | SegKind::Bytes { .. } => {
+                    return Core::Poison(Reject::decline(
+                        "a runtime bin with a bit-field or bytes segment is not yet built (integer segments only)",
+                    ));
+                }
+            }
+        }
+        return Core::BinBuild { segs: bsegs };
+    }
     let mut raw: Vec<u8> = Vec::new();
     // The open bit-accumulator between `bits` segments: `acc` holds `nbits` bits, MSB-first (the first
     // field's bits occupy the high end). Whole bytes are flushed to `raw` as soon as `nbits >= 8`.

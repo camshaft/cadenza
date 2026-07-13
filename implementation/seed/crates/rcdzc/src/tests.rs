@@ -5531,6 +5531,103 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_bin_construction_builds_and_range_checks_under_wasmtime() {
+        // A `(bin …)` whose segment value is a genuine RUNTIME value (an EXPORTED boundary parameter, which
+        // cannot fold) builds a Bytes on the rope heap at run time: `Core::BinBuild` allocs the buffer,
+        // writes each segment's bytes big-endian (`le` reversed), and range-checks each value (trap if out
+        // of range). `main` reads a SCALAR out (a `Bytes.len` or a match round-trip) so no escape is needed.
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping runtime bin construction run");
+            return;
+        };
+        let run = |src: &str, args: &[&str]| -> cdz_run::Outcome {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: args.iter().map(|s| s.to_string()).collect(),
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            cdz_run::run(&component(src), &opts).expect("run")
+        };
+        let val = |src: &str, args: &[&str]| -> String {
+            match run(src, args) {
+                cdz_run::Outcome::Value(s) => s,
+                cdz_run::Outcome::Trap(t) => panic!("unexpected trap: {t}"),
+            }
+        };
+        // (Runtime bin MATCHING — decoding a runtime Bytes scrutinee — is a separate unbuilt slice, so
+        // these read the built bytes back with `Bytes.len` / `Bytes.at`, not a `(bin …)` pattern.)
+        // A runtime u16 built + measured: (bin (u16 n)) with n=258 → 2 bytes.
+        assert_eq!(
+            val(
+                "(module m (def (main (: n Int64)) ((. Bytes len) (bin (u16 n)))) (export main))",
+                &["258"]
+            ),
+            "2",
+            "runtime u16 length"
+        );
+        // Big-endian byte order: (bin (u16 258)) = [0x01, 0x02]; read byte 0 → 1 (MSB first).
+        assert_eq!(
+            val(
+                "(module m (def (main (: n Int64)) (match ((. Bytes at) (bin (u16 n)) 0) ((Some b) b) ((None _) -1))) (export main))",
+                &["258"]
+            ),
+            "1",
+            "runtime u16 big-endian MSB"
+        );
+        // Little-endian: (bin (u16 258 le)) = [0x02, 0x01]; byte 0 → 2.
+        assert_eq!(
+            val(
+                "(module m (def (main (: n Int64)) (match ((. Bytes at) (bin (u16 n le)) 0) ((Some b) b) ((None _) -1))) (export main))",
+                &["258"]
+            ),
+            "2",
+            "runtime u16 little-endian LSB-first"
+        );
+        // Multi-segment: (u8 a)(u16 b) → 3 bytes.
+        assert_eq!(
+            val(
+                "(module m (def (main (: a Int64) (: b Int64)) ((. Bytes len) (bin (u8 a) (u16 b)))) (export main))",
+                &["7", "258"]
+            ),
+            "3",
+            "runtime multi-segment length"
+        );
+        // A SIGNED i8 of -1 is IN range (two's complement) → byte 0xFF (255), no trap.
+        assert_eq!(
+            val(
+                "(module m (def (main (: n Int64)) (match ((. Bytes at) (bin (i8 n)) 0) ((Some b) b) ((None _) -1))) (export main))",
+                &["-1"]
+            ),
+            "255",
+            "runtime signed i8 -1 → 0xFF"
+        );
+        // Range check: a runtime u8 given 256 has no 8-bit encoding → TRAP (does not truncate to 0).
+        assert!(
+            matches!(
+                run(
+                    "(module m (def (main (: n Int64)) ((. Bytes len) (bin (u8 n)))) (export main))",
+                    &["256"]
+                ),
+                cdz_run::Outcome::Trap(_)
+            ),
+            "a runtime u8 of 256 must trap, not truncate"
+        );
+        // Range check: a runtime u8 given -1 (negative into unsigned) → TRAP.
+        assert!(
+            matches!(
+                run(
+                    "(module m (def (main (: n Int64)) ((. Bytes len) (bin (u8 n)))) (export main))",
+                    &["-1"]
+                ),
+                cdz_run::Outcome::Trap(_)
+            ),
+            "a runtime u8 of -1 must trap"
+        );
+    }
+
+    #[test]
     fn bytes_of_out_of_range_element_is_a_width_error() {
         // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
         // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the
