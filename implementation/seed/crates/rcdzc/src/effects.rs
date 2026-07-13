@@ -242,6 +242,18 @@ struct HandlerCtx {
     /// which effect DECL it threads and that state's TYPE (to annotate a specialized fn's trailing param).
     /// A specialized recursive fn takes one trailing state parameter per slot, in this order.
     slots: Vec<StateSlot>,
+    /// The ABORTIVE arms of this context (E4) — the `(decl, idx)` of every arm that NEVER resumes (its
+    /// body has no `resume`). Performing such an operation ABANDONS the surrounding computation and makes
+    /// the handle yield the arm body's value (`DESIGN-effects-rcdzc.md` §4.2). Empty for a purely
+    /// tail-resumptive context.
+    abortive: std::collections::HashSet<(u32, u32)>,
+    /// The ABORT value captured during threading (interior-mutable so the immutable-`&ctx` thread walk can
+    /// record it): when an abortive perform in a STRICT position fires, its arm value is set here and
+    /// threading short-circuits — `reduce_handle` returns this value as the WHOLE handle body (the
+    /// surrounding computation is dead). `None` until an abortive perform fires. This increment realizes
+    /// the UNCONDITIONAL strict abort (the perform is reached before its enclosing op completes); a
+    /// conditional abort (inside an `if`/`match` branch) is a later increment.
+    abort_value: std::cell::Cell<Option<StructId>>,
 }
 
 /// One handler's state in a (possibly merged) [`HandlerCtx`]: the effect declaration whose operations
@@ -260,14 +272,27 @@ impl HandlerCtx {
     /// outermost first). The key is the discharged ops (`decl:idx`) plus each arm's occurrence, sorted — a
     /// stable RESOLVED identity. A single-handler context has one slot; a merged nested context (built by
     /// `merged_nested_ctx`) has one per handler.
-    fn new(arms: HashMap<(u32, u32), HandleArm>, slots: Vec<StateSlot>) -> HandlerCtx {
+    fn new(db: &mut Db, arms: HashMap<(u32, u32), HandleArm>, slots: Vec<StateSlot>) -> HandlerCtx {
         let mut parts: Vec<String> = arms
             .iter()
             .map(|((d, i), arm)| format!("{d}:{i}@{}", arm.op.0))
             .collect();
         parts.sort();
         let key = parts.join(",");
-        HandlerCtx { arms, key, slots }
+        // An arm is ABORTIVE when its body has NO `resume` (neither a bare `(resume …)` nor a
+        // `(do … (resume …))`): performing it abandons the computation, yielding the arm body's value.
+        let abortive = arms
+            .iter()
+            .filter(|(_, arm)| !arm_has_resume(db, arm.body))
+            .map(|(&k, _)| k)
+            .collect();
+        HandlerCtx {
+            arms,
+            key,
+            slots,
+            abortive,
+            abort_value: std::cell::Cell::new(None),
+        }
     }
 
     /// The slot INDEX that effect declaration `decl` threads its state through — the trailing
@@ -338,7 +363,7 @@ fn merged_nested_ctx(
         decl: inner_decl,
         state_ty: inner_state_ty,
     });
-    let merged = HandlerCtx::new(arms, slots);
+    let merged = HandlerCtx::new(db, arms, slots);
     // Only MERGE if the inner body reaches a RECURSIVE callee that (under the merged context) performs an
     // OUTER effect too — the two-nested-states signature. When it does, the inside-out path can't fold it
     // (specializing on the inner effect alone leaves the outer performs unresolved); merging lets the
@@ -818,11 +843,17 @@ pub fn reduce_handle(
         .map(|(d, _)| d.0)?;
     let state_ty = state_ty_of_arms(db, init, arms);
     let slot = StateSlot { decl, state_ty };
-    let ctx = HandlerCtx::new(map, vec![slot]);
+    let ctx = HandlerCtx::new(db, map, vec![slot]);
     // Thread the INIT state through the body in evaluation order. The handle's value is the body's
     // value (the accumulated state is observable only through the operations), so we return the
     // rewritten body; the final threaded state is discarded (the body never reads it directly).
     let (rewritten, _final_states) = thread(db, body, vec![init], &ctx)?;
+    // ABORTIVE (E4): if an abortive perform fired during threading, the handle's value is that arm's
+    // value — the surrounding computation was abandoned, so the threaded body is dead. Return the abort
+    // value directly. (Unconditional strict abort only; a conditional abort declined at the perform.)
+    if let Some(abort) = ctx.abort_value.get() {
+        return Some(abort);
+    }
     Some(rewritten)
 }
 
@@ -1028,6 +1059,18 @@ fn thread_bounded(
             }
             subst.insert(arm.state, cur[slot]);
             let arm_body = crate::eval::beta_reduce(db, arm.body, &subst);
+            // ABORTIVE arm (E4): the arm never resumes, so performing it ABANDONS the surrounding
+            // computation — the arm body value becomes the WHOLE handle's value. Record it in the ctx's
+            // abort cell (interior-mutable) and return it as this node's value; the enclosing strict
+            // context is dead, and `reduce_handle` returns the abort value instead of the threaded body.
+            // Sound for the UNCONDITIONAL strict case (the perform is reached before its enclosing op
+            // completes); the abort node is not in an `if`/`match` branch (the fold declines a perform in
+            // a branch, so a conditional abort never reaches here). State does not thread (abandoned).
+            if ctx.abortive.contains(&(decl, idx)) {
+                let copied = copy_pure(db, arm_body);
+                ctx.abort_value.set(Some(copied));
+                return Some((copied, cur));
+            }
             // The arm body must reduce to a TAIL `(resume value next-state)` — the value becomes the
             // perform's result; the next-state threads forward IN THIS SLOT. Two shapes:
             //   * a bare `(resume v s)` — the value is `v`.
@@ -1517,6 +1560,19 @@ fn tail_resume(db: &mut Db, node: StructId) -> Option<(StructId, StructId)> {
     match resolved_of(db, node) {
         Resolved::Resume { value, next_state } => Some((value, next_state)),
         _ => None,
+    }
+}
+
+/// Whether the arm body at `node` contains a `resume` anywhere (structural walk). An arm with NO resume
+/// is ABORTIVE (E4): performing it abandons the computation and yields the arm body's value. Used to
+/// classify a `HandlerCtx`'s arms; the tail-resume EXTRACTION (bare or do-wrapped) is separate.
+fn arm_has_resume(db: &mut Db, node: StructId) -> bool {
+    if matches!(resolved_of(db, node), Resolved::Resume { .. }) {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children.iter().any(|&c| arm_has_resume(db, c)),
+        Struct::Atom(_) => false,
     }
 }
 

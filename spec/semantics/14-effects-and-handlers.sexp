@@ -157,6 +157,24 @@
   (output (: 42 Int64))
   (host-calls))
 
+(case "an abortive handler arm never resumes, so its value becomes the handle's value"
+  (doc    "Witnesses capabilities-and-effects.md #A Handler Arm May Abandon The Computation It Discharges:
+           `Bail` declares `bail : Int64 -> Int64`, and the handler's arm `(Bail.bail (n) s n)` NEVER
+           resumes — it yields `n` as the arm body's value and discards the continuation. So performing
+           `(Bail.bail 7)` inside `(+ 1 (Bail.bail 7))` ABANDONS the surrounding `+ 1` (control never
+           returns to it) and the handle evaluates to the arm value 7, NOT 8. This is the abortive class
+           — a typed early-exit / 'bail and catch at the top' — realized as a control block the perform
+           `br`s out of, carrying the arm value (`DESIGN-effects-rcdzc.md` §4.2). Contrast the tail-
+           resumptive `Get` above (resumes, so `+ 1` runs): the arm's resume DISCIPLINE, not the operator,
+           decides whether the surrounding computation survives.")
+  (needs  effects)
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle 0 ((Bail.bail (n) s n))
+                (+ 1 (Bail.bail 7)))) (export main)))
+  (output (: 7 Int64)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the

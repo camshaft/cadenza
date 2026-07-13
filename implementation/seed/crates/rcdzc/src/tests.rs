@@ -11177,6 +11177,25 @@ mod stage1 {
     }
 
     #[test]
+    fn an_abortive_handler_arm_abandons_the_computation() {
+        // E4: an ABORTIVE arm `(Bail.bail (n) s n)` never resumes — performing `(Bail.bail 7)` inside
+        // `(+ 1 (Bail.bail 7))` ABANDONS the surrounding `+ 1` (control never returns) and the handle
+        // yields the arm value 7, NOT 8. The fold classifies the arm abortive (no `resume` in its body)
+        // and, when the perform fires in a strict position, records the arm value as the whole handle's
+        // value (the surrounding computation is dead). This is the "bail" / typed early-exit class.
+        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle 0 ((Bail.bail (n) s n)) (+ 1 (Bail.bail 7)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("an abortive handler compiles"),
+                "main"
+            ),
+            7
+        );
+    }
+
+    #[test]
     fn nested_intra_program_handlers_compose_inside_out() {
         // E3-nested: two nested `handle`s compose — the fold reduces the INNER handle first (discharging
         // its effect), leaving the OUTER effect's performs for the outer fold. `(A.a)` resumes 22 (inner),

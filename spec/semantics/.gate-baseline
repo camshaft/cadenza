@@ -1236,3 +1236,4 @@ todo	updating a record field changes its type to the new value's
 todo	updating a record field replaces its value
 todo	updating an absent record field is rejected
 todo	wrapping arithmetic uses the distinct wrapping type
+pass	an abortive handler arm never resumes, so its value becomes the handle's value
