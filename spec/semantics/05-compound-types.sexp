@@ -1986,6 +1986,88 @@
             (export main)))
   (error  CDZ0201))
 
+; --- A multi-payload constructor applied in CURRIED / PARTIAL form ---
+; A sum constructor is a single-arity function (core-semantics.md §A Sum Type Constructor Is A Single-
+; Arity Function), and §Functions Are Single-Arity makes `(f a b)` sugar for `((f a) b)`. So a two-payload
+; variant written curried — `((Pair 3) 4)` — is the SAME construction as the flat `(Pair 3 4)`, and a
+; PARTIAL application `(Pair 3)` is a value awaiting the last payload: bindable in a `let`, passable to a
+; HOF, or returned from a helper that supplies fewer arguments than the constructor's arity. All fold to
+; the same variant value. (The flat form is witnessed just above; these pin the curried surface builds the
+; identical value — a constructor that under-applies must not fabricate a unit payload nor reject.)
+
+(case "a two-payload constructor applied in curried form builds the variant"
+  (doc    "`((Pair.Mk 3) 4)` — the multi-payload constructor applied one payload at a time. Single-arity
+           constructors make this the SAME value as the flat `(Pair.Mk 3 4)`: the inner `(Pair.Mk 3)` is a
+           partial application awaiting the second payload, and applying `4` completes the variant. The
+           match binds `a`=3, `b`=4, so `(+ a b)` is 7. Pins that the curried-parens surface folds to the
+           flat construction (the application spine is peeled and its payloads gathered), not a `not
+           applyable` decline on the half-built constructor.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Pair (Mk Int64 Int64))
+            (def (main) (match ((Pair.Mk 3) 4) ((Pair.Mk a b) (+ a b))))
+            (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
+(case "a partial constructor bound in a let completes when applied"
+  (doc    "A partially-applied constructor is a first-class value: `(let ((g (Pair.Mk 3))) (g 4))` binds `g`
+           to the one-payload-short `(Pair.Mk 3)`, then applies the last payload `4`. The bound partial
+           completes to the same variant as the flat form — `(+ a b)` = 7. Pins that a partial constructor
+           survives a binding (its head resolves THROUGH the `let` ref to the half-built application) and
+           still flattens to the full construction when applied.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Pair (Mk Int64 Int64))
+            (def (main) (let ((g (Pair.Mk 3))) (match (g 4) ((Pair.Mk a b) (+ a b)))))
+            (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
+(case "a partial constructor passed to a higher-order function completes the variant"
+  (doc    "The partial constructor `(Pair.Mk 3)` is passed to `ap`, which applies it to `4` — the
+           constructor crosses a call boundary as a function value and is completed inside the callee. The
+           result is the full variant, `(+ a b)` = 7. Pins that a partially-applied constructor is an
+           ordinary first-class function argument (the single-arity constructor rule), completed wherever
+           its last payload is supplied.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Pair (Mk Int64 Int64))
+            (def (ap f) (f 4))
+            (def (main) (match (ap (Pair.Mk 3)) ((Pair.Mk a b) (+ a b))))
+            (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
+(case "a helper returning a partial constructor is over-applied to complete the variant"
+  (doc    "`(def (mk1 x) (Pair.Mk x))` returns a partially-applied constructor — its result type is the
+           curried `Int64 -> Pair`. Calling `(mk1 3 4)` supplies MORE arguments than `mk1`'s own arity: `3`
+           binds `x` (reducing the body to `(Pair.Mk 3)`) and the leftover `4` completes that constructor.
+           This is the single-arity-currying rule reaching through a helper — the over-applied helper builds
+           the variant, `(+ a b)` = 7, rather than rejecting `4` as excess. The curried spelling `((mk1 3)
+           4)` builds the identical value.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Pair (Mk Int64 Int64))
+            (def (mk1 x) (Pair.Mk x))
+            (def (main) (match (mk1 3 4) ((Pair.Mk a b) (+ a b))))
+            (export main)))
+  (call   main)
+  (output (: 7 Int64)))
+
+(case "a three-payload constructor fully curried builds the variant"
+  (doc    "A THREE-payload variant applied one payload at a time — `(((Tri.Mk 1) 2) 3)`. Each nested
+           application supplies the next payload; the fully-saturated spine builds the same variant as the
+           flat `(Tri.Mk 1 2 3)`. The match sums the three payloads, `1 + 2 + 3` = 6. Pins the curried fold
+           at arity 3 (the spine peels all three levels), not just the two-payload case.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Tri (Mk Int64 Int64 Int64))
+            (def (main) (match (((Tri.Mk 1) 2) 3) ((Tri.Mk a b c) (+ a (+ b c)))))
+            (export main)))
+  (call   main)
+  (output (: 6 Int64)))
+
 ; --- A compound bound from a sum payload, extracted ACROSS A FUNCTION BOUNDARY, then projected ---
 ; A value bound out of a sum payload carries its shape WITHIN THE MATCH ARM (the payload-bound cases
 ; above project fields, index lists, and re-match variants inside the arm). But when the payload

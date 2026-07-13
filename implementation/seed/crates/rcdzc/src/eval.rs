@@ -687,8 +687,37 @@ fn apply_lambda_uncached(
     } else {
         match apply_lambda(db, reduced, rest)? {
             Some(r) => Ok(Some(r)),
+            // The reduced body is not a further lambda to absorb `rest`. If it is a (possibly partial)
+            // CONSTRUCTOR — a helper `(def (mk x) (Pair x))` over-applied `(mk 3 4)` reduces the body to
+            // `(Pair 3)`, leaving `[4]` — synthesize the combined application `((Pair 3) 4)` and return
+            // it. A sum constructor is single-arity (core-semantics.md §A Sum Type Constructor Is A Single-
+            // Arity Function), so this curried spine is the SAME construction as the flat `(Pair 3 4)`;
+            // lowering flattens it via `ctor_spine`. Anything else over-applied (a scalar, a non-ctor
+            // record) genuinely takes more arguments than it accepts — keep the error.
+            None if spine_bottom_is_variant_ctor(db, reduced) => {
+                let mut app = vec![reduced];
+                app.extend_from_slice(rest);
+                let combined = db.push_list(app);
+                crate::resolve::resolve_subtree(db, combined);
+                Ok(Some(combined))
+            }
             None => Err("applied more arguments than the function accepts".to_string()),
         }
+    }
+}
+
+/// Whether the value at `id` is a (possibly partially-applied) sum-VARIANT constructor — a bare ctor
+/// record `(Pair)`, or an application spine `((Pair 3))` whose ultimate head is one. Used by the over-
+/// application path to tell a constructor result (which absorbs more arguments as payloads) from a scalar
+/// result (which genuinely rejects them). Follows a `let`/`def` ref and peels `Apply` heads to the bottom.
+fn spine_bottom_is_variant_ctor(db: &mut Db, id: StructId) -> bool {
+    let node = match resolved_of(db, id) {
+        Resolved::Ref { value } => value,
+        _ => id,
+    };
+    match resolved_of(db, node) {
+        Resolved::Apply { head, .. } => spine_bottom_is_variant_ctor(db, head),
+        _ => variant_disc_of(db, node).is_some(),
     }
 }
 
@@ -1145,6 +1174,25 @@ pub fn variant_payload_type(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> 
         Ty::Fn(param, _) => Some(*param),
         _ => None,
     }
+}
+
+/// The number of PAYLOAD arguments the variant constructor at `id` takes — the length of its curried
+/// arrow chain. A nullary variant's scheme is the bare `Sum` (arity 0); a single-payload variant is
+/// `(-> p Sum)` (arity 1); a multi-payload variant curries `(-> p0 (-> p1 Sum))` (arity 2), etc. `None`
+/// if `id` is not a variant constructor (no scheme, or a non-variant record). This is the arity a
+/// CURRIED application spine `((V a) b)` must reach to build the variant — the same count `lower_sum_new`
+/// boxes as payloads. (Peels arrows the way `variant_owner_decl` does, counting rather than discarding.)
+pub fn variant_payload_arity(db: &mut Db, id: StructId) -> Option<usize> {
+    variant_disc_of(db, id)?;
+    let mut fresh = Fresh::new();
+    let scheme = scheme_of(db, id, &mut fresh)?;
+    let mut ty = scheme.ty;
+    let mut arity = 0;
+    while let Ty::Fn(_, r) = ty {
+        arity += 1;
+        ty = *r;
+    }
+    Some(arity)
 }
 
 /// The DECLARATION OCCURRENCE of the sum type the variant constructor at `id` belongs to — the identity
