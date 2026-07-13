@@ -163,6 +163,21 @@
             (def (main) (. tbl b)) (export main)))
   (output (: 8 Int64)))
 
+(case "a top-level value definition may reference a value defined later in the module"
+  (doc    "A module's definitions form a mutually-visible scope, not a top-to-bottom sequence: a value
+           definition may reference a name bound by a LATER definition (core-semantics.md #A Module
+           Evaluates To A Record Of Its Exports — every top-level name is in scope in every definition's
+           body). `(def b (+ a 4))` uses `a`, which is defined AFTER it as `(def a 3)`; the module resolves
+           `a` = 3 regardless of order, so `b` = 7. Pins that value-definition resolution is order-independent
+           (a compiler that resolved names strictly top-to-bottom would report `a` unbound in `b`'s body),
+           the same forward visibility a function definition already enjoys.")
+  (input  (do
+            (def b (+ a 4))
+            (def a 3)
+            (def (main) b)
+            (export main)))
+  (output (: 7 Int64)))
+
 (case "a value definition may carry a leading doc, like a function definition"
   (doc    "A `(doc …)` form immediately after the definition's name/signature documents it and is not part
            of the value; a FUNCTION definition already accepts one (`(def (f) (doc \"…\") body)`), and a
