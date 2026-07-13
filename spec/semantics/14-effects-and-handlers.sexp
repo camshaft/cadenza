@@ -1110,3 +1110,21 @@
             (def (main) (+ 20 22)) (export main)))
   (output (: 42 Int64))
   (host-calls))
+
+(case "two effects declared with the same name are distinct, not one merged effect"
+  (doc    "Two `(effect Log …)` declarations name the SAME bare `Log` but declare DIFFERENT operation
+           sets — the first only `emit`, the second only `record`. They are two DISTINCT effects
+           (capabilities-and-effects.md #An Effect's Operations Are A Closed Set: an effect's identity is
+           its declaration, not its name), NOT one effect merging both operation sets. A bare `Log`
+           reference resolves the first-declared, whose closed operation set is `{emit}`; so a handler arm
+           naming `record` — the SECOND Log's operation — names an operation the first Log does not
+           declare, rejected CDZ0403. Pins that a same-name second declaration never leaks its operations
+           into the first (were the two conflated into one effect declaring `{emit, record}`, the `record`
+           arm would be accepted). This is the effect twin of the duplicate-definition rule (11-modules):
+           a name resolves to one declaration, never a silent union across same-named declarations.")
+  (input  (do
+            (effect Log (op emit (-> Int64 Int64)))
+            (effect Log (op record (-> Int64 Int64)))
+            (def (main)
+              (handle Log 0 ((record (n) s (resume n s))) 0)) (export main)))
+  (error  CDZ0403))

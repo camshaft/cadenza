@@ -20661,6 +20661,29 @@ mod stage1 {
     }
 
     #[test]
+    fn two_same_named_effects_are_distinct_not_conflated() {
+        // Two top-level effects declared with the SAME name `Log` but DIFFERENT operations. A bare `Log`
+        // reference resolves FIRST-declared (op `emit`), so a handler arm naming the OTHER's op `record`
+        // is an undeclared-operation violation (CDZ0403) — proving the two are NOT conflated into one
+        // effect. This is the invariant `db::effect_decl_by_name`'s NAME index must preserve: the index is
+        // FIRST-wins over `effect_decls` in declaration order, byte-identical to the linear `.iter().find`
+        // it replaced (the O(1) accelerator that fixed the N-sum-types O(N²) `resolve_name` scan) — it must
+        // NOT start returning the second `Log` or merging their op sets.
+        let src = "(do (effect Log (op emit (-> Int64 Int64))) \
+                   (effect Log (op record (-> Int64 Int64))) \
+                   (def (main) (handle Log 0 ((record (n) s (resume n s))) 0)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a `record` arm on the first `Log` (which declares only `emit`) must be rejected",
+        );
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0403"),
+            "the arm names an operation the FIRST Log does not declare — the two Logs are distinct: {}",
+            err.message
+        );
+    }
+
+    #[test]
     fn an_effect_reached_with_no_handler_or_delegation_is_cdz0401() {
         // E1d: an effect operation performed with NEITHER an enclosing handler NOR a host delegation has
         // no home — CDZ0401 (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error).
