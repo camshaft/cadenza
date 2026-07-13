@@ -1716,7 +1716,9 @@ impl ComposedRuntime {
         produce
             .call(&mut self.store, make_args, &mut handle)
             .expect("producer call");
-        produce.post_return(&mut self.store).expect("producer post_return");
+        produce
+            .post_return(&mut self.store)
+            .expect("producer post_return");
         // consumer(handle, consume_args…) → the result.
         let mut full = vec![handle[0].clone()];
         full.extend_from_slice(consume_args);
@@ -1724,7 +1726,9 @@ impl ComposedRuntime {
         consume
             .call(&mut self.store, &full, &mut out)
             .expect("consumer call");
-        consume.post_return(&mut self.store).expect("consumer post_return");
+        consume
+            .post_return(&mut self.store)
+            .expect("consumer post_return");
         out[0].clone()
     }
 
@@ -6889,6 +6893,32 @@ mod match_engine {
                 .iter()
                 .any(|d| d.message.contains("runtime string")),
             "the misleading 'runtime string' decline must not accompany the type error"
+        );
+    }
+
+    #[test]
+    fn a_nested_module_value_def_projects_through_member_access() {
+        // 11-modules "a module value definition registers a reachable export field": a do-local `(module m
+        // (def v 7))` binds `m` to a synthesized record of its exports (`modules::synthesize`), so `(. m
+        // v)` is ordinary member access folding to the def's value — 7. The module analogue of a sum's
+        // variants / an effect's operations, nothing privileged by name.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module top (def (main) (do (module m (def v 7)) (. m v))) (export main))"
+                ),
+                "main"
+            ),
+            7
+        );
+        // Projecting a NON-export member (an effect declared in the module) is the closed-record rejection
+        // CDZ0201 — an effect is not an export field, so `(. m log)` has no such field.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (effect log (op emit (-> String Unit)))) (. m log))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201")
         );
     }
 
@@ -23346,7 +23376,9 @@ mod closure_host_resource {
         let program =
             crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
         assert!(
-            cdz_run::required_runtime(&program).expect("valid").is_some(),
+            cdz_run::required_runtime(&program)
+                .expect("valid")
+                .is_some(),
             "a round-trip closure program imports the value-heap runtime (the closure cell is a heap value)"
         );
         let mut rt = super::ComposedRuntime::new(&program, &runtime);
@@ -23408,8 +23440,9 @@ mod closure_host_resource {
         use crate::testkit::parse;
         let src =
             "(module m (def (invoke (: g (-> Int64 Int64)) (: x Int64)) (g x)) (export invoke))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("a consumer-only closure program must DECLINE (no producer mints the closure)");
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a consumer-only closure program must DECLINE (no producer mints the closure)",
+        );
         assert!(
             err.message.contains("PRODUCER") && err.code.is_none(),
             "expected the no-producer decline, got: {:?} / {}",

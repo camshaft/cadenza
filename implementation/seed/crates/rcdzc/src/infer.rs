@@ -2902,11 +2902,16 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 }
                 continue;
             }
-            // A do-local `(type …)` / `(effect …)` is a DECLARATION, not a value expression — its sum/
-            // effect record is synthesized at load (`db::collect_nested_decls`) and its names resolve
-            // through the ordinary decl paths. There is nothing to type-check as a value (resolving the
-            // form as one would decline "unbound name `type`"), so skip it, like a `def`.
-            if matches!(db.ast.head_name(f), Some("type") | Some("effect")) {
+            // A do-local `(type …)` / `(effect …)` / `(module …)` is a DECLARATION, not a value
+            // expression — its record is synthesized at load (`db::collect_nested_decls` / the module
+            // scan) and its names resolve through the ordinary decl paths. There is nothing to type-check
+            // as a value (resolving the form as one would decline, e.g. "`module` is not an expression
+            // here"), so skip it, like a `def`. (A module member's own body IS checked on demand through
+            // the member access that reaches it, exactly like a def called through its name.)
+            if matches!(
+                db.ast.head_name(f),
+                Some("type") | Some("effect") | Some("module")
+            ) {
                 continue;
             }
             collect(db, f, out);

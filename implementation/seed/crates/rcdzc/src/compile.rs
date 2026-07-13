@@ -655,9 +655,13 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             if db.ast.head_name(f) == Some("def") {
                 continue;
             }
-            // A do-local `(type …)` / `(effect …)` is a DECLARATION (its record is synthesized at load),
-            // not an evaluated statement — skip it like a `def` (resolving it as a value would decline).
-            if matches!(db.ast.head_name(f), Some("type") | Some("effect")) {
+            // A do-local `(type …)` / `(effect …)` / `(module …)` is a DECLARATION (its record is
+            // synthesized at load), not an evaluated statement — skip it like a `def` (resolving it as a
+            // value would decline).
+            if matches!(
+                db.ast.head_name(f),
+                Some("type") | Some("effect") | Some("module")
+            ) {
                 continue;
             }
             collect_reached_poisons(db, f, out);
