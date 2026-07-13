@@ -23,6 +23,9 @@
 ///
 //= spec/capabilities/diagnostics.md#every-diagnostic-has-a-stable-code
 //# Every diagnostic the compiler emits MUST carry a machine-readable code that is stable across changes to unrelated diagnostics.
+///
+//= constitution.md#xi-diagnostics-are-machine-actionable
+//# Every diagnostic the compiler emits MUST carry a stable machine-readable code.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Code {
     /// A LEXICAL well-formedness defect the READER detected but cannot itself report through the
@@ -260,6 +263,9 @@ pub enum Applicability {
 ///
 //= spec/capabilities/diagnostics.md#a-rejection-carries-a-structural-fix
 //# A diagnostic that reports a rejection MUST carry a proposed fix expressed as a structural edit of the program's abstract syntax tree, not a textual patch.
+///
+//= constitution.md#xi-diagnostics-are-machine-actionable
+//# Every diagnostic that reports a rejection MUST carry a machine-applicable route to a compliant program, expressed as a structural edit of the program's abstract syntax tree rather than a textual patch.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Fix {
     /// A one-line human label for the edit (`replace with `foo``, `wrap in `(Some …)``) — what an
@@ -590,6 +596,8 @@ pub mod suggest {
     ///
     //= spec/capabilities/diagnostics.md#a-fix-is-a-deterministic-function-of-the-source
     //# A proposed fix and its verified-or-heuristic status MUST be a deterministic function of the source.
+    //= constitution.md#xi-diagnostics-are-machine-actionable
+    //# The route a diagnostic carries and its verified-or-heuristic status MUST be a deterministic function of the source, like every other compiler output.
     pub fn nearest<I, S>(name: &str, candidates: I) -> Option<String>
     where
         I: IntoIterator<Item = S>,

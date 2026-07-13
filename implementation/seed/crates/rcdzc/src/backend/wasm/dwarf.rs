@@ -53,9 +53,13 @@ use crate::backend::wasm::encode::{section, sleb128, uleb128};
 //= spec/capabilities/debug-information.md#debug-information-carries-no-provenance
 //# The compiler MUST NOT embed into debug information a producer or build-environment string that would otherwise vary between builds of the same source.
 const PRODUCER: &str = "cadenza-rcdzc";
-/// A fixed sentinel compilation directory — never the build directory (design §4).
+/// A fixed sentinel compilation directory — never the build directory (design §4). This is the debug
+/// section's face of the constitution's reproducibility floor: the compiler embeds no build-host path
+/// (nor wall-clock, nor host id) anywhere in its output, so the same source derives byte-identically.
 //= spec/capabilities/debug-information.md#debug-information-carries-no-provenance
 //# The compiler MUST NOT embed into debug information a wall-clock time, an absolute filesystem path, or a build-host identifier.
+//= constitution.md#ii-compilation-is-reproducible
+//# The compiler MUST NOT embed a wall-clock time, an absolute filesystem path, or a build-host identifier into its output.
 const COMP_DIR: &str = "/";
 
 // ── DWARF constants (from the DWARF 4 spec; hand-transcribed — the values are stable and standardized,

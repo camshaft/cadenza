@@ -338,6 +338,12 @@ const PRAGMA_REGISTRY: &[&str] = &["default-integer"];
 ///
 //= spec/capabilities/type-system.md#every-expression-has-a-static-type
 //# A program that is not well-typed MUST be rejected at compile time rather than compiled to a component carrying a deferred type error.
+///
+//= constitution.md#vii-strong-static-typing-is-mandatory
+//# Every expression in a well-formed program MUST have a statically determined type before the program is compiled to a component.
+///
+//= constitution.md#vii-strong-static-typing-is-mandatory
+//# The compiler MUST reject a program that is not well-typed rather than emit a component carrying a deferred type error.
 fn collect_faults(db: &mut Db) -> Vec<Reject> {
     let mut faults = Vec::new();
     // UNMODELED TOP-LEVEL FORM. A top-level `(head …)` whose head resolves to NOTHING — neither a
@@ -628,7 +634,11 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // ENTRYPOINT-level property (a library def that performs an effect is fine — its home is its callers'
     // context), so it is checked over each EXPORT's body, following the call graph, rather than per-def.
     // A perform enclosed by a `handle` that discharges its effect, or a `host` that delegates it, has a
-    // home and is skipped; one that reaches the entrypoint top with no home is CDZ0401.
+    // home and is skipped; one that reaches the entrypoint top with no home is CDZ0401. This is the
+    // no-ambient-authority floor: a program that reaches a host operation it never declared is REJECTED
+    // here rather than compiled to a component carrying that undeclared (latent) import.
+    //= constitution.md#iv-no-ambient-authority
+    //# A program that reaches a host operation it does not declare MUST be rejected at compile time rather than compiled to a component carrying a latent import.
     let export_bodies: Vec<StructId> = db
         .exports
         .iter()

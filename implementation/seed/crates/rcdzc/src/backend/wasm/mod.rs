@@ -2953,6 +2953,9 @@ fn emit_recursive_sum_resource(
 ///
 //= spec/contracts/component-abi.md#the-emitted-component-records-its-required-runtime
 //# A compiler MUST be built against a fixed runtime interface and a fixed runtime content address, so that which runtime a generation targets is a property of the compiler rather than a per-invocation choice, and the compiler and its runtime are one versioned pair.
+///
+//= constitution.md#vi-the-runnable-form-is-a-verified-content-addressed-component
+//# The compiler MUST emit a component that names the exact host-interface version it targets.
 fn runtime_import_name() -> String {
     format!(
         "{}@0.0.0+{}",
