@@ -7236,6 +7236,27 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0101")
         );
+        // A nullary export is `Unit -> T`, so applying it to a NON-UNIT argument is a type error CDZ0203 —
+        // the synthesized ignored param is ANNOTATED `Unit`, not a bare (free-type-variable) param that
+        // would silently accept the wrong argument (`((. m answer) 5)` → 42, an accept-ill-formed hole).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (def (answer) 42)) ((. m answer) 5))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0203"),
+            "a non-unit argument to a nullary export is a Unit-vs-Int64 type error"
+        );
+        // And the wrong argument's OWN fault is not swallowed: `(/ 1 0)` disagrees with Unit (CDZ0203)
+        // rather than being dropped by a free-variable param that would run the program to 42.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (def (answer) 42)) ((. m answer) (/ 1 0)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0203"),
+            "a non-unit argument is rejected, not silently dropped"
+        );
     }
 
     #[test]
