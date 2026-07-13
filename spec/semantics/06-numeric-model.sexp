@@ -319,6 +319,24 @@
               (def (x) 5))
             ((. m x) unit)))
   (error  CDZ0303))
+
+(case "a default-integer pragma naming an unbound type is rejected as unbound, like an annotation"
+  (doc    "`(pragma default-integer Nope)` names a type `Nope` that does not exist — no prelude type, no
+           declared type. The SAME name in a type-annotation position (`(: x Nope)`) is CDZ0101 'unbound
+           name', and a meaning-changing directive naming a nonexistent type must not be silently accepted
+           (a dropped directive makes one source mean two things across toolchains,
+           modules-and-namespaces.md #An Unrecognized Module Directive Is Rejected). Resolution — not the
+           `typeval_of` reduction — is what tells an UNBOUND name (a `Poison` CDZ0101) apart from a BOUND
+           type this compiler does not yet model as a `Ty`: the numeric-domain predicate conservatively
+           accepts an argument that does not reduce to a concrete `Ty` (so a legitimate unmodeled integer
+           default is not falsely rejected), but an unbound name is distinguishable, so it is the SAME
+           CDZ0101 the annotation gives, not a silent accept.")
+  (input  (do
+            (module m
+              (pragma default-integer Nope)
+              (def (x) 5))
+            ((. m x) unit)))
+  (error  CDZ0101))
 ; (The general pragma mechanism — an unrecognized key rejected CDZ0601, malformed args CDZ0602 — is
 ;  witnessed in 11-modules.sexp under `needs module-pragmas`; here we pin only the numeric-domain
 ;  behavior of the `default-integer` key.)
