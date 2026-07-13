@@ -846,3 +846,65 @@
               (export inc) (export triple) (export answer)))
   (call   answer)
   (output (: 42 Int64)))
+
+; DISTINCT-SIGNATURE closures ALONGSIDE a plain export — the distinct-sig case of the mixed shape. Closures
+; of DIFFERENT signatures cross as N resource types (each its own `make-<name>`/`call-g<n>`), and a plain
+; export rides alongside as an ordinary top-level func. The distinct-sig envelope now carries plain exports
+; too (aliased off the same program instance after the closure fns, lifted + exported at the top level).
+; `cdz-run` routes `(call <plain>)` to the top-level bare func and `(call <closure>)` to its group's
+; make/call-g<n> (matched by resource type). Composes N-resource-type grouping with the plain boundary.
+
+(case "distinct-signature closures alongside a plain export — the Int64->Int64 closure runs"
+  (doc    "`inc : (-> Int64 Int64)` (resource t0) and `isz : (-> Int64 Bool)` (resource t1) cross as TWO
+           resource types, alongside a plain `two : () -> 2`. Calling the closure `inc`: `make-inc()` → a
+           handle → `call-g0(handle, 5)` = 6. Pins that distinct-sig grouping is unaffected by a plain
+           export sharing the component.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (def (two) 2)
+              (export inc) (export isz) (export two)))
+  (call   inc (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "distinct-signature closures alongside a plain export — the Int64->Bool closure runs"
+  (doc    "The SAME program, calling the OTHER-signature closure `isz` (resource t1): `make-isz()` → a
+           handle → `call-g1(handle, 0)` = true. Confirms both resource types dispatch their own closures
+           with a plain export present.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (def (two) 2)
+              (export inc) (export isz) (export two)))
+  (call   isz (: 0 Int64))
+  (output (: true Bool)))
+
+(case "distinct-signature closures alongside a plain export — the plain export runs"
+  (doc    "The SAME program, calling the plain `two` → 2. Pins that the top-level plain export is reachable
+           when TWO distinct resource types ride beside it in `cadenza:closure/exports`.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (def (two) 2)
+              (export inc) (export isz) (export two)))
+  (call   two)
+  (output (: 2 Int64)))
+
+(case "distinct-signature capturing closures alongside a parameterized plain export"
+  (doc    "`adder : (Int64) -> (-> Int64 Int64)` (t0, captures k) and `gte : (Int64) -> (-> Int64 Bool)`
+           (t1, captures a threshold) cross as two resource types beside a plain `dbl : (Int64) -> Int64`.
+           `(call gte 3 5)` → `make-gte(3)` builds `(fn (x) (>= x 3))`, then `call-g1(handle, 5)` = true
+           (5 >= 3). Composes distinct-sig capture with a parameterized plain export.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (gte (: t Int64)) (fn ((: x Int64)) (>= x t)))
+              (def (dbl (: n Int64)) (* n 2))
+              (export adder) (export gte) (export dbl)))
+  (call   gte (: 3 Int64) (: 5 Int64))
+  (output (: true Bool)))
+
+(case "distinct-signature capturing closures alongside a parameterized plain export — the plain runs"
+  (doc    "The SAME four-export program, calling the parameterized plain `dbl(21)` = 42. Pins the
+           non-nullary plain export reachable beside two distinct capturing-closure resource types.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (gte (: t Int64)) (fn ((: x Int64)) (>= x t)))
+              (def (dbl (: n Int64)) (* n 2))
+              (export adder) (export gte) (export dbl)))
+  (call   dbl (: 21 Int64))
+  (output (: 42 Int64)))

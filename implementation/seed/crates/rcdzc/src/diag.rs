@@ -560,6 +560,23 @@ pub const HANDLER_NOT_REDUCIBLE_DECLINE: &str = "this handler is not yet reducib
 /// unrepresentable closure). Shared as consts so `dedup_faults` drops the decline whenever that CDZ0201 is
 /// present — ONE primary, actionable "no". A non-exported closure with an unrepresentable part (no CDZ0201
 /// covering it) keeps its honest decline.
+/// The UNCODED declines the emit path (`lower`) returns for a value with no runtime form — a bare type
+/// name (`Int64`), a nullary lambda, a bare built-in op, a closure whose param type has none. When such a
+/// value is an EXPORT'S result — e.g. `(def (main) Int64)` — `compile::collect_faults` reports the
+/// authoritative coded CDZ0201 "export `<name>` is a TYPE, not a runtime value" at the export clause; the
+/// emit path then declines the same body through SEVERAL of these paths at once (a 4-error cascade for one
+/// root cause). Shared as consts so `dedup_faults` drops them whenever that CDZ0201 is present, keeping the
+/// ONE coded, actionable reject. A non-export use of such a value (no CDZ0201) keeps its honest decline.
+pub const TYPE_VALUE_NO_RUNTIME_DECLINE: &str = "a type value has no runtime form";
+pub const NULLARY_LAMBDA_NO_CLOSURE_DECLINE: &str = "a nullary lambda has no runtime closure form";
+pub const PRIM_AS_VALUE_DECLINE: &str =
+    "a built-in operation used as a value needs runtime closures (not yet built)";
+
+/// A stable SUBSTRING of the coded CDZ0201 type-export reject (`export <name> is a TYPE, not a runtime
+/// value …`). `dedup_faults` matches this to recognize the reject that makes the type-value decline family
+/// redundant, without pinning the whole (name-bearing) text.
+pub const TYPE_EXPORT_MARKER: &str = "is a TYPE, not a runtime value";
+
 /// The shared PREFIX of the CDZ0201 "record has no field `<key>`" reject. A member access `(. r key)`
 /// with an absent field is reported by BOTH the infer-side member check (`infer::no_field_reject`, which
 /// adds a did-you-mean fix) AND — when that access is the head of an application `(R.make …)` — the

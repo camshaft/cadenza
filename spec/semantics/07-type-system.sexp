@@ -617,3 +617,64 @@
 ; definition whose result IS a `Type.of` value is rejected by the erasure fence, exactly as a bare unit
 ; value is. That rejection is currently an UNCODED decline, so it is not pinned as an `(error CODE)`
 ; case here; giving the erasure fence a diagnostic code is a separate increment.)
+
+; COMPILE-TIME TYPE EQUALITY — `(Type.eq a b)` folds to the constant `Bool` of two type-values' EXACT
+; structural equality (`Int64` ≠ `Int32`; a quantity's unit is part of its type, so `metre` ≠ `second`).
+; The arguments are type-values: a `(Type.of e)` result OR a written type (`Int64`, `(Qty Float64
+; metre)`). Because the result is a compile-time CONSTANT, `(if (Type.eq …) then else)` selects a branch
+; at compile time — a program branches on types. (The two branches must still share a type: the checker
+; unifies both arms before the constant condition prunes the dead one; branching to DIFFERENT result
+; types is a later, larger step. The result `Bool` is an ordinary runtime value — only the comparison is
+; compile-time.)
+
+(case "Type.eq is true for two values of the same type"
+  (doc    "Witnesses type-system.md #Inference And First-Class Types Meet At A Bidirectional Boundary:
+           types are first-class values the compiler compares. `(Type.eq (Type.of 5) (Type.of 6))` — both
+           Int64 — folds to the constant `true`. The comparison is exact structural type equality decided
+           at compile time; the produced `Bool` is an ordinary value.")
+  (input  (Type.eq (Type.of 5) (Type.of 6)))
+  (output (: true Bool)))
+
+(case "Type.eq is false for values of different types"
+  (doc    "`(Type.eq (Type.of 5) (Type.of true))` compares Int64 with Bool — distinct types — folding to
+           the constant `false`. Pins that type equality is a real, decidable comparison, not always
+           true: two differently-typed values are observably unequal at the type level.")
+  (input  (Type.eq (Type.of 5) (Type.of true)))
+  (output (: false Bool)))
+
+(case "Type.eq compares a reflected type against a written type"
+  (doc    "`(Type.eq (Type.of 5) Int64)` compares a reflected type with a WRITTEN one — both are
+           type-values, so the operation is symmetric over reflection and syntax — and is `true`. Pins
+           that a written type and `Type.of` produce the same kind of value, composably comparable.")
+  (input  (Type.eq (Type.of 5) Int64))
+  (output (: true Bool)))
+
+(case "Type.eq distinguishes quantities by their unit"
+  (doc    "A quantity's UNIT is part of its type, so `(Type.eq (Type.of (Qty.of 1.0 metre)) (Type.of
+           (Qty.of 1.0 second)))` is `false` — metre and second are different dimensions hence different
+           types — while the same unit compares `true` regardless of magnitude. Pins that type equality
+           carries the full unit-indexed type (units-of-measure.md #Dimensional Mismatch Is An Error, at
+           the type-value level).")
+  (input  (Type.eq (Type.of (Qty.of 1.0 (Unit.base #"metre")))
+                   (Type.of (Qty.of 1.0 (Unit.base #"second")))))
+  (output (: false Bool)))
+
+(case "an if on Type.eq selects a branch at compile time"
+  (doc    "The headline of compile-time reflection: `(if (Type.eq (Type.of 5) Int64) 100 200)` folds the
+           condition to the constant `true`, so the whole `if` is `100`. A program BRANCHES on types at
+           compile time — the type comparison decides control flow with no runtime cost (the condition is
+           a constant, not an emitted test).")
+  (input  (if (Type.eq (Type.of 5) Int64) 100 200))
+  (output (: 100 Int64)))
+
+(case "a compile-time type branch reads a runtime parameter's static type"
+  (doc    "`(if (Type.eq (Type.of n) Int64) (+ n 1) 0)` for a parameter `n : Int64` branches on `n`'s
+           STATIC type (Int64), folding the condition to `true` at compile time, so `main 7` returns 8.
+           Pins that the branch is decided by the parameter's inferred type — not its runtime value — yet
+           the selected branch runs on the actual value.")
+  (input  (do
+            (def (main (: n Int64))
+              (if (Type.eq (Type.of n) Int64) (+ n 1) 0))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 8 Int64)))

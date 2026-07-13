@@ -5449,6 +5449,127 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_branch_refinement_folds_a_comparison_of_two_disjoint_refined_ranges() {
+        // FLOW-SENSITIVE RANGE-VS-RANGE FOLD: when two DIFFERENT variables are each refined by an enclosing
+        // branch so their ranges are DISJOINT, a comparison BETWEEN them is decided — no runtime compare.
+        // `(if (> a 100) (if (< b 50) (< b a) …))`: under `a ∈ [101,…]` and `b ∈ […,49]`, `b < a` is always
+        // true, so the innermost `if` collapses to its taken branch. This generalizes the const-vs-range
+        // fold (one operand constant) to two runtime intervals. Pins the elimination at the Lir level (the
+        // inner `b < a` compare is gone — only the two guard compares remain) AND value parity, including
+        // an OVERLAPPING refinement that must NOT fold.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| {
+                    matches!(
+                        i,
+                        Lir::I64GtS | Lir::I64GeS | Lir::I64LtS | Lir::I64LeS | Lir::I64Eq
+                    )
+                })
+                .count()
+        };
+        // DISJOINT: `a > 100` and `b < 50` make `b < a` always true → the inner `if` folds, leaving only the
+        // two guard compares (`> 100`, `< 50`), NOT three.
+        let disjoint = select(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (> a 100) (if (< b 50) (if (< b a) 1 0) 0) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmps(&disjoint),
+            2,
+            "the disjoint inner `b < a` should fold away, leaving two guards, got: {disjoint:?}"
+        );
+        assert!(
+            !disjoint.iter().any(|i| matches!(i, Lir::Select)),
+            "the decided inner `if` collapses to its taken branch, no select, got: {disjoint:?}"
+        );
+        // OVERLAP: widen `b`'s guard to `< 500` so `b ∈ […,499]` and `a ∈ [101,…]` OVERLAP — `b < a` is NOT
+        // decided and all THREE compares remain (guards against over-folding).
+        let overlap = select(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (> a 100) (if (< b 500) (if (< b a) 1 0) 0) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmps(&overlap),
+            3,
+            "an overlapping inner comparison must NOT be folded, got: {overlap:?}"
+        );
+
+        // VALUE PARITY. Disjoint: b<a always true when the guards pass; guards failing → 0.
+        let dj = "(if (> a 100) (if (< b 50) (if (< b a) 1 0) 0) 0)";
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                dj,
+                &[Val::S64(200), Val::S64(10)]
+            ),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                dj,
+                &[Val::S64(200), Val::S64(49)]
+            ),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                dj,
+                &[Val::S64(200), Val::S64(60)]
+            ),
+            0
+        ); // b<50 fails
+        assert_eq!(
+            run::<i64>("(: a Int64) (: b Int64)", dj, &[Val::S64(50), Val::S64(10)]),
+            0
+        ); // a>100 fails
+        // Overlap: the real `b < a` decides — both outcomes must be correct.
+        let ov = "(if (> a 100) (if (< b 500) (if (< b a) 1 0) 0) 0)";
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                ov,
+                &[Val::S64(400), Val::S64(300)]
+            ),
+            1
+        ); // b<a
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                ov,
+                &[Val::S64(200), Val::S64(300)]
+            ),
+            0
+        ); // b>a
+    }
+
+    #[test]
     fn a_narrow_binary_op_with_a_constant_left_operand_emits_valid_wasm() {
         // ⚠ INVALID WASM regression: a narrow binary op whose LEFT operand is a bare integer literal and
         // whose right is a narrow-typed variable mis-emitted the literal at its i64 default beside the i32
@@ -8262,6 +8383,54 @@ mod match_engine {
                 .iter()
                 .any(|d| d.message == crate::diag::CLOSURE_PARAM_NO_REPR_DECLINE),
             "the 'no machine representation' decline must not accompany the coded reject"
+        );
+    }
+
+    #[test]
+    fn a_type_valued_export_reports_one_coded_error_not_a_cascade() {
+        // Exporting a TYPE — `(def (main) Int64)` — is compile-time-only and can't cross the boundary.
+        // The emit path declined the same body through FOUR no-runtime-form paths (type-value / nullary
+        // lambda / bare prim / closure param) — a 4-error cascade for one root cause. `collect_faults` now
+        // reports ONE coded CDZ0201 "is a TYPE, not a runtime value" at the export clause, and
+        // `dedup_faults` drops the downstream declines. One clear, actionable error, not four "not built
+        // yet" declines an agent would flail on.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse("(module m (def (main) Int64) (export main))")),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "a type-valued export = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
+        assert!(
+            errors[0].message.contains("is a TYPE, not a runtime value"),
+            "the surviving error names the real cause: {}",
+            errors[0].message
+        );
+        // None of the four downstream declines accompany it.
+        assert!(
+            !out.diagnostics.iter().any(|d| {
+                matches!(
+                    d.message.as_str(),
+                    crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE
+                        | crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE
+                        | crate::diag::PRIM_AS_VALUE_DECLINE
+                )
+            }),
+            "the no-runtime-form declines must not accompany the coded reject: {:?}",
+            out.diagnostics
         );
     }
 
@@ -11551,6 +11720,19 @@ mod match_engine {
             cadenza_syntax::sexpr::print(&arenas).trim(),
             "(: b\"\\xe5\\x8e&\" Bytes)",
             "encode still renders after the repeated len calls"
+        );
+        // VM-3c: `is-empty` returns bool — a non-empty (3-byte) Bytes → false. Another repeatable scalar
+        // method coexisting with len/encode.
+        let is_empty = get(&mut rt, "is-empty");
+        let mut out = [Val::Bool(true)];
+        is_empty
+            .call(&mut rt.store, &handle, &mut out)
+            .expect("is-empty");
+        is_empty.post_return(&mut rt.store).expect("is-empty post");
+        assert!(
+            matches!(out[0], Val::Bool(false)),
+            "is-empty on a 3-byte Bytes → false, got {:?}",
+            out[0]
         );
         // VM-3: `to-bytes` returns the RAW payload (no value-form framing) — the exact 3 bytes E5 8E 26.
         // Repeatable (borrow), so call it after len + encode; the handle is still live.
@@ -17597,6 +17779,30 @@ mod stage1 {
             Some("CDZ0404"),
             "expected CDZ0404 (latent authority), got: {}",
             err.message
+        );
+    }
+
+    #[test]
+    fn a_misspelled_delegated_op_does_not_also_report_latent_authority() {
+        // A MISSPELLED op in a delegated body — `(E.emitt 5)` for declared `emit` — is the primary
+        // CDZ0201 typo ("did you mean `emit`?"). It must NOT ALSO trigger CDZ0404 latent authority: the
+        // misspelled `E.emitt` does not resolve as a perform, so `body_reaches_effect` is false, but the
+        // author DID intend to reach `E` — the CDZ0404 is a pure cascade of the typo (fixing the typo
+        // clears both). Only the root CDZ0201 should surface.
+        let src = "(do (effect E (op emit (-> Int64 Unit))) \
+                   (def (main) (host (E) (E.emitt 5))) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let codes: Vec<String> = crate::diagnostics(&mut db)
+            .into_iter()
+            .filter_map(|d| d.code)
+            .collect();
+        assert!(
+            codes.iter().any(|c| c == "CDZ0201"),
+            "the misspelled op is a CDZ0201 typo; got {codes:?}"
+        );
+        assert!(
+            !codes.iter().any(|c| c == "CDZ0404"),
+            "the latent-authority CDZ0404 is a cascade of the typo and must be suppressed; got {codes:?}"
         );
     }
 
@@ -28237,7 +28443,11 @@ mod closure_host_resource {
         ];
 
         let core = crate::backend::wasm::serialize::distinct_sig_resource_core_module(
-            &funcs, &imports, &groups, &layout,
+            &funcs,
+            &imports,
+            &groups,
+            &[],
+            &layout,
         )
         .expect("distinct-signature closure-resource core serializes");
 
@@ -28871,14 +29081,13 @@ mod closure_host_resource {
         );
     }
 
-    /// MULTI-EXPORT closures now COMPILE for the same-signature (one resource type, shared `call`), the
-    /// DISTINCT-signature (N resource types, per-group `call-g<n>`), AND the MIXED shape (a same-signature
-    /// closure ALONGSIDE a plain non-closure export — the closure via the resource envelope, the plain export
-    /// as an ordinary top-level func). The only REMAINING declining shape is DISTINCT closure signatures
-    /// alongside a plain export (the distinct-sig envelope has no plain-export slot). Pins the three working
-    /// cases + the honest Todo.
+    /// MULTI-EXPORT closures COMPILE for the same-signature (one resource type, shared `call`), the
+    /// DISTINCT-signature (N resource types, per-group `call-g<n>`), AND the MIXED shape (closures ALONGSIDE
+    /// a plain non-closure export — the closures via the resource envelope, the plain export as an ordinary
+    /// top-level func) for BOTH same-signature and DISTINCT-signature closure sets. Pins the four working
+    /// cases (same-sig, distinct-sig, same-sig+plain, distinct-sig+plain).
     #[test]
-    fn multi_export_closures_compile_same_or_distinct_signature_else_decline() {
+    fn multi_export_closures_compile_same_or_distinct_signature() {
         use crate::testkit::parse;
         // Same signature → COMPILES (shared call).
         let same = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
@@ -28900,18 +29109,13 @@ mod closure_host_resource {
             "a same-signature closure alongside a plain export compiles (mixed-export path)",
         );
 
-        // DISTINCT closure signatures ALONGSIDE a non-closure export → still declines (the distinct-sig
-        // resource envelope has no plain-export slot; that composition is a later widening).
+        // DISTINCT closure signatures ALONGSIDE a non-closure export → now COMPILES too (the distinct-sig
+        // envelope carries plain exports: N resource types + the plain export as a top-level func).
         let mixed_distinct = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
                               (def (isz) (fn ((: x Int64)) (= x 0))) \
                               (def (two) 2) (export inc) (export isz) (export two))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(mixed_distinct)))
-            .expect_err("distinct-signature closures alongside a plain export must DECLINE");
-        assert!(
-            err.message.contains("DISTINCT signatures ALONGSIDE") && err.code.is_none(),
-            "expected the distinct-sig-plus-plain decline, got: {:?} / {}",
-            err.code,
-            err.message
+        crate::compile::compile_component(&crate::codec::encode(&parse(mixed_distinct))).expect(
+            "distinct-signature closures alongside a plain export compile (distinct-sig mixed path)",
         );
     }
 

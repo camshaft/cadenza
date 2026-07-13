@@ -426,11 +426,23 @@ the component type. The new work:
   closure signatures alongside a plain export (the distinct-sig envelope has no plain slot); a compound plain
   result (needs the memory/realloc lift shape). +6 corpus (closure+plain both driven; parameterized plain
   beside a capturing factory; two same-sig closures beside a plain export). Gate 1282p/0f.
+- **✅ DISTINCT-SIGNATURE closures ALONGSIDE a non-closure export COMPLETE `@044ff65f`.** Extends the mixed
+  shape to the distinct-sig case: closures of DIFFERENT signatures cross as N resource types (each its own
+  `make-<name>`/`call-g<n>`) while plain exports ride alongside as top-level funcs. Pieces mirror the
+  same-signature mixed envelope: (a) `serialize::distinct_sig_resource_core_module` gains `plain:
+  &[PlainExport]` (adds an export entry per plain by its core-func index); (b)
+  `envelope::assemble_distinct_sig_resource_mixed` (P=0 case delegated by `assemble_distinct_sig_resource`)
+  — each plain body aliased AFTER the closure fns (core func `k+3g+total_fns+j`), functype at comp-type
+  `1+g+2*total_fns+j`, lifted to comp func `k+total_fns+j`, exported top-level under its kebab name; (c)
+  `emit_distinct_sig_resource` partitions exports into CLOSURE (grouped by signature) + PLAIN; (d)
+  `emit_mixed_closure_resource`'s distinct-sig-plus-plain decline now routes to `emit_distinct_sig_resource`.
+  `cdz-run` needs no change (the mixed dispatch already routes plain→bare-func, closure→make/call). +5
+  corpus (distinct-sig Int64->Int64 + Int64->Bool beside a plain scalar, each closure + the plain driven;
+  distinct-sig capturing closures beside a parameterized plain export). Gate 1310p/0f.
 - **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG-or-RESULT (recursion
-  into the value-heap escape's encode/decode); DISTINCT closure signatures alongside a non-closure export
-  (the mixed envelope's same-signature restriction); a compound-RESULT plain export alongside a closure; a
-  closure TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>`
-  repeated-call handle. Everything else DONE.
+  into the value-heap escape's encode/decode); a compound-RESULT plain export alongside a closure (needs
+  the memory/realloc lift shape); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the
+  wasmtime-blocked `borrow<t>` repeated-call handle. Everything else DONE.
 
 ## Risks / open questions
 

@@ -555,12 +555,17 @@ pub enum Ty {
     /// shared tuple) was O(N²) in `Vec<Ty>` clone. Indexing/iterating are unchanged (it derefs to a
     /// slice); only construction differs (`.collect::<Vec<_>>().into()` or `vec![…].into()`).
     Tuple(std::sync::Arc<[Ty]>),
-    /// A LIST: a homogeneous, variable-length sequence of one ELEMENT type (`collections-and-text.md` §A
-    /// List Is A Homogeneous Sequence). Unlike a tuple (fixed arity, per-position type), a list's length
-    /// is a runtime property and every element shares ONE type — so `(list 1 true)` (mixed) is ill-typed
-    /// (the elements do not unify) and `(list)` is a list of a deferred element type. `List Int64` and
-    /// `List Bool` are distinct; the element type is held behind a `Box` (one type, unlike the tuple's
-    /// slice). Backed at run time by the persistent `vec-*` RRB heap ops.
+    /// A LIST: a homogeneous, variable-length sequence of one ELEMENT type. Unlike a tuple (fixed arity,
+    /// per-position type), a list's length is a runtime property and every element shares ONE type — so
+    /// `(list 1 true)` (mixed) is ill-typed (the elements do not unify) and `(list)` is a list of a
+    /// deferred element type. `List Int64` and `List Bool` are distinct; the element type is held behind a
+    /// `Box` (one type, unlike the tuple's slice). Backed at run time by the persistent `vec-*` RRB heap
+    /// ops — an internal representation the language holds behind opaque handles, unobservable to the
+    /// program (a list is only ever an i32 handle, inspected through the runtime's `vec-*` ops).
+    //= spec/capabilities/collections-and-text.md#a-list-is-an-ordered-homogeneous-sequence
+    //# A list MUST be an ordered sequence whose elements share one type.
+    //= spec/capabilities/collections-and-text.md#a-list-s-representation-is-unspecified-and-unobservable
+    //# A conforming implementation MAY back a list with any internal representation — a contiguous array, a persistent tree, or a structure it selects and changes by size or usage — and MUST NOT let that choice be observable, so that two lists with equal elements in the same order are indistinguishable by every operation, including equality, length, indexing, and the list's canonical byte form, regardless of how each is stored.
     List(Box<Ty>),
     /// A MAP: a persistent association of KEYS of one type with VALUES of one type
     /// (`collections-and-text.md` §A Map Associates Keys With Values). PARAMETRIC in two types — the
@@ -596,11 +601,16 @@ pub enum Ty {
     /// `Bytes` renders `\xNN`). This increment realizes the CONSTANT string (a literal folds + equality);
     /// runtime string ops (`concat`/`len`/`at`) + string escape arrive later.
     String,
-    /// A CHAR: a single Unicode scalar value (`collections-and-text.md` §A Char Is A Single Unicode
-    /// Scalar Value) — the element type of a string's scalar sequence. One monomorphic LEAF type (no
-    /// parameter). Its value is its scalar, so equality is scalar equality and its order is the numeric
-    /// order of its scalar value. A `#\a` literal is a `Char` constant; `Char.to-int`/`from-int` convert
-    /// to/from `Int64` totally. This increment realizes the CONSTANT char (literal + equality/ordering).
+    /// A CHAR: a single Unicode scalar value — the element type of a string's scalar sequence. One
+    /// monomorphic LEAF type (no parameter). Its value is its scalar, so equality is scalar equality and
+    /// its order is the numeric order of its scalar value. A `#\a` literal is a `Char` constant;
+    /// `Char.to-int`/`from-int` convert to/from `Int64` totally. This increment realizes the CONSTANT
+    /// char (literal + equality/ordering). A `Char` is backed by Rust's `char`, which admits ONLY a valid
+    /// scalar (never a surrogate), so it can never hold a non-scalar value.
+    //= spec/capabilities/collections-and-text.md#a-char-is-a-single-unicode-scalar-value
+    //# A char MUST be a single Unicode scalar value — a code point in the range `U+0000..=U+10FFFF` excluding the surrogate range `U+D800..=U+DFFF` — so that the element type of a string's scalar sequence is exactly a char and a char can never hold a value that is not a scalar.
+    //= spec/capabilities/collections-and-text.md#a-char-is-a-single-unicode-scalar-value
+    //# A char's ordering MUST be the numeric order of its scalar value, so that a char order and the string order defined on scalar values agree by construction.
     Char,
     /// A SYMBOL: an interned NAME value with O(1) equality (`options/symbol-interning/`; 17-symbols) — a
     /// NOMINAL wrapper over a `String`. `(Symbol.of s)` maps a String to a Symbol, and two Symbols are
