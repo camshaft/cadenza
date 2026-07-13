@@ -75,6 +75,16 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Bytes(_) => Ty::Bytes,
         // A `(bin …)` in value position CONSTRUCTS a byte sequence → `Ty::Bytes`.
         Resolved::Bin { .. } => Ty::Bytes,
+        // A `bin` PATTERN binder: an integer segment decodes an `Int`, a `bytes` segment a `Bytes`.
+        Resolved::BinField {
+            segs, seg_index, ..
+        } => match segs.get(seg_index).map(|s| &s.kind) {
+            Some(crate::resolved::SegKind::Int { .. } | crate::resolved::SegKind::Bits { .. }) => {
+                Ty::int()
+            }
+            Some(crate::resolved::SegKind::Bytes { .. }) => Ty::Bytes,
+            None => Ty::Any,
+        },
         // A float literal's width is DEFERRED — it grounds to `Float64` unless an annotation or a float
         // operator's signature fixes it (`(: 3.5 Float32)`), mirroring a bare integer literal's width.
         Resolved::Float(_) => Ty::float(),
@@ -1937,6 +1947,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         Resolved::Prim(_)
         | Resolved::Ref { .. }
         | Resolved::SumPayload { .. }
+        | Resolved::BinField { .. }
         | Resolved::Param { .. }
         | Resolved::Bool(_)
         | Resolved::Str(_)

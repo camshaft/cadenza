@@ -5022,6 +5022,74 @@ mod match_engine {
     }
 
     #[test]
+    fn a_constant_bin_pattern_decodes_and_binds_its_segments() {
+        // A `(bin …)` PATTERN over a constant Bytes scrutinee: decode + bind each segment, dispatch on
+        // literal segments, and match the WHOLE scrutinee (leftover / overrun → fall to the catch-all).
+        for (body, want) in [
+            // bind a fixed-width int (round-trips the construction): u16 258
+            (
+                "(module m (def (main) (match (bin (u16 258)) ((bin (u16 n)) n) (_ 0))) (export main))",
+                258,
+            ),
+            // signed segment: byte 255 as i8 → -1; unsigned: 255
+            (
+                "(module m (def (main) (match (Bytes.of (list 255)) ((bin (i8 n)) n) (_ 0))) (export main))",
+                -1,
+            ),
+            (
+                "(module m (def (main) (match (Bytes.of (list 255)) ((bin (u8 n)) n) (_ 0))) (export main))",
+                255,
+            ),
+            // little-endian read
+            (
+                "(module m (def (main) (match (bin (u16 258 le)) ((bin (u16 n le)) n) (_ 0))) (export main))",
+                258,
+            ),
+            // bit-fields decode back: 0xA5 = 1·01·00101 → a=1,b=1,c=5 → 7
+            (
+                "(module m (def (main) (match (Bytes.of (list 165)) ((bin (bits a 1) (bits b 2) (bits c 5)) (+ (+ a b) c)) (_ 0))) (export main))",
+                7,
+            ),
+            // a leading literal tag dispatches, then the field binds: [1,1,2] → 258
+            (
+                "(module m (def (main) (match (Bytes.of (list 1 1 2)) ((bin (u8 1) (u16 n)) n) (_ 0))) (export main))",
+                258,
+            ),
+            // whole-scrutinee: leftover bytes → the bin arm does NOT match → catch-all 0
+            (
+                "(module m (def (main) (match (Bytes.of (list 1 2 3)) ((bin (u16 n)) n) (_ 0))) (export main))",
+                0,
+            ),
+            // overrun: a u16 needs 2 bytes, input has 1 → non-match → 0
+            (
+                "(module m (def (main) (match (Bytes.of (list 5)) ((bin (u16 n) (bytes rest)) n) (_ 0))) (export main))",
+                0,
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "bin pattern decodes: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bytes_match_with_only_a_bin_arm_and_no_catch_all_is_non_exhaustive() {
+        // A `(bin …)` pattern never covers every byte sequence (empty input, wrong length, an unequal
+        // literal all fail), so a match whose only arm is a bin pattern is non-exhaustive → CDZ0210,
+        // exactly as a sum match missing a variant.
+        assert_eq!(
+            reject_code("(module m (def (main) (match (Bytes.of (list 1 2)) ((bin (u16 n)) n))) (export main))")
+                .as_deref(),
+            Some("CDZ0210"),
+        );
+    }
+
+    #[test]
     fn bytes_of_out_of_range_element_is_a_width_error() {
         // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
         // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the

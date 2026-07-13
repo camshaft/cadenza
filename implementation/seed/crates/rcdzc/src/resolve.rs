@@ -614,7 +614,65 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     if let Some(binder) = do_local_binds(db, form, from, name) {
         return Some(binder);
     }
+    // Case B: `form` is a MATCH ARM `(pattern body)` whose pattern is a `(bin <seg>…)` binary pattern that
+    // binds `name` at one of its segments — `(match b ((bin (u16 n)) n) …)`, the `n` in the body. The
+    // binder decodes that segment from the scrutinee; it resolves to a `BinField` (the binary analogue of
+    // Case 6's `SumPayload`). Scoped to this arm. An integer segment binder types `Ty::Int`, a bytes
+    // segment binder `Ty::Bytes`; lowering decodes it from the scrutinee (const-fold / BN4 runtime read).
+    if let Some((scrutinee, segs, seg_index)) = match_arm_bin_binds(db, form, from, name) {
+        return Some(Resolved::BinField {
+            scrutinee,
+            segs: segs.into(),
+            seg_index,
+        });
+    }
     None
+}
+
+/// If `form` is a match ARM `(pattern body)` (ascended from its BODY) whose pattern is a `(bin <seg>…)`
+/// binary pattern binding `name` at one of its segments, return `(scrutinee, segs, seg_index)` — the
+/// enclosing match's scrutinee, the parsed segment list, and which segment's binder `name` is. `None`
+/// otherwise. A segment's slot is a BINDER iff it is a bare name (not a literal — that is a match probe);
+/// so `(bin (u32 0x89504E47) (bytes rest))` binds `rest` at index 1 but the literal at 0 is a probe. The
+/// binary companion of [`match_arm_binds`]/[`match_arm_variant_binds`].
+fn match_arm_bin_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, Vec<crate::resolved::Segment>, usize)> {
+    let Struct::List(pb) = db.ast.get(form) else {
+        return None;
+    };
+    if pb.len() != 2 {
+        return None;
+    }
+    let (pattern, body) = (pb[0], pb[1]);
+    if from != body {
+        return None;
+    }
+    // The pattern must be a `(bin …)` form. Re-parse its segment list via `resolve_bin` (pure over `&Db`,
+    // so this is exactly the `Resolved::Bin` the pattern position resolves to).
+    if db.ast.head_name(pattern) != Some("bin") {
+        return None;
+    }
+    let Resolved::Bin { segs } = resolve_bin(db, pattern) else {
+        return None;
+    };
+    // Which segment's slot is the bare name `name`? A literal slot is a probe, not a binder.
+    let seg_index = segs.iter().position(|s| {
+        db.ast
+            .as_name(s.slot)
+            .is_some_and(|nm| nm == name && nm != "_")
+    })?;
+    // `form`'s parent must be a `(match scrutinee arm…)` and `form` an arm (not the scrutinee).
+    let parent = db.parent_of(form)?;
+    let mtail = db.ast.as_form(parent, "match")?;
+    let scrutinee = *mtail.first()?;
+    if form == scrutinee {
+        return None;
+    }
+    Some((scrutinee, segs, seg_index))
 }
 
 /// If `form` is a `(do …)` block ascended from its child `from`, and a do-local `(def …)` before `from`
@@ -863,6 +921,12 @@ fn match_arm_variant_binds(
     // root, no `Payload` step. A variant pattern descends via `find_binder_in_pattern` as before. (A
     // top-level RECORD pattern is a later increment; a tuple scrutinee is the common structural-match
     // shape — `(match (tuple a b) ((tuple x y) …))`.)
+    // A `(bin …)` binary pattern is NOT a variant pattern — its binders bind DECODED segments, resolved
+    // by Case B (`match_arm_bin_binds` → `BinField`), not a `SumPayload` path. Excluded here so a segment
+    // binder is not mis-descended as a variant/tuple payload (which would give it a spurious `Elem` path).
+    if db.ast.head_name(pattern) == Some("bin") {
+        return None;
+    }
     let mut path = Vec::new();
     let mut heads = Vec::new();
     let found = if is_tuple_pattern(db, pattern) {

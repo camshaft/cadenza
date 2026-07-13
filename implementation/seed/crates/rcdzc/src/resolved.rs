@@ -622,6 +622,19 @@ pub enum Resolved {
     /// matching). `Ty::Bytes` in value position (`binary-syntax`). A well-formedness fault (mis-aligned
     /// bit-fields, non-final unsized `(bytes …)`, non-const `bits` width) is CDZ0220, checked from `segs`.
     Bin { segs: Vec<Segment> },
+    /// A reference to a `bin` PATTERN binder — the value a segment binder decodes from the matched Bytes
+    /// scrutinee (the binary analogue of `SumPayload`, resolve Case B). `(match b ((bin (u16 n)) n) …)`:
+    /// the `n` in the body resolves here, carrying the enclosing match's `scrutinee` and the segment whose
+    /// binder it is. An INTEGER segment binder has type `Ty::Int` (decoded value); a `Bytes` segment
+    /// binder has type `Ty::Bytes`. Lowered by decoding the segment from the scrutinee (const-folded when
+    /// the scrutinee is a visible `Core::BytesOf`; the runtime cursor read is BN4). `seg_index` is the
+    /// segment's position; `segs` the whole pattern's segments (so the decoder knows each preceding
+    /// segment's width to compute this one's byte offset).
+    BinField {
+        scrutinee: StructId,
+        segs: std::sync::Arc<[Segment]>,
+        seg_index: usize,
+    },
     /// A produced "no": an unrecognized head, a malformed form, an unbound name, or an unmodeled
     /// literal. Carries its reject/decline so the fault is reported at the node it was found.
     Poison(Reject),
