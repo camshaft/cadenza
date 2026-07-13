@@ -5240,6 +5240,60 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bin_dependent_size_segment_binds_exactly_n_bytes() {
+        // `(bytes body n)` binds exactly the `n` bytes an earlier INT segment named; a trailing `(bytes
+        // rest)` takes the remainder. Construction: `(bytes b)` splices `b`; `(bytes b n)` checks `|b|==n`.
+        // Round-trip: construct a length-prefixed frame, match it back, rebuild. All constant → fold.
+        for (body, want) in [
+            // dependent body: n=2 → body=[10,20]
+            (
+                "(module m (def (main) (match (Bytes.of (list 2 10 20 99)) ((bin (u8 n) (bytes body n) (bytes rest)) (if (= body (Bytes.of (list 10 20))) 1 0)) (_ 0))) (export main))",
+                1,
+            ),
+            // the trailing rest = [99]
+            (
+                "(module m (def (main) (match (Bytes.of (list 2 10 20 99)) ((bin (u8 n) (bytes body n) (bytes rest)) (if (= rest (Bytes.of (list 99))) 1 0)) (_ 0))) (export main))",
+                1,
+            ),
+            // dependent size 0 → empty body, rest untouched
+            (
+                "(module m (def (main) (match (Bytes.of (list 0 42)) ((bin (u8 n) (bytes body n) (bytes rest)) (if (= body (Bytes.of (list))) 1 0)) (_ 0))) (export main))",
+                1,
+            ),
+            // a dependent size overrunning the remainder → non-match → catch-all
+            (
+                "(module m (def (main) (match (Bytes.of (list 5 1 2)) ((bin (u8 n) (bytes body n) (bytes rest)) 1) (_ 0))) (export main))",
+                0,
+            ),
+            // TLV round-trip: build (tag,len,payload), match it back, compare the payload
+            (
+                "(module m (def (main) (match (bin (u8 7) (u16 3) (bytes (Bytes.of (list 100 101 102)))) ((bin (u8 7) (u16 n) (bytes body n)) (if (= body (Bytes.of (list 100 101 102))) 1 0)) (_ 0))) (export main))",
+                1,
+            ),
+            // length-prefixed construction: (u16 len) then the bytes → [0,3,10,20,30]
+            (
+                "(module m (def (main) (if (= (bin (u16 3) (bytes (Bytes.of (list 10 20 30)))) (Bytes.of (list 0 3 10 20 30))) 1 0)) (export main))",
+                1,
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "bin dependent-size: {body}"
+            );
+        }
+        // A sized `(bytes b n)` construction whose value length differs from `n` → provable trap.
+        assert_eq!(
+            reject_code("(module m (def (main) (Bytes.len (bin (bytes (Bytes.of (list 1 2 3)) 2)))) (export main))")
+                .as_deref(),
+            Some("CDZ0304"),
+        );
+    }
+
+    #[test]
     fn bytes_of_out_of_range_element_is_a_width_error() {
         // `Bytes.of : (List UInt8) → Bytes` — a byte IS a UInt8, so an element outside 0..=255 is not a
         // UInt8 and is rejected as an OUT-OF-RANGE WIDTH literal (CDZ0302), NOT a runtime trap: under the
