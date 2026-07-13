@@ -224,6 +224,10 @@ impl<'a> Printer<'a> {
             // A bad-escape MARKER round-trips back to `"\<c>"` so the printed form re-reads to the same
             // marker (the defect survives the round-trip rather than being silently lost).
             Leaf::BadEscape(c) => self.doc.word(format!("\"\\{c}\"")),
+            // A char renders `#\…`; a bad-char MARKER round-trips to `#\<text>`. Both re-read (via the
+            // ML lexer's `#\` path) to the same leaf.
+            Leaf::Char(c) => self.doc.word(literal::render_char(*c)),
+            Leaf::BadChar(s) => self.doc.word(format!("#\\{s}")),
         }
     }
 

@@ -170,6 +170,10 @@ pub enum Core {
     /// A string constant — the canonical text of a string literal. A `Ty::String` value; escapes as its
     /// baked UTF-8 bytes (like a constant compound). Runtime string ops are a later stage.
     ConstStr(String),
+    /// A CHAR constant — a single Unicode scalar value (`Ty::Char`). Constant equality/ordering compare
+    /// by scalar value (`c as u32`). Crossing the boundary as a char value + `Char.to-int`/`from-int` are
+    /// later increments (a char at the boundary still declines — no scalar machine path yet).
+    ConstChar(char),
     /// A FLOATING-POINT constant — the EXACT `Decimal` of a float literal (no `f64` rounding until a
     /// width is chosen). A `Ty::Float` value. This increment folds float EQUALITY (two constants compared
     /// by their canonical Float64 value — `1e19` and `1e20` differ, `-0.0` and `0.0` differ); float

@@ -104,6 +104,10 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Int(v) => Core::ConstInt(v),
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Str(s) => Core::ConstStr(s),
+        // A char literal (`#\a`) folds to its `Core::ConstChar` — a `Ty::Char` value. Constant
+        // equality/ordering compare by scalar value; crossing the boundary as a char value is a later
+        // increment (a char at the boundary declines).
+        Resolved::Char(c) => Core::ConstChar(c),
         // A byte-string literal `b"…"` lowers to a `Core::BytesOf` of its bytes — each a fresh `UInt8`
         // `Leaf::Int` synthesized into the arena (the SAME shape `(Bytes.of (list …))` and
         // `String.to-bytes` build), so it bakes at escape, compares/slices/concats as a constant, and
@@ -3032,6 +3036,7 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         | Resolved::Bool(_)
         | Resolved::Str(_)
         | Resolved::Bytes(_)
+        | Resolved::Char(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)
@@ -3506,9 +3511,15 @@ fn resolve_leaf_offsets(
                 off += 1 + leb_len(bs.len() as u64) + bs.len();
             }
             crate::ast::Leaf::Float(_) => return None, // floats not yet in the runtime escape
-            // A bad-escape marker is a POISON — it never reaches a constant value form (resolving it
-            // rejects CDZ0001 before any escape emission), so a runtime template over it is meaningless.
-            crate::ast::Leaf::BadEscape(_) => return None,
+            // A char leaf encodes like a Str (kind byte + len LEB + utf8 bytes); a char does not yet
+            // cross the boundary in the runtime escape, so advance past it (no runtime hole).
+            crate::ast::Leaf::Char(c) => {
+                off += 1 + leb_len(c.len_utf8() as u64) + c.len_utf8();
+            }
+            // A bad-escape / bad-char marker is a POISON — it never reaches a constant value form
+            // (resolving it rejects CDZ0001/CDZ0002 before any escape emission), so a runtime template
+            // over it is meaningless.
+            crate::ast::Leaf::BadEscape(_) | crate::ast::Leaf::BadChar(_) => return None,
         }
     }
     let _ = bytes;
@@ -3657,9 +3668,9 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
 fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId> {
     use crate::ty::Ty;
     match ty {
-        // A scalar's type surface is its name atom. `String` is a monomorphic named type too, so its
-        // surface is the bare `String` atom (`render_name`).
-        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String => Some(b.name(ty.render_name())),
+        // A scalar's type surface is its name atom. `String`/`Char` are monomorphic named types too, so
+        // their surface is the bare `String`/`Char` atom (`render_name`).
+        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Char => Some(b.name(ty.render_name())),
         // A sum's type surface: the bare NAME for a monomorphic sum (`(: (Neg unit) Sign)`), or the
         // STRUCTURED application `(Option Int64)` for a generic instantiation — a `(NAME arg…)` list, so
         // the args round-trip as separate nodes (not one spaced-out name atom). Matches `render_name`'s
@@ -3853,6 +3864,7 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
         | Resolved::Bool(_)
         | Resolved::Str(_)
         | Resolved::Bytes(_)
+        | Resolved::Char(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)
@@ -4414,6 +4426,8 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
         },
         (Core::ConstBool(a), Core::ConstBool(b)) => Some(a.cmp(&b)),
         (Core::ConstStr(a), Core::ConstStr(b)) => Some(a.cmp(&b)),
+        // Two chars order by scalar value (`compare #\a #\b` → Less).
+        (Core::ConstChar(a), Core::ConstChar(b)) => Some((a as u32).cmp(&(b as u32))),
         (Core::ConstFloat(a), Core::ConstFloat(b)) => {
             f64::from_bits(a.to_f64_bits()).partial_cmp(&f64::from_bits(b.to_f64_bits()))
         }
@@ -4472,6 +4486,15 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
         (Core::ConstStr(a), Core::ConstStr(b)) => {
             let r = compare_ord(op, a.cmp(&b));
             trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant string comparison");
+            Core::ConstBool(r)
+        }
+        // Two CONSTANT chars compare by SCALAR VALUE (`collections-and-text.md` §A Char Is A Single
+        // Unicode Scalar Value: "a char's ordering MUST be the numeric order of its scalar value"), so `=`
+        // is scalar equality and `<`/`>` order by code point — `(= #\a #\a)` → true, `(< #\a #\b)` → true
+        // (97 < 98). A constant fold, no runtime (a char has no machine slot this increment).
+        (Core::ConstChar(a), Core::ConstChar(b)) => {
+            let r = compare_ord(op, (a as u32).cmp(&(b as u32)));
+            trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant char comparison");
             Core::ConstBool(r)
         }
         // Two CONSTANT floats compare by their canonical Float64 value (contracts/deterministic-value-
@@ -4579,6 +4602,8 @@ fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option<bool> {
         (Core::ConstInt(x), Core::ConstInt(y)) => Some(x.eq_value(&y)),
         (Core::ConstBool(x), Core::ConstBool(y)) => Some(x == y),
         (Core::ConstStr(x), Core::ConstStr(y)) => Some(x == y),
+        // Two chars: equal iff their scalar values match.
+        (Core::ConstChar(x), Core::ConstChar(y)) => Some(x == y),
         // Two floats: equal iff their canonical Float64 BITS match — so a nested `-0.0` is distinct from
         // `0.0` (`(= (tuple -0.0) (tuple 0.0))` → false) and a nested NaN equals a nested NaN (identical
         // bits under the canonical byte form; contracts/deterministic-value-form.md). By-bits, NOT
@@ -4728,15 +4753,17 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
             seen.pop();
             ok
         }
-        // A collection / text / float / function / type-value / unresolved leaf is NOT walkable here (its
-        // canonical form needs machinery this increment does not emit, or it is not a runtime value that
-        // reaches a compound equality — a `Ty::Type`/`Ty::Any`/`Ty::Fn` never crosses `=` at run time).
+        // A collection / text / char / float / function / type-value / unresolved leaf is NOT walkable
+        // here (its canonical form needs machinery this increment does not emit, or it is not a runtime
+        // value that reaches a compound equality — a `Ty::Type`/`Ty::Any`/`Ty::Fn` never crosses `=` at
+        // run time). A `Char` has no runtime machine rep yet (its equality folds at compile time).
         // NOTE: a `Ty::Map` handle IS canonical by construction (CHAMP), so map equality is wired directly
         // (M3) via the top-level `=` → `value-eq` path, not through this compound-leaf walkability gate.
         Ty::List(_)
         | Ty::Map(_, _)
         | Ty::Bytes
         | Ty::String
+        | Ty::Char
         | Ty::Float(_)
         | Ty::Fn(_, _)
         | Ty::Type

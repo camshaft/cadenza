@@ -54,6 +54,66 @@ pub fn classify_word_nonname(text: &str) -> Option<Leaf> {
     None
 }
 
+/// Classify the WORD of a char literal (the text after `#\`) into a [`Leaf::Char`] (a valid Unicode
+/// scalar) or a [`Leaf::BadChar`] MARKER (a surrogate / out-of-range code point / unknown name — the
+/// compiler turns it into CDZ0002). Three spellings, shared by both surfaces so a char literal reads
+/// identically:
+/// - a single scalar: `a`, `é` (exactly one `char`);
+/// - a named control char: `space`, `newline`, `tab`, `return`, `null` (the common Scheme names);
+/// - a hex code point: `u+HHHH` (case-insensitive `u+`, 1+ hex digits) — a value outside the scalar
+///   range (past `U+10FFFF` or a surrogate `U+D800..=U+DFFF`) is a `BadChar`.
+///
+/// The `word` never contains a delimiter (the reader stops at whitespace/paren/`;`); the raw-delimiter
+/// spellings (`#\(`, `#\ `) are handled by the reader before this and never reach here. A char value is
+/// NOT NFC-normalized — a char is one scalar, and normalization is a property of scalar *sequences*.
+pub fn char_leaf(word: &str) -> Leaf {
+    // A single scalar — the common case (`#\a`, `#\é`).
+    let mut chars = word.chars();
+    if let Some(c) = chars.next()
+        && chars.next().is_none()
+    {
+        return Leaf::Char(c);
+    }
+    // A `u+HHHH` code-point spelling (case-insensitive prefix).
+    if let Some(hex) = word.strip_prefix("u+").or_else(|| word.strip_prefix("U+"))
+        && !hex.is_empty()
+        && hex.bytes().all(|b| b.is_ascii_hexdigit())
+        && let Ok(cp) = u32::from_str_radix(hex, 16)
+    {
+        return match char::from_u32(cp) {
+            Some(c) => Leaf::Char(c),
+            None => Leaf::BadChar(word.to_string()), // surrogate or > U+10FFFF
+        };
+    }
+    // A named control char.
+    match word {
+        "space" => Leaf::Char(' '),
+        "newline" => Leaf::Char('\n'),
+        "tab" => Leaf::Char('\t'),
+        "return" => Leaf::Char('\r'),
+        "null" => Leaf::Char('\0'),
+        // Anything else — an unknown multi-char name — is malformed.
+        _ => Leaf::BadChar(word.to_string()),
+    }
+}
+
+/// Render a char scalar as a `#\…` literal that re-reads (via [`char_leaf`]) to the SAME scalar — the
+/// round-trip law. A common control char uses its NAME (`space`/`newline`/`tab`/`return`/`null`); any
+/// other control or non-printable char uses the `u+HHHH` code-point form; everything else is written
+/// as the bare scalar (`#\a`, `#\é`, `#\(` — a raw delimiter is handled by the reader's delimiter path).
+pub fn render_char(c: char) -> String {
+    match c {
+        ' ' => "#\\space".to_string(),
+        '\n' => "#\\newline".to_string(),
+        '\t' => "#\\tab".to_string(),
+        '\r' => "#\\return".to_string(),
+        '\0' => "#\\null".to_string(),
+        // Any other control / non-printable char: the unambiguous hex code-point form.
+        c if c.is_control() => format!("#\\u+{:04X}", c as u32),
+        c => format!("#\\{c}"),
+    }
+}
+
 /// Parse a decimal / `0x…` / `0b…` integer token into its exact value and the base its text used,
 /// or `None` if it is not a well-formed integer literal. No magnitude ceiling.
 pub fn parse_int(tok: &str) -> Option<(BigInt, Radix)> {

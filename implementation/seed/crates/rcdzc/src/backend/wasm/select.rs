@@ -387,6 +387,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::ConstInt(_)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
+        | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::Unit
         | Core::Param { .. }
@@ -955,6 +956,7 @@ pub fn collect_used_ops(
         Core::ConstInt(_)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
+        | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::Unit
         | Core::Param { .. }
@@ -2083,6 +2085,12 @@ fn emit(
         // string handle (a byte-rope alloc) is a later increment.
         Core::ConstStr(_) => Err(Reject::decline(
             "a runtime string value is not yet built (only a constant string escapes / folds)",
+        )),
+        // A constant char reaching `emit` as an in-body VALUE has no runtime slot form yet — its
+        // equality/ordering FOLD in `lower` (never reaching here), and it does not yet cross the boundary.
+        // So a char value used inside a body declines cleanly (the scalar runtime rep is a later increment).
+        Core::ConstChar(_) => Err(Reject::decline(
+            "a runtime char value is not yet built (only a constant char folds; boundary crossing is later)",
         )),
         // A float CONSTANT emits an `f64.const`/`f32.const` of its canonical bit pattern at the node's
         // SOLVED width — the value a float occupies in its machine slot, and what an export returning a

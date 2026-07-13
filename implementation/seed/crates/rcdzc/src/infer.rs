@@ -73,6 +73,8 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Bool(_) => Ty::Bool,
         Resolved::Str(_) => Ty::String,
         Resolved::Bytes(_) => Ty::Bytes,
+        // A char literal (`#\a`) is the monomorphic `Ty::Char`.
+        Resolved::Char(_) => Ty::Char,
         // A `(bin …)` in value position CONSTRUCTS a byte sequence → `Ty::Bytes`.
         Resolved::Bin { .. } => Ty::Bytes,
         // A `bin` PATTERN binder: an integer segment decodes an `Int`, a `bytes` segment a `Bytes`.
@@ -2055,6 +2057,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::Bool(_)
         | Resolved::Str(_)
         | Resolved::Bytes(_)
+        | Resolved::Char(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::TypeVal(_)

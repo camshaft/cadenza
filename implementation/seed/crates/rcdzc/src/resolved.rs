@@ -510,6 +510,10 @@ pub enum Resolved {
     /// to a `Core::BytesOf` of its bytes (same shape `(Bytes.of (list …))` builds), so it bakes at escape,
     /// compares/slices/concats as a constant, and renders back `b"…"`. The companion of `Str` for bytes.
     Bytes(Vec<u8>),
+    /// A CHAR literal (`#\a`) — a single Unicode scalar value. Types as `Ty::Char` (DISTINCT from `Int`);
+    /// folds to a `Core::ConstChar`. Constant equality/ordering compare by scalar value (`Char.to-int`/
+    /// `from-int` and `String.scalar-at` are later increments).
+    Char(char),
     /// A FLOATING-POINT literal (`2.0`). Types as `Ty::Float` — DISTINCT from `Ty::Int`, so mixing a
     /// float and an integer in one arithmetic operator is rejected (no silent promotion). Its VALUE does
     /// not yet run: `core_of` DECLINES (there is no float arithmetic / boundary rep yet), so a pure-float

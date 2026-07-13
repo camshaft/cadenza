@@ -263,6 +263,14 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
             out.push(*c);
             out.push('"');
         }
+        // A char renders `#\…` (a name for a common control char, `u+HHHH` for another, else the bare
+        // scalar) — re-reads to the same scalar.
+        Leaf::Char(c) => out.push_str(&crate::literal::render_char(*c)),
+        // A bad-char MARKER round-trips to `#\<text>` — re-reading re-detects the malformed literal.
+        Leaf::BadChar(s) => {
+            out.push_str("#\\");
+            out.push_str(s);
+        }
     }
 }
 
@@ -397,6 +405,11 @@ impl<'a, 'b> Reader<'a, 'b> {
             // longer identifier like `byte`) reads as an ordinary name. Escapes mirror `escape_bytes`:
             // `\n \t \r \\ \"` named, `\xNN` two-hex, else the raw byte.
             Some(b'b') if self.src.get(self.pos + 1) == Some(&b'"') => self.read_byte_string(),
+            // A char literal `#\c` — a single Unicode scalar value. Only the exact `#\` prefix opens
+            // one; a bare `#` reads as an ordinary token. `#\a`/`#\é` (single char), `#\space`/`#\newline`
+            // (named), `#\u+HHHH` (code point). A literal naming a NON-scalar (`#\u+D800`) becomes a
+            // `BadChar` marker → CDZ0002 at the compiler.
+            Some(b'#') if self.src.get(self.pos + 1) == Some(&b'\\') => self.read_char(),
             // `` ` `` / `,` / `,@` sigils, matching the corpus quasiquote display. The inner form is
             // built BEFORE the synthetic head (preserving structure-id order — the reader is the
             // round-trip oracle, so the arena stays byte-identical to the untracked path). The head
@@ -529,6 +542,53 @@ impl<'a, 'b> Reader<'a, 'b> {
         let s: String = s.chars().nfc().collect();
         // The string atom spans the opening quote through the closing quote (now consumed).
         Ok(self.mk_atom_leaf(Leaf::Str(s), Span::new(start, self.pos)))
+    }
+
+    /// Read a char literal `#\…` into a `Leaf::Char` (a single Unicode scalar). Three spellings:
+    /// `#\a` / `#\é` (a single scalar), `#\space` / `#\newline` / `#\tab` / `#\return` / `#\null` (a
+    /// named control char), and `#\u+HHHH` (a hex code point). A literal that spells a NON-scalar
+    /// (`#\u+D800`, a surrogate; a code point past `U+10FFFF`) or an unknown name becomes a
+    /// `Leaf::BadChar` MARKER — the compiler turns it into CDZ0002 (`collections-and-text.md` §A Char Is
+    /// A Single Unicode Scalar Value); the reader is not the diagnostic surface. The atom spans `#\`
+    /// through the end of the literal.
+    fn read_char(&mut self) -> Result<StructId, ReadError> {
+        let start = self.pos;
+        self.bump(); // '#'
+        self.bump(); // '\'
+        let is_delim = |b: u8| matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b'(' | b')' | b';');
+        // A char literal whose scalar IS a delimiter (`#\(`, `#\ `, `#\)`) is written with the raw
+        // delimiter directly after `#\`; take exactly that one scalar. (Delimiters are ASCII, so a
+        // leading multibyte scalar like `é` is never one.)
+        if let Some(b) = self.peek()
+            && is_delim(b)
+        {
+            let c = std::str::from_utf8(&self.src[self.pos..])
+                .ok()
+                .and_then(|s| s.chars().next());
+            match c {
+                Some(c) => {
+                    self.pos += c.len_utf8();
+                    return Ok(self.mk_atom_leaf(Leaf::Char(c), Span::new(start, self.pos)));
+                }
+                None => return Err(ReadError("unterminated char literal".into())),
+            }
+        }
+        // Otherwise collect a WORD of non-delimiter bytes: a single scalar (`a`), a name (`newline`), or
+        // a `u+HHHH` code point.
+        let word_start = self.pos;
+        while let Some(b) = self.peek() {
+            if is_delim(b) {
+                break;
+            }
+            self.pos += 1;
+        }
+        let word = std::str::from_utf8(&self.src[word_start..self.pos])
+            .map_err(|_| ReadError("non-utf8 char literal".into()))?;
+        if word.is_empty() {
+            return Err(ReadError("empty char literal after `#\\`".into()));
+        }
+        let span = Span::new(start, self.pos);
+        Ok(self.mk_atom_leaf(crate::literal::char_leaf(word), span))
     }
 
     /// Read a byte-string literal `b"…"` into a `Leaf::Bytes` (arbitrary bytes, NOT normalized as
@@ -1061,5 +1121,58 @@ mod tests {
             panic!("expected an atom")
         };
         assert_eq!(b.leaf(*l), &Leaf::BadEscape('q'));
+    }
+
+    #[test]
+    fn reads_char_literals_in_each_spelling() {
+        // `#\c` — a single scalar; `#\newline` — a named control char; `#\u+HHHH` — a code point. A
+        // surrogate / out-of-range code point becomes a `BadChar` MARKER (the compiler rejects CDZ0002).
+        let leaf_of = |src: &str| {
+            let a = read(src).unwrap();
+            let Struct::Atom(l) = a.get(a.root) else {
+                panic!("expected an atom for {src}")
+            };
+            a.leaf(*l).clone()
+        };
+        assert_eq!(leaf_of("#\\a"), Leaf::Char('a'));
+        assert_eq!(leaf_of("#\\é"), Leaf::Char('é'));
+        assert_eq!(leaf_of("#\\newline"), Leaf::Char('\n'));
+        assert_eq!(leaf_of("#\\space"), Leaf::Char(' '));
+        assert_eq!(leaf_of("#\\u+0061"), Leaf::Char('a'));
+        assert_eq!(leaf_of("#\\u+00E9"), Leaf::Char('é'));
+        // A surrogate is not a scalar → a BadChar marker carrying the literal text.
+        assert_eq!(leaf_of("#\\u+D800"), Leaf::BadChar("u+D800".to_string()));
+        // A code point past U+10FFFF is likewise a BadChar.
+        assert_eq!(
+            leaf_of("#\\u+110000"),
+            Leaf::BadChar("u+110000".to_string())
+        );
+    }
+
+    #[test]
+    fn char_leaves_round_trip_through_the_codec() {
+        // A `Char` and a `BadChar` must survive the binary AST codec unchanged (the compiler reads the
+        // binary AST, so it must see the same leaf the reader produced).
+        for src in ["#\\a", "#\\newline", "#\\u+D800"] {
+            let a = read(src).unwrap();
+            let bytes = crate::codec::encode(&a);
+            let b = crate::codec::decode(&bytes).expect("decode");
+            assert!(a.structurally_eq(&b), "codec round-trip changed {src}");
+        }
+    }
+
+    #[test]
+    fn char_literals_round_trip_through_the_printer() {
+        // Printing a char leaf and re-reading yields the SAME leaf (the `#\…` render is `char_leaf`'s
+        // inverse). Covers the bare-scalar, named-control, and code-point render paths.
+        for src in ["#\\a", "#\\é", "#\\newline", "#\\space"] {
+            let a = read(src).unwrap();
+            let printed = print(&a);
+            let b = read(&printed).unwrap();
+            assert!(
+                a.structurally_eq(&b),
+                "{src} printed as {printed:?} did not round-trip"
+            );
+        }
     }
 }

@@ -788,6 +788,7 @@ fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Core::ConstInt(_)
         | Core::ConstBool(_)
         | Core::ConstStr(_)
+        | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::Unit => {}
     }
@@ -910,6 +911,7 @@ fn walk_for_dead_traps(
         | Resolved::Bool(_)
         | Resolved::Str(_)
         | Resolved::Bytes(_)
+        | Resolved::Char(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)

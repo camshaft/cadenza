@@ -888,6 +888,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         | Resolved::Bool(_)
         | Resolved::Str(_)
         | Resolved::Bytes(_)
+        | Resolved::Char(_)
         | Resolved::Float(_)
         | Resolved::Unit
         | Resolved::Prim(_)

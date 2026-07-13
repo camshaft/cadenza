@@ -200,6 +200,18 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                     "unrecognized string escape `\\{c}` (the escape set is `\\n \\t \\r \\\\ \\\"`)"
                 ),
             )),
+            // A char literal (`#\a`) — a single Unicode scalar, a `Ty::Char` constant. Folds to
+            // `Core::ConstChar` (equality/ordering by scalar value; `Char.to-int`/`from-int` later).
+            Leaf::Char(c) => Resolved::Char(c),
+            // A bad-char MARKER the reader emitted for a char literal naming a NON-scalar (`#\u+D800`, a
+            // surrogate). Like `BadEscape`, the COMPILER turns the reader-detected lexical defect into a
+            // coded rejection: CDZ0002 (`collections-and-text.md` §A Char Is A Single Unicode Scalar Value).
+            Leaf::BadChar(s) => Resolved::Poison(Reject::coded(
+                Code::BadChar,
+                format!(
+                    "`#\\{s}` does not name a Unicode scalar value (a code point in U+0000..=U+10FFFF, excluding the surrogates U+D800..=U+DFFF)"
+                ),
+            )),
         },
         Struct::List(children) => {
             // `()` — the empty list — is unit.

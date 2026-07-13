@@ -26,6 +26,12 @@ pub enum Code {
     /// that marker into this coded rejection, so a lexically-malformed literal fails the build with a
     /// stable code rather than silently reading `\q` as the bare `q`.
     BadEscape,
+    /// A char literal that names a NON-scalar code point — a surrogate (`#\u+D800`) or a value outside
+    /// `U+0000..=U+10FFFF` — or is otherwise malformed. Like `BadEscape`, a LEXICAL defect the READER
+    /// detected (emitting a `Leaf::BadChar` marker) but cannot itself report; the COMPILER turns the
+    /// marker into this coded rejection (`collections-and-text.md` §A Char Is A Single Unicode Scalar
+    /// Value). The static companion of the dynamic `(Char.from-int 55296)` → None.
+    BadChar,
     /// A reference to a name with no binding in scope — the unbound-name rule, unconditional and not
     /// gated on reachability (`core-semantics.md` §Binding Is Lexical).
     Unbound,
@@ -98,6 +104,7 @@ impl Code {
     pub fn code(self) -> &'static str {
         match self {
             Code::BadEscape => "CDZ0001",
+            Code::BadChar => "CDZ0002",
             Code::Unbound => "CDZ0101",
             Code::NonLinearBinder => "CDZ0102",
             Code::Malformed => "CDZ0201",
