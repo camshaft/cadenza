@@ -3137,13 +3137,24 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 let missing = crate::effects::handler_missing_operations(db, &arms);
                 if !missing.is_empty() {
                     let list = missing.join(", ");
+                    // Name the missing ops AND spell the arm(s) to add — the "add the missing arms"
+                    // guidance for a non-exhaustive handler (the effect analogue of a non-exhaustive
+                    // match; `spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
+                    // ⚠ A STRUCTURAL InsertArms fix is NOT attached: the handle's arms-list is a
+                    // SYNTHESIZED node (the canonical `(handle E seed arms body)` is desugared in place to
+                    // the internal form with a fresh arms-list — `effects::canonical_handle_rewrite`), so
+                    // it carries no source span for a consumer to splice at. The concrete arm text goes in
+                    // the message instead, so an agent still gets the exact fix to add.
+                    let add = crate::effects::handler_missing_arm_skeletons(db, &arms)
+                        .map(|arms| format!(" — add {}", arms.join(" ")))
+                        .unwrap_or_default();
                     out.push(
                         Reject::coded(
                             Code::HandlerNotExhaustive,
                             format!(
                                 "this handler does not bind every operation its effect declares \
                                  (missing: {list}) — a handle must discharge its effect's whole \
-                                 operation set"
+                                 operation set{add}"
                             ),
                         )
                         .at(body),

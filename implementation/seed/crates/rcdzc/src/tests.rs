@@ -12709,6 +12709,18 @@ mod stage1 {
             "expected CDZ0405 (non-exhaustive handler), got: {}",
             err.message
         );
+        // The message NAMES the missing op AND spells the arm to add (the "route to a fix" — a
+        // structural fix is not attached because the desugared arms-list is span-less; see infer.rs).
+        assert!(
+            err.message.contains("missing: collect"),
+            "names the missing op: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("add (collect (v) s (resume v s))"),
+            "spells the arm to add: {}",
+            err.message
+        );
     }
 
     #[test]

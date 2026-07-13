@@ -638,6 +638,34 @@ pub fn handler_missing_operations(db: &mut Db, arms: &[HandleArm]) -> Vec<String
     }
 }
 
+/// For a non-exhaustive handler (one `handler_missing_operations` flagged), the effect's NAME plus a
+/// rendered handle-arm SKELETON for each missing operation — the "add the missing arms" fix
+/// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix), the effect analogue of
+/// the non-exhaustive-sum add-arms fix (D4). Each skeleton is `((E.op (v) s (resume v s)))` — the arm
+/// shape a handle needs (op projection, one param binder `v`, state binder `s`, a tail-resume body); the
+/// body is a placeholder the author fills (hence Heuristic). Effect ops take exactly one parameter in the
+/// shipping surface, so a single `v` binder is always right. `None` if the effect can't be determined.
+pub fn handler_missing_arm_skeletons(db: &mut Db, arms: &[HandleArm]) -> Option<Vec<String>> {
+    let decl = arms
+        .iter()
+        .find_map(|a| crate::eval::effect_op_of(db, a.op).map(|(d, _)| d))?;
+    let missing = handler_missing_operations(db, arms);
+    if missing.is_empty() {
+        return None;
+    }
+    let _ = db.effect_decl_by_occ(decl)?; // confirm the effect resolves
+    // A CANONICAL handle arm is `(op (params…) state body)` with a BARE op name (the `(handle E seed
+    // (arm…) body)` shape the author writes — `E` is named once on the handle, the arm op is bare;
+    // `effects::canonical_handle_rewrite` projects it to `(. E op)`). So the skeleton to add is a bare-op
+    // arm with one param binder `v`, the state binder `s`, and a tail-resume placeholder body.
+    Some(
+        missing
+            .iter()
+            .map(|op| format!("({op} (v) s (resume v s))"))
+            .collect(),
+    )
+}
+
 /// The effect-declaration occurrence the value at `id` denotes, if it resolves to an EFFECT record — its
 /// `(meta t)` is an `(effect NAME <decl>)` node. `None` for any value that is not an effect record.
 fn effect_decl_of_value(db: &mut Db, id: StructId) -> Option<u32> {
