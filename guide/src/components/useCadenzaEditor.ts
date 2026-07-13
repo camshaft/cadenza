@@ -17,69 +17,67 @@ export type EditorOutcome =
   | { kind: "timeout" }
   | { kind: "declined"; diags: Diag[] };
 
-/// Wrap a bare expression into a minimal runnable module in the given surface. The compiler needs an
-/// `(export …)`; a bare expression alone declines. Authored snippets are usually bare expressions.
-/// Wrap an example snippet into a compilable module, so a chapter can show just the interesting part.
-/// Three shapes are recognized so `module m { … }` / `(export main)` boilerplate only appears when the
-/// author actually wrote it:
-///   1. Already a full `module` — left untouched.
-///   2. DEFINITIONS (starts with `def`/`type`) — one or more top-level defs with a `main` among them;
-///      wrapped in a module + `(export main)`. This is the common "helper + main" example.
-///   3. A bare EXPRESSION — wrapped as the body of `main` (+ module + export).
+/// Make a snippet compilable by supplying the `export` (and, for a bare expression, a `main` to hold
+/// it) the compiler needs — a bare expression alone declines ("nothing is public"). Authored snippets
+/// are usually bare expressions or a `helper` + `main` pair, shown WITHOUT boilerplate; this adds only
+/// what's missing, at TOP LEVEL (no `module m { … }` shell — a wrapper compiles byte-identically to
+/// bare top-level forms, so the shell was pure ceremony). Four shapes:
+///   1. Already a full `module` / `(module …)` — the author wrote it; left untouched.
+///   2. Already a top-level sequence (a `;` in ML / `(do …)` in s-expr) — assumed complete; untouched.
+///   3. DEFINITIONS (starts with `def`/`type`) — a `main` among them; append an `export`.
+///   4. A bare EXPRESSION — becomes `def main() = <expr>` plus the export.
+/// In s-expr the top-level forms must be gathered under one `(do …)` (s-expr has no bare multi-form
+/// top level); in ML they are newline-separated (the surface's native top-level form).
 export function wrapModule(src: string, surface: Surface): string {
   const trimmed = src.trim();
   if (surface === "sexpr") {
-    if (/^\(module\b/.test(trimmed)) return trimmed;
-    if (/^\((def|type)\b/.test(trimmed)) return `(module m ${trimmed} (export main))`;
-    return `(module m (def (main) ${trimmed}) (export main))`;
+    if (/^\(module\b/.test(trimmed) || /^\(do\b/.test(trimmed)) return trimmed;
+    if (/^\((def|type)\b/.test(trimmed)) return `(do ${trimmed} (export main))`;
+    return `(do (def (main) ${trimmed}) (export main))`;
   }
-  if (/^module\b/.test(trimmed)) return trimmed;
-  if (/^(def|type)\b/.test(trimmed)) return `module m {\n${indent(trimmed)}\n  export { main }\n}`;
-  return `module m {\n  def main() = ${trimmed}\n  export { main }\n}`;
+  if (/^module\b/.test(trimmed) || trimmed.includes(";")) return trimmed;
+  if (/^(def|type)\b/.test(trimmed)) return `${trimmed}\nexport { main }`;
+  return `def main() = ${trimmed}\nexport { main }`;
 }
 
-/// Indent each line of a multi-line ML definitions block by two spaces (module-body indentation).
-function indent(src: string): string {
-  return src
-    .split("\n")
-    .map((line) => (line ? `  ${line}` : line))
-    .join("\n");
-}
-
-/// Strip the `module m { … }` (ML) / `(module m … (export main))` (s-expr) scaffolding a `wrapModule`
-/// added — in ML the export surface is `export { main }` — back to
-/// the bare definitions (or expression), for DISPLAY. The inverse of `wrapModule` over a RENDERED
-/// module; used so the surface toggle can round-trip a defs-only snippet (which isn't a single form)
-/// through the compiler by wrapping first, rendering, then stripping. Returns the input unchanged if
-/// it doesn't look like a generated wrapper (so a hand-written full module the author showed is kept).
+/// Strip the `export` (and synthesized `main`) that `wrapModule` supplied, back to the author's bare
+/// definitions or expression, for DISPLAY — the inverse of `wrapModule` over a RENDERED program.
+/// Because the wrapper adds only top-level forms (no `module` shell), this is a trailing-`export`
+/// removal plus an optional lone-`def main()` unwrap — no shell to peel, no re-indentation. Returns
+/// the input unchanged if it isn't a generated wrapper (so a full `module` the author wrote is kept).
 export function stripModule(rendered: string, surface: Surface): string {
   const t = rendered.trim();
+  // A hand-authored full module is displayed as-is.
+  if (surface === "sexpr" ? /^\(module\b/.test(t) : /^module\b/.test(t)) return rendered;
+
   if (surface === "sexpr") {
-    // `(module m <body…> (export main))` → the body, minus a trailing `(export …)`.
-    const m = /^\(module\s+\w+\s+([\s\S]*)\)\s*$/.exec(t);
-    if (!m) return rendered;
-    let body = m[1].trim().replace(/\(export\s+[^)]*\)\s*$/, "").trim();
-    // A single `(def (main) <expr>)` that we synthesized for a bare expression → unwrap to the expr.
+    // `(do <form…> (export …))` → the forms, minus the trailing export. Unwrap the outer `(do …)`.
+    const m = /^\(do\b([\s\S]*)\)\s*$/.exec(t);
+    const body = (m ? m[1] : t).trim().replace(/\(export\s+[^)]*\)\s*$/, "").trim();
+    // A synthesized single `(def (main) <expr>)` (no other defs) → unwrap to the bare expression.
     const bare = /^\(def\s+\(main\)\s+([\s\S]*)\)$/.exec(body);
     if (bare && !/\(def\b|\(type\b/.test(bare[1])) return bare[1].trim();
     return body;
   }
-  // ML: `module m {\n <body> \n}` → dedented body minus the `export { … }` line.
-  const m = /^module\s+\w+\s*\{\s*\n([\s\S]*)\n\s*\}\s*$/.exec(t);
-  if (!m) return rendered;
-  const lines = m[1].split("\n").filter((l) => !/^\s*export\s*[({]/.test(l));
-  const dedented = dedent(lines.join("\n"));
-  // Unwrap a synthesized `def main() = <expr>` (single def, no helpers) back to the expression. Match
-  // only the horizontal gap after `=` (`[^\S\n]*`, NOT `\s*`) so a multi-line body's continuation
-  // lines keep their leading indentation; then `dedent` the whole body as a block, so the def-body
-  // indentation is removed uniformly (a `.trim()` alone would only fix the first line, leaving the
-  // rest over-indented).
-  const bare = /^def\s+main\(\)\s*=[^\S\n]*([\s\S]*)$/.exec(dedented.trim());
+  // ML: top-level forms are separated by a trailing `;` and a blank line. Drop the `export { … }`
+  // (or legacy `export(…)`) line and the top-level `;` separators — leaving blank-line-separated
+  // forms at column 0, the clean display the old `module`-body render produced.
+  const body = t
+    .split("\n")
+    .filter((l) => !/^\s*export\s*[({]/.test(l))
+    .map((l) => l.replace(/;\s*$/, "")) // a top-level form separator sits at line end
+    .join("\n")
+    .trim();
+  // A synthesized single `def main() = <expr>` (no other defs) → unwrap to the bare expression.
+  // A multi-line body's continuation lines carry the `def`-body indentation; `dedent` removes it
+  // uniformly (a lone `.trim()` would fix only the first line).
+  const bare = /^def\s+main\(\)\s*=[^\S\n]*([\s\S]*)$/.exec(body);
   if (bare && !/^\s*(def|type)\b/m.test(bare[1])) return dedent(bare[1]).trim();
-  return dedented;
+  return body;
 }
 
-/// Remove the common leading indentation from a block (the two spaces `wrapModule` added, plus any).
+/// Remove the common leading indentation from a block — used to un-indent a multi-line `def main()`
+/// body when unwrapping it back to the bare expression it holds.
 function dedent(src: string): string {
   const lines = src.split("\n");
   const indents = lines.filter((l) => l.trim()).map((l) => l.match(/^ */)![0].length);
@@ -88,9 +86,9 @@ function dedent(src: string): string {
 }
 
 /// Re-render a DISPLAY snippet from one surface to another for the syntax toggle. A defs-only or bare
-/// snippet isn't a single parseable form, so we wrap it into a module, render THAT (a single form), and
-/// strip the wrapper back off — round-tripping through the compiler without exposing the scaffolding.
-/// A `wrap={false}` example (a full module the author wrote) renders directly.
+/// snippet isn't a complete program, so we wrap it (adding the `export`/`main`), render the whole
+/// program, and strip the added scaffolding back off — round-tripping through the compiler without
+/// exposing it. A `wrap={false}` example (a full module the author wrote) renders directly.
 export async function renderSnippet(
   text: string,
   from: Surface,
@@ -117,7 +115,7 @@ export interface CadenzaEditor {
 }
 
 /// `source` is authored once in `authoredIn`; the hook keeps the live text in the active surface.
-/// `wrap` (default true) wraps a bare expression into a module before compiling.
+/// `wrap` (default true) supplies the `export`/`main` a bare snippet needs before compiling.
 export function useCadenzaEditor(
   source: string,
   authoredIn: Surface = "sexpr",
