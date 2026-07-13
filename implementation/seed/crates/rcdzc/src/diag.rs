@@ -497,6 +497,24 @@ pub const HANDLER_NOT_REDUCIBLE_DECLINE: &str = "this handler is not yet reducib
 /// agent would apply the wrong edit). Kept in `diag` so resolve/infer/… share one implementation and
 /// one cutoff rather than each rolling its own.
 pub mod suggest {
+    /// A fresh binder name derived from `base` by appending the lowest integer suffix (starting at 2) that
+    /// `taken` does not already contain — `x` → `x2`, or `x3` if `x2` is also taken. The rename fix for a
+    /// NON-LINEAR binder (CDZ0102): a duplicated parameter / pattern binder (`(f x x)`, `(tuple a a)`) is
+    /// made linear by renaming its second occurrence to a name that collides with nothing in scope
+    /// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). `taken` is the names
+    /// already bound at that position (the linearity check's `seen` set), so the result is guaranteed
+    /// distinct; a deterministic function of `base` + `taken` (lowest free suffix), never order-dependent.
+    pub fn fresh_suffixed_name(base: &str, taken: &std::collections::HashSet<String>) -> String {
+        let mut n = 2u32;
+        loop {
+            let candidate = format!("{base}{n}");
+            if !taken.contains(&candidate) {
+                return candidate;
+            }
+            n += 1;
+        }
+    }
+
     /// Pick the closest of `candidates` to `name` under a length-relative edit-distance cutoff, or
     /// `None` if none is close enough. The cutoff (`max(1, len/3)`, rustc's `find_best_match_for_name`
     /// heuristic) keeps a suggestion only when the candidate is a plausible typo: a 3-char name tolerates

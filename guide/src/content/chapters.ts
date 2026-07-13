@@ -144,6 +144,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Numbers.tsx")),
   },
   {
+    slug: "sized-integers",
+    title: "Sized integers",
+    blurb: "Fixed-width integers that never convert silently.",
+    section: "Fundamentals",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/SizedIntegers.tsx")),
+  },
+  {
     slug: "floats",
     title: "Floating-point numbers",
     blurb: "Real-valued arithmetic with its own operators.",

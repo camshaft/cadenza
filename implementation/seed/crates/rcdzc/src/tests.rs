@@ -4567,6 +4567,89 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_kept_let_binding_carries_its_initializers_range() {
+        // A multi-use `let`-binding's `Core::LocalRef` carries the range of its INITIALIZER (the binder IS
+        // the initializer occurrence). So `(let ((y (& x 255))) (+ y y))` propagates [0,255] through `y`,
+        // and `(+ y y)` ∈ [0,510] sheds its overflow guard — exactly as the inlined `(+ (& x 255) (& x
+        // 255))` does. Without this, the kept `LocalRef` fell back to the declared type (Int64) and kept
+        // its guard.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let guards = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::IfUnreachableEnd))
+                .count()
+        };
+        // Masked binding used twice: [0,255] flows through `y`, both `+` and `*` shed their guards.
+        assert_eq!(
+            guards(&lir("(: x Int64)", "(let ((y (& x 255))) (+ y y))")),
+            0,
+            "[0,255]+[0,255] no guard"
+        );
+        assert_eq!(
+            guards(&lir("(: x Int64)", "(let ((y (& x 255))) (* y y))")),
+            0,
+            "[0,255]*[0,255] no guard"
+        );
+        // SOUNDNESS: a full-range binding (`(+ x 1)`, range unbounded) KEEPS its guards.
+        assert!(
+            guards(&lir("(: x Int64)", "(let ((y (+ x 1))) (+ y y))")) > 0,
+            "full-range binding keeps guard"
+        );
+
+        // VALUE PARITY — the guard-elided binding computes the same as the guarded form.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(let ((y (& x 255))) (+ y y))",
+                &[Val::S64(200)]
+            ),
+            400
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(let ((y (& x 255))) (* y y))",
+                &[Val::S64(20)]
+            ),
+            400
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(let ((y (& x 255))) (+ y y))",
+                &[Val::S64(-1)]
+            ),
+            510
+        ); // -1&255=255, +255=510
+    }
+
+    #[test]
     fn a_branch_condition_refines_a_variables_range_and_elides_a_dead_guard() {
         // FLOW-SENSITIVE RANGE REFINEMENT: inside `(if (> n 0) …)` the then-branch KNOWS `n ≥ 1`, so
         // `(- n 1)` cannot underflow — its overflow guard is DEAD and dropped. The refinement is a sound
@@ -7199,6 +7282,64 @@ mod match_engine {
             ),
             6
         );
+    }
+
+    #[test]
+    fn a_newtype_over_a_sum_erases_no_double_box() {
+        // A NON-RECURSIVE newtype over a sum — `(type Cached (Mk (Option Int64)))` — ERASES: the value IS
+        // the `Option` handle, with NO outer `sum-new(0, …)` wrapping it (which would double-box). The
+        // `Option`'s own box is genuine; only the redundant `Mk` tag is removed. Constructs + matches
+        // through both layers. (The blunt "contains any sum" guard used to box this; the recursion guard
+        // now boxes ONLY a genuinely cyclic newtype.)
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Cached (Mk (Option Int64))) \
+                       (def (main) (match (Cached.Mk (Some 5)) ((Mk o) (match o ((Some n) n) ((None _) 0))))) (export main))"
+                ),
+                "main"
+            ),
+            5
+        );
+    }
+
+    #[test]
+    fn a_newtype_over_a_sum_erases_to_the_same_component_as_the_bare_sum() {
+        // The proof there is NO double-box: a newtype-over-Option compiles to the BYTE-IDENTICAL component
+        // as the bare Option it wraps — the `Mk` tag erased to nothing. (A constant fold makes both a
+        // single resource; the point is they are indistinguishable, i.e. the wrapper added zero.)
+        let bare = component(
+            "(module m (def (main) (match (Some 5) ((Some n) n) ((None _) 0))) (export main))",
+        );
+        let wrapped = component(
+            "(module m (type Cached (Mk (Option Int64))) \
+               (def (main) (match (Cached.Mk (Some 5)) ((Mk o) (match o ((Some n) n) ((None _) 0))))) (export main))",
+        );
+        assert_eq!(
+            bare, wrapped,
+            "the newtype-over-sum wrapper must erase to nothing"
+        );
+    }
+
+    #[test]
+    fn a_recursive_newtype_stays_boxed_and_works() {
+        // A recursive newtype (its inner transitively reaches itself) CANNOT erase — the erased type is
+        // infinite — so it stays a boxed sum and works fully. `(type Lst (Lst (Option (Tuple Int64
+        // Lst))))` matched one level yields the head. (Direct + mutual recursion are guarded by
+        // `reaches_decl`; this exercises the through-a-sum recursive case that the arg-walk catches.)
+        // Uses the runtime-linked runner (a boxed sum builds heap nodes → needs the value-heap runtime),
+        // skipping if the runtime wasm is absent — unlike the erased cases, which need no heap.
+        let v = run_heap_value(
+            "(module m (type Lst (Lst (Option (Tuple Int64 Lst)))) \
+               (def (main) (match (Lst (Some (tuple 5 (Lst None)))) ((Lst o) (match o ((Some t) (. t 0)) ((None _) 0))))) (export main))",
+            vec![],
+        );
+        if let Some(v) = v {
+            assert_eq!(
+                v, "5",
+                "a recursive newtype stays boxed and matches to its head"
+            );
+        }
     }
 
     #[test]
@@ -14985,6 +15126,55 @@ mod stage1 {
     }
 
     #[test]
+    fn a_non_linear_pattern_binder_carries_a_rename_fix() {
+        // CDZ0102 now carries the mechanical repair: RENAME the repeated binder to a fresh non-colliding
+        // name (`a` → `a2`), making the pattern linear (`spec/capabilities/diagnostics.md` §A Diagnostic
+        // Carries A Route To A Fix). Heuristic — the rename clears the hard error but the fresh binder is
+        // then unused until the author wires it up.
+        let d = expect_error("(match (tuple 1 2) ((tuple a a) a))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0102"), "got: {}", d.message);
+        let fix = d.fix.expect("a rename fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fix.replacement, "a2",
+            "renames the duplicate to a fresh name"
+        );
+        assert!(
+            !fix.verified,
+            "renaming is a heuristic — the author confirms intent"
+        );
+    }
+
+    #[test]
+    fn a_non_linear_parameter_carries_a_rename_fix_avoiding_collisions() {
+        // The parameter-list CDZ0102 twin — a duplicate parameter `x` renames the second to `x2`. The
+        // fresh name avoids EVERY param name (earlier and later), so a list already holding `x2` renames
+        // to `x3`. (Annotated params keep CDZ0102 the reported error — an exported def with un-annotated
+        // params surfaces the "parameter type is ambiguous" error first.)
+        let d = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (f (: x Int64) (: x Int64)) (+ x 1)) (export f))",
+        )))
+        .expect_err("a duplicate parameter must be rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0102"), "got: {}", d.message);
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("x2"),
+            "renames the duplicate parameter: {}",
+            d.message
+        );
+        let collide = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (f (: x Int64) (: x Int64) (: x2 Int64)) (+ x 1)) (export f))",
+        )))
+        .expect_err("reject");
+        assert_eq!(
+            collide.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("x3"),
+            "the fresh name dodges the existing `x2`: {}",
+            collide.message
+        );
+    }
+
+    #[test]
     fn an_annotated_let_binder_constrains_the_value() {
         // A `let` binder MAY carry a `(: <pat> <Type>)` annotation (core-semantics.md §A Binding Position
         // Accepts An Irrefutable Pattern / type-system.md §Annotations Constrain, Never Contradict): the
@@ -16972,6 +17162,35 @@ mod stage1 {
             newtype_underlying(&mut db, occ),
             Some(Ty::List(Box::new(Ty::Var(0)))),
             "a generic newtype's template keeps the param var at its nested position"
+        );
+
+        // A NON-RECURSIVE newtype over a SUM erases (its inner is the sum type) — the recursion guard only
+        // boxes a CYCLIC newtype, so wrapping an `Option` no longer double-boxes.
+        let ast =
+            parse("(module m (type Cached (Mk (Option Int64))) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "Cached");
+        assert!(
+            matches!(newtype_underlying(&mut db, occ), Some(Ty::Sum { .. })),
+            "a non-recursive newtype over a sum erases to the sum type"
+        );
+
+        // MUTUAL recursion `(type A (Mk B)) (type B (Wrap A))` is caught (load-order-independent) — both
+        // stay boxed (each reaches itself through the other).
+        let ast =
+            parse("(module m (type A (Mk B)) (type B (Wrap A)) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let a = decl_of(&db, "A");
+        let b = decl_of(&db, "B");
+        assert_eq!(
+            newtype_underlying(&mut db, a),
+            None,
+            "mutual-recursive A stays boxed"
+        );
+        assert_eq!(
+            newtype_underlying(&mut db, b),
+            None,
+            "mutual-recursive B stays boxed"
         );
     }
 

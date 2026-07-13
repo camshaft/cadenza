@@ -2445,11 +2445,19 @@ fn collect_pattern_binders(
                 return Ok(());
             }
             if !seen.insert(name.clone()) {
+                // RENAME the repeated binder to a fresh non-colliding name (`a` → `a2`), making the pattern
+                // linear (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). Fresh
+                // relative to the binders already seen in this pattern, so it collides with none. Heuristic:
+                // the rename clears the hard error; the fresh binder is then unused until the author uses it
+                // (two same-named binders were likely meant to be distinct values, or an equality the pattern
+                // language does not express). Anchored at the repeated binder occurrence.
+                let fresh = crate::diag::suggest::fresh_suffixed_name(&name, seen);
                 return Err(Reject::coded(
                     Code::NonLinearBinder,
                     format!("pattern binds `{name}` more than once (a pattern must be linear)"),
                 )
-                .at(pat));
+                .at(pat)
+                .with_fix(Fix::replace_heuristic(pat, fresh)));
             }
         }
         return Ok(());
@@ -3226,10 +3234,17 @@ fn type_at_path(
                 crate::ty::Ty::Tuple(elems) => elems.get(*i)?.clone(),
                 _ => return None,
             },
-            // A `Payload` step's target type needs the variant's instantiation (`extend_path_types`);
-            // a raw type-walk cannot supply it, so this fallback does not resolve a `Payload`-bearing path
-            // (those paths are always seeded in `path_types` by the sum-variant descent).
-            crate::core::PathStep::Payload => return None,
+            crate::core::PathStep::Payload => match &cur {
+                // A `Payload` step over a NOMINAL NEWTYPE UNWRAPS the tag to its underlying type (a
+                // runtime no-op). A newtype imposes NO discriminant constraint, so its `Payload` step is
+                // NOT seeded in `path_types` by a variant descent — a raw type-walk must resolve it here,
+                // or a switch on a sub-value INSIDE an erased newtype's payload (`(Outer.Wrap (tuple
+                // (Inner.A v) k))` — switch path `[Payload, Elem(0)]` on `Inner`) has no solved type.
+                crate::ty::Ty::Nominal { inner, .. } => (**inner).clone(),
+                // A BOXED-sum `Payload` step's target type needs the variant instantiation
+                // (`extend_path_types` seeds it in `path_types`); a raw type-walk cannot supply it.
+                _ => return None,
+            },
         };
     }
     Some(cur)
@@ -6939,6 +6954,17 @@ fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
             (None, b) => b,
         };
         return Some((lo, hi));
+    }
+    // A kept `let`-binding reference (`Core::LocalRef { binder }`, no active refinement) carries the range
+    // of its INITIALIZER — `binder` IS the initializer's occurrence (see `lower_let`). So a multi-use
+    // masked binding `(let ((y (& x 255))) (+ y y))` propagates `[0,255]` through `y`, letting `(+ y y)`
+    // shed its overflow guard exactly as the inlined `(+ (& x 255) (& x 255))` does. The initializer is a
+    // distinct, earlier node (a binding never references itself), so the recursion bottoms out. No
+    // refinement applies here (the block above returned early if one did).
+    if let Core::LocalRef { binder } = core_of(db, id)
+        && let Some(r) = value_range(db, binder)
+    {
+        return Some(r);
     }
     // An ARITHMETIC / BITWISE / SHIFT node's range PROPAGATES from its operands' ranges — this is the
     // dataflow layer that lets a bounded sub-expression bound its enclosing op (`(+ (& x 15) (& y 15))`
