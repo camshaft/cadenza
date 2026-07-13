@@ -13233,6 +13233,36 @@ mod stage1 {
     }
 
     #[test]
+    fn a_runtime_fn_value_is_manually_eta_wrapped_and_applied() {
+        // A genuinely-RUNTIME fn value partially applied via a MANUAL eta-wrap. `g` is a runtime
+        // two-parameter fn parameter (no compile-time lambda to partially apply); `(fn (b) (g n b))`
+        // captures `g` (a runtime closure handle) AND `n`, and applies `g` at full arity inside — an
+        // ordinary capturing closure whose body is a full-arity `call_indirect` on the captured `g`. Both
+        // `ap` and `sumapply` recurse, so nothing folds: TWO nested indirect calls (ap→wrapper, wrapper→g).
+        // This composes the captured-closure-call path (a closure captures a runtime fn and calls it) with
+        // a two-level HOF. `ap g n` = sum over i=n..1 of (g(i,2)+g(i,1)) = (i+2)+(i+1) = 2i+3; n=3 → 21.
+        let src = "(module m \
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) \
+              (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g n b)) 2) (ap g (- n 1))))) \
+            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "21"); // (9)+(7)+(5)
+        // The NON-recursive-outer form folds `ap` but the eta-wrapper still runs through recursive
+        // `sumapply`: `sumapply (fn (b) (g 5 b)) 2` = (5+2)+(5+1) = 13.
+        let flat = "(module m \
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) (sumapply (fn ((: b Int64)) (g n b)) 2)) \
+            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
+        assert_eq!(run_closure(flat, 5).unwrap(), "13"); // (5+2)+(5+1)
+    }
+
+    #[test]
     fn a_closure_that_captures_a_boolean_imports_the_ops_its_lifted_body_uses() {
         // A runtime op used ONLY inside a LIFTED closure body must still be imported. The used-op set that
         // fixes the module's import layout was walked over the top-level defs ONLY, NOT the lambda-lifted
