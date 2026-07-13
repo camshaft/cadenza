@@ -3234,10 +3234,17 @@ fn type_at_path(
                 crate::ty::Ty::Tuple(elems) => elems.get(*i)?.clone(),
                 _ => return None,
             },
-            // A `Payload` step's target type needs the variant's instantiation (`extend_path_types`);
-            // a raw type-walk cannot supply it, so this fallback does not resolve a `Payload`-bearing path
-            // (those paths are always seeded in `path_types` by the sum-variant descent).
-            crate::core::PathStep::Payload => return None,
+            crate::core::PathStep::Payload => match &cur {
+                // A `Payload` step over a NOMINAL NEWTYPE UNWRAPS the tag to its underlying type (a
+                // runtime no-op). A newtype imposes NO discriminant constraint, so its `Payload` step is
+                // NOT seeded in `path_types` by a variant descent — a raw type-walk must resolve it here,
+                // or a switch on a sub-value INSIDE an erased newtype's payload (`(Outer.Wrap (tuple
+                // (Inner.A v) k))` — switch path `[Payload, Elem(0)]` on `Inner`) has no solved type.
+                crate::ty::Ty::Nominal { inner, .. } => (**inner).clone(),
+                // A BOXED-sum `Payload` step's target type needs the variant instantiation
+                // (`extend_path_types` seeds it in `path_types`); a raw type-walk cannot supply it.
+                _ => return None,
+            },
         };
     }
     Some(cur)

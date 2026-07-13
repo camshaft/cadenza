@@ -1366,7 +1366,10 @@ fn a_wrap_of_an_in_range_value_elides_the_truncation() {
     use crate::testkit::parse;
     use wasmtime::component::Val;
     let code_of = |src: &str| -> Vec<Lir> {
-        let full = format!("(module m (def (f {}) {}) (def (main) 0) (export main))", "(: x Int64)", src);
+        let full = format!(
+            "(module m (def (f {}) {}) (def (main) 0) (export main))",
+            "(: x Int64)", src
+        );
         let mut db = crate::db::Db::load(parse(&full));
         let layout = crate::layout::compute(&mut db).expect("layout");
         let d = db.def_by_name("f").expect("f");
@@ -1384,7 +1387,9 @@ fn a_wrap_of_an_in_range_value_elides_the_truncation() {
             })
             .collect();
         let body = db.defs[d].body.expect("body");
-        select_function(&mut db, body, &ps, &layout).expect("select").code
+        select_function(&mut db, body, &ps, &layout)
+            .expect("select")
+            .code
     };
     // UInt8.wrap of a [0,255] value: the operand's `& 255` is at the i64 source width (`I64And`); the
     // wrap's OWN truncation mask would be an `i32.and` AFTER `i32.wrap_i64` — and it is ELIDED (zero
@@ -3846,12 +3851,27 @@ mod runtime_ops {
         );
         // VALUE parity — the fast path agrees with the divide for nonneg, and the bias path still
         // truncates toward zero for negatives. Masked (always nonneg, even for a negative source):
-        assert_eq!(run::<i64>("(: x Int64)", "(: (/ (& x 255) 2) Int64)", &[Val::S64(255)]), 127);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (/ (& x 255) 2) Int64)", &[Val::S64(-1)]), 127);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (% (& x 255) 4) Int64)", &[Val::S64(255)]), 3);
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (/ (& x 255) 2) Int64)", &[Val::S64(255)]),
+            127
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (/ (& x 255) 2) Int64)", &[Val::S64(-1)]),
+            127
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (% (& x 255) 4) Int64)", &[Val::S64(255)]),
+            3
+        );
         // Flow-refined nonneg dividend inside `(> x 0)`:
-        assert_eq!(run::<i64>("(: x Int64)", "(if (> x 0) (/ x 2) 0)", &[Val::S64(7)]), 3);
-        assert_eq!(run::<i64>("(: x Int64)", "(if (> x 0) (/ x 2) 0)", &[Val::S64(8)]), 4);
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(if (> x 0) (/ x 2) 0)", &[Val::S64(7)]),
+            3
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(if (> x 0) (/ x 2) 0)", &[Val::S64(8)]),
+            4
+        );
         // Bare signed divide (bias kept) still rounds toward zero for negatives — soundness.
         assert_eq!(run::<i64>("(: x Int64)", "(/ x 2)", &[Val::S64(-7)]), -3);
         assert_eq!(run::<i64>("(: x Int64)", "(/ x 2)", &[Val::S64(-1)]), 0);
@@ -3973,9 +3993,20 @@ mod runtime_ops {
             "an unknown-sign dividend keeps the range-check; got {bare:?}"
         );
         // VALUE/TRAP PARITY. Nonneg dividend: correct quotients, ÷0 still traps, and `a / -1 = -a` fits.
-        assert_eq!(run::<i8>("(: x Int8) (: d Int8)", "(/ (& x 7) d)", &[Val::S8(7), Val::S8(2)]), 3);
         assert_eq!(
-            run::<i8>("(: x Int8) (: d Int8)", "(/ (& x 7) d)", &[Val::S8(7), Val::S8(-1)]),
+            run::<i8>(
+                "(: x Int8) (: d Int8)",
+                "(/ (& x 7) d)",
+                &[Val::S8(7), Val::S8(2)]
+            ),
+            3
+        );
+        assert_eq!(
+            run::<i8>(
+                "(: x Int8) (: d Int8)",
+                "(/ (& x 7) d)",
+                &[Val::S8(7), Val::S8(-1)]
+            ),
             -7 // 7 / -1 = -7, fits Int8 — no spurious trap from the elided check
         );
         assert!(traps(
@@ -3984,10 +4015,18 @@ mod runtime_ops {
             &[Val::S8(7), Val::S8(0)]
         )); // ÷0 native trap survives
         // SAFETY: the unknown-sign div still traps at MIN_8 / -1.
-        assert!(traps("(: x Int8) (: d Int8)", "(/ x d)", &[Val::S8(-128), Val::S8(-1)]));
+        assert!(traps(
+            "(: x Int8) (: d Int8)",
+            "(/ x d)",
+            &[Val::S8(-128), Val::S8(-1)]
+        ));
         // A flow-refined nonneg dividend elides too.
         assert_eq!(
-            run::<i8>("(: x Int8) (: d Int8)", "(if (> x 0) (/ x d) 0)", &[Val::S8(10), Val::S8(3)]),
+            run::<i8>(
+                "(: x Int8) (: d Int8)",
+                "(if (> x 0) (/ x d) 0)",
+                &[Val::S8(10), Val::S8(3)]
+            ),
             3
         );
     }
@@ -5090,25 +5129,79 @@ mod runtime_ops {
                 .expect("select")
                 .code
         };
-        let has_div = |code: &[Lir]| code.iter().any(|i| matches!(i, Lir::I32DivS | Lir::I32DivU));
+        let has_div = |code: &[Lir]| {
+            code.iter()
+                .any(|i| matches!(i, Lir::I32DivS | Lir::I32DivU))
+        };
         // Narrow widths that fit the slot: NO div in the multiply guard.
-        assert!(!has_div(&lir("(: a Int8) (: b Int8)", "(* a b)")), "Int8*Int8 fits i32 — no div guard");
-        assert!(!has_div(&lir("(: a UInt8) (: b UInt8)", "(* a b)")), "UInt8 — no div guard");
-        assert!(!has_div(&lir("(: a Int16) (: b Int16)", "(* a b)")), "Int16*Int16 fits i32 — no div guard");
-        assert!(!has_div(&lir("(: a UInt16) (: b UInt16)", "(* a b)")), "UInt16 — no div guard");
+        assert!(
+            !has_div(&lir("(: a Int8) (: b Int8)", "(* a b)")),
+            "Int8*Int8 fits i32 — no div guard"
+        );
+        assert!(
+            !has_div(&lir("(: a UInt8) (: b UInt8)", "(* a b)")),
+            "UInt8 — no div guard"
+        );
+        assert!(
+            !has_div(&lir("(: a Int16) (: b Int16)", "(* a b)")),
+            "Int16*Int16 fits i32 — no div guard"
+        );
+        assert!(
+            !has_div(&lir("(: a UInt16) (: b UInt16)", "(* a b)")),
+            "UInt16 — no div guard"
+        );
         // Int32×Int32 CAN overflow i32 — the div guard is REQUIRED and must remain.
         assert!(
-            lir("(: a Int32) (: b Int32)", "(* a b)").iter().any(|i| matches!(i, Lir::I32DivS)),
+            lir("(: a Int32) (: b Int32)", "(* a b)")
+                .iter()
+                .any(|i| matches!(i, Lir::I32DivS)),
             "Int32*Int32 can overflow i32 — the div guard must be kept"
         );
         // VALUE/TRAP PARITY — the range-check still catches the overflow the div guard used to.
-        assert_eq!(run::<i8>("(: a Int8) (: b Int8)", "(* a b)", &[Val::S8(10), Val::S8(12)]), 120);
-        assert!(traps("(: a Int8) (: b Int8)", "(* a b)", &[Val::S8(12), Val::S8(12)])); // 144 > 127
-        assert!(traps("(: a Int8) (: b Int8)", "(* a b)", &[Val::S8(-128), Val::S8(-1)])); // 128 > 127
-        assert_eq!(run::<i16>("(: a Int16) (: b Int16)", "(* a b)", &[Val::S16(181), Val::S16(181)]), 32761);
-        assert!(traps("(: a Int16) (: b Int16)", "(* a b)", &[Val::S16(182), Val::S16(182)])); // 33124 > 32767
-        assert_eq!(run::<u16>("(: a UInt16) (: b UInt16)", "(* a b)", &[Val::U16(255), Val::U16(257)]), 65535);
-        assert!(traps("(: a UInt16) (: b UInt16)", "(* a b)", &[Val::U16(256), Val::U16(256)])); // 65536
+        assert_eq!(
+            run::<i8>(
+                "(: a Int8) (: b Int8)",
+                "(* a b)",
+                &[Val::S8(10), Val::S8(12)]
+            ),
+            120
+        );
+        assert!(traps(
+            "(: a Int8) (: b Int8)",
+            "(* a b)",
+            &[Val::S8(12), Val::S8(12)]
+        )); // 144 > 127
+        assert!(traps(
+            "(: a Int8) (: b Int8)",
+            "(* a b)",
+            &[Val::S8(-128), Val::S8(-1)]
+        )); // 128 > 127
+        assert_eq!(
+            run::<i16>(
+                "(: a Int16) (: b Int16)",
+                "(* a b)",
+                &[Val::S16(181), Val::S16(181)]
+            ),
+            32761
+        );
+        assert!(traps(
+            "(: a Int16) (: b Int16)",
+            "(* a b)",
+            &[Val::S16(182), Val::S16(182)]
+        )); // 33124 > 32767
+        assert_eq!(
+            run::<u16>(
+                "(: a UInt16) (: b UInt16)",
+                "(* a b)",
+                &[Val::U16(255), Val::U16(257)]
+            ),
+            65535
+        );
+        assert!(traps(
+            "(: a UInt16) (: b UInt16)",
+            "(* a b)",
+            &[Val::U16(256), Val::U16(256)]
+        )); // 65536
     }
 
     #[test]
@@ -5975,11 +6068,23 @@ mod runtime_ops {
                 .expect("select")
                 .code
         };
-        let and_count = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I32And | Lir::I64And)).count();
+        let and_count = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I32And | Lir::I64And))
+                .count()
+        };
         // `(& (& x 255) 15)` → one `and` (255 & 15 = 15).
-        assert_eq!(and_count(&lir("(: x Int64)", "(: (& (& x 255) 15) Int64)")), 1, "two masks → one");
+        assert_eq!(
+            and_count(&lir("(: x Int64)", "(: (& (& x 255) 15) Int64)")),
+            1,
+            "two masks → one"
+        );
         // Constant on the LEFT of the outer `&`.
-        assert_eq!(and_count(&lir("(: x Int64)", "(: (& 15 (& x 255)) Int64)")), 1, "left-const → one");
+        assert_eq!(
+            and_count(&lir("(: x Int64)", "(: (& 15 (& x 255)) Int64)")),
+            1,
+            "left-const → one"
+        );
         // A triple nest collapses all the way to one `and`.
         assert_eq!(
             and_count(&lir("(: x Int64)", "(: (& (& (& x 255) 63) 15) Int64)")),
@@ -5987,15 +6092,34 @@ mod runtime_ops {
             "triple mask → one"
         );
         // The same-operand fold is NOT shadowed by the collapse guard: `(& x x)` → `x` (no `and`).
-        assert_eq!(and_count(&lir("(: x Int64)", "(: (& x x) Int64)")), 0, "& a a still folds to a");
+        assert_eq!(
+            and_count(&lir("(: x Int64)", "(: (& x x) Int64)")),
+            0,
+            "& a a still folds to a"
+        );
 
         // VALUE PARITY — subset and NON-subset mask pairs.
-        assert_eq!(run::<i64>("(: x Int64)", "(: (& (& x 255) 15) Int64)", &[Val::S64(58)]), 10); // 58&15
-        assert_eq!(run::<i64>("(: x Int64)", "(: (& (& x 255) 15) Int64)", &[Val::S64(-1)]), 15);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (& (& x 12) 10) Int64)", &[Val::S64(15)]), 8); // 15 & (12&10=8)
-        assert_eq!(run::<i64>("(: x Int64)", "(: (& 15 (& x 255)) Int64)", &[Val::S64(58)]), 10);
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (& (& x 255) 15) Int64)", &[Val::S64(58)]),
+            10
+        ); // 58&15
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (& (& x 255) 15) Int64)", &[Val::S64(-1)]),
+            15
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (& (& x 12) 10) Int64)", &[Val::S64(15)]),
+            8
+        ); // 15 & (12&10=8)
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (& 15 (& x 255)) Int64)", &[Val::S64(58)]),
+            10
+        );
         // Narrow (Int8): the folded constant grounds to the narrow width.
-        assert_eq!(run::<i8>("(: x Int8)", "(: (& (& x 15) 7) Int8)", &[Val::S8(13)]), 5); // 13&15&7 = 5
+        assert_eq!(
+            run::<i8>("(: x Int8)", "(: (& (& x 15) 7) Int8)", &[Val::S8(13)]),
+            5
+        ); // 13&15&7 = 5
     }
 
     #[test]
@@ -6037,24 +6161,82 @@ mod runtime_ops {
                 .count()
         };
         // Int64 A+B=5 < 64 → one signed shift; UInt64 → one unsigned; triple nest → one.
-        assert_eq!(shifts(&lir("(: x Int64)", "(: (>> (>> x 2) 3) Int64)")), 1, "signed shr-shr → one");
-        assert_eq!(shifts(&lir("(: x UInt64)", "(: (>> (>> x 2) 3) UInt64)")), 1, "unsigned shr-shr → one");
-        assert_eq!(shifts(&lir("(: x Int64)", "(: (>> (>> (>> x 1) 2) 3) Int64)")), 1, "triple → one");
+        assert_eq!(
+            shifts(&lir("(: x Int64)", "(: (>> (>> x 2) 3) Int64)")),
+            1,
+            "signed shr-shr → one"
+        );
+        assert_eq!(
+            shifts(&lir("(: x UInt64)", "(: (>> (>> x 2) 3) UInt64)")),
+            1,
+            "unsigned shr-shr → one"
+        );
+        assert_eq!(
+            shifts(&lir("(: x Int64)", "(: (>> (>> (>> x 1) 2) 3) Int64)")),
+            1,
+            "triple → one"
+        );
         // A+B ≥ width does NOT combine (would be masked mod width): Int64 40+30=70, Int8 3+5=8.
-        assert_eq!(shifts(&lir("(: x Int64)", "(: (>> (>> x 40) 30) Int64)")), 2, "70 >= 64 → keep two");
-        assert_eq!(shifts(&lir("(: x Int8)", "(: (>> (>> x 3) 5) Int8)")), 2, "8 >= 8 → keep two");
+        assert_eq!(
+            shifts(&lir("(: x Int64)", "(: (>> (>> x 40) 30) Int64)")),
+            2,
+            "70 >= 64 → keep two"
+        );
+        assert_eq!(
+            shifts(&lir("(: x Int8)", "(: (>> (>> x 3) 5) Int8)")),
+            2,
+            "8 >= 8 → keep two"
+        );
         // Int8 3+4=7 < 8 combines.
-        assert_eq!(shifts(&lir("(: x Int8)", "(: (>> (>> x 3) 4) Int8)")), 1, "7 < 8 → one");
+        assert_eq!(
+            shifts(&lir("(: x Int8)", "(: (>> (>> x 3) 4) Int8)")),
+            1,
+            "7 < 8 → one"
+        );
 
         // VALUE PARITY — signed sign-fill, unsigned zero-fill, negatives, and the un-combined saturating
         // double shift.
-        assert_eq!(run::<i64>("(: x Int64)", "(: (>> (>> x 2) 3) Int64)", &[Val::S64(1024)]), 32);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (>> (>> x 2) 3) Int64)", &[Val::S64(-1024)]), -32);
-        assert_eq!(run::<i64>("(: x Int64)", "(: (>> (>> x 2) 3) Int64)", &[Val::S64(-1)]), -1);
-        assert_eq!(run::<u64>("(: x UInt64)", "(: (>> (>> x 2) 3) UInt64)", &[Val::U64(1024)]), 32);
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (>> (>> x 2) 3) Int64)",
+                &[Val::S64(1024)]
+            ),
+            32
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (>> (>> x 2) 3) Int64)",
+                &[Val::S64(-1024)]
+            ),
+            -32
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(: (>> (>> x 2) 3) Int64)", &[Val::S64(-1)]),
+            -1
+        );
+        assert_eq!(
+            run::<u64>(
+                "(: x UInt64)",
+                "(: (>> (>> x 2) 3) UInt64)",
+                &[Val::U64(1024)]
+            ),
+            32
+        );
         // The un-combined case still computes the saturating double-shift value.
-        assert_eq!(run::<i64>("(: x Int64)", "(: (>> (>> x 40) 30) Int64)", &[Val::S64(-1)]), -1);
-        assert_eq!(run::<i8>("(: x Int8)", "(: (>> (>> x 3) 5) Int8)", &[Val::S8(-1)]), -1);
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (>> (>> x 40) 30) Int64)",
+                &[Val::S64(-1)]
+            ),
+            -1
+        );
+        assert_eq!(
+            run::<i8>("(: x Int8)", "(: (>> (>> x 3) 5) Int8)", &[Val::S8(-1)]),
+            -1
+        );
     }
 
     #[test]
@@ -7017,6 +7199,64 @@ mod match_engine {
             ),
             6
         );
+    }
+
+    #[test]
+    fn a_newtype_over_a_sum_erases_no_double_box() {
+        // A NON-RECURSIVE newtype over a sum — `(type Cached (Mk (Option Int64)))` — ERASES: the value IS
+        // the `Option` handle, with NO outer `sum-new(0, …)` wrapping it (which would double-box). The
+        // `Option`'s own box is genuine; only the redundant `Mk` tag is removed. Constructs + matches
+        // through both layers. (The blunt "contains any sum" guard used to box this; the recursion guard
+        // now boxes ONLY a genuinely cyclic newtype.)
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type Cached (Mk (Option Int64))) \
+                       (def (main) (match (Cached.Mk (Some 5)) ((Mk o) (match o ((Some n) n) ((None _) 0))))) (export main))"
+                ),
+                "main"
+            ),
+            5
+        );
+    }
+
+    #[test]
+    fn a_newtype_over_a_sum_erases_to_the_same_component_as_the_bare_sum() {
+        // The proof there is NO double-box: a newtype-over-Option compiles to the BYTE-IDENTICAL component
+        // as the bare Option it wraps — the `Mk` tag erased to nothing. (A constant fold makes both a
+        // single resource; the point is they are indistinguishable, i.e. the wrapper added zero.)
+        let bare = component(
+            "(module m (def (main) (match (Some 5) ((Some n) n) ((None _) 0))) (export main))",
+        );
+        let wrapped = component(
+            "(module m (type Cached (Mk (Option Int64))) \
+               (def (main) (match (Cached.Mk (Some 5)) ((Mk o) (match o ((Some n) n) ((None _) 0))))) (export main))",
+        );
+        assert_eq!(
+            bare, wrapped,
+            "the newtype-over-sum wrapper must erase to nothing"
+        );
+    }
+
+    #[test]
+    fn a_recursive_newtype_stays_boxed_and_works() {
+        // A recursive newtype (its inner transitively reaches itself) CANNOT erase — the erased type is
+        // infinite — so it stays a boxed sum and works fully. `(type Lst (Lst (Option (Tuple Int64
+        // Lst))))` matched one level yields the head. (Direct + mutual recursion are guarded by
+        // `reaches_decl`; this exercises the through-a-sum recursive case that the arg-walk catches.)
+        // Uses the runtime-linked runner (a boxed sum builds heap nodes → needs the value-heap runtime),
+        // skipping if the runtime wasm is absent — unlike the erased cases, which need no heap.
+        let v = run_heap_value(
+            "(module m (type Lst (Lst (Option (Tuple Int64 Lst)))) \
+               (def (main) (match (Lst (Some (tuple 5 (Lst None)))) ((Lst o) (match o ((Some t) (. t 0)) ((None _) 0))))) (export main))",
+            vec![],
+        );
+        if let Some(v) = v {
+            assert_eq!(
+                v, "5",
+                "a recursive newtype stays boxed and matches to its head"
+            );
+        }
     }
 
     #[test]
@@ -13285,7 +13525,8 @@ mod stage1 {
             d.message
         );
         let prelude = "(module m (def (main) (: 5 Booll)) (export main))";
-        let d2 = compile_component(&crate::codec::encode(&parse(prelude))).expect_err("must reject");
+        let d2 =
+            compile_component(&crate::codec::encode(&parse(prelude))).expect_err("must reject");
         assert_eq!(
             d2.fix.as_ref().map(|f| f.replacement.as_str()),
             Some("Bool"),
@@ -16826,6 +17067,35 @@ mod stage1 {
             newtype_underlying(&mut db, occ),
             Some(Ty::List(Box::new(Ty::Var(0)))),
             "a generic newtype's template keeps the param var at its nested position"
+        );
+
+        // A NON-RECURSIVE newtype over a SUM erases (its inner is the sum type) — the recursion guard only
+        // boxes a CYCLIC newtype, so wrapping an `Option` no longer double-boxes.
+        let ast =
+            parse("(module m (type Cached (Mk (Option Int64))) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let occ = decl_of(&db, "Cached");
+        assert!(
+            matches!(newtype_underlying(&mut db, occ), Some(Ty::Sum { .. })),
+            "a non-recursive newtype over a sum erases to the sum type"
+        );
+
+        // MUTUAL recursion `(type A (Mk B)) (type B (Wrap A))` is caught (load-order-independent) — both
+        // stay boxed (each reaches itself through the other).
+        let ast =
+            parse("(module m (type A (Mk B)) (type B (Wrap A)) (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let a = decl_of(&db, "A");
+        let b = decl_of(&db, "B");
+        assert_eq!(
+            newtype_underlying(&mut db, a),
+            None,
+            "mutual-recursive A stays boxed"
+        );
+        assert_eq!(
+            newtype_underlying(&mut db, b),
+            None,
+            "mutual-recursive B stays boxed"
         );
     }
 
@@ -25368,29 +25638,59 @@ mod closure_host_resource {
         let import_base = imports.len() as u32 + 2 * 2; // k + 2 intrinsics per group × 2 groups
         let layout = Layout::with_lifted(
             vec![
-                ExportPlan { name: "inc".into(), def: 0, body: crate::ast::StructId(0), params: vec![], result: fn_ii.clone() },
-                ExportPlan { name: "isz".into(), def: 1, body: crate::ast::StructId(0), params: vec![], result: fn_ib.clone() },
+                ExportPlan {
+                    name: "inc".into(),
+                    def: 0,
+                    body: crate::ast::StructId(0),
+                    params: vec![],
+                    result: fn_ii.clone(),
+                },
+                ExportPlan {
+                    name: "isz".into(),
+                    def: 1,
+                    body: crate::ast::StructId(0),
+                    params: vec![],
+                    result: fn_ib.clone(),
+                },
             ],
             vec![0, 1],
             import_base,
             vec![
-                LiftedLambda { body: crate::ast::StructId(0), params: vec![(crate::ast::StructId(0), s64.clone())], ret_ty: s64.clone(), captures: vec![] },
-                LiftedLambda { body: crate::ast::StructId(0), params: vec![(crate::ast::StructId(0), s64.clone())], ret_ty: boolt.clone(), captures: vec![] },
+                LiftedLambda {
+                    body: crate::ast::StructId(0),
+                    params: vec![(crate::ast::StructId(0), s64.clone())],
+                    ret_ty: s64.clone(),
+                    captures: vec![],
+                },
+                LiftedLambda {
+                    body: crate::ast::StructId(0),
+                    params: vec![(crate::ast::StructId(0), s64.clone())],
+                    ret_ty: boolt.clone(),
+                    captures: vec![],
+                },
             ],
             vec![true, true],
         );
         let groups = vec![
             SigGroup {
-                makes: vec![ClosureMake { export_name: "make-inc".into(), export_abs: import_base, param_vts: vec![] }],
+                makes: vec![ClosureMake {
+                    export_name: "make-inc".into(),
+                    export_abs: import_base,
+                    param_vts: vec![],
+                }],
                 arg_vts: vec![ValType::I64],
                 ret_vt: ValType::I64,
                 lifted_slot: 0, // lifted-inc is table slot 0
             },
             SigGroup {
-                makes: vec![ClosureMake { export_name: "make-isz".into(), export_abs: import_base + 1, param_vts: vec![] }],
+                makes: vec![ClosureMake {
+                    export_name: "make-isz".into(),
+                    export_abs: import_base + 1,
+                    param_vts: vec![],
+                }],
                 arg_vts: vec![ValType::I64],
                 ret_vt: ValType::I32, // Bool → i32
-                lifted_slot: 1, // lifted-isz is table slot 1
+                lifted_slot: 1,       // lifted-isz is table slot 1
             },
         ];
 
@@ -25532,7 +25832,9 @@ mod closure_host_resource {
         // The interface publishes two resource types + per-signature make/call — confirm it's the closure
         // interface and imports the runtime (the cells are heap values).
         assert!(
-            cdz_run::required_runtime(&program).expect("valid").is_some(),
+            cdz_run::required_runtime(&program)
+                .expect("valid")
+                .is_some(),
             "a distinct-signature closure program imports the value-heap runtime"
         );
     }

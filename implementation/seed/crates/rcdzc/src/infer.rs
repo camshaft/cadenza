@@ -1748,15 +1748,15 @@ fn wrap_variant_for(db: &mut Db, expected: &Ty, actual: &Ty) -> Option<String> {
 ///  1. it has EXACTLY ONE variant (a multi-variant sum needs the discriminant → stays boxed),
 ///  2. it is MONOMORPHIC (no type parameters — a generic single-variant sum's erasure is a follow-up;
 ///     until then it stays boxed, which is still correct), AND
-///  3. no payload type mentions the declaration's OWN name (directly or nested). A recursive
-///     single-variant sum (`(type Stream (More (Tuple Int64 Stream)))`) is NOT erased: its self-reference
-///     `decode`s to a BOXED `Ty::Sum`, so erasing the outer while the inner stays boxed would be an
-///     inconsistent representation for the same type. It stays a boxed `Ty::Sum` (decline-to-erase). AND
-///  4. the underlying type is SUM-FREE (no `Ty::Sum`/`Ty::Nominal` anywhere inside). A payload that is
-///     itself a sum/nominal (`(type W (Mk (Option Int64)))`, or a newtype wrapping another newtype) has
-///     a HANDLE runtime representation, and erasing it would conflict with a wrapped newtype's own
-///     erasure — so it stays boxed. This covers every idiomatic newtype (over an int, float, string,
-///     bytes, list, or a tuple of those); nested-sum erasure is a possible follow-up.
+///  3. it is NON-RECURSIVE — the inner type does not transitively reach `decl` itself (via
+///     `reaches_decl`, which follows every nested sum/nominal into its variants' payloads, catching a
+///     direct self-reference `(type Stream (More (Tuple Int64 Stream)))` AND mutual recursion `(type A
+///     (Mk B)) (type B (Mk A))`, load-order-independent). A recursive newtype's erased type is INFINITE
+///     (`μX. …`), which `Ty::Nominal{inner}` cannot represent, so it stays boxed. A newtype whose inner is
+///     a sum that does NOT cycle back (`(type Cached (Mk (Option Value)))`) DOES erase: its `Option` box
+///     is genuine, but the outer `Mk` box (disc always 0) is pure overhead — removing it avoids the
+///     double-box. (This replaced a blunt "contains ANY sum" guard that conservatively boxed every
+///     newtype-over-a-sum, recursive or not.)
 ///
 /// **Why this decodes payloads DIRECTLY (not via `scheme_of`).** It is precomputed once at load into
 /// `Db::newtype_inner`, which `decode_ty` then consults to normalize a `Sum` into a `Nominal`. Using the
@@ -1793,15 +1793,96 @@ pub(crate) fn newtype_underlying(db: &mut Db, decl: StructId) -> Option<Ty> {
     } else {
         Ty::Tuple(tys.into())
     };
-    // (3) + (4): a self-reference decodes to a `Ty::Sum` naming this decl, and any other sum/nominal
-    // payload is also a `Ty::Sum` here (nothing is normalized yet during the load-time precompute) — the
-    // single sum-free check covers BOTH the recursion guard and the nested-sum restriction. A param
-    // `Ty::Var` is sum-free, so a generic `(Box a)` PASSES (its inner is erasable); a `(Box (Option a))`
-    // correctly STAYS BOXED (its `Option` payload decodes to a `Ty::Sum`).
-    if ty_contains_sum(&inner) {
+    // RECURSION GUARD: erase iff the inner does NOT transitively reach THIS declaration. A newtype whose
+    // inner cycles back to `decl` (directly — `(type Stream (More (Tuple Int64 Stream)))` — or via mutual
+    // recursion `(type A (Mk B)) (type B (Mk A))`) has an INFINITE erased type, which `Ty::Nominal{inner}`
+    // cannot represent, so it STAYS boxed. A newtype whose inner is a sum that does NOT cycle back (`(type
+    // Cached (Mk (Option Value)))`) DOES erase — its `Option` box is genuine and unavoidable, but the
+    // outer `Mk` box (disc always 0, no information) is pure overhead and is removed (no double-boxing).
+    // `reaches_decl` walks sum/nominal decls transitively (cycle-tracked, load-order-independent), so this
+    // replaces the blunt "contains ANY sum" check that conservatively boxed every newtype-over-a-sum.
+    if reaches_decl(db, &inner, decl, &mut Vec::new()) {
         return None;
     }
     Some(inner)
+}
+
+/// Whether the type `ty` transitively REACHES the declaration `target` — i.e. following every nested
+/// sum/nominal into ITS variants' payload types eventually lands back on `target`'s own declaration. This
+/// is the newtype recursion guard: a newtype `decl` whose inner reaches `decl` is RECURSIVE (its erased
+/// type would be infinite), so it must stay boxed; one that doesn't reach it is erasable even if it wraps
+/// OTHER (non-cyclic) sums. `seen` tracks the sum decls already on the walk so a DIFFERENT recursive sum
+/// nested inside (`(type Cached (Mk IntList))` where `IntList` is its own recursive sum) terminates
+/// without looping — its self-cycle is not `target`'s cycle. Load-order-independent (it reads the decl
+/// table, not the erasure cache), so mutual recursion is caught regardless of which decl loads first.
+fn reaches_decl(db: &mut Db, ty: &Ty, target: StructId, seen: &mut Vec<StructId>) -> bool {
+    match ty {
+        // A NOMINAL carries its instantiated `inner` directly — the concrete reach is there.
+        Ty::Nominal { decl, inner, .. } => {
+            if *decl == target {
+                return true;
+            }
+            let inner = (**inner).clone();
+            reaches_decl(db, &inner, target, seen)
+        }
+        Ty::Sum { decl, args, .. } => {
+            if *decl == target {
+                return true;
+            }
+            // The INSTANTIATION args carry the concrete reach: `Option (Tuple Int64 Lst)` mentions `Lst`
+            // ONLY in its arg, not in `Option`'s declaration (whose `Some` payload is the param `a`). So a
+            // recursive `(type Lst (Lst (Option (Tuple Int64 Lst))))` reaches `Lst` THROUGH this arg — walk
+            // the args (they carry the real instantiation, not part of the visited decl's own cycle).
+            if args.iter().any(|a| reaches_decl(db, a, target, seen)) {
+                return true;
+            }
+            if seen.contains(decl) {
+                return false; // a different sum already being walked — its own cycle, not target's
+            }
+            seen.push(*decl);
+            // Walk each variant's payload type at its declaration (params as vars — the payload TEMPLATE;
+            // the concrete reach through the instantiation is handled by the `args` walk above).
+            let Some(td) = db.type_decl_by_occ(*decl) else {
+                seen.pop();
+                return false;
+            };
+            let variants: Vec<Vec<StructId>> =
+                td.variants.iter().map(|v| v.payloads.clone()).collect();
+            let params: Vec<String> = td.params.clone();
+            let mut hit = false;
+            'outer: for payloads in &variants {
+                for &p in payloads {
+                    if let Some(pty) = decode_payload_template(db, p, &params)
+                        && reaches_decl(db, &pty, target, seen)
+                    {
+                        hit = true;
+                        break 'outer;
+                    }
+                }
+            }
+            seen.pop();
+            hit
+        }
+        Ty::Tuple(elems) => elems.iter().any(|t| reaches_decl(db, t, target, seen)),
+        Ty::Record(fields) => {
+            let vals: Vec<Ty> = fields.values().cloned().collect();
+            vals.iter().any(|t| reaches_decl(db, t, target, seen))
+        }
+        Ty::List(elem) | Ty::Set(elem) => reaches_decl(db, elem, target, seen),
+        Ty::Map(k, v) => {
+            let (k, v) = ((**k).clone(), (**v).clone());
+            reaches_decl(db, &k, target, seen) || reaches_decl(db, &v, target, seen)
+        }
+        Ty::Qty { inner, .. } => {
+            let inner = (**inner).clone();
+            reaches_decl(db, &inner, target, seen)
+        }
+        Ty::Fn(p, r) => {
+            let (p, r) = ((**p).clone(), (**r).clone());
+            reaches_decl(db, &p, target, seen) || reaches_decl(db, &r, target, seen)
+        }
+        _ => false,
+    }
 }
 
 /// Decode a newtype payload TYPE occurrence to a template `Ty`, mapping a declaration PARAMETER name
@@ -1844,33 +1925,6 @@ fn decode_payload_template(db: &mut Db, occ: StructId, params: &[String]) -> Opt
     // A concrete type occurrence with no free param — decode normally. (A self-reference or another sum
     // yields a `Ty::Sum` here, which `newtype_underlying`'s sum-free guard rejects — staying boxed.)
     crate::eval::typeval_of(db, occ)
-}
-
-/// Whether `ty` contains a `Ty::Sum` or `Ty::Nominal` anywhere (the newtype-erasure sum-free guard) — a
-/// type whose runtime representation involves a nominal handle, which must not be erased into a newtype's
-/// underlying value. Descends the structural compounds (tuple/record/list/fn); the scalar leaves are free.
-fn ty_contains_sum(ty: &Ty) -> bool {
-    match ty {
-        Ty::Sum { .. } | Ty::Nominal { .. } => true,
-        Ty::Tuple(elems) => elems.iter().any(ty_contains_sum),
-        Ty::Record(fields) => fields.values().any(ty_contains_sum),
-        Ty::List(elem) => ty_contains_sum(elem),
-        Ty::Map(k, v) => ty_contains_sum(k) || ty_contains_sum(v),
-        Ty::Set(elem) => ty_contains_sum(elem),
-        Ty::Qty { inner, .. } => ty_contains_sum(inner),
-        Ty::Fn(p, r) => ty_contains_sum(p) || ty_contains_sum(r),
-        Ty::Int(_)
-        | Ty::Bool
-        | Ty::Unit
-        | Ty::Bytes
-        | Ty::String
-        | Ty::Char
-        | Ty::Symbol
-        | Ty::Float(_)
-        | Ty::Type
-        | Ty::Var(_)
-        | Ty::Any => false,
-    }
 }
 
 /// The `db.defs` index of the top-level def an application head names, if any — for typing a recursive
@@ -2230,7 +2284,10 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
         // distinct from (`type-system.md` §Nominal Types Are Not Comparable Across Their Boundary), the
         // same rule the nominal-record-vs-plain-record case pins. Reported HERE for the right code (the
         // generic scheme-unify below would give the plain CDZ0203); fires on either operand order.
-        if matches!((&a, &b), (Ty::Symbol, Ty::String) | (Ty::String, Ty::Symbol)) {
+        if matches!(
+            (&a, &b),
+            (Ty::Symbol, Ty::String) | (Ty::String, Ty::Symbol)
+        ) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: comparing a Symbol to a String across the nominal boundary (CDZ0202)");
             out.push(Reject::coded(
                 Code::NominalMismatch,
