@@ -744,3 +744,34 @@
               (export adder) (export appa) (export isz) (export appb)))
   (call   appb (: 5 Int64))
   (output (: false Bool)))
+
+; NON-KEBAB EXPORT NAMES — a component-model extern name MUST be kebab-case, but a Cadenza source
+; identifier may be camelCase or snake_case (`mkA`, `appA`, `makeAdder`). Every PUBLIC closure-interface
+; export name (`make-<src>`, a consumer's own name, `make-<src>` in a multi-export) is normalized at emit
+; through `kebab_extern_name` (the same rule a bare scalar export uses); the private per-func wiring names
+; are index-derived (`import-func-f<n>`) so a source name never leaks into them. The runner resolves the
+; caller's SOURCE name through the SAME rule, so `(call appA …)` still finds the `app-a` export. These pins
+; guard the boundary-name normalization end-to-end (a camelCase program used to emit an invalid component).
+
+(case "a camelCase round-trip resolves through kebab boundary-name normalization"
+  (doc    "`mkA : (Int64) -> (-> Int64 Int64)` + `appA : ((-> Int64 Int64), Int64) -> Int64`. In a round
+           trip a producer is exported under its OWN name, so the public exports emit as `mk-a`/`app-a`
+           (kebab); calling `appA` produces from `mkA(10)` → a handle → `appA(handle, 5)` = 15. Pins that a
+           camelCase closure round-trip emits a VALID component and the runner still resolves the source
+           name.")
+  (input  (do (def (mkA (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (appA (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (export mkA) (export appA)))
+  (call   appA (: 10 Int64) (: 5 Int64))
+  (output (: 15 Int64)))
+
+(case "a camelCase same-signature multi-export normalizes each make-<name>"
+  (doc    "Two same-signature closure exports with camelCase names: `makeAdder(k)` = `x + k`, `makeScaler(k)`
+           = `x * k`. They share ONE resource type + `call`; each `make-<src>` public name is kebabized
+           (`make-make-adder`/`make-make-scaler`). `(call makeScaler 3 4)` → `makeScaler(3)` → a handle →
+           `call(handle, 4)` = 4 * 3 = 12. Pins multi-export public-name normalization.")
+  (input  (do (def (makeAdder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (makeScaler (: k Int64)) (fn ((: x Int64)) (* x k)))
+              (export makeAdder) (export makeScaler)))
+  (call   makeScaler (: 3 Int64) (: 4 Int64))
+  (output (: 12 Int64)))
