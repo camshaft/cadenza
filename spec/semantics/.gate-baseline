@@ -43,6 +43,7 @@ pass	a Result carrying a Result is matched by a nested pattern to its inner valu
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
+pass	a String compound export under a non-main name crosses to the host
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
@@ -318,6 +319,7 @@ pass	a linear non-tail recursion over a non-associative operator preserves its e
 pass	a list annotated with the wrong element type is rejected
 pass	a list built by a runtime-length loop has that many elements
 pass	a list chosen by a runtime if is length-measured without emitting invalid wasm
+pass	a list compound export under a non-main name crosses to the host
 pass	a list mixing integer and boolean elements is a type error
 pass	a list mixing integer and float elements is a type error
 pass	a list of maps with different keys is homogeneous, not a type error
@@ -733,6 +735,7 @@ pass	a tuple annotated as a scalar type is rejected
 pass	a tuple annotated with the wrong arity is rejected
 pass	a tuple binding pattern against a non-tuple value is a shape error
 pass	a tuple binding pattern nests to any depth
+pass	a tuple compound export under a non-main name crosses to the host
 pass	a tuple is constructed with positional elements
 pass	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
 pass	a tuple of two sums is matched with nested constructor patterns

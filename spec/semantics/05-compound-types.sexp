@@ -769,6 +769,37 @@
             (def (main) (tuple 3 1)) (export main)))
   (output (: (tuple 3 1) (Tuple Int64 Int64))))
 
+; A compound result crosses as a resource-with-display (`cadenza:run/run`'s make/encode), NOT a bare
+; function — so the host reaches it by taking the escape path, NOT by looking up a function of the export's
+; name. That path must fire whether the export is the nullary `main` OR a DIFFERENTLY-NAMED export the
+; caller names with `(call NAME)`: the escape has exactly one compound result, and its make/encode carry no
+; export name, so a `(call greet)` naming the compound export routes to the escape (there is no bare func
+; `greet` to find). Before this, a non-`main` compound export errored "component exports no function".
+
+(case "a String compound export under a non-main name crosses to the host"
+  (doc    "`(def (greet) \"hello\")` exported as `greet` (not `main`), driven by `(call greet)`. Its
+           String result crosses as the resource-with-display escape; the host takes the escape path even
+           though `greet` names no bare function. Pins that a compound escape is reachable under any export
+           name, not only the nullary `main`.")
+  (input  (do (def (greet) "hello") (export greet)))
+  (call   greet)
+  (output (: "hello" String)))
+
+(case "a tuple compound export under a non-main name crosses to the host"
+  (doc    "`(def (pair) (tuple 1 2))` exported as `pair`, driven by `(call pair)` → `(tuple 1 2)`. A tuple
+           result crosses the escape under a named export, same as the String case.")
+  (input  (do (def (pair) (tuple 1 2)) (export pair)))
+  (call   pair)
+  (output (: (tuple 1 2) (Tuple Int64 Int64))))
+
+(case "a list compound export under a non-main name crosses to the host"
+  (doc    "`(def (nums) (list 1 2 3))` exported as `nums`, driven by `(call nums)` → `(list 1 2 3)`. A
+           list result crosses the escape under a named export. Confirms the named-escape dispatch is
+           agnostic to the compound's shape (String/tuple/list all route the same way).")
+  (input  (do (def (nums) (list 1 2 3)) (export nums)))
+  (call   nums)
+  (output (: (list 1 2 3) (List Int64))))
+
 ; The `(tuple n 1)` case above carries ONE runtime element beside a constant. A runtime compound built
 ; on the heap must carry the general shape too: EVERY element computed at run time, MORE than two
 ; elements, a NON-Int64 element (mixed-type heap layout), a NESTED runtime compound (a heap cell holding
