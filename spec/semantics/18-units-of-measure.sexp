@@ -577,7 +577,6 @@
            `(Unit.in metre (Qty.of 1.0 furlong))` = 660 * 381/1250 = 201.168 m. Pins that a user-declared
            unit joins the family of its base's dimension and converts by the composed scale — the layer
            fixes the mechanism, a program supplies its own vocabulary.")
-  (needs  units-of-measure)
   (input  (do
             (Unit.define #"furlong" (Unit.of #"foot") 660 1)
             (def (main) (Qty.value (Unit.in (Unit.of #"metre") (Qty.of 1.0 (Unit.of #"furlong")))))
@@ -589,7 +588,6 @@
            as 2 m — a conflicting conversion — so it is CDZ0502 (units-of-measure.md #A Named Unit's
            Conversion Is Unique): a unit's name must resolve to ONE conversion. A redeclaration that
            AGREED with the built-in would be admissible; a disagreement is rejected.")
-  (needs  units-of-measure)
   (input  (do
             (Unit.define #"foot" (Unit.of #"metre") 2 1)
             (def (main) 0)
