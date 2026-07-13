@@ -4451,15 +4451,59 @@ mod match_engine {
                 .as_deref(),
             Some("CDZ0210")
         );
-        // A REST pattern `(list x .. rest)` is not yet lowered — it DECLINES (a to-do), never a
-        // miscompile. (The runtime element-pattern matcher + rest-tail materialization is a later
-        // increment.) `reject_code` returns the decline's code, which is uncoded (None) for a to-do.
+        // A malformed rest pattern — more than one binder after `..` — is CDZ0201 (a rest pattern is
+        // `(list p… .. rest)`, exactly one tail binder).
         assert_eq!(
-            reject_code("(module m (def (main) (match (list 1 2 3) ((list x .. rest) x) (_ 0))) (export main))")
+            reject_code("(module m (def (main) (match (list 1 2 3) ((list x .. r s) x) (_ 0))) (export main))")
                 .as_deref(),
-            // the rest binder's body reference is unbound today (CDZ0101) — a clean decline-class outcome,
-            // NOT a value/miscompile; pins that a rest pattern does not silently produce a wrong result.
-            Some("CDZ0101")
+            Some("CDZ0201")
+        );
+    }
+
+    #[test]
+    fn a_rest_list_pattern_matches_by_minimum_length_and_binds_leading_elements() {
+        // 05-compound-types "an element pattern matches a list by its length and elements": a REST pattern
+        // `(list p0 … p_{k-1} .. rest)` matches any list of length ≥ k, binding each LEADING position to
+        // its element (a `SumPayload` `Elem(i)` fold over the constant list) — the rest binder captures the
+        // tail (a sublist; unused here, so it stays inert). A `(list .. rest)` with zero leading binders is
+        // a catch-all (length ≥ 0). The scrutinee folds, so the whole match folds to the selected arm.
+        let run = |src: &str| run_returns::<i64>(&component(src), "main");
+        // A rest pattern selects on length ≥ leading count; the leading binder reads element 0.
+        assert_eq!(
+            run(
+                "(module m (def (main) (match (list 10 20 30) ((list) 0) ((list x .. rest) x))) (export main))"
+            ),
+            10
+        );
+        // The empty list matches `(list)`, not the rest pattern (which needs length ≥ 1 here).
+        assert_eq!(
+            run(
+                "(module m (def (main) (match (list) ((list) 1) ((list a .. r) 2))) (export main))"
+            ),
+            1
+        );
+        // A non-empty list falls through `(list)` to the length-≥-1 rest arm.
+        assert_eq!(
+            run(
+                "(module m (def (main) (match (list 5) ((list) 1) ((list a .. r) 2))) (export main))"
+            ),
+            2
+        );
+        // `(list .. rest)` with zero leading binders is a catch-all (matches every length).
+        assert_eq!(
+            run("(module m (def (main) (match (list 1 2 3) ((list .. all) 7))) (export main))"),
+            7
+        );
+        assert_eq!(
+            run("(module m (def (main) (match (list) ((list .. all) 7))) (export main))"),
+            7
+        );
+        // Two leading binders read elements 0 and 1 past the minimum-length gate.
+        assert_eq!(
+            run(
+                "(module m (def (main) (match (list 4 5 6 7) ((list a b .. rest) (+ a b)) (_ 0))) (export main))"
+            ),
+            9
         );
     }
 
