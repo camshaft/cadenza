@@ -1793,6 +1793,22 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 ));
             }
             if let Some(annot_ty) = crate::eval::typeval_of(db, ty_expr) {
+                // A FLOAT type annotating with a NON-ADMITTED width reduces (via the `Float` constructor)
+                // to the sentinel `Ty::Float(Fixed(0))` — a `(: 1.5 (Float 16))` / `(: 1.5 (Float 48))`.
+                // A float width outside {32,64} is rejected CDZ0302 (numeric-model.md §A Floating-Point
+                // Type Is Indexed By A Compile-Time Width), the float analogue of an out-of-range integer
+                // width; caught here at the annotation, before the grounding/unify below (which would
+                // otherwise let the sentinel slip through against a deferred literal).
+                if let Ty::Float(ft) = &annot_ty
+                    && let crate::ty::Width::Fixed(w) = ft.width
+                    && !crate::ty::ADMITTED_FLOAT_WIDTHS.contains(&w)
+                {
+                    trace!(target: "rcdzc::infer", node = id.0, "fault: float width not in the admitted set (CDZ0302)");
+                    out.push(Reject::coded(
+                        Code::IntOutOfRange,
+                        "a floating-point width must be one of the admitted IEEE widths (32 or 64)",
+                    ));
+                }
                 // A bare integer LITERAL annotated with an integer type is a GROUNDING, not a
                 // unification: the literal has no intrinsic signedness/width to conflict, so the
                 // annotation fixes its type (`(: 200 UInt8)` : UInt8) subject only to a RANGE CHECK —

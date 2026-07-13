@@ -148,6 +148,13 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                     };
                     Some(Ty::Int(IntTy { sign, width }))
                 }
+                // `(Float W)` where W may be a parameter (a width variable, in the `+.` operator's
+                // type-lambda `(fn (a) … (Float a) …)`) or a constant. Reuses the integer `width_in_env`
+                // — a float width IS a `Width`. The float analogue of the `IntCtor` arm.
+                Prim::FloatCtor if args.len() == 1 => {
+                    let width = width_in_env(db, args[0], env)?;
+                    Some(Ty::Float(crate::ty::FloatTy { width }))
+                }
                 Prim::FnCtor if args.len() == 2 => {
                     let p = type_in_env(db, args[0], env)?;
                     let r = type_in_env(db, args[1], env)?;
@@ -1331,6 +1338,33 @@ pub fn reduce_ctor(
             trace!(target: "rcdzc::eval", signed, width, node = built.0, "ctor (Int/UInt): built integer module");
             Ok(built)
         }
+        Prim::FloatCtor => {
+            if args.len() != 1 {
+                return Err("Float takes one width argument".to_string());
+            }
+            // A width the compiler cannot resolve to a compile-time natural, OR one outside the admitted
+            // set {32,64}, reduces to the sentinel width 0 — so the built module's type is
+            // `Ty::Float(Fixed(0))`, which `build_float_module` (and the annotation check) reject as
+            // CDZ0302, exactly as an out-of-admitted-set integer width is (numeric-model.md §A
+            // Floating-Point Type Is Indexed By A Compile-Time Width). This is where the admitted-SET
+            // membership is enforced (unlike integers' 1..=64 range) — the constructor is the one gate.
+            let width = match read_width(db, args[0]) {
+                WidthRead::Fixed(w) if crate::ty::ADMITTED_FLOAT_WIDTHS.contains(&w) => w,
+                _ => 0,
+            };
+            let key = crate::db::BuildKey {
+                prim,
+                args: vec![width as i64],
+            };
+            if let Some(cached) = db.cached_build(&key) {
+                trace!(target: "rcdzc::eval", width, node = cached.0, "ctor (Float): build-cache hit");
+                return Ok(cached);
+            }
+            let built = build_float_module(db, width);
+            db.cache_build(key, built);
+            trace!(target: "rcdzc::eval", width, node = built.0, "ctor (Float): built float module");
+            Ok(built)
+        }
         Prim::FnCtor => {
             // A SINGLE-element arrow `(-> R)` is a nullary type `Unit -> R` — the elided-unit convention
             // (a nullary effect op `(op get (-> R))`); a two-element `(-> P R)` is the ordinary `P -> R`.
@@ -1703,14 +1737,24 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
         // variant `(type Tag (Named String) …)` then unified its `"x"` argument against `Unit` ("cannot
         // unify Unit with String"). The same round-trip hole the `Bytes` arm above fixed for bytes.
         Ty::String => db.push_name("String"),
-        // A float type-value: the bare aliased name `Float32`/`Float64` (a leaf), round-tripping with
-        // `decode_ty`'s matching arm — so a `(: e Float64)` annotation encodes/decodes faithfully. The
-        // width picks the alias; every admitted width has one.
-        Ty::Float(ft) => db.push_name(if ft.ground_width() == 32 {
-            "Float32"
-        } else {
-            "Float64"
-        }),
+        // A float type-value: the `(Float N)` HEAD form (like `(Int N)`), so the WIDTH round-trips
+        // FAITHFULLY through `decode_ty`'s `(Float N)` arm — INCLUDING the sentinel width 0 a
+        // non-admitted `(Float 16)` reduces to (a bare alias name would lose it: width 0 has no alias,
+        // so it would collapse to `Float64` and slip past the admitted-set check). The admitted-set
+        // membership is enforced at the annotation (`infer`) + the constructor (`reduce_ctor`), not by
+        // dropping the width here.
+        Ty::Float(ft) => {
+            let ctor = db.push_name("Float");
+            let w = match ft.width {
+                Width::Fixed(w) => w as i64,
+                _ => crate::ty::DEFAULT_FLOAT_WIDTH as i64,
+            };
+            let width = db.push_atom(Leaf::Int {
+                value: IntValue::from_i64(w),
+                radix: crate::ast::Radix::Dec,
+            });
+            db.push_list(vec![ctor, width])
+        }
         // Var/Any shouldn't reach a built type-value in Milestone A; encode Unit as a safe stub.
         _ => db.push_name("Unit"),
     }
@@ -1758,6 +1802,23 @@ pub fn build_int_module(db: &mut Db, signed: bool, width: u32) -> StructId {
     let head = db.push_str("record");
     let mut children = vec![head];
     children.append(&mut fields);
+    db.push_list(children)
+}
+
+/// Build a fixed-width FLOAT MODULE record for `width` — the constructor-side twin of
+/// `prelude::float_module_record` (the two MUST build the same shape so `(Float N)` and the named-width
+/// `Float64` are one module). Carries `(meta t)` = the concrete float type-value + an `of-int`
+/// `unrealized` field (realized in F5). A `width` of 0 (the sentinel a NON-admitted `(Float N)` reduces
+/// to) yields `Ty::Float(Fixed(0))`, which the annotation check rejects CDZ0302.
+pub fn build_float_module(db: &mut Db, width: u32) -> StructId {
+    let ty = crate::ty::Ty::Float(crate::ty::FloatTy::fixed(width));
+    let ty_node = encode_typeval(db, &ty);
+    let fields = vec![meta_field(db, "t", ty_node), unrealized_field(db, "of-int")];
+    let head = db.push_str("record");
+    let mut children = vec![head];
+    for f in fields {
+        children.push(f);
+    }
     db.push_list(children)
 }
 

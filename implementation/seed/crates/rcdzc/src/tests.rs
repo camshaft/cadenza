@@ -8860,6 +8860,47 @@ mod stage1 {
     }
 
     #[test]
+    fn a_non_admitted_float_width_is_rejected_cdz0302() {
+        // 06-numeric-model: `(Float N)` for N ∉ {32,64} — the admitted IEEE set — is rejected CDZ0302
+        // (numeric-model.md §A Floating-Point Type Is Indexed By A Compile-Time Width), the float
+        // analogue of an out-of-range integer width. A non-admitted `(Float N)` reduces to the sentinel
+        // width 0 (via `reduce_ctor`), which the annotation check rejects. Set-MEMBERSHIP, not a range:
+        // 16 and 48 both fail even though 48 is within 1..=64 (an integer width would accept it).
+        for body in [
+            "(: 1.5 (Float 16))",
+            "(: 1.5 (Float 48))",
+            "(: 1.5 (Float 0))",
+            "(: 1.5 (Float 128))",
+        ] {
+            let msg = expect_decline(body);
+            assert!(
+                msg.contains("admitted IEEE widths"),
+                "a non-admitted float width must be rejected CDZ0302: {body}; got: {msg}"
+            );
+        }
+        // An ADMITTED width (`Float64`) types cleanly and CROSSES as f64 — the value runs to 1.5, not a
+        // CDZ0302. (A `Float32` value declines at emit until the f32 path lands — F3/F4 — but is
+        // WELL-TYPED, no CDZ0302; that decline is covered where the emit path is exercised.)
+        assert_eq!(run_main_as::<f64>("(: 1.5 (Float 64))"), 1.5);
+        assert_eq!(run_main_as::<f64>("(: 1.5 Float64)"), 1.5);
+    }
+
+    #[test]
+    fn a_float_operator_rejects_an_integer_operand_no_silent_promotion() {
+        // 06-numeric-model: the FLOAT operators `+.`/`-.`/`*.`/`/.` are float-only — an integer operand
+        // fails to unify with `(Float a)` → CDZ0301, the dual of an int operator rejecting a float
+        // (numeric-model.md §A Floating-Point Operation Uses A Floating-Point Operator). Neither operator
+        // coerces: `(+. 2 2.0)` is as rejected as `(+ 2 2.0)`.
+        for op in ["+.", "-.", "*.", "/."] {
+            let msg = expect_decline(&format!("({op} 2 2.0)"));
+            assert!(
+                msg.contains("Float") || msg.contains("Int") || msg.contains("unify"),
+                "an integer operand to `{op}` should cite the numeric mismatch; got: {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn signed_and_unsigned_of_the_same_width_do_not_promote() {
         // `(+ (: 1 Int8) (: 2 UInt8))` — same width (8), different SIGNEDNESS → still rejected (no
         // implicit promotion). Pins that signedness alone is a mismatch, not just width.

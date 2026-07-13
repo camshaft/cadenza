@@ -3834,7 +3834,13 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::BytesAt
         | Prim::BytesConcat
         | Prim::BytesSlice
-        | Prim::BytesCompact => {
+        | Prim::BytesCompact
+        // Float arithmetic is folded by `lower_float_arith` (an f64/f32 fold), not this integer fold.
+        | Prim::FAdd
+        | Prim::FSub
+        | Prim::FMul
+        | Prim::FDiv
+        | Prim::FloatCtor => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -5326,6 +5332,11 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::CheckedMul => "checked-mul",
         Prim::WrappingAdd => "wrapping-add",
         Prim::WrappingMul => "wrapping-mul",
+        Prim::FAdd => "+.",
+        Prim::FSub => "-.",
+        Prim::FMul => "*.",
+        Prim::FDiv => "/.",
+        Prim::FloatCtor => "Float",
     }
 }
 

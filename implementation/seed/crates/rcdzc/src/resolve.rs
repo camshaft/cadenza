@@ -1664,10 +1664,10 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             })?;
             Some(Ty::Int(IntTy::fixed(head == "Int", w)))
         }
-        // A float type-value: `(Float N)` for an admitted width N ∈ {32,64} — the dual of `encode_ty`'s
-        // float arm and the width-indexed form `Float32`/`Float64` alias. A non-admitted width has no
-        // decoded type here (the `prelude::build_float_ty` constructor is where CDZ0302 is raised for a
-        // source annotation; this backend-side decoder just declines an unknown width).
+        // A float type-value: `(Float N)` — the dual of `encode_ty`'s `(Float N)` head form. Decodes
+        // FAITHFULLY for ANY width, INCLUDING the sentinel 0 a non-admitted `(Float 16)` reduces to, so
+        // the width round-trips and the admitted-set check (`infer`'s Annot arm / `reduce_ctor`) is the
+        // ONE place a non-admitted float width is rejected — this decoder never drops or remaps a width.
         "Float" => {
             let tail = db.ast.as_form(node, "Float")?;
             let w = tail.first().and_then(|&s| match db.ast.get(s) {
@@ -1677,11 +1677,7 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 },
                 _ => None,
             })?;
-            if crate::ty::ADMITTED_FLOAT_WIDTHS.contains(&w) {
-                Some(Ty::Float(crate::ty::FloatTy::fixed(w)))
-            } else {
-                None
-            }
+            Some(Ty::Float(crate::ty::FloatTy::fixed(w)))
         }
         "->" => {
             let tail = db.ast.as_form(node, "->")?;

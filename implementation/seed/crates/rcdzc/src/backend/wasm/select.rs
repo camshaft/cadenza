@@ -1874,10 +1874,22 @@ fn emit(
         Core::ConstStr(_) => Err(Reject::decline(
             "a runtime string value is not yet built (only a constant string escapes / folds)",
         )),
-        // A float CONSTANT emits an `f64.const` of its canonical bit pattern — the value a `Ty::Float`
+        // A float CONSTANT emits an `f64.const` of its canonical bit pattern — the value a `Float64`
         // occupies in its f64 machine slot, and what an export returning a float leaves on the stack (the
-        // boundary lifts it to the component `f64`). Float ARITHMETIC (f64.add/…) is a later increment.
+        // boundary lifts it to the component `f64`). A `Float32`-typed constant needs an `f32.const`
+        // (a different opcode + a rounded-to-binary32 immediate) — DECLINES here until the f32 emit path
+        // lands (a clean Todo, never an f64 value in an f32 slot = invalid wasm). The width is read off
+        // the node's SOLVED type (the same read the boundary valtype uses). Float ARITHMETIC is later.
         Core::ConstFloat(d) => {
+            let width = match crate::infer::type_of(db, id) {
+                crate::ty::Ty::Float(ft) => ft.ground_width(),
+                _ => 64,
+            };
+            if width == 32 {
+                return Err(Reject::decline(
+                    "a Float32 constant is not yet emitted (only Float64 crosses; f32 emit is a later increment)",
+                ));
+            }
             out.push(Lir::F64ConstBits(d.to_f64_bits()));
             Ok(())
         }

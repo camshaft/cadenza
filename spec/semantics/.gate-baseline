@@ -32,6 +32,8 @@ pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
 pass	a binary literal with digit separators
 pass	a binding form with bindings but no body is rejected, not a crash
+pass	a bit-field value that needs more bits than its width does not fit its segment
+pass	a bit-field wider than a byte packs across the byte boundary big-endian
 pass	a bit-field width that is not a compile-time constant is ill-formed
 pass	a bool match missing the false arm is non-exhaustive
 pass	a bool match missing the true arm is non-exhaustive
@@ -62,6 +64,7 @@ pass	a capturing closure stored in a tuple is extracted and applied
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a checked result is consumed by matching its Option at run time
 pass	a closure argument is another closure's result
+pass	a closure captures a function value and applies it through a recursive HOF
 pass	a closure captures another closure and applies it
 pass	a closure captures the binding in scope where it was created
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
@@ -69,6 +72,7 @@ pass	a closure capturing two enclosing bindings threads a multi-slot environment
 pass	a closure carried in a USER-declared sum's payload is extracted and applied
 pass	a closure carried in a sum payload is extracted by a match and applied
 pass	a closure factory's returned capturing closure is applied at the call site
+pass	a closure returned from a recursive function is applied through a recursive HOF
 pass	a comparison-predicate function returns its boolean result
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
@@ -131,6 +135,7 @@ pass	a field read follows the record's SORTED field order, not its written order
 pass	a fixpoint loop that threads a growing list accumulator returns that list
 pass	a fixpoint that re-seeds a fresh list each round via a helper returns a list
 pass	a float in integer-width position is rejected
+pass	a float width outside the admitted set is rejected
 pass	a floating-point literal
 pass	a function applied to an argument
 pass	a function argument is applied through a recursive higher-order function
@@ -289,6 +294,7 @@ pass	a non-exhaustive guarded match is rejected even when a constant scrutinee f
 pass	a non-final unsized bytes segment is ill-formed
 pass	a non-first field is projected from a record returned across a call boundary
 pass	a non-matching literal inside a constructor pattern binds the runtime payload
+pass	a non-power-of-two float width is rejected
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a nullary Sign variant applied to a non-unit payload is a type error
 pass	a nullary constructor is a single-arity function taking unit
@@ -306,6 +312,7 @@ pass	a parameter named tuple is applied as the bound function
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
+pass	a pipeline chain applies its stages left to right
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a program that delegates no effect is pure and never suspends
 pass	a program's syntax tree is an ordinary value walked recursively across calls
@@ -364,6 +371,8 @@ pass	a runtime left shift by the bit width or more traps
 pass	a runtime left shift multiplies by a power of two
 pass	a runtime less-than at the integer extremes is signed
 pass	a runtime multiplication that overflows traps
+pass	a runtime negative dividend divided by a constant power of two truncates toward zero
+pass	a runtime negative dividend mod a constant power of two takes the dividend's sign
 pass	a runtime overflowing left shift traps
 pass	a runtime record built behind a recursive call escapes to the host
 pass	a runtime record whose field is a runtime tuple escapes to the host
@@ -398,6 +407,8 @@ pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
+pass	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
+pass	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 pass	a runtime-selected function chosen directly at the application head is applied
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
@@ -572,6 +583,7 @@ pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
+pass	bit-field segments pack sub-byte values into one byte
 pass	bitwise AND masks bits
 pass	bitwise AND of an integer and a float does not silently promote
 pass	bitwise OR combines bits
@@ -685,6 +697,7 @@ pass	member access on a string is a type error
 pass	member access on a tuple is a type error
 pass	mixing nullary and unary constructors in one match
 pass	mixing signed and unsigned of the same width does not silently promote
+pass	mixing two float widths without a conversion does not silently promote
 pass	mixing two integer widths without a conversion does not silently promote
 pass	mixing two numeric types without an explicit conversion does not silently promote
 pass	modulo by -1 is zero even at the minimum integer
@@ -775,6 +788,7 @@ pass	the entrypoint multiplies its runtime argument
 pass	the entrypoint returns its runtime argument unchanged
 pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
+pass	the float operator rejects an integer operand and does not promote it
 pass	the guarded-let conditional takes its else-branch when the conjunction is false
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
@@ -794,6 +808,8 @@ pass	the minimum signed 8-bit value is its per-width bound
 pass	the module entrypoint is the def named main regardless of its position
 pass	the nullary-first if returns the None arm on the base path
 pass	the other parity of a mutually-recursive pair
+pass	the pipeline operator splices the value as a call's first argument
+pass	the pipeline operator threads a value into a named function
 pass	the prelude binds Constructor values not pre-applied Sums
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
@@ -806,6 +822,7 @@ pass	the three-way comparison orders strings lexicographically
 pass	the two variants of Result compare unequal
 pass	the unit value
 pass	the width-indexed and aliased annotations of one value do not conflict
+pass	the width-indexed and aliased float annotations of one value do not conflict
 pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly
 pass	true is greater than false
 pass	true is not less than false
@@ -892,7 +909,6 @@ todo	a factorial that overflows the integer type traps through the recursion
 todo	a final bytes segment binds the remainder after the sized segments
 todo	a final unquote-splice binds the remaining elements as a list
 todo	a float annotation reaches the 32-bit width
-todo	a float width outside the admitted set is rejected
 todo	a function deriving a velocity from a distance and a time
 todo	a function whose body always diverges has result type Never
 todo	a header of packed nibbles and a length-prefixed body round-trips
@@ -940,7 +956,6 @@ todo	a nested unquote pattern matches a sub-AST by shape
 todo	a nominal record compared to a plain record of the same shape is a type error
 todo	a non-empty scrutinee does not match an empty bin pattern
 todo	a non-final unquote-splice in a quote pattern is ill-formed
-todo	a non-power-of-two float width is rejected
 todo	a peephole rewrite rule reads in the shape of the code it rewrites
 todo	a plain quote does not evaluate a quasiquote's unquote nested inside it
 todo	a plain record compared to a nominal record of the same shape is a type error
@@ -1037,7 +1052,6 @@ todo	an unsigned pattern segment reads the same byte as a non-negative integer
 todo	an unusual in-range width is a first-class type
 todo	an unusual-width value that overflows its computed range traps
 todo	annotating a quantity at a dimension the expression does not derive is an error
-todo	bit-field segments pack sub-byte values into one byte
 todo	char to-int and from-int round-trip through the scalar value
 todo	comparing a map to a record is a type error
 todo	comparing an empty map to an empty record is a type error
@@ -1105,7 +1119,6 @@ todo	membership of an absent element in the empty set is false
 todo	membership of an absent element is false, not a trap
 todo	merging records that share a field name is rejected
 todo	merging two records with disjoint fields unions their fields
-todo	mixing two float widths without a conversion does not silently promote
 todo	mixing units of DIFFERENT dimensions is still a compile-time error
 todo	multiplying quantities multiplies their dimensions
 todo	negative integer to byte uses two's complement
@@ -1156,7 +1169,6 @@ todo	the empty reader literal is the empty symbol
 todo	the empty set is equal to the empty set
 todo	the empty symbol converts to the empty string
 todo	the empty symbol equals itself
-todo	the float operator rejects an integer operand and does not promote it
 todo	the intersection contains the elements in both sets
 todo	the number of elements counts distinct elements
 todo	the program manifest is the union of its entrypoints' delegations
@@ -1165,7 +1177,6 @@ todo	the underlying numeric type obeys the numeric core — no silent promotion 
 todo	the union contains the elements of either set
 todo	the value-yielding insert reports the value it replaced
 todo	the value-yielding remove reports the value it dropped
-todo	the width-indexed and aliased float annotations of one value do not conflict
 todo	two dependent-size segments each bind the count a preceding segment named
 todo	two distinct names bound to the same value key the same map entry
 todo	two equal chars compare equal
