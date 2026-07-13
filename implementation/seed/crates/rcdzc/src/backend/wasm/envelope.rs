@@ -1966,6 +1966,7 @@ pub fn assemble_mixed_closure_resource(
 /// Component types: 0 = import instance-type, 1 = resource; per make own<t> (2+2i) + functype (3+2i); call
 /// own<t> (2+2N) + `list<u8>` (3+2N) + call-ft (4+2N). Component funcs: aliased ops 0..k; make[i] lift → k+i,
 /// `call` lift → k+N.
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_multi_closure_bytes_resource(
     main_core: &[u8],
     dtor_core: &[u8],
@@ -1973,9 +1974,11 @@ pub fn assemble_multi_closure_bytes_resource(
     import_name: &str,
     makes: &[ClosureMakeAbi],
     arg_bytes: &[u8],
+    plain: &[PlainExportAbi],
 ) -> Vec<u8> {
     let k = imports.len();
     let nmk = makes.len();
+    let np = plain.len();
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
 
@@ -2072,11 +2075,16 @@ pub fn assemble_multi_closure_bytes_resource(
         items.extend_from_slice(&core_alias_item(3, CALL_CORE_EXPORT));
         items.extend_from_slice(&memory_alias_item(3, MEMORY_EXPORT));
         items.extend_from_slice(&core_alias_item(3, REALLOC_EXPORT));
-        // N makes + `call` + `memory` + `cabi_realloc`.
-        section(sec::ALIAS, &wasm_vec(nmk + 3, &items))
+        // then each PLAIN export's body (core funcs after realloc; memory is not a func index).
+        for p in plain {
+            items.extend_from_slice(&core_alias_item(3, &p.core_name));
+        }
+        // N makes + `call` + `memory` + `cabi_realloc` + P plain.
+        section(sec::ALIAS, &wasm_vec(nmk + 3 + np, &items))
     });
     // sec 7: per make `own<t>` (2+2i) + make functype (3+2i); then call `own<t>` (2+2N) + `list<u8>` (3+2N) +
-    // call functype `(self: own<t>, args…) -> list<u8>` (4+2N).
+    // call functype `(self: own<t>, args…) -> list<u8>` (4+2N); then one PLAIN functype per plain export
+    // (a scalar `(params…) -> R`, comp type 5+2N+j).
     out.extend_from_slice(&{
         let mut items = Vec::new();
         for (i, mk) in makes.iter().enumerate() {
@@ -2092,10 +2100,14 @@ pub fn assemble_multi_closure_bytes_resource(
         let list_ty = (3 + 2 * nmk) as u32;
         items.extend_from_slice(&list_u8_defined_type());
         items.extend_from_slice(&closure_call_list_functype(call_own_ty, arg_bytes, list_ty));
-        section(sec::COMPONENT_TYPE, &wasm_vec(2 * nmk + 3, &items))
+        for p in plain {
+            items.extend_from_slice(&params_result_functype(&p.param_bytes, &[p.result_byte]));
+        }
+        section(sec::COMPONENT_TYPE, &wasm_vec(2 * nmk + 3 + np, &items))
     });
     // sec 8: lift make[i] (core func k+3+i) against functype 3+2i → comp func k+i; lift `call` (core func
-    // k+3+N) against functype 4+2N WITH Memory 0 + Realloc (core func k+4+N) → comp func k+N.
+    // k+3+N) against functype 4+2N WITH Memory 0 + Realloc (core func k+4+N) → comp func k+N; lift each PLAIN
+    // export (core func k+5+N+j) against its functype (comp type 5+2N+j) → comp func k+N+1+j.
     out.extend_from_slice(&{
         let mut items = Vec::new();
         for i in 0..nmk {
@@ -2112,9 +2124,15 @@ pub fn assemble_multi_closure_bytes_resource(
             realloc_fn,
             call_functype,
         ));
-        section(sec::CANON, &wasm_vec(nmk + 1, &items))
+        for j in 0..np {
+            let core_fn = (k + 5 + nmk + j) as u32;
+            let functype = (5 + 2 * nmk + j) as u32;
+            items.extend_from_slice(&canon_lift_item(core_fn, functype));
+        }
+        section(sec::CANON, &wasm_vec(nmk + 1 + np, &items))
     });
-    // sec 4/5/11: nested re-export component (list-result `call`); instantiate; export the closure interface.
+    // sec 4/5/11: nested re-export component (list-result `call`); instantiate; export the closure interface,
+    // then each PLAIN export as an ordinary top-level comp func (comp func k+nmk+1+j).
     out.extend_from_slice(&component_section(
         &resource_inner_component_multi_closure_bytes(makes, arg_bytes),
     ));
@@ -2125,10 +2143,14 @@ pub fn assemble_multi_closure_bytes_resource(
             &component_instantiate_multi_call_item(1, k as u32, nmk, makes),
         ),
     ));
-    out.extend_from_slice(&section(
-        sec::COMPONENT_EXPORT,
-        &wasm_vec(1, &export_instance_item(CLOSURE_INTERFACE, 1)),
-    ));
+    out.extend_from_slice(&{
+        let mut items = export_instance_item(CLOSURE_INTERFACE, 1);
+        for (j, p) in plain.iter().enumerate() {
+            let comp_fn = (k + nmk + 1 + j) as u32;
+            items.extend_from_slice(&comp_export_item(&p.name, comp_fn));
+        }
+        section(sec::COMPONENT_EXPORT, &wasm_vec(1 + np, &items))
+    });
     out
 }
 

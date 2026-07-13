@@ -217,9 +217,15 @@ pub fn run_prepared(
     // targets win; else `[Wasm]` UNLESS a `sidecar` input drives the run (then its Emit requests name
     // the targets, and a default `wasm` would force an unwanted component for a query-only sidecar).
     // The default is the UNDECORATED `Wasm` component (debug excluded), so a non-interactive build that
-    // names no debug target proceeds without asking whether to emit debug information.
+    // names no debug target proceeds without asking whether to emit debug information. WHICH target to
+    // emit is an open point resolvable more than one way; it carries this declared default (`[Wasm]`),
+    // so a build reaching it without an explicit `--target` applies the default rather than halting.
     //= spec/capabilities/debug-information.md#whether-to-emit-debug-information-is-a-user-facing-choice
     //# Whether a derivation emits debug information MUST carry a declared default so that a non-interactive or autonomous build proceeds without asking.
+    //= spec/capabilities/build-modes.md#an-open-point-carries-a-declared-default
+    //# A specification point that a conforming generation could resolve in more than one way MUST carry a declared default that states the conforming choice to apply when the point is otherwise unresolved.
+    //= spec/capabilities/build-modes.md#autonomous-mode-applies-a-declared-default-instead-of-asking
+    //# An autonomous build MUST resolve a specification ambiguity by applying the point's declared default.
     let has_sidecar = inputs
         .iter()
         .any(|a| a.kind == crate::sidecar::KIND_SIDECAR);

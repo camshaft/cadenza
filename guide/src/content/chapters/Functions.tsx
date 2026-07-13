@@ -111,19 +111,23 @@ export default function Functions() {
 
       <Exercise
         id="functions:2"
-        prompt={<>Finish <C>compose</C> so <C>(compose inc dbl)</C> applied to <C>5</C> gives <C>11</C> — double first, then increment.</>}
-        starter={`(def (compose f g)
-  (fn (x) (f ?)))
-(def (inc n) (+ n 1))
-(def (dbl n) (* n 2))
-(def (main) ((compose inc dbl) 5))`}
-        solution={`(def (compose f g)
-  (fn (x) (f (g x))))
-(def (inc n) (+ n 1))
-(def (dbl n) (* n 2))
-(def (main) ((compose inc dbl) 5))`}
-        expected="11"
-        hint={<>Apply <C>g</C> to <C>x</C> first, then hand the result to <C>f</C>: the hole is <C>(g x)</C>.</>}
+        prompt={
+          <>
+            <C>mul</C> takes two arguments, so <C>(mul 6)</C> is a function still waiting for the second.
+            Apply it to <C>7</C> to finish the call — the answer is <C>42</C>.
+          </>
+        }
+        starter={`(def (mul a b) (* a b))
+(def (main) ((mul 6) ?))`}
+        solution={`(def (mul a b) (* a b))
+(def (main) ((mul 6) 7))`}
+        expected="42"
+        hint={
+          <>
+            <C>(mul 6)</C> is a function expecting one more number; applying it to <C>7</C> computes{" "}
+            <C>6 × 7</C>.
+          </>
+        }
       />
     </article>
   );

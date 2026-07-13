@@ -2,7 +2,7 @@
 /// so any component can `await compiler.compile(...)` as if it were a local async function.
 
 import * as Comlink from "comlink";
-import type { CompilerApi, CompileOutcome, Diag, DiagFix, Surface, TypeAtInfo, DefineAtInfo } from "./worker.ts";
+import type { CompilerApi, CompileOutcome, Diag, DiagFix, Surface, TypeAtInfo, DefineAtInfo, SemanticTok } from "./worker.ts";
 
 let proxy: Comlink.Remote<CompilerApi> | null = null;
 
@@ -38,6 +38,12 @@ export function defineAt(text: string, from: Surface, byteOffset: number): Promi
 /// Byte ranges of every occurrence referencing the name at a byte offset (find-all-references), flat.
 export function references_at(text: string, from: Surface, byteOffset: number): Promise<Uint32Array> {
   return client().referencesAt(text, from, byteOffset);
+}
+
+/// Semantic syntax-highlight tokens for the whole buffer — each a byte range + a compiler-classified
+/// role. Empty when the buffer doesn't parse (the editor keeps its lexical colours).
+export function semanticTokens(text: string, from: Surface): Promise<SemanticTok[]> {
+  return client().semanticTokens(text, from);
 }
 
 /// `to` may be a surface (`ml`/`sexpr`) or an output-only view (`debug`/`flat`) for "show the raw AST".
@@ -77,4 +83,4 @@ export function runtimeHash(): Promise<string> {
   return client().runtimeHash();
 }
 
-export type { CompileOutcome, Surface, Diag, DiagFix, TypeAtInfo, DefineAtInfo };
+export type { CompileOutcome, Surface, Diag, DiagFix, TypeAtInfo, DefineAtInfo, SemanticTok };

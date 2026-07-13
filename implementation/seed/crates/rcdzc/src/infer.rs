@@ -59,12 +59,19 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
     let t = compute(db, id);
     db.descent_depth -= 1;
     trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "solved type");
-    // Do NOT memoize a provisional `Any`: a node typed `Any` here may be a recursive-def parameter (or
-    // a reference to one) whose CONNECTED solve (A2) has not run yet — caching `Any` would freeze that
-    // stale answer even after the solve fills the real type. `Any` is compatible with everything and
-    // costs only a recompute, so leaving it unmemoized is safe and lets the solved type win on a later
-    // demand. Every DEFINITE type is memoized as before (the solve-once discipline holds for real types).
-    if !matches!(t, Ty::Any) {
+    // Do NOT memoize a provisional `Any`, OR a type that still CONTAINS A FREE VARIABLE: a node typed
+    // here may depend on a recursive-def parameter (or a reference to one) whose CONNECTED solve (A2) has
+    // not run yet — caching the stale answer would freeze it even after the solve fills the real type. For
+    // a bare `Any` this is obvious; the subtler case is a PARTIALLY-solved type like `(Box ?0)` — a
+    // generic sum read off a param whose instantiation the A2 solve pins LATER. A payload read
+    // `(match acc ((Box.Full m) …))` computes `m`'s type by walking `acc`'s type down the payload path; if
+    // `acc` is still `(Box ?0)` when first demanded, the walk yields `?0` (a `Ty::Var`) — NOT `Any`, so the
+    // old guard memoized it, and the later-solved `acc = (Box Int64)` never reached `m` (the value-heap
+    // layout then declined "projecting an element of type ?0"). A type with a free var is likewise cheap to
+    // recompute, so leave it unmemoized and let the solved type win. Every FULLY-GROUND type is memoized as
+    // before (the solve-once discipline holds for real types; `has_free_var` treats a deferred int
+    // width/sign as ground — those default, they are not undetermined).
+    if !matches!(t, Ty::Any) && !t.has_free_var() {
         db.types.fill(id, t.clone());
     }
     t
@@ -1758,6 +1765,37 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         }
         return Ty::Record(std::sync::Arc::new(kept));
     }
+    // `Record.without r (b)` — `r` MINUS the named fields (the complement of `project`). The result is a
+    // NEW record type keeping every field of `r` whose label is NOT named. Same literal field-name list;
+    // an absent named field is CDZ0212 (`check_application`), not reflected in the shape.
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordWithout)
+        && args.len() == 2
+        && let Ty::Record(fields) = type_of(db, args[0])
+        && let Some(labels) = crate::resolve::record_op_labels(db, args[1])
+    {
+        let drop: std::collections::BTreeSet<_> = labels.into_iter().collect();
+        let kept: std::collections::BTreeMap<_, _> = fields
+            .iter()
+            .filter(|(k, _)| !drop.contains(*k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        return Ty::Record(std::sync::Arc::new(kept));
+    }
+    // `Record.merge a b` — the UNION of two records' fields. The result is a NEW record type with every
+    // field of BOTH operands. The field sets MUST be disjoint (a shared name is CDZ0211, reported by
+    // `check_application`); the type here is the union regardless (a shared field's fault fires there, and
+    // last-writer here keeps the shape sane). A non-record operand → the generic path (Any).
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordMerge)
+        && args.len() == 2
+        && let (Ty::Record(a), Ty::Record(b)) = (type_of(db, args[0]), type_of(db, args[1]))
+    {
+        let mut union: std::collections::BTreeMap<_, _> =
+            a.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for (k, v) in b.iter() {
+            union.insert(k.clone(), v.clone());
+        }
+        return Ty::Record(std::sync::Arc::new(union));
+    }
     // `Type.of e` — compile-time type reflection. The application itself has type `Type` (it IS a
     // type-value, like `(Qty T u)` / `(-> A B)` in type position); the type-value it REDUCES to (via
     // `eval::typeval_of` → the `reduce_ctor` arm) is `e`'s inferred type, consumed only in a type
@@ -2259,25 +2297,39 @@ fn total_conversion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, 
     }
 }
 
-/// The `(prefix, suffix, verb)` of the CHECKED integer conversion `(<Expected>.of …)` when an integer of
-/// one width is supplied where a DIFFERENT integer width is `expected` — the numeric-model coercion wrap
-/// (`06-numeric-model.sexp` — `(+ 2 (Int64.of 1))`). Shared by every site the same int-width mismatch
-/// surfaces: an operator/ctor argument, a value/param `(: … T)` annotation, and an annotated let-binder.
-/// GATED to an ALIASED expected width ({8,16,32,64}) — only those render to a BOUND type name, so
-/// `(<Expected>.of …)` resolves; a non-aliased `(Int 48)` would suggest an unbound `Int48.of`, worse than
-/// no fix. The wrap text is a member-access spelling the resolver handles generically, not a hard-coded
-/// name. Heuristic: `.of` is CHECKED (traps out of range), and which operand to convert is the author's
-/// intent. `None` unless both types are integers and the expected width is aliased.
+/// The `(prefix, suffix, verb)` of the conversion `(<Expected>.of …)` when a NUMERIC value of one
+/// width/precision is supplied where a DIFFERENT one of the SAME numeric kind is `expected` — the
+/// numeric-model coercion wrap (`06-numeric-model.sexp` — `(+ 2 (Int64.of 1))`). Covers BOTH an INTEGER
+/// width mismatch (`Int8`/`Int64`) and a FLOAT precision mismatch (`Float32`/`Float64`); shared by every
+/// site the same mismatch surfaces — an operator/ctor argument, a value/param `(: … T)` annotation, and an
+/// annotated let-binder. GATED to an ALIASED expected width/precision (int {8,16,32,64}, float {32,64}) —
+/// only those render to a BOUND type name, so `(<Expected>.of …)` resolves; a non-aliased `(Int 48)` would
+/// suggest an unbound `Int48.of`, worse than no fix. The wrap text is a member-access spelling the resolver
+/// handles generically, not a hard-coded name. Heuristic: which value to convert is the author's intent —
+/// and the int `.of` is CHECKED (traps out of range) while the float `.of` is TOTAL (widen exact, narrow
+/// rounds), reflected in the verb. `None` unless both types are the same numeric kind at an aliased width.
 fn int_coercion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, String)> {
-    if let (Ty::Int(exp), Ty::Int(_)) = (expected, actual)
-        && crate::ty::ALIASED_INT_WIDTHS.contains(&exp.ground_width())
-    {
+    let (kind_matches, aliased, checked) = match (expected, actual) {
+        (Ty::Int(exp), Ty::Int(_)) => (
+            true,
+            crate::ty::ALIASED_INT_WIDTHS.contains(&exp.ground_width()),
+            true,
+        ),
+        (Ty::Float(exp), Ty::Float(_)) => (
+            true,
+            crate::ty::ADMITTED_FLOAT_WIDTHS.contains(&exp.ground_width()),
+            false,
+        ),
+        _ => (false, false, false),
+    };
+    if kind_matches && aliased {
         let n = expected.render_name();
-        return Some((
-            format!("({n}.of "),
-            ")".to_string(),
-            format!("convert to {n} with `{n}.of` (checked)"),
-        ));
+        let verb = if checked {
+            format!("convert to {n} with `{n}.of` (checked)")
+        } else {
+            format!("convert to {n} with `{n}.of`")
+        };
+        return Some((format!("({n}.of "), ")".to_string(), verb));
     }
     None
 }
@@ -2741,12 +2793,19 @@ fn check_application(
         collect(db, args[1], out);
         return;
     }
-    // `Record.project r (a c)` — has NO HM scheme (the label-list operand is not a typed value, and the
-    // result shape is computed row-polymorphically by `apply_type`), so SKIP the generic scheme-unify (it
-    // would fault the label list against a scheme). The absent-field CDZ0212 + operand descent are done in
-    // `collect_node`'s Apply arm; nothing to add here beyond stopping the generic path.
+    // The RECORD ROW OPERATIONS have NO HM scheme (a label-list operand is not a typed value; a result
+    // shape is row-polymorphic), so SKIP the generic scheme-unify (it would fault the label list). The
+    // per-op faults (CDZ0212 absent / CDZ0211 shared) + operand descent are done in `collect_node`'s Apply
+    // arm; nothing to add here beyond stopping the generic path.
     if args.len() == 2
-        && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordProject)
+        && matches!(
+            crate::eval::meta_apply_of(db, head),
+            Some(
+                crate::resolved::Prim::RecordProject
+                    | crate::resolved::Prim::RecordWithout
+                    | crate::resolved::Prim::RecordMerge
+            )
+        )
     {
         return;
     }
@@ -4464,33 +4523,66 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 }
             } else if matches!(
                 crate::eval::meta_apply_of(db, head),
-                Some(crate::resolved::Prim::RecordProject)
+                Some(crate::resolved::Prim::RecordProject | crate::resolved::Prim::RecordWithout)
             ) && args.len() == 2
             {
-                // `Record.project r (a c)` — the FIRST operand `r` is an ordinary expression (descend it);
-                // the SECOND is a LITERAL field-name list `(a c)` — LABELS, not an expression, so descending
-                // it would resolve `a` as applied to `c`. Instead read its labels and check each names a
-                // field the operand record HOLDS: a named field ABSENT from `r`'s record type is CDZ0212
-                // (`type-system.md` §A Record Is Restricted To A Named Set Of Its Fields, 2nd sentence). A
-                // malformed label list (not a list, a non-label element) is CDZ0201.
+                // `Record.project r (a c)` / `Record.without r (b)` — the FIRST operand `r` is an ordinary
+                // expression (descend it); the SECOND is a LITERAL field-name list `(a c)` — LABELS, not an
+                // expression, so descending it would resolve `a` as applied to `c`. Instead read its labels
+                // and check each names a field the operand record HOLDS: a named field ABSENT from `r`'s
+                // record type is CDZ0212 — for `project` (§A Record Is Restricted To A Named Set Of Its
+                // Fields, 2nd sentence) AND `without` (§A Record Is Reduced By Dropping A Named Set …, 2nd
+                // sentence), the same absent-field check. A malformed label list is CDZ0201.
                 collect(db, args[0], out);
                 match (
                     type_of(db, args[0]),
                     crate::resolve::record_op_labels(db, args[1]),
                 ) {
                     (Ty::Record(fields), Some(labels)) => {
+                        // A DUPLICATE label in the projection list `(a a)` is the SAME malformedness a
+                        // record LITERAL with a duplicate field `(record (a 1) (a 2))` is rejected for
+                        // (CDZ0201) — a record's fields are a fixed SET of names (`type-system.md` §A Record
+                        // Is Restricted To A Named Set Of Its Fields), so a label named twice is ill-formed,
+                        // not silently deduplicated to one field. Checked here (the projection's
+                        // well-formedness site, beside the absent-field check) so it holds whether or not the
+                        // projection is reached. Reported at the first REPEAT, matching the record-literal
+                        // message/code.
+                        let mut seen: std::collections::HashSet<&crate::resolved::Symbol> =
+                            std::collections::HashSet::new();
                         for label in &labels {
-                            if !fields.contains_key(label) {
+                            if !seen.insert(label) {
                                 out.push(
                                     Reject::coded(
-                                        Code::AbsentField,
+                                        Code::Malformed,
                                         format!(
-                                            "record has no field `{}` to project onto",
+                                            "record names field `{}` more than once",
                                             label.name
                                         ),
                                     )
                                     .at(args[1]),
                                 );
+                                break;
+                            }
+                        }
+                        // The record's own field NAMES — the closed set a dropped/projected label must
+                        // name, so a near-miss is a "did you mean?" (the same closed-set suggestion a
+                        // member access `(. r k)` gets — a mistyped `Record.without r (alfa)` for a field
+                        // `alpha` should point at it, not just say "no field `alfa`").
+                        let field_names: Vec<&str> =
+                            fields.keys().map(|k| k.name.as_str()).collect();
+                        for label in &labels {
+                            if !fields.contains_key(label) {
+                                let msg = match crate::diag::suggest::nearest(
+                                    &label.name,
+                                    field_names.iter().copied(),
+                                ) {
+                                    Some(near) => format!(
+                                        "record has no field `{}` — did you mean `{near}`?",
+                                        label.name
+                                    ),
+                                    None => format!("record has no field `{}`", label.name),
+                                };
+                                out.push(Reject::coded(Code::AbsentField, msg).at(args[1]));
                             }
                         }
                     }
@@ -4498,9 +4590,35 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     // type) surfaces via the `collect(args[0])` above; a malformed label list is CDZ0201.
                     (_, None) => out.push(Reject::coded(
                         Code::Malformed,
-                        "Record.project's second operand is a list of field names, e.g. `(a c)`",
+                        "the second operand is a list of field names, e.g. `(a c)`",
                     )),
                     _ => {}
+                }
+            } else if matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(crate::resolved::Prim::RecordMerge)
+            ) && args.len() == 2
+            {
+                // `Record.merge a b` — BOTH operands are ordinary record expressions (descend each). Their
+                // field sets MUST be DISJOINT: a name present in BOTH is CDZ0211 (`type-system.md` §Two
+                // Records Are Combined Only When Their Field Sets Are Disjoint, 2nd sentence) — the combined
+                // record never chooses which operand's value a shared field takes. A non-record operand's
+                // own fault surfaces via the descent.
+                collect(db, args[0], out);
+                collect(db, args[1], out);
+                if let (Ty::Record(a), Ty::Record(b)) = (type_of(db, args[0]), type_of(db, args[1]))
+                {
+                    for k in a.keys() {
+                        if b.contains_key(k) {
+                            out.push(
+                                Reject::coded(
+                                    Code::PresentField,
+                                    format!("both records share the field `{}`", k.name),
+                                )
+                                .at(id),
+                            );
+                        }
+                    }
                 }
             } else if crate::eval::lambda_body(db, head).is_some() {
                 // A LAMBDA head — `check_application` already collected the REDUCED body (step 2), which
@@ -4670,39 +4788,49 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
                         trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), expr_ty = %expr_ty.render_name(), "fault: annotation type mismatch (CDZ0203)");
-                        // The annotation mismatch has a MECHANICAL REPAIR in three cases, each making the
+                        // The annotation mismatch has a MECHANICAL REPAIR in several cases, each making the
                         // value type-check in ONE shot (the annotation position mirrors the argument
-                        // position's coercion fixes):
+                        // position's coercion fixes). The two LITERAL-RETYPE repairs (a `replace`, not a
+                        // wrap) are checked first:
                         //  • an INTEGER-VALUED FLOAT LITERAL annotated an INTEGER — `(: 3.0 Int64)` → DROP
                         //    the fractional form, REPLACE `3.0` with `3` (a non-integer / out-of-range float
-                        //    yields no `int_text` → no fix; truncating is the author's choice);
-                        //  • the annotation is a SUM with a single-payload variant whose payload is the
-                        //    value's type — "wrap in `Some`" (`(: n Option)` for `n : Int64`); and
-                        //  • both types are INTEGERS and the annotation is an aliased width — wrap in the
-                        //    annotation type's checked `(<AnnotInt>.of value)` (`(: n Int64)` for `n : Int8`).
-                        // The float-drop is a REPLACE (not a wrap), so it is handled first; the other two
-                        // compute a `wrap (prefix, suffix, verb, msg_tail)`.
-                        let float_drop: Option<String> = if let Ty::Int(expected_int) = &annot_ty
-                            && let crate::ast::Struct::Atom(lid) = db.ast.get(expr)
-                            && let crate::ast::Leaf::Float(dec) = db.ast.leaf(*lid).clone()
-                        {
-                            integer_text_of_float_literal(&dec, *expected_int)
-                        } else {
-                            None
-                        };
-                        if let Some(int_text) = float_drop {
+                        //    → no `int_text` → no fix; truncating is the author's choice); and
+                        //  • an INTEGER LITERAL annotated a FLOAT — `(: 3 Float64)` → ADD the fractional
+                        //    form, REPLACE `3` with `3.0` (the exact mirror; a bignum past i128 → no fix).
+                        // Then the two WRAP repairs: sum single-payload ctor ("wrap in `Some`"), and the
+                        // `(<AnnotInt>.of value)` int-width coercion.
+                        let literal_retype: Option<(String, &'static str)> =
+                            if let Ty::Int(expected_int) = &annot_ty
+                                && let crate::ast::Struct::Atom(lid) = db.ast.get(expr)
+                                && let crate::ast::Leaf::Float(dec) = db.ast.leaf(*lid).clone()
+                            {
+                                // integer-valued float annotated Int → drop the `.0`.
+                                integer_text_of_float_literal(&dec, *expected_int)
+                                    .map(|t| (t, "drop the fractional form"))
+                            } else if matches!(&annot_ty, Ty::Float(_))
+                                && let crate::ast::Struct::Atom(lid) = db.ast.get(expr)
+                                && let crate::ast::Leaf::Int { value, .. } =
+                                    db.ast.leaf(*lid).clone()
+                                && let Some(n) = value.to_i128()
+                            {
+                                // integer literal annotated Float → add the `.0` (make it a float literal).
+                                Some((format!("{n}.0"), "make it a float literal"))
+                            } else {
+                                None
+                            };
+                        if let Some((text, verb)) = literal_retype {
                             out.push(
                                 Reject::coded(
                                     Code::TypeMismatch,
                                     format!(
-                                        "annotation type {} does not match value type {} — drop the \
-                                         fractional form (`{int_text}`)",
+                                        "annotation type {} does not match value type {} — {verb} \
+                                         (`{text}`)",
                                         annot_ty.render_name(),
                                         expr_ty.render_name()
                                     ),
                                 )
                                 .at(id)
-                                .with_fix(Fix::replace_heuristic(expr, int_text)),
+                                .with_fix(Fix::replace_heuristic(expr, text)),
                             );
                         } else {
                             // Compute the wrap `(prefix, suffix, verb, msg_tail)` from whichever applies.
@@ -4776,7 +4904,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // itself declines to run (E1a).
         Resolved::Handle { init, arms, body } => {
             collect(db, init, out);
-            for arm in &arms {
+            for arm in arms.iter() {
                 // A HANDLER ARM NAMES AN UNDECLARED OPERATION (CDZ0403). If the arm's op is `(. E k)`
                 // where `E` is an effect but `k` is not one of its declared operations, that is a
                 // closed-set violation (`capabilities-and-effects.md` §A Handler Arm Names An Operation
@@ -4908,10 +5036,23 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     .map(|it| Ty::Int(it).render_name())
                     .unwrap_or_else(|| "Int64".to_string());
                 trace!(target: "rcdzc::infer", node = id.0, "fault: integer literal exceeds its width (malformed, CDZ0201)");
-                out.push(Reject::coded(
-                    Code::Malformed,
-                    format!("integer literal is out of range for {ty_name}"),
-                ));
+                // Name the valid RANGE the literal overflowed (as the annotated-width CDZ0302 does), so a
+                // bare huge literal explains WHAT it exceeded rather than a terse "out of range". When the
+                // overflowed type is the Int64 DEFAULT (a bare literal, no context), also note it is the
+                // widest fixed integer — the honest current story (the numeric model reserves wider values
+                // to a big-integer layer not yet constructible), so the author knows the value simply has
+                // no representable fixed type rather than expecting a `--from`-style flag.
+                let msg = match int_width_range(signed, width) {
+                    Some(range) if context.is_none() => format!(
+                        "integer literal is out of range for {ty_name} (the valid range is {range}; \
+                         Int64 is the widest fixed-size integer)"
+                    ),
+                    Some(range) => format!(
+                        "integer literal is out of range for {ty_name} (the valid range is {range})"
+                    ),
+                    None => format!("integer literal is out of range for {ty_name}"),
+                };
+                out.push(Reject::coded(Code::Malformed, msg));
             }
         }
         Resolved::Prim(_)

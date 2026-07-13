@@ -200,6 +200,10 @@ pub enum Prim {
     /// in type position reduces to `Ty::Symbol` (a NULLARY type, like `String`/`Char`; the `Symbol` module
     /// also carries `of`/`to-string` operation fields, but its type role is this).
     SymbolTy,
+    /// The ground `BigInt` type-value — held in the `BigInt` module record's `(meta t)`, so bare `BigInt`
+    /// in type position reduces to `Ty::BigInt` (a NULLARY type, like `String`/`Symbol`; the `BigInt`
+    /// module also carries the `of` conversion field, but this is its type role). `ground_type` maps it.
+    BigIntTy,
     /// `Symbol.of` — INTERN a String into a Symbol (`String → Symbol`, 17-symbols). A constant string
     /// FOLDS to a constant symbol (represented as the underlying `Core::ConstStr` at type `Ty::Symbol` —
     /// the identity is content-derived), so `(= (Symbol.of "a") (Symbol.of "a"))` folds via the shared
@@ -241,6 +245,18 @@ pub enum Prim {
     /// `Core::Record` with only the named fields; a named field absent from the operand is CDZ0212. The
     /// narrowing member of the record row-operation surface (`without`/`merge`/`with`/`pop`/`extend` follow).
     RecordProject,
+    /// The RECORD ROW-DROP operation — `(Record.without r (b))` derives `r` MINUS the named fields, i.e.
+    /// the complement of `project` (`type-system.md` §A Record Is Reduced By Dropping A Named Set Of Its
+    /// Fields). Same LITERAL field-name-list second operand as `project`; folds a constant `Core::Record`
+    /// to a new one with the named fields removed. A named field absent from the operand is CDZ0212 (a
+    /// drop of a field never held is a static error, not a silent no-op).
+    RecordWithout,
+    /// The RECORD ROW-MERGE operation — `(Record.merge a b)` combines two records into one whose field set
+    /// is the UNION (`type-system.md` §Two Records Are Combined Only When Their Field Sets Are Disjoint).
+    /// UNLIKE `project`/`without`, BOTH operands are ordinary record VALUES (no label list). The field sets
+    /// MUST be DISJOINT: a shared field name is CDZ0211 (the combined record never chooses which operand's
+    /// value a shared field takes). Folds two constant `Core::Record`s to their union.
+    RecordMerge,
     /// A LIST VALUE CONSTRUCTOR — the `(meta apply)` of the prelude `list` alias. Applying it (`(list 1 2
     /// 3)`) builds the list value, exactly as the STRING-head primitive `("list" 1 2 3)` does. VARIADIC,
     /// but HOMOGENEOUS: every element unifies to ONE element type (a mixed list is ill-typed), so its
@@ -592,6 +608,7 @@ impl Prim {
             "Bool" => Some(Prim::BoolTy),
             "Unit" => Some(Prim::UnitTy),
             "String" => Some(Prim::StringTy),
+            "BigInt" => Some(Prim::BigIntTy),
             "Char" => Some(Prim::CharTy),
             "char-to-int" => Some(Prim::CharToInt),
             "char-from-int" => Some(Prim::CharFromInt),
@@ -603,6 +620,8 @@ impl Prim {
             "tuple-new" => Some(Prim::TupleNew),
             "record-new" => Some(Prim::RecordNew),
             "record-project" => Some(Prim::RecordProject),
+            "record-without" => Some(Prim::RecordWithout),
+            "record-merge" => Some(Prim::RecordMerge),
             "list-new" => Some(Prim::ListNew),
             "list-len" => Some(Prim::ListLen),
             "list-push" => Some(Prim::ListPush),
@@ -730,8 +749,36 @@ impl Prim {
             Prim::StringTy => Some(crate::ty::Ty::String),
             Prim::CharTy => Some(crate::ty::Ty::Char),
             Prim::SymbolTy => Some(crate::ty::Ty::Symbol),
+            Prim::BigIntTy => Some(crate::ty::Ty::BigInt),
             _ => None,
         }
+    }
+
+    /// Whether this primitive DENOTES A TYPE — a ground type-value (`Bool`/`String`/…) or a type
+    /// CONSTRUCTOR (`List`/`Map`/`Int`/`->`/`Tuple`/… — applied in type position to build a `Ty`). This
+    /// is the single role split a `(meta apply)`-carrying record can't reveal on its own: a `List` module
+    /// and the `+` operator BOTH resolve through `(meta apply)` to a `Prim`, but `List` builds a TYPE
+    /// while `+` computes a VALUE. Which one a prim is is a property the prelude fixes when it authors the
+    /// intrinsic — so the fact lives here beside `is_arith`/`ground_type`, not in a name table
+    /// downstream. Used only by the highlight query to colour a type-former distinctly from a value op;
+    /// it changes no compiled byte. A variant/value constructor (`SumNew`/`TupleNew`/…) is NOT here — it
+    /// builds a VALUE, not a type.
+    pub fn denotes_type(self) -> bool {
+        self.ground_type().is_some()
+            || matches!(
+                self,
+                Prim::IntCtor
+                    | Prim::UIntCtor
+                    | Prim::FloatCtor
+                    | Prim::FnCtor
+                    | Prim::TupleCtor
+                    | Prim::RecordCtor
+                    | Prim::ListCtor
+                    | Prim::MapCtor
+                    | Prim::SetCtor
+                    | Prim::SumCtor
+                    | Prim::QtyCtor
+            )
     }
 }
 
@@ -964,7 +1011,13 @@ pub enum Resolved {
     /// `resume`; it does not yet run).
     Handle {
         init: StructId,
-        arms: Vec<HandleArm>,
+        /// The handler arms, behind an `Arc` so CLONING a `Resolved::Handle` (which `resolved_of` does on
+        /// every memo read) is a refcount bump, not a deep `Vec<HandleArm>` copy — each `HandleArm` itself
+        /// holds a `params: Vec`, so an N-arm handler's clone was O(N). A perform's `perform_host_target`
+        /// walks PARENTS (`resolved_of` each) to find its enclosing `(host …)`, passing THROUGH the N-arm
+        /// handle node every time — so re-cloning its arms per walk made a wide handler O(N²). Mirrors the
+        /// `Arc` on `Tuple`/`List`/`Apply` and `Core::Record` for the identical clone-on-read reason.
+        arms: std::sync::Arc<[HandleArm]>,
         body: StructId,
     },
     /// A resumption `(resume VALUE NEXT-STATE)` inside a handler arm — hand `value` back to the point that

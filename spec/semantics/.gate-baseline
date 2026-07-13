@@ -23,6 +23,8 @@ pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
+pass	a Bytes-returning closure alongside a plain export — the closure runs
+pass	a Bytes-returning closure alongside a plain export — the plain runs
 pass	a Bytes-returning closure on a different argument
 pass	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
 pass	a CBOR atom decodes each scalar major type to its value
@@ -46,6 +48,8 @@ pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
 pass	a String compound export under a non-main name crosses to the host
+pass	a String-returning closure alongside a parameterized plain export
+pass	a String-returning closure alongside a parameterized plain export — the plain runs
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
@@ -338,6 +342,7 @@ pass	a let-bound variable passed as a function-call argument resolves at the cal
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
 pass	a linear non-tail recursion over a non-associative operator preserves its exact result
 pass	a list annotated with the wrong element type is rejected
+pass	a list built at run time by a push-loop escapes to the host
 pass	a list built by a runtime-length loop has that many elements
 pass	a list chosen by a runtime if is length-measured without emitting invalid wasm
 pass	a list compound export under a non-main name crosses to the host
@@ -358,6 +363,7 @@ pass	a literal nested in a tuple let-binder is refutable and rejected
 pass	a literal segment before a binder dispatches then reads the payload
 pass	a literal segment matches a magic-number header by equality
 pass	a magic header and a length-prefixed chunk parse together
+pass	a map built at run time escapes to the host as its value form
 pass	a map can be a key, compared by its value
 pass	a map can hold a map as a value
 pass	a map entry with no value expression is rejected, not a crash
@@ -690,6 +696,7 @@ pass	a sequencing block discards a pure compound intermediate
 pass	a sequencing block discards a pure list intermediate
 pass	a sequencing block whose last form is unit yields unit
 pass	a sequencing block yields the value of its last form
+pass	a set built at run time escapes to the host as its value form
 pass	a set collapses a duplicate element
 pass	a set is constructed from a list of its elements
 pass	a set with elements of two different types is a type error
@@ -925,6 +932,7 @@ pass	an unannotated closure typed Int8 from context overflows a constant like an
 pass	an unannotated closure with an unused parameter in a payload takes the declared parameter type
 pass	an unannotated generic branching sum fold infers its parameter's instantiation from the arms
 pass	an unannotated generic recursive tree consumer whose result is independent of the payload infers
+pass	an unannotated generic sum ACCUMULATOR infers its parameter from the values folded into it
 pass	an unannotated program with a valid typing type-checks and runs
 pass	an unbound name as a parameter's annotation type is rejected
 pass	an unbound name in a map key is a scope error, not a coerced string
@@ -1047,6 +1055,8 @@ pass	dividing quantities divides their dimensions
 pass	division by zero traps
 pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
+pass	dropping an absent field from a record is rejected
+pass	dropping fields from a record leaves the remaining fields
 pass	each definition in a module registers a reachable export field
 pass	encoding a decoded string round-trips to the same bytes
 pass	equality across incompatible dimensions is a compile-time error
@@ -1130,6 +1140,8 @@ pass	member access on a tuple is a type error
 pass	membership of a present element is true
 pass	membership of an absent element in the empty set is false
 pass	membership of an absent element is false, not a trap
+pass	merging records that share a field name is rejected
+pass	merging two records with disjoint fields unions their fields
 pass	mixing a prefixed unit across DIFFERENT dimensions is still a compile-time error
 pass	mixing nullary and unary constructors in one match
 pass	mixing signed and unsigned of the same width does not silently promote
@@ -1178,6 +1190,7 @@ pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
 pass	projecting a record onto an absent field is rejected
 pass	projecting a record restricts it to the named fields
+pass	projecting a record with a duplicate label is rejected
 pass	projecting a tuple passed as a function parameter yields the element, never an invalid component
 pass	projecting an if-of-tuples does not evaluate the untaken branch's unprojected sibling
 pass	promoting a Float32 to Float64 is exact
@@ -1462,8 +1475,6 @@ todo	converting a fixed-width integer to BigInt is explicit
 todo	converting a unit to another unit of the same dimension is an exact rational scale
 todo	decoding bytes that are not a canonical AST yields the error case, not a trap
 todo	decoding canonical bytes followed by a trailing byte yields the error case
-todo	dropping an absent field from a record is rejected
-todo	dropping fields from a record leaves the remaining fields
 todo	encoding and decoding a constructor-built AST round-trips to an equal value
 todo	encoding and decoding a constructor-built compound AST round-trips
 todo	eval is optional for macros and interactive use
@@ -1474,8 +1485,6 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	extending a record adds a new field
 todo	extending a record with an already-present field is rejected
-todo	merging records that share a field name is rejected
-todo	merging two records with disjoint fields unions their fields
 todo	negating a runtime Int64 overflows at Int64.min
 todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 todo	pattern matching over AST distinguishes forms

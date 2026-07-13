@@ -33,6 +33,20 @@ use tracing::trace;
 /// Compile a set of kinded input artifacts to the requested targets. The `ast` input is decoded into
 /// a `Db`; each target's backend fills its artifact from the shared columns. Targets default to
 /// `[Wasm]` at the CLI, not here — this entry emits exactly what it is asked for.
+///
+/// A program compiles on the CORE guarantees alone — static typing (`collect_faults`), determinism, and
+/// capability-safety (the no-home effect check) — with NO verification layer as a precondition; the seed
+/// realizes no contract/refinement/proof layer, so engaging one is not something a program can (or must)
+/// opt into here.
+///
+//= constitution.md#viii-verification-is-progressive-and-meaning-preserving
+//# A program MUST be compilable when only the core guarantees — static typing, determinism, and capability-safety — are satisfied.
+///
+//= spec/capabilities/verification-layers.md#a-program-compiles-without-any-layer
+//# A program MUST compile when only the core guarantees — static typing, determinism, and capability-safety — are satisfied.
+///
+//= spec/capabilities/verification-layers.md#a-program-compiles-without-any-layer
+//# Engaging a verification layer MUST be something a program opts into, not a precondition of compiling.
 pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     trace!(target: "rcdzc::compile", inputs = inputs.len(), targets = targets.len(), "compile requested");
     // Select the `ast` input artifact(s) and decode them into ONE arena. A single `ast` (the common
@@ -333,12 +347,12 @@ const PRAGMA_REGISTRY: &[&str] = &["default-integer"];
 /// takes), and the integer-domain predicate is `Ty::Int` — the ONE representation every fixed-width and
 /// deferred integer type shares. A non-integer type-value (`Float64` → `Ty::Float`, a record, …) is the
 /// numeric-domain rejection CDZ0303, distinct from the structural CDZ0602 (wrong arity) / CDZ0601
-/// (unknown key). A type argument that does NOT reduce to a concrete type-value — an integer type the
-/// numeric model admits but this compiler does not yet represent as a `Ty` (`BigInt`), an unbound name, a
-/// non-type expression — returns `None` here: NOT a domain violation (an unrepresented integer type is a
-/// legitimate default), so the whole program declines downstream on the still-unmodeled pragma rather
-/// than being falsely rejected as non-integer. The predicate is CONSERVATIVE — it fires only on a type it
-/// can prove is non-integer, never on absence of proof.
+/// (unknown key). The integer domain is `Ty::Int` (fixed-width + deferred) OR `Ty::BigInt` (the
+/// arbitrary-precision integer, now modeled). A type argument that does NOT reduce to a concrete
+/// type-value — an unbound name, a non-type expression — returns `None` here: NOT a domain violation
+/// (absence of proof is not proof of non-integer), so the whole program declines downstream rather than
+/// being falsely rejected. The predicate is CONSERVATIVE — it fires only on a type it can prove is
+/// non-integer, never on absence of proof.
 fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> Option<Reject> {
     // An UNBOUND type name is the SAME CDZ0101 an annotation gives (`(: x Nope)`). Resolution — not the
     // `typeval_of` reduction — is what tells an unbound name apart from a BOUND type this compiler does
@@ -354,7 +368,11 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
         return Some(reject);
     }
     let ty = crate::eval::typeval_of(db, ty_expr)?;
-    if matches!(ty, crate::ty::Ty::Int(_)) {
+    // The integer domain is `Ty::Int` (every fixed-width + deferred integer) AND `Ty::BigInt` (the
+    // arbitrary-precision integer) — both are integer types the numeric model admits as a declarable
+    // default (`options/numeric-model/explicit-checked.md` §"Any integer type is declarable" lists
+    // `BigInt`). A non-integer type-value (`Float64`, a record, …) is the CDZ0303 domain rejection.
+    if matches!(ty, crate::ty::Ty::Int(_) | crate::ty::Ty::BigInt) {
         return None;
     }
     Some(

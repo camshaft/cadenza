@@ -2376,7 +2376,11 @@ fn resolve_handle(db: &Db, id: StructId) -> Resolved {
             ),
         ));
     }
-    Resolved::Handle { init, arms, body }
+    Resolved::Handle {
+        init,
+        arms: arms.into(),
+        body,
+    }
 }
 
 /// Resolve `(resume VALUE NEXT-STATE)` into its resolved form. The two children are AST occurrences
@@ -2536,6 +2540,9 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             // `Char`/`Symbol` arms so the round-trip is faithful, exactly as the `Bytes`/`String` arms are.
             "Char" => Some(Ty::Char),
             "Symbol" => Some(Ty::Symbol),
+            // `BigInt` — the arbitrary-precision integer leaf, paired with `encode_ty`'s `BigInt` arm so
+            // a `BigInt` nested in a compound type-value round-trips faithfully (not collapsing to `Unit`).
+            "BigInt" => Some(Ty::BigInt),
             "Float32" => Some(Ty::Float(crate::ty::FloatTy::fixed(32))),
             "Float64" => Some(Ty::Float(crate::ty::FloatTy::fixed(64))),
             _ => None,

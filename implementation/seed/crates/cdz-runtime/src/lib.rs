@@ -115,6 +115,13 @@ mod bindings;
 #[cfg(target_arch = "wasm32")]
 use bindings::exports::cadenza::runtime::heap::Guest;
 
+// Arbitrary-precision signed integers (DESIGN-bigint-and-rational-rcdzc.md §5). A pure `no_std` limb
+// library, not yet wired to any WIT op — `#[allow(dead_code)]` so it is DCE'd from the shipped wasm
+// (hash-neutral) until the `bigint-*` ops land. Independently unit-tested (differential vs `num-bigint`,
+// a dev-dependency) as the safety net for the hand-written arithmetic.
+#[allow(dead_code)]
+mod bigint;
+
 /// A single-threaded stand-in for `std::thread_local!`, so the two scratch/counter cells work under
 /// `no_std` (the shipped wasm build) without pulling in `std`. A component instance is
 /// single-threaded, so a plain `static` behind an `UnsafeCell` is sound: there is no other thread to
@@ -203,7 +210,10 @@ impl Raw {
     fn inline(bytes: &[u8]) -> Raw {
         let mut buf = [0u8; INLINE_RAW_CAP];
         buf[..bytes.len()].copy_from_slice(bytes);
-        Raw::Inline { len: bytes.len() as u8, buf }
+        Raw::Inline {
+            len: bytes.len() as u8,
+            buf,
+        }
     }
     fn as_slice(&self) -> &[u8] {
         match self {
@@ -252,7 +262,10 @@ impl Raw {
             let keep = cur.len().min(new_len);
             let mut buf = [fill; INLINE_RAW_CAP];
             buf[..keep].copy_from_slice(&cur[..keep]);
-            *self = Raw::Inline { len: new_len as u8, buf };
+            *self = Raw::Inline {
+                len: new_len as u8,
+                buf,
+            };
         } else {
             let mut v = self.as_slice().to_vec();
             v.resize(new_len, fill);
@@ -283,7 +296,10 @@ impl From<Vec<u8>> for Raw {
         if v.len() <= INLINE_RAW_CAP {
             let mut buf = [0u8; INLINE_RAW_CAP];
             buf[..v.len()].copy_from_slice(&v);
-            Raw::Inline { len: v.len() as u8, buf }
+            Raw::Inline {
+                len: v.len() as u8,
+                buf,
+            }
         } else {
             Raw::Heap(v)
         }
@@ -316,7 +332,10 @@ const INLINE_HANDLES_CAP: usize = 2;
 /// demand. `take()` returns an OWNED `Handles` (a move — NEVER materializes a Vec for an inline node, or
 /// it would re-add a heap alloc to the 0-alloc FBIP paths — the iter-23 trap).
 enum Handles {
-    Inline { buf: [Handle; INLINE_HANDLES_CAP], len: u8 },
+    Inline {
+        buf: [Handle; INLINE_HANDLES_CAP],
+        len: u8,
+    },
     Heap(Vec<Handle>),
 }
 
@@ -330,7 +349,10 @@ impl Default for Handles {
 impl Handles {
     #[inline]
     fn new() -> Handles {
-        Handles::Inline { buf: [Handle::NULL; INLINE_HANDLES_CAP], len: 0 }
+        Handles::Inline {
+            buf: [Handle::NULL; INLINE_HANDLES_CAP],
+            len: 0,
+        }
     }
     /// Build a ≤`INLINE_HANDLES_CAP`-element `Handles` INLINE from a slice — no heap Vec. The direct
     /// construction path for the small terminal nodes (sum `[payload]`, tuple/`[k,v]` of arity ≤2) so
@@ -340,13 +362,19 @@ impl Handles {
     fn inline_from(hs: &[Handle]) -> Handles {
         let mut buf = [Handle::NULL; INLINE_HANDLES_CAP];
         buf[..hs.len()].copy_from_slice(hs);
-        Handles::Inline { buf, len: hs.len() as u8 }
+        Handles::Inline {
+            buf,
+            len: hs.len() as u8,
+        }
     }
     /// An inline `Handles` of `len` NULL slots (≤ cap) — `op_arr_alloc`'s direct path for a small
     /// tuple/record before its slots are filled by `op_arr_set`. No heap Vec.
     #[inline]
     fn inline_nulls(len: usize) -> Handles {
-        Handles::Inline { buf: [Handle::NULL; INLINE_HANDLES_CAP], len: len as u8 }
+        Handles::Inline {
+            buf: [Handle::NULL; INLINE_HANDLES_CAP],
+            len: len as u8,
+        }
     }
     #[inline]
     fn as_slice(&self) -> &[Handle] {
@@ -519,7 +547,10 @@ impl From<Vec<Handle>> for Handles {
         if v.len() <= INLINE_HANDLES_CAP {
             let mut buf = [Handle::NULL; INLINE_HANDLES_CAP];
             buf[..v.len()].copy_from_slice(&v);
-            Handles::Inline { buf, len: v.len() as u8 }
+            Handles::Inline {
+                buf,
+                len: v.len() as u8,
+            }
         } else {
             Handles::Heap(v)
         }
@@ -677,7 +708,9 @@ fn node_raw_arity(h: Handle) -> (Vec<u8>, usize) {
     if is_immediate(h) {
         (imm_canonical_raw(h), 0)
     } else {
-        with_node(h, (Vec::new(), 0usize), |n| (n.raw.to_vec(), n.handles.len()))
+        with_node(h, (Vec::new(), 0usize), |n| {
+            (n.raw.to_vec(), n.handles.len())
+        })
     }
 }
 
@@ -929,7 +962,10 @@ fn op_arr_len(arr: Handle) -> u32 {
 fn op_sum_new(disc: u32, payload: Handle) -> Handle {
     // Build BOTH the 4-byte disc raw AND the 1-element handles INLINE (no transient heap Vec for
     // either) — a sum node is then just the node Box, 1 alloc instead of 2 (was 3 before inline-raw).
-    alloc_raw(Handles::inline_from(&[payload]), Raw::inline(&disc.to_le_bytes()))
+    alloc_raw(
+        Handles::inline_from(&[payload]),
+        Raw::inline(&disc.to_le_bytes()),
+    )
 }
 fn op_sum_disc(h: Handle) -> u32 {
     if is_immediate(h) {
@@ -971,6 +1007,10 @@ fn op_sum_payload(h: Handle) -> Handle {
 //     9 Sum    [ n ]( [ head_len ][ head_utf8 ] [ payload: idx ] )*n       (nullary payload → a Unit idx)
 //    10 Named  [ name_len ][ name_utf8 ] [ inner: idx ]   — the `(: <value> <name>)` frame (root only)
 //    11 Ref    [ idx ]                                    — an alias to another table entry (recursion)
+//    12 Set    [ elem: idx ]                              — 13 Map [ key: idx ][ val: idx ] — 14 Float32
+//    15 Framed [ head_len ][ head_utf8 ] [ n_args ]( [ arg_len ][ arg_utf8 ] )*n [ inner: idx ]
+//              — the `(: <value> (<head> <arg>…))` frame: a PARAMETRIC type node (e.g. `(List Int64)`),
+//                each `arg` a bare type name (root only). Used for a runtime List result.
 // (Every child position is an INDEX into the table, not an inline shape — that is what lets a cycle
 // close: entry k's Sum names entry k as a payload, a finite 1-entry loop the value walk unfolds.)
 
@@ -1035,6 +1075,11 @@ enum Shape {
     /// NOT hash order. Only a SCALAR KEY shape is orderable-and-encodable; the VALUE may be any encodable
     /// shape (the walk recurses on it). `(key_shape, value_shape)` table indices.
     Map(u32, u32),
+    /// A `(: <value> (<head> <arg>…))` frame — like `Named` but the TYPE is a PARAMETRIC node
+    /// `(head arg…)` (each `arg` a bare type name), not a single name. Used for `(List <elem>)` (and any
+    /// parametric result type whose arguments are type names) so a runtime List renders `(: (list …)
+    /// (List Int64))` — the element type is OBSERVABLE, matching the constant-List value form.
+    Framed(String, Vec<String>, u32),
 }
 
 /// The decoded descriptor: the shape table + the root index. A child index into `table` is followed by
@@ -1117,6 +1162,16 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
             Shape::Map(key, val)
         }
         14 => Shape::Float32,
+        15 => {
+            // Framed: [ head_len ][ head_utf8 ] [ n_args ]( [ arg_len ][ arg_utf8 ] )*n [ inner: idx ]
+            let head = desc_name(d, pos)?;
+            let n = desc_leb(d, pos)?;
+            let mut args = Vec::with_capacity(n as usize);
+            for _ in 0..n {
+                args.push(desc_name(d, pos)?);
+            }
+            Shape::Framed(head, args, desc_leb(d, pos)? as u32)
+        }
         _ => return None,
     })
 }
@@ -1153,7 +1208,7 @@ enum DocLeaf {
     Name(String),
     Int(bool, Vec<u8>), // (negative, big-endian magnitude)
     Bool(bool),
-    Str(Vec<u8>), // UTF-8 body verbatim (the runtime String's raw bytes)
+    Str(Vec<u8>),   // UTF-8 body verbatim (the runtime String's raw bytes)
     Bytes(Vec<u8>), // raw byte payload verbatim (the runtime Bytes value, rope flattened)
     Float { negative: bool, exponent: i64, significand: Vec<u8> }, // exact decimal (from f64), big-endian mag
 }
@@ -1482,12 +1537,24 @@ enum EncodeWork<'d> {
     Visit { h: Handle, shape_ix: u32, refs: u32 },
     /// A record FIELD: emit the key leaf+atom (BEFORE the field value, matching the recursive per-field
     /// order), then queue the value visit and a `Pair` assembler.
-    VisitField { h: Handle, shape_ix: u32, key: &'d str },
+    VisitField {
+        h: Handle,
+        shape_ix: u32,
+        key: &'d str,
+    },
     /// Assemble `list([head_s, <the top `nkids` results in child order>])` — the tuple/list/record/sum body.
     List { head_s: u32, nkids: usize },
     /// Assemble the `(: value Type)` frame: pop the inner value, emit the type-name leaf+atom AFTER it
     /// (matching the recursive order), then `list([colon_s, value, tname_s])`.
     Named { colon_s: u32, name: &'d str },
+    /// Assemble a `(: value (head arg…))` frame — like `Named` but the type is a PARAMETRIC node. Pop the
+    /// inner value, build the type node `list([head_atom, arg_atoms…])`, then `list([colon_s, value,
+    /// type_node])`.
+    Framed {
+        colon_s: u32,
+        head: &'d str,
+        args: &'d [String],
+    },
     /// Assemble one record pair: pop the field value, `list([katom, fval])`.
     Pair { katom: u32 },
     /// Assemble `((. Set of) (list e1 … en))` — the canonical Set value form. Pops the top `nelems`
@@ -1516,10 +1583,19 @@ enum EncodeWork<'d> {
 /// `value_encode_iterative_matches_recursive_reference`). `refs` counts only consecutive non-consuming
 /// `Ref`/`Named` hops (reset on every child descent), so the cap bounds a malformed cycle WITHOUT
 /// limiting a well-formed value's genuine depth.
-fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shape: u32) -> Option<u32> {
+fn encode_value(
+    desc: &Descriptor,
+    b: &mut DocBuilder,
+    root_h: Handle,
+    root_shape: u32,
+) -> Option<u32> {
     let mut work: Vec<EncodeWork> = Vec::new();
     let mut out: Vec<u32> = Vec::new(); // completed struct indices, in completion order
-    work.push(EncodeWork::Visit { h: root_h, shape_ix: root_shape, refs: 0 });
+    work.push(EncodeWork::Visit {
+        h: root_h,
+        shape_ix: root_shape,
+        refs: 0,
+    });
     while let Some(task) = work.pop() {
         match task {
             EncodeWork::Visit { h, shape_ix, refs } => {
@@ -1529,7 +1605,11 @@ fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shap
                 match desc.table.get(shape_ix as usize)? {
                     Shape::Ref(target) => {
                         // Non-consuming: same `h`, no heap node reached → count toward the cycle cap.
-                        work.push(EncodeWork::Visit { h, shape_ix: *target, refs: refs + 1 });
+                        work.push(EncodeWork::Visit {
+                            h,
+                            shape_ix: *target,
+                            refs: refs + 1,
+                        });
                     }
                     Shape::Int => {
                         let l = b.int_leaf(op_get_int(h));
@@ -1581,7 +1661,10 @@ fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shap
                         } else {
                             let head = b.name_leaf("tuple");
                             let head_s = b.atom(head);
-                            work.push(EncodeWork::List { head_s, nkids: elems.len() });
+                            work.push(EncodeWork::List {
+                                head_s,
+                                nkids: elems.len(),
+                            });
                             // Push children in REVERSE so the LIFO stack visits them left→right; each
                             // completes to one `out` entry, in child order under the `List` assembler.
                             // A child is a DIFFERENT heap node (arr-get) → progress → reset `refs` to 0.
@@ -1595,18 +1678,32 @@ fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shap
                         }
                     }
                     Shape::List(elem) => {
-                        let (elem, n) = (*elem, op_arr_len(h));
+                        // A Cadenza `List` is an RRB `vec` (NOT a flat `arr` — a tuple/record is the arr),
+                        // so read its length + elements with the `vec-*` ops. (`arr-len`/`arr-get` on a vec
+                        // handle read the root node's arity, not the logical element count — the bug that
+                        // rendered only the first element.)
+                        let (elem, n) = (*elem, op_vec_len(h));
                         let head = b.name_leaf("list");
                         let head_s = b.atom(head);
-                        work.push(EncodeWork::List { head_s, nkids: n as usize });
+                        work.push(EncodeWork::List {
+                            head_s,
+                            nkids: n as usize,
+                        });
                         for i in (0..n).rev() {
-                            work.push(EncodeWork::Visit { h: op_arr_get(h, i), shape_ix: elem, refs: 0 });
+                            work.push(EncodeWork::Visit {
+                                h: op_vec_get(h, i),
+                                shape_ix: elem,
+                                refs: 0,
+                            });
                         }
                     }
                     Shape::Record(fields) => {
                         let head = b.name_leaf("record");
                         let head_s = b.atom(head);
-                        work.push(EncodeWork::List { head_s, nkids: fields.len() });
+                        work.push(EncodeWork::List {
+                            head_s,
+                            nkids: fields.len(),
+                        });
                         for (i, (k, fs)) in fields.iter().enumerate().rev() {
                             work.push(EncodeWork::VisitField {
                                 h: op_arr_get(h, i as u32),
@@ -1636,7 +1733,28 @@ fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shap
                         let colon = b.name_leaf(":");
                         let colon_s = b.atom(colon);
                         work.push(EncodeWork::Named { colon_s, name });
-                        work.push(EncodeWork::Visit { h, shape_ix: inner, refs: refs + 1 });
+                        work.push(EncodeWork::Visit {
+                            h,
+                            shape_ix: inner,
+                            refs: refs + 1,
+                        });
+                    }
+                    Shape::Framed(head, args, inner) => {
+                        // The `(: <value> (<head> <arg>…))` frame — a PARAMETRIC type node. Same `h`, no node
+                        // consumed → count toward the ref cap.
+                        let inner = *inner;
+                        let colon = b.name_leaf(":");
+                        let colon_s = b.atom(colon);
+                        work.push(EncodeWork::Framed {
+                            colon_s,
+                            head,
+                            args,
+                        });
+                        work.push(EncodeWork::Visit {
+                            h,
+                            shape_ix: inner,
+                            refs: refs + 1,
+                        });
                     }
                     Shape::Set(elem) => {
                         // A Set renders `((. Set of) (list e1 … en))` with elements in CANONICAL key-VALUE
@@ -1686,7 +1804,11 @@ fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shap
                 let kname = b.name_leaf(key);
                 let katom = b.atom(kname);
                 work.push(EncodeWork::Pair { katom });
-                work.push(EncodeWork::Visit { h, shape_ix, refs: 0 });
+                work.push(EncodeWork::Visit {
+                    h,
+                    shape_ix,
+                    refs: 0,
+                });
             }
             EncodeWork::List { head_s, nkids } => {
                 let base = out.len().checked_sub(nkids)?;
@@ -1701,6 +1823,22 @@ fn encode_value(desc: &Descriptor, b: &mut DocBuilder, root_h: Handle, root_shap
                 let tname = b.name_leaf(name);
                 let tname_s = b.atom(tname);
                 out.push(b.list(&[colon_s, value, tname_s]));
+            }
+            EncodeWork::Framed {
+                colon_s,
+                head,
+                args,
+            } => {
+                let value = out.pop()?;
+                // Build the parametric type node `(head arg…)` = list([head_atom, arg_atoms…]).
+                let head_leaf = b.name_leaf(head);
+                let mut type_children = vec![b.atom(head_leaf)];
+                for arg in args {
+                    let a = b.name_leaf(arg);
+                    type_children.push(b.atom(a));
+                }
+                let type_s = b.list(&type_children);
+                out.push(b.list(&[colon_s, value, type_s]));
             }
             EncodeWork::Pair { katom } => {
                 let fval = out.pop()?;
@@ -1764,7 +1902,13 @@ fn op_bytes_alloc(len: u32) -> Handle {
     // len]` that `alloc` would otherwise copy into the inline `Raw` and immediately free. That transient
     // Vec was pure malloc/free churn on the hot leaf-build path (dominant in a rope-assembly profile).
     if (len as usize) <= INLINE_RAW_CAP {
-        return alloc_raw(Vec::new(), Raw::Inline { len: len as u8, buf: [0u8; INLINE_RAW_CAP] });
+        return alloc_raw(
+            Vec::new(),
+            Raw::Inline {
+                len: len as u8,
+                buf: [0u8; INLINE_RAW_CAP],
+            },
+        );
     }
     alloc(Vec::new(), vec![0u8; len as usize])
 }
@@ -1773,7 +1917,7 @@ fn op_bytes_alloc(len: u32) -> Handle {
 fn op_bytes_set(buf: Handle, index: u32, value: u32) -> Handle {
     if is_immediate(buf) {
         return buf; // defensive (mirrors op_bytes_get/len): a bytes buffer is never an immediate;
-                    // return the handle unchanged (no-op write), never deref the tagged bits
+        // return the handle unchanged (no-op write), never deref the tagged bits
     }
     match unsafe { buf.0.as_mut() } {
         None => {}
@@ -1942,7 +2086,10 @@ fn op_bytes_concat(a: Handle, b: Handle) -> Handle {
     // INLINE (`inline_from`) rather than `vec![a, b]` — a concat is arity-2 = exactly INLINE_HANDLES_CAP,
     // so a heap Vec would be allocated then immediately re-inlined + freed by `From<Vec>` (the transient-
     // Vec smell). Direct inline construction = the node Box only, one fewer alloc per concat.
-    alloc_raw(Handles::inline_from(&[a, b]), Raw::inline(&total.to_le_bytes()))
+    alloc_raw(
+        Handles::inline_from(&[a, b]),
+        Raw::inline(&total.to_le_bytes()),
+    )
 }
 
 /// `bytes-slice(buf, start, len)` — a new Bytes = `len` bytes of `buf` from `start`. O(1): one slice
@@ -1973,7 +2120,10 @@ fn op_bytes_slice(buf: Handle, start: u32, len: u32) -> Handle {
         op_drop(buf);
         // slice-of-slice: 1 handle + inline [off,len]. Build the handle INLINE (arity-1 ≤ cap) — a
         // `vec![parent]` would allocate a heap Vec then get re-inlined + freed by `From<Vec>`.
-        return alloc_raw(Handles::inline_from(&[parent]), slice_raw(off1 + start, len));
+        return alloc_raw(
+            Handles::inline_from(&[parent]),
+            slice_raw(off1 + start, len),
+        );
     }
     // slice node: 1 handle + inline [off,len]. Inline the single handle (no transient heap Vec).
     alloc_raw(Handles::inline_from(&[buf]), slice_raw(start, len))
@@ -2023,7 +2173,7 @@ fn op_map_alloc(len: u32) -> Handle {
 fn op_map_set(m: Handle, index: u32, key: Handle, value: Handle) -> Handle {
     if is_immediate(m) {
         return m; // defensive (mirrors the map readers): a map is never an immediate; return the
-                  // handle unchanged (no-op write), never deref the tagged bits
+        // handle unchanged (no-op write), never deref the tagged bits
     }
     match unsafe { m.0.as_mut() } {
         None => {}
@@ -2310,7 +2460,10 @@ fn op_arr_alloc_reuse(len: u32, token: Handle) -> Handle {
             // heap buffer if the token came from a reset bytes/string leaf — an empty heap Vec retained
             // for the node's life, and a non-canonical rep vs the inline-empty raw a fresh `op_arr_alloc`
             // produces. Assigning the inline-empty raw drops that spill and matches the fresh node.
-            n.raw = Raw::Inline { len: 0, buf: [0u8; INLINE_RAW_CAP] };
+            n.raw = Raw::Inline {
+                len: 0,
+                buf: [0u8; INLINE_RAW_CAP],
+            };
             token
         }
     }
@@ -2574,7 +2727,10 @@ fn vec_new_path(level: u32, node: Handle) -> Handle {
     } else {
         // Arity-1 single-child spine node — build the handle INLINE (no transient `vec![child]` heap Vec
         // that `From<Vec>` would re-inline + free).
-        alloc_raw(Handles::inline_from(&[vec_new_path(level - VEC_BITS, node)]), Raw::from(Vec::new()))
+        alloc_raw(
+            Handles::inline_from(&[vec_new_path(level - VEC_BITS, node)]),
+            Raw::from(Vec::new()),
+        )
     }
 }
 
@@ -2934,7 +3090,10 @@ fn op_vec_push(v: Handle, elem: Handle) -> Handle {
             op_dup(root);
             let branch = vec_new_path(shift, vec_leaf_of(elem));
             // Arity-2 new root — build handles INLINE (exactly INLINE_HANDLES_CAP, no transient Vec).
-            (alloc_raw(Handles::inline_from(&[root, branch]), Raw::from(Vec::new())), shift + VEC_BITS)
+            (
+                alloc_raw(Handles::inline_from(&[root, branch]), Raw::from(Vec::new())),
+                shift + VEC_BITS,
+            )
         } else {
             (vec_push_into(root, shift, count, elem), shift)
         };
@@ -3413,7 +3572,12 @@ impl Guest for Component {
         op_map_empty().to_u32()
     }
     fn map_insert(m: u32, key: u32, val: u32) -> u32 {
-        op_map_insert(Handle::from_u32(m), Handle::from_u32(key), Handle::from_u32(val)).to_u32()
+        op_map_insert(
+            Handle::from_u32(m),
+            Handle::from_u32(key),
+            Handle::from_u32(val),
+        )
+        .to_u32()
     }
     fn map_lookup(m: u32, key: u32) -> u32 {
         op_map_lookup(Handle::from_u32(m), Handle::from_u32(key)).to_u32()
@@ -3608,7 +3772,10 @@ fn champ_header(datamap: u32, nodemap: u32, size: u32) -> Raw {
     buf[0..4].copy_from_slice(&datamap.to_le_bytes());
     buf[4..8].copy_from_slice(&nodemap.to_le_bytes());
     buf[8..12].copy_from_slice(&size.to_le_bytes());
-    Raw::Inline { len: CHAMP_HEADER_SIZE as u8, buf }
+    Raw::Inline {
+        len: CHAMP_HEADER_SIZE as u8,
+        buf,
+    }
 }
 
 // ── Bitmap / slot arithmetic ──────────────────────────────────────────────────────────────
@@ -3748,7 +3915,10 @@ fn champ_hash(root: Handle) -> u32 {
     // Allocates NOTHING (vs the two worklist Vecs below). Falls through to the iterative walk only for a
     // genuinely NESTED compound (a child that is itself a compound).
     if let Some(hash) = with_node(root, None, |n| {
-        if n.handles.iter().all(|&c| is_immediate(c) || with_node(c, 0usize, |cn| cn.handles.len()) == 0) {
+        if n.handles
+            .iter()
+            .all(|&c| is_immediate(c) || with_node(c, 0usize, |cn| cn.handles.len()) == 0)
+        {
             let mut acc = FNV_OFFSET;
             for &b in n.raw.iter() {
                 acc = fnv_step(acc, b);
@@ -3837,10 +4007,16 @@ fn champ_eq(a: Handle, b: Handle) -> bool {
                 (Some(na), Some(nb)) => {
                     if *na.raw != *nb.raw || na.handles.len() != nb.handles.len() {
                         Some(false) // roots differ ⇒ not equal, no descent
-                    } else if na.handles.iter().chain(nb.handles.iter()).all(|&c| is_immediate(c) || c.0.as_ref().map(|cn| cn.handles.is_empty()).unwrap_or(true)) {
+                    } else if na.handles.iter().chain(nb.handles.iter()).all(|&c| {
+                        is_immediate(c)
+                            || c.0.as_ref().map(|cn| cn.handles.is_empty()).unwrap_or(true)
+                    }) {
                         // Shallow: every child on both sides is arity-0 → compare pairwise inline.
                         let eq = na.handles.iter().zip(nb.handles.iter()).all(|(&cx, &cy)| {
-                            cx == cy || with_raw_arity(cx, |rx, ax| with_raw_arity(cy, |ry, ay| rx == ry && ax == ay))
+                            cx == cy
+                                || with_raw_arity(cx, |rx, ax| {
+                                    with_raw_arity(cy, |ry, ay| rx == ry && ax == ay)
+                                })
                         });
                         Some(eq)
                     } else {
@@ -3869,7 +4045,8 @@ fn champ_eq(a: Handle, b: Handle) -> bool {
             } else if is_immediate(x) || is_immediate(y) {
                 // An immediate's `.0` is NOT a Node pointer — compare by decoded value (arity 0, so
                 // equality reduces to equal canonical raw bytes and equal arity), WITHOUT allocating.
-                let equal = with_raw_arity(x, |rx, ax| with_raw_arity(y, |ry, ay| rx == ry && ax == ay));
+                let equal =
+                    with_raw_arity(x, |rx, ax| with_raw_arity(y, |ry, ay| rx == ry && ax == ay));
                 if !equal {
                     return false;
                 }
@@ -3920,12 +4097,17 @@ fn champ_key_cmp(a: Handle, b: Handle) -> core::cmp::Ordering {
             match (a.0.as_ref(), b.0.as_ref()) {
                 (Some(na), Some(nb)) => {
                     let shallow = na.handles.iter().chain(nb.handles.iter()).all(|&c| {
-                        is_immediate(c) || c.0.as_ref().map(|cn| cn.handles.is_empty()).unwrap_or(true)
+                        is_immediate(c)
+                            || c.0.as_ref().map(|cn| cn.handles.is_empty()).unwrap_or(true)
                     });
                     if !shallow {
                         None // a nested child — use the general worklist walk
                     } else {
-                        let mut ord = na.raw.as_slice().cmp(nb.raw.as_slice()).then(na.handles.len().cmp(&nb.handles.len()));
+                        let mut ord = na
+                            .raw
+                            .as_slice()
+                            .cmp(nb.raw.as_slice())
+                            .then(na.handles.len().cmp(&nb.handles.len()));
                         let mut i = 0;
                         while ord == Ordering::Equal && i < na.handles.len() {
                             let (cx, cy) = (na.handles[i], nb.handles[i]);
@@ -3955,13 +4137,15 @@ fn champ_key_cmp(a: Handle, b: Handle) -> core::cmp::Ordering {
             // Order by canonical (raw bytes, arity) WITHOUT allocating — the SAME (raw, arity) ordering
             // `champ_eq` compares (slice `cmp` is byte-lexicographic like `Vec` `cmp`), keeping the two
             // consistent (`cmp == Equal` iff `champ_eq`). An immediate has arity 0, no children.
-            let ord = with_raw_arity(x, |rx, ax| with_raw_arity(y, |ry, ay| rx.cmp(ry).then(ax.cmp(&ay))));
+            let ord = with_raw_arity(x, |rx, ax| {
+                with_raw_arity(y, |ry, ay| rx.cmp(ry).then(ax.cmp(&ay)))
+            });
             if ord != Ordering::Equal {
                 return ord;
             }
         } else {
             match (unsafe { x.0.as_ref() }, unsafe { y.0.as_ref() }) {
-                (None, None) => {}                        // both null (unreachable given x==y, but total)
+                (None, None) => {} // both null (unreachable given x==y, but total)
                 (None, Some(_)) => return Ordering::Less, // null orders before non-null
                 (Some(_), None) => return Ordering::Greater,
                 (Some(nx), Some(ny)) => {
@@ -4126,11 +4310,17 @@ struct Entry {
 impl Entry {
     /// A set element (len 1).
     fn elem(e: Handle) -> Entry {
-        Entry { cols: [e, Handle::NULL], len: 1 }
+        Entry {
+            cols: [e, Handle::NULL],
+            len: 1,
+        }
     }
     /// A map key/value pair (len 2).
     fn kv(k: Handle, v: Handle) -> Entry {
-        Entry { cols: [k, v], len: 2 }
+        Entry {
+            cols: [k, v],
+            len: 2,
+        }
     }
     /// The key/element column (column 0), compared by `champ_eq`.
     fn key(&self) -> Handle {
@@ -4200,7 +4390,10 @@ struct Slots {
 }
 impl Slots {
     fn new() -> Slots {
-        Slots { buf: [0; SLOTS_CAP], len: 0 }
+        Slots {
+            buf: [0; SLOTS_CAP],
+            len: 0,
+        }
     }
     fn len(&self) -> usize {
         self.len
@@ -4265,9 +4458,15 @@ fn merge_two_entries(e1: Entry, h1: u32, e2: Entry, h2: u32, level: u32) -> Hand
         // For a SET (stride 1) that is 2 handles = inline-eligible: `merge_entry_pair` builds them
         // INLINE (no transient heap Vec that `From<Vec>` would re-inline + free — this SPLIT fires on
         // every set-insert into an occupied slot). A MAP (stride 2) is 4 handles → heap, as before.
-        alloc_raw(merge_entry_pair(&e1, &e2), champ_header((1 << i1) | (1 << i2), 0, 2))
+        alloc_raw(
+            merge_entry_pair(&e1, &e2),
+            champ_header((1 << i1) | (1 << i2), 0, 2),
+        )
     } else {
-        alloc_raw(merge_entry_pair(&e2, &e1), champ_header((1 << i2) | (1 << i1), 0, 2))
+        alloc_raw(
+            merge_entry_pair(&e2, &e1),
+            champ_header((1 << i2) | (1 << i1), 0, 2),
+        )
     }
 }
 
@@ -4281,7 +4480,10 @@ fn merge_entry_pair(first: &Entry, second: &Entry) -> Handles {
         let mut buf = [Handle::NULL; INLINE_HANDLES_CAP];
         buf[..first.len()].copy_from_slice(first.cols());
         buf[first.len()..total].copy_from_slice(second.cols());
-        Handles::Inline { buf, len: total as u8 }
+        Handles::Inline {
+            buf,
+            len: total as u8,
+        }
     } else {
         let mut hs = Vec::with_capacity(total);
         hs.extend_from_slice(first.cols());
@@ -4296,7 +4498,12 @@ fn merge_entry_pair(first: &Entry, second: &Entry) -> Handles {
 /// `(new_node, size_delta)` where `size_delta` is 0 (overwrite) or 1 (new key) — so the caller
 /// propagates the size change WITHOUT a `champ_size_of` re-read of the child subtree.
 #[allow(dead_code)]
-fn collision_insert(node: Handle, handles: Vec<Handle>, entry: Entry, stride: usize) -> (Handle, u32) {
+fn collision_insert(
+    node: Handle,
+    handles: Vec<Handle>,
+    entry: Entry,
+    stride: usize,
+) -> (Handle, u32) {
     let key = entry.key();
     let mut found = None;
     let mut idx = 0;
@@ -4362,25 +4569,27 @@ fn collision_insert(node: Handle, handles: Vec<Handle>, entry: Entry, stride: us
 /// new key was added). Bounded recursion (≤ `CHAMP_LEVELS`). Always path-copies. Returning the delta
 /// lets the DESCEND branch set the parent's size header WITHOUT two `champ_size_of` subtree re-reads.
 #[allow(dead_code)]
-fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: usize) -> (Handle, u32) {
+fn champ_insert_node(
+    node: Handle,
+    entry: Entry,
+    hash: u32,
+    level: u32,
+    stride: usize,
+) -> (Handle, u32) {
     let key = entry.key();
     // Read only the HEADER + arity upfront — NOT a clone of `handles`. The old code cloned the whole
     // handle vector here even on the SPLIT/EMPTY/collision branches that only ever READ it by index and
     // build a fresh, differently-sized result — a wasted Vec alloc + O(arity) copy on every path-copied
     // node. Now the OVERWRITE/DESCEND branches (which REUSE a full-length copy as their result) clone at
     // their own branch, and the growth branches read via a borrow. `arity` gates the empty/collision test.
-    let (datamap, nodemap, size, arity) = with_node(
-        node,
-        (0u32, 0u32, 0u32, 0usize),
-        |n| {
-            (
-                champ_datamap(&n.raw),
-                champ_nodemap(&n.raw),
-                champ_size(&n.raw),
-                n.handles.len(),
-            )
-        },
-    );
+    let (datamap, nodemap, size, arity) = with_node(node, (0u32, 0u32, 0u32, 0usize), |n| {
+        (
+            champ_datamap(&n.raw),
+            champ_nodemap(&n.raw),
+            champ_size(&n.raw),
+            n.handles.len(),
+        )
+    });
 
     // Empty node (fresh single entry) or collision node.
     if datamap == 0 && nodemap == 0 {
@@ -4459,7 +4668,10 @@ fn champ_insert_node(node: Handle, entry: Entry, hash: u32, level: u32, stride: 
             nh.extend(subs);
             nh
         });
-        let new = alloc_raw(new_handles, champ_header(new_datamap, new_nodemap, size + 1));
+        let new = alloc_raw(
+            new_handles,
+            champ_header(new_datamap, new_nodemap, size + 1),
+        );
         op_drop(node);
         return (new, 1); // split adds the new key
     }
@@ -4608,21 +4820,23 @@ fn champ_insert_fbip(
     }
     let key = entry.key();
     // Read the header + arity WITHOUT cloning `handles` (see the take below).
-    let (datamap, nodemap, size, arity) =
-        with_node(node, (0u32, 0u32, 0u32, 0usize), |n| {
-            (
-                champ_datamap(&n.raw),
-                champ_nodemap(&n.raw),
-                champ_size(&n.raw),
-                n.handles.len(),
-            )
-        });
+    let (datamap, nodemap, size, arity) = with_node(node, (0u32, 0u32, 0u32, 0usize), |n| {
+        (
+            champ_datamap(&n.raw),
+            champ_nodemap(&n.raw),
+            champ_size(&n.raw),
+            n.handles.len(),
+        )
+    });
 
     // Empty (fresh single entry) or collision node.
     if datamap == 0 && nodemap == 0 {
         if arity == 0 {
             let i = level_index(hash, level);
-            return (champ_become_hdr(node, entry.into_handles(), 1 << i, 0, 1), 1); // fresh: new key (inline handles, no transient Vec)
+            return (
+                champ_become_hdr(node, entry.into_handles(), 1 << i, 0, 1),
+                1,
+            ); // fresh: new key (inline handles, no transient Vec)
         }
         // Collision node (full 32-bit hash clash — rare): path-copy via the proven helper, which
         // `op_drop`s `node` and so needs its child references intact — clone rather than take here.
@@ -4680,7 +4894,10 @@ fn champ_insert_fbip(
         //     goes at `+ new_sidx`. The only allocation left is `sub` itself (intrinsic — a new node).
         handles.drain_range(base, stride);
         handles.insert(stride * (dcount - 1) + new_sidx, sub);
-        return (champ_become_hdr(node, handles, new_datamap, new_nodemap, size + 1), 1); // split: new key
+        return (
+            champ_become_hdr(node, handles, new_datamap, new_nodemap, size + 1),
+            1,
+        ); // split: new key
     }
 
     if nodemap & bit != 0 {
@@ -4691,13 +4908,17 @@ fn champ_insert_fbip(
         let sidx = subnode_index_for_slot(nodemap, i) as usize;
         let child = handles[subbase + sidx];
         let child_mine = node_rc(child) == 1;
-        let (new_child, delta) = champ_insert_fbip(child, entry, hash, level + 1, stride, child_mine);
+        let (new_child, delta) =
+            champ_insert_fbip(child, entry, hash, level + 1, stride, child_mine);
         // Arity unchanged — swap the one child slot in the taken `handles` IN PLACE and reinstall,
         // rather than rebuilding a fresh Vec (saves one alloc per descended level, the common path).
         // The recursion CONSUMED `child` (the reference at this slot); writing `new_child` here is a
         // no-op when it reused the shell (`new_child == child`) and installs the fresh node otherwise.
         handles.set(subbase + sidx, new_child);
-        return (champ_become_hdr(node, handles, datamap, nodemap, size + delta), delta);
+        return (
+            champ_become_hdr(node, handles, datamap, nodemap, size + delta),
+            delta,
+        );
     }
 
     // EMPTY slot: place a new inline entry in canonical (ascending-bit) order. The entry region sits
@@ -4711,7 +4932,10 @@ fn champ_insert_fbip(
         handles.insert(stride * new_eidx + off, *h); // incoming entry column (owned), no dup
     }
     let _ = entry; // consumed: columns relocated into `handles` by value (handles are Copy)
-    (champ_become_hdr(node, handles, new_datamap, nodemap, size + 1), 1) // empty slot filled: new key
+    (
+        champ_become_hdr(node, handles, new_datamap, nodemap, size + 1),
+        1,
+    ) // empty slot filled: new key
 }
 
 /// Insert `key => val`, returning the new map. CONSUMES `m`, `key`, `val`. Inserting an existing key
@@ -4775,24 +4999,26 @@ fn collapse_candidate(node: Handle, stride: usize) -> Option<Entry> {
 /// handle), BORROWS `key`. Returns `(new_node, removed)`; when `removed` is false the returned handle
 /// is the unchanged input. Bounded recursion (≤ `CHAMP_LEVELS`). Always path-copies.
 #[allow(dead_code)]
-fn champ_remove_node(node: Handle, key: Handle, hash: u32, level: u32, stride: usize) -> (Handle, bool) {
+fn champ_remove_node(
+    node: Handle,
+    key: Handle,
+    hash: u32,
+    level: u32,
+    stride: usize,
+) -> (Handle, bool) {
     // Read only the HEADER + arity upfront — NOT a clone of `handles`. The old code cloned the whole
     // handle vector here even on the common ABSENT-key early-returns (`(node, false)`) and on the
     // fresh-shorter-result branches (found-entry drop, collapse) that only READ it by index — a wasted
     // Vec alloc + O(arity) copy on every path-copied node. Branches that reuse a full-length copy as the
     // result (DESCEND non-collapse) clone at their own branch; the rest borrow-and-build / return early.
-    let (datamap, nodemap, size, arity) = with_node(
-        node,
-        (0u32, 0u32, 0u32, 0usize),
-        |n| {
-            (
-                champ_datamap(&n.raw),
-                champ_nodemap(&n.raw),
-                champ_size(&n.raw),
-                n.handles.len(),
-            )
-        },
-    );
+    let (datamap, nodemap, size, arity) = with_node(node, (0u32, 0u32, 0u32, 0usize), |n| {
+        (
+            champ_datamap(&n.raw),
+            champ_nodemap(&n.raw),
+            champ_size(&n.raw),
+            n.handles.len(),
+        )
+    });
 
     // Empty node or collision node.
     if datamap == 0 && nodemap == 0 {
@@ -4914,7 +5140,10 @@ fn champ_remove_node(node: Handle, key: Handle, hash: u32, level: u32, stride: u
                     new_handles.push(c);
                 }
             });
-            let new = alloc_raw(new_handles, champ_header(new_datamap, new_nodemap, size - 1));
+            let new = alloc_raw(
+                new_handles,
+                champ_header(new_datamap, new_nodemap, size - 1),
+            );
             op_drop(node);
             return (new, true);
         }
@@ -4959,7 +5188,12 @@ fn champ_remove_fbip(
     // handle vector at every level up front). `node` is rc==1 (caller-gated), so an in-place slot write
     // and a deferred take are both safe — no other reference observes the node.
     let (datamap, nodemap, size, arity) = with_node(node, (0u32, 0u32, 0u32, 0usize), |n| {
-        (champ_datamap(&n.raw), champ_nodemap(&n.raw), champ_size(&n.raw), n.handles.len())
+        (
+            champ_datamap(&n.raw),
+            champ_nodemap(&n.raw),
+            champ_size(&n.raw),
+            n.handles.len(),
+        )
     });
 
     // Empty node or collision node.
@@ -5024,7 +5258,8 @@ fn champ_remove_fbip(
         let sidx = subnode_index_for_slot(nodemap, i) as usize;
         let child = champ_handle_at(node, subbase + sidx); // borrow the child slot, no clone
         let child_mine = node_rc(child) == 1;
-        let (new_child, removed) = champ_remove_fbip(child, key, hash, level + 1, stride, child_mine);
+        let (new_child, removed) =
+            champ_remove_fbip(child, key, hash, level + 1, stride, child_mine);
         if !removed {
             // Unchanged: `new_child == child` (in-place path) or an untouched shared handle (copy path
             // returns the input on absent). Either way the node's reference is intact; nothing to undo.
@@ -5127,7 +5362,9 @@ fn champ_subnode_at(node: Handle, slot: u32, stride: usize) -> Handle {
 /// A single handle from a node's `handles`, or NULL (benign).
 #[allow(dead_code)]
 fn champ_handle_at(node: Handle, idx: usize) -> Handle {
-    with_node(node, Handle::NULL, |n| n.handles.get(idx).copied().unwrap_or(Handle::NULL))
+    with_node(node, Handle::NULL, |n| {
+        n.handles.get(idx).copied().unwrap_or(Handle::NULL)
+    })
 }
 
 /// From `node`, descend to the LEFTMOST (in-order first) entry, appending a `(node, slot)` frame at
@@ -5135,7 +5372,12 @@ fn champ_handle_at(node: Handle, idx: usize) -> Handle {
 /// `node` MUST be non-empty (callers exclude the empty root); subnodes are ≥2 entries by invariant,
 /// so this always terminates at an inline entry or a collision frame.
 #[allow(dead_code)]
-fn champ_descend_leftmost(node: Handle, frames: &mut Vec<Handle>, slots: &mut Slots, stride: usize) {
+fn champ_descend_leftmost(
+    node: Handle,
+    frames: &mut Vec<Handle>,
+    slots: &mut Slots,
+    stride: usize,
+) {
     let mut cur = node;
     loop {
         let (dm, nm, is_coll) = with_node(cur, (0u32, 0u32, false), |n| {
@@ -5221,7 +5463,12 @@ fn champ_advance_fbip(frames: &mut Vec<Handle>, slots: &mut Slots, stride: usize
 
 /// `champ_descend_leftmost` but `op_dup`s each frame it pushes — the cursor takes ownership of every
 /// newly-focused node on the descent. Used only by `champ_advance_fbip` (the inline-refcount advance).
-fn champ_descend_leftmost_dup(node: Handle, frames: &mut Vec<Handle>, slots: &mut Slots, stride: usize) {
+fn champ_descend_leftmost_dup(
+    node: Handle,
+    frames: &mut Vec<Handle>,
+    slots: &mut Slots,
+    stride: usize,
+) {
     let start = frames.len();
     champ_descend_leftmost(node, frames, slots, stride);
     for &f in &frames[start..] {
@@ -5893,7 +6140,10 @@ mod tests {
             0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x02, 0x01, 0x02, 0x00, 0x03, 0x01, 0x03,
             0x00, 0x03, 0x04, 0x05,
         ];
-        assert_eq!(got, expect_nil, "Nil value form must be byte-identical to the codec");
+        assert_eq!(
+            got, expect_nil,
+            "Nil value form must be byte-identical to the codec"
+        );
         op_drop(nil);
 
         // Cons(tuple 1 Nil) → the LEN-77 oracle dump.
@@ -5911,7 +6161,10 @@ mod tests {
             0x01, 0x02, 0x04, 0x05, 0x01, 0x03, 0x02, 0x03, 0x06, 0x01, 0x02, 0x01, 0x07, 0x00,
             0x06, 0x01, 0x03, 0x00, 0x08, 0x09, 0x0a,
         ];
-        assert_eq!(got, expect_cons, "Cons value form must be byte-identical to the codec");
+        assert_eq!(
+            got, expect_cons,
+            "Cons value form must be byte-identical to the codec"
+        );
         op_drop(cons);
     }
 
@@ -5977,7 +6230,13 @@ mod tests {
                 let head_s = b.atom(head);
                 let mut children = vec![head_s];
                 for (i, &es) in elems.iter().enumerate() {
-                    children.push(encode_value_recursive(desc, b, op_arr_get(h, i as u32), es, depth + 1)?);
+                    children.push(encode_value_recursive(
+                        desc,
+                        b,
+                        op_arr_get(h, i as u32),
+                        es,
+                        depth + 1,
+                    )?);
                 }
                 b.list(&children)
             }
@@ -5987,7 +6246,13 @@ mod tests {
                 let head_s = b.atom(head);
                 let mut children = vec![head_s];
                 for i in 0..n {
-                    children.push(encode_value_recursive(desc, b, op_arr_get(h, i), elem, depth + 1)?);
+                    children.push(encode_value_recursive(
+                        desc,
+                        b,
+                        op_arr_get(h, i),
+                        elem,
+                        depth + 1,
+                    )?);
                 }
                 b.list(&children)
             }
@@ -5998,7 +6263,8 @@ mod tests {
                 for (i, (k, fs)) in fields.iter().enumerate() {
                     let kname = b.name_leaf(k);
                     let katom = b.atom(kname);
-                    let fval = encode_value_recursive(desc, b, op_arr_get(h, i as u32), *fs, depth + 1)?;
+                    let fval =
+                        encode_value_recursive(desc, b, op_arr_get(h, i as u32), *fs, depth + 1)?;
                     children.push(b.list(&[katom, fval]));
                 }
                 b.list(&children)
@@ -6009,7 +6275,8 @@ mod tests {
                 let (head, payload_shape) = (head.clone(), *payload_shape);
                 let head_leaf = b.name_leaf(&head);
                 let head_s = b.atom(head_leaf);
-                let payload = encode_value_recursive(desc, b, op_sum_payload(h), payload_shape, depth + 1)?;
+                let payload =
+                    encode_value_recursive(desc, b, op_sum_payload(h), payload_shape, depth + 1)?;
                 b.list(&[head_s, payload])
             }
             S::Named(name, inner) => {
@@ -6020,6 +6287,22 @@ mod tests {
                 let tname = b.name_leaf(&name);
                 let tname_s = b.atom(tname);
                 b.list(&[colon_s, value, tname_s])
+            }
+            S::Framed(head, args, inner) => {
+                // The `(: value (head arg…))` parametric-type frame — mirrors the iterative walk's
+                // `Framed` arm: colon eagerly, value, then the `(head arg…)` type node, then the outer list.
+                let (head, args, inner) = (head.clone(), args.clone(), *inner);
+                let colon = b.name_leaf(":");
+                let colon_s = b.atom(colon);
+                let value = encode_value_recursive(desc, b, h, inner, depth + 1)?;
+                let head_leaf = b.name_leaf(&head);
+                let mut type_children = vec![b.atom(head_leaf)];
+                for arg in &args {
+                    let a = b.name_leaf(arg);
+                    type_children.push(b.atom(a));
+                }
+                let type_s = b.list(&type_children);
+                b.list(&[colon_s, value, type_s])
             }
             S::Set(elem) => {
                 let elem = *elem;
@@ -6080,9 +6363,13 @@ mod tests {
             // Recursive oracle over the same borrowed value.
             let descriptor = decode_descriptor(&desc).expect("descriptor");
             let mut b = DocBuilder::default();
-            let root = encode_value_recursive(&descriptor, &mut b, v, descriptor.root, 0).expect("recursive encode");
+            let root = encode_value_recursive(&descriptor, &mut b, v, descriptor.root, 0)
+                .expect("recursive encode");
             let rec_doc = b.finish(root);
-            assert_eq!(iter_doc, rec_doc, "iterative and recursive encode disagree at N={n}");
+            assert_eq!(
+                iter_doc, rec_doc,
+                "iterative and recursive encode disagree at N={n}"
+            );
             op_drop(v);
         }
         assert_eq!(live_nodes(), 0, "no leak: every built list dropped");
@@ -6098,9 +6385,13 @@ mod tests {
         let desc = intlist_descriptor();
         const DEEP: usize = 50_000;
         let v = build_intlist(DEEP);
-        let doc = op_value_encode_form(v, &desc).expect("deep encode must succeed, not crash or decline");
+        let doc =
+            op_value_encode_form(v, &desc).expect("deep encode must succeed, not crash or decline");
         // A well-formed non-empty document (header + pools + root); the exact length is not the point.
-        assert!(doc.len() > DEEP, "a {DEEP}-element list yields a document with at least one struct per node");
+        assert!(
+            doc.len() > DEEP,
+            "a {DEEP}-element list yields a document with at least one struct per node"
+        );
         op_drop(v);
         assert_eq!(live_nodes(), 0, "no leak after the deep list is dropped");
     }
@@ -6127,22 +6418,33 @@ mod tests {
             0x00, 0x00, // TAG_ATOM, leaf id 0
             0x00, // root = 0
         ];
-        assert_eq!(got, expect, "String value form must be a KIND_STR leaf, byte-identical to the codec");
+        assert_eq!(
+            got, expect,
+            "String value form must be a KIND_STR leaf, byte-identical to the codec"
+        );
         op_drop(s);
 
         // An EMPTY string round-trips (zero-length body).
         let e = op_str_new(String::new());
         let got_e = op_value_encode_form(e, desc).expect("encode empty String");
         let expect_e: &[u8] = &[
-            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x01, 0x07, 0x00, 0x01, 0x00, 0x00, 0x00,
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x01, 0x07, 0x00, 0x01, 0x00, 0x00,
+            0x00,
         ];
-        assert_eq!(got_e, expect_e, "empty String → KIND_STR with a zero-length body");
+        assert_eq!(
+            got_e, expect_e,
+            "empty String → KIND_STR with a zero-length body"
+        );
         op_drop(e);
 
         // A multi-byte (UTF-8) string keeps its bytes verbatim (length is BYTES, not scalars).
         let u = op_str_new(String::from("é")); // 2 UTF-8 bytes: 0xC3 0xA9
         let got_u = op_value_encode_form(u, desc).expect("encode UTF-8 String");
-        assert_eq!(&got_u[8..13], &[0x01, 0x07, 0x02, 0xC3, 0xA9], "UTF-8 body verbatim, len = byte count");
+        assert_eq!(
+            &got_u[8..13],
+            &[0x01, 0x07, 0x02, 0xC3, 0xA9],
+            "UTF-8 body verbatim, len = byte count"
+        );
         op_drop(u);
 
         assert_eq!(live_nodes(), before, "no leak: every string value dropped");
@@ -6219,12 +6521,19 @@ mod tests {
         // Recursive oracle over the same value.
         let descriptor = decode_descriptor(&d).expect("descriptor");
         let mut b = DocBuilder::default();
-        let root = encode_value_recursive(&descriptor, &mut b, acc, descriptor.root, 0).expect("recursive");
+        let root = encode_value_recursive(&descriptor, &mut b, acc, descriptor.root, 0)
+            .expect("recursive");
         let rec_doc = b.finish(root);
-        assert_eq!(iter_doc, rec_doc, "iterative and recursive String-list encode must agree");
+        assert_eq!(
+            iter_doc, rec_doc,
+            "iterative and recursive String-list encode must agree"
+        );
         // The three string bodies appear in the leaf pool.
         assert!(iter_doc.windows(1).any(|w| w == b"a"), "string 'a' present");
-        assert!(iter_doc.windows(3).any(|w| w == b"ccc"), "string 'ccc' present");
+        assert!(
+            iter_doc.windows(3).any(|w| w == b"ccc"),
+            "string 'ccc' present"
+        );
         op_drop(acc);
         assert_eq!(live_nodes(), 0, "no leak");
     }
@@ -6251,16 +6560,23 @@ mod tests {
             0x00, 0x00, // TAG_ATOM, leaf id 0
             0x00, // root = 0
         ];
-        assert_eq!(got, expect, "Bytes value form must be a KIND_BYTES leaf, byte-identical to the codec");
+        assert_eq!(
+            got, expect,
+            "Bytes value form must be a KIND_BYTES leaf, byte-identical to the codec"
+        );
         op_drop(flat);
 
         // (2) An EMPTY bytes value.
         let empty = op_bytes_alloc(0);
         let got_e = op_value_encode_form(empty, desc).expect("encode empty Bytes");
         let expect_e: &[u8] = &[
-            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x01, 0x0b, 0x00, 0x01, 0x00, 0x00, 0x00,
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x01, 0x0b, 0x00, 0x01, 0x00, 0x00,
+            0x00,
         ];
-        assert_eq!(got_e, expect_e, "empty Bytes → KIND_BYTES with a zero-length body");
+        assert_eq!(
+            got_e, expect_e,
+            "empty Bytes → KIND_BYTES with a zero-length body"
+        );
         op_drop(empty);
 
         // (3) A ROPE (concat of two leaves) must FLATTEN to its logical bytes before encoding — the
@@ -6345,11 +6661,18 @@ mod tests {
         let iter_doc = op_value_encode_form(acc, &d).expect("iterative encode of a Bytes list");
         let descriptor = decode_descriptor(&d).expect("descriptor");
         let mut b = DocBuilder::default();
-        let root = encode_value_recursive(&descriptor, &mut b, acc, descriptor.root, 0).expect("recursive");
+        let root = encode_value_recursive(&descriptor, &mut b, acc, descriptor.root, 0)
+            .expect("recursive");
         let rec_doc = b.finish(root);
-        assert_eq!(iter_doc, rec_doc, "iterative and recursive Bytes-list encode must agree");
+        assert_eq!(
+            iter_doc, rec_doc,
+            "iterative and recursive Bytes-list encode must agree"
+        );
         // The flattened rope body appears verbatim.
-        assert!(iter_doc.windows(3).any(|w| w == [0x30, 0x40, 0x50]), "flattened rope body present");
+        assert!(
+            iter_doc.windows(3).any(|w| w == [0x30, 0x40, 0x50]),
+            "flattened rope body present"
+        );
         op_drop(acc);
         assert_eq!(live_nodes(), 0, "no leak");
     }
@@ -6758,7 +7081,10 @@ mod tests {
             }
         });
         println!("ALLOC map_insert x{N}: {insert}");
-        assert!(insert <= 900, "unique map_insert x{N} allocs {insert} exceeds ceiling 900 (… → 1084 in-place SPLIT → ~766 inline champ_header raw; residual = the intrinsic subnode Box + handles Vec on a split)");
+        assert!(
+            insert <= 900,
+            "unique map_insert x{N} allocs {insert} exceeds ceiling 900 (… → 1084 in-place SPLIT → ~766 inline champ_header raw; residual = the intrinsic subnode Box + handles Vec on a split)"
+        );
 
         // (A2) PERSISTENT insert (OVERWRITE) into a SHARED map — the real-world functional pattern (keep
         // the old version, derive a new one). `mkeep` is kept (rc>1) across each insert, so every insert
@@ -6779,7 +7105,10 @@ mod tests {
             }
         });
         println!("ALLOC map_insert_shared x{N}: {pinsert}");
-        assert!(pinsert <= 6400, "shared/persistent map_insert (overwrite) x{N} allocs {pinsert} exceeds ceiling 6400 (path-copy: 1 Vec + 1 node Box per copied spine node; was 8715 with a wasted upfront handles.clone())");
+        assert!(
+            pinsert <= 6400,
+            "shared/persistent map_insert (overwrite) x{N} allocs {pinsert} exceeds ceiling 6400 (path-copy: 1 Vec + 1 node Box per copied spine node; was 8715 with a wasted upfront handles.clone())"
+        );
         op_drop(mkeep);
 
         // (A3) persistent insert of a NEW key into a shared map — exercises the EMPTY-slot / SPLIT copy
@@ -6800,7 +7129,10 @@ mod tests {
             }
         });
         println!("ALLOC map_insert_shared_newkey x{N}: {pinsert_new}");
-        assert!(pinsert_new <= 6500, "shared/persistent map_insert (new key) x{N} allocs {pinsert_new} exceeds ceiling 6700 (path-copy growth: borrow-and-build, no upfront clone; was 7445)");
+        assert!(
+            pinsert_new <= 6500,
+            "shared/persistent map_insert (new key) x{N} allocs {pinsert_new} exceeds ceiling 6700 (path-copy growth: borrow-and-build, no upfront clone; was 7445)"
+        );
         op_drop(mkeep2);
 
         // (C2) PERSISTENT remove from a SHARED map — keep the base (rc>1) across each remove, so every
@@ -6825,7 +7157,10 @@ mod tests {
             }
         });
         println!("ALLOC map_remove_shared x{N}: {premove}");
-        assert!(premove <= 7000, "shared/persistent map_remove x{N} allocs {premove} exceeds ceiling 7000 (path-copy: 1 Vec + 1 node Box per copied spine node; was 9277 with a wasted upfront handles.clone())");
+        assert!(
+            premove <= 7000,
+            "shared/persistent map_remove x{N} allocs {premove} exceeds ceiling 7000 (path-copy: 1 Vec + 1 node Box per copied spine node; was 9277 with a wasted upfront handles.clone())"
+        );
         op_drop(mkeep3);
 
         // (B) full iteration (unique cursor walk).
@@ -6837,7 +7172,10 @@ mod tests {
             op_drop(c);
         });
         println!("ALLOC map_iterate x{N}: {iterate}");
-        assert!(iterate <= 50, "unique map_iterate x{N} allocs {iterate} exceeds ceiling 50 (5248 → 2248 → 1126 → ~3 inline Slots buffer, iteration is now essentially alloc-free — only the initial cursor's frames Vec)");
+        assert!(
+            iterate <= 50,
+            "unique map_iterate x{N} allocs {iterate} exceeds ceiling 50 (5248 → 2248 → 1126 → ~3 inline Slots buffer, iteration is now essentially alloc-free — only the initial cursor's frames Vec)"
+        );
         op_drop(m);
 
         // (C) map remove (unique) — remove all N.
@@ -6853,7 +7191,10 @@ mod tests {
             }
         });
         println!("ALLOC map_remove x{N}: {remove}");
-        assert!(remove <= 50, "unique map_remove x{N} allocs {remove} exceeds ceiling 50 (8397 → 5207 → 2953 → 1953 → 954 in-place drain → ~0 in-place COLLAPSE + inline collapse_candidate; remove is now allocation-FREE)");
+        assert!(
+            remove <= 50,
+            "unique map_remove x{N} allocs {remove} exceeds ceiling 50 (8397 → 5207 → 2953 → 1953 → 954 in-place drain → ~0 in-place COLLAPSE + inline collapse_candidate; remove is now allocation-FREE)"
+        );
         op_drop(m2);
 
         // (D) vec push (unique, FBIP) — the in-place RRB reference: near-zero amortized.
@@ -6864,7 +7205,10 @@ mod tests {
             }
         });
         println!("ALLOC vec_push x{N}: {push}");
-        assert!(push <= 400, "unique vec_push x{N} allocs {push} exceeds ceiling 400");
+        assert!(
+            push <= 400,
+            "unique vec_push x{N} allocs {push} exceeds ceiling 400"
+        );
         // (E) vec get — a pure read must allocate NOTHING.
         let get = measure(&mut || {
             for k in 0..N as u32 {
@@ -6883,7 +7227,10 @@ mod tests {
             }
         });
         println!("ALLOC vec_update x{N}: {vupd}");
-        assert_eq!(vupd, 0, "vec_update on a uniquely-owned vec is FBIP in-place — zero allocations");
+        assert_eq!(
+            vupd, 0,
+            "vec_update on a uniquely-owned vec is FBIP in-place — zero allocations"
+        );
         // (E3) PERSISTENT vec_update on a SHARED vec — keep the base (rc>1) across each update, so every
         // update path-copies the touched spine (root→leaf) via `vec_update_into`/`vec_node_replace`
         // instead of refitting in place. UNLIKE the CHAMP copy cores (which cloned the whole handle vec
@@ -6899,7 +7246,10 @@ mod tests {
             }
         });
         println!("ALLOC vec_update_shared x{N}: {vupd_shared}");
-        assert!(vupd_shared <= 7100, "shared/persistent vec_update x{N} allocs {vupd_shared} exceeds ceiling 8200 (RRB path-copy floor: borrow-and-build, ~2 allocs per copied spine node + header)");
+        assert!(
+            vupd_shared <= 7100,
+            "shared/persistent vec_update x{N} allocs {vupd_shared} exceeds ceiling 8200 (RRB path-copy floor: borrow-and-build, ~2 allocs per copied spine node + header)"
+        );
         // (D2) PERSISTENT vec_push on a SHARED vec — keep the base (rc>1) so each push path-copies the
         // rightmost spine via `vec_push_into`/`vec_node_append` instead of FBIP in place. Same borrow-and-
         // build copy path; tracked so the persistent-push pattern is guarded (the unique D row is FBIP).
@@ -6911,7 +7261,10 @@ mod tests {
             }
         });
         println!("ALLOC vec_push_shared x{N}: {vpush_shared}");
-        assert!(vpush_shared <= 7200, "shared/persistent vec_push x{N} allocs {vpush_shared} exceeds ceiling 8300 (RRB path-copy floor: borrow-and-build rightmost spine + header)");
+        assert!(
+            vpush_shared <= 7200,
+            "shared/persistent vec_push x{N} allocs {vpush_shared} exceeds ceiling 8300 (RRB path-copy floor: borrow-and-build rightmost spine + header)"
+        );
         op_drop(v);
 
         // TEMP PROBE: vec_concat / vec_split — the RRB O(log N) rebalancing ops (List.concat/List.split),
@@ -6936,7 +7289,10 @@ mod tests {
             }
         });
         println!("ALLOC vec_concat x100: {concat_allocs}");
-        assert!(concat_allocs <= 2000, "vec_concat x100 allocs {concat_allocs} exceeds ceiling 2000 (O(log N) rebalance: ≤a few nodes/op, N-independent — a regression to element-copy would scale with N)");
+        assert!(
+            concat_allocs <= 2000,
+            "vec_concat x100 allocs {concat_allocs} exceeds ceiling 2000 (O(log N) rebalance: ≤a few nodes/op, N-independent — a regression to element-copy would scale with N)"
+        );
         let split_allocs = measure(&mut || {
             for _ in 0..100 {
                 op_dup(ca);
@@ -6946,7 +7302,10 @@ mod tests {
             }
         });
         println!("ALLOC vec_split x100: {split_allocs}");
-        assert!(split_allocs <= 3000, "vec_split x100 allocs {split_allocs} exceeds ceiling 3000 (O(log N) boundary-spine rebuild, N-independent)");
+        assert!(
+            split_allocs <= 3000,
+            "vec_split x100 allocs {split_allocs} exceeds ceiling 3000 (O(log N) boundary-spine rebuild, N-independent)"
+        );
         op_drop(ca);
         op_drop(cbv);
 
@@ -6965,7 +7324,10 @@ mod tests {
             }
         });
         println!("ALLOC map_lookup x{N}: {lookup}");
-        assert_eq!(lookup, 0, "map_lookup on scalar keys is a pure read — zero allocations (was 1/op via champ_eq's eager worklist)");
+        assert_eq!(
+            lookup, 0,
+            "map_lookup on scalar keys is a pure read — zero allocations (was 1/op via champ_eq's eager worklist)"
+        );
         op_drop(mm);
 
         // (G) set algebra — union / intersection / difference of two N-element sets with 50% overlap.
@@ -6995,21 +7357,30 @@ mod tests {
         // because a set data-node that grows 2→3 entries spills inline→heap once (the cost of inlining a
         // node that grows). Accepted as a small trade for the big wins (sum_new/tuple2/`[k,v]` −1000 each,
         // vec push/update shared −1000); TODO next iteration: born-heap for growing CHAMP set nodes.
-        assert!(union <= 320, "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 320 (was 376 → 270 after merge_entry_pair inlines the 2-handle SET split node)");
+        assert!(
+            union <= 320,
+            "set_union (walk the smaller N/4 into the larger N) allocs {union} exceeds ceiling 320 (was 376 → 270 after merge_entry_pair inlines the 2-handle SET split node)"
+        );
         let inter = measure(&mut || {
             op_dup(sa);
             op_dup(sb);
             op_drop(op_set_intersection(sa, sb));
         });
         println!("ALLOC set_intersection x{N}: {inter}");
-        assert!(inter <= 320, "set_intersection x{N} allocs {inter} exceeds ceiling 320 (was 385 → 263 after merge_entry_pair)");
+        assert!(
+            inter <= 320,
+            "set_intersection x{N} allocs {inter} exceeds ceiling 320 (was 385 → 263 after merge_entry_pair)"
+        );
         let diff = measure(&mut || {
             op_dup(sa);
             op_dup(sb);
             op_drop(op_set_difference(sa, sb));
         });
         println!("ALLOC set_difference x{N}: {diff}");
-        assert!(diff <= 320, "set_difference x{N} allocs {diff} exceeds ceiling 320 (was 391 → 266 after merge_entry_pair)");
+        assert!(
+            diff <= 320,
+            "set_difference x{N} allocs {diff} exceeds ceiling 320 (was 391 → 266 after merge_entry_pair)"
+        );
         op_drop(sa);
         op_drop(sb);
         op_drop(sc);
@@ -7031,7 +7402,10 @@ mod tests {
         // build_set(0,N) is the map_insert cost. So this asserts the DIFFERENCE ITSELF adds little beyond
         // building da. Ceiling = build cost (~1084) + small headroom; a regression to the insert-fold
         // (which rebuilds another full set) would roughly double it.
-        assert!(ddiff <= 600, "unique-a small-b difference x{N} allocs {ddiff} exceeds ceiling 600 (fast path: build da + in-place removes; was 807 → 488 after merge_entry_pair; a regression to the insert-fold would ~2x)");
+        assert!(
+            ddiff <= 600,
+            "unique-a small-b difference x{N} allocs {ddiff} exceeds ceiling 600 (fast path: build da + in-place removes; was 807 → 488 after merge_entry_pair; a regression to the insert-fold would ~2x)"
+        );
         op_drop(db);
 
         // (H) map lookup by a SHALLOW-COMPOUND key (a 2-tuple) — a pure read whose only allocation
@@ -7060,7 +7434,10 @@ mod tests {
         // BOTH the shallow-compound champ_hash fast path AND the shallow-compound champ_eq fast path add
         // NO worklist — so a hit costs exactly the probe. A regression to the general walk (hash and/or
         // eq) would add ~1-2 more per lookup. ~2000 for N=1000 = 2/lookup (the probe tuple).
-        assert!(clookup <= 1500, "shallow-compound-key lookup x{N} allocs {clookup} exceeds ceiling 2500 (probe tuple only; shallow hash+eq fast paths add no worklist)");
+        assert!(
+            clookup <= 1500,
+            "shallow-compound-key lookup x{N} allocs {clookup} exceeds ceiling 2500 (probe tuple only; shallow hash+eq fast paths add no worklist)"
+        );
         op_drop(cm);
 
         // (H2) map lookup by a NESTED-COMPOUND key (a 4-deep nested tuple) — the key falls THROUGH the
@@ -7095,7 +7472,10 @@ mod tests {
         // slot-hit champ_eq's (`EQ_SCRATCH`, this tick): each clears + reuses its buffer, so a nested-key
         // hash AND its equality compare are both allocation-FREE (was 5/op with the eq worklist Vec, 7/op
         // before the hash worklists were reused). Guards that neither thread-local reuse regressed.
-        assert!(nlookup <= 4400, "nested-compound-key lookup x{N} allocs {nlookup} exceeds ceiling 4400 (probe arr nodes only; both the champ_hash AND champ_eq general-walk worklists are thread-local-reused, allocation-free — was 5000 with the eq Vec)");
+        assert!(
+            nlookup <= 4400,
+            "nested-compound-key lookup x{N} allocs {nlookup} exceeds ceiling 4400 (probe arr nodes only; both the champ_hash AND champ_eq general-walk worklists are thread-local-reused, allocation-free — was 5000 with the eq Vec)"
+        );
         op_drop(nm);
 
         // (H2b) DIRECT structural value-equality (`champ_eq`, the language `=` on two runtime compounds
@@ -7125,7 +7505,10 @@ mod tests {
         // ZERO allocations: `champ_eq` borrows, and the general-walk worklist is reused from `EQ_SCRATCH`
         // (clear + refill, grows once then never allocates). A regression to a per-compare Vec would push
         // this to ~N. Both operands are pre-built + dropped outside the measured closure.
-        assert!(veq <= 50, "nested value-eq x{N} allocs {veq} exceeds ceiling 50 (champ_eq borrows + the general-walk worklist is thread-local-reused → allocation-free; a per-compare Vec would be ~N)");
+        assert!(
+            veq <= 50,
+            "nested value-eq x{N} allocs {veq} exceeds ceiling 50 (champ_eq borrows + the general-walk worklist is thread-local-reused → allocation-free; a per-compare Vec would be ~N)"
+        );
         op_drop(ea);
         op_drop(eb);
 
@@ -7137,7 +7520,9 @@ mod tests {
         // pre-built ONCE outside the measured closure (a `Vec<Vec<u8>>`) so the counting allocator does
         // NOT charge `format!`'s buffer-growth to the lookup — inside the loop we build exactly one
         // string leaf per probe (`op_str_new` on a cloned byte string) and look it up.
-        let skeys: Vec<Vec<u8>> = (0..N).map(|k| format!("key-{k:0>11}").into_bytes()).collect();
+        let skeys: Vec<Vec<u8>> = (0..N)
+            .map(|k| format!("key-{k:0>11}").into_bytes())
+            .collect();
         let mut sm = op_map_empty();
         for bytes in &skeys {
             let key = op_str_new(String::from_utf8(bytes.clone()).unwrap());
@@ -7159,7 +7544,10 @@ mod tests {
         // `into_bytes` — no extra raw alloc). = 2 allocs/op. The arity-0 champ_hash fast path and the
         // no-worklist champ_eq byte compare add NOTHING to the lookup. ~2000 for N=1000 = 2/lookup (probe
         // bytes + node). A regression to an allocating hash/eq walk for string keys would exceed this.
-        assert!(slookup <= 2200, "string-key lookup x{N} allocs {slookup} exceeds ceiling 2200 (probe string leaf only: cloned key bytes + node Box; arity-0 hash + no-worklist eq add nothing to the lookup)");
+        assert!(
+            slookup <= 2200,
+            "string-key lookup x{N} allocs {slookup} exceeds ceiling 2200 (probe string leaf only: cloned key bytes + node Box; arity-0 hash + no-worklist eq add nothing to the lookup)"
+        );
         op_drop(sm);
 
         // (I) sum construction (Option/Result-shaped: disc in raw + payload handle) x1000. With the
@@ -7172,7 +7560,10 @@ mod tests {
             }
         });
         println!("ALLOC sum_new x{N}: {sum}");
-        assert!(sum <= 1200, "sum_new x{N} allocs {sum} exceeds ceiling 2200 (node Box + handles Vec; the disc is inline — was 3/op with a heap disc Vec)");
+        assert!(
+            sum <= 1200,
+            "sum_new x{N} allocs {sum} exceeds ceiling 2200 (node Box + handles Vec; the disc is inline — was 3/op with a heap disc Vec)"
+        );
 
         // (J) bytes SLICE x1000 — a rope slice node over a shared leaf: 1 handle (the parent buf) +
         // the 8-byte `[off,len]` raw. Both the `[off,len]` raw (`slice_raw`) AND the single handle
@@ -7194,7 +7585,10 @@ mod tests {
             }
         });
         println!("ALLOC bytes_slice x{N}: {slice}");
-        assert!(slice <= 1100, "bytes_slice x{N} allocs {slice} exceeds ceiling 1100 (JUST the node Box = 1/op; both the [off,len] raw and the single handle are inline — was 2/op with a heap vec![buf] handles Vec)");
+        assert!(
+            slice <= 1100,
+            "bytes_slice x{N} allocs {slice} exceeds ceiling 1100 (JUST the node Box = 1/op; both the [off,len] raw and the single handle are inline — was 2/op with a heap vec![buf] handles Vec)"
+        );
         op_drop(leaf);
 
         // (J2) bytes CONCAT x1000 — a rope concat node over two shared leaves: 2 handles (left, right) +
@@ -7225,7 +7619,10 @@ mod tests {
             }
         });
         println!("ALLOC bytes_concat x{N}: {concat}");
-        assert!(concat <= 1100, "bytes_concat x{N} allocs {concat} exceeds ceiling 1100 (ONE node Box + inline 2-elem handles + inline [len] raw = 1 alloc/op; a regression to eager byte-copy would scale with operand length, or to a heap handles Vec would ~2x)");
+        assert!(
+            concat <= 1100,
+            "bytes_concat x{N} allocs {concat} exceeds ceiling 1100 (ONE node Box + inline 2-elem handles + inline [len] raw = 1 alloc/op; a regression to eager byte-copy would scale with operand length, or to a heap handles Vec would ~2x)"
+        );
         op_drop(la);
         op_drop(lb);
 
@@ -7260,7 +7657,10 @@ mod tests {
         println!("ALLOC bytes_flatten x{DEPTH}: {flatten}");
         // Build allocs: 1 base leaf + DEPTH×(piece leaf + concat node) then flatten adds the leaf's Heap
         // raw. All bounded by O(DEPTH), NOT O(DEPTH²). Ceiling = generous headroom over the linear count.
-        assert!(flatten <= 400, "bytes_flatten DEPTH={DEPTH} allocs {flatten} exceeds ceiling 400 (linear in DEPTH: base + DEPTH×(piece+concat) + one flattened leaf; a regression to O(DEPTH²) re-flatten/re-walk would blow up)");
+        assert!(
+            flatten <= 400,
+            "bytes_flatten DEPTH={DEPTH} allocs {flatten} exceeds ceiling 400 (linear in DEPTH: base + DEPTH×(piece+concat) + one flattened leaf; a regression to O(DEPTH²) re-flatten/re-walk would blow up)"
+        );
 
         // (K) build a 2-tuple x1000 (`op_arr_alloc(2)` + two slot sets) — the common positional-product
         // constructor shared by tuples, records, and CHAMP `[k,v]` pairs. With scalar (immediate)
@@ -7305,9 +7705,6 @@ mod tests {
         assert!(venc <= 13000, "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 13000 (~100/encode of a 50-node list after the child_pool arena; grow-once leaf/struct/child-pool Vecs + output + Bytes, linear in node count; a per-node Vec regression would push back toward ~195/encode)");
         op_drop(ve_list);
     }
-
-
-
 
     /// CPU-scaling PROBE (diagnostic, not a regression gate): times set ∩/∖ at growing N to reveal
     /// whether they are linear-ish or super-linear (the alloc bench can't see the O(log) contains-probe
@@ -7376,7 +7773,9 @@ mod tests {
             op_drop(op_set_union(big, small));
         }
         let union_ns = t.elapsed().as_nanos() as f64 / (reps as f64 * n_small as f64);
-        println!("SETSCALE compound-union (small={n_small} into big={n_big})  {union_ns:6.1} ns/elem-walked");
+        println!(
+            "SETSCALE compound-union (small={n_small} into big={n_big})  {union_ns:6.1} ns/elem-walked"
+        );
         op_drop(big);
         op_drop(small);
     }
@@ -7592,7 +7991,10 @@ mod tests {
             Shape::Record(fields) => {
                 let mut out = String::from("(record");
                 for (i, (k, s)) in fields.iter().enumerate() {
-                    out.push_str(&format!(" ({k} {})", render(op_arr_get(handle, i as u32), s)));
+                    out.push_str(&format!(
+                        " ({k} {})",
+                        render(op_arr_get(handle, i as u32), s)
+                    ));
                 }
                 out.push(')');
                 out
@@ -7676,12 +8078,12 @@ mod tests {
             u32::from_le_bytes(b)
         }
         let raws: &[&[u8]] = &[
-            &[],                                             // absent: fallback only
-            &[0xAB],                                         // 1 byte: fallback (3 zero-padded)
-            &[0x01, 0x02],                                   // 2 bytes
-            &[0xFF, 0xEE, 0xDD],                             // 3 bytes: fallback (1 zero-padded)
-            &[0x78, 0x56, 0x34, 0x12],                       // exactly 4: fast path, no pad
-            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],        // 12-byte CHAMP-header-sized raw
+            &[],                                      // absent: fallback only
+            &[0xAB],                                  // 1 byte: fallback (3 zero-padded)
+            &[0x01, 0x02],                            // 2 bytes
+            &[0xFF, 0xEE, 0xDD],                      // 3 bytes: fallback (1 zero-padded)
+            &[0x78, 0x56, 0x34, 0x12],                // exactly 4: fast path, no pad
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], // 12-byte CHAMP-header-sized raw
         ];
         for raw in raws {
             // Probe every offset from 0 to just past the end — covers in-bounds (fast) and past-end
@@ -7721,8 +8123,14 @@ mod tests {
         }
         // the discriminator must NOT misfire on a real pointer or NULL
         let real = alloc(Vec::new(), 7i64.to_le_bytes().to_vec());
-        assert!(!is_immediate(real), "a real alloc'd Node must not read as immediate");
-        assert!(!is_immediate(Handle::NULL), "NULL is tag 00 → not immediate");
+        assert!(
+            !is_immediate(real),
+            "a real alloc'd Node must not read as immediate"
+        );
+        assert!(
+            !is_immediate(Handle::NULL),
+            "NULL is tag 00 → not immediate"
+        );
         op_drop(real);
     }
 
@@ -7740,7 +8148,13 @@ mod tests {
     fn imm_rc_ops_are_noops() {
         reset();
         let before = live_object_count();
-        for h in [imm_unit(), imm_bool(true), imm_bool(false), imm_int(5), imm_int(-7)] {
+        for h in [
+            imm_unit(),
+            imm_bool(true),
+            imm_bool(false),
+            imm_int(5),
+            imm_int(-7),
+        ] {
             // node_rc MUST be the non-1 sentinel (never 1 → no FBIP in-place mutation of a non-Node)
             assert_eq!(node_rc(h), 2, "node_rc(immediate) must be 2, not 1");
             // dup/drop must not crash and must not touch the allocator
@@ -7777,7 +8191,10 @@ mod tests {
         ];
         for &h in cases {
             let round = Handle((h.0 as usize as u32) as usize as *mut Node);
-            assert!(is_immediate(round), "round-tripped handle must still be immediate");
+            assert!(
+                is_immediate(round),
+                "round-tripped handle must still be immediate"
+            );
             assert_eq!(
                 std::mem::discriminant(&imm_kind(round)),
                 std::mem::discriminant(&imm_kind(h)),
@@ -7792,9 +8209,19 @@ mod tests {
         // For values whose encoding fits in the low 32 bits with no sign extension into the host
         // pointer's high half (unit, bool, non-negative fixnums), the raw handle bits are identical —
         // exactly the wasm32 case where `usize` is 32-bit.
-        for &h in &[imm_unit(), imm_bool(true), imm_bool(false), imm_int(0), imm_int(1), imm_int(FIXNUM_MAX)] {
+        for &h in &[
+            imm_unit(),
+            imm_bool(true),
+            imm_bool(false),
+            imm_int(0),
+            imm_int(1),
+            imm_int(FIXNUM_MAX),
+        ] {
             let round = Handle((h.0 as usize as u32) as usize as *mut Node);
-            assert_eq!(round, h, "u32 ABI round-trip must be bit-identical for low-32-bit immediates");
+            assert_eq!(
+                round, h,
+                "u32 ABI round-trip must be bit-identical for low-32-bit immediates"
+            );
         }
     }
 
@@ -7806,11 +8233,20 @@ mod tests {
         // Normalize-on-construct: a bool / unit value is now ALWAYS inline, never a boxed Node.
         assert!(is_immediate(op_box_bool(true)));
         assert!(is_immediate(op_box_bool(false)));
-        assert!(is_immediate(op_arr_alloc(0)), "empty array (unit) must inline");
+        assert!(
+            is_immediate(op_arr_alloc(0)),
+            "empty array (unit) must inline"
+        );
         // Since P2 a small in-window int ALSO inlines (op_box_int normalizes); an out-of-window int
         // still boxes, and a non-empty array still allocates.
-        assert!(is_immediate(op_box_int(5)), "an in-window int inlines since P2");
-        assert!(!is_immediate(op_box_int((1 << 30) as i64)), "an out-of-window int still boxes");
+        assert!(
+            is_immediate(op_box_int(5)),
+            "an in-window int inlines since P2"
+        );
+        assert!(
+            !is_immediate(op_box_int((1 << 30) as i64)),
+            "an out-of-window int still boxes"
+        );
         let a = op_arr_alloc(2);
         assert!(!is_immediate(a));
         op_drop(a);
@@ -7840,7 +8276,11 @@ mod tests {
             "(tuple true 9)"
         );
         op_drop(t);
-        assert_eq!(live_nodes(), before, "array reclaimed; both inline scalars leave nothing");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "array reclaimed; both inline scalars leave nothing"
+        );
     }
 
     #[test]
@@ -7880,8 +8320,15 @@ mod tests {
         // identically to the pre-P1b boxed-empty-array form.
         let t = op_arr_alloc(1);
         op_arr_set(t, 0, op_arr_alloc(0)); // unit element (inline)
-        assert_eq!(render(t, &Shape::Tuple(vec![Shape::Tuple(vec![])])), "(tuple unit)");
-        assert_eq!(op_arr_len(op_arr_get(t, 0)), 0, "the inline unit element has 0 slots");
+        assert_eq!(
+            render(t, &Shape::Tuple(vec![Shape::Tuple(vec![])])),
+            "(tuple unit)"
+        );
+        assert_eq!(
+            op_arr_len(op_arr_get(t, 0)),
+            0,
+            "the inline unit element has 0 slots"
+        );
         op_drop(t);
 
         // A nullary variant carrying unit renders "(None unit)" as before.
@@ -7917,7 +8364,11 @@ mod tests {
         assert!(op_get_bool(op_vec_get(v, 0)));
         assert!(!op_get_bool(op_vec_get(v, 1)));
         op_drop(v);
-        assert_eq!(live_nodes(), before, "list-of-bools fully reclaimed; inline bools leave nothing");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "list-of-bools fully reclaimed; inline bools leave nothing"
+        );
     }
 
     // ── Inline small ints: the fixnum window (P2 flips op_box_int) ────────────────────────
@@ -7927,9 +8378,15 @@ mod tests {
         reset();
         // A value that FITS the window is ALWAYS inline; just outside, it boxes. THE single boundary.
         assert!(is_immediate(op_box_int(FIXNUM_MAX)), "FIXNUM_MAX inlines");
-        assert!(!is_immediate(op_box_int(FIXNUM_MAX + 1)), "FIXNUM_MAX+1 boxes");
+        assert!(
+            !is_immediate(op_box_int(FIXNUM_MAX + 1)),
+            "FIXNUM_MAX+1 boxes"
+        );
         assert!(is_immediate(op_box_int(FIXNUM_MIN)), "FIXNUM_MIN inlines");
-        assert!(!is_immediate(op_box_int(FIXNUM_MIN - 1)), "FIXNUM_MIN-1 boxes");
+        assert!(
+            !is_immediate(op_box_int(FIXNUM_MIN - 1)),
+            "FIXNUM_MIN-1 boxes"
+        );
         assert!(is_immediate(op_box_int(0)));
         assert!(is_immediate(op_box_int(-1)));
         assert!(is_immediate(op_box_int(1)));
@@ -7962,15 +8419,34 @@ mod tests {
         // pointer's high 32 bits, so a RAW-BIT u32 round-trip would differ on native. We therefore
         // assert BEHAVIORAL identity — op_get_int decodes the right value and imm_kind == Int — which
         // is what the wasm32 ABI (32-bit usize) preserves bit-for-bit anyway.
-        for v in [-1i64, -2, -42, -1000, FIXNUM_MIN, FIXNUM_MIN + 1, -(1 << 20)] {
+        for v in [
+            -1i64,
+            -2,
+            -42,
+            -1000,
+            FIXNUM_MIN,
+            FIXNUM_MIN + 1,
+            -(1 << 20),
+        ] {
             let h = op_box_int(v);
             assert!(is_immediate(h), "in-window negative {v} must inline");
-            assert!(matches!(imm_kind(h), ImmKind::Int), "negative fixnum classifies as Int");
-            assert_eq!(op_get_int(h), v, "negative fixnum decodes to the right value");
+            assert!(
+                matches!(imm_kind(h), ImmKind::Int),
+                "negative fixnum classifies as Int"
+            );
+            assert_eq!(
+                op_get_int(h),
+                v,
+                "negative fixnum decodes to the right value"
+            );
             // to_u32/from_u32 BEHAVIORAL round-trip (reproduce the wasm32 projection: .0 as u32 back):
             let round = Handle((h.0 as usize as u32) as usize as *mut Node);
             assert!(is_immediate(round));
-            assert_eq!(imm_as_int(round), v, "negative fixnum survives the u32 ABI projection by value");
+            assert_eq!(
+                imm_as_int(round),
+                v,
+                "negative fixnum survives the u32 ABI projection by value"
+            );
         }
     }
 
@@ -7979,7 +8455,10 @@ mod tests {
         reset();
         // Small ints as CHAMP map KEYS: normalize means the key is ALWAYS inline (no boxed twin can
         // exist), and champ_hash/eq fold the SAME `(v as u64).to_le_bytes()` a boxed int would carry.
-        assert!(is_immediate(op_box_int(7)), "an in-window key can never arrive boxed");
+        assert!(
+            is_immediate(op_box_int(7)),
+            "an in-window key can never arrive boxed"
+        );
         let m0 = op_map_empty();
         let m1 = op_map_insert(m0, op_box_int(7), op_box_int(70));
         let m2 = op_map_insert(m1, op_box_int(-3), op_box_int(-30));
@@ -8013,8 +8492,15 @@ mod tests {
         let inline = op_box_int(3);
         let boxed = boxed_int_leaf(3);
         assert!(is_immediate(inline) && !is_immediate(boxed));
-        assert_eq!(champ_hash(inline), champ_hash(boxed), "inline and boxed int hash equal");
-        assert!(champ_eq(inline, boxed), "inline and boxed int compare equal");
+        assert_eq!(
+            champ_hash(inline),
+            champ_hash(boxed),
+            "inline and boxed int hash equal"
+        );
+        assert!(
+            champ_eq(inline, boxed),
+            "inline and boxed int compare equal"
+        );
         assert_eq!(render(inline, &Shape::Int), render(boxed, &Shape::Int));
         assert_eq!(render(inline, &Shape::Int), "3");
         op_drop(boxed);
@@ -8048,13 +8534,24 @@ mod tests {
         op_arr_set(t, 0, op_box_int(10));
         op_arr_set(t, 1, op_box_int(-20));
         op_arr_set(t, 2, op_box_int(30));
-        assert_eq!(live_nodes(), before + 1, "tuple of small ints = just the array node");
+        assert_eq!(
+            live_nodes(),
+            before + 1,
+            "tuple of small ints = just the array node"
+        );
         assert_eq!(op_get_int(op_arr_get(t, 0)), 10);
         assert_eq!(op_get_int(op_arr_get(t, 1)), -20);
         assert_eq!(op_get_int(op_arr_get(t, 2)), 30);
-        assert_eq!(render(t, &Shape::List(Box::new(Shape::Int))), "(list 10 -20 30)");
+        assert_eq!(
+            render(t, &Shape::List(Box::new(Shape::Int))),
+            "(list 10 -20 30)"
+        );
         op_drop(t);
-        assert_eq!(live_nodes(), before, "array reclaimed; inline ints leave nothing");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "array reclaimed; inline ints leave nothing"
+        );
     }
 
     #[test]
@@ -8075,18 +8572,30 @@ mod tests {
         // len via the array accessor; get + decode per element (inline and boxed transparently).
         assert_eq!(op_arr_len(a), values.len() as u32);
         for (i, &x) in values.iter().enumerate() {
-            assert_eq!(op_get_int(op_arr_get(a, i as u32)), x, "element {i} = {x} reads back exactly");
+            assert_eq!(
+                op_get_int(op_arr_get(a, i as u32)),
+                x,
+                "element {i} = {x} reads back exactly"
+            );
         }
         // Exactly TWO elements (big1, big2) are boxed nodes; the array shell is the third node. The
         // four in-window ints ride inline — the P2 win, mid-container, alongside boxed neighbors.
-        assert_eq!(live_nodes(), before + 3, "array shell + the 2 out-of-window boxed ints only");
+        assert_eq!(
+            live_nodes(),
+            before + 3,
+            "array shell + the 2 out-of-window boxed ints only"
+        );
         // Render walks every element under Shape::Int, mixing inline and boxed transparently.
         assert_eq!(
             render(a, &Shape::List(Box::new(Shape::Int))),
             format!("(list 0 {big1} -7 {big2} {FIXNUM_MAX} 42)")
         );
         op_drop(a);
-        assert_eq!(live_nodes(), before, "whole mixed container reclaimed; inline elems leak nothing");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "whole mixed container reclaimed; inline elems leak nothing"
+        );
     }
 
     // NOTE (serializer / value-interchange): the runtime crate has NO value-interchange / Ast
@@ -8113,10 +8622,16 @@ mod tests {
         assert_eq!(live_nodes(), before + 1, "just the retained shell is live");
 
         let u = op_arr_alloc_reuse(0, token);
-        assert!(is_immediate(u), "reuse-to-0 must return an inline unit, never a boxed empty node");
+        assert!(
+            is_immediate(u),
+            "reuse-to-0 must return an inline unit, never a boxed empty node"
+        );
         assert!(matches!(imm_kind(u), ImmKind::Unit));
         // Byte-identical (structurally) to the normal unit producer.
-        assert!(champ_eq(u, op_arr_alloc(0)), "reuse-to-0 unit == op_arr_alloc(0) unit");
+        assert!(
+            champ_eq(u, op_arr_alloc(0)),
+            "reuse-to-0 unit == op_arr_alloc(0) unit"
+        );
         // The token node was reclaimed — no leak, no boxed twin left behind.
         assert_eq!(live_nodes(), before, "the token shell is freed, not leaked");
     }
@@ -8151,8 +8666,14 @@ mod tests {
         }
         assert_eq!(render(op_box_int(0), &Shape::Int), "0");
         assert_eq!(render(op_box_int(-42), &Shape::Int), "-42");
-        assert_eq!(render(op_box_int(i64::MAX), &Shape::Int), "9223372036854775807");
-        assert_eq!(render(op_box_int(i64::MIN), &Shape::Int), "-9223372036854775808");
+        assert_eq!(
+            render(op_box_int(i64::MAX), &Shape::Int),
+            "9223372036854775807"
+        );
+        assert_eq!(
+            render(op_box_int(i64::MIN), &Shape::Int),
+            "-9223372036854775808"
+        );
     }
 
     #[test]
@@ -8210,7 +8731,10 @@ mod tests {
         );
         assert_eq!(render(a, &Shape::List(Box::new(Shape::Int))), "(list 3 1)");
         assert_eq!(
-            render(a, &Shape::Record(vec![("x", Shape::Int), ("y", Shape::Int)])),
+            render(
+                a,
+                &Shape::Record(vec![("x", Shape::Int), ("y", Shape::Int)])
+            ),
             "(record (x 3) (y 1))"
         );
     }
@@ -8262,12 +8786,7 @@ mod tests {
         assert_eq!(op_sum_payload(some), payload);
         assert_eq!(op_get_int(op_sum_payload(some)), 7);
 
-        let variants = || {
-            Shape::Sum(vec![
-                ("None", Shape::Tuple(vec![])),
-                ("Some", Shape::Int),
-            ])
-        };
+        let variants = || Shape::Sum(vec![("None", Shape::Tuple(vec![])), ("Some", Shape::Int)]);
         assert_eq!(render(some, &variants()), "(Some 7)");
 
         // disc 0 with an empty-arr payload = a nullary variant carrying unit.
@@ -8321,7 +8840,10 @@ mod tests {
         };
         // Small (<= cap): inline raw.
         let small = make(INLINE_RAW_CAP as u32); // exactly at the boundary — still inline
-        assert!(!raw_is_heap(small), "a <=cap bytes leaf has an INLINE raw (no transient Vec allocated)");
+        assert!(
+            !raw_is_heap(small),
+            "a <=cap bytes leaf has an INLINE raw (no transient Vec allocated)"
+        );
         assert_eq!(op_bytes_len(small), INLINE_RAW_CAP as u32);
         for i in 0..INLINE_RAW_CAP as u32 {
             assert_eq!(op_bytes_get(small, i), i, "small leaf byte {i} round-trips");
@@ -8330,16 +8852,31 @@ mod tests {
         let large = make(INLINE_RAW_CAP as u32 + 5);
         assert!(raw_is_heap(large), "a >cap bytes leaf spills to a heap raw");
         for i in 0..(INLINE_RAW_CAP as u32 + 5) {
-            assert_eq!(op_bytes_get(large, i), i & 0xff, "large leaf byte {i} round-trips");
+            assert_eq!(
+                op_bytes_get(large, i),
+                i & 0xff,
+                "large leaf byte {i} round-trips"
+            );
         }
         // A small leaf must compare/hash EQUAL to a fresh twin (canonical rep, one value).
         let small2 = make(INLINE_RAW_CAP as u32);
-        assert!(champ_eq(small, small2), "two identically-built small leaves are champ_eq");
-        assert_eq!(champ_hash(small), champ_hash(small2), "…and hash identically");
+        assert!(
+            champ_eq(small, small2),
+            "two identically-built small leaves are champ_eq"
+        );
+        assert_eq!(
+            champ_hash(small),
+            champ_hash(small2),
+            "…and hash identically"
+        );
         op_drop(small);
         op_drop(small2);
         op_drop(large);
-        assert_eq!(live_nodes(), before, "no leak across the small/large leaf builds");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak across the small/large leaf builds"
+        );
     }
 
     #[test]
@@ -8375,8 +8912,14 @@ mod tests {
             assert_eq!(op_str_get(op_str_new(s.to_string())), s);
         }
         assert_eq!(render(op_str_new("".to_string()), &Shape::Str), "\"\"");
-        assert_eq!(render(op_str_new("hello".to_string()), &Shape::Str), "\"hello\"");
-        assert_eq!(render(op_str_new("héllo☃".to_string()), &Shape::Str), "\"héllo☃\"");
+        assert_eq!(
+            render(op_str_new("hello".to_string()), &Shape::Str),
+            "\"hello\""
+        );
+        assert_eq!(
+            render(op_str_new("héllo☃".to_string()), &Shape::Str),
+            "\"héllo☃\""
+        );
     }
 
     // ── Map ─────────────────────────────────────────────────────────────────────────────────
@@ -8426,7 +8969,10 @@ mod tests {
         op_arr_set(rec, 3, name);
         let shape = Shape::Record(vec![
             ("xs", Shape::List(Box::new(Shape::Int))),
-            ("tag", Shape::Sum(vec![("None", Shape::Tuple(vec![])), ("Some", Shape::Int)])),
+            (
+                "tag",
+                Shape::Sum(vec![("None", Shape::Tuple(vec![])), ("Some", Shape::Int)]),
+            ),
             ("raw", Shape::Bytes),
             ("name", Shape::Str),
         ]);
@@ -8444,13 +8990,21 @@ mod tests {
         // Definitely-boxed values are born with rc == 1. `op_box_int(5)` now INLINES (no Node), so
         // use a genuinely-boxed leaf / an out-of-window int to exercise the heap birth-refcount.
         assert_eq!(rc_of(boxed_int_leaf(5)), 1);
-        assert_eq!(rc_of(op_box_int((1 << 30) as i64)), 1, "out-of-window int boxes");
+        assert_eq!(
+            rc_of(op_box_int((1 << 30) as i64)),
+            1,
+            "out-of-window int boxes"
+        );
         assert_eq!(rc_of(op_arr_alloc(2)), 1);
         assert_eq!(rc_of(op_sum_new(0, op_arr_alloc(0))), 1);
         assert_eq!(rc_of(op_str_new("x".to_string())), 1);
         // An immediate is NOT a Node and must never report rc == 1 (a 1 would let an FBIP in-place
         // path mutate a non-Node) — the P2 canonical-form invariant.
-        assert_ne!(rc_of(op_box_int(5)), 1, "an inline int must not look uniquely-owned");
+        assert_ne!(
+            rc_of(op_box_int(5)),
+            1,
+            "an inline int must not look uniquely-owned"
+        );
         assert_ne!(rc_of(op_box_bool(true)), 1);
         assert_ne!(rc_of(op_arr_alloc(0)), 1);
     }
@@ -8588,17 +9142,33 @@ mod tests {
         // Drop parent A: it releases ITS reference to the child, but B (and the birth ref) remain,
         // so the child and its int MUST survive. Only parent A's own node is freed.
         op_drop(pa);
-        assert_eq!(live_nodes(), before + 3, "shared child must not be freed while B holds it");
-        assert_eq!(op_get_int(op_arr_get(child, 0)), 9, "shared child still intact");
+        assert_eq!(
+            live_nodes(),
+            before + 3,
+            "shared child must not be freed while B holds it"
+        );
+        assert_eq!(
+            op_get_int(op_arr_get(child, 0)),
+            9,
+            "shared child still intact"
+        );
 
         // Drop parent B: releases the second reference; the birth reference still pins the child.
         op_drop(pb);
-        assert_eq!(live_nodes(), before + 2, "child still pinned by its birth reference");
+        assert_eq!(
+            live_nodes(),
+            before + 2,
+            "child still pinned by its birth reference"
+        );
         assert_eq!(op_get_int(op_arr_get(child, 0)), 9);
 
         // Release the birth reference: now the child's last owner is gone → child + int reclaimed.
         op_drop(child);
-        assert_eq!(live_nodes(), before, "last owner gone: shared subtree reclaimed");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "last owner gone: shared subtree reclaimed"
+        );
     }
 
     #[test]
@@ -8618,7 +9188,11 @@ mod tests {
         // DEPTH spine nodes + DEPTH boxed int leaves. The unit terminator is inline (no node) since P1b.
         assert_eq!(live_nodes(), before + (DEPTH as i64) * 2);
         op_drop(acc); // single drop must reclaim the whole spine iteratively
-        assert_eq!(live_nodes(), before, "deep structure fully reclaimed, no overflow");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "deep structure fully reclaimed, no overflow"
+        );
     }
 
     #[test]
@@ -8672,7 +9246,11 @@ mod tests {
         op_dup(kept); // §4: dup the kept child BEFORE dropping the parent
         op_drop(t); // frees the tuple node + element 1; element 0 survives (rc went 1->2->1)
 
-        assert_eq!(op_get_int(kept), 3, "kept element must survive the parent drop");
+        assert_eq!(
+            op_get_int(kept),
+            3,
+            "kept element must survive the parent drop"
+        );
         assert_eq!(live_nodes(), before + 1, "only the kept element remains");
         op_drop(kept); // the returned owner is eventually released
         assert_eq!(live_nodes(), before, "no leak once the kept owner drops");
@@ -8692,7 +9270,11 @@ mod tests {
         op_dup(x); // §3.5: dup the kept field BEFORE dropping the scrutinee
         op_drop(s); // frees only the sum node; payload survives (rc 1->2->1)
 
-        assert_eq!(op_get_int(x), 42, "extracted payload survives the scrutinee drop");
+        assert_eq!(
+            op_get_int(x),
+            42,
+            "extracted payload survives the scrutinee drop"
+        );
         assert_eq!(live_nodes(), before + 1, "sum node reclaimed, payload kept");
         op_drop(x);
         assert_eq!(live_nodes(), before);
@@ -8708,7 +9290,11 @@ mod tests {
         assert_eq!(live_nodes(), before + 2);
         // Arm returns a constant; payload not kept ⇒ just drop the scrutinee.
         op_drop(s);
-        assert_eq!(live_nodes(), before, "whole sum + payload reclaimed when nothing is kept");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "whole sum + payload reclaimed when nothing is kept"
+        );
     }
 
     /// §3.3 — the duplicate-binder question, answered: `(tuple x x)` is a `dup`, not an error. The
@@ -8728,11 +9314,19 @@ mod tests {
         op_arr_set(t, 0, x); // slot 0 owns one reference
         op_arr_set(t, 1, x); // slot 1 consumes the original — tuple now owns x twice
         assert_eq!(rc_of(x), 2, "the tuple holds two owned references to x");
-        assert_eq!(live_nodes(), before + 3, "tuple node added; x not duplicated in memory");
+        assert_eq!(
+            live_nodes(),
+            before + 3,
+            "tuple node added; x not duplicated in memory"
+        );
 
         // Dropping the tuple releases BOTH references; x is reclaimed exactly once, no double-free.
         op_drop(t);
-        assert_eq!(live_nodes(), before, "duplicate-binder child reclaimed exactly once");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "duplicate-binder child reclaimed exactly once"
+        );
     }
 
     /// §3.4 — branch balancing. `(if c xs ys)` returns one of two owned lists, both live at the
@@ -8760,10 +9354,22 @@ mod tests {
             };
 
             let expect = if take_then { 1 } else { 2 };
-            assert_eq!(op_get_int(op_arr_get(result, 0)), expect, "the taken list survives intact");
-            assert_eq!(live_nodes(), before + 2, "exactly one list (2 nodes) survives");
+            assert_eq!(
+                op_get_int(op_arr_get(result, 0)),
+                expect,
+                "the taken list survives intact"
+            );
+            assert_eq!(
+                live_nodes(),
+                before + 2,
+                "exactly one list (2 nodes) survives"
+            );
             op_drop(result); // the if's owned result is eventually released
-            assert_eq!(live_nodes(), before, "no leak, no double-free on either path");
+            assert_eq!(
+                live_nodes(),
+                before,
+                "no leak, no double-free on either path"
+            );
         }
     }
 
@@ -8800,14 +9406,25 @@ mod tests {
         assert_eq!(live_nodes(), before + 3);
 
         let token = op_reset(t);
-        assert_eq!(token, t, "the token IS the reset node's shell (same handle)");
+        assert_eq!(
+            token, t,
+            "the token IS the reset node's shell (same handle)"
+        );
         assert_ne!(token, Handle::NULL, "unique reset yields a non-null token");
         assert_eq!(op_arr_len(token), 0, "children released; shell is empty");
         assert_eq!(rc_of(token), 1, "the retained shell keeps rc == 1");
-        assert_eq!(live_nodes(), before + 1, "the 2 children freed; only the shell remains");
+        assert_eq!(
+            live_nodes(),
+            before + 1,
+            "the 2 children freed; only the shell remains"
+        );
 
         op_drop(token); // an unused token is just a childless unique node — drop frees the shell
-        assert_eq!(live_nodes(), before, "dropping an unused token frees exactly the shell");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "dropping an unused token frees exactly the shell"
+        );
     }
 
     /// `reset` on a SHARED node declines: it returns NULL, decrements, and leaves the node (and its
@@ -8825,8 +9442,16 @@ mod tests {
         let token = op_reset(t);
         assert_eq!(token, Handle::NULL, "shared reset declines: null token");
         assert_eq!(rc_of(t), 1, "reset decremented the shared count by one");
-        assert_eq!(op_get_int(op_arr_get(t, 0)), 9, "the shared node is fully intact");
-        assert_eq!(live_nodes(), before + 2, "nothing freed: the other owner still holds it");
+        assert_eq!(
+            op_get_int(op_arr_get(t, 0)),
+            9,
+            "the shared node is fully intact"
+        );
+        assert_eq!(
+            live_nodes(),
+            before + 2,
+            "nothing freed: the other owner still holds it"
+        );
 
         op_drop(t); // release the surviving owner
         assert_eq!(live_nodes(), before);
@@ -8839,11 +9464,19 @@ mod tests {
         reset();
         let before = live_nodes();
         let a = op_arr_alloc_reuse(2, Handle::NULL);
-        assert_eq!(op_arr_len(a), 2, "null token: fresh array of the requested length");
+        assert_eq!(
+            op_arr_len(a),
+            2,
+            "null token: fresh array of the requested length"
+        );
         let s = op_sum_new_reuse(1, boxed_int_leaf(7), Handle::NULL);
         assert_eq!(op_sum_disc(s), 1);
         assert_eq!(op_get_int(op_sum_payload(s)), 7);
-        assert_eq!(live_nodes(), before + 3, "array + sum + its (heap) int, all freshly allocated");
+        assert_eq!(
+            live_nodes(),
+            before + 3,
+            "array + sum + its (heap) int, all freshly allocated"
+        );
         op_drop(a);
         op_drop(s);
         assert_eq!(live_nodes(), before);
@@ -8862,9 +9495,16 @@ mod tests {
         assert_eq!(live_nodes(), before + 1);
 
         let fresh = op_arr_alloc_reuse(3, token); // refit to a DIFFERENT length
-        assert_eq!(fresh, old, "reuse returns the very same node — in-place, no allocation");
+        assert_eq!(
+            fresh, old,
+            "reuse returns the very same node — in-place, no allocation"
+        );
         assert_eq!(op_arr_len(fresh), 3, "refit to the new length");
-        assert_eq!(live_nodes(), before + 1, "still one node: no new allocation for the rebuild");
+        assert_eq!(
+            live_nodes(),
+            before + 1,
+            "still one node: no new allocation for the rebuild"
+        );
         op_arr_set(fresh, 0, op_box_int(10));
         op_arr_set(fresh, 1, op_box_int(20));
         op_arr_set(fresh, 2, op_box_int(30));
@@ -8891,17 +9531,30 @@ mod tests {
 
         // (1) reuse a heap-raw shell as a SUM node → raw must be inline (the 4-byte disc).
         let leaf = big_leaf(INLINE_RAW_CAP + 8);
-        assert!(raw_is_heap(leaf), "precondition: a >cap bytes leaf has a heap raw");
+        assert!(
+            raw_is_heap(leaf),
+            "precondition: a >cap bytes leaf has a heap raw"
+        );
         let token = op_reset(leaf); // childless heap-raw shell, rc==1
         assert_eq!(token, leaf, "unique reset yields the shell");
         let s = op_sum_new_reuse(3, op_box_int(42), token);
-        assert!(!raw_is_heap(s), "reused sum node's raw is INLINE, not the token's leftover heap buffer");
+        assert!(
+            !raw_is_heap(s),
+            "reused sum node's raw is INLINE, not the token's leftover heap buffer"
+        );
         assert_eq!(op_sum_disc(s), 3, "disc correct");
         assert_eq!(op_get_int(op_sum_payload(s)), 42, "payload correct");
         // Byte-identical to a FRESH sum (same disc/payload) — the whole point of normalizing the rep.
         let fresh_sum = op_sum_new(3, op_box_int(42));
-        assert!(champ_eq(s, fresh_sum), "reused sum equals a fresh one built the same way");
-        assert_eq!(champ_hash(s), champ_hash(fresh_sum), "…and hashes identically");
+        assert!(
+            champ_eq(s, fresh_sum),
+            "reused sum equals a fresh one built the same way"
+        );
+        assert_eq!(
+            champ_hash(s),
+            champ_hash(fresh_sum),
+            "…and hashes identically"
+        );
         op_drop(s);
         op_drop(fresh_sum);
 
@@ -8910,13 +9563,20 @@ mod tests {
         assert!(raw_is_heap(leaf2));
         let token2 = op_reset(leaf2);
         let a = op_arr_alloc_reuse(2, token2);
-        assert!(!raw_is_heap(a), "reused array node's raw is INLINE-empty, not a leftover heap buffer");
+        assert!(
+            !raw_is_heap(a),
+            "reused array node's raw is INLINE-empty, not a leftover heap buffer"
+        );
         op_arr_set(a, 0, op_box_int(1));
         op_arr_set(a, 1, op_box_int(2));
         assert_eq!(op_get_int(op_arr_get(a, 1)), 2);
         op_drop(a);
 
-        assert_eq!(live_nodes(), before, "no leak: every reused/fresh node reclaimed");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak: every reused/fresh node reclaimed"
+        );
     }
 
     /// The HANDLES-arm twin of `reuse_ctor_normalizes_a_heap_raw_token_to_inline`. A reuse TOKEN whose
@@ -8940,7 +9600,10 @@ mod tests {
         for i in 0..4 {
             op_arr_set(wide, i, op_box_int(i as i64));
         }
-        assert!(handles_is_heap(wide), "precondition: an arity-4 array has a heap handle vector");
+        assert!(
+            handles_is_heap(wide),
+            "precondition: an arity-4 array has a heap handle vector"
+        );
         let token = op_reset(wide); // childless heap-handles shell, rc==1
         assert_eq!(token, wide, "unique reset yields the shell");
         let a = op_arr_alloc_reuse(2, token); // refit to 2 slots (≤ cap)
@@ -8954,8 +9617,15 @@ mod tests {
         let fresh_arr = op_arr_alloc(2);
         op_arr_set(fresh_arr, 0, op_box_int(10));
         op_arr_set(fresh_arr, 1, op_box_int(20));
-        assert!(champ_eq(a, fresh_arr), "reused array equals a fresh one built the same way");
-        assert_eq!(champ_hash(a), champ_hash(fresh_arr), "…and hashes identically");
+        assert!(
+            champ_eq(a, fresh_arr),
+            "reused array equals a fresh one built the same way"
+        );
+        assert_eq!(
+            champ_hash(a),
+            champ_hash(fresh_arr),
+            "…and hashes identically"
+        );
         op_drop(a);
         op_drop(fresh_arr);
 
@@ -8974,12 +9644,23 @@ mod tests {
         assert_eq!(op_sum_disc(s), 1, "disc correct");
         assert_eq!(op_get_int(op_sum_payload(s)), 42, "payload correct");
         let fresh_sum = op_sum_new(1, op_box_int(42));
-        assert!(champ_eq(s, fresh_sum), "reused sum equals a fresh one built the same way");
-        assert_eq!(champ_hash(s), champ_hash(fresh_sum), "…and hashes identically");
+        assert!(
+            champ_eq(s, fresh_sum),
+            "reused sum equals a fresh one built the same way"
+        );
+        assert_eq!(
+            champ_hash(s),
+            champ_hash(fresh_sum),
+            "…and hashes identically"
+        );
         op_drop(s);
         op_drop(fresh_sum);
 
-        assert_eq!(live_nodes(), before, "no leak: every reused/fresh node reclaimed");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak: every reused/fresh node reclaimed"
+        );
     }
 
     /// `sum-new-reuse` with a token repurposes the SAME shell as the new `(disc, payload)` node.
@@ -8996,7 +9677,11 @@ mod tests {
         assert_eq!(fresh, old, "the sum shell is reused in place");
         assert_eq!(op_sum_disc(fresh), 1);
         assert_eq!(op_get_int(op_sum_payload(fresh)), 42);
-        assert_eq!(live_nodes(), before + 2, "reused shell + the new payload int; shell not re-alloc'd");
+        assert_eq!(
+            live_nodes(),
+            before + 2,
+            "reused shell + the new payload int; shell not re-alloc'd"
+        );
         op_drop(fresh);
         assert_eq!(live_nodes(), before);
     }
@@ -9035,7 +9720,10 @@ mod tests {
             peak_probe = live_nodes(); // shell + N old ints + N new ints
             let token = op_reset(xs); // unique → frees the N old ints, retains the shell
             let ys = op_arr_alloc_reuse(N, token); // SAME shell, refit
-            assert_eq!(ys, shell_addr, "the mapped list reuses the input's array shell in place");
+            assert_eq!(
+                ys, shell_addr,
+                "the mapped list reuses the input's array shell in place"
+            );
             for (i, leaf) in new_leaves.into_iter().enumerate() {
                 op_arr_set(ys, i as u32, leaf);
             }
@@ -9053,8 +9741,16 @@ mod tests {
         }
         // Peak during the rebuild was bounded by input + transient new leaves (2N+1), NOT doubled
         // by a free→malloc that keeps both the old array shell AND a fresh one.
-        assert_eq!(peak_probe, before + 1 + 2 * N as i64, "peak = shell + old ints + new ints");
-        assert_eq!(live_nodes(), before, "no leak after the mapped list is dropped");
+        assert_eq!(
+            peak_probe,
+            before + 1 + 2 * N as i64,
+            "peak = shell + old ints + new ints"
+        );
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak after the mapped list is dropped"
+        );
     }
 
     /// The ordering invariant for reset (the §4 dup-before-drop rule): a child of the old node that
@@ -9074,11 +9770,23 @@ mod tests {
 
         op_dup(keep); // §4: dup the child we intend to carry BEFORE resetting the parent
         let token = op_reset(old); // frees `discard`; `keep` survives (rc 1->2 via dup, ->1 via drop)
-        assert_eq!(live_nodes(), before + 2, "shell + kept child; discard freed");
+        assert_eq!(
+            live_nodes(),
+            before + 2,
+            "shell + kept child; discard freed"
+        );
         let rebuilt = op_arr_alloc_reuse(1, token);
         op_arr_set(rebuilt, 0, keep); // carry the kept child into the reused shell
-        assert_eq!(op_get_int(op_arr_get(rebuilt, 0)), 77, "kept child survived reset into the reuse");
-        assert_eq!(live_nodes(), before + 2, "still shell + kept child — reuse allocated nothing");
+        assert_eq!(
+            op_get_int(op_arr_get(rebuilt, 0)),
+            77,
+            "kept child survived reset into the reuse"
+        );
+        assert_eq!(
+            live_nodes(),
+            before + 2,
+            "still shell + kept child — reuse allocated nothing"
+        );
         op_drop(rebuilt);
         assert_eq!(live_nodes(), before, "no leak");
     }
@@ -9145,14 +9853,26 @@ mod tests {
         // First, last, and both child boundaries (2→3 crosses child0→child1; 4→5 crosses child1→child2).
         assert_eq!(op_get_int(op_vec_get(v, 0)), 0, "first element");
         assert_eq!(op_get_int(op_vec_get(v, 2)), 2, "last of child 0");
-        assert_eq!(op_get_int(op_vec_get(v, 3)), 3, "first of child 1 (boundary)");
+        assert_eq!(
+            op_get_int(op_vec_get(v, 3)),
+            3,
+            "first of child 1 (boundary)"
+        );
         assert_eq!(op_get_int(op_vec_get(v, 4)), 4, "last of child 1");
-        assert_eq!(op_get_int(op_vec_get(v, 5)), 5, "first of child 2 (boundary)");
+        assert_eq!(
+            op_get_int(op_vec_get(v, 5)),
+            5,
+            "first of child 2 (boundary)"
+        );
         assert_eq!(op_get_int(op_vec_get(v, 8)), 8, "last element");
         // And the full dense round-trip.
         assert_eq!(vec_to_ints(v), (0..9).collect::<Vec<_>>());
         op_drop(v);
-        assert_eq!(live_nodes(), before, "relaxed hand-built vector reclaims to baseline");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "relaxed hand-built vector reclaims to baseline"
+        );
     }
 
     #[test]
@@ -9188,7 +9908,10 @@ mod tests {
         // Positive control: the hand-built relaxed node IS relaxed.
         let relaxed = vec_relaxed_of(&[2, 3]);
         let (_c2, _s2, rroot) = vec_read_header(relaxed);
-        assert!(vec_is_relaxed(rroot), "hand-built relaxed node (positive control)");
+        assert!(
+            vec_is_relaxed(rroot),
+            "hand-built relaxed node (positive control)"
+        );
 
         op_drop(empty);
         op_drop(v);
@@ -9196,7 +9919,11 @@ mod tests {
         op_drop(rope);
         op_drop(slice);
         op_drop(relaxed);
-        assert_eq!(live_nodes(), before, "no leak across the disambiguation cases");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak across the disambiguation cases"
+        );
     }
 
     #[test]
@@ -9209,8 +9936,16 @@ mod tests {
         let (_c, _s, root) = vec_read_header(v);
         assert!(vec_is_relaxed(root), "root stays relaxed after update");
         assert_eq!(op_get_int(op_vec_get(v, 4)), 400, "updated element");
-        assert_eq!(op_get_int(op_vec_get(v, 3)), 3, "neighbor in same child untouched");
-        assert_eq!(op_get_int(op_vec_get(v, 5)), 5, "neighbor across boundary untouched");
+        assert_eq!(
+            op_get_int(op_vec_get(v, 3)),
+            3,
+            "neighbor in same child untouched"
+        );
+        assert_eq!(
+            op_get_int(op_vec_get(v, 5)),
+            5,
+            "neighbor across boundary untouched"
+        );
         assert_eq!(op_vec_len(v), 9, "count unchanged");
         op_drop(v);
         assert_eq!(live_nodes(), before, "no leak");
@@ -9227,7 +9962,10 @@ mod tests {
             v = op_vec_push(v, op_box_int(i));
         }
         let (_c, _s, root) = vec_read_header(v);
-        assert!(vec_is_relaxed(root), "root stays relaxed after right-edge pushes");
+        assert!(
+            vec_is_relaxed(root),
+            "root stays relaxed after right-edge pushes"
+        );
         assert_eq!(op_vec_len(v), 20);
         assert_eq!(
             vec_to_ints(v),
@@ -9262,8 +10000,14 @@ mod tests {
                 assert!(cc > 0, "no zero-size child in a relaxed node (child {i})");
                 running += cc;
                 let s = vec_relaxed_size_at(node, i);
-                assert!(s > prev, "relaxed size table strictly increasing at {i}: {s} <= {prev}");
-                assert_eq!(s, running, "cumulative entry {i} == running child-count sum");
+                assert!(
+                    s > prev,
+                    "relaxed size table strictly increasing at {i}: {s} <= {prev}"
+                );
+                assert_eq!(
+                    s, running,
+                    "cumulative entry {i} == running child-count sum"
+                );
                 prev = s;
             }
             assert_eq!(prev, total, "last size-table entry == subtree total");
@@ -9293,9 +10037,17 @@ mod tests {
         let mut oracle: Vec<i64> = (0..la).collect();
         oracle.extend(0..lb);
         let c = op_vec_concat(a, b);
-        assert_eq!(op_vec_len(c) as i64, la + lb, "concat len == la+lb for ({la},{lb})");
+        assert_eq!(
+            op_vec_len(c) as i64,
+            la + lb,
+            "concat len == la+lb for ({la},{lb})"
+        );
         assert_vec_invariants(c);
-        assert_eq!(vec_to_ints(c), oracle, "concat elements match oracle for ({la},{lb})");
+        assert_eq!(
+            vec_to_ints(c),
+            oracle,
+            "concat elements match oracle for ({la},{lb})"
+        );
         op_drop(c);
         assert_eq!(live_nodes(), before, "no leak for concat({la},{lb})");
     }
@@ -9364,7 +10116,11 @@ mod tests {
         v = op_vec_update(v, 74, op_box_int(-2)); // pushed tail
         assert_eq!(op_get_int(op_vec_get(v, 40)), -1);
         assert_eq!(op_get_int(op_vec_get(v, 74)), -2);
-        assert_eq!(op_get_int(op_vec_get(v, 39)), 39, "neighbor untouched by update");
+        assert_eq!(
+            op_get_int(op_vec_get(v, 39)),
+            39,
+            "neighbor untouched by update"
+        );
         assert_vec_invariants(v);
         op_drop(v);
         assert_eq!(live_nodes(), before, "no leak after concat+push+update");
@@ -9380,7 +10136,10 @@ mod tests {
             let b = vec_range(lb);
             let c = op_vec_concat(a, b);
             let (_count, _shift, root) = vec_read_header(c);
-            assert!(vec_is_relaxed(root), "unequal/large concat produced a relaxed root ({la},{lb})");
+            assert!(
+                vec_is_relaxed(root),
+                "unequal/large concat produced a relaxed root ({la},{lb})"
+            );
             assert_vec_invariants(c); // strictly increasing, cumulative, last == total
             op_drop(c);
         }
@@ -9401,7 +10160,11 @@ mod tests {
             acc = op_vec_concat(acc, piece);
             let _ = k;
         }
-        assert_eq!(op_vec_len(acc) as usize, oracle.len(), "folded length == 200*7");
+        assert_eq!(
+            op_vec_len(acc) as usize,
+            oracle.len(),
+            "folded length == 200*7"
+        );
         assert_eq!(vec_to_ints(acc), oracle, "folded elements match oracle");
         assert_vec_invariants(acc);
         op_drop(acc);
@@ -9416,7 +10179,11 @@ mod tests {
         let v = vec_range(len);
         let (l, r) = op_vec_split(v, index);
         let idx = index.min(len as u32);
-        assert_eq!(op_vec_len(l), idx, "left len == index for (len={len}, idx={index})");
+        assert_eq!(
+            op_vec_len(l),
+            idx,
+            "left len == index for (len={len}, idx={index})"
+        );
         assert_eq!(
             op_vec_len(r),
             len as u32 - idx,
@@ -9426,11 +10193,23 @@ mod tests {
         assert_vec_invariants(r);
         let left_want: Vec<i64> = (0..idx as i64).collect();
         let right_want: Vec<i64> = (idx as i64..len).collect();
-        assert_eq!(vec_to_ints(l), left_want, "left elements (len={len}, idx={index})");
-        assert_eq!(vec_to_ints(r), right_want, "right elements (len={len}, idx={index})");
+        assert_eq!(
+            vec_to_ints(l),
+            left_want,
+            "left elements (len={len}, idx={index})"
+        );
+        assert_eq!(
+            vec_to_ints(r),
+            right_want,
+            "right elements (len={len}, idx={index})"
+        );
         op_drop(l);
         op_drop(r);
-        assert_eq!(live_nodes(), before, "no leak for split(len={len}, idx={index})");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak for split(len={len}, idx={index})"
+        );
     }
 
     #[test]
@@ -9460,7 +10239,11 @@ mod tests {
             let (l, r) = op_vec_split(v, i);
             let joined = op_vec_concat(l, r); // consumes l and r
             assert_eq!(op_vec_len(joined), 1000, "reconcat len for i={i}");
-            assert_eq!(vec_to_ints(joined), (0..1000).collect::<Vec<_>>(), "reconcat elements for i={i}");
+            assert_eq!(
+                vec_to_ints(joined),
+                (0..1000).collect::<Vec<_>>(),
+                "reconcat elements for i={i}"
+            );
             assert_vec_invariants(joined);
             op_drop(joined);
             assert_eq!(live_nodes(), before, "no leak for reconcat i={i}");
@@ -9630,10 +10413,18 @@ mod tests {
         for i in 0..3u32 {
             op_arr_set(a, i, op_box_int(i as i64)); // small ints are immediate — no boxed nodes
         }
-        assert_eq!(live_nodes(), before + 1, "just the arr node (immediate elements)");
+        assert_eq!(
+            live_nodes(),
+            before + 1,
+            "just the arr node (immediate elements)"
+        );
         let v = op_vec_of_arr(a);
         // header (new) + the reused arr-as-leaf = before + 2; NOT before + 3 (no throwaway leaf).
-        assert_eq!(live_nodes(), before + 2, "vec-of-arr adds ONLY the header — arr reused as the leaf");
+        assert_eq!(
+            live_nodes(),
+            before + 2,
+            "vec-of-arr adds ONLY the header — arr reused as the leaf"
+        );
         assert_eq!(vec_to_ints(v), vec![0, 1, 2]);
         op_drop(v);
         assert_eq!(live_nodes(), before, "no leak");
@@ -9650,17 +10441,29 @@ mod tests {
         let b = vec_range(70); // push-built twin
         // update through the vec-of-arr-built vector
         let a = op_vec_update(a, 65, op_box_int(999));
-        assert_eq!(op_get_int(op_vec_get(a, 65)), 999, "update on a vec-of-arr-built vector");
+        assert_eq!(
+            op_get_int(op_vec_get(a, 65)),
+            999,
+            "update on a vec-of-arr-built vector"
+        );
         assert_eq!(op_get_int(op_vec_get(a, 0)), 0, "other elements intact");
         // split it and reconcat — round-trips
         op_dup(a);
         let (l, r) = op_vec_split(a, 40);
         let joined = op_vec_concat(l, r);
-        assert_eq!(vec_to_ints(joined), vec_to_ints(a), "split+reconcat round-trips");
+        assert_eq!(
+            vec_to_ints(joined),
+            vec_to_ints(a),
+            "split+reconcat round-trips"
+        );
         op_drop(joined);
         op_drop(a);
         op_drop(b);
-        assert_eq!(live_nodes(), before, "no leak across update/split/concat on a vec-of-arr vector");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak across update/split/concat on a vec-of-arr vector"
+        );
     }
 
     #[test]
@@ -9780,7 +10583,11 @@ mod tests {
         let v = vec_range(200); // 2-level trie + 200 int leaves + interior/leaf nodes + header
         assert!(live_nodes() > before, "the trie occupies many nodes");
         op_drop(v);
-        assert_eq!(live_nodes(), before, "the whole vector subtree is reclaimed");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "the whole vector subtree is reclaimed"
+        );
     }
 
     #[test]
@@ -9795,8 +10602,15 @@ mod tests {
         // Drop v0: the shared subtrees survive under v1; v1 still reads correctly.
         op_drop(v0);
         assert_eq!(op_get_int(op_vec_get(v1, 10)), 7);
-        assert_eq!(op_get_int(op_vec_get(v1, 99)), 99, "shared tail intact after v0 dropped");
-        assert!(live_nodes() > before, "v1 (and its shared subtrees) still live");
+        assert_eq!(
+            op_get_int(op_vec_get(v1, 99)),
+            99,
+            "shared tail intact after v0 dropped"
+        );
+        assert!(
+            live_nodes() > before,
+            "v1 (and its shared subtrees) still live"
+        );
         // Drop v1: last owner of everything → baseline.
         op_drop(v1);
         assert_eq!(live_nodes(), before, "both versions gone: full reclamation");
@@ -9890,13 +10704,25 @@ mod tests {
         op_dup(v1); // rc(header) == 2: v1 is now a SHARED version
         let v2 = op_vec_push(v1, op_box_int(77_000));
         // v1 (the shared version) is UNCHANGED — not mutated in place.
-        assert_eq!(op_vec_len(v1) as i64, orig_len, "shared version keeps its length");
-        assert_eq!(vec_to_ints(v1), orig, "shared version byte-identical after other owner's push");
+        assert_eq!(
+            op_vec_len(v1) as i64,
+            orig_len,
+            "shared version keeps its length"
+        );
+        assert_eq!(
+            vec_to_ints(v1),
+            orig,
+            "shared version byte-identical after other owner's push"
+        );
         // v2 has the pushed element appended.
         assert_eq!(op_vec_len(v2) as i64, orig_len + 1);
         assert_eq!(op_get_int(op_vec_get(v2, orig_len as u32)), 77_000);
         for (i, &x) in orig.iter().enumerate() {
-            assert_eq!(op_get_int(op_vec_get(v2, i as u32)), x, "v2 prefix matches v1");
+            assert_eq!(
+                op_get_int(op_vec_get(v2, i as u32)),
+                x,
+                "v2 prefix matches v1"
+            );
         }
         assert_vec_invariants(v1);
         assert_vec_invariants(v2);
@@ -9931,13 +10757,25 @@ mod tests {
         op_dup(v1); // shared version
         let v2 = op_vec_update(v1, idx, op_box_int(-999));
         // v1 unchanged at idx (and everywhere).
-        assert_eq!(op_get_int(op_vec_get(v1, idx)), orig[idx as usize], "shared version unchanged at idx");
+        assert_eq!(
+            op_get_int(op_vec_get(v1, idx)),
+            orig[idx as usize],
+            "shared version unchanged at idx"
+        );
         assert_eq!(vec_to_ints(v1), orig, "shared version byte-identical");
         // v2 changed at idx, equal elsewhere.
-        assert_eq!(op_get_int(op_vec_get(v2, idx)), -999, "new version changed at idx");
+        assert_eq!(
+            op_get_int(op_vec_get(v2, idx)),
+            -999,
+            "new version changed at idx"
+        );
         for i in 0..len as u32 {
             if i != idx {
-                assert_eq!(op_get_int(op_vec_get(v2, i)), orig[i as usize], "v2 equals v1 off the path");
+                assert_eq!(
+                    op_get_int(op_vec_get(v2, i)),
+                    orig[i as usize],
+                    "v2 equals v1 off the path"
+                );
             }
         }
         assert_vec_invariants(v1);
@@ -9996,7 +10834,10 @@ mod tests {
             "FBIP push must allocate fewer nodes when unique ({unique_push_alloc}) than shared ({shared_push_alloc})"
         );
         // The unique push adds ONLY the new element leaf (the header + spine are reused): 1 node.
-        assert_eq!(unique_push_alloc, 1, "unique push allocates just the pushed element");
+        assert_eq!(
+            unique_push_alloc, 1,
+            "unique push allocates just the pushed element"
+        );
 
         // Same for UPDATE: unique refits in place (0 new nodes beyond the replacement element), shared
         // path-copies the whole root→leaf spine + a fresh header.
@@ -10026,7 +10867,10 @@ mod tests {
         // inline immediate (0 new nodes) and the replaced old inline element frees nothing, so the NET
         // delta is 0 — the sharpest possible FBIP win. (Were the element boxed, the +1 new leaf would
         // be offset by the -1 freed old leaf for the same net 0; both reps give 0 here.)
-        assert_eq!(unique_update_alloc, 0, "unique update reuses the spine; inline elem adds no node");
+        assert_eq!(
+            unique_update_alloc, 0,
+            "unique update reuses the spine; inline elem adds no node"
+        );
     }
 
     #[test]
@@ -10044,7 +10888,11 @@ mod tests {
         // and NOT corrupt v0.
         let v0_orig = vec_to_ints(v0);
         let v2 = op_vec_push(v1, op_box_int(2_000));
-        assert_eq!(vec_to_ints(v0), v0_orig, "v0 intact after push on a partially-shared sibling");
+        assert_eq!(
+            vec_to_ints(v0),
+            v0_orig,
+            "v0 intact after push on a partially-shared sibling"
+        );
         assert_eq!(op_get_int(op_vec_get(v2, 200)), 2_000);
         assert_vec_invariants(v0);
         assert_vec_invariants(v2);
@@ -10062,7 +10910,9 @@ mod tests {
         let mut oracle: Vec<i64> = Vec::new();
         let mut lcg: u64 = 0x1234_5678;
         let next = |lcg: &mut u64| {
-            *lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *lcg = lcg
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (*lcg >> 33) as u32
         };
         for step in 0..500i64 {
@@ -10085,8 +10935,16 @@ mod tests {
                 oracle[idx as usize] = val;
             }
         }
-        assert_eq!(op_vec_len(v) as usize, oracle.len(), "length matches oracle");
-        assert_eq!(vec_to_ints(v), oracle, "elements match oracle after mixed FBIP ops");
+        assert_eq!(
+            op_vec_len(v) as usize,
+            oracle.len(),
+            "length matches oracle"
+        );
+        assert_eq!(
+            vec_to_ints(v),
+            oracle,
+            "elements match oracle after mixed FBIP ops"
+        );
         assert_vec_invariants(v);
         op_drop(v);
         assert_eq!(live_nodes(), before, "no leak across the mixed sequence");
@@ -10110,7 +10968,10 @@ mod tests {
         assert_vec_invariants(v);
         let live = live_nodes() - baseline;
         // 1000 element leaves + ~32 leaf nodes + ~2 interior + header ≈ well under 1100.
-        assert!(live < 1100, "final structure is bounded ({live} nodes), not O(chain length) leaked");
+        assert!(
+            live < 1100,
+            "final structure is bounded ({live} nodes), not O(chain length) leaked"
+        );
         op_drop(v);
         assert_eq!(live_nodes(), baseline, "chain fully reclaims");
     }
@@ -10154,7 +11015,11 @@ mod tests {
         let y = bytes_leaf(&[1; 50]);
         let before = live_nodes();
         let c = op_bytes_concat(x, y);
-        assert_eq!(live_nodes(), before + 1, "concat = one node, not 100 byte copies");
+        assert_eq!(
+            live_nodes(),
+            before + 1,
+            "concat = one node, not 100 byte copies"
+        );
         assert_eq!(op_bytes_len(c), 100);
         op_drop(c);
     }
@@ -10247,8 +11112,16 @@ mod tests {
         // proving the slice-of-slice collapsed. Also check the recomputed offset (1 + 1 = 2).
         assert_eq!(vec_arity(s2), 1, "s2 is still a slice before reading");
         let child = with_node(s2, Handle::NULL, |n| n.handles[0]);
-        assert_eq!(vec_arity(child), 0, "collapsed slice points straight at the leaf parent");
-        assert_eq!(with_node(s2, 99, |n| read_u32_at(&n.raw, 0)), 2, "offset collapsed to 1+1");
+        assert_eq!(
+            vec_arity(child),
+            0,
+            "collapsed slice points straight at the leaf parent"
+        );
+        assert_eq!(
+            with_node(s2, 99, |n| read_u32_at(&n.raw, 0)),
+            2,
+            "offset collapsed to 1+1"
+        );
         // Now read: content is correct.
         assert_eq!(bytes_to_vec(s2), vec![12, 13]);
         op_drop(s2);
@@ -10289,7 +11162,11 @@ mod tests {
         );
         assert!(live_nodes() > before);
         op_drop(rope);
-        assert_eq!(live_nodes(), before, "whole rope (concats, slice, leaves) reclaimed");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "whole rope (concats, slice, leaves) reclaimed"
+        );
     }
 
     #[test]
@@ -10317,12 +11194,20 @@ mod tests {
         let before = live_nodes();
         let parent = bytes_leaf(&[0u8; 1000]); // one large leaf
         let s = op_bytes_slice(parent, 10, 3); // pins the 1000-byte parent
-        assert_eq!(live_nodes(), before + 2, "large parent + slice node both live");
+        assert_eq!(
+            live_nodes(),
+            before + 2,
+            "large parent + slice node both live"
+        );
         let c = op_bytes_compact(s); // flatten → independent 3-byte leaf, parent released
         assert_eq!(c, s, "compact returns the same handle, now a leaf");
         assert_eq!(vec_arity(c), 0, "compacted to a leaf");
         assert_eq!(op_bytes_len(c), 3);
-        assert_eq!(live_nodes(), before + 1, "the 1000-byte parent was released by compact");
+        assert_eq!(
+            live_nodes(),
+            before + 1,
+            "the 1000-byte parent was released by compact"
+        );
         op_drop(c);
         assert_eq!(live_nodes(), before);
     }
@@ -10434,7 +11319,11 @@ mod tests {
         op_drop(empty);
         op_drop(collision);
         op_drop(normal);
-        assert_eq!(live_nodes(), before, "discrimination test reclaimed all nodes");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "discrimination test reclaimed all nodes"
+        );
     }
 
     // Build a small normal CHAMP node owning two int leaves as one k/v entry (datamap bit 0).
@@ -10508,15 +11397,15 @@ mod tests {
             op_box_int(0),
             op_box_int(7),
             op_box_int(-1),
-            op_box_int(FIXNUM_MAX),           // largest inline fixnum
-            op_box_int(FIXNUM_MAX + 1),       // first BOXED int (out of the inline window)
-            op_box_int(FIXNUM_MIN - 1),       // first boxed negative
+            op_box_int(FIXNUM_MAX),     // largest inline fixnum
+            op_box_int(FIXNUM_MAX + 1), // first BOXED int (out of the inline window)
+            op_box_int(FIXNUM_MIN - 1), // first boxed negative
             op_box_float(3.5),
-            op_box_float(-0.0),               // distinct bits from 0.0
+            op_box_float(-0.0), // distinct bits from 0.0
             op_str_new(String::new()),
             op_str_new("cadenza".to_string()),
             op_bytes_alloc(0),
-            Handle::NULL,                     // null folds to the bare offset basis on both paths
+            Handle::NULL, // null folds to the bare offset basis on both paths
         ];
         for &h in &leaves {
             assert_eq!(
@@ -10538,9 +11427,9 @@ mod tests {
         // `champ_node_raw_hash` fold plus child folding.
         let arr = op_arr_alloc(2);
         op_arr_set(arr, 0, op_box_int(FIXNUM_MAX + 100)); // boxed child so a real leaf node is walked
-        op_arr_set(arr, 1, imm_bool(true));               // immediate child folded via the fast leaf
+        op_arr_set(arr, 1, imm_bool(true)); // immediate child folded via the fast leaf
         let sum = op_sum_new(3, op_box_int(9));
-        let kv = champ_kv_node(10, 20);                    // a real CHAMP node with a set datamap bit
+        let kv = champ_kv_node(10, 20); // a real CHAMP node with a set datamap bit
         let nested = op_arr_alloc(2);
         op_arr_set(nested, 0, arr); // arr's ownership moves into `nested`
         op_arr_set(nested, 1, sum); // sum's ownership moves into `nested`
@@ -10558,7 +11447,11 @@ mod tests {
         }
         op_drop(nested); // frees arr + sum + their children transitively
         op_drop(kv);
-        assert_eq!(live_nodes(), before, "reference-hash test reclaimed all nodes");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "reference-hash test reclaimed all nodes"
+        );
     }
 
     #[test]
@@ -10584,7 +11477,11 @@ mod tests {
         for &(a, b, v) in &[(1i64, 2i64, 10i64), (3, 4, 20), (1, 9, 30), (5, 5, 40)] {
             let probe = tuple(a, b);
             let got = op_map_lookup(m, probe);
-            assert_ne!(got, Handle::NULL, "tuple key ({a},{b}) found via a fresh, equal probe");
+            assert_ne!(
+                got,
+                Handle::NULL,
+                "tuple key ({a},{b}) found via a fresh, equal probe"
+            );
             assert_eq!(op_get_int(got), v, "tuple key ({a},{b}) maps to {v}");
             op_drop(probe);
         }
@@ -10592,11 +11489,19 @@ mod tests {
         m = op_map_insert(m, tuple(1, 2), op_box_int(999));
         assert_eq!(op_map_size(m), 4, "equal tuple key overwrote, did not add");
         let probe = tuple(1, 2);
-        assert_eq!(op_get_int(op_map_lookup(m, probe)), 999, "value overwritten");
+        assert_eq!(
+            op_get_int(op_map_lookup(m, probe)),
+            999,
+            "value overwritten"
+        );
         op_drop(probe);
         // A miss on an absent tuple.
         let miss = tuple(7, 7);
-        assert_eq!(op_map_lookup(m, miss), Handle::NULL, "absent tuple key misses");
+        assert_eq!(
+            op_map_lookup(m, miss),
+            Handle::NULL,
+            "absent tuple key misses"
+        );
         op_drop(miss);
         op_drop(m);
         assert_eq!(live_nodes(), before, "no leak");
@@ -10664,20 +11569,45 @@ mod tests {
         let z = nest(big + 1); // differs ONLY at the deepest leaf
 
         // Identical nests: eq true, cmp Equal — the worklist must fully descend all 4 levels to confirm.
-        assert!(champ_eq(x, y), "identical 4-level nests are eq (full descent)");
-        assert_eq!(champ_key_cmp(x, y), core::cmp::Ordering::Equal, "identical nests cmp Equal");
+        assert!(
+            champ_eq(x, y),
+            "identical 4-level nests are eq (full descent)"
+        );
+        assert_eq!(
+            champ_key_cmp(x, y),
+            core::cmp::Ordering::Equal,
+            "identical nests cmp Equal"
+        );
         // Differ only at the deepest leaf: eq false, cmp non-Equal, and antisymmetric.
-        assert!(!champ_eq(x, z), "nests differing at the deepest leaf are not eq");
+        assert!(
+            !champ_eq(x, z),
+            "nests differing at the deepest leaf are not eq"
+        );
         let ord = champ_key_cmp(x, z);
-        assert_ne!(ord, core::cmp::Ordering::Equal, "deep-leaf difference is found by cmp");
-        assert_eq!(champ_key_cmp(z, x), ord.reverse(), "cmp is antisymmetric across the deep difference");
+        assert_ne!(
+            ord,
+            core::cmp::Ordering::Equal,
+            "deep-leaf difference is found by cmp"
+        );
+        assert_eq!(
+            champ_key_cmp(z, x),
+            ord.reverse(),
+            "cmp is antisymmetric across the deep difference"
+        );
         // eq/cmp consistency at depth.
-        assert_eq!(champ_eq(x, z), champ_key_cmp(x, z) == core::cmp::Ordering::Equal);
+        assert_eq!(
+            champ_eq(x, z),
+            champ_key_cmp(x, z) == core::cmp::Ordering::Equal
+        );
 
         op_drop(x);
         op_drop(y);
         op_drop(z);
-        assert_eq!(live_nodes(), before, "nested-compound eq/cmp test reclaimed all nodes");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "nested-compound eq/cmp test reclaimed all nodes"
+        );
     }
 
     #[test]
@@ -10702,7 +11632,7 @@ mod tests {
         let a2 = tup(&[op_box_int(1), op_box_int(2)]); // structurally equal, distinct pointer
         let b = tup(&[op_box_int(1), op_box_int(3)]); // differs at child 1
         let c = tup(&[op_box_int(0), op_box_int(2)]); // differs at child 0
-        let d = tup(&[op_box_int(1)]);                // differs in arity
+        let d = tup(&[op_box_int(1)]); // differs in arity
         let e = tup(&[boxed_int_leaf(big(1)), boxed_int_leaf(big(2))]); // boxed-leaf children (shallow)
         let e2 = tup(&[boxed_int_leaf(big(1)), boxed_int_leaf(big(2))]); // equal to e
         let e3 = tup(&[boxed_int_leaf(big(1)), boxed_int_leaf(big(9))]); // differs at child 1 (boxed)
@@ -10712,10 +11642,20 @@ mod tests {
 
         // Equalities.
         assert!(champ_eq(a, a2), "equal shallow tuples are eq");
-        assert_eq!(champ_key_cmp(a, a2), core::cmp::Ordering::Equal, "equal shallow tuples cmp Equal");
-        assert!(champ_eq(e, e2), "equal shallow tuples over boxed leaves are eq");
+        assert_eq!(
+            champ_key_cmp(a, a2),
+            core::cmp::Ordering::Equal,
+            "equal shallow tuples cmp Equal"
+        );
+        assert!(
+            champ_eq(e, e2),
+            "equal shallow tuples over boxed leaves are eq"
+        );
         assert_eq!(champ_key_cmp(e, e2), core::cmp::Ordering::Equal);
-        assert!(champ_eq(nested, nested2), "equal NESTED tuples are eq (via the general walk)");
+        assert!(
+            champ_eq(nested, nested2),
+            "equal NESTED tuples are eq (via the general walk)"
+        );
         assert_eq!(champ_key_cmp(nested, nested2), core::cmp::Ordering::Equal);
         // Inequalities + eq/cmp consistency + antisymmetry across each difference kind.
         for &(x, y) in &[(a, b), (a, c), (a, d), (e, e3), (nested, a)] {
@@ -10723,12 +11663,20 @@ mod tests {
             let ord = champ_key_cmp(x, y);
             assert_ne!(ord, core::cmp::Ordering::Equal, "cmp finds the difference");
             assert_eq!(champ_key_cmp(y, x), ord.reverse(), "cmp antisymmetric");
-            assert_eq!(champ_eq(x, y), champ_key_cmp(x, y) == core::cmp::Ordering::Equal, "cmp==Equal iff eq");
+            assert_eq!(
+                champ_eq(x, y),
+                champ_key_cmp(x, y) == core::cmp::Ordering::Equal,
+                "cmp==Equal iff eq"
+            );
         }
         for &h in &[a, a2, b, c, d, e, e2, e3, nested, nested2] {
             op_drop(h);
         }
-        assert_eq!(live_nodes(), before, "shallow-compound eq/cmp test reclaimed all nodes");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "shallow-compound eq/cmp test reclaimed all nodes"
+        );
     }
 
     /// Guard the alloc-free `with_raw_arity` fast path in `champ_eq`/`champ_key_cmp` against the naive
@@ -10762,13 +11710,13 @@ mod tests {
             imm_unit(),
             imm_bool(false),
             imm_bool(true),
-            op_box_int(0),          // inline fixnum
-            op_box_int(-1),         // inline negative
-            op_box_int(536_870_912),// FIXNUM_MAX+1 ⇒ boxed leaf
-            boxed_int_leaf(0),      // hand-boxed twin of inline 0
+            op_box_int(0),           // inline fixnum
+            op_box_int(-1),          // inline negative
+            op_box_int(536_870_912), // FIXNUM_MAX+1 ⇒ boxed leaf
+            boxed_int_leaf(0),       // hand-boxed twin of inline 0
             boxed_int_leaf(-1),
             op_box_float(0.0),
-            op_box_float(-0.0),     // -0.0 ≠ 0.0 by raw bytes
+            op_box_float(-0.0), // -0.0 ≠ 0.0 by raw bytes
             op_box_float(1.5),
             op_str_new(String::new()),
             op_str_new("hi".to_string()),
@@ -10799,7 +11747,11 @@ mod tests {
                 op_drop(h);
             }
         }
-        assert_eq!(live_nodes(), before, "raw-arity reference test reclaimed all nodes");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "raw-arity reference test reclaimed all nodes"
+        );
     }
 
     // ── CHAMP persistent MAP: empty / lookup / insert / size ──────────────────────────────
@@ -10875,12 +11827,20 @@ mod tests {
         for (i, &k) in keys.iter().enumerate() {
             m = minsert_int(m, k, k * 2);
             expected += 1; // a fresh key: delta 1 at every ancestor
-            assert_eq!(op_map_size(m), expected, "size after inserting fresh key #{i} ({k})");
+            assert_eq!(
+                op_map_size(m),
+                expected,
+                "size after inserting fresh key #{i} ({k})"
+            );
         }
         // Overwrite every key (delta 0 everywhere) — size must NOT change at any step.
         for &k in &keys {
             m = minsert_int(m, k, k * 3);
-            assert_eq!(op_map_size(m), expected, "overwrite of {k} must not change size");
+            assert_eq!(
+                op_map_size(m),
+                expected,
+                "overwrite of {k} must not change size"
+            );
         }
         // Now the SHARED (path-copy) insert path: keep the base, derive versions, check their sizes.
         for &k in &[keys[0], 999_999, keys[200], 888_888] {
@@ -10888,13 +11848,25 @@ mod tests {
             let m2 = minsert_int(m, k, 0);
             let was_present = keys.contains(&k);
             let want = if was_present { expected } else { expected + 1 };
-            assert_eq!(op_map_size(m2), want, "shared-insert size for key {k} (present={was_present})");
-            assert_eq!(op_map_size(m), expected, "the shared base's size is untouched");
+            assert_eq!(
+                op_map_size(m2),
+                want,
+                "shared-insert size for key {k} (present={was_present})"
+            );
+            assert_eq!(
+                op_map_size(m),
+                expected,
+                "the shared base's size is untouched"
+            );
             op_drop(m2);
         }
         // Full membership + value sweep on the (overwritten) map.
         for &k in &keys {
-            assert_eq!(mlookup_int(m, k), Some(k * 3), "key {k} resolves to its overwritten value");
+            assert_eq!(
+                mlookup_int(m, k),
+                Some(k * 3),
+                "key {k} resolves to its overwritten value"
+            );
         }
         assert_eq!(mlookup_int(m, 999_999), None, "an absent key still misses");
         op_drop(m);
@@ -10905,7 +11877,14 @@ mod tests {
     fn map_many_distinct_keys_all_lookup() {
         reset();
         let before = live_nodes();
-        let pairs = [(1i64, 10i64), (2, 20), (3, 30), (17, 170), (99, 990), (1000, 10000)];
+        let pairs = [
+            (1i64, 10i64),
+            (2, 20),
+            (3, 30),
+            (17, 170),
+            (99, 990),
+            (1000, 10000),
+        ];
         let mut m = op_map_empty();
         for &(k, v) in &pairs {
             m = minsert_int(m, k, v);
@@ -10951,7 +11930,9 @@ mod tests {
         assert_eq!(mlookup_int(m, a), Some(1));
         assert_eq!(mlookup_int(m, b), Some(2));
         // Root must now hold a subnode (the split), not two inline entries.
-        let (dm, nm) = with_node(m, (0u32, 0u32), |n| (champ_datamap(&n.raw), champ_nodemap(&n.raw)));
+        let (dm, nm) = with_node(m, (0u32, 0u32), |n| {
+            (champ_datamap(&n.raw), champ_nodemap(&n.raw))
+        });
         assert_eq!(data_count(dm), 0, "root has no inline entries after split");
         assert_eq!(subnode_count(nm), 1, "root created exactly one subnode");
         op_drop(m);
@@ -11157,12 +12138,26 @@ mod tests {
             }
             m
         };
-        assert!(champ_eq(fbip, copy), "in-place drain remove == copy-path remove (canonical)");
-        assert_eq!(champ_hash(fbip), champ_hash(copy), "byte-identical canonical shape");
-        assert!(champ_eq(fbip, fresh), "== a fresh map of the survivors (order-independent canonical)");
+        assert!(
+            champ_eq(fbip, copy),
+            "in-place drain remove == copy-path remove (canonical)"
+        );
+        assert_eq!(
+            champ_hash(fbip),
+            champ_hash(copy),
+            "byte-identical canonical shape"
+        );
+        assert!(
+            champ_eq(fbip, fresh),
+            "== a fresh map of the survivors (order-independent canonical)"
+        );
         assert_eq!(mlookup_int(fbip, remove_key), None, "removed key absent");
         for &(k, v) in &[(sa, 100i64), (sb, 200), (1, 10), (3, 30), (4, 40)] {
-            assert_eq!(mlookup_int(fbip, k), Some(v), "survivor {k} intact after the drain shift");
+            assert_eq!(
+                mlookup_int(fbip, k),
+                Some(v),
+                "survivor {k} intact after the drain shift"
+            );
         }
         op_drop(fbip);
         op_drop(copy);
@@ -11250,8 +12245,15 @@ mod tests {
         };
         let fbip = build_then_remove_b(false);
         let copy = build_then_remove_b(true);
-        assert!(champ_eq(fbip, copy), "in-place-descend remove == copy-path remove (canonical)");
-        assert_eq!(champ_hash(fbip), champ_hash(copy), "byte-identical canonical shape");
+        assert!(
+            champ_eq(fbip, copy),
+            "in-place-descend remove == copy-path remove (canonical)"
+        );
+        assert_eq!(
+            champ_hash(fbip),
+            champ_hash(copy),
+            "byte-identical canonical shape"
+        );
         assert_eq!(op_map_size(fbip), 4, "one of five entries removed");
         assert_eq!(mlookup_int(fbip, b), None, "removed key absent");
         for &(k, val) in &[(a, 1i64), (c, 3), (7i64, 70), (8, 80)] {
@@ -11263,7 +12265,11 @@ mod tests {
         assert_eq!(mlookup_int(fbip, a), Some(1));
         op_drop(fbip);
         op_drop(copy);
-        assert_eq!(live_nodes(), before, "no leak across the in-place-descend removes");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak across the in-place-descend removes"
+        );
     }
 
     #[test]
@@ -11282,7 +12288,10 @@ mod tests {
         let empty = op_map_empty();
         assert!(is_empty_node(m));
         assert_eq!(op_map_size(m), 0);
-        assert!(champ_eq(m, empty), "remove-to-empty is byte-identical to op_map_empty()");
+        assert!(
+            champ_eq(m, empty),
+            "remove-to-empty is byte-identical to op_map_empty()"
+        );
         assert_eq!(champ_hash(m), champ_hash(empty));
         op_drop(empty);
         op_drop(m);
@@ -11296,11 +12305,19 @@ mod tests {
         let (a, b) = low5_split_pair();
         let m = minsert_int(minsert_int(op_map_empty(), a, 1), b, 2);
         // Sanity: the split produced a subnode at the root.
-        let (dm0, nm0) = with_node(m, (0u32, 0u32), |n| (champ_datamap(&n.raw), champ_nodemap(&n.raw)));
-        assert_eq!((data_count(dm0), subnode_count(nm0)), (0, 1), "split created a subnode");
+        let (dm0, nm0) = with_node(m, (0u32, 0u32), |n| {
+            (champ_datamap(&n.raw), champ_nodemap(&n.raw))
+        });
+        assert_eq!(
+            (data_count(dm0), subnode_count(nm0)),
+            (0, 1),
+            "split created a subnode"
+        );
         // Remove one of the two: the subnode must collapse back into a single inline entry.
         let m = mremove_int(m, a);
-        let (dm, nm) = with_node(m, (0u32, 0u32), |n| (champ_datamap(&n.raw), champ_nodemap(&n.raw)));
+        let (dm, nm) = with_node(m, (0u32, 0u32), |n| {
+            (champ_datamap(&n.raw), champ_nodemap(&n.raw))
+        });
         assert_eq!(data_count(dm), 1, "root collapsed to one inline entry");
         assert_eq!(nm, 0, "root has no subnodes after collapse");
         assert_eq!(op_map_size(m), 1);
@@ -11324,7 +12341,10 @@ mod tests {
         assert_eq!(mlookup_int(m, b), Some(2000));
         // The survivor must be reachable as a plain inline entry, byte-identical to inserting it alone.
         let solo = minsert_int(op_map_empty(), b, 2000);
-        assert!(champ_eq(m, solo), "collision collapse is canonical (== fresh single-entry map)");
+        assert!(
+            champ_eq(m, solo),
+            "collision collapse is canonical (== fresh single-entry map)"
+        );
         assert_eq!(champ_hash(m), champ_hash(solo));
         op_drop(solo);
         op_drop(m);
@@ -11347,7 +12367,8 @@ mod tests {
         let build = |shared: bool| -> Handle {
             let mut m = op_map_empty();
             // a,b (subnode #1) + c,d (subnode #2) + ordinary inline entries.
-            let mut seq: Vec<(i64, i64)> = vec![(a, 1), (b, 2), (c, 3), (d, 4), (5i64, 50), (6, 60), (7, 70)];
+            let mut seq: Vec<(i64, i64)> =
+                vec![(a, 1), (b, 2), (c, 3), (d, 4), (5i64, 50), (6, 60), (7, 70)];
             // Remove `a`: subnode #1 (from the a,b split) collapses to inline `b`, while subnode #2
             // (c,d) and the inline entries stay — exercising the reposition amid entries + a subnode.
             seq.push((a, -1)); // marker handled below
@@ -11376,11 +12397,22 @@ mod tests {
         };
         let fbip = build(false);
         let copy = build(true);
-        assert!(champ_eq(fbip, copy), "in-place collapse == copy-path collapse (canonical)");
-        assert_eq!(champ_hash(fbip), champ_hash(copy), "byte-identical canonical shape");
+        assert!(
+            champ_eq(fbip, copy),
+            "in-place collapse == copy-path collapse (canonical)"
+        );
+        assert_eq!(
+            champ_hash(fbip),
+            champ_hash(copy),
+            "byte-identical canonical shape"
+        );
         assert_eq!(mlookup_int(fbip, a), None, "removed key gone");
         for &(k, v) in &[(b, 2i64), (c, 3), (d, 4), (5, 50), (6, 60), (7, 70)] {
-            assert_eq!(mlookup_int(fbip, k), Some(v), "survivor {k} intact after in-place collapse");
+            assert_eq!(
+                mlookup_int(fbip, k),
+                Some(v),
+                "survivor {k} intact after in-place collapse"
+            );
         }
         op_drop(fbip);
         op_drop(copy);
@@ -11406,7 +12438,10 @@ mod tests {
             mb = minsert_int(mb, k, v);
         }
         assert_eq!(op_map_size(ma), op_map_size(mb));
-        assert!(champ_eq(ma, mb), "insert-then-remove == direct insert (canonical)");
+        assert!(
+            champ_eq(ma, mb),
+            "insert-then-remove == direct insert (canonical)"
+        );
         assert_eq!(champ_hash(ma), champ_hash(mb));
         // Insert-order independence: [a,b,c] vs [c,b,a].
         let mut mc = op_map_empty();
@@ -11425,7 +12460,11 @@ mod tests {
     fn map_remove_persistence() {
         reset();
         let before = live_nodes();
-        let orig = minsert_int(minsert_int(minsert_int(op_map_empty(), 10, 1), 20, 2), 30, 3);
+        let orig = minsert_int(
+            minsert_int(minsert_int(op_map_empty(), 10, 1), 20, 2),
+            30,
+            3,
+        );
         op_dup(orig);
         let derived = mremove_int(orig, 20);
         // Original unchanged.
@@ -11467,7 +12506,11 @@ mod tests {
         let before = live_nodes();
         let m = op_map_empty();
         let cur = op_map_iter(m);
-        assert_eq!(op_map_iter_key(cur), Handle::NULL, "empty map cursor is exhausted");
+        assert_eq!(
+            op_map_iter_key(cur),
+            Handle::NULL,
+            "empty map cursor is exhausted"
+        );
         assert_eq!(op_map_iter_val(cur), Handle::NULL);
         op_drop(cur);
         op_drop(m);
@@ -11483,7 +12526,11 @@ mod tests {
         assert_eq!(op_get_int(op_map_iter_key(cur)), 7);
         assert_eq!(op_get_int(op_map_iter_val(cur)), 700);
         let cur = op_map_iter_next(cur);
-        assert_eq!(op_map_iter_key(cur), Handle::NULL, "past the only entry ⇒ exhausted");
+        assert_eq!(
+            op_map_iter_key(cur),
+            Handle::NULL,
+            "past the only entry ⇒ exhausted"
+        );
         op_drop(cur);
         op_drop(m);
         assert_eq!(live_nodes(), before);
@@ -11494,7 +12541,14 @@ mod tests {
         reset();
         let before = live_nodes();
         let (sa, sb) = low5_split_pair(); // force a subnode split into the traversal
-        let mut pairs: Vec<(i64, i64)> = vec![(1, 10), (2, 20), (3, 30), (17, 170), (99, 990), (1000, 10000)];
+        let mut pairs: Vec<(i64, i64)> = vec![
+            (1, 10),
+            (2, 20),
+            (3, 30),
+            (17, 170),
+            (99, 990),
+            (1000, 10000),
+        ];
         pairs.push((sa, 111));
         pairs.push((sb, 222));
         let mut m = op_map_empty();
@@ -11502,7 +12556,11 @@ mod tests {
             m = minsert_int(m, k, v);
         }
         let visited = collect_map(m);
-        assert_eq!(visited.len(), op_map_size(m) as usize, "visited exactly size entries");
+        assert_eq!(
+            visited.len(),
+            op_map_size(m) as usize,
+            "visited exactly size entries"
+        );
         assert_eq!(visited.len(), pairs.len());
         // Every inserted key seen exactly once, mapped to its value.
         let mut got: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
@@ -11521,7 +12579,14 @@ mod tests {
         reset();
         let before = live_nodes();
         let (sa, sb) = low5_split_pair();
-        let keys = [(1i64, 10i64), (5, 50), (sa, 100), (sb, 200), (42, 420), (7, 70)];
+        let keys = [
+            (1i64, 10i64),
+            (5, 50),
+            (sa, 100),
+            (sb, 200),
+            (42, 420),
+            (7, 70),
+        ];
         // Build the same logical map two different insert orders.
         let mut m1 = op_map_empty();
         for &(k, v) in keys.iter() {
@@ -11533,7 +12598,10 @@ mod tests {
         }
         let order1: Vec<i64> = collect_map(m1).into_iter().map(|(k, _)| k).collect();
         let order2: Vec<i64> = collect_map(m2).into_iter().map(|(k, _)| k).collect();
-        assert_eq!(order1, order2, "canonical order is insert-order-independent");
+        assert_eq!(
+            order1, order2,
+            "canonical order is insert-order-independent"
+        );
         op_drop(m1);
         op_drop(m2);
         assert_eq!(live_nodes(), before);
@@ -11543,14 +12611,22 @@ mod tests {
     fn map_iter_fork_independence() {
         reset();
         let before = live_nodes();
-        let m = minsert_int(minsert_int(minsert_int(op_map_empty(), 1, 10), 2, 20), 3, 30);
+        let m = minsert_int(
+            minsert_int(minsert_int(op_map_empty(), 1, 10), 2, 20),
+            3,
+            30,
+        );
         // A shared cursor with rc>1: advancing the RESULT of next must not disturb the other ref.
         let cur = op_map_iter(m);
         let first_key = op_get_int(op_map_iter_key(cur));
         op_dup(cur); // now rc==2: `cur` referenced twice
         let advanced = op_map_iter_next(cur); // consumes one ref, returns a fresh cursor
         // The still-held original reference (cur) must project its ORIGINAL key unchanged.
-        assert_eq!(op_get_int(op_map_iter_key(cur)), first_key, "fork undisturbed by advance");
+        assert_eq!(
+            op_get_int(op_map_iter_key(cur)),
+            first_key,
+            "fork undisturbed by advance"
+        );
         // The advanced cursor is at a different (successor) key.
         let adv_key = op_map_iter_key(advanced);
         assert_ne!(op_get_int(adv_key), first_key, "advanced cursor moved on");
@@ -11569,7 +12645,10 @@ mod tests {
         let visited = collect_map(m);
         assert_eq!(visited.len(), 2, "both colliding entries visited");
         let keys: std::collections::HashSet<i64> = visited.iter().map(|(k, _)| *k).collect();
-        assert!(keys.contains(&a) && keys.contains(&b), "both colliding keys seen");
+        assert!(
+            keys.contains(&a) && keys.contains(&b),
+            "both colliding keys seen"
+        );
         op_drop(m);
         assert_eq!(live_nodes(), before);
     }
@@ -11686,8 +12765,14 @@ mod tests {
         let (a, b) = low5_split_pair();
         let s = sinsert_int(sinsert_int(op_set_empty(), a), b);
         assert_eq!(op_set_size(s), 2);
-        let (dm, nm) = with_node(s, (0u32, 0u32), |n| (champ_datamap(&n.raw), champ_nodemap(&n.raw)));
-        assert_eq!((data_count(dm), subnode_count(nm)), (0, 1), "split created a subnode");
+        let (dm, nm) = with_node(s, (0u32, 0u32), |n| {
+            (champ_datamap(&n.raw), champ_nodemap(&n.raw))
+        });
+        assert_eq!(
+            (data_count(dm), subnode_count(nm)),
+            (0, 1),
+            "split created a subnode"
+        );
         assert!(scontains_int(s, a) && scontains_int(s, b));
         op_drop(s);
         assert_eq!(live_nodes(), before);
@@ -11729,7 +12814,10 @@ mod tests {
         let empty = op_set_empty();
         assert!(is_empty_node(s));
         assert_eq!(op_set_size(s), 0);
-        assert!(champ_eq(s, empty), "remove-to-empty is byte-identical to op_set_empty()");
+        assert!(
+            champ_eq(s, empty),
+            "remove-to-empty is byte-identical to op_set_empty()"
+        );
         assert_eq!(champ_hash(s), champ_hash(empty));
         op_drop(empty);
         op_drop(s);
@@ -11744,7 +12832,9 @@ mod tests {
         let (a, b) = low5_split_pair();
         let s = sinsert_int(sinsert_int(op_set_empty(), a), b);
         let s = sremove_int(s, a);
-        let (dm, nm) = with_node(s, (0u32, 0u32), |n| (champ_datamap(&n.raw), champ_nodemap(&n.raw)));
+        let (dm, nm) = with_node(s, (0u32, 0u32), |n| {
+            (champ_datamap(&n.raw), champ_nodemap(&n.raw))
+        });
         assert_eq!(data_count(dm), 1, "root collapsed to one inline elem");
         assert_eq!(nm, 0, "no subnodes after collapse");
         assert!(scontains_int(s, b) && !scontains_int(s, a));
@@ -11815,7 +12905,11 @@ mod tests {
         }
         let v1 = collect_set(s1);
         let v2 = collect_set(s2);
-        assert_eq!(v1.len(), op_set_size(s1) as usize, "visited exactly size elements");
+        assert_eq!(
+            v1.len(),
+            op_set_size(s1) as usize,
+            "visited exactly size elements"
+        );
         // Every element seen exactly once.
         let seen: std::collections::HashSet<i64> = v1.iter().copied().collect();
         assert_eq!(seen.len(), elems.len());
@@ -11838,8 +12932,16 @@ mod tests {
         let first = op_get_int(op_set_iter_elem(cur));
         op_dup(cur);
         let advanced = op_set_iter_next(cur);
-        assert_eq!(op_get_int(op_set_iter_elem(cur)), first, "fork undisturbed by advance");
-        assert_ne!(op_get_int(op_set_iter_elem(advanced)), first, "advanced moved on");
+        assert_eq!(
+            op_get_int(op_set_iter_elem(cur)),
+            first,
+            "fork undisturbed by advance"
+        );
+        assert_ne!(
+            op_get_int(op_set_iter_elem(advanced)),
+            first,
+            "advanced moved on"
+        );
         op_drop(cur);
         op_drop(advanced);
         op_drop(s);
@@ -11847,7 +12949,10 @@ mod tests {
         let (a, b) = full_hash_collision_pair();
         let sc = sinsert_int(sinsert_int(op_set_empty(), a), b);
         let visited: std::collections::HashSet<i64> = collect_set(sc).into_iter().collect();
-        assert!(visited.contains(&a) && visited.contains(&b), "both colliding elems visited");
+        assert!(
+            visited.contains(&a) && visited.contains(&b),
+            "both colliding elems visited"
+        );
         op_drop(sc);
         assert_eq!(live_nodes(), before);
     }
@@ -11891,9 +12996,20 @@ mod tests {
         let m2 = minsert_int(minsert_int(op_map_empty(), b, 200), a, 100);
         assert_eq!(op_map_size(m1), 2);
         assert_eq!(op_map_size(m2), 2);
-        assert!(champ_eq(m1, m2), "collision node canonical regardless of insert order");
-        assert_eq!(champ_hash(m1), champ_hash(m2), "equal collision maps hash equal");
-        assert_eq!(collect_map(m1), collect_map(m2), "iteration order identical");
+        assert!(
+            champ_eq(m1, m2),
+            "collision node canonical regardless of insert order"
+        );
+        assert_eq!(
+            champ_hash(m1),
+            champ_hash(m2),
+            "equal collision maps hash equal"
+        );
+        assert_eq!(
+            collect_map(m1),
+            collect_map(m2),
+            "iteration order identical"
+        );
         // Both keys still lookup to correct values.
         assert_eq!(mlookup_int(m1, a), Some(100));
         assert_eq!(mlookup_int(m1, b), Some(200));
@@ -11913,9 +13029,20 @@ mod tests {
         let s2 = sinsert_int(sinsert_int(op_set_empty(), b), a);
         assert_eq!(op_set_size(s1), 2);
         assert_eq!(op_set_size(s2), 2);
-        assert!(champ_eq(s1, s2), "collision set canonical regardless of insert order");
-        assert_eq!(champ_hash(s1), champ_hash(s2), "equal collision sets hash equal");
-        assert_eq!(collect_set(s1), collect_set(s2), "iteration order identical");
+        assert!(
+            champ_eq(s1, s2),
+            "collision set canonical regardless of insert order"
+        );
+        assert_eq!(
+            champ_hash(s1),
+            champ_hash(s2),
+            "equal collision sets hash equal"
+        );
+        assert_eq!(
+            collect_set(s1),
+            collect_set(s2),
+            "iteration order identical"
+        );
         assert!(scontains_int(s1, a) && scontains_int(s1, b));
         assert!(scontains_int(s2, a) && scontains_int(s2, b));
         op_drop(s1);
@@ -11940,7 +13067,10 @@ mod tests {
         // Null orders before any non-null; two nulls equal.
         assert_eq!(champ_key_cmp(Handle::NULL, x), core::cmp::Ordering::Less);
         assert_eq!(champ_key_cmp(x, Handle::NULL), core::cmp::Ordering::Greater);
-        assert_eq!(champ_key_cmp(Handle::NULL, Handle::NULL), core::cmp::Ordering::Equal);
+        assert_eq!(
+            champ_key_cmp(Handle::NULL, Handle::NULL),
+            core::cmp::Ordering::Equal
+        );
         op_drop(x);
         op_drop(y);
         op_drop(z);
@@ -11977,16 +13107,39 @@ mod tests {
         op_dup(m1); // rc == 3 now: m1 is a SHARED version
         let m2 = minsert_int(m1, 12345, 999); // insert a NEW key on the shared owner
         // m1 (shared) is byte-identical to the pre-insert snapshot.
-        assert!(champ_eq(m1, snap), "shared map unchanged after other owner's insert");
-        assert_eq!(champ_hash(m1), champ_hash(snap), "shared map hash unchanged");
+        assert!(
+            champ_eq(m1, snap),
+            "shared map unchanged after other owner's insert"
+        );
+        assert_eq!(
+            champ_hash(m1),
+            champ_hash(snap),
+            "shared map hash unchanged"
+        );
         assert_eq!(op_map_size(m1), orig_size, "shared map size unchanged");
-        assert_eq!(mlookup_int(m1, sa), Some(1), "shared map key still resolves");
-        assert_eq!(mlookup_int(m1, ca), Some(3), "shared map collision key still resolves");
-        assert_eq!(mlookup_int(m1, 12345), None, "shared map never saw the new key");
+        assert_eq!(
+            mlookup_int(m1, sa),
+            Some(1),
+            "shared map key still resolves"
+        );
+        assert_eq!(
+            mlookup_int(m1, ca),
+            Some(3),
+            "shared map collision key still resolves"
+        );
+        assert_eq!(
+            mlookup_int(m1, 12345),
+            None,
+            "shared map never saw the new key"
+        );
         // m2 has the change.
         assert_eq!(op_map_size(m2), orig_size + 1);
         assert_eq!(mlookup_int(m2, 12345), Some(999));
-        assert_eq!(mlookup_int(m2, ca), Some(3), "m2 preserves the shared collision entry");
+        assert_eq!(
+            mlookup_int(m2, ca),
+            Some(3),
+            "m2 preserves the shared collision entry"
+        );
         op_drop(snap);
         op_drop(m1);
         op_drop(m2);
@@ -12003,10 +13156,21 @@ mod tests {
         let snap = m1;
         op_dup(m1); // shared version
         let m2 = mremove_int(m1, sa); // remove a key that lives under the split subnode
-        assert!(champ_eq(m1, snap), "shared map unchanged after other owner's remove");
-        assert_eq!(champ_hash(m1), champ_hash(snap), "shared map hash unchanged");
+        assert!(
+            champ_eq(m1, snap),
+            "shared map unchanged after other owner's remove"
+        );
+        assert_eq!(
+            champ_hash(m1),
+            champ_hash(snap),
+            "shared map hash unchanged"
+        );
         assert_eq!(op_map_size(m1), orig_size, "shared map size unchanged");
-        assert_eq!(mlookup_int(m1, sa), Some(1), "shared map still has the removed key");
+        assert_eq!(
+            mlookup_int(m1, sa),
+            Some(1),
+            "shared map still has the removed key"
+        );
         // m2 has the removal.
         assert_eq!(op_map_size(m2), orig_size - 1);
         assert_eq!(mlookup_int(m2, sa), None, "m2 removed the key");
@@ -12033,10 +13197,16 @@ mod tests {
         let snap = s1;
         op_dup(s1); // shared
         let s2 = sinsert_int(s1, 54321);
-        assert!(champ_eq(s1, snap), "shared set unchanged after other owner's insert");
+        assert!(
+            champ_eq(s1, snap),
+            "shared set unchanged after other owner's insert"
+        );
         assert_eq!(champ_hash(s1), champ_hash(snap));
         assert_eq!(op_set_size(s1), orig_size);
-        assert!(!scontains_int(s1, 54321), "shared set never saw the new elem");
+        assert!(
+            !scontains_int(s1, 54321),
+            "shared set never saw the new elem"
+        );
         assert!(scontains_int(s2, 54321));
         assert!(scontains_int(s2, ca), "s2 preserves the collision elem");
         assert_eq!(op_set_size(s2), orig_size + 1);
@@ -12061,10 +13231,16 @@ mod tests {
         let snap = s1;
         op_dup(s1); // shared
         let s2 = sremove_int(s1, ca); // remove one of a collision pair
-        assert!(champ_eq(s1, snap), "shared set unchanged after other owner's remove");
+        assert!(
+            champ_eq(s1, snap),
+            "shared set unchanged after other owner's remove"
+        );
         assert_eq!(champ_hash(s1), champ_hash(snap));
         assert_eq!(op_set_size(s1), orig_size);
-        assert!(scontains_int(s1, ca), "shared set still has the removed elem");
+        assert!(
+            scontains_int(s1, ca),
+            "shared set still has the removed elem"
+        );
         assert!(!scontains_int(s2, ca), "s2 removed the elem");
         assert!(scontains_int(s2, cb), "s2 kept the collision sibling");
         assert_eq!(op_set_size(s2), orig_size - 1);
@@ -12132,7 +13308,10 @@ mod tests {
             unique_rm <= shared_rm,
             "FBIP set remove must not allocate more when unique ({unique_rm}) than shared ({shared_rm})"
         );
-        assert!(unique_rm < shared_rm, "and strictly fewer in the collapse case");
+        assert!(
+            unique_rm < shared_rm,
+            "and strictly fewer in the collapse case"
+        );
     }
 
     #[test]
@@ -12159,8 +13338,15 @@ mod tests {
         };
         let fbip = build(false);
         let copy = build(true);
-        assert!(champ_eq(fbip, copy), "FBIP-built collision map == copy-built");
-        assert_eq!(champ_hash(fbip), champ_hash(copy), "byte-identical canonical shape");
+        assert!(
+            champ_eq(fbip, copy),
+            "FBIP-built collision map == copy-built"
+        );
+        assert_eq!(
+            champ_hash(fbip),
+            champ_hash(copy),
+            "byte-identical canonical shape"
+        );
         op_drop(fbip);
         op_drop(copy);
 
@@ -12193,8 +13379,14 @@ mod tests {
             }
             m
         };
-        assert!(champ_eq(collapsed_fbip, collapsed_copy), "FBIP collapse == copy collapse");
-        assert!(champ_eq(collapsed_fbip, fresh), "collapse yields the canonical fresh shape");
+        assert!(
+            champ_eq(collapsed_fbip, collapsed_copy),
+            "FBIP collapse == copy collapse"
+        );
+        assert!(
+            champ_eq(collapsed_fbip, fresh),
+            "collapse yields the canonical fresh shape"
+        );
         assert_eq!(champ_hash(collapsed_fbip), champ_hash(fresh));
         op_drop(collapsed_fbip);
         op_drop(collapsed_copy);
@@ -12203,7 +13395,10 @@ mod tests {
         // (3) remove-to-canonical-empty via FBIP.
         let mut m = minsert_int(op_map_empty(), 42, 1);
         m = mremove_int(m, 42);
-        assert!(is_empty_node(m), "FBIP remove of the last entry yields the canonical empty");
+        assert!(
+            is_empty_node(m),
+            "FBIP remove of the last entry yields the canonical empty"
+        );
         let fresh_empty = op_map_empty();
         assert!(champ_eq(m, fresh_empty), "byte-identical to op_map_empty()");
         assert_eq!(champ_hash(m), champ_hash(fresh_empty));
@@ -12266,12 +13461,23 @@ mod tests {
         };
         let fbip = build(false);
         let copy = build(true);
-        assert!(champ_eq(fbip, copy), "empty-slot splice past a subnode == copy-path build (canonical)");
-        assert_eq!(champ_hash(fbip), champ_hash(copy), "byte-identical canonical shape");
+        assert!(
+            champ_eq(fbip, copy),
+            "empty-slot splice past a subnode == copy-path build (canonical)"
+        );
+        assert_eq!(
+            champ_hash(fbip),
+            champ_hash(copy),
+            "byte-identical canonical shape"
+        );
         assert_eq!(mlookup_int(fbip, a), Some(1));
         assert_eq!(mlookup_int(fbip, b), Some(2));
         for (i, &k) in extra_keys.iter().enumerate() {
-            assert_eq!(mlookup_int(fbip, k), Some(100 + i as i64), "spliced key {k} present");
+            assert_eq!(
+                mlookup_int(fbip, k),
+                Some(100 + i as i64),
+                "spliced key {k} present"
+            );
         }
         op_drop(fbip);
         op_drop(copy);
@@ -12289,12 +13495,13 @@ mod tests {
         // then insert a key that COLLIDES (at level 0) with one of the inline entries — forcing that
         // entry to split into a new subnode while other entries + the existing subnode stay put — and
         // assert byte-identical (champ_eq + champ_hash) to the copy-path build, all keys correct, no leak.
-        let (sa, sb) = low5_split_pair();     // sa,sb share low-5 ⇒ an existing subnode at the root
+        let (sa, sb) = low5_split_pair(); // sa,sb share low-5 ⇒ an existing subnode at the root
         let (ca, cb) = full_hash_collision_pair(); // a distinct pair that also splits (to a collision node)
         let build = |shared: bool| -> Handle {
             let mut m = op_map_empty();
             // First sa,sb (creates subnode #1) + ordinary inline entries + ca alone (inline).
-            let mut seq: Vec<(i64, i64)> = vec![(sa, 1), (sb, 2), (ca, 3), (1i64, 10), (2, 20), (3, 30)];
+            let mut seq: Vec<(i64, i64)> =
+                vec![(sa, 1), (sb, 2), (ca, 3), (1i64, 10), (2, 20), (3, 30)];
             // Then insert cb: it collides with ca (full-hash), so ca's inline entry SPLITS into a new
             // subnode #2 that must slot canonically alongside the existing subnode #1.
             seq.push((cb, 4));
@@ -12312,10 +13519,29 @@ mod tests {
         };
         let fbip = build(false);
         let copy = build(true);
-        assert!(champ_eq(fbip, copy), "in-place SPLIT == copy-path build (canonical subnode placement)");
-        assert_eq!(champ_hash(fbip), champ_hash(copy), "byte-identical canonical shape");
-        for &(k, v) in &[(sa, 1i64), (sb, 2), (ca, 3), (cb, 4), (1, 10), (2, 20), (3, 30)] {
-            assert_eq!(mlookup_int(fbip, k), Some(v), "key {k} present after the in-place split");
+        assert!(
+            champ_eq(fbip, copy),
+            "in-place SPLIT == copy-path build (canonical subnode placement)"
+        );
+        assert_eq!(
+            champ_hash(fbip),
+            champ_hash(copy),
+            "byte-identical canonical shape"
+        );
+        for &(k, v) in &[
+            (sa, 1i64),
+            (sb, 2),
+            (ca, 3),
+            (cb, 4),
+            (1, 10),
+            (2, 20),
+            (3, 30),
+        ] {
+            assert_eq!(
+                mlookup_int(fbip, k),
+                Some(v),
+                "key {k} present after the in-place split"
+            );
         }
         op_drop(fbip);
         op_drop(copy);
@@ -12337,11 +13563,11 @@ mod tests {
         //       must not disturb the snapshot.
         // Keys that force several levels of subnode splits: share the low 5, 10, 15 hash bits.
         let deep_keys: [i64; 6] = [
-            0,           // …00000_00000_00000
-            1 << 5,      // differs only at level 1
-            1 << 10,     // differs only at level 2
+            0,       // …00000_00000_00000
+            1 << 5,  // differs only at level 1
+            1 << 10, // differs only at level 2
             (1 << 5) | (1 << 10),
-            1,           // differs at level 0
+            1, // differs at level 0
             (1 << 10) | 1,
         ];
         let build = |shared: bool| -> Handle {
@@ -12360,8 +13586,15 @@ mod tests {
         };
         let fbip = build(false);
         let copy = build(true);
-        assert!(champ_eq(fbip, copy), "deep unique FBIP spine == copy-path build");
-        assert_eq!(champ_hash(fbip), champ_hash(copy), "byte-identical canonical shape");
+        assert!(
+            champ_eq(fbip, copy),
+            "deep unique FBIP spine == copy-path build"
+        );
+        assert_eq!(
+            champ_hash(fbip),
+            champ_hash(copy),
+            "byte-identical canonical shape"
+        );
         // Every key present with the right value in the FBIP-built map.
         for (i, &k) in deep_keys.iter().enumerate() {
             assert_eq!(mlookup_int(fbip, k), Some(i as i64), "key {k} present");
@@ -12379,11 +13612,23 @@ mod tests {
         let snap_hash = champ_hash(snap);
         // Insert a NEW key that descends the deepest shared subnode; the snapshot must be untouched.
         m = minsert_int(m, (1 << 5) | (1 << 10) | 1, 999);
-        assert_eq!(champ_hash(snap), snap_hash, "shared snapshot unchanged after sibling insert");
+        assert_eq!(
+            champ_hash(snap),
+            snap_hash,
+            "shared snapshot unchanged after sibling insert"
+        );
         for (i, &k) in deep_keys.iter().enumerate() {
-            assert_eq!(mlookup_int(snap, k), Some(i as i64), "snapshot key {k} intact");
+            assert_eq!(
+                mlookup_int(snap, k),
+                Some(i as i64),
+                "snapshot key {k} intact"
+            );
         }
-        assert_eq!(mlookup_int(m, (1 << 5) | (1 << 10) | 1), Some(999), "new key in the new version");
+        assert_eq!(
+            mlookup_int(m, (1 << 5) | (1 << 10) | 1),
+            Some(999),
+            "new key in the new version"
+        );
         op_drop(snap);
         op_drop(m);
         assert_eq!(live_nodes(), before, "no leak");
@@ -12414,16 +13659,32 @@ mod tests {
         for (i, &k) in keys.iter().enumerate().filter(|(i, _)| i % 2 == 0) {
             m = op_map_insert(m, op_box_int(k), boxed(1000 + i as i64));
         }
-        assert_eq!(op_map_size(m) as usize, keys.len(), "overwrites did not change size");
+        assert_eq!(
+            op_map_size(m) as usize,
+            keys.len(),
+            "overwrites did not change size"
+        );
         for (i, &k) in keys.iter().enumerate() {
-            let want = if i % 2 == 0 { 1000 + i as i64 } else { i as i64 };
+            let want = if i % 2 == 0 {
+                1000 + i as i64
+            } else {
+                i as i64
+            };
             let probe = op_box_int(k);
             let got = op_map_lookup(m, probe); // borrows the value; do not retain
-            assert_eq!(op_get_int(got), (1i64 << 40) + want, "key {k} has the right (boxed) value");
+            assert_eq!(
+                op_get_int(got),
+                (1i64 << 40) + want,
+                "key {k} has the right (boxed) value"
+            );
             op_drop(probe);
         }
         op_drop(m);
-        assert_eq!(live_nodes(), before, "every entry column freed exactly once — no leak, no double-free");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "every entry column freed exactly once — no leak, no double-free"
+        );
     }
 
     #[test]
@@ -12435,7 +13696,9 @@ mod tests {
         let mut reference: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
         let mut lcg: u64 = 0xDEAD_BEEF;
         let next = |lcg: &mut u64| {
-            *lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *lcg = lcg
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (*lcg >> 33) as u32
         };
         for step in 0..800u32 {
@@ -12458,13 +13721,21 @@ mod tests {
                 op_drop(forked);
             }
         }
-        assert_eq!(op_map_size(m) as usize, reference.len(), "size matches reference");
+        assert_eq!(
+            op_map_size(m) as usize,
+            reference.len(),
+            "size matches reference"
+        );
         for (&k, &v) in &reference {
             assert_eq!(mlookup_int(m, k), Some(v), "key {k} matches reference");
         }
         // And no phantom keys: probe the whole small keyspace.
         for k in 0..64i64 {
-            assert_eq!(mlookup_int(m, k), reference.get(&k).copied(), "keyspace probe {k}");
+            assert_eq!(
+                mlookup_int(m, k),
+                reference.get(&k).copied(),
+                "keyspace probe {k}"
+            );
         }
         op_drop(m);
         assert_eq!(live_nodes(), before, "no leak across the mixed sequence");
@@ -12488,8 +13759,8 @@ mod tests {
     enum MapOp {
         Insert { key: u8, val: u8 },
         Remove { key: u8 },
-        Fork,          // dup the current version + push it onto the live stack
-        DropForked,    // drop + pop the most recent forked version (no-op if none)
+        Fork,       // dup the current version + push it onto the live stack
+        DropForked, // drop + pop the most recent forked version (no-op if none)
     }
 
     /// Build a reference-equal fresh map from a BTreeMap oracle (for the canonical-shape cross-check).
@@ -12531,21 +13802,40 @@ mod tests {
             }
         }
         // (1) value equivalence over the whole u8 keyspace (probes present + absent keys).
-        assert_eq!(op_map_size(m) as usize, reference.len(), "size matches reference");
+        assert_eq!(
+            op_map_size(m) as usize,
+            reference.len(),
+            "size matches reference"
+        );
         for k in 0..=255i64 {
-            assert_eq!(mlookup_int(m, k), reference.get(&k).copied(), "key {k} matches reference");
+            assert_eq!(
+                mlookup_int(m, k),
+                reference.get(&k).copied(),
+                "key {k} matches reference"
+            );
         }
         // (2) canonical shape: same contents ⇒ byte-identical to a freshly-built twin, regardless of the
         // insert/remove/fork history that produced `m`.
         let twin = map_of_reference(&reference);
-        assert!(champ_eq(m, twin), "map equals a fresh twin of the same contents (canonical)");
+        assert!(
+            champ_eq(m, twin),
+            "map equals a fresh twin of the same contents (canonical)"
+        );
         assert_eq!(champ_hash(m), champ_hash(twin), "…and hashes identically");
         op_drop(twin);
         // Every forked snapshot must be UNDISTURBED by the later mutations of `m` (aliasing safety).
         for (h, snap) in &forks {
-            assert_eq!(op_map_size(*h) as usize, snap.len(), "forked snapshot size intact");
+            assert_eq!(
+                op_map_size(*h) as usize,
+                snap.len(),
+                "forked snapshot size intact"
+            );
             for (&k, &v) in snap {
-                assert_eq!(mlookup_int(*h, k), Some(v), "forked snapshot key {k} intact");
+                assert_eq!(
+                    mlookup_int(*h, k),
+                    Some(v),
+                    "forked snapshot key {k} intact"
+                );
             }
         }
         // (3) no leak / no double-free: release everything, live count returns to baseline.
@@ -12553,7 +13843,11 @@ mod tests {
         for (h, _) in forks {
             op_drop(h);
         }
-        assert_eq!(live_nodes(), before, "no leak / no double-free across the whole sequence");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak / no double-free across the whole sequence"
+        );
     }
 
     #[test]
@@ -12607,16 +13901,31 @@ mod tests {
                 }
             }
         }
-        assert_eq!(op_set_size(s) as usize, reference.len(), "set size matches reference");
+        assert_eq!(
+            op_set_size(s) as usize,
+            reference.len(),
+            "set size matches reference"
+        );
         for e in 0..=255i64 {
-            assert_eq!(scontains_int(s, e), reference.contains(&e), "membership of {e} matches");
+            assert_eq!(
+                scontains_int(s, e),
+                reference.contains(&e),
+                "membership of {e} matches"
+            );
         }
         let twin = set_of_reference(&reference);
-        assert!(champ_eq(s, twin), "set equals a fresh twin of the same contents (canonical)");
+        assert!(
+            champ_eq(s, twin),
+            "set equals a fresh twin of the same contents (canonical)"
+        );
         assert_eq!(champ_hash(s), champ_hash(twin), "…and hashes identically");
         op_drop(twin);
         for (h, snap) in &forks {
-            assert_eq!(op_set_size(*h) as usize, snap.len(), "forked set snapshot size intact");
+            assert_eq!(
+                op_set_size(*h) as usize,
+                snap.len(),
+                "forked set snapshot size intact"
+            );
             for &e in snap {
                 assert!(scontains_int(*h, e), "forked set snapshot elem {e} intact");
             }
@@ -12625,7 +13934,11 @@ mod tests {
         for (h, _) in forks {
             op_drop(h);
         }
-        assert_eq!(live_nodes(), before, "no leak / no double-free across the set sequence");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak / no double-free across the set sequence"
+        );
     }
 
     #[test]
@@ -12657,7 +13970,8 @@ mod tests {
     fn run_tuplekey_op_sequence(ops: &[TupleKeyOp]) {
         let before = live_nodes();
         let mut m = op_map_empty();
-        let mut reference: std::collections::BTreeMap<(i64, i64), i64> = std::collections::BTreeMap::new();
+        let mut reference: std::collections::BTreeMap<(i64, i64), i64> =
+            std::collections::BTreeMap::new();
         let mut forks: Vec<(Handle, std::collections::BTreeMap<(i64, i64), i64>)> = Vec::new();
         // Small tuple keyspace (a,b ∈ 0..8) → real overwrites, splits, and shared-prefix hashing.
         for op in ops {
@@ -12685,7 +13999,11 @@ mod tests {
                 }
             }
         }
-        assert_eq!(op_map_size(m) as usize, reference.len(), "tuple-key map size matches reference");
+        assert_eq!(
+            op_map_size(m) as usize,
+            reference.len(),
+            "tuple-key map size matches reference"
+        );
         for a in 0..8i64 {
             for b in 0..8i64 {
                 let probe = ctuple_key(a, b);
@@ -12693,7 +14011,11 @@ mod tests {
                 op_drop(probe);
                 let want = reference.get(&(a, b)).copied();
                 assert_eq!(
-                    if got == Handle::NULL { None } else { Some(op_get_int(got)) },
+                    if got == Handle::NULL {
+                        None
+                    } else {
+                        Some(op_get_int(got))
+                    },
                     want,
                     "tuple key ({a},{b}) matches reference"
                 );
@@ -12703,7 +14025,11 @@ mod tests {
         for (h, _) in forks {
             op_drop(h);
         }
-        assert_eq!(live_nodes(), before, "no leak across the tuple-key sequence");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak across the tuple-key sequence"
+        );
     }
 
     #[test]
@@ -12725,7 +14051,15 @@ mod tests {
         let (sa, sb) = low5_split_pair();
         let (ca, cb) = full_hash_collision_pair();
         let mut m = op_map_empty();
-        for &(k, v) in &[(sa, 1i64), (sb, 2), (ca, 3), (cb, 4), (5i64, 50), (11, 110), (23, 230)] {
+        for &(k, v) in &[
+            (sa, 1i64),
+            (sb, 2),
+            (ca, 3),
+            (cb, 4),
+            (5i64, 50),
+            (11, 110),
+            (23, 230),
+        ] {
             m = minsert_int(m, k, v);
         }
         m
@@ -12749,10 +14083,18 @@ mod tests {
         op_dup(cur); // rc == 2: forked
         let advanced = op_map_iter_next(cur); // rc>1 ⇒ copy path; must NOT mutate `cur`
         // The retained fork still projects its ORIGINAL current entry.
-        assert_eq!(op_get_int(op_map_iter_key(cur)), first_key, "fork undisturbed by advance");
+        assert_eq!(
+            op_get_int(op_map_iter_key(cur)),
+            first_key,
+            "fork undisturbed by advance"
+        );
         assert_eq!(op_get_int(op_map_iter_val(cur)), full[0].1);
         // The advanced copy is at the SECOND entry.
-        assert_eq!(op_get_int(op_map_iter_key(advanced)), full[1].0, "advanced copy moved to successor");
+        assert_eq!(
+            op_get_int(op_map_iter_key(advanced)),
+            full[1].0,
+            "advanced copy moved to successor"
+        );
         // Now walk the fork independently through the ENTIRE sequence — it must reproduce `full`.
         let mut seq: Vec<(i64, i64)> = Vec::new();
         let mut c = cur; // `cur` is rc==1 again (advanced consumed one ref) ⇒ walks via FBIP in place
@@ -12764,7 +14106,10 @@ mod tests {
             seq.push((op_get_int(k), op_get_int(op_map_iter_val(c))));
             c = op_map_iter_next(c);
         }
-        assert_eq!(seq, full, "independent fork walk reproduces the full sequence");
+        assert_eq!(
+            seq, full,
+            "independent fork walk reproduces the full sequence"
+        );
         // And the advanced copy walks the remaining tail correctly.
         let mut tail: Vec<(i64, i64)> = Vec::new();
         let mut a = advanced;
@@ -12776,11 +14121,19 @@ mod tests {
             tail.push((op_get_int(k), op_get_int(op_map_iter_val(a))));
             a = op_map_iter_next(a);
         }
-        assert_eq!(tail, full[1..].to_vec(), "advanced copy walks the tail from entry 1");
+        assert_eq!(
+            tail,
+            full[1..].to_vec(),
+            "advanced copy walks the tail from entry 1"
+        );
         op_drop(c);
         op_drop(a);
         op_drop(m);
-        assert_eq!(live_nodes(), before, "no leak / no double-free across forked walks");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak / no double-free across forked walks"
+        );
     }
 
     #[test]
@@ -12800,7 +14153,11 @@ mod tests {
         op_dup(cur); // forked, rc==2
         let advanced = op_set_iter_next(cur); // copy path
         assert_eq!(op_get_int(op_set_iter_elem(cur)), first, "fork undisturbed");
-        assert_eq!(op_get_int(op_set_iter_elem(advanced)), full[1], "advanced moved on");
+        assert_eq!(
+            op_get_int(op_set_iter_elem(advanced)),
+            full[1],
+            "advanced moved on"
+        );
         // Independent full walk of the fork.
         let mut seq: Vec<i64> = Vec::new();
         let mut c = cur;
@@ -12812,7 +14169,10 @@ mod tests {
             seq.push(op_get_int(e));
             c = op_set_iter_next(c);
         }
-        assert_eq!(seq, full, "independent fork walk reproduces the full set sequence");
+        assert_eq!(
+            seq, full,
+            "independent fork walk reproduces the full set sequence"
+        );
         op_drop(c);
         op_drop(advanced);
         op_drop(s);
@@ -12839,11 +14199,18 @@ mod tests {
             let delta = live_nodes() - pre;
             // In place: the advance nets ZERO node allocations (it may dup/drop frame refs, but frames
             // already exist; no new cursor node is built).
-            assert_eq!(delta, 0, "unique cursor advance allocates zero nodes (step {steps})");
+            assert_eq!(
+                delta, 0,
+                "unique cursor advance allocates zero nodes (step {steps})"
+            );
             steps += 1;
         }
         assert_eq!(steps, size, "walked exactly size entries");
-        assert_eq!(live_nodes(), after_iter, "LIVE_NODES flat across the whole unique walk");
+        assert_eq!(
+            live_nodes(),
+            after_iter,
+            "LIVE_NODES flat across the whole unique walk"
+        );
         op_drop(c);
         op_drop(m);
 
@@ -12853,7 +14220,10 @@ mod tests {
         op_dup(cur2); // rc==2 ⇒ copy path
         let pre = live_nodes();
         let adv = op_map_iter_next(cur2);
-        assert!(live_nodes() - pre > 0, "shared cursor advance allocates a fresh cursor node");
+        assert!(
+            live_nodes() - pre > 0,
+            "shared cursor advance allocates a fresh cursor node"
+        );
         op_drop(cur2);
         op_drop(adv);
         op_drop(m2);
@@ -12877,11 +14247,19 @@ mod tests {
             }
             let pre = live_nodes();
             c = op_set_iter_next(c);
-            assert_eq!(live_nodes() - pre, 0, "unique set-cursor advance is zero-alloc (step {steps})");
+            assert_eq!(
+                live_nodes() - pre,
+                0,
+                "unique set-cursor advance is zero-alloc (step {steps})"
+            );
             steps += 1;
         }
         assert_eq!(steps, size);
-        assert_eq!(live_nodes(), after_iter, "LIVE_NODES flat across the unique set walk");
+        assert_eq!(
+            live_nodes(),
+            after_iter,
+            "LIVE_NODES flat across the unique set walk"
+        );
         op_drop(c);
         op_drop(s);
     }
@@ -12906,19 +14284,39 @@ mod tests {
         }
         assert_eq!(steps, size, "walked exactly size entries before exhaustion");
         // Now exhausted. Re-read: both projections must be the NULL done-signal.
-        assert_eq!(op_map_iter_key(c), Handle::NULL, "exhausted cursor key is NULL");
-        assert_eq!(op_map_iter_val(c), Handle::NULL, "exhausted cursor val is NULL");
+        assert_eq!(
+            op_map_iter_key(c),
+            Handle::NULL,
+            "exhausted cursor key is NULL"
+        );
+        assert_eq!(
+            op_map_iter_val(c),
+            Handle::NULL,
+            "exhausted cursor val is NULL"
+        );
         // Advance PAST the end several more times (each takes the rc==1 take path, reinstalls empty):
         // must stay exhausted, allocate no node, and not corrupt the (empty) frame set.
         for _ in 0..3 {
             let pre = live_nodes();
             c = op_map_iter_next(c);
-            assert_eq!(live_nodes() - pre, 0, "advancing an exhausted unique cursor allocates nothing");
-            assert_eq!(op_map_iter_key(c), Handle::NULL, "still exhausted after over-advance");
+            assert_eq!(
+                live_nodes() - pre,
+                0,
+                "advancing an exhausted unique cursor allocates nothing"
+            );
+            assert_eq!(
+                op_map_iter_key(c),
+                Handle::NULL,
+                "still exhausted after over-advance"
+            );
         }
         op_drop(c);
         op_drop(m);
-        assert_eq!(live_nodes(), before, "no frame leaked or double-freed across the over-walk");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no frame leaked or double-freed across the over-walk"
+        );
     }
 
     #[test]
@@ -12931,10 +14329,21 @@ mod tests {
         let m = deep_walk_map();
         let walk_a = collect_map(m);
         let walk_b = collect_map(m);
-        assert_eq!(walk_a, walk_b, "two FBIP map walks are identically ordered (deterministic)");
-        assert_eq!(walk_a.len(), op_map_size(m) as usize, "map walk visited exactly size entries");
+        assert_eq!(
+            walk_a, walk_b,
+            "two FBIP map walks are identically ordered (deterministic)"
+        );
+        assert_eq!(
+            walk_a.len(),
+            op_map_size(m) as usize,
+            "map walk visited exactly size entries"
+        );
         let keys: std::collections::HashSet<i64> = walk_a.iter().map(|(k, _)| *k).collect();
-        assert_eq!(keys.len(), walk_a.len(), "each map key visited exactly once (incl. collision)");
+        assert_eq!(
+            keys.len(),
+            walk_a.len(),
+            "each map key visited exactly once (incl. collision)"
+        );
         op_drop(m);
 
         let (ca, cb) = full_hash_collision_pair();
@@ -12945,10 +14354,21 @@ mod tests {
         let sa = collect_set(s);
         let sb = collect_set(s);
         assert_eq!(sa, sb, "two FBIP set walks are identically ordered");
-        assert_eq!(sa.len(), op_set_size(s) as usize, "set walk visited exactly size entries");
+        assert_eq!(
+            sa.len(),
+            op_set_size(s) as usize,
+            "set walk visited exactly size entries"
+        );
         let selems: std::collections::HashSet<i64> = sa.iter().copied().collect();
-        assert_eq!(selems.len(), sa.len(), "each set elem visited once (incl. collision)");
-        assert!(selems.contains(&ca) && selems.contains(&cb), "collision elems both visited");
+        assert_eq!(
+            selems.len(),
+            sa.len(),
+            "each set elem visited once (incl. collision)"
+        );
+        assert!(
+            selems.contains(&ca) && selems.contains(&cb),
+            "collision elems both visited"
+        );
         op_drop(s);
         assert_eq!(live_nodes(), before, "no leak across the traversals");
     }
@@ -12967,13 +14387,27 @@ mod tests {
         // frame at the floor, so the walk exercises pop-from-collision + pop-from-normal + deep descend.
         let (ca, cb) = full_hash_collision_pair();
         let deep = [
-            0i64, 1 << 5, 1 << 10, (1 << 5) | (1 << 10), (1 << 10) | (1 << 15),
-            1, 2, ca, cb, 7, 8, 40, 41,
+            0i64,
+            1 << 5,
+            1 << 10,
+            (1 << 5) | (1 << 10),
+            (1 << 10) | (1 << 15),
+            1,
+            2,
+            ca,
+            cb,
+            7,
+            8,
+            40,
+            41,
         ];
         // Map each key to a small, collision-safe tag value (a running index, not k*const — the
         // collision pair carries full-width i64 payloads that would overflow a multiply).
-        let reference: std::collections::BTreeMap<i64, i64> =
-            deep.iter().enumerate().map(|(i, &k)| (k, 1000 + i as i64)).collect();
+        let reference: std::collections::BTreeMap<i64, i64> = deep
+            .iter()
+            .enumerate()
+            .map(|(i, &k)| (k, 1000 + i as i64))
+            .collect();
         let mut m = op_map_empty();
         for (&k, &v) in &reference {
             m = op_map_insert(m, op_box_int(k), op_box_int(v));
@@ -12990,7 +14424,10 @@ mod tests {
             seen.insert(op_get_int(k), op_get_int(v)); // key→value pairing must survive the walk
             cur = op_map_iter_next(cur);
         }
-        assert_eq!(seen, reference, "in-place walk visited exactly the reference key→value map");
+        assert_eq!(
+            seen, reference,
+            "in-place walk visited exactly the reference key→value map"
+        );
         // Over-advance the exhausted cursor a few times (each an rc==1 advance on empty frames).
         for _ in 0..3 {
             cur = op_map_iter_next(cur);
@@ -12998,7 +14435,11 @@ mod tests {
         }
         op_drop(cur);
         op_drop(m);
-        assert_eq!(live_nodes(), before, "frame refcounts balanced — no leak, no double-free");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "frame refcounts balanced — no leak, no double-free"
+        );
     }
 
     #[test]
@@ -13038,7 +14479,11 @@ mod tests {
             cur = op_map_iter_next(cur);
             steps += 1;
         }
-        assert_eq!(steps, ks.len(), "walked every entry (deepest paths included)");
+        assert_eq!(
+            steps,
+            ks.len(),
+            "walked every entry (deepest paths included)"
+        );
         op_drop(cur);
         op_drop(m);
         assert_eq!(live_nodes(), before, "no leak");
@@ -13059,10 +14504,22 @@ mod tests {
     }
 
     /// Assert a runtime set's membership + size EXACTLY match a reference over `universe`.
-    fn assert_set_eq_reference(s: Handle, reference: &std::collections::BTreeSet<i64>, universe: &[i64]) {
-        assert_eq!(op_set_size(s) as usize, reference.len(), "size matches reference");
+    fn assert_set_eq_reference(
+        s: Handle,
+        reference: &std::collections::BTreeSet<i64>,
+        universe: &[i64],
+    ) {
+        assert_eq!(
+            op_set_size(s) as usize,
+            reference.len(),
+            "size matches reference"
+        );
         for &e in universe {
-            assert_eq!(scontains_int(s, e), reference.contains(&e), "membership of {e} matches reference");
+            assert_eq!(
+                scontains_int(s, e),
+                reference.contains(&e),
+                "membership of {e} matches reference"
+            );
         }
     }
 
@@ -13074,12 +14531,12 @@ mod tests {
         let (ca, cb) = full_hash_collision_pair(); // a collision pair spanning both operands
         // Overlapping, disjoint, subset, identical — encoded as element-set pairs over a universe.
         let cases: Vec<(Vec<i64>, Vec<i64>)> = vec![
-            (vec![1, 2, 3], vec![3, 4, 5]),                 // overlapping
-            (vec![1, 2, 3], vec![10, 11, 12]),              // disjoint
-            (vec![1, 2, 3, 4, 5], vec![2, 4]),              // b subset of a
-            (vec![7, 8, 9], vec![7, 8, 9]),                 // identical
-            (vec![sa, sb, 3, 17, 42], vec![sb, 42, 100]),   // subnode splits + overlap
-            (vec![ca, 1, 2], vec![cb, 2, 3]),               // collision pair split across operands
+            (vec![1, 2, 3], vec![3, 4, 5]),               // overlapping
+            (vec![1, 2, 3], vec![10, 11, 12]),            // disjoint
+            (vec![1, 2, 3, 4, 5], vec![2, 4]),            // b subset of a
+            (vec![7, 8, 9], vec![7, 8, 9]),               // identical
+            (vec![sa, sb, 3, 17, 42], vec![sb, 42, 100]), // subnode splits + overlap
+            (vec![ca, 1, 2], vec![cb, 2, 3]),             // collision pair split across operands
         ];
         for (ea, eb) in &cases {
             let mut reference: std::collections::BTreeSet<i64> = ea.iter().copied().collect();
@@ -13116,11 +14573,21 @@ mod tests {
 
         let ab = op_set_union(set_of(&big), set_of(&small)); // base = big
         let ba = op_set_union(set_of(&small), set_of(&big)); // base = big too (larger), via the swap
-        assert!(champ_eq(ab, ba), "union(big,small) == union(small,big) byte-identically");
+        assert!(
+            champ_eq(ab, ba),
+            "union(big,small) == union(small,big) byte-identically"
+        );
         assert_eq!(champ_hash(ab), champ_hash(ba));
-        assert!(champ_eq(ab, fresh), "union == a fresh set of all elements (canonical)");
+        assert!(
+            champ_eq(ab, fresh),
+            "union == a fresh set of all elements (canonical)"
+        );
         assert_eq!(champ_hash(ab), champ_hash(fresh));
-        assert_eq!(op_set_size(ab) as usize, all.len(), "union has every distinct element once");
+        assert_eq!(
+            op_set_size(ab) as usize,
+            all.len(),
+            "union has every distinct element once"
+        );
         op_drop(ab);
         op_drop(ba);
         op_drop(fresh);
@@ -13187,7 +14654,11 @@ mod tests {
         assert!(is_empty_node(ed), "∅ ∖ ∅ == ∅");
         op_drop(ed);
 
-        assert_eq!(live_nodes(), before, "self-op short-circuits balanced all refs — no leak/double-free");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "self-op short-circuits balanced all refs — no leak/double-free"
+        );
     }
 
     #[test]
@@ -13198,16 +14669,17 @@ mod tests {
         let (ca, cb) = full_hash_collision_pair();
         let cases: Vec<(Vec<i64>, Vec<i64>)> = vec![
             (vec![1, 2, 3], vec![3, 4, 5]),
-            (vec![1, 2, 3], vec![10, 11, 12]),              // disjoint ⇒ empty
-            (vec![1, 2, 3, 4, 5], vec![2, 4]),              // ⇒ {2,4}
-            (vec![7, 8, 9], vec![7, 8, 9]),                 // identical ⇒ itself
-            (vec![sa, sb, 3, 17, 42], vec![sb, 42, 100]),   // ⇒ {sb,42}
-            (vec![ca, cb, 1], vec![ca, 2]),                 // one collision elem shared
+            (vec![1, 2, 3], vec![10, 11, 12]), // disjoint ⇒ empty
+            (vec![1, 2, 3, 4, 5], vec![2, 4]), // ⇒ {2,4}
+            (vec![7, 8, 9], vec![7, 8, 9]),    // identical ⇒ itself
+            (vec![sa, sb, 3, 17, 42], vec![sb, 42, 100]), // ⇒ {sb,42}
+            (vec![ca, cb, 1], vec![ca, 2]),    // one collision elem shared
         ];
         for (ea, eb) in &cases {
             let ra: std::collections::BTreeSet<i64> = ea.iter().copied().collect();
             let rb: std::collections::BTreeSet<i64> = eb.iter().copied().collect();
-            let reference: std::collections::BTreeSet<i64> = ra.intersection(&rb).copied().collect();
+            let reference: std::collections::BTreeSet<i64> =
+                ra.intersection(&rb).copied().collect();
             let universe: Vec<i64> = ra.union(&rb).copied().chain([999]).collect();
             let r = op_set_intersection(set_of(ea), set_of(eb));
             assert_set_eq_reference(r, &reference, &universe);
@@ -13262,7 +14734,10 @@ mod tests {
             a
         };
         let via_plain = set_of(&[7, 5, 6]); // different order — canonical result is order-independent
-        assert!(champ_eq(via_h, via_plain), "set_insert_h builds the same canonical set as op_set_insert");
+        assert!(
+            champ_eq(via_h, via_plain),
+            "set_insert_h builds the same canonical set as op_set_insert"
+        );
         assert_eq!(champ_hash(via_h), champ_hash(via_plain));
         op_drop(via_h);
         op_drop(via_plain);
@@ -13278,12 +14753,12 @@ mod tests {
         let (sa, sb) = low5_split_pair();
         let (ca, cb) = full_hash_collision_pair();
         let cases: Vec<(Vec<i64>, Vec<i64>)> = vec![
-            (vec![1, 2, 3], vec![3, 4, 5]),                 // ⇒ {1,2}
-            (vec![1, 2, 3], vec![10, 11, 12]),              // disjoint ⇒ a
-            (vec![1, 2, 3, 4, 5], vec![2, 4]),              // ⇒ {1,3,5}
-            (vec![7, 8, 9], vec![7, 8, 9]),                 // identical ⇒ empty
-            (vec![sa, sb, 3, 17, 42], vec![sb, 42, 100]),   // ⇒ {sa,3,17}
-            (vec![ca, cb, 1], vec![ca, 2]),                 // ⇒ {cb,1}
+            (vec![1, 2, 3], vec![3, 4, 5]),               // ⇒ {1,2}
+            (vec![1, 2, 3], vec![10, 11, 12]),            // disjoint ⇒ a
+            (vec![1, 2, 3, 4, 5], vec![2, 4]),            // ⇒ {1,3,5}
+            (vec![7, 8, 9], vec![7, 8, 9]),               // identical ⇒ empty
+            (vec![sa, sb, 3, 17, 42], vec![sb, 42, 100]), // ⇒ {sa,3,17}
+            (vec![ca, cb, 1], vec![ca, 2]),               // ⇒ {cb,1}
         ];
         for (ea, eb) in &cases {
             let ra: std::collections::BTreeSet<i64> = ea.iter().copied().collect();
@@ -13339,7 +14814,11 @@ mod tests {
             assert!(is_empty_node(r));
             op_drop(r);
         }
-        assert_eq!(live_nodes(), before, "no leak across empty-operand identities");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak across empty-operand identities"
+        );
     }
 
     #[test]
@@ -13351,8 +14830,15 @@ mod tests {
         let r = op_set_union(set_of(&[ca, 1, 5]), set_of(&[cb, 5, 9]));
         // Logical result = {ca, cb, 1, 5, 9}. Build it fresh in a scrambled order.
         let fresh = set_of(&[9, ca, 5, cb, 1]);
-        assert!(champ_eq(r, fresh), "union result is canonical (== differently-ordered fold)");
-        assert_eq!(champ_hash(r), champ_hash(fresh), "byte-identical canonical shape");
+        assert!(
+            champ_eq(r, fresh),
+            "union result is canonical (== differently-ordered fold)"
+        );
+        assert_eq!(
+            champ_hash(r),
+            champ_hash(fresh),
+            "byte-identical canonical shape"
+        );
         op_drop(r);
         op_drop(fresh);
         // intersection result canonicality, also with the collision pair.
@@ -13378,7 +14864,11 @@ mod tests {
         op_dup(b); // keep b too
         let r = op_set_union(a, b); // consumes ONE ref of each
         // The retained references are unchanged in value.
-        assert_eq!(collect_set(a), a_snapshot, "retained operand a unchanged after consuming union");
+        assert_eq!(
+            collect_set(a),
+            a_snapshot,
+            "retained operand a unchanged after consuming union"
+        );
         assert_eq!(op_set_size(a), 4);
         assert!(scontains_int(b, 5), "retained operand b unchanged");
         assert_eq!(op_set_size(b), 4);
@@ -13390,7 +14880,11 @@ mod tests {
         op_drop(a);
         op_drop(b);
         op_drop(r);
-        assert_eq!(live_nodes(), before, "no leak / no double-free with shared operands");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak / no double-free with shared operands"
+        );
     }
 
     #[test]
@@ -13400,7 +14894,9 @@ mod tests {
         // Fixed-seed LCG: random element sets over a small universe, all three ops vs BTreeSet.
         let mut lcg: u64 = 0xA5A5_1234;
         let next = |lcg: &mut u64| {
-            *lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *lcg = lcg
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (*lcg >> 33) as u32
         };
         for _ in 0..60 {
@@ -13449,7 +14945,10 @@ mod tests {
     fn relaxed_80() -> Handle {
         let c = op_vec_concat(vec_range(40), vec_range(40));
         let (_count, _shift, root) = vec_read_header(c);
-        assert!(vec_is_relaxed(root), "concat(40,40) must produce a relaxed root");
+        assert!(
+            vec_is_relaxed(root),
+            "concat(40,40) must produce a relaxed root"
+        );
         c
     }
 
@@ -13519,7 +15018,11 @@ mod tests {
         r = op_vec_update(r, 5, op_box_int(-8));
         assert_eq!(op_get_int(op_vec_get(l, 10)), -7);
         assert_eq!(op_get_int(op_vec_get(r, 5)), -8);
-        assert_eq!(op_get_int(op_vec_get(l, 9)), oracle[9], "left neighbor untouched");
+        assert_eq!(
+            op_get_int(op_vec_get(l, 9)),
+            oracle[9],
+            "left neighbor untouched"
+        );
         assert_vec_invariants(l);
         assert_vec_invariants(r);
         // concat the two halves back together
@@ -13527,7 +15030,11 @@ mod tests {
         assert_eq!(op_vec_len(joined), 73 + 87);
         assert_vec_invariants(joined);
         op_drop(joined);
-        assert_eq!(live_nodes(), before, "no leak after relaxed split + downstream ops");
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak after relaxed split + downstream ops"
+        );
     }
 
     #[test]
@@ -13560,7 +15067,10 @@ mod tests {
         }
         let total = oracle.len() as u32;
         let (_c, _s, root) = vec_read_header(acc);
-        assert!(vec_is_relaxed(root), "deep fold-concat must produce a relaxed root");
+        assert!(
+            vec_is_relaxed(root),
+            "deep fold-concat must produce a relaxed root"
+        );
         assert_eq!(op_vec_len(acc), total);
         // Split at several interior points; keep acc alive by dup-before-split.
         for &p in &[1u32, 29, 30, 75, 135, 168, 257] {
@@ -13568,8 +15078,16 @@ mod tests {
             let (l, r) = op_vec_split(acc, p);
             assert_eq!(op_vec_len(l), p, "deep left len (p={p})");
             assert_eq!(op_vec_len(r), total - p, "deep right len (p={p})");
-            assert_eq!(vec_to_ints(l), oracle[..p as usize].to_vec(), "deep left elems (p={p})");
-            assert_eq!(vec_to_ints(r), oracle[p as usize..].to_vec(), "deep right elems (p={p})");
+            assert_eq!(
+                vec_to_ints(l),
+                oracle[..p as usize].to_vec(),
+                "deep left elems (p={p})"
+            );
+            assert_eq!(
+                vec_to_ints(r),
+                oracle[p as usize..].to_vec(),
+                "deep right elems (p={p})"
+            );
             assert_vec_invariants(l);
             assert_vec_invariants(r);
             op_drop(l);

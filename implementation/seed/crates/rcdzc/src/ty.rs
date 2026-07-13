@@ -649,6 +649,19 @@ pub enum Ty {
     /// underlying string's constant equality (a constant symbol shares the `Core::ConstStr` rep; only the
     /// static type differs). The runtime symbol handle + `#"…"` reader-sugar equivalence arrive later.
     Symbol,
+    /// An ARBITRARY-PRECISION signed integer — `BigInt`, of UNBOUNDED range (`numeric-model.md`
+    /// §Arbitrary Precision; `options/numeric-model/explicit-checked.md` §Arbitrary-precision integer).
+    /// A monomorphic LEAF type (no width parameter, unlike [`Ty::Int`]) — it is the signed, unbounded
+    /// companion of the fixed-width family, opted into explicitly. It NEVER overflows or wraps: an
+    /// arithmetic operation grows its representation as the result requires. It is a DISTINCT numeric
+    /// type — `agrees_with` is true only `BigInt`↔`BigInt`, so a `BigInt`/fixed-width mix is a mismatch
+    /// (CDZ0301) with no silent promotion, exactly as `Int64`/`Float64` is. A constant folds in the
+    /// compiler (reusing `num-bigint`, already the backing of `ast::IntValue`); a runtime-valued `BigInt`
+    /// is a sign-magnitude limb-array heap leaf (the `Bytes`-leaf shape — raw bytes, zero handles). Its
+    /// boundary representation is a `list<u8>` in the pinned two's-complement encoding, so it MAY cross an
+    /// exported signature. See `implementation/DESIGN-bigint-and-rational-rcdzc.md`. B0 adds the type
+    /// through the closed universe (byte-neutral — nothing constructs one yet).
+    BigInt,
     /// A FLOATING-POINT number, indexed by its bit WIDTH (`numeric-model.md` §A Floating-Point Type Is
     /// Indexed By A Compile-Time Width) — the float analogue of [`Ty::Int`], carrying a [`FloatTy`]
     /// (a possibly-deferred [`FloatWidth`]) rather than a fixed name. `Float64` is the signed 64-bit
@@ -781,6 +794,7 @@ impl PartialEq for Ty {
             | (Ty::String, Ty::String)
             | (Ty::Char, Ty::Char)
             | (Ty::Symbol, Ty::Symbol)
+            | (Ty::BigInt, Ty::BigInt)
             | (Ty::Type, Ty::Type)
             | (Ty::Any, Ty::Any) => true,
             (Ty::Float(a), Ty::Float(b)) => a == b,
@@ -885,7 +899,7 @@ impl Ty {
             // nominal's inner holds a `Ty::Sum{decl}` back-edge that is not a free var anyway; `args` is
             // the identity/instantiation axis).
             Ty::Nominal { args, .. } => args.iter().any(|t| t.has_free_var()),
-            // Bytes, String, Char, and Symbol are leaves — no inner type, so no free variable.
+            // Bytes, String, Char, Symbol, and BigInt are leaves — no inner type, so no free variable.
             Ty::Int(_)
             | Ty::Bool
             | Ty::Unit
@@ -895,6 +909,7 @@ impl Ty {
             | Ty::String
             | Ty::Char
             | Ty::Symbol
+            | Ty::BigInt
             | Ty::Float(_) => false,
         }
     }
@@ -1017,6 +1032,10 @@ impl Ty {
             // `Symbol` is monomorphic — the one symbol type agrees only with itself (and NOT with the
             // `String` it wraps: the nominal boundary, handled by the `_ => false` fallthrough).
             (Ty::Symbol, Ty::Symbol) => true,
+            // `BigInt` is monomorphic and DISTINCT — the one arbitrary-precision integer type agrees only
+            // with itself, NEVER with a fixed-width `Ty::Int` (no silent promotion: a `BigInt`/`Int64`
+            // mix is CDZ0301, via the `_ => false` fallthrough), the same discipline as float-vs-int.
+            (Ty::BigInt, Ty::BigInt) => true,
             // Two floats agree iff their WIDTHS agree — `Float32` ≠ `Float64` (no silent promotion), a
             // deferred/variable width is compatible (not yet fixed). A float never agrees with an integer
             // (numeric-model.md §Numeric Types Do Not Silently Promote). Mirrors the `Ty::Int` width check.
@@ -1167,6 +1186,8 @@ impl Ty {
             // A char renders as `Char` — one monomorphic type (its VALUES render `#\c`).
             Ty::Char => "Char".to_string(),
             Ty::Symbol => "Symbol".to_string(),
+            // The arbitrary-precision integer renders as `BigInt` — one monomorphic type, no parameters.
+            Ty::BigInt => "BigInt".to_string(),
             // A float renders as its aliased width name — `Float32`/`Float64`. Every admitted float
             // width ({32, 64}) has an alias, so an observed float type is always a concrete `FloatN`
             // (an unresolved width grounds to `Float64`), mirroring the integer `IntN`/`UIntN` render.
