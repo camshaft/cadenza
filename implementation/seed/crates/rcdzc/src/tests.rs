@@ -6830,6 +6830,63 @@ mod runtime_ops {
     }
 
     #[test]
+    fn nested_left_shifts_collapse_to_a_single_shift() {
+        // `(<< (<< v A) B)` → `(<< v (A+B))` when A+B < width. A LEFT shift is CHECKED (exact `·2^count`,
+        // traps on N-bit overflow) but collapses TRAP-IDENTICALLY: magnitude is monotonic in the count, so
+        // `(v<<A)<<B` overflows on exactly the inputs `v<<(A+B)` does. Bounded by A+B < width (a combined
+        // count ≥ width must trap as an out-of-range count / is masked mod width, disagreeing with the
+        // double shift). Pins the collapse (one shl), the width guard (two shifts when A+B ≥ width), the
+        // MIXED-direction non-collapse, and value + overflow-trap parity vs the single-shift form.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let shls = |c: &[Lir]| c.iter().filter(|i| matches!(i, Lir::I64Shl | Lir::I32Shl)).count();
+        // A+B=5 < 64 → one shl; triple nest → one; Int8 3+4=7 < 8 → one.
+        assert_eq!(shls(&lir("(: x Int64)", "(: (<< (<< x 2) 3) Int64)")), 1, "shl-shl → one");
+        assert_eq!(shls(&lir("(: x Int64)", "(: (<< (<< (<< x 1) 2) 3) Int64)")), 1, "triple shl → one");
+        assert_eq!(shls(&lir("(: x Int8)", "(: (<< (<< x 3) 4) Int8)")), 1, "Int8 7 < 8 → one");
+        // A+B ≥ width does NOT combine: Int8 3+5=8, Int64 40+30=70.
+        assert_eq!(shls(&lir("(: x Int8)", "(: (<< (<< x 3) 5) Int8)")), 2, "8 >= 8 → keep two");
+        assert_eq!(shls(&lir("(: x Int64)", "(: (<< (<< x 40) 30) Int64)")), 2, "70 >= 64 → keep two");
+        // MIXED direction (`(<< (>> x 2) 3)`) is NOT collapsed — one of each stays.
+        let mixed = lir("(: x Int64)", "(: (<< (>> x 2) 3) Int64)");
+        assert_eq!(shls(&mixed), 1, "mixed shr-then-shl keeps its one shl");
+
+        // VALUE PARITY: 3<<5 = 96 (Int64 and in-range Int8); negatives shift correctly.
+        assert_eq!(run::<i64>("(: x Int64)", "(: (<< (<< x 2) 3) Int64)", &[Val::S64(3)]), 96);
+        assert_eq!(run::<i64>("(: x Int64)", "(: (<< (<< x 2) 3) Int64)", &[Val::S64(-1)]), -32);
+        assert_eq!(run::<i8>("(: x Int8)", "(: (<< (<< x 2) 3) Int8)", &[Val::S8(3)]), 96);
+        // OVERFLOW-TRAP PARITY: Int8 8<<5 = 256 overflows — the collapsed `<< 5` traps exactly as the
+        // single-shift form does (the double-shift and single-shift agree on the trap set).
+        assert!(traps("(: x Int8)", "(: (<< (<< x 2) 3) Int8)", &[Val::S8(8)]), "collapsed overflow traps");
+        assert!(traps("(: x Int8)", "(: (<< x 5) Int8)", &[Val::S8(8)]), "single-shift overflow traps");
+    }
+
+    #[test]
     fn a_mask_covering_a_shifted_values_range_is_elided() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;
