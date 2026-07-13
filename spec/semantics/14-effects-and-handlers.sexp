@@ -339,6 +339,21 @@
                 (match (Fresh.next) (0 100) (_ 200)))) (export main)))
   (output (: 100 Int64)))
 
+(case "a performed operation composes under a projection and a negation"
+  (doc    "Witnesses that an effect operation composes under the STRICT one-operand forms — a tuple
+           projection and a boolean negation — exactly as under arithmetic. `(. (tuple (Fresh.next)
+           (Fresh.next)) 1)` builds a pair from two successive reads (seeded 0 → 0 and 1) and projects the
+           second, 1; `(not (= … 0))` negates a comparison of a performed value. Both operands are evaluated
+           left to right, threading the counter, before the enclosing op applies. This pins that the fold
+           threads through projection/negation, not only conditionals and arithmetic — a performed value is
+           an ordinary sub-expression everywhere it appears.")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (. (tuple (Fresh.next) (Fresh.next)) 1))) (export main)))
+  (output (: 1 Int64)))
+
 (case "a handler accumulates into a list and a read-out operation reads it back"
   (doc    "Witnesses capabilities-and-effects.md #A Handler Threads State Across The Operations It
            Discharges and #A Handler Evaluates To The Value Of Its Body: `Diag` declares two operations —

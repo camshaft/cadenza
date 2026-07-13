@@ -6601,6 +6601,43 @@ mod match_engine {
     }
 
     #[test]
+    fn symbol_of_a_non_string_reports_one_error_not_a_misleading_runtime_string_decline() {
+        // `(Symbol.of 5)` is a type error (`Symbol.of : String → Symbol`, applied to Int64) — CDZ0203.
+        // It used to ALSO emit the emit-path decline "Symbol.of on a runtime string is not yet interned",
+        // which is a LIE (5 is not a string at all) AND a second `error:`. Now the decline is suppressed
+        // (an uncoded decline at a node that carries a coded reject is shadowed by it), so the type error
+        // is the ONE story. A genuine runtime STRING still declines honestly elsewhere.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) (Symbol.of 5)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "Symbol.of on a non-string = one type error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0203"));
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("runtime string")),
+            "the misleading 'runtime string' decline must not accompany the type error"
+        );
+    }
+
+    #[test]
     fn constant_symbol_of_equality_and_to_string_fold() {
         // 17-symbols inc 1: `Symbol.of` interns a String → Symbol (content-derived identity), and equality
         // is String equality lifted through the Symbol tag. A CONSTANT symbol reuses the underlying
@@ -14753,6 +14790,53 @@ mod stage1 {
             run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(1)]),
             42,
             "x=1 → the wildcard arm yields 42"
+        );
+    }
+
+    #[test]
+    fn a_perform_threads_through_strict_one_operand_forms() {
+        // E-fold arms for `not` / projection / member / annotation — STRICT one-operand forms that had no
+        // thread arm (a perform inside declined, though `if`/`match` fold). Each threads its operand:
+        //   `(not (= (Get.next) 0))` seed 0 → Get reads 0, `= 0` true, `not` → false → arm 2.
+        //   `(. (tuple (Get.next) (Get.next)) 1)` seed 10 → second Get reads 11 → projects 11.
+        let neg = "(do (effect Get (op next (-> Unit Int64))) \
+                   (def (main) (handle 0 ((Get.next (u) s (resume s (+ s 1)))) (if (not (= (Get.next) 0)) 1 2))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(neg))).expect("not threads"),
+                "main"
+            ),
+            2
+        );
+        let proj = "(do (effect Get (op next (-> Unit Int64))) \
+                   (def (main) (handle 10 ((Get.next (u) s (resume s (+ s 1)))) (. (tuple (Get.next) (Get.next)) 1))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(proj)))
+                    .expect("projection threads"),
+                "main"
+            ),
+            11
+        );
+    }
+
+    #[test]
+    fn a_short_circuit_connective_with_a_perform_preserves_short_circuit() {
+        // E-fold `and`/`or` arm: a connective's rhs runs only conditionally, so threading it strictly would
+        // evaluate rhs's perform even when `lhs` short-circuits. The arm DESUGARS to `if` (`(or lhs rhs)` ≡
+        // `(if lhs true rhs)`), so rhs is a branch run only on the taken path. Here `(or true (= (Get.next)
+        // 99))` short-circuits on `true`, so the rhs `Get.next` does NOT advance state — the following
+        // `(Get.next)` then reads 0 (not 1). Pins that the desugar preserves short-circuit evaluation.
+        let src = "(do (effect Get (op next (-> Unit Int64))) \
+                   (def (main) (handle 0 ((Get.next (u) s (resume s (+ s 1)))) (if (or true (= (Get.next) 99)) (Get.next) 0))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a short-circuit connective with a perform folds"),
+                "main"
+            ),
+            0,
+            "the short-circuited rhs did not advance state, so the branch Get reads 0"
         );
     }
 
