@@ -778,6 +778,7 @@ pass	an escaping closure whose body is a match hits the wildcard arm
 pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit conversion makes the operation well-typed
 pass	an explicit float-width conversion makes a mixed-width operation well-typed
+pass	an export whose name is not kebab-case crosses under a normalized extern name
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct
@@ -814,6 +815,7 @@ pass	an unbound name in a type annotation's type position is rejected
 pass	an unbound name in an uncalled sibling definition is still rejected
 pass	an unbound name in an unselected conditional branch is still rejected
 pass	an unbound name in an unselected match arm is still rejected
+pass	an underscore export name crosses under a normalized extern name
 pass	an underscore-letter identifier binds and resolves
 pass	an underscore-prefixed function parameter binds its argument
 pass	an underscore-prefixed token is an identifier, not an integer
@@ -1193,6 +1195,7 @@ pass	two effects each declaring a same-named operation do not collide
 pass	two empty byte sequences are equal
 pass	two empty strings are equal
 pass	two equal chars compare equal
+pass	two exports normalizing to the same kebab extern name are rejected
 pass	two functions defined by mutual recursion compute a result
 pass	two host calls consume their responses in order
 pass	two lists are concatenated into one flat list

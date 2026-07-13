@@ -519,6 +519,7 @@ pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit conversion makes the operation well-typed
 pass	an explicit float-width conversion makes a mixed-width operation well-typed
+pass	an export whose name is not kebab-case crosses under a normalized extern name
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an in-bounds slice yields Some of the bytes at that range
 pass	an inner binding shadows an outer one only within its scope
@@ -547,6 +548,7 @@ pass	an unbound name in a type annotation's type position is rejected
 pass	an unbound name in an uncalled sibling definition is still rejected
 pass	an unbound name in an unselected conditional branch is still rejected
 pass	an unbound name in an unselected match arm is still rejected
+pass	an underscore export name crosses under a normalized extern name
 pass	an underscore-letter identifier binds and resolves
 pass	an underscore-prefixed function parameter binds its argument
 pass	an underscore-prefixed token is an identifier, not an integer
@@ -1222,6 +1224,7 @@ todo	tuple elements are accessed by index
 todo	two definitions imported under the same name are rejected
 todo	two differing runtime Ok values of a multi-parameter sum compare unequal by a heap walk
 todo	two distinct names bound to the same value key the same map entry
+todo	two exports normalizing to the same kebab extern name are rejected
 todo	two host calls consume their responses in order
 todo	two lists are concatenated into one flat list
 todo	two maps of different sizes are unequal, not a type error

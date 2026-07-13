@@ -17,6 +17,7 @@ pub mod codec;
 pub mod convert;
 pub mod debug;
 pub mod doc;
+pub mod extern_name;
 pub mod fxhash;
 pub mod iter;
 pub mod leb128;

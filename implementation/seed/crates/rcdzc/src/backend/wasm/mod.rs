@@ -41,6 +41,73 @@ use crate::db::Db;
 use crate::diag::Reject;
 use crate::layout::Layout;
 
+/// The kebab-case component EXTERN name for a source export identifier. A Cadenza identifier is broader
+/// than a component-model extern name: it may contain uppercase letters (`fA`, `Foo`) or underscores
+/// (`my_func`) — all valid source names — but the component model requires an export's extern name to be
+/// kebab-case (`[a-z][a-z0-9]*(-[a-z][a-z0-9]*)*`). Emitting a non-kebab name verbatim yields a component
+/// that fails to validate ("export name `fA` is not a valid extern name") — an unloadable artifact. So a
+/// non-kebab source name is NORMALIZED here at the component boundary. The rule (matches
+/// `cadenza-syntax`'s `extern_name::kebab_extern_name`, which `cdz-run` uses to resolve a `--call` name):
+///   * an UPPERCASE letter begins a word — insert a `-` before it (unless the output is empty / ends in
+///     `-`), then lowercase it (`fA`→`f-a`, `myFunc`→`my-func`, `Foo`→`foo`);
+///   * `_` becomes a `-` separator (`my_func`→`my-func`); runs of separators collapse; a trailing
+///     separator is trimmed;
+///   * a lowercase letter, a digit, or a `-` is kept — so an ALREADY-kebab name is the IDENTITY (every
+///     corpus export is unchanged, byte-for-byte).
+///
+/// A source identifier always starts with a letter (a digit-led token is a numeric literal, rejected in
+/// the reader), so the result always starts with a valid kebab word. Deterministic — the compiler and
+/// the runner agree without threading a mapping across the boundary; a COLLISION (two source names → one
+/// extern name) is rejected at export planning (`kebab_export_collision`) before emit.
+pub(crate) fn kebab_extern_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for c in name.chars() {
+        if c.is_ascii_uppercase() {
+            if !out.is_empty() && !out.ends_with('-') {
+                out.push('-');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else if c == '_' || c == '-' {
+            if !out.is_empty() && !out.ends_with('-') {
+                out.push('-');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+/// If two DISTINCT source export names normalize to the SAME kebab extern name, return a reject naming
+/// the collision (else `None`). Two exports that share a normalized extern name cannot both cross the
+/// component boundary — the component would carry a duplicate export name (invalid) or silently drop one
+/// — so the compiler declines rather than miscompile, exactly as the duplicate-export check does for
+/// identical names. (Exports with the SAME source name are the duplicate-export case, caught earlier; a
+/// name colliding with ITSELF under normalization is not a collision.) The FIRST such pair is reported.
+fn kebab_export_collision(layout: &Layout) -> Option<Reject> {
+    let mut seen: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
+    for e in &layout.exports {
+        let extern_name = kebab_extern_name(&e.name);
+        if let Some(&prior) = seen.get(&extern_name)
+            && prior != e.name
+        {
+            return Some(Reject::coded(
+                crate::diag::Code::Malformed,
+                format!(
+                    "exports `{prior}` and `{}` both normalize to the component extern name `{extern_name}` \
+                     — rename one so each export has a distinct kebab-case boundary name",
+                    e.name
+                ),
+            ));
+        }
+        seen.insert(extern_name, &e.name);
+    }
+    None
+}
+
 /// Emit a WebAssembly component for the program in `db` under the boundary `layout`. Selects each
 /// definition in the layout's emission order, serializes the core module, and assembles the envelope.
 ///
@@ -59,6 +126,15 @@ pub fn emit(
     spans: Option<&crate::spans::SpanData>,
     external_debug_info: Option<&str>,
 ) -> Result<Vec<u8>, Reject> {
+    // KEBAB-NAME COLLISION GUARD. Each export's component extern name is normalized to kebab-case
+    // (`kebab_extern_name`, applied at `comp_export_item`), so two DISTINCT source names could normalize
+    // to the SAME extern name (`(export fA)` + `(export f-a)` → both `f-a`). Emitting that would produce a
+    // component with a duplicate export name (invalid) or silently drop one — so reject it here, before
+    // any emit path, naming the two colliding source names. (An identity-normalized common case never
+    // collides with itself; only genuinely-distinct source names that share a normalized form do.)
+    if let Some(reject) = kebab_export_collision(layout) {
+        return Err(reject);
+    }
     // The RESOURCE ESCAPE path (`DESIGN-value-heap-rcdzc.md` §3a), detected BEFORE selection: a single
     // nullary export returning a COMPOUND crosses as a component-model resource whose `encode() ->
     // list<u8>` yields the canonical binary value form. For a fully-CONSTANT compound (R1) the value is

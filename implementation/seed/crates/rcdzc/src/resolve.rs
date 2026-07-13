@@ -524,10 +524,8 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
 /// candidates are considered in a fixed order and ties break on the lexicographically-smaller name, so
 /// the suggestion is a pure function of the program — never dependent on hash-map iteration order.
 fn nearest_name_suggestion(db: &Db, id: StructId, name: &str) -> Option<String> {
-    // A one-char name has no meaningful "typo" neighbour; skip the search (avoids `x`→`a` noise).
-    if name.chars().count() < 2 {
-        return None;
-    }
+    // (A one-char name has no meaningful typo neighbour — that guard now lives in `suggest::nearest`, so
+    // every suggestion site shares it, and this path need not repeat it.)
     // CONTEXT-AWARE candidate pool: the syntactic POSITION of the typo constrains which names could have
     // been meant, so the suggestion is one the fix would actually resolve (the one-shot rule), not merely
     // the lexically-nearest name of any kind. Three positions:

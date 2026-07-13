@@ -509,6 +509,13 @@ pub mod suggest {
         S: AsRef<str>,
     {
         let name_len = name.chars().count();
+        // A one-char query has no meaningful typo neighbour: with `max_dist` floored at 1, EVERY one-char
+        // candidate is one substitution away, so `z` would "suggest" an unrelated `a` — a confident but
+        // baseless "did you mean?". Suppress it for ALL sites (unbound name, record field, import, effect
+        // op); the field/import paths otherwise leaked exactly this noise the unbound path already guarded.
+        if name_len < 2 {
+            return None;
+        }
         let max_dist = (name_len / 3).max(1);
         let mut best: Option<(usize, String)> = None;
         for cand in candidates {
