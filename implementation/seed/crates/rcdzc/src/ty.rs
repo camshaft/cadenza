@@ -453,6 +453,28 @@ impl Unit {
         }
         acc
     }
+
+    /// A compact, HUMAN-readable rendering of the unit for a DIAGNOSTIC — the base names joined by `·`
+    /// with `^n` exponents (`metre`, `metre^2`, `metre·second^-1`), and `dimensionless` for the empty
+    /// unit. Unlike [`render`] (the round-tripping `(Unit.base …)` surface form), this is for a message
+    /// where naming just the units — not the whole `(Qty T <unit>)` type — is what the reader needs.
+    /// The `exp` map is a `BTreeMap`, so iteration is in sorted base-name order → deterministic.
+    pub fn render_human(&self) -> String {
+        if self.exp.is_empty() {
+            return "dimensionless".to_string();
+        }
+        self.exp
+            .iter()
+            .map(|(name, &exp)| {
+                if exp == 1 {
+                    name.clone()
+                } else {
+                    format!("{name}^{exp}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("·")
+    }
 }
 
 /// Normalize a machine-integer ratio `num/den` to canonical form — lowest terms, denominator strictly

@@ -6145,6 +6145,34 @@ mod match_engine {
     }
 
     #[test]
+    fn constant_map_equality_folds_order_independently() {
+        // 05-compound-types §Two Maps Are Equal When They Associate The Same Keys With Equal Values — a
+        // CONSTANT map equality folds structurally, order-independent + by value. `const_compound_eq` gains
+        // a `MapNew` arm so it works standalone AND recursively (a `(list (map …) (map …))` element compare).
+        let run = |src: &str| {
+            run_returns::<bool>(
+                &component(&format!("(module m (def (main) {src}) (export main))")),
+                "main",
+            )
+        };
+        // Same entries in DIFFERENT written order → true (order-independent).
+        assert!(run(
+            "(= (map (\"a\" 1) (\"b\" 2)) (map (\"b\" 2) (\"a\" 1)))"
+        ));
+        // Different key sets → false (same Map<String,Int64> type, NOT a type error).
+        assert!(!run("(= (map (\"a\" 1)) (map (\"b\" 1)))"));
+        // Same key, different value → false.
+        assert!(!run("(= (map (\"a\" 1)) (map (\"a\" 2)))"));
+        // Different sizes → false.
+        assert!(!run("(= (map (\"a\" 1)) (map (\"a\" 1) (\"b\" 2)))"));
+        // NESTED: two lists whose elements are maps of different keys — the recursion that previously
+        // declined. Both lists are identical, so the list equality folds true.
+        assert!(run(
+            "(= (list (map (\"a\" 1)) (map (\"b\" 2))) (list (map (\"a\" 1)) (map (\"b\" 2))))"
+        ));
+    }
+
+    #[test]
     fn a_list_homogeneity_violation_is_cdz0201_by_shape() {
         // 05-compound-types §A List Is An Ordered Homogeneous Sequence — the same taxonomy line the numeric
         // operators and `if`-branches draw. A homogeneity violation between two DISTINCT NUMERIC types, or
@@ -9595,13 +9623,18 @@ mod match_engine {
         // is a compile-time rejection (units erase before the program runs), never a runtime trap.
         let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit base) #\"metre\")) \
                    ((. Qty of) 1.0 ((. Unit base) #\"second\")))) (export main))";
-        assert_eq!(
-            compile_component(&crate::codec::encode(&parse(src)))
-                .err()
-                .and_then(|d| d.code.as_deref().map(str::to_string))
-                .as_deref(),
-            Some("CDZ0501"),
-            "a length + a time must reject CDZ0501 (dimensional mismatch)"
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a length + a time must reject CDZ0501 (dimensional mismatch)");
+        assert_eq!(err.code.as_deref(), Some("CDZ0501"), "got: {}", err.message);
+        // The message names the OPERATION and just the UNITS (not the whole `(Qty …)` types), and states
+        // the equal-dimensions rule — the rustc-gold form, not a bare type dump.
+        assert!(
+            err.message.contains("adding")
+                && err.message.contains("metre")
+                && err.message.contains("second")
+                && !err.message.contains("(Qty"),
+            "names the op + bare units + rule, no full-type dump: {}",
+            err.message
         );
     }
 
@@ -9659,6 +9692,40 @@ mod match_engine {
                 "main"
             ),
             0.0264
+        );
+    }
+
+    #[test]
+    fn unit_in_converts_a_quantity_to_a_chosen_unit_exactly_over_int() {
+        // F2-3: `(Unit.in kilometre (Qty.of 2000 metre))` explicitly converts 2000 m to km: 2000/1000 =
+        // 2 km, exact integer arithmetic (the source→target scale ratio divides). Unit.in pins the RESULT
+        // unit; the magnitude is `value * (source.scale / target.scale)` in the inner T. Compiles + RUNS.
+        let src = "(do (def (main) ((. Qty value) \
+                   ((. Unit in) ((. Unit of) #\"kilometre\") ((. Qty of) 2000 ((. Unit of) #\"metre\"))))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a Unit.in conversion compiles and runs"),
+                "main"
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn unit_in_across_dimensions_is_cdz0501() {
+        // F2-3: `(Unit.in metre (Qty.of 3.0 second))` asks to convert a time to a length — different
+        // dimensions — CDZ0501. Unit.in converts WITHIN a dimension, never across one.
+        let src = "(do (def (main) ((. Unit in) ((. Unit of) #\"metre\") \
+                   ((. Qty of) 3.0 ((. Unit of) #\"second\")))) (export main))";
+        assert_eq!(
+            compile_component(&crate::codec::encode(&parse(src)))
+                .err()
+                .and_then(|d| d.code.as_deref().map(str::to_string))
+                .as_deref(),
+            Some("CDZ0501"),
+            "converting across dimensions with Unit.in must reject CDZ0501"
         );
     }
 
