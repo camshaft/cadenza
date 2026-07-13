@@ -2,7 +2,7 @@
 /// the chapter content column with prev/next navigation.
 
 import { NavLink, useParams } from "react-router-dom";
-import { Suspense } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { CHAPTERS, chapterAt } from "../content/chapters.ts";
 import { SyntaxToggle } from "../syntax/SyntaxToggle.tsx";
 import { useProgress } from "../progress/ProgressContext.tsx";
@@ -11,60 +11,46 @@ export function Layout() {
   const { slug } = useParams();
   const active = slug ?? CHAPTERS[0].slug;
   const found = chapterAt(active);
-  const progress = useProgress();
-
-  const sections = groupBySection();
+  // The mobile nav drawer, open state. Closed on route change and on Escape.
+  const [navOpen, setNavOpen] = useState(false);
+  useEffect(() => {
+    setNavOpen(false);
+  }, [active]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setNavOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
-      <Header />
+      <Header onOpenNav={() => setNavOpen(true)} />
+
+      {/* Mobile nav drawer: a left slide-over with a backdrop, below md. */}
+      {navOpen && (
+        <div className="fixed inset-0 z-40 md:hidden" role="dialog" aria-modal="true">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setNavOpen(false)} />
+          <div className="absolute inset-y-0 left-0 w-72 max-w-[80%] overflow-y-auto border-r border-slate-800 bg-slate-950 p-4 shadow-xl">
+            <div className="mb-4 flex items-center justify-between">
+              <span className="text-sm font-bold text-slate-100">Contents</span>
+              <button
+                onClick={() => setNavOpen(false)}
+                aria-label="Close navigation"
+                className="rounded p-1 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+              >
+                ✕
+              </button>
+            </div>
+            <SidebarNav />
+          </div>
+        </div>
+      )}
+
       <div className="mx-auto flex max-w-7xl gap-8 px-4 py-8">
         <aside className="hidden w-60 shrink-0 md:block">
-          <nav className="sticky top-24 space-y-6">
-            <ProgressSummary />
-            {sections.map(([section, chapters]) => (
-              <div key={section}>
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  {section}
-                </div>
-                <ul className="space-y-0.5">
-                  {chapters.map((c) => {
-                    const total = c.exercises ?? 0;
-                    const done = total > 0 ? progress.countFor(c.slug) : 0;
-                    return (
-                      <li key={c.slug}>
-                        <NavLink
-                          to={`/${c.slug}`}
-                          className={({ isActive }) =>
-                            "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm transition " +
-                            (isActive
-                              ? "bg-cadenza-600/15 font-medium text-cadenza-300"
-                              : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200")
-                          }
-                        >
-                          <span className="flex-1">{c.title}</span>
-                          {/* Show a badge only once the reader has engaged (≥1 done): a fully-done
-                              chapter gets a ✓, a partly-done one gets n/m. A fresh chapter shows
-                              nothing, so the sidebar isn't cluttered with 0/n before you start. */}
-                          {total > 0 && done > 0 && (
-                            <span
-                              className={
-                                "shrink-0 text-[10px] tabular-nums " +
-                                (done >= total ? "text-emerald-400" : "text-slate-500")
-                              }
-                              title={`${done} of ${total} exercises done`}
-                            >
-                              {done >= total ? "✓" : `${done}/${total}`}
-                            </span>
-                          )}
-                        </NavLink>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            ))}
-          </nav>
+          <div className="sticky top-24">
+            <SidebarNav />
+          </div>
         </aside>
 
         <main className="min-w-0 flex-1">
@@ -81,6 +67,57 @@ export function Layout() {
         </main>
       </div>
     </div>
+  );
+}
+
+/// The table-of-contents navigation — shared by the desktop sidebar and the mobile drawer. A section
+/// grouping of chapter links, each with a progress badge once the reader has engaged.
+function SidebarNav() {
+  const progress = useProgress();
+  const sections = groupBySection();
+  return (
+    <nav className="space-y-6">
+      <ProgressSummary />
+      {sections.map(([section, chapters]) => (
+        <div key={section}>
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">{section}</div>
+          <ul className="space-y-0.5">
+            {chapters.map((c) => {
+              const total = c.exercises ?? 0;
+              const done = total > 0 ? progress.countFor(c.slug) : 0;
+              return (
+                <li key={c.slug}>
+                  <NavLink
+                    to={`/${c.slug}`}
+                    className={({ isActive }) =>
+                      "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm transition " +
+                      (isActive
+                        ? "bg-cadenza-600/15 font-medium text-cadenza-300"
+                        : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200")
+                    }
+                  >
+                    <span className="flex-1">{c.title}</span>
+                    {/* Badge only once the reader has engaged (≥1 done): fully-done → ✓, partial → n/m;
+                        a fresh chapter shows nothing so the list isn't cluttered with 0/n. */}
+                    {total > 0 && done > 0 && (
+                      <span
+                        className={
+                          "shrink-0 text-[10px] tabular-nums " +
+                          (done >= total ? "text-emerald-400" : "text-slate-500")
+                        }
+                        title={`${done} of ${total} exercises done`}
+                      >
+                        {done >= total ? "✓" : `${done}/${total}`}
+                      </span>
+                    )}
+                  </NavLink>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
+    </nav>
   );
 }
 
@@ -114,14 +151,26 @@ function ProgressSummary() {
   );
 }
 
-function Header() {
+function Header({ onOpenNav }: { onOpenNav: () => void }) {
   return (
     <header className="sticky top-0 z-20 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur">
       <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3">
-        <NavLink to="/" className="flex items-center gap-2">
-          <span className="text-lg font-bold tracking-tight text-slate-100">Cadenza</span>
-          <span className="hidden text-sm text-slate-500 sm:inline">the interactive guide</span>
-        </NavLink>
+        <div className="flex items-center gap-2">
+          {/* Hamburger — opens the nav drawer on mobile; the sidebar is always visible at md+. */}
+          <button
+            onClick={onOpenNav}
+            aria-label="Open navigation"
+            className="-ml-1 rounded p-1.5 text-slate-300 transition hover:bg-slate-800/60 md:hidden"
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+          </button>
+          <NavLink to="/" className="flex items-center gap-2">
+            <span className="text-lg font-bold tracking-tight text-slate-100">Cadenza</span>
+            <span className="hidden text-sm text-slate-500 sm:inline">the interactive guide</span>
+          </NavLink>
+        </div>
         <div className="flex items-center gap-3">
           <NavLink
             to="/playground"
