@@ -6145,6 +6145,34 @@ mod match_engine {
     }
 
     #[test]
+    fn constant_map_equality_folds_order_independently() {
+        // 05-compound-types §Two Maps Are Equal When They Associate The Same Keys With Equal Values — a
+        // CONSTANT map equality folds structurally, order-independent + by value. `const_compound_eq` gains
+        // a `MapNew` arm so it works standalone AND recursively (a `(list (map …) (map …))` element compare).
+        let run = |src: &str| {
+            run_returns::<bool>(
+                &component(&format!("(module m (def (main) {src}) (export main))")),
+                "main",
+            )
+        };
+        // Same entries in DIFFERENT written order → true (order-independent).
+        assert!(run(
+            "(= (map (\"a\" 1) (\"b\" 2)) (map (\"b\" 2) (\"a\" 1)))"
+        ));
+        // Different key sets → false (same Map<String,Int64> type, NOT a type error).
+        assert!(!run("(= (map (\"a\" 1)) (map (\"b\" 1)))"));
+        // Same key, different value → false.
+        assert!(!run("(= (map (\"a\" 1)) (map (\"a\" 2)))"));
+        // Different sizes → false.
+        assert!(!run("(= (map (\"a\" 1)) (map (\"a\" 1) (\"b\" 2)))"));
+        // NESTED: two lists whose elements are maps of different keys — the recursion that previously
+        // declined. Both lists are identical, so the list equality folds true.
+        assert!(run(
+            "(= (list (map (\"a\" 1)) (map (\"b\" 2))) (list (map (\"a\" 1)) (map (\"b\" 2))))"
+        ));
+    }
+
+    #[test]
     fn a_list_homogeneity_violation_is_cdz0201_by_shape() {
         // 05-compound-types §A List Is An Ordered Homogeneous Sequence — the same taxonomy line the numeric
         // operators and `if`-branches draw. A homogeneity violation between two DISTINCT NUMERIC types, or

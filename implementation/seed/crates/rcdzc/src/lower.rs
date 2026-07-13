@@ -6758,6 +6758,46 @@ pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option
             }
             Some(true)
         }
+        // Two constant MAPS — equal iff same size AND every entry `k ↦ v` of one has a KEY-EQUAL entry in
+        // the other whose VALUE is equal (collections-and-text.md §Two Maps Are Equal When They Associate
+        // The Same Keys With Equal Values — order-independent, by value, exactly like a set but with a
+        // value per key). A map's KEY SET is runtime data, NOT its type, so two maps of DIFFERENT key sets
+        // are the SAME `Map<K,V>` type and compare `false` here (not a type error) — this is what folds `(=
+        // (map ("a" 1)) (map ("b" 2)))` → false AND lets a `(list (map …) (map …))` element-compare fold
+        // (the recursion that was declining). Entries are already dedup'd (the `map` literal / insert folds
+        // keep one entry per key), so equal size + one-way key-and-value containment suffices.
+        (Core::MapNew { entries: ea, .. }, Core::MapNew { entries: eb, .. }) => {
+            if ea.len() != eb.len() {
+                return Some(false);
+            }
+            for &(ka, va) in &ea {
+                // Find `ka` among `eb`'s keys (by value). Track whether any key comparison was AMBIGUOUS
+                // (a non-const nested key → `None`): if the key is not found AND every comparison was a
+                // definite `Some(false)`, the key is genuinely ABSENT, so — sizes being equal — the maps
+                // differ (`false`); but if a comparison was ambiguous we cannot conclude absence, so decline.
+                let mut value_at_key = None;
+                let mut ambiguous_key = false;
+                for &(kb, vb) in &eb {
+                    match const_compound_eq(db, ka, kb) {
+                        Some(true) => {
+                            value_at_key = Some(vb);
+                            break;
+                        }
+                        Some(false) => {}
+                        None => ambiguous_key = true,
+                    }
+                }
+                match value_at_key {
+                    Some(vb) => match const_compound_eq(db, va, vb)? {
+                        true => {}                        // key present, value equal — continue
+                        false => return Some(false),      // key present, value differs
+                    },
+                    None if ambiguous_key => return None, // couldn't rule out the key being present
+                    None => return Some(false),           // key genuinely absent → maps differ
+                }
+            }
+            Some(true)
+        }
         // Any other pairing includes a runtime operand (not a constant compound) — decline the fold.
         _ => None,
     }
