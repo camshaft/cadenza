@@ -15081,6 +15081,75 @@ mod match_engine {
     }
 
     #[test]
+    fn a_same_direction_comparison_pair_subsumes_to_one() {
+        // SUBSUMPTION: two comparisons on the SAME operand `v` vs constants with the SAME operator — one
+        // implies the other. `(and (< v 5) (< v 10))` → `(< v 5)` (and keeps the tighter bound), `(or …)` →
+        // `(< v 10)` (or keeps the looser). Restricted to IDENTICAL operators. Pins one comparison at the Lir
+        // level + value parity; a distinct variable / different operator / different side is NOT folded.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS))
+                .count()
+        };
+        // Same-op pairs subsume to ONE comparison (and/or, `<`/`>`, mirrored operand).
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (< x 5) (< x 10)) Bool)")), 1, "and (<5)(<10) → (<5)");
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (or (< x 5) (< x 10)) Bool)")), 1, "or (<5)(<10) → (<10)");
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (> x 5) (> x 10)) Bool)")), 1, "and (>5)(>10) → (>10)");
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (< 5 x) (< 10 x)) Bool)")), 1, "mirrored operand");
+        // NON-subsumable: distinct variable, different operator, different side — all kept (2 compares).
+        assert_eq!(cmps(&lir("(: x Int64) (: y Int64)", "(: (and (< x 5) (< y 10)) Bool)")), 2, "distinct var kept");
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (< x 5) (<= x 4)) Bool)")), 2, "different op kept");
+        assert_eq!(cmps(&lir("(: x Int64)", "(: (and (< x 5) (< 10 x)) Bool)")), 2, "different side kept");
+
+        // VALUE PARITY: `and` keeps the tighter, `or` the looser — verified across the two bounds.
+        use wasmtime::component::Val;
+        let andfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (and (< x 5) (< x 10))) (export f))"
+        ))).expect("compile");
+        assert!(run_returns_with::<bool>(&andfn, "f", &[Val::S64(3)]));   // < 5 & < 10
+        assert!(!run_returns_with::<bool>(&andfn, "f", &[Val::S64(7)]));  // 7 not < 5
+        assert!(!run_returns_with::<bool>(&andfn, "f", &[Val::S64(12)]));
+        let orfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (or (< x 5) (< x 10))) (export f))"
+        ))).expect("compile");
+        assert!(run_returns_with::<bool>(&orfn, "f", &[Val::S64(3)]));
+        assert!(run_returns_with::<bool>(&orfn, "f", &[Val::S64(7)]));    // 7 < 10
+        assert!(!run_returns_with::<bool>(&orfn, "f", &[Val::S64(12)]));
+        // TRAP SAFETY: the kept comparison still evaluates the operand, so a trapping `(/ 100 z)` traps.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: z Int64)) (if (and (< (/ 100 z) 5) (< (/ 100 z) 10)) 1 0)) (export f))"
+        ))).expect("compile");
+        assert!(call_traps(&tb, "f", &[Val::S64(0)]), "the kept comparison preserves the operand's trap");
+    }
+
+    #[test]
     fn a_boolean_connective_operand_must_be_bool() {
         // A non-Bool operand is a MALFORMED program (CDZ0201) — the operand is not the required Bool, like
         // a binary operator's operand — NOT the structural-shape mismatch (CDZ0203) a cross-kind branch

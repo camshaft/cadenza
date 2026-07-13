@@ -586,6 +586,14 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 {
                     Core::ConstBool(!is_and) // or → true ; and → false
                 }
+                // SUBSUMPTION: two comparisons on the SAME runtime operand `v` against constants with the
+                // SAME operator (both `<`, both `<=`, both `>`, or both `>=`) — one implies the other, so
+                // the redundant one drops. `and` keeps the STRONGER (tighter bound), `or` the WEAKER
+                // (looser): `(and (< v 5) (< v 10))` → `(< v 5)`, `(or (< v 5) (< v 10))` → `(< v 10)`. The
+                // kept comparison still evaluates `v` (its trap, if any, is preserved) — no operand is
+                // dropped, only the redundant second bound. `subsuming_comparison` returns the occurrence to
+                // keep (`lhs` or `rhs`).
+                _ if let Some(keep) = subsuming_comparison(db, lhs, rhs, is_and) => core_of(db, keep),
                 _ => Core::And { lhs, rhs, is_and },
             },
         },
@@ -6922,6 +6930,51 @@ fn complementary_comparisons(db: &mut Db, lhs: StructId, rhs: StructId) -> bool 
     );
     // Same operand pair in the SAME order (the operators already encode the direction).
     complement && core_equiv(db, la, ra) && core_equiv(db, lb, rb)
+}
+
+/// SUBSUMPTION between two comparisons on the SAME runtime operand `v` against CONSTANTS with the SAME
+/// operator — one implies the other, so `(and …)`/`(or …)` keeps just one. Returns the occurrence to KEEP
+/// (`lhs` or `rhs`), or `None` when the shape does not match. `is_and` selects which survives: `and` keeps
+/// the STRONGER (tighter) bound, `or` the WEAKER (looser). Restricted to IDENTICAL operators so no
+/// off-by-one bound arithmetic is needed — `< c` is stronger than `< d` iff `c <= d` (smaller upper bound);
+/// `> c` is stronger iff `c >= d` (larger lower bound); `<=`/`>=` compare the same way. The runtime operand
+/// `v` must be `core_equiv` on both sides and on the SAME side (both `(cmp v const)` or both `(cmp const v)`
+/// — a mirrored pair would flip the direction). The kept comparison still evaluates `v`, so no trap drops.
+fn subsuming_comparison(db: &mut Db, lhs: StructId, rhs: StructId, is_and: bool) -> Option<StructId> {
+    let Core::Compare { op: lop, lhs: la, rhs: lb } = core_of(db, lhs) else { return None };
+    let Core::Compare { op: rop, lhs: ra, rhs: rb } = core_of(db, rhs) else { return None };
+    if lop != rop {
+        return None; // identical operator only (avoids `<`/`<=` bound normalization edge cases)
+    }
+    let as_int = |db: &mut Db, id: StructId| match core_of(db, id) {
+        Core::ConstInt(v) => v.to_i64(),
+        _ => None,
+    };
+    // Identify `(v, c)` for each side with the runtime operand `v` on the SAME side (both left, both right).
+    // `v_left` = the compare is `(cmp v c)`; else `(cmp c v)` — a mixed arrangement flips the effective
+    // direction, so require the same arrangement on both.
+    let (lv, lc, l_v_left) = match (as_int(db, lb), as_int(db, la)) {
+        (Some(c), _) => (la, c, true),  // `(cmp v c)`
+        (_, Some(c)) => (lb, c, false), // `(cmp c v)`
+        _ => return None,
+    };
+    let (rv, rc, r_v_left) = match (as_int(db, rb), as_int(db, ra)) {
+        (Some(c), _) => (ra, c, true),
+        (_, Some(c)) => (rb, c, false),
+        _ => return None,
+    };
+    if l_v_left != r_v_left || !core_equiv(db, lv, rv) {
+        return None; // same operand on the same side
+    }
+    // With `v` on the left: `< `/`<=` are UPPER bounds (stronger = smaller c), `>`/`>=` LOWER bounds
+    // (stronger = larger c). With `v` on the RIGHT (`c < v` ≡ `v > c`), the sense flips. Compute whether
+    // the LHS comparison is the stronger (tighter) one.
+    let upper_bound_on_v = matches!((lop, l_v_left), (Prim::Lt | Prim::Le, true) | (Prim::Gt | Prim::Ge, false));
+    // For an upper bound on `v`, smaller constant ⇒ stronger; for a lower bound, larger ⇒ stronger.
+    let lhs_stronger = if upper_bound_on_v { lc <= rc } else { lc >= rc };
+    // `and` keeps the stronger; `or` keeps the weaker.
+    let keep_lhs = if is_and { lhs_stronger } else { !lhs_stronger };
+    Some(if keep_lhs { lhs } else { rhs })
 }
 
 /// The NESTED-BITWISE COLLAPSE for an outer TOTAL, ASSOCIATIVE bitwise op (`&`/`|`/`^`) whose operands
