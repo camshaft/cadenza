@@ -19174,6 +19174,35 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wide_effect_handler_compiles_and_dispatches_the_performed_op() {
+        // A handler over a WIDE effect (many ops, many arms) compiles + runs correctly — the behaviour the
+        // `program_delegates_effect` memo (in `effects::perform_host_target`) must preserve. That routing
+        // fallback walks every export body per residual host-perform; recomputing it per op made an N-op
+        // handler O(N²) (an 800-op handler spent ~86% of the compile in `body_has_host_delegating`). The
+        // memo makes it linear. Here 12 ops; the body performs op p3 (arm resumes 3), so `(+ (p3) 1) = 4`
+        // — a wrong dispatch (or a memo that returned the wrong delegation verdict) would give a wrong value.
+        let n = 12;
+        let ops: String = (0..n)
+            .map(|i| format!(" (op p{i} (-> Unit Int64))"))
+            .collect();
+        let arms: String = (0..n)
+            .map(|i| format!(" (p{i} () s (resume {i} s))"))
+            .collect();
+        let src = format!(
+            "(do (effect E{ops}) (def (main) (handle E unit ({arms}) (+ ((. E p3)) 1))) (export main))"
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(&src)))
+                    .expect("a wide-effect handler compiles"),
+                "main"
+            ),
+            4,
+            "the performed op p3 resumes 3, so (+ (p3) 1) = 4"
+        );
+    }
+
+    #[test]
     fn an_effect_reached_with_no_handler_or_delegation_is_cdz0401() {
         // E1d: an effect operation performed with NEITHER an enclosing handler NOR a host delegation has
         // no home — CDZ0401 (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error).

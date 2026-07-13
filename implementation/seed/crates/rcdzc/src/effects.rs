@@ -806,14 +806,22 @@ pub fn perform_host_target(
 /// ancestor was erased by a `reduce_handle` node synthesis. Memoized-free but cheap (a handful of
 /// exports, walked once per residual host perform).
 fn program_delegates_effect(db: &mut Db, decl: crate::ast::StructId) -> bool {
+    // Memoized per `decl`: the delegation set is a pure function of the export bodies, but this is a
+    // FALLBACK consulted once per residual host-perform — recomputing the O(export-body) walk per perform
+    // was O(N²) for a program with N performs / a wide N-op effect handler. First query computes, rest hit.
+    if let Some(&hit) = db.delegates_effect_cache.get(&decl) {
+        return hit;
+    }
     let export_bodies: Vec<StructId> = db
         .exports
         .iter()
         .filter_map(|e| e.def.and_then(|d| db.defs[d].body))
         .collect();
-    export_bodies
+    let delegates = export_bodies
         .into_iter()
-        .any(|b| body_has_host_delegating(db, b, decl, 0))
+        .any(|b| body_has_host_delegating(db, b, decl, 0));
+    db.delegates_effect_cache.insert(decl, delegates);
+    delegates
 }
 
 /// Whether the subtree at `node` contains a `(host (E…) …)` delegating the effect `decl`. A structural
