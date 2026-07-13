@@ -489,7 +489,12 @@ mod tests {
             x
         }
         fn big(&mut self) -> Big {
-            let limbs = (self.next() % 5) as usize; // 0..=4 limbs
+            self.big_upto(5) // 0..=4 limbs
+        }
+        /// A random `Big` with 0..`max_limbs` limbs (wider magnitudes exercise the divmod limb-boundary
+        /// carry/borrow that ≤4-limb operands never reach).
+        fn big_upto(&mut self, max_limbs: u64) -> Big {
+            let limbs = (self.next() % max_limbs) as usize;
             let mut mag = Vec::new();
             for _ in 0..limbs {
                 mag.push(self.next() as u32);
@@ -618,6 +623,98 @@ mod tests {
                 b,
                 "num-bigint 2c bytes {rbytes:?} parse to {b:?}"
             );
+        }
+    }
+
+    /// divmod is the algorithm with real subtlety (bit-at-a-time long division; a limb-boundary carry/
+    /// borrow bug hides only on LARGE operands the ≤4-limb random fuzzer never reaches). Two prongs:
+    /// (1) a WIDE differential vs num-bigint (up to ~20 limbs = ~640-bit); (2) structural corner cases —
+    /// powers of two (all-carry shifts), a single-limb divisor of a huge dividend, dividend just below /
+    /// at / above the divisor, all-`0xffffffff` limbs, and an EXACT multiple (`(k*d)/d == k`, rem 0).
+    #[test]
+    fn divmod_edge_cases_and_wide_operands() {
+        // (1) Wide differential — magnitudes up to ~20 limbs, both signs.
+        let mut rng = Rng(0xf00d_1234_5678_9abc);
+        for _ in 0..3000 {
+            let a = rng.big_upto(20);
+            let b = rng.big_upto(20);
+            let (ra, rb) = (to_ref(&a), to_ref(&b));
+            if b.is_zero() {
+                assert!(a.divmod(&b).is_none());
+                continue;
+            }
+            let (q, r) = a.divmod(&b).unwrap();
+            assert_eq!(to_ref(&q), &ra / &rb, "wide div {a:?} {b:?}");
+            assert_eq!(to_ref(&r), &ra % &rb, "wide rem {a:?} {b:?}");
+            assert_eq!(a, q.mul(&b).add(&r), "wide divmod identity");
+            // |remainder| < |divisor| (the division invariant).
+            assert_eq!(
+                Big { neg: false, mag: r.mag.clone() }.cmp(&Big { neg: false, mag: b.mag.clone() }),
+                core::cmp::Ordering::Less,
+                "|rem| < |divisor| {a:?} {b:?}"
+            );
+        }
+
+        // (2) Structural corners.
+        let pow2 = |bits: u32| -> Big {
+            // 2^bits as a Big (a single set bit — exercises the shift/carry path).
+            let limb = (bits / 32) as usize;
+            let mut mag = alloc::vec![0u32; limb + 1];
+            mag[limb] = 1 << (bits % 32);
+            let mut b = Big { neg: false, mag };
+            b.normalize();
+            b
+        };
+        // 2^200 / 2^64 = 2^136, remainder 0.
+        let (q, r) = pow2(200).divmod(&pow2(64)).unwrap();
+        assert_eq!(q, pow2(136), "2^200 / 2^64 = 2^136");
+        assert!(r.is_zero(), "2^200 % 2^64 = 0");
+        // (2^200 - 1) / 2^64 → quotient 2^136 - 1, remainder 2^64 - 1 (all low bits set).
+        let big = pow2(200).sub(&Big::from_i64(1));
+        let (q2, r2) = big.divmod(&pow2(64)).unwrap();
+        assert_eq!(to_ref(&q2), to_ref(&big) / to_ref(&pow2(64)), "(2^200-1)/2^64 vs ref");
+        assert_eq!(to_ref(&r2), to_ref(&big) % to_ref(&pow2(64)), "(2^200-1)%2^64 vs ref");
+
+        // Single-limb divisor of a huge dividend (the common `n / small` shape).
+        let huge = pow2(300).add(&Big::from_i64(12345));
+        let small = Big::from_i64(7);
+        let (qs, rs) = huge.divmod(&small).unwrap();
+        assert_eq!(to_ref(&qs), to_ref(&huge) / to_ref(&small));
+        assert_eq!(to_ref(&rs), to_ref(&huge) % to_ref(&small));
+
+        // Dividend just-below / at / just-above the divisor.
+        let d = pow2(128);
+        let below = d.sub(&Big::from_i64(1));
+        assert_eq!(below.divmod(&d).unwrap(), (Big::zero(), below.clone()), "a<d → (0, a)");
+        assert_eq!(d.divmod(&d).unwrap(), (Big::from_i64(1), Big::zero()), "a==d → (1, 0)");
+        let above = d.add(&Big::from_i64(1));
+        assert_eq!(above.divmod(&d).unwrap(), (Big::from_i64(1), Big::from_i64(1)), "a=d+1 → (1, 1)");
+
+        // All-0xffffffff limbs (max limb values — carry propagation stress).
+        let maxes = Big { neg: false, mag: alloc::vec![0xffff_ffff; 8] };
+        let mref = to_ref(&maxes);
+        for div in [Big::from_i64(3), pow2(32), pow2(100), maxes.clone()] {
+            let (q, r) = maxes.divmod(&div).unwrap();
+            assert_eq!(to_ref(&q), &mref / to_ref(&div), "maxes / {div:?}");
+            assert_eq!(to_ref(&r), &mref % to_ref(&div), "maxes % {div:?}");
+        }
+
+        // Exact multiple: (k*d)/d == k, rem 0 — for random NON-NEGATIVE k, d (sign cleared so the
+        // truncating quotient's sign can't confuse the `q == k` check).
+        let abs = |mut b: Big| {
+            b.neg = false;
+            b
+        };
+        for _ in 0..500 {
+            let k = abs(rng.big_upto(8));
+            let dd = abs(rng.big_upto(8));
+            if dd.is_zero() {
+                continue;
+            }
+            let prod = k.mul(&dd);
+            let (q, r) = prod.divmod(&dd).unwrap();
+            assert_eq!(q, k, "(k*d)/d == k");
+            assert!(r.is_zero(), "(k*d)%d == 0");
         }
     }
 }
