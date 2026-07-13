@@ -1349,6 +1349,31 @@ fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> 
     }
 }
 
+/// The non-exhaustiveness fault of the match form `id`, if it has one — for the WELL-FORMEDNESS pass
+/// (`compile::collect_faults` via `infer::collect_node`) to surface a CDZ0210 over EVERY match, not only
+/// the ones the emit path lowers. `cdz check` runs `type_errors` on every def body but the reached-poison
+/// (lowering) walk only on nullary EXPORTED bodies, so a non-exhaustive match on a function PARAMETER
+/// (`(def (f (: c Color)) (match c …))`) — the common case — was silently missed by `check`/`--json`/`fix`
+/// and an UNCALLED function's non-exhaustive match escaped emission entirely (dead, never laid out). This
+/// closes both gaps by lowering just the match: exhaustiveness is a STRUCTURAL, value-independent verdict
+/// (`build_tree` decides it from the scrutinee's TYPE and the arm patterns, before any constant fold), so
+/// an unsubstituted parameter scrutinee gives the correct answer.
+///
+/// Returns ONLY a `Code::NonExhaustive` reject. A DECLINE (a not-yet-lowerable match — a runtime list, an
+/// unsupported nested pattern) is dropped: those are not reported by `check` today, and surfacing them
+/// here from a standalone (un-β-reduced) lowering would raise false alarms a call-site fold resolves. Any
+/// OTHER coded reject (a shape/type fault in a pattern, CDZ0201/0203) is already produced by the
+/// surrounding `collect_node` walk, so it is not re-raised here. SAFE to call during `check`: β-reduction
+/// at a call site copies the callee body into FRESH nodes (`eval::beta_reduce`), so it never reads this
+/// match node's own memoized core — pre-filling the slot for the unsubstituted body cannot corrupt an
+/// emitted call site.
+pub fn match_nonexhaustive_fault(db: &mut Db, id: StructId) -> Option<Reject> {
+    match core_of(db, id) {
+        Core::Poison(r) if r.code == Some(Code::NonExhaustive) => Some(r),
+        _ => None,
+    }
+}
+
 /// Lower a `(match scrutinee (pattern body)…)` over a SCALAR scrutinee. Each pattern classifies to a
 /// [`Probe`] (an integer/boolean literal, a binder, or the wildcard `_`); a pattern that is none of
 /// these declines (sum/tuple/record patterns walk the value heap — a separate path). If the scrutinee
