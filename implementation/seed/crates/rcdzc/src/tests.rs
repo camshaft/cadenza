@@ -20272,6 +20272,37 @@ mod stage1 {
     }
 
     #[test]
+    fn a_pure_one_hole_match_scrutinee_re_resolves_a_binder_arm_and_nests_in_an_operator() {
+        // ADVERSARIAL: (1) a match scrutinee hole whose selected arm BINDS the scrutinee and USES the binder
+        // — the whole match is copied per resume by `splice_context`, so the pattern binder `k` must
+        // re-resolve against the spliced scrutinee. `C = (match □ (0 100) (k (+ k k)))`, resume 10 → binder
+        // arm k=10 → `(+ 10 10)` = 20, arm `(+ 1 (resume 10 s))` → `(+ 1 20)` = 21.
+        let binder_arm = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (Amb.flip) (0 100) (k (+ k k))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(binder_arm)))
+                    .expect("a match binder arm re-resolves after the splice"),
+                "main"
+            ),
+            21
+        );
+        // (2) a conditional hole NESTED inside a strict operator — `(+ 1 (if (< (Amb.flip) 5) 10 20))`. The
+        // outer `+` and the `if` compose: `C = (+ 1 (if (< □ 5) 10 20))`, resume 10 → `(+ 1 (if (< 10 5) 10
+        // 20))` = `(+ 1 20)` = 21, arm `(+ 1 (resume 10 s))` → `(+ 1 21)` = 22.
+        let nested = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 1 (if (< (Amb.flip) 5) 10 20)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(nested)))
+                    .expect("a conditional hole nested in an operator folds"),
+                "main"
+            ),
+            22
+        );
+    }
+
+    #[test]
     fn a_pure_one_hole_in_a_match_scrutinee_folds() {
         // The perform may sit in a `match` SCRUTINEE — a STRICT, always-evaluated-first position (like an
         // `if` condition), so its continuation `C = (match [] (0 100) (_ 2))` is uniform (the arms run only
