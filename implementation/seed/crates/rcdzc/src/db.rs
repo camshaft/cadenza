@@ -440,6 +440,16 @@ pub struct Db {
     /// over Float/Int with no arbitrary-precision arithmetic.
     pub unit_families: BTreeMap<String, crate::prelude::UnitConversion>,
 
+    /// USER-DECLARED family units — the `(Unit.define #"name" base-unit-expr num den)` forms a program
+    /// writes, scanned at load: `(name, the base-unit-expression's occurrence, scale-num, scale-den)`.
+    /// `(Unit.define #"furlong" (Unit.of #"foot") 660 1)` declares a furlong = 660 feet. `Unit.of` and
+    /// the conflict check consult these (reducing the base-unit occurrence via `eval::unit_of` on demand,
+    /// which needs the built `Db` — hence a raw-occurrence store, not a reduced one). A name declared
+    /// with a conversion conflicting with the built-in table or another declaration is `CDZ0502`
+    /// (`units-of-measure.md` §A Named Unit's Conversion Is Unique), checked in the passes. This is the
+    /// "a program MAY declare its own families" surface (`options/units-of-measure/`).
+    pub unit_defines: Vec<(String, StructId, i128, i128)>,
+
     /// PACKAGE LINKAGE — `Some` only for a multi-file package (`DESIGN-package-linking.md`), `None` for
     /// the single-file compile (whose namespace is flat, byte-identical to the pre-linking compiler).
     /// When present it makes name resolution FILE-SCOPED: a bare name in file `f` resolves against
@@ -780,6 +790,9 @@ impl Db {
         // def of that name). A single-file compile carries no linkage, so this stays `None` and every
         // lookup falls through to the flat `def_name_index` — byte-identical to before.
         let file_scope = linkage.map(|lk| build_file_scope(&lk, &defs, &def_by_name));
+        // Scan the program's `(Unit.define …)` forms BEFORE `ast` moves into the db (a raw-occurrence
+        // store the units layer reduces on demand).
+        let unit_defines = scan_unit_defines(&ast);
         let mut db = Db {
             ast,
             defs,
@@ -796,6 +809,7 @@ impl Db {
             scope_binders,
             prelude,
             unit_families: crate::prelude::unit_families(),
+            unit_defines,
             file_scope,
             user_node_count,
             reduce_depth: 0,
@@ -1905,6 +1919,46 @@ fn collect_nested_decls(
             // Any other form may itself be (or contain) a nested `(do …)` — descend it directly.
             collect_nested_decls(ast, form, top, types, effects, modules);
         }
+    }
+}
+
+/// Scan the top-level `(Unit.define #"name" base-unit-expr num den)` forms into
+/// `(name, base-unit-occurrence, scale-num, scale-den)` entries — the user family-declaration surface.
+/// `Unit.define` reads as the member-access head `(. Unit define)` applied to four args: a symbol name,
+/// a base-unit expression (reduced later by `eval::unit_of`), and an integer `num`/`den` scaling the
+/// base. A malformed form (wrong arity, non-symbol name, non-integer scale) is skipped here — it
+/// surfaces as an ordinary fault when the node is checked, not silently. The name's TEXT comes from the
+/// `Leaf::Sym`; a non-symbol first arg is not a unit definition.
+fn scan_unit_defines(ast: &Arenas) -> Vec<(String, StructId, i128, i128)> {
+    let mut out = Vec::new();
+    for item in top_items(ast) {
+        if let Some(args) = unit_member_call(ast, item, "define")
+            && args.len() == 4
+            && let Some(name) = ast.as_sym(args[0])
+            && let Some(num) = ast.as_int(args[2]).and_then(|v| v.to_i128())
+            && let Some(den) = ast.as_int(args[3]).and_then(|v| v.to_i128())
+        {
+            out.push((name.to_string(), args[1], num, den));
+        }
+    }
+    out
+}
+
+/// The argument list of a `((. Unit KEY) arg…)` member-access call at `item`, or `None` if `item` is not
+/// that shape. Recognizes the reader's desugaring of `(Unit.KEY arg…)` — the head is a `(. Unit KEY)`
+/// list. Used to scan `Unit.define` top-level forms (and to recognize them as modeled forms so they
+/// don't decline as "unknown top-level").
+fn unit_member_call<'a>(ast: &'a Arenas, item: StructId, key: &str) -> Option<&'a [StructId]> {
+    let Struct::List(items) = ast.get(item) else {
+        return None;
+    };
+    let head = *items.first()?;
+    // The head must be `(. Unit KEY)`.
+    let dot = ast.as_form(head, ".")?;
+    if dot.len() == 2 && ast.as_name(dot[0]) == Some("Unit") && ast.as_name(dot[1]) == Some(key) {
+        Some(&items[1..])
+    } else {
+        None
     }
 }
 

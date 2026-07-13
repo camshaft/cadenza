@@ -588,6 +588,11 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     for f in &mut faults {
         sanitize_origin(db, f);
     }
+    // UNIT-DEFINITION CONFLICTS (CDZ0502). A `(Unit.define #"name" …)` form is a top-level DECLARATION
+    // (not a def body `type_errors` walks), so its uniqueness is checked here: a name declared with a
+    // conversion conflicting with the built-in family table or an earlier declaration is CDZ0502
+    // (`units-of-measure.md` §A Named Unit's Conversion Is Unique). An agreeing redeclaration is fine.
+    crate::infer::check_unit_defines(db, &mut faults);
     dedup_faults(faults)
 }
 
