@@ -10532,6 +10532,24 @@ mod stage1 {
     }
 
     #[test]
+    fn a_value_eq_on_a_sum_payload_string_compiles() {
+        // Comparing a variant's PAYLOAD (a `SumPayload`/tuple-element read) to a constant string —
+        // `(= h "+")` where `h` is bound from a `(NPrim (tuple h a b))` payload — is the shape a recursive
+        // resolver dispatches on. The `value-eq` operand-ownership analysis must classify a payload READ
+        // as Borrowed (the enclosing compound owns it) and a constant-string literal as Owned (it
+        // materializes a fresh byte-leaf that the compare drops); previously the `ConstStr` operand
+        // declined "an ownership this backend cannot yet prove", blocking the whole resolver.
+        let src = "(module m (type N (NI Int64) (NP (Tuple String N))) \
+                     (def (f n) (match n ((NI v) v) ((NP (tuple h t)) (if (= h \"+\") (f t) 0)))) \
+                     (def (main) (f (NP (tuple \"+\" (NI 5))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a value-eq comparing a sum-payload string to a constant compiles (payload=Borrowed, \
+             const string=Owned)"
+        );
+    }
+
+    #[test]
     fn a_multi_export_compound_return_declines_with_the_multi_export_diagnosis() {
         // The OTHER compound-return trigger: a program with MULTIPLE exports, one returning a compound.
         // The resource-escape path takes only a SINGLE nullary compound export, so a multi-export program

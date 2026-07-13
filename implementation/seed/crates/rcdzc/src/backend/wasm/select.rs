@@ -4309,9 +4309,23 @@ fn value_eq_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnersh
         | Core::MapNew { .. }
         | Core::MapInsert { .. }
         | Core::MapRemove { .. }
+        // A constant string/bytes materializes a FRESH owned byte-leaf handle (`bytes-alloc`+`bytes-set`,
+        // see the `Core::ConstStr`/`BytesOf` emit), so — like a constructor — the `value-eq` emit drops
+        // it after the borrowing compare. This is the `(= h "+")` shape: comparing a runtime payload
+        // string against a constant-string literal.
+        | Core::ConstStr(_)
+        | Core::BytesOf { .. }
         | Core::Call { .. } => Ok(HandleOwnership::Owned),
         // A reference to a parameter or a kept `let`-binding — the owner elsewhere reclaims it.
         Core::Param { .. } | Core::LocalRef { .. } => Ok(HandleOwnership::Borrowed),
+        // A payload/element READ (`sum-payload`/`arr-get`) BORROWS its operand — the enclosing compound
+        // owns the sub-value, so the read yields a borrowed handle the `value-eq` emit must NOT drop
+        // (`sum-payload`/`arr-get` read without transferring ownership; see `binding_escapes`). This is
+        // the shape a recursive tree-walker compares — `(= h "+")` where `h` is a variant's tuple-payload
+        // element bound via `SumPayload`. `SumExpect` (an `Option.expect` payload read) borrows likewise.
+        Core::SumPayload { .. } | Core::SumExpect { .. } | Core::Proj { .. } => {
+            Ok(HandleOwnership::Borrowed)
+        }
         // Control flow: each result branch must agree on ownership (so the single post-compare drop is
         // correct on every path). `if` — both arms; `let` — its body. A disagreement declines.
         Core::If { then_, else_, .. } => {
