@@ -192,6 +192,15 @@ const OP_VEC_OF_ARR: &str = "vec-of-arr";
 /// `drop` — release a reference to a heap handle (the Perceus calling convention). At refcount 0 the
 /// runtime frees the node and recursively releases its children (the boxed elements), so a single
 /// `drop` of a dead tuple reclaims the whole value.
+///
+/// Reclamation is this emitted reference-count discipline — the compiler places `drop`/`dup` at the
+/// source-determined points its escape analysis fixes — NOT a tracing garbage collector the runnable
+/// form depends on, and because the release points are a static function of the source, the timing of
+/// reclamation is not a source of observable nondeterminism.
+//= spec/capabilities/memory-and-resource-model.md#the-runnable-form-needs-no-collector
+//# The runnable form of a program MUST NOT depend on a tracing garbage collector for correctness.
+//= spec/capabilities/memory-and-resource-model.md#the-runnable-form-needs-no-collector
+//# The timing of memory reclamation MUST NOT be a source of nondeterminism in a program's observable behavior.
 const OP_DROP: &str = "drop";
 /// `dup(handle)` — increment a heap handle's refcount (the Perceus retain). Emitted where a construct
 /// takes ownership of a handle it only BORROWED — `List.at` `dup`s the `vec-get` element before the
@@ -235,6 +244,16 @@ const NULL_HANDLE: i32 = 0;
 /// ill-formed). A `Ty::List` is an owned `vec-*` handle exactly like a tuple/record/sum — it MUST be
 /// listed here, and `valtype_of` already agrees it is an i32 handle; omitting it let an `if` over a
 /// list take the scalar `select` path and emit a module that failed wasm validation (i64/i32 mismatch).
+///
+/// This predicate is where the reference-count reclamation the emitted component CARRIES is decided: a
+/// heap-typed `let` binding gets a `drop` emitted after the body (see `emit`), so the runnable form
+/// releases each value's storage after its last use — the release point being a static consequence of
+/// the source, not a later collector sweep — and the runtime it targets need supply only raw memory
+/// (the `alloc`/`drop`/`dup` refcount discipline is emitted BY the component, imported by name).
+//= spec/capabilities/memory-and-resource-model.md#reclamation-is-carried-by-the-runnable-form
+//# The runnable form of a program MUST carry its own allocation and reclamation of values, so that the runtime it targets need provide only raw memory rather than a memory manager.
+//= spec/capabilities/memory-and-resource-model.md#cleanup-is-source-determined
+//# A value's storage MUST be released after its last use in a way the executable semantics defines, rather than at an unspecified later time.
 fn is_heap_type(ty: &Ty) -> bool {
     match ty {
         Ty::Tuple(_)
@@ -261,6 +280,17 @@ fn is_heap_type(ty: &Ty) -> bool {
 /// value is never wrongly reclaimed (a false "escapes" only leaks in a case we do not yet emit; a false
 /// "does not escape" would be a use-after-free, which this avoids). `tail` marks whether `id` is in the
 /// body's TAIL (result) position — a bare `LocalRef` in tail position is the return, an escape.
+///
+/// This is the aliasing discipline the compiler applies INTERNALLY: the escape/borrow classification is
+/// computed here from the source, deciding where a `dup` retains and where a `drop` reclaims — the
+/// program's author writes no use-count and no aliasing annotation to be memory-safe. Because the
+/// analysis is conservative (only a provable borrow is treated as non-escaping), a live value is never
+/// reclaimed under one reference while another still reads it, so the emitted component has no
+/// unspecified aliasing behavior.
+//= spec/capabilities/memory-and-resource-model.md#aliasing-is-statically-disciplined
+//# The aliasing discipline MUST be one the compiler applies internally to reclaim and reuse storage, rather than a use-counting obligation the program's author writes, so that a program's author states no aliasing annotation to be memory-safe.
+//= spec/capabilities/memory-and-resource-model.md#aliasing-is-statically-disciplined
+//# A value MUST NOT be observably mutated through one reference while it is read through another in a way the executable semantics leaves unspecified.
 fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: bool) -> bool {
     match core_of(db, id) {
         // A reference to the binding: it escapes UNLESS this occurrence is a borrow (the operand of a
