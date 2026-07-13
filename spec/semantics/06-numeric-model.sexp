@@ -1337,6 +1337,23 @@
   (input  UInt64.max)
   (output (: 18446744073709551615 UInt64)))
 
+(case "a high UInt64 literal operand takes UInt64 from context, not Int64"
+  (doc    "A bare integer literal in [2^63, 2^64-1] as an OPERAND of a binary op whose other operand is a
+           UInt64 value takes UInt64 from that operand — the type constraint (numeric-model.md §An
+           Explicit Type Annotation Or Other Constraint On An Integer Literal Takes Precedence). A LOW
+           literal already does (`(& x 255)` infers UInt64), and UInt8/UInt32 high literals already do;
+           the gap was UInt64-only because only it has representable values above Int64.max, so a
+           full-width literal `18446744073709551615` (2^64-1) was fit-checked against the signed-64
+           DEFAULT and rejected CDZ0201 before the UInt64 context propagated. `(& x 0xFFFF…FFFF)` masks
+           the low 64 bits — returns x unchanged — so main(0) => 0. Pins that the binary-op sibling's
+           concrete unsigned type constrains the literal, closing the gap the annotation/`.max` workarounds
+           had to route around.")
+  (input  (do
+            (def (main (: x UInt64)) (& x 18446744073709551615))
+            (export main)))
+  (call   main (: 0 UInt64))
+  (output (: 0 UInt64)))
+
 ; --- Checked overflow per width (numeric-model.md #Overflow Is Defined, at each width) ----
 
 (case "unsigned 8-bit addition that overflows its width traps"

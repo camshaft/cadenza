@@ -604,6 +604,32 @@
             (export main)))
   (output (: 107 Int64)))
 
+; A function stored in a RECORD FIELD, where that record is a SUM's payload, and CALLED after a match
+; binds the payload — `(match h ((H.M rec) ((. rec f) x)))`. The projected `(. rec f)` reads a fn value
+; off a RUNTIME record (the payload survives the match as a heap value, so it does not fold to the
+; lambda), so it must apply via `call_indirect` like any runtime closure. This was declined "value is
+; not applyable" — a record-field projection was not recognized as a runtime function-value head the way
+; a tuple-element projection (`Proj`) or a payload binder (`SumPayload`) already were. Pins that a fn
+; reached through a record field of a sum payload is a first-class callable (the record-field analogue of
+; the closure-in-a-sum-payload case above), while a DATA field read and a `(. Sum Variant)` constructor —
+; both also member projections — keep their own paths.
+
+(case "a function stored in a record field of a sum payload is called after a match"
+  (needs  sum-type-declaration)
+  (doc    "`(type H (M (Record (f (-> Int64 Int64)) (n Int64))))` carries a record with a FUNCTION field
+           `f` and a data field `n`. Matching binds the whole record to `rec`; `((. rec f) rec.n)` projects
+           the fn field off the runtime payload record and applies it to the data field — `(fn (x) (+ x 1))`
+           applied to 41 → 42. Pins that a fn projected from a record that is a sum payload dispatches via
+           call_indirect (it cannot fold — the record is a runtime heap value behind the match), while the
+           sibling `rec.n` data read folds as usual.")
+  (input  (do
+            (type H (M (Record (f (-> Int64 Int64)) (n Int64))))
+            (def (run (: h H)) (match h ((H.M rec) ((. rec f) rec.n))))
+            (def (main) (run (H.M (record (f (fn ((: x Int64)) (+ x 1))) (n 41)))))
+            (export main)))
+  (call   main)
+  (output (: 42 Int64)))
+
 ; The runtime-condition selection above FOLDS because the chosen function is applied AT the selection
 ; site — `((if b f g) 5)` commutes the application into each branch, so no function value survives. But
 ; when the runtime-selected function is instead THREADED THROUGH A RECURSIVE HOF — chosen by `if`, then

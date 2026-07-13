@@ -1513,6 +1513,17 @@ fn load_program_spanned(
     String,
 > {
     let source = std::fs::read_to_string(file).map_err(|e| format!("reading {file}: {e}"))?;
+    // An EMPTY (or whitespace-only) source has NO top-level form — an "empty program" error on BOTH
+    // surfaces (exits nonzero, `file:1:1: error: empty program`). Checked BEFORE the surface split so
+    // both agree: the s-expr `read_all_spanned` fallback would otherwise build a rootless synthetic
+    // `(do)` that silently checks clean (`cdz check empty.sexp` exiting 0), and the ML `read_ml`
+    // surfaces "empty program" as a printed parse error but then RETURNS OK and proceeds over the empty
+    // arena, so `cdz check empty.cdz` ALSO exited 0 despite printing the error. One early `Err` fixes
+    // both. (The common "I made the file but haven't written anything" mistake; a comment-only file is
+    // a rarer edge left to each reader's own path.)
+    if source.trim().is_empty() {
+        return Err(format!("{file}:1:1: error: empty program"));
+    }
     let is_ml = is_ml_source(file);
     if is_ml {
         let parsed = cadenza_syntax::parser::read_ml(&source);
@@ -1538,15 +1549,7 @@ fn load_program_spanned(
         let spans = parsed.spans.remap(&id_map, arenas.structure.len());
         Ok((source, arenas, spans))
     } else {
-        // An EMPTY (or whitespace-only) s-expr source has NO top-level form. Report it as an "empty
-        // program" error, matching the ML branch (whose `read_ml` surfaces "empty program"): otherwise
-        // the `read_all_spanned` fallback below builds a rootless synthetic `(do)` that silently compiles
-        // to nothing, so `cdz check emptyfile.sexp` exits CLEAN — misleading the user into thinking their
-        // file checked. (Scoped to the whitespace-only case, the common "I created the file but haven't
-        // written anything" mistake; a comment-only file is a rarer edge left to the fallback.)
-        if source.trim().is_empty() {
-            return Err(format!("{file}:1:1: error: empty program"));
-        }
+        // (Empty/whitespace-only source is handled uniformly before the surface split above.)
         // Mirror the driver's root convention (`query::driver::load`): a SINGLE top-level form stays
         // BARE (so a lone `(module …)`/`(def …)` is the root the compiler scans), and only MULTIPLE
         // forms wrap in a synthetic `(do …)`. `read_spanned` succeeds iff there's exactly one form
@@ -1962,22 +1965,38 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_sexpr_program_is_an_error_not_a_silent_pass() {
-        // An empty (or whitespace-only) `.sexp` has no top-level form. It must report "empty program"
-        // like the ML surface does, NOT silently build a rootless `(do)` that checks clean (which once
-        // let `cdz check empty.sexp` exit 0 — misleading the author). A valid single-form file still
-        // loads. Exercised through `load_program_spanned`, the load boundary.
+    fn an_empty_program_is_an_error_on_both_surfaces() {
+        // An empty (or whitespace-only) file has no top-level form → an "empty program" error on BOTH
+        // the s-expr AND ML surfaces (so `cdz check` exits nonzero). The s-expr `read_all_spanned`
+        // fallback once built a rootless `(do)` that checked clean (exit 0); the ML `read_ml` printed
+        // "empty program" but RETURNED OK and proceeded (also exit 0). A unified pre-split check errors
+        // both. A valid single-form file on each surface still loads.
         let dir = tmp("emptyprog");
-        let empty = dir.join("e.sexp");
-        std::fs::write(&empty, "   \n  ").unwrap();
-        let err = load_program_spanned(&empty.to_string_lossy())
-            .expect_err("an empty s-expr program must error");
-        assert!(err.contains("empty program"), "got {err}");
-        let ok = dir.join("v.sexp");
-        std::fs::write(&ok, "(module m (def (a) 1) (export a))").unwrap();
+        // Empty AND whitespace-only, on BOTH surfaces, all error "empty program".
+        for (name, body) in [
+            ("e.sexp", ""),
+            ("ws.sexp", "   \n  "),
+            ("e.cdz", ""),
+            ("ws.cdz", "\n\n"),
+        ] {
+            let f = dir.join(name);
+            std::fs::write(&f, body).unwrap();
+            let err = load_program_spanned(&f.to_string_lossy())
+                .expect_err("an empty program must error");
+            assert!(err.contains("empty program"), "got {err} for {name}");
+        }
+        // A valid single-form file on each surface still loads.
+        let sok = dir.join("v.sexp");
+        std::fs::write(&sok, "(module m (def (a) 1) (export a))").unwrap();
         assert!(
-            load_program_spanned(&ok.to_string_lossy()).is_ok(),
-            "a valid single-form s-expr file still loads"
+            load_program_spanned(&sok.to_string_lossy()).is_ok(),
+            "valid s-expr loads"
+        );
+        let mok = dir.join("v.cdz");
+        std::fs::write(&mok, "let m = fn() => 1 in m").unwrap();
+        assert!(
+            load_program_spanned(&mok.to_string_lossy()).is_ok(),
+            "valid ML loads"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

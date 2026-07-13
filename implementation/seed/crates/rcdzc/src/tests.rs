@@ -5705,6 +5705,105 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_or_then_mask_with_a_covered_mask_absorbs_to_the_constant() {
+        // OR-THEN-MASK ABSORPTION: `(& (| v C1) C2)` → `C2` when `C2 ⊆ C1` (`C2 & C1 == C2`). The inner OR
+        // forces every bit of C2 (all in C1) to 1, the outer mask keeps only those bits → exactly C2,
+        // regardless of `v`. `(& (| x 15) 15)` → 15, `(& (| x 255) 15)` → 15. A mask NOT covered by the OR
+        // constant (`(& (| x 15) 240)`) does NOT fold. Pins the fold at the Lir level (no `or`/`and`, a
+        // `const`) AND value + trap parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let bitops = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64Or | Lir::I64And | Lir::I32Or | Lir::I32And))
+                .count()
+        };
+        // `(& (| x 15) 15)` and `(& (| x 255) 15)` both absorb to the constant `15` — no bit ops.
+        assert_eq!(
+            bitops(&lir("(: x Int64)", "(: (& (: (| x 15) Int64) 15) Int64)")),
+            0,
+            "C2==C1 → absorbed"
+        );
+        assert_eq!(
+            bitops(&lir("(: x Int64)", "(: (& (: (| x 255) Int64) 15) Int64)")),
+            0,
+            "C2 ⊂ C1 → absorbed"
+        );
+        // Constant on the LEFT of the outer `&` works too.
+        assert_eq!(
+            bitops(&lir("(: x Int64)", "(: (& 15 (: (| x 15) Int64)) Int64)")),
+            0,
+            "left-const → absorbed"
+        );
+        // A mask NOT covered (`240 ⊄ 15`) is NOT absorbed — both ops stay.
+        assert_eq!(
+            bitops(&lir("(: x Int64)", "(: (& (: (| x 15) Int64) 240) Int64)")),
+            2,
+            "C2 ⊄ C1 → kept"
+        );
+
+        // VALUE PARITY: absorbed cases → the constant; the non-covered case computes the real result.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (& (: (| x 15) Int64) 15) Int64)",
+                &[Val::S64(12345)]
+            ),
+            15
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (& (: (| x 255) Int64) 15) Int64)",
+                &[Val::S64(12345)]
+            ),
+            15
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(: (& (: (| x 15) Int64) 240) Int64)",
+                &[Val::S64(12345)]
+            ),
+            (12345 | 15) & 240
+        );
+        // TRAP PRESERVATION: the fold DISCARDS `v`, so a trapping `(/ 100 z)` keeps its ÷0 trap.
+        assert!(
+            traps(
+                "(: z Int64)",
+                "(& (: (| (: (/ 100 z) Int64) 15) Int64) 15)",
+                &[Val::S64(0)]
+            ),
+            "the or-then-mask absorption must not drop a trapping operand"
+        );
+    }
+
+    #[test]
     fn a_conjunction_or_disjunction_condition_refines_both_variable_bounds() {
         // FLOW-SENSITIVE REFINEMENT through `and`/`or` (De Morgan): the range-check idiom
         // `(and (> n 0) (< n 100))` bounds `n` to [1,99] in the THEN branch, so `(- n 1)` sheds its
@@ -9513,6 +9612,45 @@ mod match_engine {
         assert_eq!(
             reject_code("(module m (def (main) (: 18446744073709551615 (UInt 64))) (export main))"),
             None
+        );
+    }
+
+    #[test]
+    fn a_high_uint64_literal_operand_takes_uint64_from_context() {
+        // A bare literal in [2^63, 2^64-1] as an OPERAND of a binary op whose sibling is a UInt64 value
+        // takes UInt64 from that operand (numeric-model.md §a constraint on a literal takes precedence),
+        // so it is NOT the malformed-out-of-range-for-Int64 fault a bare unannotated literal would be. The
+        // gap was UInt64-only: only it has representable values above Int64.max, so the fit-check against
+        // the i64 default rejected a full-width mask while UInt8/UInt32 highs (which fit i64) sailed through.
+        let ok = |src: &str| {
+            assert_eq!(
+                reject_code(src),
+                None,
+                "a high UInt64 literal operand must take UInt64 from context: {src}"
+            );
+        };
+        // Full-width mask (2^64-1), addition of 2^63 (i64::MAX+1), and a comparison — all against a UInt64.
+        ok("(module m (def (main (: x UInt64)) (& x 18446744073709551615)) (export main))");
+        ok("(module m (def (main (: x UInt64)) (+ x 9223372036854775808)) (export main))");
+        ok(
+            "(module m (def (main (: x UInt64)) (if (< x 18446744073709551615) 1 0)) (export main))",
+        );
+        // NO OVER-ACCEPTANCE: a bare literal past i64 with NO integer-operand context is still CDZ0201; a
+        // value too big even for the contextual UInt64 (2^64) is still rejected (now naming UInt64).
+        assert_eq!(
+            reject_code("(module m (def (main) 18446744073709551615) (export main))").as_deref(),
+            Some("CDZ0201"),
+            "a bare literal past i64 with no context is still malformed"
+        );
+        let d = reject_full(
+            "(module m (def (main (: x UInt64)) (& x 18446744073709551616)) (export main))",
+        )
+        .expect("a value past UInt64.max must still be rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("UInt64"),
+            "the reject names the overflowed contextual type: {}",
+            d.message
         );
     }
 
@@ -15534,6 +15672,38 @@ mod diagnostics {
     }
 
     #[test]
+    fn an_int_annotation_mismatch_offers_an_of_conversion_fix() {
+        // An `(: value T)` ANNOTATION whose value is a DIFFERENT integer width than T — `(: n Int64)` for
+        // `n : Int8` — is CDZ0203 (no silent promotion), repaired by wrapping the value in the annotation
+        // type's checked `.of` conversion: `(: (Int64.of n) Int64)`. This mirrors the ARGUMENT-position
+        // coercion at the ANNOTATION position (the D31/D29 lesson: cover the structurally-equivalent forms).
+        for (src, want) in [
+            (
+                "(module m (def (f (: n Int8)) (: n Int64)) (export f))",
+                "(Int64.of ",
+            ),
+            (
+                "(module m (def (f (: n Int64)) (: n Int8)) (export f))",
+                "(Int8.of ",
+            ),
+        ] {
+            let d = first_error(src);
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            let fix = d.fix.expect("an annotation coercion fix is carried");
+            assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+            assert!(
+                fix.replacement.starts_with(want),
+                "wraps the value in the annotation type's `.of`: {} (want {want})",
+                fix.replacement
+            );
+            assert!(!fix.verified, "`.of` is checked (can trap) → heuristic");
+        }
+        // NO coercion between unrelated types: a Bool value annotated Int64 has no `.of` repair.
+        let d = first_error("(module m (def (f (: b Bool)) (: b Int64)) (export f))");
+        assert!(d.fix.is_none(), "no coercion fix Bool→Int64: {:?}", d.fix);
+    }
+
+    #[test]
     fn the_same_fault_is_reported_once_even_when_two_passes_find_it() {
         // An unbound name in a REACHABLE position is found by BOTH the type-check walk and the
         // reached-poison walk — it must be reported ONCE (deduped by code+node), not twice.
@@ -19996,16 +20166,98 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_tail_resume_with_a_real_continuation_declines() {
-        // The E5 BOUNDARY: a non-tail resume whose perform is NOT in tail position — `(+ 100 (Amb.flip))`
-        // — has a non-identity continuation `(+ 100 [])` that `resume` must return into. Realizing it needs
-        // the captured-continuation machinery (defunctionalized frames), a later increment; `reduce_handle`
-        // declines rather than mis-fold. Contrast the identity-continuation case above, which folds.
-        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+    fn an_e5_pure_one_hole_continuation_folds() {
+        // E5 PURE ONE-HOLE-CONTINUATION: a non-tail resume whose perform is NOT in tail position —
+        // `(+ 100 (Amb.flip))` — has a PURE one-hole continuation `C = (+ 100 □)` that `resume` returns
+        // into. Because `C` is effect-free, `(resume v s)` folds to `C[v]`, so the arm body's resume is
+        // rewritten to a copy of the body with the perform replaced by the resume value:
+        //   arm `(+ 1 (resume 10 s))`, `C = (+ 100 □)` → `(+ 1 (+ 100 10))` = 111. No frame machinery.
+        let single = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 100 (Amb.flip)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(single)))
+                    .expect("a pure one-hole continuation folds"),
+                "main"
+            ),
+            111
+        );
+        // A MULTI-shot arm over the same pure continuation DUPLICATES `C` safely (it is effect-free):
+        //   `(* (resume 1 s) (resume 2 s))`, `C = (+ 100 □)` → `(* (+ 100 1) (+ 100 2))` = 101*102 = 10302.
+        let multi = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (* (resume 1 s) (resume 2 s)))) (+ 100 (Amb.flip)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(multi)))
+                    .expect("a multi-shot pure one-hole continuation folds"),
+                "main"
+            ),
+            10302
+        );
+    }
+
+    #[test]
+    fn a_non_tail_resume_under_a_conditional_continuation_declines() {
+        // The E5 BOUNDARY (still): a non-tail resume whose perform sits under a CONDITIONAL —
+        // `(if (< (Amb.flip) 5) 1 2)` — has a NON-UNIFORM continuation (the perform's result flows into a
+        // branch selector, not one downstream computation), so `pure_hole` returns Impure and the fold
+        // declines rather than mis-fold. Realizing it needs the captured-continuation machinery
+        // (defunctionalized frames), a later increment. Contrast the pure one-hole case above, which folds.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 5) 1 2))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a non-tail resume with a real continuation must decline (needs E5 frame capture)"
+            "a non-tail resume under a conditional continuation must decline (needs E5 frame capture)"
+        );
+    }
+
+    #[test]
+    fn a_tail_resumptive_arm_with_a_non_tail_perform_body_still_threads() {
+        // ADVERSARIAL: the pure one-hole block must NOT hijack a TAIL-resumptive arm. Here the arm body
+        // `(resume s (+ s 1))` IS a tail resume, so `tail_resume` is `Some` and the block is skipped — the
+        // ordinary state-threading path runs. `(+ 100 (Get.next))` seed 0: `Get.next` reads state 0 (the
+        // resume value is `s`), threads `s+1` forward → `(+ 100 0)` = 100. Pins that a non-tail perform in
+        // the body does not tempt the pure-continuation fold when the arm is tail-resumptive.
+        let src = "(do (effect Get (op next (-> Unit Int64))) \
+                   (def (main) (handle Get 0 ((next (u) s (resume s (+ s 1)))) (+ 100 (Get.next)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a tail-resumptive arm threads even with a non-tail perform body"),
+                "main"
+            ),
+            100
+        );
+    }
+
+    #[test]
+    fn a_pure_one_hole_continuation_with_a_pure_sibling_folds() {
+        // The pure one-hole context may have PURE siblings around the hole — `(- (* 2 (Amb.flip)) 3)` has
+        // `C = (- (* 2 □) 3)`, effect-free. arm `(+ 1 (resume 10 s))` → `(+ 1 (- (* 2 10) 3))` = `(+ 1 17)`
+        // = 18. Pins that the hole is located correctly inside a nested strict operator tree and the pure
+        // siblings (`2`, `3`) are preserved in the spliced continuation.
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (- (* 2 (Amb.flip)) 3))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a pure one-hole continuation with pure siblings folds"),
+                "main"
+            ),
+            18
+        );
+    }
+
+    #[test]
+    fn two_performs_in_the_handle_body_decline_the_pure_one_hole_fold() {
+        // ADVERSARIAL: the pure one-hole fold requires EXACTLY ONE discharged perform on the spine. Two
+        // performs `(+ (Amb.flip) (Amb.flip))` is a TWO-hole context — `pure_hole` returns Impure and the
+        // fold declines (this needs sequential state threading / real continuations, not a single splice).
+        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ (Amb.flip) (Amb.flip)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "two performs in the handle body must decline the single-hole fold"
         );
     }
 

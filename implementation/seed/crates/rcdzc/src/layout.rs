@@ -272,6 +272,15 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
     // that a recursive function reaches. A worklist closes the reachable set: for each def in `order`,
     // lower its body and append any `Core::Call` callee not already present. (Non-recursive calls
     // inline, so they add nothing here — only a `Core::Call` grows the set.)
+    //
+    // This SEQUENCE is a deterministic function of the source (export declaration order, then a
+    // source-structure worklist) — no filesystem enumeration order or nondeterministic collection
+    // iteration reaches it, so the backend emits definitions/data/interface entries in a source-fixed
+    // order and two derivations of the same source byte-match.
+    //= spec/contracts/reproducible-derivation.md#codegen-order-is-source-determined
+    //# The order in which the compiler emits definitions, data, and interface entries MUST be a deterministic function of the source.
+    //= spec/contracts/reproducible-derivation.md#codegen-order-is-source-determined
+    //# The compiler MUST NOT let filesystem enumeration order or nondeterministic collection iteration affect the order of its output.
     // `order` keeps the emission SEQUENCE (exports first, then reachable callees); `in_order` is the
     // O(1) membership check that goes with it. A plain `order.contains(&x)` here is an O(len) scan, and
     // it runs once per export AND once per discovered callee — O(N²) on a program with many exports or

@@ -1344,11 +1344,16 @@ fn emit_closure_resource(
         .iter()
         .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
         .collect::<Result<_, _>>()?;
-    // The RESULT: either a scalar (crosses by value) OR a runtime `Bytes` (crosses as `list<u8>` through
-    // linear memory — the compound-result path, reusing the value-escape's list machinery). A `Bytes`
-    // result peels its nominal like any other. Other compounds (String/tuple/list) are a later widening
-    // (they need the escape's `encode` walker; `Bytes` IS the raw payload, so it lands first).
-    let ret_is_bytes = matches!(ret_ty.strip_nominal(), crate::ty::Ty::Bytes);
+    // The RESULT: either a scalar (crosses by value) OR a BYTE-ROPE (`Bytes` OR `String`) which crosses as
+    // `list<u8>` through linear memory — the compound-result path, reusing the value-escape's list machinery.
+    // A `String` is a UTF-8 byte-rope handle representationally IDENTICAL to `Bytes` (same `bytes-*` store),
+    // so its `call` copies the UTF-8 bytes out exactly as a `Bytes` result does — the host receives the raw
+    // `list<u8>` (the encoded bytes, not a decoded string). Both peel a nominal first. Other compounds
+    // (tuple/list/record) need the escape's `encode` walker + value-form framing (a later widening).
+    let ret_is_bytes = matches!(
+        ret_ty.strip_nominal(),
+        crate::ty::Ty::Bytes | crate::ty::Ty::String
+    );
     let result_byte = if ret_is_bytes {
         0 // unused by the bytes path; the `call` returns list<u8>, not a scalar byte
     } else {
@@ -3223,6 +3228,9 @@ fn emit_recursive_sum_resource(
 ///
 //= constitution.md#vi-the-runnable-form-is-a-verified-content-addressed-component
 //# The compiler MUST emit a component that names the exact host-interface version it targets.
+///
+//= spec/contracts/reproducible-derivation.md#derivation-is-a-function-of-source-and-toolchain
+//# The identity of the value-heap runtime a program is emitted against MUST be the content address of that runtime component, so that "which runtime" is a hash rather than a version label and a program's observable behavior — which depends on the runtime's construction, storage, and reclamation of values — is pinned to exact bytes (component-abi.md §The Value-Heap Runtime).
 fn runtime_import_name() -> String {
     format!(
         "{}@0.0.0+{}",
