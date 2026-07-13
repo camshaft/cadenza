@@ -29,6 +29,52 @@ use crate::ty::{IntTy, Ty};
 use std::collections::HashMap;
 use tracing::trace;
 
+/// The emit buffer — the flat `Vec<Lir>` a body linearizes into, PLUS a per-construct source-line map
+/// for debug info (`DESIGN-debug-line-granularity-rcdzc.md`). Wrapping the vector (rather than threading
+/// a second `&mut` param through the ~28-function emit family) means every existing `out.push(…)` /
+/// `out.contains(…)` / `out.last()` site works UNCHANGED via `Deref`/`DerefMut` — the wrapper adds a
+/// channel, not a rewrite.
+///
+/// `lines` records `(instruction index, source StructId)` at each point a distinct source construct's
+/// evaluation BEGINS — marked by `mark(id)` at every `StructId`-consuming emit point (the coverage the
+/// first attempt lacked). The backend turns these into `.debug_line` rows (mapping code offset → source
+/// line), dedups a repeated offset (keeps the first — the outer construct), and collapses consecutive
+/// same-line rows so the table has one row per LINE the code visits. Indices are into `code` as emitted;
+/// `peephole_emit` remaps them when it fuses `set;get`→`tee` (which shifts later indices down).
+#[derive(Default)]
+pub struct Emit {
+    code: Vec<Lir>,
+    lines: Vec<(u32, StructId)>,
+}
+
+impl Emit {
+    fn new() -> Emit {
+        Emit::default()
+    }
+    /// Mark that the source construct `id` begins at the CURRENT instruction position — its first
+    /// emitted instruction is the next `push`. Dedups a repeated offset (two marks at the same index
+    /// keep the FIRST, i.e. the outer/earlier construct's line). The caller guards to user nodes (a
+    /// prelude/synthesized node has no source span, so a mark for it would map to a garbage line).
+    fn mark(&mut self, id: StructId) {
+        let at = self.code.len() as u32;
+        if self.lines.last().map(|&(i, _)| i) != Some(at) {
+            self.lines.push((at, id));
+        }
+    }
+}
+
+impl std::ops::Deref for Emit {
+    type Target = Vec<Lir>;
+    fn deref(&self) -> &Vec<Lir> {
+        &self.code
+    }
+}
+impl std::ops::DerefMut for Emit {
+    fn deref_mut(&mut self) -> &mut Vec<Lir> {
+        &mut self.code
+    }
+}
+
 // The value-heap runtime ops the tuple path emits, referenced by their WIT names (the same names the
 // generated `runtime_abi` table + the import section resolve by). Named here so the emit reads clearly
 // and `collect_used_ops` and `emit` agree on exactly one spelling per op.
@@ -359,6 +405,14 @@ pub struct SelectedFunc {
     /// tagless heap (§3), so only scalars appear. `let`-bindings / match binders live in dynamically-
     /// claimed scratch slots and are a later refinement. Empty unless debug is requested.
     pub locals: Vec<LocalVar>,
+    /// Per-CONSTRUCT source line markers (`DESIGN-debug-line-granularity-rcdzc.md`): `(Lir index,
+    /// source occurrence)` at each point a distinct source construct's evaluation begins, in emission
+    /// order, remapped through the peephole pass. The backend turns each into a `.debug_line` row (one
+    /// per source LINE the code visits, after dedup/collapse), so a debugger steps line-by-line instead
+    /// of resting on the function's opening line. Empty for a single-construct body → the line program
+    /// falls back to one function-entry row (the function-granularity behavior, preserved). Always
+    /// collected (cheap); only READ under a debug target.
+    pub stmt_lines: Vec<(u32, StructId)>,
 }
 
 /// A named scalar local for debug info (D3): its wasm local slot, source name, and solved scalar type.
@@ -392,6 +446,7 @@ pub fn stub_function(params: &[(StructId, Ty)], ret: &Ty) -> SelectedFunc {
         declared: Vec::new(),
         src_body: None,
         locals: Vec::new(),
+        stmt_lines: Vec::new(),
     }
 }
 
@@ -817,7 +872,7 @@ pub fn select_function_of(
         }
     }
     let ret = type_of(db, body);
-    let mut code = Vec::new();
+    let mut code = Emit::new();
     // Scratch locals start PAST the parameters (slots `0..n` are the params); a guarded op claims scratch
     // slots from `base` up. `high` tracks the highest scratch slot used, and `scratch_ty` records each
     // scratch slot's VALUE TYPE (i32 for a ≤32-bit op, i64 otherwise) — a slot must be DECLARED at the
@@ -936,16 +991,18 @@ pub fn select_function_of(
     let declared: Vec<ValType> = (base..high)
         .map(|s| scratch_ty.get(&s).copied().unwrap_or(ValType::I64))
         .collect();
-    peephole(&mut code);
+    peephole_emit(&mut code);
     Ok(SelectedFunc {
         params: param_vts,
         ret,
-        code,
+        code: code.code,
         declared,
         // The body occurrence is this function's source anchor for debug info (§2.1b).
         src_body: Some(body),
         // Named scalar params for debug-info variable inspection (§2.4, D3).
         locals,
+        // Per-construct source line markers (per-statement granularity), remapped through the peephole.
+        stmt_lines: code.lines,
     })
 }
 
@@ -958,6 +1015,10 @@ pub fn select_function_of(
 /// local.get $r_inner ; local.set $a`), and a runtime `let` value stored then used. Block markers
 /// (`If`/`Else`/`End`) are their own `Lir` entries, so "adjacent in the vec" means adjacent WITHIN a
 /// block — a `local.get` that opens a different block never fuses with a `local.set` closing another.
+///
+/// This is the plain-`Vec<Lir>` fusion, kept as the unit-tested reference for the fusion RULE; the emit
+/// path uses [`peephole_emit`] (same fusion, plus a remap of the debug line-table indices).
+#[cfg(test)]
 fn peephole(code: &mut Vec<Lir>) {
     let mut out: Vec<Lir> = Vec::with_capacity(code.len());
     let mut i = 0;
@@ -974,6 +1035,42 @@ fn peephole(code: &mut Vec<Lir>) {
         i += 1;
     }
     *code = out;
+}
+
+/// The peephole pass over an [`Emit`] — fuses `set;get`→`tee` in the code (as [`peephole`]) AND remaps
+/// the debug `lines` indices, since a fusion shifts every later instruction down by one. Builds an
+/// `old_index → new_index` map as it walks (both instructions of a fused pair map to the single `tee`'s
+/// new index), then rewrites each line entry, so a `.debug_line` row still lands on the instruction it
+/// names after the transform.
+fn peephole_emit(emit: &mut Emit) {
+    let old = std::mem::take(&mut emit.code);
+    let mut out: Vec<Lir> = Vec::with_capacity(old.len());
+    let mut remap: Vec<u32> = Vec::with_capacity(old.len());
+    let mut i = 0;
+    while i < old.len() {
+        if let Lir::LocalSet(n) = old[i]
+            && let Some(Lir::LocalGet(m)) = old.get(i + 1)
+            && n == *m
+        {
+            let new_i = out.len() as u32;
+            out.push(Lir::LocalTee(n));
+            remap.push(new_i); // the `set` maps to the tee
+            remap.push(new_i); // the fused `get` maps to the SAME tee
+            i += 2;
+            continue;
+        }
+        remap.push(out.len() as u32);
+        out.push(old[i].clone());
+        i += 1;
+    }
+    for (idx, _) in emit.lines.iter_mut() {
+        // A marker whose only instructions all fused away clamps to the code end (a valid offset).
+        *idx = remap
+            .get(*idx as usize)
+            .copied()
+            .unwrap_or(out.len() as u32);
+    }
+    emit.code = out;
 }
 
 /// Whether the body at `id` makes a tail call to any def in `members` through the tail positions the
@@ -1242,7 +1339,7 @@ fn emit_tail(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
     tl: Option<TailLoop>,
 ) -> Result<(), Reject> {
     match core_of(db, id) {
@@ -1335,7 +1432,7 @@ fn emit_tail(
                                     b: StructId,
                                     high: &mut u32,
                                     st: &mut HashMap<u32, ValType>,
-                                    out: &mut Vec<Lir>|
+                                    out: &mut Emit|
              -> Result<(), Reject> {
                 if matches!(core_of(db, b), Core::ConstInt(_))
                     && let Ty::Int(rit) = &result
@@ -1461,7 +1558,7 @@ fn emit_loop_iteration(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) -> Result<(), Reject> {
     trace!(target: "rcdzc::select", which, depth = tl.depth, args = args.len(), "emit member tail-call as loop iteration");
     // Evaluate each new argument value onto the stack, grounding a bare-literal arg to its OWN solved
@@ -1518,7 +1615,7 @@ fn emit_mutual_dispatch(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
     tl: TailLoop,
 ) -> Result<(), Reject> {
     // Emit member `idx`'s body at branch-depth `depth` (loop-relative), then the rest as the `else` tail.
@@ -1532,7 +1629,7 @@ fn emit_mutual_dispatch(
         high: &mut u32,
         scratch_ty: &mut HashMap<u32, ValType>,
         layout: &Layout,
-        out: &mut Vec<Lir>,
+        out: &mut Emit,
         tl: TailLoop,
         block_ty: BlockType,
     ) -> Result<(), Reject> {
@@ -1672,7 +1769,7 @@ fn emit(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) -> Result<(), Reject> {
     // A node MATERIALIZED into a scratch slot reads back as a `local.get`, not a recomputation. A
     // sum-match evaluates a non-reusable scrutinee ONCE into a slot (`emit_sum_match_arms`) and records
@@ -1683,6 +1780,14 @@ fn emit(
     if let Some(&slot) = slots.get(&id) {
         out.push(Lir::LocalGet(slot));
         return Ok(());
+    }
+    // DEBUG (per-construct line rows): mark this node's first instruction with its source occurrence,
+    // so a `.debug_line` row maps the code offset to its line. Recorded for every USER node (a prelude/
+    // synthesized node has no span; `Emit::mark` dedups a repeated offset). The operand-consuming
+    // helpers (`emit_operand`/`emit_checked_arith`/…) mark their own child ids too, so a construct whose
+    // operands this `emit` never re-enters (an inline `Param`/`ConstInt`) still gets attributed there.
+    if db.is_user_node(id) {
+        out.mark(id);
     }
     match core_of(db, id) {
         Core::ConstInt(v) => {
@@ -2944,7 +3049,7 @@ fn emit_match_arms(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) -> Result<(), Reject> {
     emit_match_arms_tailable(
         db,
@@ -2980,7 +3085,7 @@ fn emit_match_arms_tailable(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
     tail: TailPos,
 ) -> Result<(), Reject> {
     // Resolve the scrutinee to a SOURCE pushed once per probe. A match dispatches by testing the
@@ -3095,12 +3200,7 @@ fn emit_match_arms_tailable(
 /// against `true` is IDENTITY (a Bool is canonical i32 0/1, so `p == 1` is just `p` — push nothing more),
 /// against `false` is `i32.eqz`. Shared by the branchless 2-arm select; the `Wild` probe is not a
 /// condition (it's the fallthrough) so it never reaches here.
-fn emit_probe_condition(
-    probe: &crate::core::Probe,
-    src: OperandSrc,
-    it: IntTy,
-    out: &mut Vec<Lir>,
-) {
+fn emit_probe_condition(probe: &crate::core::Probe, src: OperandSrc, it: IntTy, out: &mut Emit) {
     src.push(out);
     match probe {
         crate::core::Probe::Int(v) => {
@@ -3232,7 +3332,7 @@ fn emit_probe_chain(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
     tail: TailPos,
 ) -> Result<(), Reject> {
     // BR_TABLE DECISION TREE for a DENSE integer match: ≥3 `Int` probes over a small contiguous-ish
@@ -3368,7 +3468,7 @@ fn try_emit_scalar_br_table(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
     tail: TailPos,
 ) -> Result<Option<()>, Reject> {
     // A SELF-LOOP tail match must keep the linear chain (it threads the loop context so a self-tail-call
@@ -3537,7 +3637,7 @@ fn emit_arm_body(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
     tp: TailPos,
 ) -> Result<(), Reject> {
     if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, body)) {
@@ -3570,7 +3670,7 @@ fn emit_arm_guarded_body(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
     inner: TailPos,
 ) -> Result<(), Reject> {
     match arm.guard {
@@ -3647,7 +3747,7 @@ fn try_emit_disc_br_table(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) -> Result<Option<()>, Reject> {
     // Partition into explicit-disc arms (the table entries) and an optional trailing default.
     let (disc_arms, default): (&[crate::core::SumArm], Option<&crate::core::SumArm>) =
@@ -3749,7 +3849,7 @@ fn emit_sum_match_arms(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) -> Result<(), Reject> {
     // BR_TABLE DECISION TREE: a switch that tests ≥3 DISTINCT discriminants dispatches in O(1) via a
     // jump table instead of a linear `if (disc == k)` cascade (the arms below). Sum discriminants are
@@ -3839,7 +3939,7 @@ fn emit_sum_cont(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) -> Result<(), Reject> {
     match cont {
         crate::core::SumCont::Leaf(body) => {
@@ -4178,7 +4278,7 @@ fn emit_operand(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) -> Result<(), Reject> {
     if let Core::ConstInt(v) = core_of(db, id) {
         let width = it.ground_width();
@@ -4214,7 +4314,7 @@ fn emit_branch(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) -> Result<(), Reject> {
     if let (Ty::Int(rit), Core::ConstInt(_)) = (result, core_of(db, id)) {
         return emit_operand(db, id, *rit, slots, base, high, scratch_ty, layout, out);
@@ -4290,7 +4390,7 @@ enum OperandSrc {
 
 impl OperandSrc {
     /// Push this operand's value onto the stack (`local.get slot`, or the constant push).
-    fn push(self, out: &mut Vec<Lir>) {
+    fn push(self, out: &mut Emit) {
         match self {
             OperandSrc::Slot(slot) => out.push(Lir::LocalGet(slot)),
             OperandSrc::ConstI32(v) => out.push(Lir::ConstI32(v)),
@@ -4471,7 +4571,7 @@ fn emit_checked_arith(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) -> Result<(), Reject> {
     emit_checked_arith_to(
         db,
@@ -4501,7 +4601,7 @@ fn emit_checked_arith_to(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
     dest: ResultDest,
 ) -> Result<(), Reject> {
     let ot = IntTy::fixed(m.signed, m.width);
@@ -4672,7 +4772,7 @@ fn emit_operand_into(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) -> Result<(), Reject> {
     if let Core::Arith { op, lhs, rhs } = core_of(db, id)
         && matches!(op, Prim::Add | Prim::Sub | Prim::Mul)
@@ -4730,7 +4830,7 @@ fn emit_machine_overflow_guard(
     sa: OperandSrc,
     sb: OperandSrc,
     sr: u32,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) {
     // `+`/`-` overflow the slot only at a FULL width; a narrow add/sub stays within the slot.
     let addsub_can_overflow = !m.narrow();
@@ -4895,7 +4995,7 @@ enum ReachableBounds {
 /// width, including one just below the slot size (a `UInt31` sum of `2^32-2` reads as a NEGATIVE signed
 /// slot value, which the old signed `r <ₛ 0` guard caught and a signed `r >ₛ max` would MISS — the
 /// unsigned compare catches it directly). (`reach` does not apply to unsigned — already one test.)
-fn emit_range_check(m: Machine, sr: u32, reach: ReachableBounds, out: &mut Vec<Lir>) {
+fn emit_range_check(m: Machine, sr: u32, reach: ReachableBounds, out: &mut Emit) {
     if !m.narrow() {
         return;
     }
@@ -4942,7 +5042,7 @@ fn emit_div_rem(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) -> Result<(), Reject> {
     let ot = IntTy::fixed(m.signed, m.width);
     // STRENGTH REDUCTION: an UNSIGNED `/`/`%` by a constant POWER OF TWO becomes a shift/mask — far
@@ -5103,7 +5203,7 @@ fn emit_mul_pow2_as_shift(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) -> Result<(), Reject> {
     let ot = IntTy::fixed(m.signed, m.width);
     let mut next_scratch = base;
@@ -5176,7 +5276,7 @@ fn emit_shift(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) -> Result<(), Reject> {
     let ot = IntTy::fixed(m.signed, m.width);
     // The count read once here to fold a compile-time-constant count (see the count-guard below).
@@ -5336,7 +5436,7 @@ fn emit_wrap(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) -> Result<(), Reject> {
     // 1. The operand, in the source slot.
     emit(db, operand, slots, base, high, scratch_ty, layout, out)?;
@@ -5518,7 +5618,7 @@ fn emit_call_args(
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
-    out: &mut Vec<Lir>,
+    out: &mut Emit,
 ) -> Result<(), Reject> {
     let param_its = callee_param_int_tys(db, callee);
     // Each arg after the first starts its scratch ABOVE the running high-water (`arg_base = *high`): the

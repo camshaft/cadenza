@@ -12,7 +12,7 @@
 import { useState } from "react";
 import { CodeEditor } from "../editor/CodeEditor.tsx";
 import { useCadenzaEditor } from "./useCadenzaEditor.ts";
-import { renderSyntax } from "../compiler/client.ts";
+import { renderSnippet } from "./useCadenzaEditor.ts";
 import { StatusIcon } from "./StatusIcon.tsx";
 import { useProgress } from "../progress/ProgressContext.tsx";
 import type { Surface } from "../syntax/SyntaxContext.tsx";
@@ -91,7 +91,8 @@ export function Exercise({
   async function revealSolution() {
     // Render the authored solution into the surface the editor is currently showing.
     const shown = editor.surface;
-    const text = authoredIn === shown ? solution : await renderSyntax(solution, authoredIn, shown).catch(() => solution);
+    const text =
+      authoredIn === shown ? solution : await renderSnippet(solution, authoredIn, shown, wrap).catch(() => solution);
     editor.setText(text);
     setCheck({ phase: "idle" });
   }

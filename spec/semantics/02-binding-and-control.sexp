@@ -1055,6 +1055,19 @@
             ((guard x (< x 0)) 1)))
   (error  CDZ0210))
 
+(case "a match whose only arm is guarded by a literally-true condition is still non-exhaustive"
+  (doc    "The exhaustiveness check treats EVERY guard as opaque — it does not reason about whether the
+           guard condition is true. `(match 5 ((guard x true) 1))` has a guard whose condition is the
+           literal `true`, so the arm always fires at run time; but the checker MUST still reject it
+           (CDZ0210) as non-exhaustive, exactly as the `(< x 0)` case above. A checker that 'optimized' by
+           recognizing a literally-true guard as an unconditional arm would wrongly ACCEPT this match, then
+           the same reasoning would have to extend to arbitrarily complex always-true conditions — the
+           conservative rule is simpler and sound: a guarded arm never counts toward coverage, whatever its
+           condition. Pins that guard truth is not analyzed for exhaustiveness.")
+  (input  (match 5
+            ((guard x true) 1)))
+  (error  CDZ0210))
+
 ; --- A guard may refine a VARIANT pattern ---------------------------------------------------------
 ; A guard composes with a variant (sum) pattern, not only a bare binder: `(guard (Some x) <cond>)`
 ; fires when the scrutinee is `Some` AND `<cond>` (which reads the payload binder `x`) holds. On a

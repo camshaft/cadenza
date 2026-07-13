@@ -227,6 +227,39 @@ fn code_entry(f: &SelectedFunc, import_index: &std::collections::HashMap<&str, u
     out
 }
 
+/// The byte offset of each `Lir` instruction WITHIN this function's `code_entry` (relative to the
+/// entry's first byte — the size prefix), one per `f.code` index. Used for per-construct debug line
+/// rows (`DESIGN-debug-line-granularity-rcdzc.md`): an absolute DWARF code offset is `code_base +
+/// FuncCodeRange.code_start + instr_offsets(f)[lir_index]`. Replays the exact `code_entry` byte layout
+/// (size prefix + local decls, then the instructions), recording the running offset before each
+/// instruction — so it stays byte-exact with the emitted entry. `imports` fixes the `CallImport` map.
+pub fn instr_offsets(f: &SelectedFunc, imports: &[&RtOp]) -> Vec<u32> {
+    let import_index: std::collections::HashMap<&str, u32> = imports
+        .iter()
+        .enumerate()
+        .map(|(i, o)| (o.name, i as u32))
+        .collect();
+    // The inner stream = local decls, then instructions. Track each instruction's position within it.
+    let mut inner = Vec::new();
+    let groups = rle(&f.declared);
+    uleb128(groups.len() as u64, &mut inner);
+    for (count, vt) in groups {
+        uleb128(count as u64, &mut inner);
+        inner.push(vt.byte());
+    }
+    let mut offsets = Vec::with_capacity(f.code.len());
+    for i in &f.code {
+        offsets.push(inner.len() as u32); // position of this instruction within the inner stream
+        instr(i, &import_index, &mut inner);
+    }
+    // Every instruction sits after the entry's size-prefix uleb (`uleb(inner_total_len)`); shift by it.
+    let prefix_len = uleb_bytes(inner.len() as u64).len() as u32;
+    for off in &mut offsets {
+        *off += prefix_len;
+    }
+    offsets
+}
+
 /// One function's core functype: `0x60 <params-vec> <results-vec>`. A unit return is a zero-result
 /// function; any other return is one result of its value type. The form tag is the generated
 /// `wasm_abi::CORE_FUNCTYPE_FORM` (from `wasm-encoder`), not a hand-typed `0x60`.

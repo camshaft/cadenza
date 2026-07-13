@@ -2729,6 +2729,22 @@
               ((Sign.Pos _)  1)))
   (error    CDZ0210))
 
+(case "a non-exhaustive guarded match is rejected even when a constant scrutinee folds its guard true"
+  (doc    "Witnesses core-semantics.md #Matching Is Exhaustive Or Rejected together with the guarded-arm
+           rule (a guarded arm covers no variant unconditionally, since its guard may be false). The only
+           `Some` arm here is GUARDED (`(guard (Some x) (> x 0))`) with no unguarded `Some` fall-through,
+           so the match does NOT cover the `Some` variant — it is non-exhaustive (CDZ0210). Crucially the
+           rejection must hold EVEN THOUGH the scrutinee is the constant `(Some 5)` whose guard `(> 5 0)`
+           folds to true at compile time: a match is ill-formed AS WRITTEN regardless of whether a specific
+           constant input happens to satisfy the guard. A generation that folded the constant-scrutinee
+           match to the guarded arm's body (→ 5) BEFORE checking exhaustiveness silently accepted a
+           non-exhaustive match; the check must run on the fall-through even on the guard-folds-true path.
+           The control `((Some y) y)` fall-through (below, not shown) restores exhaustiveness and folds to 5.")
+  (input    (match (Some 5)
+              ((guard (Some x) (> x 0)) x)
+              ((None) 0)))
+  (error    CDZ0210))
+
 (case "a nullary constructor is a single-arity function taking unit"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (2nd sentence): a 'nullary' variant is a constructor whose argument type

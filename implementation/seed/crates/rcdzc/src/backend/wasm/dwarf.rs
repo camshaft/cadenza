@@ -117,6 +117,11 @@ pub struct DwarfFunc {
     pub high_pc: u32,
     pub line: u32,
     pub vars: Vec<DwarfVar>,
+    /// Per-construct `(absolute code offset, 1-based source line)` rows, ascending by offset — one per
+    /// source LINE the function's code visits (`DESIGN-debug-line-granularity-rcdzc.md`). The line
+    /// program emits a row at each, so a debugger steps line-by-line. Empty → one row at `low_pc`/`line`
+    /// (the function-granularity fallback for a single-construct body).
+    pub rows: Vec<(u32, u32)>,
 }
 
 /// A named scalar local to describe (D3): its source name, wasm local slot, and base type. Emits a
@@ -509,20 +514,32 @@ fn build_line_program(module_path: &str, funcs: &[DwarfFunc]) -> Vec<u8> {
     prog.push(dw::LNS_SET_FILE);
     uleb128(1, &mut prog);
     for f in &ordered {
-        // DW_LNE_set_address <addr> — an extended opcode: 0x00 <len-uleb> <sub-opcode> <operand>.
-        prog.push(0x00);
-        uleb128(1 + 4, &mut prog); // 1 (sub-opcode) + 4 (a 4-byte address)
-        prog.push(dw::LNE_SET_ADDRESS);
-        prog.extend_from_slice(&f.low_pc.to_le_bytes());
-        // Advance the line register to this function's line.
-        let target = f.line.max(1) as i64;
-        if target != cur_line {
-            prog.push(dw::LNS_ADVANCE_LINE);
-            sleb128(target - cur_line, &mut prog);
-            cur_line = target;
+        // The rows for this function: its per-construct `(offset, line)` rows if present, else a single
+        // row at the function entry (function-granularity fallback for a single-construct body). Each
+        // row sets the address (an absolute code offset — simplest, no `advance_pc` arithmetic) then
+        // advances the line register, then `copy` emits the row.
+        let fallback = [(f.low_pc, f.line.max(1))];
+        let rows: &[(u32, u32)] = if f.rows.is_empty() {
+            &fallback
+        } else {
+            &f.rows
+        };
+        for &(offset, line) in rows {
+            // DW_LNE_set_address <addr> — an extended opcode: 0x00 <len-uleb> <sub-opcode> <operand>.
+            prog.push(0x00);
+            uleb128(1 + 4, &mut prog); // 1 (sub-opcode) + 4 (a 4-byte address)
+            prog.push(dw::LNE_SET_ADDRESS);
+            prog.extend_from_slice(&offset.to_le_bytes());
+            // Advance the line register to this row's line.
+            let target = line.max(1) as i64;
+            if target != cur_line {
+                prog.push(dw::LNS_ADVANCE_LINE);
+                sleb128(target - cur_line, &mut prog);
+                cur_line = target;
+            }
+            // Emit a row (DW_LNS_copy).
+            prog.push(dw::LNS_COPY);
         }
-        // Emit a row (DW_LNS_copy).
-        prog.push(dw::LNS_COPY);
     }
     // Close the sequence at the highest high_pc: set the address there, then end_sequence.
     let end_addr = ordered.iter().map(|f| f.high_pc).max().unwrap_or(0);

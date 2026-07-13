@@ -58,6 +58,7 @@ const KIND_BOOL_FALSE: u8 = 8;
 const KIND_BOOL_TRUE: u8 = 9;
 const KIND_NAME: u8 = 10;
 const KIND_BYTES: u8 = 11;
+const KIND_BAD_ESCAPE: u8 = 12;
 
 const TAG_ATOM: u8 = 0;
 const TAG_LIST: u8 = 1;
@@ -141,6 +142,12 @@ fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
         Leaf::Name(n) => {
             out.push(KIND_NAME);
             write_bytes(out, n.as_bytes());
+        }
+        // A bad-escape MARKER — the offending escape char, UTF-8 encoded (mirrors cadenza-syntax's codec).
+        Leaf::BadEscape(c) => {
+            out.push(KIND_BAD_ESCAPE);
+            let mut buf = [0u8; 4];
+            write_bytes(out, c.encode_utf8(&mut buf).as_bytes());
         }
     }
 }
@@ -263,6 +270,7 @@ fn read_leaf(r: &mut Reader) -> Option<Leaf> {
         KIND_BOOL_FALSE => Leaf::Bool(false),
         KIND_BOOL_TRUE => Leaf::Bool(true),
         KIND_NAME => Leaf::Name(read_string(r)?),
+        KIND_BAD_ESCAPE => Leaf::BadEscape(read_string(r)?.chars().next()?),
         _ => return None,
     })
 }

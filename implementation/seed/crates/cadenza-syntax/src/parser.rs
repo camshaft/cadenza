@@ -484,10 +484,9 @@ impl<'a> Parser<'a> {
             }
             Kind::Str => {
                 let t = self.bump().unwrap();
-                self.atom(
-                    Leaf::Str(literal::unescape_string_token(self.text(t))),
-                    span,
-                )
+                // `unescape_string_token` yields the leaf directly — `Str` on a valid escape set, or a
+                // `BadEscape` MARKER (`\q`) the compiler rejects CDZ0001. Both surfaces agree here.
+                self.atom(literal::unescape_string_token(self.text(t)), span)
             }
             Kind::ByteStr => {
                 let t = self.bump().unwrap();
@@ -1003,10 +1002,9 @@ impl<'a> Parser<'a> {
             }
             Kind::Str => {
                 let t = self.bump().unwrap();
-                self.atom(
-                    Leaf::Str(literal::unescape_string_token(self.text(t))),
-                    span,
-                )
+                // `unescape_string_token` yields the leaf directly — `Str` on a valid escape set, or a
+                // `BadEscape` MARKER (`\q`) the compiler rejects CDZ0001. Both surfaces agree here.
+                self.atom(literal::unescape_string_token(self.text(t)), span)
             }
             Kind::ByteStr => {
                 let t = self.bump().unwrap();

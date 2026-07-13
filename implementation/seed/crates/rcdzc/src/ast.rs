@@ -20,7 +20,8 @@
 
 use std::collections::HashMap;
 
-/// A leaf primitive value. Frozen at 5 variants.
+/// A leaf primitive value. The value kinds plus one MARKER (`BadEscape`) the reader emits for a
+/// lexically-malformed literal it cannot itself report.
 ///
 /// `Int` is arbitrary-precision and `Float` is an exact width-free decimal: a literal's magnitude
 /// or precision is never a well-formedness ceiling, and the concrete machine width (`Int64`,
@@ -45,6 +46,11 @@ pub enum Leaf {
     Bool(bool),
     /// An identifier: a name reference, a construct head, a variant, or a qualified name segment.
     Name(String),
+    /// A string literal carrying an UNRECOGNIZED ESCAPE (`"\q"`) — a reader-detected lexical defect that
+    /// the front-end cannot report through the artifact channel, so it rides the binary AST as a MARKER.
+    /// Resolving it is a `CDZ0001` rejection (`collections-and-text.md` §A String Literal's Escapes Are A
+    /// Closed Set): the compiler is the diagnostic surface, not the reader. Holds the offending escape char.
+    BadEscape(char),
 }
 
 /// An arbitrary-precision integer value: a sign plus a big-endian magnitude. This is the whole of

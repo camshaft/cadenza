@@ -948,8 +948,28 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     let mut fresh = Fresh::new();
     let scheme = match crate::eval::scheme_of(db, head, &mut fresh) {
         Some(s) => s,
-        // No `(meta t)` (e.g. a bare type constructor whose result is a type value) → `Any`.
+        // No `(meta t)` scheme. A RUNTIME FUNCTION VALUE head whose type is directly a `Ty::Fn` — a
+        // closure bound out of a compound by a match binder (`(match t ((T.Mk f) (f 5)))`, where `f`
+        // reads the `T.Mk` payload arrow), or a function-typed parameter — has no prelude scheme (a
+        // `SumPayload`/`Proj`/`Param` binder is not a prelude entry), but its OWN type carries the arrow.
+        // Peel one arrow per argument to get the result: `f : (-> Int64 Int64)` applied to one arg is
+        // `Int64`. Without this the application typed `Any`, leaving the enclosing function's return type
+        // non-machine ("function return type has no machine representation"). A prelude sum like `Some`
+        // resolved WITHOUT this because its ctor scheme threads the payload type; a USER sum's
+        // payload-bound closure relies on this arm. (Applied to more args than the arrow takes stops at
+        // the non-function tail — a fault reported elsewhere.)
         None => {
+            let head_ty = type_of(db, head);
+            if matches!(head_ty, Ty::Fn(_, _)) {
+                let mut cur = head_ty;
+                for _ in args {
+                    match cur {
+                        Ty::Fn(_, result) => cur = *result,
+                        _ => break,
+                    }
+                }
+                return cur;
+            }
             trace!(target: "rcdzc::infer", head = head.0, "apply: head has no (meta t) scheme → Any");
             return Ty::Any;
         }
@@ -1228,6 +1248,34 @@ fn check_application(db: &mut Db, head: StructId, args: &[StructId], out: &mut V
                 if let Err(reject) = crate::unify::unify(&mut subst, &pt, &at) {
                     trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, "apply: argument conflicts with parameter annotation (type fault)");
                     out.push(reject);
+                }
+            }
+            // OVER-APPLICATION: more arguments than the lambda's arity, and the body's result is not
+            // itself a function to absorb them. `((fn (x) (+ x 1)) 5 9)` is a type error, not a decline —
+            // the SAME CDZ0201 the corpus assigns an over-applied CONSTRUCTOR ("over-applying a constructor
+            // is a type error, not a silent argument drop"). Without this, `apply_lambda` returns
+            // Err("applied more arguments…") and the reduced body is never collected, so the extra args
+            // silently graded as a to-do. A body whose result IS a function (a curried lambda returning a
+            // lambda) legitimately absorbs the extra args — so gate on the reduced result NOT being an
+            // arrow (checked via the full-application result type below).
+            if args.len() > params.len() {
+                // Type the lambda fully applied to its own arity; if the result is not a function, the
+                // surplus args over-apply it.
+                let applied_ty = apply_type(db, head, &args[..params.len()]);
+                if !matches!(applied_ty, Ty::Fn(_, _) | Ty::Any) {
+                    trace!(target: "rcdzc::infer", head = head.0, arity = params.len(), args = args.len(), "fault: over-applied lambda (CDZ0203)");
+                    // CDZ0203 (`TypeMismatch`) — the SAME code an over-applied CONSTRUCTOR and a
+                    // scheme-typed over-application use (applying the fully-consumed value, which is not a
+                    // function, to a further argument). Keeps the over-application taxonomy uniform.
+                    out.push(Reject::coded(
+                        Code::TypeMismatch,
+                        format!(
+                            "applied {} arguments to a function of arity {} — it is not a function after \
+                             its arguments are consumed",
+                            args.len(),
+                            params.len()
+                        ),
+                    ));
                 }
             }
         }
@@ -1955,7 +2003,7 @@ mod tests {
         // concrete part pins the result — which, for terminating monomorphic recursion, cannot happen
         // (there must be a base case, and it pins the type).
         let ast = parse(
-            "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
+            "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (let ((r (sum-to (+ n -1)))) (+ n r)))) (def (main) (sum-to 3)) (export main))",
         );
         let mut db = Db::load(ast);
         let d = def_of(&db, "sum-to");
@@ -1975,7 +2023,7 @@ mod tests {
         // now HAS a scheme `Int64 -> Int64` — where before A2 it declined. (The mechanism the recursive
         // corpus rides.)
         let ast = parse(
-            "(module m (def (sum-to n) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
+            "(module m (def (sum-to n) (if (= n 0) 0 (let ((r (sum-to (+ n -1)))) (+ n r)))) (def (main) (sum-to 3)) (export main))",
         );
         let mut db = Db::load(ast);
         let d = def_of(&db, "sum-to");
@@ -1993,7 +2041,7 @@ mod tests {
         // The NON-NEGOTIABLE property (build-order Stage 2 "done when"; the coarse-kind post-mortem): a
         // recursive def's parameter type is the SAME regardless of which node's type is demanded first.
         // Solve `sum-to`'s param via two different first-demands and assert they agree.
-        let src = "(module m (def (sum-to n) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))";
+        let src = "(module m (def (sum-to n) (if (= n 0) 0 (let ((r (sum-to (+ n -1)))) (+ n r)))) (def (main) (sum-to 3)) (export main))";
 
         // Order A: demand the def's scheme first (drives the solve from the signature).
         let mut db_a = Db::load(parse(src));

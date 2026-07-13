@@ -154,6 +154,16 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
         // A name is written verbatim. (The s-expr surface has no reserved words — `let`, `+`, `|`
         // are all ordinary atoms — so no escaping is needed here, unlike the ML surface.)
         Leaf::Name(n) => out.push_str(n),
+        // A bad-escape MARKER round-trips back to the offending literal `"\<c>"` — so re-reading the
+        // printed form yields the SAME marker (the reader re-detects the unknown escape). A marker is not
+        // valid source; printing it faithfully keeps the round-trip law (`read(print(x)) == x`) rather
+        // than losing the defect.
+        Leaf::BadEscape(c) => {
+            out.push('"');
+            out.push('\\');
+            out.push(*c);
+            out.push('"');
+        }
     }
 }
 
@@ -382,6 +392,11 @@ impl<'a, 'b> Reader<'a, 'b> {
         let start = self.pos;
         self.bump(); // opening quote
         let mut bytes: Vec<u8> = Vec::new();
+        // The FIRST unrecognized escape encountered (`\q`), if any — a lexical defect the reader records
+        // rather than reports (its stderr is not the diagnostic surface). The whole literal becomes a
+        // `Leaf::BadEscape` marker the COMPILER rejects (CDZ0001); the reader still consumes to the closing
+        // quote so the rest of the program parses (one diagnostic, not a cascade).
+        let mut bad_escape: Option<char> = None;
         loop {
             match self.bump() {
                 None => return Err(ReadError("unterminated string".into())),
@@ -392,11 +407,23 @@ impl<'a, 'b> Reader<'a, 'b> {
                     Some(b'r') => bytes.push(b'\r'),
                     Some(b'\\') => bytes.push(b'\\'),
                     Some(b'"') => bytes.push(b'"'),
-                    Some(other) => bytes.push(other),
+                    // An UNRECOGNIZED escape — the escape set is CLOSED (`\n \t \r \\ \"`). Record the
+                    // offending char (first one wins) and keep the byte so the literal still terminates;
+                    // the marker below overrides the value with a `BadEscape` the compiler rejects.
+                    Some(other) => {
+                        if bad_escape.is_none() {
+                            bad_escape = Some(other as char);
+                        }
+                        bytes.push(other);
+                    }
                     None => return Err(ReadError("unterminated escape".into())),
                 },
                 Some(b) => bytes.push(b),
             }
+        }
+        // A bad escape makes the whole literal a MARKER leaf — the compiler turns it into CDZ0001.
+        if let Some(c) = bad_escape {
+            return Ok(self.mk_atom_leaf(Leaf::BadEscape(c), Span::new(start, self.pos)));
         }
         let s = String::from_utf8(bytes).map_err(|_| ReadError("non-utf8 string".into()))?;
         // NFC-normalize string contents (the value form normalizes text).
@@ -823,5 +850,36 @@ mod tests {
                 radix: Radix::Dec
             }
         );
+    }
+
+    #[test]
+    fn an_unknown_string_escape_reads_as_a_bad_escape_marker() {
+        // The escape set is CLOSED (`\n \t \r \\ \"`); `\q` begins none of them, so the reader emits a
+        // `Leaf::BadEscape('q')` MARKER (not silently `q`) — the compiler turns it into CDZ0001. A VALID
+        // escape still reads to its `Str`. (The reader does not error: its stderr is not the diagnostic
+        // surface, so the defect must ride the AST to the compiler.)
+        let a = read("\"\\q\"").unwrap();
+        let Struct::Atom(l) = a.get(a.root) else {
+            panic!("expected an atom")
+        };
+        assert_eq!(a.leaf(*l), &Leaf::BadEscape('q'));
+        let b = read("\"\\n\"").unwrap();
+        let Struct::Atom(l) = b.get(b.root) else {
+            panic!("expected an atom")
+        };
+        assert_eq!(b.leaf(*l), &Leaf::Str("\n".to_string()));
+    }
+
+    #[test]
+    fn a_bad_escape_marker_round_trips_through_the_codec() {
+        // The marker must survive the binary AST codec (encode→decode) unchanged, so the compiler that
+        // reads the binary AST sees the same `BadEscape` the reader produced.
+        let a = read("\"\\q\"").unwrap();
+        let bytes = crate::codec::encode(&a);
+        let b = crate::codec::decode(&bytes).expect("decode");
+        let Struct::Atom(l) = b.get(b.root) else {
+            panic!("expected an atom")
+        };
+        assert_eq!(b.leaf(*l), &Leaf::BadEscape('q'));
     }
 }
