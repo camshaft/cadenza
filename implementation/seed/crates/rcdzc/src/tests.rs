@@ -1839,17 +1839,16 @@ impl ComposedRuntime {
     }
 
     /// Drive a RESOURCE-ESCAPE program to completion: reach `make`/`encode` inside the `cadenza:run/run`
-    /// instance, call `make()` → a resource handle, then `encode(handle)` → the value bytes. `encode`
-    /// takes `self: own<t>`, so it CONSUMES the resource and OWNS the last reference to the compound's
-    /// heap handle — so `encode` itself calls `heap.drop(rep)` after the walk (see
-    /// `serialize::encode_walk_body`), reclaiming it and balancing `make`'s `arr-alloc`. So after the
-    /// `make`/`encode` round-trip NO heap cell remains live — `live_objects()` reads 0. (We do NOT rely
-    /// on the resource dtor / a host `resource_drop`: `resource.rep` on a BORROWED self traps in wasmtime
-    /// 37, so `encode` keeps `own` + releases the rep itself — the sound release point for the nullary
-    /// escape, which always calls encode. See [[rcdzc-r1-resource-encode-linking-findings]].) Returns the
-    /// decoded value text.
+    /// instance, call `make()` → a resource handle, `encode(handle)` → the value bytes, then DROP the
+    /// handle so the resource dtor fires. `encode` now takes `self: borrow<t>` — it READS self without
+    /// consuming (using the borrow's rep DIRECTLY, no `resource.rep`), so the host keeps ownership and the
+    /// resource stays live (repeatable). Reclamation is the resource DTOR's job: dropping the handle calls
+    /// `t-dtor(rep)` → `heap.drop(rep)`, reclaiming the compound's rc handle (cascading to its boxed
+    /// elements) and balancing `make`'s `arr-alloc`. So after make/encode/drop NO heap cell remains live —
+    /// `live_objects()` reads 0. See [[rcdzc-r1-resource-encode-linking-findings]] (the borrow correction).
+    /// Returns the decoded value text.
     fn run_escape_and_drop(&mut self) -> String {
-        use wasmtime::component::Val;
+        use wasmtime::component::{ResourceAny, Val};
         let iface = self
             .program
             .get_export_index(&mut self.store, None, "cadenza:run/run")
@@ -1876,7 +1875,7 @@ impl ComposedRuntime {
         let mut out = [Val::Bool(false)];
         encode
             .call(&mut self.store, &handle, &mut out)
-            .expect("encode"); // consumes the own<t>
+            .expect("encode"); // BORROWS self — the handle stays owned by the host
         encode.post_return(&mut self.store).expect("encode post");
         let bytes: Vec<u8> = match &out[0] {
             Val::List(items) => items
@@ -1889,7 +1888,16 @@ impl ComposedRuntime {
             o => panic!("expected list<u8>, got {o:?}"),
         };
         let arenas = cadenza_syntax::codec::decode(&bytes).expect("decode value form");
-        cadenza_syntax::sexpr::print(&arenas).trim().to_string()
+        let text = cadenza_syntax::sexpr::print(&arenas).trim().to_string();
+        // DROP the still-owned resource handle → the dtor runs `heap.drop(rep)`, reclaiming the compound.
+        if let Val::Resource(r) = handle[0] {
+            let r: ResourceAny = r;
+            r.resource_drop(&mut self.store)
+                .expect("resource drop fires the dtor");
+        } else {
+            panic!("make did not return a resource handle");
+        }
+        text
     }
 }
 
@@ -2096,12 +2104,12 @@ fn a_recursive_list_fold_leaks_every_node_known_gap() {
 }
 
 /// R2 RECLAMATION ACCEPTANCE: a RUNTIME compound that ESCAPES to the host as a resource leaves NO live
-/// heap cells after the `make`/`encode` round-trip — `encode` (which takes `own<t>`, consuming the
-/// resource) calls `heap.drop(rep)` after the walk, reclaiming the compound's rc handle (cascading to its
-/// boxed elements) and balancing `make`'s `arr-alloc`. Composes the debug-counters runtime, runs the
-/// recursive-tuple escape, and reads `live-objects` → 0. `#[ignore]` — needs `xtask build` to have
-/// populated the store (run with `-- --ignored`). (This was the R2 leak bug; the fix is encode-owns-and-
-/// drops, NOT a resource dtor + borrow — `resource.rep` on a borrow traps in wasmtime 37, see
+/// heap cells after the `make`/`encode`/DROP round-trip — `encode` now BORROWS self (reads without
+/// consuming), so reclamation is the resource DTOR's job: dropping the handle runs `t-dtor(rep)` →
+/// `heap.drop(rep)`, reclaiming the compound's rc handle (cascading to its boxed elements) and balancing
+/// `make`'s `arr-alloc`. Composes the debug-counters runtime, runs the recursive-tuple escape + drop, and
+/// reads `live-objects` → 0. `#[ignore]` — needs `xtask build` to have populated the store (run with
+/// `-- --ignored`). (The borrow migration replaced the earlier encode-owns-and-drops workaround; see
 /// [[rcdzc-r1-resource-encode-linking-findings]].)
 #[test]
 #[ignore]
@@ -4407,6 +4415,31 @@ mod runtime_ops {
         ));
     }
 
+    #[test]
+    fn a_non_aliased_width_result_crosses_widened_to_the_next_aliased_width() {
+        // A NON-ALIASED integer width (`(UInt 48)`, `(Int 24)`) has no component primitive of its own, so
+        // it cannot cross as itself — but a RESULT we PRODUCE is in range by construction, so it crosses
+        // WIDENED to the smallest aliased width ≥ N of the SAME signedness, value-preserving (the core slot
+        // is unchanged; the canonical ABI lifts it faithfully). RETURN-ONLY: a non-aliased PARAMETER still
+        // declines (see `a_non_aliased_width_parameter_still_declines`).
+        // `(UInt 48).max` = 2^48-1 crosses as `u64` → the exact value (06-numeric "an unusual in-range
+        // width is a first-class type").
+        assert_eq!(
+            run::<u64>("", "(: 281474976710655 (UInt 48))", &[]),
+            281474976710655
+        );
+        // `(UInt 48).wrap -1` keeps the low 48 bits (48 ones) = 2^48-1, crossing as `u64` (06-numeric "a
+        // truncating conversion to an unusual width keeps that width's low bits").
+        assert_eq!(
+            run::<u64>("", "((. (UInt 48) wrap) (: -1 Int64))", &[]),
+            281474976710655
+        );
+        // SIGNED non-aliased width: `(Int 24).wrap -5` crosses as `s32` SIGN-EXTENDED → -5 (not a
+        // reinterpreted large unsigned). Pins the widening picks the same signedness. (The RETURN-ONLY
+        // half — a non-aliased PARAMETER still declines — is `stage1::a_non_aliased_width_result_crosses_…`.)
+        assert_eq!(run::<i32>("", "((. (Int 24) wrap) (: -5 Int64))", &[]), -5);
+    }
+
     /// A NARROW signed `+`/`-` by a compile-time CONSTANT drops the provably-unreachable range-check
     /// bound: the exact result moves in ONE direction from an in-range operand, so only that bound can
     /// be exceeded. `(+ a 1)` Int8 can only exceed `max` (127) — the `r < min` check is dead; `(- a 1)`
@@ -4647,6 +4680,86 @@ mod runtime_ops {
             ),
             510
         ); // -1&255=255, +255=510
+    }
+
+    #[test]
+    fn a_remainder_by_a_constant_bounds_its_result_range() {
+        // `(% v C)` (constant C) has a bounded result: `|v % C| < |C|`, so its range is `[-(|C|-1),
+        // |C|-1]` (tightened to `[0, |C|-1]` for a nonneg dividend). That lets a downstream checked op
+        // shed its guard when the bounded remainder keeps the result in type: `(* (% x 10) 5)` ∈ [-45,45]
+        // ⊆ Int8. A remainder whose consumer CAN still overflow keeps its guard.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let guards = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::IfUnreachableEnd))
+                .count()
+        };
+        // `%10`∈[-9,9] → *5∈[-45,45] ⊆ Int8; `%100`∈[-99,99] → +1∈[-98,100] ⊆ Int8. No guard.
+        assert_eq!(
+            guards(&lir("(: x Int8)", "(: (* (% x 10) 5) Int8)")),
+            0,
+            "[-45,45] fits Int8"
+        );
+        assert_eq!(
+            guards(&lir("(: x Int8)", "(: (+ (% x 100) 1) Int8)")),
+            0,
+            "[-98,100] fits Int8"
+        );
+        // SOUNDNESS: `%100`∈[-99,99] → *5∈[-495,495] EXCEEDS Int8 → guard KEPT.
+        assert!(
+            guards(&lir("(: x Int8)", "(: (* (% x 100) 5) Int8)")) > 0,
+            "[-495,495] overflows Int8"
+        );
+
+        // VALUE + TRAP parity.
+        assert_eq!(
+            run::<i8>("(: x Int8)", "(: (* (% x 10) 5) Int8)", &[Val::S8(27)]),
+            35
+        ); // 7*5
+        assert_eq!(
+            run::<i8>("(: x Int8)", "(: (* (% x 10) 5) Int8)", &[Val::S8(-27)]),
+            -35
+        ); // -7*5
+        assert_eq!(
+            run::<i8>("(: x Int8)", "(: (+ (% x 100) 1) Int8)", &[Val::S8(99)]),
+            100
+        );
+        // The kept-guard case traps on real overflow (99*5=495) and computes when in range.
+        assert!(traps(
+            "(: x Int8)",
+            "(: (* (% x 100) 5) Int8)",
+            &[Val::S8(99)]
+        ));
+        assert_eq!(
+            run::<i8>("(: x Int8)", "(: (* (% x 100) 5) Int8)", &[Val::S8(100)]),
+            0
+        ); // 100%100=0
     }
 
     #[test]
@@ -14645,15 +14758,22 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_aliased_width_cannot_cross_the_boundary() {
-        // A `(UInt 48)` is a first-class INTERNAL type — its bounds fold and its arithmetic is correct —
-        // but only the aliased widths (8/16/32/64) have a component boundary representation. Exporting a
-        // value of a non-aliased width DECLINES (naming the width), rather than crossing as a misreported
-        // wider primitive. This is the safety property: to expose 48-bit data you take a `u64` at the
-        // boundary and convert explicitly, so the host never sees an ambiguous "48 bits in a u64".
-        let src = "(module m (def (main) (. (UInt 48) max)) (export main))";
-        let msg = compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("a non-aliased width cannot be exported")
+    fn a_non_aliased_width_result_crosses_widened_but_a_parameter_declines() {
+        // A `(UInt 48)` is a first-class INTERNAL type — its bounds fold and its arithmetic is correct.
+        // A RESULT of a non-aliased width CROSSES the boundary WIDENED to the next-larger aliased width of
+        // the same signedness (a produced value is in range by construction, so the widening is
+        // value-preserving): `(. (UInt 48) max)` = 2^48-1 exports as `u64` → the exact value. But a
+        // non-aliased PARAMETER still DECLINES (naming the width) — accepting one would trust an incoming
+        // wider value fits the narrower width, which the guest cannot verify. (Return-only; the full
+        // value-and-signedness matrix is in `runtime_ops::a_non_aliased_width_result_crosses_…`.)
+        let ret = "(module m (def (main) (. (UInt 48) max)) (export main))";
+        let bytes =
+            compile_component(&crate::codec::encode(&parse(ret))).expect("a UInt48 result crosses");
+        assert_eq!(run_returns::<u64>(&bytes, "main"), 281474976710655);
+
+        let param = "(module m (def (f (: x (UInt 48))) x) (export f))";
+        let msg = compile_component(&crate::codec::encode(&parse(param)))
+            .expect_err("a non-aliased width parameter cannot be accepted")
             .message;
         assert!(
             msg.contains("boundary") || msg.contains("aliased"),
@@ -14719,16 +14839,15 @@ mod stage1 {
     }
 
     #[test]
-    fn wrap_to_a_nonaliased_width_folds_but_cannot_cross() {
-        // `((UInt 48).wrap -1)` = 2^48-1 at the FOLD (the low 48 bits of -1) — a non-aliased target has
-        // no boundary form, so it can't be exported, but the truncation itself is correct. Asserted at
-        // the fold; exporting it declines (the non-aliased-boundary rule from R2). `(UInt 48).wrap` is
-        // the postfix-member sugar (reads to `(. (UInt 48) wrap)`).
+    fn wrap_to_a_nonaliased_width_folds_and_crosses_widened() {
+        // `((UInt 48).wrap -1)` = 2^48-1 at the FOLD (the low 48 bits of -1) — the truncation is correct.
+        // A non-aliased target has no boundary primitive of its own, but a RESULT crosses WIDENED to the
+        // next aliased width (`u64`), value-preserving — so exporting it now RUNS to the exact value
+        // (was a decline under the old aliased-only boundary rule). `(UInt 48).wrap` is the postfix-member
+        // sugar (reads to `(. (UInt 48) wrap)`). (The full matrix + the parameter-still-declines half are
+        // in `runtime_ops::a_non_aliased_width_result_crosses_…` / `a_non_aliased_width_result_crosses_…`.)
         assert_eq!(fold_const_u128("((UInt 48).wrap -1)"), (1u128 << 48) - 1);
-        assert!(
-            expect_decline("((UInt 48).wrap -1)").contains("boundary"),
-            "a non-aliased wrap result must decline at the boundary"
-        );
+        assert_eq!(run_main_as::<u64>("((UInt 48).wrap -1)"), (1u64 << 48) - 1);
     }
 
     #[test]
@@ -16852,6 +16971,44 @@ mod stage1 {
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "a host op with a constant string argument must compile"
         );
+    }
+
+    #[test]
+    fn a_non_kebab_effect_and_op_name_emit_a_valid_component() {
+        // REGRESSION (the effect-boundary residual of the export-name kebab fix): a non-kebab effect NAME
+        // (the imported interface's extern name) or OPERATION name (a func the interface exports) emitted
+        // an INVALID component ("import name `Log` is not a valid extern name") with no diagnostic. Both
+        // boundary names must be kebab-normalized. `wasmparser::validate` rejected the pre-fix bytes.
+        let up_effect = "(do (effect Log (op msg (-> Unit Int64))) \
+                   (def (main) (host (Log) (Log.msg))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(up_effect)))
+            .expect("an uppercase effect name must compile");
+        wasmparser::validate(&bytes).expect(
+            "an uppercase effect name must emit a VALID component (kebab interface import)",
+        );
+        // The interface import name is the kebab-normalized `log`, not the verbatim `Log`.
+        assert!(
+            bytes.windows(3).any(|w| w == b"log") && !contains_extern_name(&bytes, "Log"),
+            "the interface import extern name must be kebab `log`, not `Log`"
+        );
+
+        // The operation-name site: an uppercase op `Ask` normalizes to `ask` at the interface's func
+        // export decl + its alias (they must agree, or the alias fails to resolve).
+        let up_op = "(do (effect e (op Ask (-> Unit Int64))) \
+                   (def (main) (host (e) (e.Ask))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(up_op)))
+            .expect("an uppercase op name must compile");
+        wasmparser::validate(&bytes)
+            .expect("an uppercase op name must emit a VALID component (kebab func extern)");
+    }
+
+    /// Whether the component bytes contain `name` as a length-prefixed extern name (`<len><name>`) — a
+    /// crude but sufficient check that a NON-kebab source name did not leak verbatim into an extern
+    /// position. (`Log` is 3 bytes, prefixed by the uleb length `0x03`.)
+    fn contains_extern_name(bytes: &[u8], name: &str) -> bool {
+        let mut needle = vec![name.len() as u8];
+        needle.extend_from_slice(name.as_bytes());
+        bytes.windows(needle.len()).any(|w| w == needle.as_slice())
     }
 
     #[test]
@@ -21130,8 +21287,10 @@ mod r2_runtime_resource {
     }
 
     /// The INNER re-export component (identical to R1's — imports the abstract resource + funcs, re-
-    /// exports the resource directly + the funcs against it). Reused so the combined shape publishes
-    /// `cadenza:run/run` the same way.
+    /// exports the resource directly + the funcs against it). The runtime resource path now uses the
+    /// BORROW inner (`inner_reexport_component_borrow`); this OWN-encode variant is kept as the reference
+    /// for the own shape.
+    #[allow(dead_code)]
     fn inner_reexport_component() -> wasm_encoder::ComponentBuilder {
         use wasm_encoder::*;
         let mut c = ComponentBuilder::default();
@@ -21259,18 +21418,22 @@ mod r2_runtime_resource {
         let mem = c.core_alias_export(prog_inst, "memory", ExportKind::Memory);
         let realloc = c.core_alias_export(prog_inst, "cabi_realloc", ExportKind::Func);
 
-        // (5) lift make/encode against the internal resource type (both `own<t>` self for now — the
-        // `borrow<t>` migration is the R2-dtor follow-up).
+        // (5) lift make against `own<t>` (make PRODUCES the owned handle) and encode against `borrow<t>`
+        // (encode READS self without consuming — the host keeps ownership, drops afterward → the dtor
+        // reclaims the rep, and the resource is repeatable). The core `t-encode` uses the borrow's rep
+        // DIRECTLY (no resource.rep), matching `RepSource::Borrow` in the production serializer.
         let (own_t, odef) = c.type_defined();
         odef.own(res_ty);
         let (make_ty, mut enc) = c.type_function();
         enc.params::<[(&str, ComponentValType); 0], _>([])
             .result(Some(ComponentValType::Type(own_t)));
         let make_comp = c.lift_func(make_core, make_ty, []);
+        let (borrow_t, bdef) = c.type_defined();
+        bdef.borrow(res_ty);
         let (list_u8, ldef) = c.type_defined();
         ldef.list(ComponentValType::Primitive(PrimitiveValType::U8));
         let (encode_ty, mut enc2) = c.type_function();
-        enc2.params([("self", ComponentValType::Type(own_t))])
+        enc2.params([("self", ComponentValType::Type(borrow_t))])
             .result(Some(ComponentValType::Type(list_u8)));
         let encode_comp = c.lift_func(
             encode_core,
@@ -21281,8 +21444,9 @@ mod r2_runtime_resource {
             ],
         );
 
-        // (6) inner re-export component → the `cadenza:run/run` instance.
-        let inner_idx = c.component(inner_reexport_component());
+        // (6) inner re-export component (BORROW variant — re-types encode against borrow<t>) → the
+        // `cadenza:run/run` instance.
+        let inner_idx = c.component(inner_reexport_component_borrow());
         let inst2 = c.instantiate(
             inner_idx,
             [
@@ -21331,10 +21495,11 @@ mod r2_runtime_resource {
     #[test]
     fn a_flat_runtime_tuple_walks_and_crosses() {
         // Build `(tuple 3 1)` on the value heap, escape it as a resource, walk it in encode(), decode →
-        // the exact corpus value form. The FIRST genuine heap-alloc→escape→walk round-trip.
+        // the exact corpus value form. The FIRST genuine heap-alloc→escape→walk round-trip. `run_composed`
+        // wraps the BORROW envelope now, so the core must be the borrow walker (rep = param, no drop).
         let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
         let tpl = runtime_value_form_template(&ty).expect("template");
-        let core = walker_core(&tpl, &[3, 1]);
+        let core = walker_core_borrow(&tpl, &[3, 1]);
         if let Some(text) = run_composed(&core) {
             assert_eq!(text, "(: (tuple 3 1) (Tuple Int64 Int64))");
         } else {
@@ -21347,7 +21512,7 @@ mod r2_runtime_resource {
         // A negative element exercises the NEG kind-byte flip + absolute-magnitude write in the walker.
         let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
         let tpl = runtime_value_form_template(&ty).expect("template");
-        let core = walker_core(&tpl, &[-5, 7]);
+        let core = walker_core_borrow(&tpl, &[-5, 7]);
         if let Some(text) = run_composed(&core) {
             assert_eq!(text, "(: (tuple -5 7) (Tuple Int64 Int64))");
         } else {

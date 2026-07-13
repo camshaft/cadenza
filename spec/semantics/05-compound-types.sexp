@@ -3114,6 +3114,42 @@
             (export main)))
   (output (: 2 Int64)))
 
+(case "an all-nullary enum nested in a tuple carries its discriminant through the heap"
+  (doc    "An all-nullary enum is represented as its bare discriminant (no heap box — it carries no data
+           beyond WHICH variant it is). When such a value is an ELEMENT of a heap compound it is boxed
+           exactly like an integer and read back the same way, so the discriminant survives the round trip
+           through the tuple slot. `(mk true)` builds `(tuple Color.Red 99)`; the caller projects element 0
+           and matches it, recovering `Color.Red` → 1. `(mk false)` boxes `Color.Blue` → element 0 matches
+           the third arm → 3. Pins that the discriminant representation composes with the value heap (an
+           enum element is not mis-stored as a raw handle nor aliased to the zero variant).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Color Red Green Blue)
+            (def (mk (: b Bool)) (tuple (if b Color.Red Color.Blue) 99))
+            (def (main (: b Bool)) (match (. (mk b) 0) ((Color.Red) 1) ((Color.Green) 2) ((Color.Blue) 3)))
+            (export main)))
+  (call   main (: true Bool))
+  (output (: 1 Int64))
+  (call   main (: false Bool))
+  (output (: 3 Int64)))
+
+(case "all-nullary enum equality compares discriminants"
+  (doc    "Equality on an all-nullary enum compares its DISCRIMINANT directly — two enum values are equal
+           iff they are the same variant. Since the value is a bare discriminant (not a heap handle), this
+           is a scalar comparison, not a structural heap walk: `Color.Red = Color.Red` is true (1),
+           `Color.Red = Color.Green` is false (0), summing to 1. Pins that enum `=` is decided on the
+           discriminant and yields a Bool, distinguishing a runtime-built enum from its siblings.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Color Red Green Blue)
+            (def (eq2 (: x Color) (: y Color)) (if (= x y) 1 0))
+            (def (main (: b Bool)) (+ (eq2 (if b Color.Red Color.Green) Color.Red) 0))
+            (export main)))
+  (call   main (: true Bool))
+  (output (: 1 Int64))
+  (call   main (: false Bool))
+  (output (: 0 Int64)))
+
 (case "a program's unary variant reusing a prelude nullary variant name is unary"
   (doc    "A program declares `(type Expr (Lit Int64) (Neg Expr))` whose `Neg` variant carries a
            payload — reusing the NAME of the prelude `(type Sign Neg Zero Pos)`'s NULLARY `Neg`.

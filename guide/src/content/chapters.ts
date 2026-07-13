@@ -172,7 +172,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Modules",
     blurb: "Grouping definitions under a name; a module is a record of its exports.",
     section: "What makes Cadenza different",
-    exercises: 1,
+    exercises: 2,
     Component: lazy(() => import("./chapters/Modules.tsx")),
   },
   {

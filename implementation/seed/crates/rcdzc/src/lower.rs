@@ -6699,6 +6699,19 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                     lhs: args[0],
                     rhs: args[1],
                 }
+            } else if matches!(op, Prim::Eq) && node_ty_is_enum_disc(db, args[0]) {
+                // ENUM-DISCRIMINANT equality: both operands are bare discriminant i32s (an all-nullary
+                // enum is represented as its discriminant, no heap box), so `=` is a plain `i32.eq` — NOT
+                // a `value-eq` heap walk (which would misread a small discriminant as a tagged immediate
+                // handle). Route to `Core::Compare`, whose backend emits `i32.eq` for an enum-disc operand
+                // (`operand_int_ty` widths it as i32). Only equality — an enum has no order, so `<`/`>`
+                // never reach here (they take the `is_scalar` path above, false for a sum, then decline).
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "enum-discriminant equality → i32.eq compare");
+                Core::Compare {
+                    op,
+                    lhs: args[0],
+                    rhs: args[1],
+                }
             } else if matches!(op, Prim::Eq) && compound_eq_heap_walkable(db, args[0]) {
                 // RUNTIME STRUCTURAL EQUALITY — a `=` on two COMPOUND heap values neither of which folded
                 // (a sum/tuple/record built from a parameter or a recursive call). Emit a `value-eq`
@@ -7026,7 +7039,8 @@ fn value_range(db: &mut Db, id: StructId) -> Option<(i64, Option<i64>)> {
 /// the op is not range-tracked or an operand's range is unknown (→ the node falls back to its type). All
 /// arithmetic is `i128` (endpoints never wrap); each endpoint is clamped to `i64` (an out-of-i64 bound
 /// becomes `None` on that side = "unbounded there"). Covers: `&` (bounded by the smaller nonneg operand),
-/// `|`/`^` (bounded by `2^max(bits)` for nonneg operands), `<<`/`>>ᵤ` by a constant, and `+`/`-`/`*`
+/// `|`/`^` (bounded by `2^max(bits)` for nonneg operands), `<<`/`>>ᵤ` by a constant, `%` by a constant
+/// divisor (`[-(|C|-1), |C|-1]`, tightened to `[0, |C|-1]` for a nonneg dividend), and `+`/`-`/`*`
 /// interval arithmetic. Verified sound by exhaustive endpoint checks.
 fn arith_range(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<(i64, Option<i64>)> {
     let clamp = |lo: i128, hi: i128| -> (i64, Option<i64>) {
@@ -7090,6 +7104,25 @@ fn arith_range(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Option<(i
             };
             let k = k.to_i64().filter(|&k| (0..64).contains(&k))?;
             Some((0, Some(hi >> k)))
+        }
+        // `v % C` (constant divisor `C`): the truncated-toward-zero remainder has magnitude `< |C|`, so
+        // its range is `[-(|C|-1), |C|-1]` in general, tightened to `[0, |C|-1]` when the DIVIDEND is
+        // provably non-negative (a nonneg dividend yields a nonneg remainder). `(% x 10)` → `[-9,9]`, and
+        // `(% (& x 255) 10)` → `[0,9]`. Only a compile-time constant divisor (the common `% C` idiom); a
+        // runtime divisor's range is unknown here. `C = 0` never reaches this (a constant `÷0`/`%0` is a
+        // constant-trap poison in `lower`); `|C| = 1` folds to `0` (the `% 1` identity) before here.
+        Prim::Rem => {
+            let Core::ConstInt(c) = core_of(db, rhs) else {
+                return None;
+            };
+            let d = c.to_i64().map(|c| c.unsigned_abs()).filter(|&d| d >= 1)?;
+            let hi = (d - 1).min(i64::MAX as u64) as i64;
+            let lo = if value_provably_nonneg(db, lhs) {
+                0
+            } else {
+                -hi
+            };
+            Some((lo, Some(hi)))
         }
         // `+`/`-`/`*`: interval arithmetic over the operands' CLOSED ranges.
         Prim::Add | Prim::Sub | Prim::Mul => {
@@ -9498,6 +9531,17 @@ fn is_scalar(db: &mut Db, id: StructId) -> bool {
         crate::infer::type_of(db, id),
         crate::ty::Ty::Int(_) | crate::ty::Ty::Bool
     )
+}
+
+/// Whether the value at `id` has an ENUM-DISCRIMINANT type — a C-style enum the backend represents as a
+/// bare discriminant `i32` (no heap box; `Db::is_enum_disc`). Used to route `=` on such a value to the
+/// scalar `i32.eq` compare rather than a `value-eq` heap walk. Peels a nominal wrapper (a nominal-over-
+/// enum shares the representation).
+fn node_ty_is_enum_disc(db: &mut Db, id: StructId) -> bool {
+    match crate::infer::type_of(db, id).strip_nominal() {
+        crate::ty::Ty::Sum { decl, .. } => db.is_enum_disc(*decl),
+        _ => false,
+    }
 }
 
 /// Reduce an `Ordering` to the boolean the comparison `op` asks of it — the one place the relational

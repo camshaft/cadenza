@@ -255,6 +255,8 @@ pass	a hexadecimal integer literal
 pass	a hexadecimal literal is case-insensitive
 pass	a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern
 pass	a hexadecimal literal with digit separators
+pass	a host effect with a non-kebab NAME crosses under a normalized interface extern name
+pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 pass	a host-called closure applied to a different argument tracks the input
 pass	a host-called closure with a different body dispatches the right code
 pass	a lambda applied in the scope of the binding it captures observes that binding
@@ -723,6 +725,7 @@ pass	adding quantities of incompatible dimension is a compile-time error
 pass	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
 pass	adding two named family units of one dimension converts to the reference (Float)
 pass	adding two quantities of the same dimension keeps that dimension
+pass	all-nullary enum equality compares discriminants
 pass	an 8-bit-integer closure crosses the host boundary
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
@@ -739,6 +742,7 @@ pass	an abortive perform in the tail of an if branch inside a let body abandons 
 pass	an abortive perform under a non-tail conditional abandons the enclosing computation
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
+pass	an all-nullary enum nested in a tuple carries its discriminant through the heap
 pass	an annotated destructuring let binder
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
 pass	an annotated let binder constrains the value's type

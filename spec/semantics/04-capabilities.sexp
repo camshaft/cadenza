@@ -137,3 +137,35 @@
   (host-responses (respond ask.ask (: 41 Int64)))
   (host-calls (call ask.ask))
   (output (: 42 Int64)))
+
+; --- A non-kebab effect / operation name crosses under a normalized component extern name --------------
+; A host effect crosses the component boundary at two name-minting sites the value-export path does not
+; touch: the effect NAME is the imported WIT interface's extern name, and each operation NAME is a func the
+; interface exports. Both must be KEBAB-CASE (the component-model extern-name rule), but a valid Cadenza
+; identifier may be uppercase/underscore/camelCase (`Log`, `Ask`, `my_eff`, `askUser`). Emitting such a name
+; verbatim yields an INVALID, unloadable component ("import name `Log` is not a valid extern name"). The
+; name is NORMALIZED to kebab-case at both effect-boundary sites (the same `kebab_extern_name` the value
+; exports use), so a non-kebab effect/op name produces a loadable component; the CORE host import/export
+; names (which the program's core module binds against) stay verbatim. An already-lowercase effect+op is
+; the identity — byte-identical to before.
+
+(case "a host effect with a non-kebab NAME crosses under a normalized interface extern name"
+  (doc    "`(effect Log (op msg (-> Unit Int64)))` delegated via `(host (Log) …)` — `Log` is a valid
+           identifier but not a valid component import extern name. The effect name is normalized to the
+           kebab interface name `log`; the program still names the effect `Log` in source and the host
+           responds to `Log.msg`. Produces a LOADABLE component (was an invalid artifact with no
+           diagnostic). The value-export kebab fix (eacfb5f8) did not reach the effect host-import site;
+           this pins it.")
+  (input  (do (effect Log (op msg (-> Unit Int64))) (def (main) (host (Log) (Log.msg))) (export main)))
+  (host-responses (respond Log.msg (: 0 Int64)))
+  (output (: 0 Int64)))
+
+(case "a host effect with a non-kebab OPERATION name crosses under a normalized func extern name"
+  (doc    "The operation-name site: `(effect e (op Ask (-> Unit Int64)))` — the op `Ask` is a func the
+           imported interface exports, so its extern name must be kebab. It is normalized to `ask` (the
+           instance-type export decl and the alias that reads it agree on the kebab name); the source
+           performs `e.Ask` and the host responds to `e.Ask`. A loadable component, not the invalid
+           artifact `export name Ask is not a valid extern name`.")
+  (input  (do (effect e (op Ask (-> Unit Int64))) (def (main) (host (e) (e.Ask))) (export main)))
+  (host-responses (respond e.Ask (: 0 Int64)))
+  (output (: 0 Int64)))
