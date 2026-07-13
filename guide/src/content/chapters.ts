@@ -86,6 +86,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Pattern matching",
     blurb: "Deciding by shape; sum types and exhaustiveness.",
     section: "Fundamentals",
+    exercises: 2,
     Component: lazy(() => import("./chapters/PatternMatching.tsx")),
   },
   {
