@@ -199,6 +199,23 @@ impl Big {
         Some((q, r))
     }
 
+    /// The greatest common divisor of `|self|` and `|other|` — always NON-NEGATIVE (gcd is sign-agnostic:
+    /// `gcd(a, b) = gcd(|a|, |b|)`). `gcd(0, 0) = 0`; `gcd(a, 0) = |a|`. Euclid over magnitudes via
+    /// `divmod_mag` (the remainder shrinks each step). Needed by `Rational` normalization (DESIGN §7).
+    pub fn gcd(&self, other: &Big) -> Big {
+        let mut a = self.mag.clone(); // |self|
+        let mut b = other.mag.clone(); // |other|
+        while !b.is_empty() {
+            let (_q, r) = divmod_mag(&a, &b); // r = a mod b, normalized (no trailing zeros)
+            a = b;
+            b = r;
+        }
+        // `a` is the gcd magnitude (empty iff both inputs were zero). Non-negative by construction.
+        let mut g = Big { neg: false, mag: a };
+        g.normalize();
+        g
+    }
+
     // ─── conversions ──────────────────────────────────────────────────────────────────────────
 
     /// Box a signed 64-bit int as a `Big`.
@@ -422,7 +439,7 @@ fn shl1(r: &mut Vec<u32>) {
 mod tests {
     use super::*;
     use num_bigint::BigInt as Ref;
-    use num_traits::Signed;
+    use num_traits::{Signed, Zero};
 
     // Convert a native `Big` to the reference `num_bigint::BigInt` for differential comparison.
     fn to_ref(b: &Big) -> Ref {
@@ -510,7 +527,30 @@ mod tests {
             } else {
                 assert!(a.divmod(&b).is_none(), "div by zero → None");
             }
+
+            // gcd: compare against a reference Euclid over num-bigint absolutes (no extra dep). gcd is
+            // sign-agnostic and non-negative; gcd(0,0)=0.
+            let g = a.gcd(&b);
+            assert!(!g.neg, "gcd is non-negative {a:?} {b:?}");
+            assert_eq!(to_ref(&g), ref_gcd(ra.abs(), rb.abs()), "gcd {a:?} {b:?}");
+            // The GCD divides both operands exactly (when nonzero) and is a common divisor.
+            if !g.is_zero() {
+                assert!(a.divmod(&g).unwrap().1.is_zero(), "gcd divides a exactly");
+                assert!(b.divmod(&g).unwrap().1.is_zero(), "gcd divides b exactly");
+            } else {
+                assert!(a.is_zero() && b.is_zero(), "gcd is 0 only when both operands are 0");
+            }
         }
+    }
+
+    /// Reference gcd via Euclid over non-negative num-bigint values (avoids a `num-integer` dep).
+    fn ref_gcd(mut a: Ref, mut b: Ref) -> Ref {
+        while !b.is_zero() {
+            let r = &a % &b;
+            a = b;
+            b = r;
+        }
+        a
     }
 
     #[test]
