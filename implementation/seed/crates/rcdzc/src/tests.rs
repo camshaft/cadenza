@@ -8454,6 +8454,54 @@ mod stage1 {
     }
 
     #[test]
+    fn a_misspelled_field_on_a_visible_record_suggests_the_nearest_field() {
+        // The record analogue of the unbound-name "did you mean?" — a field typo (`height` → `heigth`)
+        // on a compile-time-visible record names the near field AND carries a heuristic fix on the KEY
+        // token (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
+        let d = expect_error("(. (record (width 10) (height 20)) heigth)");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("did you mean `height`?"),
+            "names the near field: {}",
+            d.message
+        );
+        let fix = d.fix.expect("a fix is carried");
+        assert_eq!(fix.replacement, "height");
+        assert!(!fix.verified, "a nearest-field guess is heuristic");
+    }
+
+    #[test]
+    fn a_misspelled_field_on_a_runtime_record_type_suggests_the_nearest_field() {
+        // A RUNTIME record (reached through a def parameter that inlines a record argument) carries a
+        // record TYPE; the field typo is caught on that type and suggested the same way. `get-h`'s body
+        // `(. r heigth)` faults once `r`'s record argument flows in.
+        let src = "(module m (def (get-h r) (. r heigth)) \
+                   (def (main) (get-h (record (width 10) (height 20)))) (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("height"),
+            "message: {}",
+            d.message
+        );
+    }
+
+    #[test]
+    fn a_field_with_no_close_match_carries_no_suggestion() {
+        // No field is within the edit-distance cutoff of `zzzzzz` — the plain "no field" message, no
+        // misleading fix.
+        let d = expect_error("(. (record (width 10) (height 20)) zzzzzz)");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            !d.message.contains("did you mean"),
+            "no suggestion: {}",
+            d.message
+        );
+        assert!(d.fix.is_none(), "no fix carried: {:?}", d.fix);
+    }
+
+    #[test]
     fn returning_a_constant_record_compiles_via_the_resource_escape() {
         // A CONSTANT record returned as the program result now crosses the host boundary as a
         // component-model resource whose `encode()` yields the canonical value form (the escape path,

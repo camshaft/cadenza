@@ -24,7 +24,7 @@
 use crate::arena::Slot;
 use crate::ast::StructId;
 use crate::db::Db;
-use crate::diag::{Code, Reject};
+use crate::diag::{Code, Fix, Reject};
 use crate::resolve::resolved_of;
 use crate::resolved::Resolved;
 use crate::ty::{Scheme, Ty};
@@ -1408,6 +1408,39 @@ pub fn type_errors(db: &mut Db, id: StructId) -> Vec<Reject> {
     out
 }
 
+/// The `record has no field \`key\`` rejection for a member access `member` (`(. operand key)`),
+/// enriched with a "did you mean?" suggestion when a field of the record is a near-miss for `key`
+/// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix — the record analogue of
+/// the unbound-name suggestion). `operand`'s field names are the candidate set. A close field →
+/// message names it AND the reject carries a heuristic ReplaceNode fix on the KEY occurrence (so an
+/// editor rewrites exactly the field token, `(. r fild)` → `(. r field)`); no close field → the plain
+/// message, no fix.
+fn no_field_reject(
+    db: &mut Db,
+    member: StructId,
+    operand: StructId,
+    key: &crate::resolved::Symbol,
+) -> Reject {
+    let fields = crate::eval::record_field_names(db, operand);
+    let suggestion = crate::diag::suggest::nearest(&key.name, &fields);
+    // The key occurrence is the second child of the `(. operand key)` form — the node the fix rewrites.
+    let key_occ = db.ast.as_form(member, ".").and_then(|t| t.get(1).copied());
+    match (suggestion, key_occ) {
+        (Some(field), Some(occ)) => Reject::coded(
+            Code::Malformed,
+            format!(
+                "record has no field `{}` — did you mean `{field}`?",
+                key.name
+            ),
+        )
+        .with_fix(Fix::replace_heuristic(occ, field)),
+        _ => Reject::coded(
+            Code::Malformed,
+            format!("record has no field `{}`", key.name),
+        ),
+    }
+}
+
 /// Collect faults at and under `id`, stamping each with its origin node. The recursive `collect_node`
 /// pushes this node's own faults and recurses into children (each child stamped by its OWN frame
 /// first); afterwards we stamp every fault THIS frame added that is still unanchored with `id` — so a
@@ -1561,10 +1594,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 crate::eval::Member::Field(_) => {}
                 crate::eval::Member::NoField => {
                     trace!(target: "rcdzc::infer", node = id.0, key = %key.name, "fault: record has no such field (CDZ0201)");
-                    out.push(Reject::coded(
-                        Code::Malformed,
-                        format!("record has no field `{}`", key.name),
-                    ))
+                    out.push(no_field_reject(db, id, operand, &key))
                 }
                 // The operand did not reduce to a compile-time-visible record. Before rejecting, check
                 // its TYPE: a RUNTIME record (a call result, an `if` selection) carries a record type,
@@ -1576,10 +1606,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         Ty::Record(fields) if fields.contains_key(&key) => {}
                         Ty::Record(_) => {
                             trace!(target: "rcdzc::infer", node = id.0, key = %key.name, "fault: runtime record has no such field (CDZ0201)");
-                            out.push(Reject::coded(
-                                Code::Malformed,
-                                format!("record has no field `{}`", key.name),
-                            ))
+                            out.push(no_field_reject(db, id, operand, &key))
                         }
                         // An UNCONSTRAINED operand (`Any`) — a bare (unannotated) parameter of a
                         // non-recursive def, whose type is not known until the def inlines at a call

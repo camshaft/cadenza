@@ -1194,6 +1194,24 @@ pub fn member_value(db: &mut Db, operand: StructId, key: &Symbol) -> Member {
     }
 }
 
+/// The field NAMES a member-access operand offers — the candidate set a "no field `x`; did you mean
+/// `y`?" suggestion draws from (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
+/// Fix). Reduces the operand exactly as [`member_value`] does: if it reduces to a compile-time-visible
+/// record, its field names; otherwise the operand's record TYPE's field names (a runtime record — a
+/// call result / `if` selection). Empty when the operand is not a record at all (a non-record operand
+/// is a different fault, "member access requires a record", with no field to suggest).
+pub fn record_field_names(db: &mut Db, operand: StructId) -> Vec<String> {
+    if let Some(rec) = reduce_to_record_id(db, operand)
+        && let Resolved::Record { fields } = resolved_of(db, rec)
+    {
+        return fields.keys().map(|k| k.name.clone()).collect();
+    }
+    match crate::infer::type_of(db, operand) {
+        crate::ty::Ty::Record(fields) => fields.keys().map(|k| k.name.clone()).collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// The sorted-position index of field `key` in a RUNTIME record operand — one whose value does not
 /// reduce to a compile-time-visible record (returned from a call, selected by an `if`) but whose TYPE
 /// is a record carrying the field. `None` if the operand is not a record type, or is a record type
