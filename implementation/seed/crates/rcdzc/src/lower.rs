@@ -783,6 +783,25 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 return core_of(db, head);
             }
             match crate::eval::meta_apply_of(db, head) {
+                // MIXED-UNIT COMBINE: `+`/`-`/comparison on two quantities of the SAME dimension but
+                // DIFFERENT scale (`1 km + 500 m`, `1 KiB + 1 kB`). Each operand converts to the
+                // dimension's REFERENCE unit by its exact scale (`value * num / den` in the inner type T),
+                // then the plain op runs there (units-of-measure.md §Combining Units Of One Dimension Is
+                // Well-Formed / §A Unit Conversion Is The Arithmetic The Source Denotes). Handles the
+                // CONSTANT case by folding the conversion (the demonstrable slice); a runtime mixed-unit
+                // operand declines (the emitted scale-multiply on a runtime value is a later increment).
+                Some(
+                    prim @ (Prim::Add
+                    | Prim::Sub
+                    | Prim::Lt
+                    | Prim::Gt
+                    | Prim::Le
+                    | Prim::Ge
+                    | Prim::Eq),
+                ) if args.len() == 2 && quantity_scales_differ(db, &args) => {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: mixed-unit combine (convert to reference)");
+                    lower_quantity_combine(db, id, prim, args[0], args[1])
+                }
                 // A quantity over a FLOAT magnitude combined with `+`/`-`/`*`/`/` runs the INNER numeric
                 // type's operation — the plain `T` op (units-of-measure.md §A Unit Conversion Is The
                 // Arithmetic The Source Denotes: the running arithmetic is the plain `T` operation on erased
@@ -5063,6 +5082,162 @@ fn quantity_inner_is_float(db: &mut Db, id: StructId, args: &[StructId]) -> bool
         .unwrap_or(false)
 }
 
+/// Whether the two operands are quantities of the SAME dimension at DIFFERENT scales — a mixed-unit
+/// combine that must convert to the reference (`1 km + 500 m`). `false` when either is not a quantity,
+/// they differ in dimension (that is CDZ0501, reported in `infer`), or the scales are equal (the common
+/// same-unit case — no conversion, the ordinary arith path). Reads the operands' solved units.
+fn quantity_scales_differ(db: &mut Db, args: &[StructId]) -> bool {
+    let (a, b) = (
+        crate::infer::type_of(db, args[0]),
+        crate::infer::type_of(db, args[1]),
+    );
+    match (&a, &b) {
+        (crate::ty::Ty::Qty { unit: ua, .. }, crate::ty::Ty::Qty { unit: ub, .. }) => {
+            ua.same_dimension(ub) && ua.scale() != ub.scale()
+        }
+        _ => false,
+    }
+}
+
+/// Lower a MIXED-UNIT combine `(op a b)` where `a` and `b` are quantities of one dimension at different
+/// scales: convert EACH operand to the dimension's REFERENCE unit by its exact scale (`value * num /
+/// den` in the inner type T), then apply `op` at the reference. Folds the CONSTANT case — the operands
+/// erase to a `Core::ConstInt`/`ConstFloat`, each scaled exactly (Int) or by round-to-nearest (Float),
+/// per spec §48 ("los[es] precision only where the underlying numeric type is itself inexact"). A
+/// non-constant operand DECLINES (the runtime scale-multiply is a later increment). `+`/`-` fold to the
+/// converted numeric (rendered back as `(Qty <sum> <reference-unit>)` by the value form); a comparison
+/// folds to a `ConstBool`.
+fn lower_quantity_combine(
+    db: &mut Db,
+    id: StructId,
+    op: Prim,
+    lhs: StructId,
+    rhs: StructId,
+) -> Core {
+    // Each operand's scale to the reference (num/den) — read off its solved unit.
+    let scale_of = |db: &mut Db, arg: StructId| -> Option<(i128, i128)> {
+        match crate::infer::type_of(db, arg) {
+            crate::ty::Ty::Qty { unit, .. } => Some(unit.scale()),
+            _ => None,
+        }
+    };
+    let (ln, ld) = match scale_of(db, lhs) {
+        Some(s) => s,
+        None => return Core::Poison(Reject::decline("mixed-unit combine: non-quantity operand")),
+    };
+    let (rn, rd) = match scale_of(db, rhs) {
+        Some(s) => s,
+        None => return Core::Poison(Reject::decline("mixed-unit combine: non-quantity operand")),
+    };
+    // The inner numeric type decides how conversion + the op run.
+    let inner_is_float = matches!(
+        crate::infer::type_of(db, lhs),
+        crate::ty::Ty::Qty { inner, .. } if matches!(*inner, crate::ty::Ty::Float(_))
+    );
+    let lc = core_of(db, lhs);
+    let rc = core_of(db, rhs);
+    if inner_is_float {
+        // FLOAT: convert each to the reference by `v * num / den` (rounding), then run the op.
+        let (lv, rv) = match (float_of_core(&lc), float_of_core(&rc)) {
+            (Some(l), Some(r)) => (l, r),
+            _ => {
+                return Core::Poison(Reject::decline(
+                    "mixed-unit combine over a runtime float operand (not yet emitted)",
+                ));
+            }
+        };
+        let l = lv * (ln as f64) / (ld as f64);
+        let r = rv * (rn as f64) / (rd as f64);
+        return fold_float_combine(op, l, r);
+    }
+    // INT (and other exact inner): convert each by `v * num / den` over i128 (exact; truncates on a
+    // non-whole ratio, per opting into integer math). A non-constant operand declines.
+    let (lv, rv) = match (int_of_core(&lc), int_of_core(&rc)) {
+        (Some(l), Some(r)) => (l, r),
+        _ => {
+            return Core::Poison(Reject::decline(
+                "mixed-unit combine over a runtime integer operand (not yet emitted)",
+            ));
+        }
+    };
+    let conv = |v: i128, n: i128, d: i128| -> Option<i128> { v.checked_mul(n).map(|x| x / d) };
+    let (l, r) = match (conv(lv, ln, ld), conv(rv, rn, rd)) {
+        (Some(l), Some(r)) => (l, r),
+        _ => {
+            return Core::Poison(Reject::coded(
+                Code::ConstTrap,
+                "mixed-unit conversion overflows the machine range",
+            ));
+        }
+    };
+    let _ = id;
+    fold_int_combine(op, l, r)
+}
+
+/// The `f64` a constant float/int core holds (a quantity's erased inner), for the float conversion fold.
+fn float_of_core(c: &Core) -> Option<f64> {
+    match c {
+        Core::ConstFloat(d) => Some(f64::from_bits(d.to_f64_bits())),
+        _ => None,
+    }
+}
+
+/// The `i128` a constant int core holds (a quantity's erased inner), for the integer conversion fold.
+fn int_of_core(c: &Core) -> Option<i128> {
+    match c {
+        Core::ConstInt(v) => v.to_i128(),
+        _ => None,
+    }
+}
+
+/// Apply `op` to two converted FLOAT reference values, producing the result core: `+`/`-` a
+/// `ConstFloat`, a comparison a `ConstBool`.
+fn fold_float_combine(op: Prim, l: f64, r: f64) -> Core {
+    match op {
+        Prim::Add | Prim::Sub => {
+            let v = if matches!(op, Prim::Add) {
+                l + r
+            } else {
+                l - r
+            };
+            match crate::ast::Decimal::from_f64(v) {
+                Some(d) => Core::ConstFloat(d),
+                None => Core::Poison(Reject::decline(
+                    "mixed-unit float result has no finite form",
+                )),
+            }
+        }
+        Prim::Lt => Core::ConstBool(l < r),
+        Prim::Gt => Core::ConstBool(l > r),
+        Prim::Le => Core::ConstBool(l <= r),
+        Prim::Ge => Core::ConstBool(l >= r),
+        Prim::Eq => Core::ConstBool(l == r),
+        _ => Core::Poison(Reject::decline("unexpected op in mixed-unit float combine")),
+    }
+}
+
+/// Apply `op` to two converted INT reference values, producing the result core: `+`/`-` a `ConstInt`, a
+/// comparison a `ConstBool`.
+fn fold_int_combine(op: Prim, l: i128, r: i128) -> Core {
+    let arith = |v: Option<i128>| match v {
+        Some(n) => Core::ConstInt(IntValue::from_i128(n)),
+        None => Core::Poison(Reject::coded(
+            Code::ConstTrap,
+            "mixed-unit result overflows",
+        )),
+    };
+    match op {
+        Prim::Add => arith(l.checked_add(r)),
+        Prim::Sub => arith(l.checked_sub(r)),
+        Prim::Lt => Core::ConstBool(l < r),
+        Prim::Gt => Core::ConstBool(l > r),
+        Prim::Le => Core::ConstBool(l <= r),
+        Prim::Ge => Core::ConstBool(l >= r),
+        Prim::Eq => Core::ConstBool(l == r),
+        _ => Core::Poison(Reject::decline("unexpected op in mixed-unit int combine")),
+    }
+}
+
 fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
         return Core::Poison(Reject::coded(
@@ -5657,6 +5832,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::UnitMul
         | Prim::UnitDiv
         | Prim::UnitPow
+        | Prim::UnitPrefix
         | Prim::QtyOf
         | Prim::QtyValue
         | Prim::QtyCtor
@@ -8582,6 +8758,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::UnitMul => "unit-mul",
         Prim::UnitDiv => "unit-div",
         Prim::UnitPow => "unit-pow",
+        Prim::UnitPrefix => "unit-prefix",
         Prim::QtyOf => "qty-of",
         Prim::QtyValue => "qty-value",
         Prim::QtyCtor => "Qty",

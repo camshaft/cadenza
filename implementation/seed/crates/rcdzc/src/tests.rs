@@ -9490,6 +9490,44 @@ mod match_engine {
     }
 
     #[test]
+    fn a_prefixed_unit_auto_converts_to_the_reference_over_int() {
+        // F2-1: `1 KiB + 1 kB` over Int64 — two units of the `information` dimension at DIFFERENT scales
+        // (kibi = 1024, kilo = 1000) — each converts to the reference `byte` and sums to 2024 (NOT 2000:
+        // the classic KiB-vs-kB conflation is CAUGHT and computed distinctly). The scale is compile-time
+        // metadata and the conversion is exact integer arithmetic — NO arbitrary-precision Rational
+        // needed. Compiles + RUNS.
+        let src = "(do (def (main) ((. Qty value) \
+                   (+ ((. Qty of) 1 ((. Unit prefix) kibi ((. Unit base) #\"byte\"))) \
+                      ((. Qty of) 1 ((. Unit prefix) kilo ((. Unit base) #\"byte\")))))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a KiB+kB mixed-unit sum compiles and runs"),
+                "main"
+            ),
+            2024
+        );
+    }
+
+    #[test]
+    fn a_prefixed_unit_of_a_different_dimension_still_rejects_cdz0501() {
+        // F2-1: a prefix scales WITHIN a dimension, never across — `km + second` is still CDZ0501. Pins
+        // that the family/prefix relaxation (auto-convert within a dimension) does not weaken the
+        // dimensional safety the layer exists for.
+        let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit prefix) kilo ((. Unit base) #\"metre\"))) \
+                   ((. Qty of) 1.0 ((. Unit base) #\"second\")))) (export main))";
+        assert_eq!(
+            compile_component(&crate::codec::encode(&parse(src)))
+                .err()
+                .and_then(|d| d.code.as_deref().map(str::to_string))
+                .as_deref(),
+            Some("CDZ0501"),
+            "km + second (different dimensions) must reject CDZ0501 even with a prefix"
+        );
+    }
+
+    #[test]
     fn a_quantity_over_a_wrong_inner_numeric_type_is_rejected_not_miscompiled() {
         // L1-1b: the unit layer sits OVER the numeric core and does not relax it — adding an Int64
         // quantity to a Float64 quantity (SAME dimension `metre`, DIFFERENT inner type) must be REFUSED,

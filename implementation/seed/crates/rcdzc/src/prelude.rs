@@ -124,6 +124,31 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     names.insert("Unit./".to_string(), unit_op_ctor(ast, "unit-div"));
     names.insert("Unit.^".to_string(), unit_op_ctor(ast, "unit-pow"));
 
+    // The PREFIXES — each a prelude record carrying its exact scale factor `(num den)` on a `(meta
+    // scale)` channel, applied to a unit by `(Unit.prefix P u)`. SI decimal prefixes are powers of ten
+    // (a negative power is a `1/10^k` ratio — `milli` = 1/1000, no float/int rounding); IEC binary
+    // prefixes are powers of two (`kibi` = 1024, `mebi` = 2²⁰), the distinct scales `information` uses.
+    // All fit `i64` with headroom (`tera` = 10¹², `tebi` = 2⁴⁰). Ordinary shadowable names.
+    for (name, num, den) in [
+        // SI decimal, positive powers.
+        ("kilo", 1_000i64, 1i64),
+        ("mega", 1_000_000, 1),
+        ("giga", 1_000_000_000, 1),
+        ("tera", 1_000_000_000_000, 1),
+        // SI decimal, negative powers (an exact `1/10^k` ratio).
+        ("milli", 1, 1_000),
+        ("micro", 1, 1_000_000),
+        ("nano", 1, 1_000_000_000),
+        ("pico", 1, 1_000_000_000_000),
+        // IEC binary (powers of two).
+        ("kibi", 1_024, 1),
+        ("mebi", 1_048_576, 1),
+        ("gibi", 1_073_741_824, 1),
+        ("tebi", 1_099_511_627_776, 1),
+    ] {
+        names.insert(name.to_string(), prefix_record(ast, num, den));
+    }
+
     // `Qty` — the module of QUANTITY operations: `of` (attach a unit to a numeric value) and `value`
     // (recover the numeric value, discarding the unit). Reached by member access `(. Qty of)` / `(. Qty
     // value)`. A `(Qty T u)` is checked then ERASED before emission (units-of-measure.md §Dimensions Are
@@ -704,7 +729,39 @@ fn unit_module(ast: &mut Arenas) -> StructId {
     let base_field = push_atom(ast, Leaf::Name("base".to_string()));
     let base_op = unit_op_ctor(ast, "unit-base");
     children.push(push_list(ast, vec![base_field, base_op]));
+    // `prefix` — scale a unit by a prefix's factor: `(Unit.prefix kilo (Unit.base #"metre"))`. Member
+    // access (`prefix` is alphabetic → `(. Unit prefix)`), so a field, not a top-level name (unlike
+    // `Unit.*`/`^`).
+    let prefix_field = push_atom(ast, Leaf::Name("prefix".to_string()));
+    let prefix_op = unit_op_ctor(ast, "unit-prefix");
+    children.push(push_list(ast, vec![prefix_field, prefix_op]));
     push_list(ast, children)
+}
+
+/// A PREFIX record — a prelude binding (`kilo`, `milli`, `mebi`, …) carrying its exact scale factor as a
+/// `(meta scale)` channel holding `(num den)` (a machine-integer ratio: `kilo`=1000/1, `milli`=1/1000,
+/// `mebi`=1048576/1). `Unit.prefix` reads this ratio and applies it to a unit via `Unit::scaled`. The
+/// scale is compile-time metadata, NOT a runtime `Rational` — so prefixes (and the conversions they
+/// drive) need no arbitrary-precision arithmetic. A prefix is an ordinary shadowable name.
+fn prefix_record(ast: &mut Arenas, num: i64, den: i64) -> StructId {
+    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let n = push_atom(
+        ast,
+        Leaf::Int {
+            value: IntValue::from_i64(num),
+            radix: Radix::Dec,
+        },
+    );
+    let d = push_atom(
+        ast,
+        Leaf::Int {
+            value: IntValue::from_i64(den),
+            radix: Radix::Dec,
+        },
+    );
+    let ratio = push_list(ast, vec![n, d]);
+    let scale_field = meta_field(ast, "scale", ratio);
+    push_list(ast, vec![head, scale_field])
 }
 
 /// A UNIT-builder record `(record ((meta apply) (intrinsic PRIM)))` — `Unit.one`/`Unit.base`/`Unit.*`/…
