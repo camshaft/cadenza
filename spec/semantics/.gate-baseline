@@ -1013,8 +1013,10 @@ pass	concatenating an empty string on the left is the identity
 pass	concatenating an empty string on the right is the identity
 pass	concatenating byte sequences built at run time appends their bytes in order
 pass	concatenating lists of different element types is a type error
+pass	concatenating tuples preserves each element's type
 pass	concatenating two byte sequences appends their bytes in order
 pass	concatenating two runtime strings and measuring the result
+pass	concatenating two tuples appends their elements
 pass	concatenating with the empty list on the right is identity
 pass	concatenation is associative by content
 pass	conditional propagation respects a shadowing rebind of the condition variable
@@ -1192,6 +1194,7 @@ pass	performing a string-parameter operation with a non-string argument is a typ
 pass	performing an operation with a wrong-type argument for a compound parameter is a type error
 pass	performing an operation with an argument of the wrong type is a type error
 pass	popping a field yields its value and the remaining record
+pass	popping a tuple yields element zero and the remaining tuple
 pass	popping an absent field is rejected
 pass	projecting a field is independent of the order fields are written
 pass	projecting a field of a non-compound argument is rejected at the call site
@@ -1239,6 +1242,8 @@ pass	slicing with a start near i64::MAX is out of range, not a trap
 pass	slicing with start+len overflowing i64 is out of range, not a wrong slice
 pass	splicing a non-list value into a quasiquote is a type error
 pass	splicing an integer literal directly is a type error
+pass	splitting a tuple at a position yields a prefix and a suffix
+pass	splitting a tuple at zero yields an empty prefix
 pass	splitting a tuple beyond its arity is rejected
 pass	string concatenation
 pass	string equality
@@ -1477,8 +1482,6 @@ todo	an open sum's payload decodes against a schema to a typed result
 todo	an unusual-width value that overflows its computed range traps
 todo	comparing same-shape nominal types is a type error
 todo	comparing two units of one dimension converts before comparing
-todo	concatenating tuples preserves each element's type
-todo	concatenating two tuples appends their elements
 todo	constructing a rational with a zero denominator traps
 todo	constructing a runtime value that does not fit its segment traps
 todo	converting a BigInt back to a fixed width is checked and traps when out of range
@@ -1497,7 +1500,6 @@ todo	expect traps on the absent case of a runtime optional
 todo	negating a runtime Int64 overflows at Int64.min
 todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 todo	pattern matching over AST distinguishes forms
-todo	popping a tuple yields element zero and the remaining tuple
 todo	projecting an if-of-tuples evaluates the taken branch's projected element, so its trap occurs
 todo	projecting the result of a function that threads a tuple parameter must not trap
 todo	quasiquote constructs AST with selective evaluation
@@ -1509,8 +1511,6 @@ todo	quote-vs-constructor AST equality holds regardless of operand order
 todo	reading the text a printer produced round-trips to an equal value
 todo	signed 8-bit addition that overflows its width traps
 todo	splice flattens where unquote nests
-todo	splitting a tuple at a position yields a prefix and a suffix
-todo	splitting a tuple at zero yields an empty prefix
 todo	the AST is a sum type deconstructible by pattern matching
 todo	the built-in Ast is transformed as an ordinary value
 todo	the built-in list is folded by an element-with-rest pattern

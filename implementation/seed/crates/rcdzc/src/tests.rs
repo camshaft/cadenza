@@ -11406,6 +11406,43 @@ mod match_engine {
     }
 
     #[test]
+    fn tuple_cat_split_at_pop_reshape_tuples_positionally() {
+        // 15-rows tuple reshaping — the POSITIONAL analogue of the record row ops. `Tuple.cat a b`
+        // concatenates (arity = sum, each element keeps its position's type); `Tuple.split-at t k` splits
+        // at compile-time `k` into a `(prefix suffix)` pair (k=0 → prefix is unit, k out of 0..=arity →
+        // CDZ0201); `Tuple.pop t` takes element 0 off. cat/split-at/pop all compile over constant tuples.
+        for src in [
+            "(module m (def (main) (Tuple.cat (tuple 1 2) (tuple 3 4))) (export main))",
+            "(module m (def (main) (Tuple.split-at (tuple 1 2 3) 1)) (export main))",
+            "(module m (def (main) (Tuple.split-at (tuple 1 2) 0)) (export main))",
+            "(module m (def (main) (Tuple.pop (tuple 1 2 3))) (export main))",
+        ] {
+            assert_eq!(
+                reject_code(src),
+                None,
+                "a well-formed tuple reshaping must compile: {src}"
+            );
+        }
+        // A split position OUTSIDE the operand's static arity `0..=len` is CDZ0201 (the `(. x N)`
+        // static-bounds rule) — `(tuple 1 2)` has arity 2, so a split at 5 names a position it lacks.
+        assert_eq!(
+            reject_code("(module m (def (main) (Tuple.split-at (tuple 1 2) 5)) (export main))")
+                .as_deref(),
+            Some("CDZ0201"),
+            "a split beyond the tuple's arity is CDZ0201"
+        );
+        // `Tuple` is STILL the tuple-TYPE constructor in type position — the dual-shape module did not
+        // break `(: t (Tuple Int64 Bool))`.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (: (tuple 1 true) (Tuple Int64 Bool))) (export main))"
+            ),
+            None,
+            "Tuple must still work as the tuple-type constructor in an annotation"
+        );
+    }
+
+    #[test]
     fn a_list_homogeneity_violation_is_cdz0201_by_shape() {
         // 05-compound-types §A List Is An Ordered Homogeneous Sequence — the same taxonomy line the numeric
         // operators and `if`-branches draw. A homogeneity violation between two DISTINCT NUMERIC types, or

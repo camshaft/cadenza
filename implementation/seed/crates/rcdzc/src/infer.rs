@@ -1680,6 +1680,18 @@ fn qty_pow_type(db: &mut Db, args: &[StructId]) -> Option<Ty> {
     None
 }
 
+/// The type of a tuple built from `elems`, EXCEPT the empty tuple IS the unit value (`Ty::Unit`) — the
+/// empty-tuple-is-unit convention (`core-semantics.md` §The Empty Tuple Is The Unit Value). Used by the
+/// tuple row ops' result-type arms (a `split-at 0` prefix / an all-consumed suffix is `Unit`, not a
+/// zero-arity tuple).
+fn tuple_or_unit(elems: &[Ty]) -> Ty {
+    if elems.is_empty() {
+        Ty::Unit
+    } else {
+        Ty::Tuple(elems.iter().cloned().collect())
+    }
+}
+
 fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // CASE-OF-CASE (matches `lower`): a head that reduces to a runtime `if` — `((if c a b) args…)` —
     // types as the `if` of the two branch applications. Each branch's lambda applies (β-reduces) to a
@@ -1855,6 +1867,43 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             .collect();
         let rest_ty = Ty::Record(std::sync::Arc::new(rest));
         return Ty::Tuple(std::sync::Arc::from([field_ty, rest_ty]));
+    }
+    // `Tuple.cat a b` — the concatenation of two tuples' element types (`type-system.md` §Two Tuples Are
+    // Concatenated Into One Of Their Combined Length). Result arity = the sum; each element keeps its
+    // source position's type. A non-tuple operand → the generic path (Any).
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::TupleCat)
+        && args.len() == 2
+        && let (Ty::Tuple(a), Ty::Tuple(b)) = (type_of(db, args[0]), type_of(db, args[1]))
+    {
+        let cat: Vec<Ty> = a.iter().chain(b.iter()).cloned().collect();
+        return Ty::Tuple(cat.into());
+    }
+    // `Tuple.split-at t k` — split at compile-time position `k` into a PAIR `(prefix suffix)`
+    // (`type-system.md` §A Tuple Is Split At A Position Into A Prefix And A Suffix). The result type is
+    // `(Tuple <prefix-tuple> <suffix-tuple>)`; `k=0` makes the empty prefix the UNIT value (the empty
+    // tuple IS unit), so the prefix type is `Ty::Unit`, not a zero-arity tuple. `k` out of `0..=arity` is
+    // CDZ0201 (`check_application`); here an out-of-range k falls through to the generic path (Any).
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::TupleSplitAt)
+        && args.len() == 2
+        && let Ty::Tuple(elems) = type_of(db, args[0])
+        && let Resolved::Int(k) = resolved_of(db, args[1])
+        && let Some(k) = k.to_i64()
+        && (0..=elems.len() as i64).contains(&k)
+    {
+        let k = k as usize;
+        let prefix = tuple_or_unit(&elems[..k]);
+        let suffix = tuple_or_unit(&elems[k..]);
+        return Ty::Tuple(std::sync::Arc::from([prefix, suffix]));
+    }
+    // `Tuple.pop t` — element 0 off: `(tuple (. t 0) <rest>)`. Result `(Tuple <e0> (Tuple <rest…>))`. A
+    // non-tuple or empty-tuple operand falls through (Any); the arity-≥1 requirement is `check_application`'s.
+    if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::TuplePop)
+        && args.len() == 1
+        && let Ty::Tuple(elems) = type_of(db, args[0])
+        && !elems.is_empty()
+    {
+        let rest = tuple_or_unit(&elems[1..]);
+        return Ty::Tuple(std::sync::Arc::from([elems[0].clone(), rest]));
     }
     // `Type.of e` — compile-time type reflection. The application itself has type `Type` (it IS a
     // type-value, like `(Qty T u)` / `(-> A B)` in type position); the type-value it REDUCES to (via
@@ -2866,23 +2915,25 @@ fn check_application(
         collect(db, args[1], out);
         return;
     }
-    // The RECORD ROW OPERATIONS have NO HM scheme (a label-list operand is not a typed value; a result
-    // shape is row-polymorphic), so SKIP the generic scheme-unify (it would fault the label list). The
-    // per-op faults (CDZ0212 absent / CDZ0211 shared) + operand descent are done in `collect_node`'s Apply
-    // arm; nothing to add here beyond stopping the generic path.
-    if args.len() == 2
-        && matches!(
-            crate::eval::meta_apply_of(db, head),
-            Some(
-                crate::resolved::Prim::RecordProject
-                    | crate::resolved::Prim::RecordWithout
-                    | crate::resolved::Prim::RecordMerge
-                    | crate::resolved::Prim::RecordExtend
-                    | crate::resolved::Prim::RecordWith
-                    | crate::resolved::Prim::RecordPop
-            )
+    // The RECORD + TUPLE ROW OPERATIONS have NO HM scheme (a label-list / literal-position operand is not
+    // a typed value; a result shape is row-/arity-polymorphic), so SKIP the generic scheme-unify (it would
+    // fault the operand). The per-op faults (CDZ0212 absent / CDZ0211 shared / CDZ0201 split-out-of-arity)
+    // + operand descent are done in `collect_node`'s Apply arm; nothing to add here beyond stopping the
+    // generic path. Matches any arity (`Tuple.pop`/1, the rest/2).
+    if matches!(
+        crate::eval::meta_apply_of(db, head),
+        Some(
+            crate::resolved::Prim::RecordProject
+                | crate::resolved::Prim::RecordWithout
+                | crate::resolved::Prim::RecordMerge
+                | crate::resolved::Prim::RecordExtend
+                | crate::resolved::Prim::RecordWith
+                | crate::resolved::Prim::RecordPop
+                | crate::resolved::Prim::TupleCat
+                | crate::resolved::Prim::TupleSplitAt
+                | crate::resolved::Prim::TuplePop
         )
-    {
+    ) {
         return;
     }
     // A COMPARISON between a MAP and a RECORD is a type error — they are DISTINCT KINDS (a record's field
@@ -4818,6 +4869,44 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         "the second operand is a field name, e.g. `z`",
                     )),
                     _ => {}
+                }
+            } else if matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(crate::resolved::Prim::TupleSplitAt)
+            ) && args.len() == 2
+            {
+                // `Tuple.split-at t k` — descend `t`; the position `k` is a compile-time literal (not an
+                // expression to descend). A `k` OUTSIDE the operand's static arity range `0..=arity` is a
+                // type error (CDZ0201) — the same static-bounds rule an out-of-arity `(. x N)` gets
+                // (`type-system.md` §A Tuple Is Split At A Position …, 2nd sentence). A non-literal `k`, or
+                // a non-tuple operand, falls through (declines/faulted elsewhere).
+                collect(db, args[0], out);
+                if let Ty::Tuple(elems) = type_of(db, args[0])
+                    && let Resolved::Int(k) = resolved_of(db, args[1])
+                    && k.to_i64()
+                        .is_none_or(|k| !(0..=elems.len() as i64).contains(&k))
+                {
+                    out.push(
+                        Reject::coded(
+                            Code::Malformed,
+                            format!(
+                                "split position is outside the tuple's arity 0..={}",
+                                elems.len()
+                            ),
+                        )
+                        .at(args[1]),
+                    );
+                }
+            } else if matches!(
+                crate::eval::meta_apply_of(db, head),
+                Some(crate::resolved::Prim::TupleCat | crate::resolved::Prim::TuplePop)
+            ) {
+                // `Tuple.cat a b` / `Tuple.pop t` — both operands (cat) / the sole operand (pop) are
+                // ordinary tuple expressions; descend each. No positional literal to guard (cat has none;
+                // pop's arity-≥1 requirement — an empty tuple is `unit`, not a tuple — surfaces as the
+                // generic non-tuple fault). No per-op reject here.
+                for &arg in args.iter() {
+                    collect(db, arg, out);
                 }
             } else if crate::eval::lambda_body(db, head).is_some() {
                 // A LAMBDA head — `check_application` already collected the REDUCED body (step 2), which

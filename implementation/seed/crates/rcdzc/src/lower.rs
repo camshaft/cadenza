@@ -1036,6 +1036,16 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::RecordPop) if args.len() == 2 => {
                     lower_record_pop(db, id, args[0], args[1])
                 }
+                // `Tuple.cat a b` — concatenate two constant `Core::Tuple`s (elements of `a` then `b`).
+                Some(Prim::TupleCat) if args.len() == 2 => {
+                    lower_tuple_cat(db, id, args[0], args[1])
+                }
+                // `Tuple.split-at t k` — `(tuple <prefix> <suffix>)` at compile-time literal `k`.
+                Some(Prim::TupleSplitAt) if args.len() == 2 => {
+                    lower_tuple_split_at(db, id, args[0], args[1])
+                }
+                // `Tuple.pop t` — `(tuple (. t 0) <rest>)`.
+                Some(Prim::TuplePop) if args.len() == 1 => lower_tuple_pop(db, id, args[0]),
                 // `vec-len`). One operand: the list.
                 Some(Prim::ListLen) if args.len() == 1 => {
                     let operand = args[0];
@@ -7357,6 +7367,9 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::RecordExtend
         | Prim::RecordWith
         | Prim::RecordPop
+        | Prim::TupleCat
+        | Prim::TupleSplitAt
+        | Prim::TuplePop
         | Prim::ListNew
         | Prim::ListLen
         | Prim::ListPush
@@ -9903,6 +9916,93 @@ fn lower_record_pop(db: &mut Db, id: StructId, record: StructId, name: StructId)
     }
 }
 
+/// Lower `(Tuple.cat a b)` — concatenate two constant `Core::Tuple`s: the elements of `a` in order
+/// followed by `b`'s (each element carrying its source occurrence). A poison operand propagates; a
+/// non-constant/non-tuple operand declines (the runtime op is a later increment).
+fn lower_tuple_cat(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Core {
+    match (core_of(db, a), core_of(db, b)) {
+        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+        (Core::Tuple { elems: ea }, Core::Tuple { elems: eb }) => {
+            let mut elems = ea;
+            elems.extend(eb);
+            trace!(target: "rcdzc::fold", node = id.0, n = elems.len(), "Tuple.cat folds two constant tuples");
+            Core::Tuple { elems }
+        }
+        _ => Core::Poison(Reject::decline(
+            "Tuple.cat over a runtime tuple is not yet built",
+        )),
+    }
+}
+
+/// Synthesize a tuple VALUE node from element occurrences — a `Core::Tuple` (or `Core::Unit` for the
+/// empty tuple, the empty-tuple-is-unit convention) with its `Ty` filled, so it can be an element of an
+/// enclosing tuple (whose elements are node ids). Mirrors `Record.pop`'s remaining-record synthesis.
+fn synth_tuple(db: &mut Db, elems: Vec<StructId>) -> StructId {
+    if elems.is_empty() {
+        return synth_core(db, Core::Unit, crate::ty::Ty::Unit);
+    }
+    let tys: Vec<crate::ty::Ty> = elems
+        .iter()
+        .map(|&e| crate::infer::type_of(db, e))
+        .collect();
+    synth_core(db, Core::Tuple { elems }, crate::ty::Ty::Tuple(tys.into()))
+}
+
+/// Lower `(Tuple.split-at t k)` — split a constant `Core::Tuple` at compile-time literal `k` into the
+/// PAIR `(tuple <prefix> <suffix>)`: a prefix tuple of the first `k` elements and a suffix tuple of the
+/// rest, each synthesized as its own occurrence (`synth_tuple`; an empty side is `unit`). An out-of-range
+/// or non-literal `k` is the CDZ0201 `infer` reports (this fold declines defensively). A poison / non-
+/// constant tuple operand propagates/declines.
+fn lower_tuple_split_at(db: &mut Db, id: StructId, tuple: StructId, pos: StructId) -> Core {
+    let Core::Tuple { elems } = core_of(db, tuple) else {
+        return match core_of(db, tuple) {
+            Core::Poison(r) => Core::Poison(r),
+            _ => Core::Poison(Reject::decline(
+                "Tuple.split-at over a runtime tuple is not yet built",
+            )),
+        };
+    };
+    let arity = elems.len() as i64;
+    let k = match core_of(db, pos) {
+        Core::ConstInt(v) => v.to_i64().filter(|&k| (0..=arity).contains(&k)),
+        _ => None,
+    };
+    let Some(k) = k else {
+        return Core::Poison(Reject::decline(
+            "Tuple.split-at needs a compile-time position within the tuple's arity",
+        ));
+    };
+    let k = k as usize;
+    let prefix = synth_tuple(db, elems[..k].to_vec());
+    let suffix = synth_tuple(db, elems[k..].to_vec());
+    trace!(target: "rcdzc::fold", node = id.0, k, "Tuple.split-at folds to a (prefix, suffix) pair");
+    Core::Tuple {
+        elems: vec![prefix, suffix],
+    }
+}
+
+/// Lower `(Tuple.pop t)` — element 0 off: `(tuple (. t 0) <rest>)`, the rest a synthesized tuple of the
+/// remaining elements (`(Tuple.split-at t 1)` with the singleton prefix unwrapped). A poison / non-
+/// constant / empty tuple operand propagates/declines.
+fn lower_tuple_pop(db: &mut Db, id: StructId, tuple: StructId) -> Core {
+    let Core::Tuple { elems } = core_of(db, tuple) else {
+        return match core_of(db, tuple) {
+            Core::Poison(r) => Core::Poison(r),
+            _ => Core::Poison(Reject::decline(
+                "Tuple.pop over a runtime tuple is not yet built",
+            )),
+        };
+    };
+    let Some((&first, rest)) = elems.split_first() else {
+        return Core::Poison(Reject::decline("Tuple.pop of an empty tuple"));
+    };
+    let rest_tuple = synth_tuple(db, rest.to_vec());
+    trace!(target: "rcdzc::fold", node = id.0, "Tuple.pop folds to a (element0, rest) tuple");
+    Core::Tuple {
+        elems: vec![first, rest_tuple],
+    }
+}
+
 fn lower_sum_expect(db: &mut Db, id: StructId, sum: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, sum) {
         return Core::Poison(r);
@@ -11138,6 +11238,9 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::RecordExtend => "record-extend",
         Prim::RecordWith => "record-with",
         Prim::RecordPop => "record-pop",
+        Prim::TupleCat => "tuple-cat",
+        Prim::TupleSplitAt => "tuple-split-at",
+        Prim::TuplePop => "tuple-pop",
         Prim::ListNew => "list-new",
         Prim::ListLen => "list-len",
         Prim::ListPush => "list-push",
