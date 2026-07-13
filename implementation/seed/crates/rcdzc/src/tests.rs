@@ -6481,6 +6481,35 @@ mod match_engine {
     }
 
     #[test]
+    fn symbol_reader_sugar_and_nominal_boundary() {
+        // 17-symbols inc 2: `#"text"` reader sugar reads to the SAME value as `(Symbol.of "text")`, and a
+        // Symbol is NOMINAL over String — comparing the two ACROSS the boundary is CDZ0202.
+        assert!(run_returns::<bool>(
+            &component(
+                "(module m (def (main) (= #\"map-insert\" (Symbol.of \"map-insert\"))) (export main))"
+            ),
+            "main"
+        ));
+        // The empty reader literal is the empty symbol.
+        assert!(run_returns::<bool>(
+            &component("(module m (def (main) (= #\"\" (Symbol.of \"\"))) (export main))"),
+            "main"
+        ));
+        // A Symbol compared to the plain String it wraps is a nominal-boundary type error (CDZ0202), on
+        // either operand order — NOT the generic CDZ0203, and NOT silently `false`.
+        assert_eq!(
+            reject_code("(module m (def (main) (= \"x\" (Symbol.of \"x\"))) (export main))")
+                .as_deref(),
+            Some("CDZ0202")
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (= (Symbol.of \"x\") \"x\")) (export main))")
+                .as_deref(),
+            Some("CDZ0202")
+        );
+    }
+
+    #[test]
     fn constant_symbol_of_equality_and_to_string_fold() {
         // 17-symbols inc 1: `Symbol.of` interns a String → Symbol (content-derived identity), and equality
         // is String equality lifted through the Symbol tag. A CONSTANT symbol reuses the underlying
@@ -13921,6 +13950,45 @@ mod stage1 {
                 .iter()
                 .any(|d| d.message == crate::diag::NO_HOME_STANDALONE_DECLINE),
             "the standalone-perform no-home decline must not accompany the CDZ0401"
+        );
+    }
+
+    #[test]
+    fn a_malformed_handler_reports_one_error_not_a_shadowing_reducibility_decline() {
+        // A misspelled handler op is CDZ0403 (with a `did you mean` fix). The malformed handler ALSO fails
+        // to fold, so `lower` returns the uncoded "not yet reducible by the tail-resumptive fold" DECLINE —
+        // a CONSEQUENCE of the misspelling, not an independent limitation. `dedup_faults` drops that
+        // decline when a CDZ0403/CDZ0405 is present, so the fault is ONE primary `error:` carrying the fix
+        // (an agent that applies the fix does not then face a second, confusing error). `guess` is
+        // undeclared (only `pick` exists).
+        let src = "(do (effect Choose (op pick (-> Unit Int64))) \
+                   (def (main) (handle Choose 0 ((guess (u) s (resume s s))) 42)) (export main))";
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "a malformed handler = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0403"));
+        // The shadowing reducibility decline is gone specifically.
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE),
+            "the not-reducible decline must not accompany the coded handler reject"
         );
     }
 

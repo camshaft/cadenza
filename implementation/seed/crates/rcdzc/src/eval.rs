@@ -1009,6 +1009,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
+        | Resolved::SymbolConst(_)
         | Resolved::Bytes(_)
         | Resolved::Char(_)
         | Resolved::Float(_)
@@ -1950,10 +1951,11 @@ pub fn unit_of(db: &mut Db, id: StructId) -> Option<crate::ty::Unit> {
             match prim {
                 Prim::UnitOne => Some(Unit::one()),
                 Prim::UnitBase => {
-                    // `(Unit.base #"metre")` — the base-dimension name is the symbol's text (a `Str` in
-                    // Layer 1). A non-symbol argument is not a well-formed base unit.
+                    // `(Unit.base #"metre")` — the base-dimension name is the symbol's TEXT, read directly
+                    // off the `#"…"` literal (a `SymbolConst`; also accept a plain `Str` for a string-keyed
+                    // caller). A non-symbol/string argument is not a well-formed base unit.
                     let name = match resolved_of(db, *args.first()?) {
-                        Resolved::Str(s) => s,
+                        Resolved::SymbolConst(s) | Resolved::Str(s) => s,
                         _ => return None,
                     };
                     Some(Unit::base(name))
@@ -1992,7 +1994,7 @@ pub fn unit_of(db: &mut Db, id: StructId) -> Option<crate::ty::Unit> {
                     // one like a rate) + scale, compose the dimension via `base`/`mul`/`pow`, then
                     // `scaled(num, den)`. An unregistered name fails to reduce (declines).
                     let name = match resolved_of(db, *args.first()?) {
-                        Resolved::Str(s) => s,
+                        Resolved::SymbolConst(s) | Resolved::Str(s) => s,
                         _ => return None,
                     };
                     let (dim_pairs, num, den) = db.unit_families.get(&name)?.clone();

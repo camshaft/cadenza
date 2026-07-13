@@ -468,6 +468,18 @@ pub const OVER_APPLICATION_DECLINE: &str = "applied more arguments than the func
 /// without pinning the count-bearing text.
 pub const OVER_APPLICATION_MARKER: &str = "arguments to a function of arity";
 
+/// The message the emit path (`lower`) attaches to the UNCODED decline it returns when `reduce_handle`
+/// cannot fold a `handle` form. A MALFORMED handler — one whose arm names an operation its effect does
+/// not declare (CDZ0403), or that does not discharge every operation (CDZ0405) — cannot fold, so this
+/// decline rides ALONGSIDE the coded reject as a second `error:` for the same root cause (the misspelled
+/// / missing arm). Shared as a const so `compile::dedup_faults` drops it whenever a CDZ0403/CDZ0405 is
+/// present on the program — ONE primary, actionable "no" (the coded reject carries the fix), not a coded
+/// rejection shadowed by an emit-path decline (`reference-compiler.md` §Outcomes Are Ordered By Safety).
+/// A WELL-FORMED handler that is genuinely not-yet-reducible (a real cross-function / non-tail resume,
+/// with NO coded reject) keeps this honest decline — there is nothing stronger to defer to.
+pub const HANDLER_NOT_REDUCIBLE_DECLINE: &str = "this handler is not yet reducible by the tail-resumptive fold (cross-function \
+     or non-tail resume arrives in a later increment)";
+
 /// The shared "did you mean?" machinery — the ONE nearest-name search every suggestion draws on
 /// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). A producer that
 /// rejected an unknown name (an unbound reference, an absent record field, a mistyped variant) hands
