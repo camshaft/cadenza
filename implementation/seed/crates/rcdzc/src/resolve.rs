@@ -154,6 +154,14 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 if is_param_occurrence(db, id) {
                     trace!(target: "rcdzc::resolve", node = id.0, %n, "name → parameter (formal)");
                     Resolved::Param { binder: id }
+                } else if is_list_pattern_element_occurrence(db, id) {
+                    // A `(list a b)` match-pattern element binder IN THE PATTERN position — it names a
+                    // binding, not a value. It carries nothing on its own (a body reference resolves to a
+                    // `SumPayload` reading the scrutinee element, `binder_in` Case 6l); resolving the
+                    // pattern occurrence to `Unit` keeps it INERT, so walking the arm's pattern (e.g.
+                    // `resolve_subtree`) never reports it as a spurious unbound name.
+                    trace!(target: "rcdzc::resolve", node = id.0, %n, "name → list-pattern element binder (inert)");
+                    Resolved::Unit
                 } else {
                     resolve_name(db, id, &n)
                 }
@@ -581,6 +589,19 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             heads: heads.into(),
         });
     }
+    // Case 6l: `form` is a MATCH ARM `((list a b …) body)` (ascended from `body`) whose FIXED-ARITY list
+    // pattern binds `name` at element position `i`. Reading element `i` of the (list) scrutinee is the
+    // SAME `Elem(i)` access a tuple-payload binder uses, so it reuses `SumPayload` with a bare `[Elem(i)]`
+    // path (no `Payload` step, no head). Its type is the list's element type; a constant scrutinee folds
+    // the element (`fold_sum_path`'s `ListNew` arm). Scoped to this arm. (A REST binder binds a SUBLIST,
+    // not one element — a later increment; `list_pattern_element_binds` declines a pattern with `..`.)
+    if let Some((scrutinee, index)) = list_pattern_element_binds(db, form, from, name) {
+        return Some(Resolved::SumPayload {
+            scrutinee,
+            steps: vec![crate::core::PathStep::Elem(index)].into(),
+            heads: vec![].into(),
+        });
+    }
     // Case 6g: `form` is a GUARD `(guard <variant-pattern> <cond>)`, ascended from `<cond>` → a payload
     // binder of the variant pattern is in scope in the guard cond (`(guard (Some x) (> x 0))` — the guard
     // `(> x 0)` reads the payload binder `x`). Like Case 5g but the binder nests in a VARIANT pattern, so
@@ -874,6 +895,75 @@ fn match_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Optio
     Some(scrutinee)
 }
 
+/// If `form` is a match arm `((list a b …) body)` ascended from `body`, and the FIXED-ARITY list pattern
+/// binds `name` at element position `i`, return `(scrutinee, i)`. Only a fixed-arity `(list …)` (no `..`)
+/// is handled — a rest binder binds a sublist, not one element (a later increment), so a pattern with
+/// `..` returns `None`. Element sub-patterns are bare names. `None` if not a fixed-arity `(list …)` arm
+/// binding `name`.
+fn list_pattern_element_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, usize)> {
+    let Struct::List(pb) = db.ast.get(form) else {
+        return None;
+    };
+    if pb.len() != 2 || pb[1] != from {
+        return None; // must be `(pattern body)` ascended from the body
+    }
+    let elems = db
+        .ast
+        .as_ctor_form(pb[0], "list")
+        .or_else(|| db.ast.as_form(pb[0], "list"))?;
+    if elems.iter().any(|&e| db.ast.as_name(e) == Some("..")) {
+        return None; // a REST pattern is a later increment — decline the whole list-match
+    }
+    let parent = db.parent_of(form)?;
+    let mtail = db.ast.as_form(parent, "match")?;
+    let scrutinee = *mtail.first()?;
+    if form == scrutinee {
+        return None;
+    }
+    // The FIRST element position bound to `name` (a bare name, not `_`).
+    elems
+        .iter()
+        .position(|&e| db.ast.as_name(e) == Some(name) && name != "_")
+        .map(|i| (scrutinee, i))
+}
+
+/// Whether `id` is a NAME occurrence that is a FIXED-ARITY `(list …)` match-pattern element — a binder in
+/// the PATTERN position, which must resolve INERT (not a looked-up value) so walking the arm's pattern
+/// never reports it unbound. Only a fixed-arity list pattern (no `..`); a rest pattern is a later
+/// increment. Mirrors the arm/scrutinee shape `list_pattern_element_binds` requires.
+fn is_list_pattern_element_occurrence(db: &Db, id: StructId) -> bool {
+    let Some(list) = db.parent_of(id) else {
+        return false;
+    };
+    let Some(elems) = db.ast.as_form(list, "list") else {
+        return false;
+    };
+    if !elems.contains(&id) || elems.iter().any(|&e| db.ast.as_name(e) == Some("..")) {
+        return false; // not an element, or a rest pattern (handled later)
+    }
+    let Some(arm) = db.parent_of(list) else {
+        return false;
+    };
+    let Struct::List(pb) = db.ast.get(arm) else {
+        return false;
+    };
+    if pb.len() != 2 || pb[0] != list {
+        return false; // the list must be the arm's PATTERN (first element)
+    }
+    let Some(matchf) = db.parent_of(arm) else {
+        return false;
+    };
+    match db.ast.as_form(matchf, "match") {
+        Some(mtail) => mtail.first().copied() != Some(arm) && mtail.contains(&arm),
+        None => false,
+    }
+}
+
 /// If `form` is a match ARM `(pattern body)` (ascended from its BODY) whose pattern binds `name` at a
 /// variant PAYLOAD — possibly NESTED — return `(scrutinee, path, innermost_variant_head)`. The scrutinee
 /// is the enclosing match's; the path is the `Payload`/`Elem` steps from the scrutinee down to the
@@ -963,8 +1053,16 @@ fn find_binder_in_pattern(
         return false; // a nullary variant pattern binds nothing; a lone head has no payload.
     }
     let head = app[0];
-    // The head is the variant CONSTRUCTOR — a `(. Sum V)` member OR a bare variant NAME.
-    let head_ok = db.ast.as_form(head, ".").is_some() || db.ast.as_name(head).is_some();
+    // The head is the variant CONSTRUCTOR — a `(. Sum V)` member OR a bare variant NAME. But the
+    // compound-VALUE constructor names (`list`/`tuple`/`record`/`map`) are NOT variant heads: a `(list a
+    // b)` / `(tuple a b)` pattern is a COLLECTION/tuple destructure, handled by its own binder case — so
+    // exclude them here, or this would mis-bind `(list a b)`'s elements at a `[Payload]` variant path.
+    let is_compound_ctor = db
+        .ast
+        .as_name(head)
+        .is_some_and(|h| matches!(h, "list" | "tuple" | "record" | "map"));
+    let head_ok = !is_compound_ctor
+        && (db.ast.as_form(head, ".").is_some() || db.ast.as_name(head).is_some());
     if !head_ok {
         return false;
     }

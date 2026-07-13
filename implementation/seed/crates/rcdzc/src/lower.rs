@@ -1061,6 +1061,14 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     {
         return lower_match_bin(db, scrutinee, arms);
     }
+    // A LIST scrutinee is deconstructed by ELEMENT patterns (`core-semantics.md` §A List Is Deconstructed
+    // By Element Patterns With An Optional Rest). This increment folds a CONSTANT list (`Core::ListNew`)
+    // against FIXED-ARITY patterns `(list a b)` / `(list)`: the known length selects the matching arm; its
+    // element binders read the constant elements via `SumPayload` `Elem` folds. A REST pattern
+    // `(list x .. rest)` or a RUNTIME list scrutinee declines (later increments).
+    if matches!(crate::infer::type_of(db, scrutinee), crate::ty::Ty::List(_)) {
+        return lower_match_list(db, scrutinee, arms);
+    }
     // Classify each arm into a probe + optional GUARD + body. An arm's pattern may be a GUARDED pattern
     // `(guard <inner-pat> <cond>)` — the inner pattern gives the probe, `<cond>` the guard (a boolean the
     // arm's binder is in scope for, resolve Case 5). A pattern that is not a scalar literal, binder,
@@ -1233,6 +1241,81 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     }
 }
 
+/// Lower a `(match scrutinee (list-pattern body)…)` over a LIST scrutinee — this increment folds a
+/// COMPILE-TIME-CONSTANT scrutinee against FIXED-ARITY element patterns. Its `Core::ListNew` gives the
+/// length; select the FIRST arm whose pattern matches (a `(list p0 … pk)` of arity k matches length k; a
+/// bare binder / `_` matches any) and lower that arm's body — the body's element binders resolve to
+/// `SumPayload` `Elem(i)` reads that FOLD against the constant list (resolve Case 6l). A REST pattern
+/// `(list x .. rest)` or a RUNTIME list scrutinee declines (later increments). A well-formed match must
+/// cover every length — a bare binder / `_` catch-all — else CDZ0210.
+fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    enum Arm {
+        Fixed(usize, StructId), // a fixed-arity `(list …)` of this exact arity
+        Wild(StructId),         // a bare binder / `_` — matches any length
+    }
+    let mut classified: Vec<Arm> = Vec::with_capacity(arms.len());
+    for &(pat, body) in arms {
+        if db.ast.as_name(pat).is_some() {
+            classified.push(Arm::Wild(body));
+            continue;
+        }
+        match db
+            .ast
+            .as_ctor_form(pat, "list")
+            .or_else(|| db.ast.as_form(pat, "list"))
+        {
+            Some(es) if !es.iter().any(|&e| db.ast.as_name(e) == Some("..")) => {
+                // Fixed arity: each element must be a bare name binder / `_` (a nested/literal element
+                // pattern is a later increment).
+                if es.iter().all(|&e| db.ast.as_name(e).is_some()) {
+                    classified.push(Arm::Fixed(es.len(), body));
+                } else {
+                    return Core::Poison(Reject::decline(
+                        "a list element sub-pattern that is not a binder is not yet supported",
+                    ));
+                }
+            }
+            _ => {
+                return Core::Poison(Reject::decline(
+                    "a list rest pattern `(list x .. rest)` (or a non-element list arm) is not yet supported",
+                ));
+            }
+        }
+    }
+    // WELL-FORMEDNESS: a list is OPEN (any length), so the arms must cover every length via a bare
+    // binder / `_` catch-all (a finite set of fixed arities cannot). Else CDZ0210.
+    if !classified.iter().any(|a| matches!(a, Arm::Wild(_))) {
+        return Core::Poison(Reject::coded(
+            Code::NonExhaustive,
+            "a list match must cover every length (end in a `_` or a whole-list binder arm)",
+        ));
+    }
+    // FOLD only a constant scrutinee this increment: the length selects the arm; the body's element
+    // binders read the constant elements via their `SumPayload` `Elem` folds, so lowering the SELECTED
+    // body is all that is needed (no β-substitution).
+    let n = match core_of(db, scrutinee) {
+        Core::ListNew { elems } => elems.len(),
+        Core::Poison(r) => return Core::Poison(r),
+        _ => {
+            return Core::Poison(Reject::decline(
+                "matching a runtime list by element patterns needs the runtime list matcher (constant lists only)",
+            ));
+        }
+    };
+    for arm in &classified {
+        let (matches, body) = match arm {
+            Arm::Fixed(k, body) => (*k == n, *body),
+            Arm::Wild(body) => (true, *body),
+        };
+        if matches {
+            return core_of(db, body);
+        }
+    }
+    Core::Poison(Reject::decline(
+        "list match: no arm matched the constant list (unreachable — a catch-all was required)",
+    ))
+}
+
 /// A constant scrutinee value for the guarded-match fold — an integer or a boolean.
 enum GuardFoldScrut {
     Int(IntValue),
@@ -1254,6 +1337,9 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
                 payloads[0]
             }
             (PathStep::Elem(i), Core::Tuple { elems }) => *elems.get(*i)?,
+            // A list-pattern element binder reads position `i` of a CONSTANT list — the same `Elem` step a
+            // tuple element uses, over a `Core::ListNew`. A runtime list has no `Core::ListNew` here.
+            (PathStep::Elem(i), Core::ListNew { elems }) => *elems.get(*i)?,
             _ => return None,
         };
     }
@@ -2221,6 +2307,9 @@ fn const_at_path(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep
                 payloads[0]
             }
             (PathStep::Elem(i), Core::Tuple { elems }) => *elems.get(*i)?,
+            // A list-pattern element binder reads position `i` of a CONSTANT list — the same `Elem` step a
+            // tuple element uses, over a `Core::ListNew`. A runtime list has no `Core::ListNew` here.
+            (PathStep::Elem(i), Core::ListNew { elems }) => *elems.get(*i)?,
             _ => return None,
         };
     }

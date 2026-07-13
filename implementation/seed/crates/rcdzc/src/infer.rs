@@ -196,6 +196,9 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                             Some(t) => t.clone(),
                             None => return Ty::Any,
                         },
+                        // A list-pattern element binder — every element of a `List T` has type `T`
+                        // (homogeneous), regardless of the index.
+                        Ty::List(elem) => (**elem).clone(),
                         _ => return Ty::Any,
                     },
                 };

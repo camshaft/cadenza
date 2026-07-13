@@ -4301,6 +4301,57 @@ mod match_engine {
     }
 
     #[test]
+    fn a_fixed_arity_list_pattern_binds_elements_of_a_constant_list() {
+        // 05-compound-types "an element pattern matches a list by its length and elements": a FIXED-ARITY
+        // `(list a b)` matches a constant list of that exact length, binding each position; the element
+        // binders read the constant elements (a `SumPayload` `Elem(i)` fold — no β-substitution). A
+        // wrong-length list falls to the wildcard; the empty `(list)` matches only the empty list.
+        let run = |src: &str| run_returns::<i64>(&component(src), "main");
+        assert_eq!(
+            run("(module m (def (main) (match (list 7) ((list a) a) (_ 0))) (export main))"),
+            7
+        );
+        assert_eq!(
+            run(
+                "(module m (def (main) (match (list 7 8) ((list a b) (+ a b)) (_ 0))) (export main))"
+            ),
+            15
+        );
+        assert_eq!(
+            run("(module m (def (main) (match (list) ((list) 1) (_ 2))) (export main))"),
+            1
+        );
+        // A list of the WRONG arity does not match the fixed pattern — falls through to the wildcard.
+        assert_eq!(
+            run(
+                "(module m (def (main) (match (list 1 2 3) ((list a b) 99) (_ 42))) (export main))"
+            ),
+            42
+        );
+    }
+
+    #[test]
+    fn a_list_match_is_well_formed_or_declines() {
+        // A list is OPEN (any length): a match with only fixed-arity arms and no catch-all is
+        // NON-EXHAUSTIVE (CDZ0210) — a finite set of lengths cannot cover every list.
+        assert_eq!(
+            reject_code("(module m (def (main) (match (list 1 2) ((list a b) a))) (export main))")
+                .as_deref(),
+            Some("CDZ0210")
+        );
+        // A REST pattern `(list x .. rest)` is not yet lowered — it DECLINES (a to-do), never a
+        // miscompile. (The runtime element-pattern matcher + rest-tail materialization is a later
+        // increment.) `reject_code` returns the decline's code, which is uncoded (None) for a to-do.
+        assert_eq!(
+            reject_code("(module m (def (main) (match (list 1 2 3) ((list x .. rest) x) (_ 0))) (export main))")
+                .as_deref(),
+            // the rest binder's body reference is unbound today (CDZ0101) — a clean decline-class outcome,
+            // NOT a value/miscompile; pins that a rest pattern does not silently produce a wrong result.
+            Some("CDZ0101")
+        );
+    }
+
+    #[test]
     fn a_constant_string_scrutinee_selects_the_matching_string_literal_arm() {
         // 02-binding "matching on string literals": a STRING-literal pattern `("hello" …)` selects the arm
         // whose string EQUALS a constant scrutinee (by value, both NFC — the constant `String` equality
