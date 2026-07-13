@@ -1143,24 +1143,40 @@ fn collect_param_constraints(
             // only against a SIBLING arm's DETERMINED (non-var, non-`Any`) result. Unifying arbitrary arm
             // types against each other over-constrains (a sibling's own unsolved var spuriously conflicts);
             // this pins exactly the echoed-parameter case without touching well-typed programs.
-            let arm_param = |db: &mut Db, body: StructId| -> Option<StructId> {
+            // The VARIABLE an arm body contributes to the arms-agree constraint, when its type is a
+            // still-open var this solve owns: a BARE PARAMETER echoed out (`ys`), or an APPLICATION OF A
+            // FN-TYPED PARAM (`(f n)`) whose result var is open. Either way the arm's type is an unpinned
+            // var that a SIBLING arm's determined type must fix — the pass-through case, extended to a
+            // callback result. `None` for a determined/ordinary arm (which SUPPLIES the type, below). A
+            // free function (not a closure) so it takes `subst` by shared ref without capturing it.
+            fn open_arm_var(
+                db: &mut Db,
+                body: StructId,
+                env: &crate::fxhash::FxHashMap<StructId, Ty>,
+                subst: &Subst,
+            ) -> Option<Ty> {
                 match resolved_of(db, body) {
-                    Resolved::Ref { value } if env.contains_key(&value) => Some(value),
-                    Resolved::Param { binder } if env.contains_key(&binder) => Some(binder),
+                    Resolved::Ref { value } if env.contains_key(&value) => env.get(&value).cloned(),
+                    Resolved::Param { binder } if env.contains_key(&binder) => {
+                        env.get(&binder).cloned()
+                    }
+                    // `(f n)` — a fn-typed param applied. Its type is `f`'s result var (peeled by
+                    // `arg_ty_in_env`); constrainable only if that is still an open var.
+                    Resolved::Apply { head, .. } if binder_var_of(db, head, env).is_some() => {
+                        let t = arg_ty_in_env(db, body, env, subst);
+                        matches!(subst.apply(&t), Ty::Var(_)).then_some(t)
+                    }
                     _ => None,
                 }
-            };
+            }
             let arm_list: Vec<StructId> = arms.iter().map(|(_, b)| *b).collect();
             for &body in &arm_list {
-                let Some(pbinder) = arm_param(db, body) else {
-                    continue;
-                };
-                let Some(pvar) = env.get(&pbinder).cloned() else {
+                let Some(pvar) = open_arm_var(db, body, env, subst) else {
                     continue;
                 };
                 for &other in &arm_list {
-                    if other == body || arm_param(db, other).is_some() {
-                        continue; // self, or another echoed param — no determined type to borrow
+                    if other == body || open_arm_var(db, other, env, subst).is_some() {
+                        continue; // self, or another open arm — no determined type to borrow
                     }
                     let ot = arg_ty_in_env(db, other, env, subst);
                     let applied = subst.apply(&ot);

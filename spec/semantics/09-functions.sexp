@@ -403,6 +403,25 @@
             (export main)))
   (output (: 5 Int64)))
 
+(case "a branching recursive tree fold infers its unannotated callback across both arms"
+  (doc    "A tree `(type T (Leaf Int64) (Node (Tuple T T)))` folded by an unannotated callback `f` with
+           BRANCHING recursion — the `Node` arm makes TWO self-calls `(+ (fold-t f l) (fold-t f r))`. The
+           `Leaf` arm returns `(f n)` DIRECTLY, so `f`'s result type is fixed only by the arms agreeing:
+           the `Node` arm is Int64, so the `Leaf` arm — hence `f`'s result — is Int64. Pins that the
+           arms-agree constraint reaches a fn-param's result var when an arm body is a bare callback
+           application, the branching-recursion companion of the single-recursion fold. `(1 + 2) · 10`
+           applied per leaf → 10 + 20 = 30.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type T (Leaf Int64) (Node (Tuple T T)))
+            (def (fold-t f (: t T))
+              (match t
+                ((T.Leaf n) (f n))
+                ((T.Node (tuple l r)) (+ (fold-t f l) (fold-t f r)))))
+            (def (main) (fold-t (fn ((: x Int64)) (* x 10)) (T.Node (tuple (T.Leaf 1) (T.Leaf 2)))))
+            (export main)))
+  (output (: 30 Int64)))
+
 (case "a closure capturing two enclosing bindings folds through nested arithmetic"
   (doc    "`(fn (x) (+ (* x a) b))` captures BOTH `a` and `b` from enclosing lets; applied to 5 with
            a = 2, b = 3 → (5·2)+3 = 13. Pins that MULTIPLE distinct captures from different enclosing
