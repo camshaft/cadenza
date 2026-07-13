@@ -3683,6 +3683,33 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_provably_in_range_shift_computes_the_same_value_without_a_guard() {
+        // A `<<` / `* 2^k` whose result provably fits (a masked operand) has its overflow guard elided —
+        // the value must be EXACTLY the guarded result. `(<< (& x 15) 2)` = (x&15)*4 ∈ [0,60].
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(<< (& x 15) 2)", &[Val::S64(255)]),
+            60
+        ); // 15*4
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(<< (& x 15) 2)", &[Val::S64(-1)]),
+            60
+        ); // (-1&15)*4
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(<< (& x 15) 2)", &[Val::S64(1)]),
+            4
+        );
+        // `(* (& x 15) 2)` = (x&15)*2 ∈ [0,30], strength-reduced to `<< 1`, guard elided.
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(* (& x 15) 2)", &[Val::S64(255)]),
+            30
+        );
+        assert_eq!(
+            run::<i64>("(: x Int64)", "(* (& x 15) 2)", &[Val::S64(7)]),
+            14
+        );
+    }
+
+    #[test]
     fn constant_count_shift_folds_the_count_guard() {
         // A shift by a COMPILE-TIME-CONSTANT count folds the runtime `count >= width` guard (the
         // condition is decided at compile time). It must behave IDENTICALLY to the runtime-count form:
@@ -5980,6 +6007,41 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0203")
         );
+    }
+
+    #[test]
+    fn trap_diverges_and_unifies_with_any_position() {
+        // 07-type-system §Never Is The Empty Sum: `trap : ∀a. String → a` — a diverging expression whose
+        // type unifies with any expected type. (1) A `(trap …)` in one `if` branch and an Int64 in the
+        // other type-checks (Never unifies with the Int64 branch) and the taken branch returns its value.
+        // (2) A whole-body-trap function `(bomb)` type-checks at an Int64 use site and DIVERGES at run time
+        // (the wasm `unreachable`) — the honest type for a function that never returns normally.
+        use wasmtime::component::Val;
+        // (1) the diverging branch does not spoil the conditional; b=true selects the Int64 branch.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (f (: b Bool)) (if b 1 (trap \"unreachable\"))) (def (main) (f true)) (export main))"
+                ),
+                "main"
+            ),
+            1
+        );
+        // (2) a Never-returning function is callable in an Int64 position and traps when reached.
+        assert!(
+            call_traps(
+                &component(
+                    "(module m (def (bomb) (trap \"unreachable\")) (def (main) (+ 1 (bomb))) (export main))"
+                ),
+                "main",
+                &[] as &[Val],
+            ),
+            "a whole-body-trap function reached at run time must trap"
+        );
+        // NOTE a bare-trap EXPORT `(def (main) (trap …))` gives `main` an UNDETERMINED (`Ty::Var`) return
+        // type — no machine representation at the boundary — so it declines, exactly as any unannotated
+        // undetermined-type export does. `trap` fits any INTERNAL position (the two cases above); an
+        // export still needs a concrete result type, which a bare trap does not supply.
     }
 
     #[test]
@@ -20580,6 +20642,42 @@ mod closure_host_resource {
         assert!(
             err.message.contains("passed AS A PARAMETER"),
             "expected the Direction-2 not-yet-supported message, got: {}",
+            err.message
+        );
+    }
+
+    /// A closure that PERFORMS AN EFFECT cannot escape to the host (operator decision 2026-07-13:
+    /// "closures escaping effects — that's going to be super weird and I don't really want to support
+    /// it"). The closure's handler context is the `(host …)`/`(handle …)` frame open when the closure
+    /// was BUILT; that frame is gone when the host later invokes `call()`. Here the effect is DELEGATED
+    /// with `(host (ask) …)`, so absent this check the program would decline with an incidental internal
+    /// error ("not in the host-import set") — we reject it INTENTIONALLY with a message that names the
+    /// unsupported feature. (A fully intra-program-HANDLED effect leaves no `Core::HostCall` and is NOT
+    /// caught here — only an effect that would escape the boundary is.)
+    #[test]
+    fn a_closure_escaping_an_effect_declines_intentionally() {
+        use crate::testkit::parse;
+        let src = "(do (effect ask (op ask (-> Unit Int64))) \
+                   (def (main) (host (ask) (fn ((: x Int64)) (+ x (ask.ask))))) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a closure whose body performs an effect must REJECT (closures can't escape effects)",
+        );
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0406"),
+            "expected the CDZ0406 closures-escaping-effects code, got: {:?} / {}",
+            err.code,
+            err.message
+        );
+        assert!(
+            err.message.contains("performs an effect")
+                && err.message.contains("cannot cross the host boundary"),
+            "expected the closures-escaping-effects rejection naming the op, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("ask.ask"),
+            "the rejection should name the escaping effect operation, got: {}",
             err.message
         );
     }

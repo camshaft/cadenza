@@ -320,6 +320,15 @@ pub enum Prim {
     /// The message argument is a `String` (for a human), dropped by the pure core (the wasm trap is
     /// textless). ONE prim for both Option and Result — present is discriminant 0 in each.
     SumExpect,
+    /// `trap` — the DIVERGING primitive: `∀a. String → a`, an expression that never produces a value but
+    /// HALTS the program at a defined point (core-semantics.md §A Trap Occurs Only Where Its Computation
+    /// Is Observed; type-system.md §Never Is The Empty Sum — a diverging expression has type `Never`,
+    /// which unifies with any expected type). Realized as a bare-name prelude intrinsic whose scheme's
+    /// RESULT is a fresh unquantified type variable `a` — so ordinary Hindley-Milner makes `(trap "x")`
+    /// fit ANY position (`(if b 1 (trap "x"))`, `(+ 1 (bomb))`), no dedicated `Never` type needed. Lowers
+    /// to `Core::Trap`, which emits `unreachable` (wasm) / `unreachable!()` (rust); the `String` message
+    /// argument is DROPPED (the wasm trap carries no text, exactly as `SumExpect`'s absent branch does).
+    Trap,
     /// `Int64.checked-add` / `checked-mul` — the FALLIBLE arithmetic companions of the trapping `+`/`*`:
     /// `T → T → (Option T)`, the exact result wrapped in `Some` when it fits the width, `None` on overflow
     /// (numeric-model.md §Overflow Is Defined — the defined value outcome alongside the trap). The `(meta
@@ -518,6 +527,7 @@ impl Prim {
             "str-to-bytes" => Some(Prim::StrToBytes),
             "str-from-bytes" => Some(Prim::StrFromBytes),
             "sum-expect" => Some(Prim::SumExpect),
+            "trap" => Some(Prim::Trap),
             "checked-add" => Some(Prim::CheckedAdd),
             "checked-mul" => Some(Prim::CheckedMul),
             "wrapping-add" => Some(Prim::WrappingAdd),

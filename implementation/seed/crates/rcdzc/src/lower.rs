@@ -1073,6 +1073,15 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // variant to its payload; a runtime sum emits `Core::SumExpect` (disc probe → payload /
                 // trap).
                 Some(Prim::SumExpect) if args.len() == 2 => lower_sum_expect(db, id, args[0]),
+                // `(trap "message")` — the diverging primitive. Its message argument is DROPPED (the wasm
+                // trap carries no text) and it lowers to the unconditional `Core::Trap` (an `unreachable`).
+                // A malformed argument in the message still surfaces its own fault: descend for it, and if
+                // the message poisoned, propagate THAT (an unbound name in the message is the reported
+                // fault, not the trap). Arity is exactly one (the scheme is `String → a`).
+                Some(Prim::Trap) if args.len() == 1 => match core_of(db, args[0]) {
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => Core::Trap,
+                },
                 // `Int64.checked-add` / `checked-mul` — the FALLIBLE arithmetic. FOLD a constant operand
                 // pair to `(Some result)` in range / `(None unit)` on overflow; a runtime operand is a
                 // later increment (declines cleanly).
@@ -5650,7 +5659,9 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::UnitPow
         | Prim::QtyOf
         | Prim::QtyValue
-        | Prim::QtyCtor => {
+        | Prim::QtyCtor
+        // `trap` is the diverging primitive (lowered to `Core::Trap`), never an integer binary operation.
+        | Prim::Trap => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -6240,6 +6251,32 @@ pub(crate) fn arith_provably_in_range(db: &mut Db, op: Prim, lhs: StructId, rhs:
         }
         _ => return false,
     };
+    rlo >= tmin as i128 && rhi <= tmax as i128
+}
+
+/// Whether `val << k` provably CANNOT overflow the type of `val` — so the shift's overflow round-trip
+/// guard (and narrow range-check) can be elided. A left shift is exact multiplication by `2^k`, so it
+/// overflows iff the interval `[vlo << k, vhi << k]` leaves the type's `[min, max]`. `<<` is monotone for
+/// `k ≥ 0`, so checking both endpoints (in `i128`, never wrapping) suffices. Used by both the `<<` emit
+/// and the `* 2^k → <<` strength-reduction emit — a masked/bounded operand (`(<< (& x 15) 2)` = `[0,60]`)
+/// sheds its guard. `None` operand range → `false` (keep the guard). Verified sound by endpoint check.
+pub(crate) fn shl_provably_in_range(db: &mut Db, val: StructId, k: u32) -> bool {
+    let crate::ty::Ty::Int(it) = crate::infer::type_of(db, val) else {
+        return false;
+    };
+    let (Some(tmin), Some(tmax)) = (match resolved_int_bounds(it) {
+        Some(b) => b,
+        None => return false,
+    }) else {
+        return false;
+    };
+    let Some((vlo, vhi)) = closed_range(db, val) else {
+        return false;
+    };
+    // `k < 128` guaranteed (a valid shift count is `< width ≤ 64`); the i128 shift never overflows for a
+    // real operand interval, and the fit-check against the i64-representable type bounds catches any
+    // out-of-type result.
+    let (rlo, rhi) = ((vlo as i128) << k, (vhi as i128) << k);
     rlo >= tmin as i128 && rhi <= tmax as i128
 }
 
@@ -8518,6 +8555,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::StrToBytes => "str-to-bytes",
         Prim::StrFromBytes => "str-from-bytes",
         Prim::SumExpect => "sum-expect",
+        Prim::Trap => "trap",
         Prim::CheckedAdd => "checked-add",
         Prim::CheckedMul => "checked-mul",
         Prim::WrappingAdd => "wrapping-add",

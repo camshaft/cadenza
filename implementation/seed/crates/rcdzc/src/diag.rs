@@ -105,6 +105,17 @@ pub enum Code {
     /// be exactly the effects that escape, no more and no fewer, so a granted-but-unexercised capability
     /// is rejected rather than carried.
     LatentAuthority,
+    /// A closure that PERFORMS AN EFFECT is passed across the host boundary (as an export's result, or a
+    /// parameter) — a closure escaping its handler context (`capabilities-and-effects.md` §An Effect Is
+    /// Discharged Within Its Dynamic Extent). A closure's effects are discharged by the `handle`/`(host …)`
+    /// frame that was dynamically open where the closure was BUILT; a host-held closure is invoked LATER,
+    /// outside that frame, so the effect would have no home at the call — the dynamic extent the effect
+    /// system relies on is broken. Rejected as unsupported rather than declined: it is a positive design
+    /// decision (a closure that captures effectful authority cannot be handed to a custodian that will run
+    /// it in an unknown context), not a not-yet-built gap. Distinct from `EffectNoHome` (CDZ0401), which is
+    /// an effect with NO delegation anywhere; here the effect IS delegated, but the delegation cannot travel
+    /// with the escaping closure.
+    ClosureEscapesEffect,
     /// An ILL-FORMED binary form `(bin …)` — a compile-time well-formedness defect decidable from the
     /// segment list alone (`options/binary-syntax/`): bit-fields whose widths do not close a whole byte
     /// (the whole `bin` must be byte-aligned), a non-final unsized `(bytes …)` segment, or a `bits` width
@@ -144,6 +155,7 @@ impl Code {
             Code::HandlerUndeclaredOp => "CDZ0403",
             Code::HandlerNotExhaustive => "CDZ0405",
             Code::LatentAuthority => "CDZ0404",
+            Code::ClosureEscapesEffect => "CDZ0406",
             Code::IllFormedBinary => "CDZ0220",
             Code::DimensionMismatch => "CDZ0501",
         }

@@ -118,3 +118,27 @@
   (input  (do (def (main) (fn ((: x Int64)) (= x 0))) (export main)))
   (call   main (: 0 Int64))
   (output (: true Bool)))
+
+; A closure that PERFORMS AN EFFECT cannot escape to the host — the scope fence for this whole feature. A
+; closure's effects are discharged by the `handle`/`(host …)` frame that is DYNAMICALLY OPEN where the
+; closure is built; a host-held closure is invoked LATER, outside that frame, so the effect would have no
+; home when the host calls it. Here `ask` IS delegated (`(host (ask) …)`), so the effect has a home at the
+; export's TOP — but the closure the export RETURNS carries the `ask.ask` past that delegation, out to the
+; host, where the delegation no longer applies. We reject this INTENTIONALLY (CDZ0406) rather than compile a
+; closure whose effect silently loses its handler. (An effect fully HANDLED inside the closure — reduced to
+; plain code with no residual host call — is unaffected; only an effect that would escape is rejected.)
+
+(case "a closure that performs a delegated effect cannot cross the host boundary"
+  (doc    "`(def (main) (host (ask) (fn (x) (+ x (ask.ask)))))` returns a closure whose body performs the
+           delegated effect `ask.ask`. The delegation `(host (ask) …)` gives the effect a home at the
+           export's top, but the RETURNED closure carries `ask.ask` out to the host, to be run when the host
+           later invokes `call` — outside the delegation's dynamic extent, where the effect has no home. A
+           closure's handler context does not travel with it across the boundary, so this is rejected
+           (CDZ0406): closures escaping effects are not supported. Pins the scope fence that a host-held
+           closure must be effect-free.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (def (main)
+              (host (ask)
+                (fn ((: x Int64)) (+ x (ask.ask))))) (export main)))
+  (error  CDZ0406))

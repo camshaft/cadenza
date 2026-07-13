@@ -1050,6 +1050,39 @@ fn emit_closure_resource(
         cur = *rng;
     }
     let ret_ty = cur;
+    // A closure that PERFORMS AN EFFECT cannot cross to the host (operator decision 2026-07-13). A
+    // closure's handler context is the `(handle …)`/`(host …)` frame that was OPEN when the closure was
+    // built; that frame is gone by the time the host later invokes `call()`, so an effect performed inside
+    // the escaped body has no home. We reject this INTENTIONALLY rather than let it fall through to an
+    // incidental decline (CDZ0401 "no home", or "not in the host-import set"). The detector: the export
+    // body OR any lifted closure body reaches a `Core::HostCall` — a fully intra-program-HANDLED effect
+    // leaves no `Core::HostCall` (the fold reduced it away), so a legitimate self-contained effect inside
+    // the closure is NOT caught here; only an effect that would escape the boundary is.
+    {
+        let export_body = layout
+            .exports
+            .iter()
+            .find(|e| e.def == export_def)
+            .map(|e| e.body);
+        let mut escaping = Vec::new();
+        for l in &layout.lifted {
+            host::collect_host_imports(db, l.body, &mut escaping);
+        }
+        if let Some(body) = export_body {
+            host::collect_host_imports(db, body, &mut escaping);
+        }
+        if let Some(h) = escaping.first() {
+            return Err(Reject::coded(
+                crate::diag::Code::ClosureEscapesEffect,
+                format!(
+                    "a closure that performs an effect ({}.{}) cannot cross the host boundary — the \
+                     closure's handler context does not travel with it, so the effect would have no home \
+                     when the host invokes it (closures escaping effects are not supported)",
+                    h.effect, h.op
+                ),
+            ));
+        }
+    }
     // Boundary bytes (component valtypes) for the `call` method's args + result — aliased scalar widths.
     let arg_bytes: Vec<u8> = arg_tys
         .iter()

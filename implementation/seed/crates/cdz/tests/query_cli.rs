@@ -1397,6 +1397,34 @@ fn ml_fix_targets_the_value_node_not_the_annotation_type() {
 }
 
 #[test]
+fn ml_fix_renders_a_wrap_in_ml_syntax_and_applies_it() {
+    // `cdz fix` on an ML file must render a wrap in ML surface syntax — `Some(n)`, not the s-expr
+    // `(Some n)` (which is a parse error in ML). Before surface-aware rendering, `cdz fix` silently
+    // DECLINED every wrap on `.cdz`/`.ml` (the verify re-parse failed). Now it applies + recompiles clean.
+    let dir = scratch_dir("ml_wrapfix");
+    let f = dir.join("prog.cdz");
+    std::fs::write(
+        &f,
+        "type Option = Some(Int64) | None\ndef f(n: Int64) = (n : Option)\n",
+    )
+    .unwrap();
+    let (ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok, "fix succeeds: {stderr}");
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("Some(n)") && !repaired.contains("(Some n)"),
+        "the wrap is rendered in ML syntax `Some(n)`, not s-expr `(Some n)`: {repaired}"
+    );
+    // The repaired ML file re-checks clean (the CDZ0203 is gone).
+    let (_, check, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(
+        !check.contains("CDZ0203"),
+        "the repaired file no longer has the annotation mismatch: {check}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn check_on_a_clean_program_prints_nothing_and_exits_zero() {
     let dir = scratch_dir("check_ok");
     let f = dir.join("prog.sexp");
