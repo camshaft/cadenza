@@ -7409,6 +7409,26 @@ mod recursion {
     }
 
     #[test]
+    fn a_recursive_newtype_traversal_recurses_on_its_projected_field() {
+        // OVER-REJECTION regression: a recursive NEWTYPE `(type Lst (Mk (Option (Tuple Int64 Lst))))` whose
+        // recursive field is PROJECTED out (`(. p 1) : Lst`) and passed to a same-typed recursive call was
+        // rejected CDZ0203 "Lst and Lst must be the same type here, but differ". The projected field's type
+        // is the μ back-edge (a bare `Ty::Sum{decl}`) while the declared param is the folded
+        // `Ty::Nominal{decl}` — the SAME recursive type, so `unify`/`agrees_with` must treat a `Sum{decl}`
+        // and a `Nominal{decl}` with EQUAL `decl` as the one type. `sm` of a 3-element list = 60.
+        // Assert it TYPE-CHECKS + emits (the regression was a CDZ0203 type reject at compile time). The
+        // program imports the value-heap runtime (it builds a runtime linked list), so the runtime RUN is
+        // covered by the corpus gate (via cdz-run's composition); here we pin that it COMPILES clean — the
+        // recursive field projection no longer diverges from the declared type.
+        let src = "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) (def (sm (: l Lst)) (match l ((Mk o) (match o ((Some p) (+ (. p 0) (sm (. p 1)))) ((None u) 0))))) (def (main) (sm (Mk (Some (tuple 10 (Mk (Some (tuple 20 (Mk (Some (tuple 30 (Mk (None unit))))))))))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a recursive-newtype traversal recursing on its projected field must type-check + emit \
+             (was rejected CDZ0203 'Lst and Lst differ')"
+        );
+    }
+
+    #[test]
     fn a_recursive_factorial_runs() {
         // fac(5) = 120 — recursion through multiplication (checked; in range here).
         let bytes = component(

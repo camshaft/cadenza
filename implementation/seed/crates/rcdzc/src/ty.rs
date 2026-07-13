@@ -967,6 +967,29 @@ impl Ty {
                     decl: b, args: ab, ..
                 },
             ) => a == b && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.agrees_with(y)),
+            // A RECURSIVE NOMINAL, FOLDED (`Ty::Nominal{decl}`) vs UNFOLDED μ back-edge (`Ty::Sum{decl}`) —
+            // the same recursive newtype reached by different derivation paths (see the matching `unify`
+            // arm). A recursive field projected out of the compound is the bare-Sum back-edge; it must
+            // AGREE with the folded declared type. Same `decl` (a nominal's back-edge reuses its own
+            // declaration occurrence; a genuine sum's decl differs, so this never conflates two types) +
+            // args pairwise. Without it, a recursive-newtype traversal's tail projection disagreed with
+            // its own declared type.
+            (
+                Ty::Sum {
+                    decl: a, args: aa, ..
+                },
+                Ty::Nominal {
+                    decl: b, args: ab, ..
+                },
+            )
+            | (
+                Ty::Nominal {
+                    decl: a, args: aa, ..
+                },
+                Ty::Sum {
+                    decl: b, args: ab, ..
+                },
+            ) => a == b && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| x.agrees_with(y)),
             // `String` is monomorphic — the one string type agrees only with itself.
             (Ty::String, Ty::String) => true,
             // `Char` is monomorphic — the one char type agrees only with itself.
