@@ -1571,6 +1571,34 @@ type IfOfTuples = (
 /// back — folding through it would duplicate the computation), so a `Ref` to one stops the reduction;
 /// a single-use / propagated `Ref` and an `Annot` are followed. Mirrors `reduce_to_tuple_elems`'s
 /// ref/annot/kept handling.
+/// If `id` reduces to a runtime `match`, return its AST occurrence — the `(match scrutinee (pat body)…)`
+/// list — so the caller can push a surrounding operation into each arm body (the match analogue of
+/// [`reduce_to_if`]'s case-of-case). Returns the MATCH FORM's occurrence (not the destructured parts),
+/// because a rewrite must rebuild the arms with their PATTERN nodes intact (a pattern's binders are in
+/// scope for its rewritten body). Follows a `Ref`/annotation/β-reducible-call to the match, exactly as
+/// `reduce_to_if` does, so `((classify c) 5)` — a call returning a match of closures — is reached too.
+/// `None` for a kept (multi-use) binding, or anything that is not a match.
+pub fn reduce_to_match(db: &mut Db, id: StructId) -> Option<StructId> {
+    match resolved_of(db, id) {
+        Resolved::Match { .. } => Some(id),
+        Resolved::Ref { value } => {
+            if db.kept_bindings.contains(&value) {
+                None
+            } else {
+                reduce_to_match(db, value)
+            }
+        }
+        Resolved::Annot { expr, .. } => reduce_to_match(db, expr),
+        Resolved::Apply { head, args } => {
+            let mut guard = db.enter_reduction()?;
+            let g = guard.db();
+            let reduced = apply_lambda(g, head, &args).ok().flatten()?;
+            reduce_to_match(g, reduced)
+        }
+        _ => None,
+    }
+}
+
 pub fn reduce_to_if(db: &mut Db, id: StructId) -> Option<(StructId, StructId, StructId)> {
     match resolved_of(db, id) {
         Resolved::If { cond, then_, else_ } => Some((cond, then_, else_)),

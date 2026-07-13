@@ -359,12 +359,14 @@ pass	a match on a tuple-element-access scrutinee dispatches on the element value
 pass	a match on a value of one sum type rejects a pattern from a different sum type
 pass	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 pass	a match over multiple nullary constructors with uniform patterns
+pass	a match returning multi-argument closures applies at full arity
 pass	a match takes another match's result as its scrutinee
 pass	a match whose arm bodies have different types is a type error even when a constant scrutinee selects one
 pass	a match whose only arm is guarded by a literally-true condition is still non-exhaustive
 pass	a match whose only arm is guarded is non-exhaustive
 pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
+pass	a match-of-closures on a runtime-selected variant is applied per arm
 pass	a member access with no field operand is rejected, not a crash
 pass	a module declaration binds its name in the enclosing scope
 pass	a module function calls a sibling export by name
@@ -917,6 +919,7 @@ pass	annotating a quantity at a dimension the expression does not derive is an e
 pass	applying a boolean is a type error
 pass	applying a float is a type error
 pass	applying a non-function is a type error
+pass	applying the result of a match whose arms return payload-capturing closures
 pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand

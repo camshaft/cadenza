@@ -644,6 +644,55 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 let rewritten = db.push_list(vec![if_head, cond, then_app, else_app]);
                 return core_of(db, rewritten);
             }
+            // CASE-OF-MATCH (the `match` analogue of case-of-case): a head that reduces to a runtime
+            // `match` — `((match c (pat0 f0) (pat1 f1)…) args…)` — pushes the application into each arm
+            // BODY: `(match c (pat0 (f0 args…)) (pat1 (f1 args…))…)`. A match whose arms return CLOSURES
+            // (`(match c ((C.A n) (fn (x) (+ x n))) …)`) then has each arm's lambda β-reduce in place
+            // against the args, so the whole thing folds with no closure value surviving — exactly as the
+            // `if` case does for `(if c (fn …) (fn …))`. Sound because only ONE arm runs (evaluating the
+            // application in the taken arm is what the original did), and the arm PATTERN nodes are reused
+            // verbatim so their binders stay in scope for the rewritten body `(f args…)`. Rebuilt from the
+            // match form's AST (`(match scrutinee arm…)`, each arm `(pat body)`), then lowered through the
+            // ordinary `Resolved::Match` path. Checked before the lambda-head path (a match head is not a
+            // lambda) and after case-of-case (an `if` is not a match).
+            if let Some(match_form) = crate::eval::reduce_to_match(db, head)
+                && let Some(mtail) = db.ast.as_form(match_form, "match").map(<[_]>::to_vec)
+                && let [scrutinee, arm_occs @ ..] = mtail.as_slice()
+            {
+                trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: case-of-match — push the application into each arm body");
+                let scrutinee = *scrutinee;
+                let mut new_arms: Vec<StructId> = Vec::with_capacity(arm_occs.len());
+                let mut ok = true;
+                for &arm in arm_occs {
+                    // Each arm is `(pattern body)`; rewrite to `(pattern (body args…))`.
+                    let (pat, body) = match db.ast.get(arm) {
+                        crate::ast::Struct::List(kv) if kv.len() == 2 => (kv[0], kv[1]),
+                        _ => {
+                            ok = false;
+                            break;
+                        }
+                    };
+                    let body_app = {
+                        let mut v = vec![body];
+                        v.extend_from_slice(&args);
+                        db.push_list(v)
+                    };
+                    new_arms.push(db.push_list(vec![pat, body_app]));
+                }
+                if ok {
+                    let match_head = db.push_name("match");
+                    let mut items = vec![match_head, scrutinee];
+                    items.extend(new_arms);
+                    let rewritten = db.push_list(items);
+                    // Resolve the rewritten subtree against its NEW positions before lowering: each arm's
+                    // rewritten body `(f args…)` and the pattern binders it references must re-resolve
+                    // against the re-parented arm, exactly as `apply_lambda` pins an argument subtree
+                    // before splicing. Without this a payload binder a closure arm captures (`(fn (x) (+ x
+                    // n))` capturing the arm's `n`) kept a stale/absent resolution and reported `n` unbound.
+                    crate::resolve::resolve_subtree(db, rewritten);
+                    return core_of(db, rewritten);
+                }
+            }
             // A CURRIED CONSTRUCTOR SPINE — `((Pair 3) 4)`. A sum constructor is single-arity, so the
             // nested-parens surface is the SAME construction as the flat `(Pair 3 4)` (core-semantics.md
             // §A Sum Type Constructor Is A Single-Arity Function; §Functions Are Single-Arity). The flat
