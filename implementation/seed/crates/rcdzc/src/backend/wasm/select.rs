@@ -3901,8 +3901,12 @@ fn emit(
                 _ => crate::ty::DEFAULT_FLOAT_WIDTH,
             };
             trace!(target: "rcdzc::select", node = id.0, ?op, width, "emit runtime float op");
-            emit(db, lhs, slots, base, high, scratch_ty, layout, out)?;
-            emit(db, rhs, slots, base, high, scratch_ty, layout, out)?;
+            // Ground each operand to the OP width: a bare float literal defaults to Float64 (an f64 slot),
+            // which beside a Float32 operand would push an f64 into an `f32.add` and wasm rejects the
+            // module. `emit_float_operand` materializes a literal at the op width (and demotes/promotes a
+            // control-flow operand whose slot disagrees), the float analogue of the integer `emit_operand`.
+            emit_float_operand(db, lhs, width, slots, base, high, scratch_ty, layout, out)?;
+            emit_float_operand(db, rhs, width, slots, base, high, scratch_ty, layout, out)?;
             out.push(float_arith_op(op, width));
             Ok(())
         }
@@ -5601,6 +5605,62 @@ fn emit_operand(
         if operand_slot == Some(ValType::I64) && op_slot == ValType::I32 {
             out.push(Lir::I32WrapI64);
         }
+    }
+    Ok(())
+}
+
+/// Emit a FLOAT operation's OPERAND at the operation's width `w` (32 or 64). The float analogue of
+/// [`emit_operand`]: a bare float LITERAL is width-polymorphic (it defaults to Float64 = an f64 slot
+/// when typed on its own), so `(+. x 1.0)` over a `Float32` `x` would otherwise push the literal as an
+/// f64 beside `x`'s f32 and produce invalid wasm (`expected f32, found f64`). Materialize a bare-literal
+/// operand (or the canonical NaN) DIRECTLY at the op width `w` — the width unification the per-node
+/// `type_of` does not thread back to the operand. Any other operand emits normally, then a slot
+/// DISAGREEMENT is reconciled by a demote/promote: an f64-slot operand into an f32 op demotes
+/// (`f32.demote_f64`), an f32-slot operand into an f64 op promotes (`f64.promote_f32`). SOUND: a genuine
+/// fixed-width Float32-vs-Float64 disagreement is a type FAULT (CDZ0301) that aborts before emit, so a
+/// mismatched-slot operand reaching here is necessarily a bare deferred literal (its value is exact at
+/// either width for the small constants a literal denotes; a demote is the same rounding the op width
+/// would apply). This mirrors the integer normalization above and the `Float N.of` conversion arm.
+#[allow(clippy::too_many_arguments)]
+fn emit_float_operand(
+    db: &mut Db,
+    id: StructId,
+    w: u32,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    // A bare float literal / canonical NaN materializes at the OP width directly (no f64 detour).
+    match core_of(db, id) {
+        Core::ConstFloat(d) => {
+            if w == 32 {
+                let bits = (f64::from_bits(d.to_f64_bits()) as f32).to_bits();
+                out.push(Lir::F32ConstBits(bits));
+            } else {
+                out.push(Lir::F64ConstBits(d.to_f64_bits()));
+            }
+            return Ok(());
+        }
+        Core::ConstFloatNan => {
+            if w == 32 {
+                out.push(Lir::F32ConstBits(f32::NAN.to_bits()));
+            } else {
+                out.push(Lir::F64ConstBits(f64::NAN.to_bits()));
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
+    emit(db, id, slots, base, high, scratch_ty, layout, out)?;
+    // Reconcile a control-flow / non-literal operand whose emitted float slot differs from the op width.
+    let operand_slot = valtype_of(&type_of(db, id));
+    match (operand_slot, w) {
+        (Some(ValType::F64), 32) => out.push(Lir::F32DemoteF64),
+        (Some(ValType::F32), 64) => out.push(Lir::F64PromoteF32),
+        _ => {}
     }
     Ok(())
 }

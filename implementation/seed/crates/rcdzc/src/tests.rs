@@ -2103,6 +2103,53 @@ fn an_exported_float_op_runs_over_runtime_args() {
     }
 }
 
+/// ⚠ INVALID WASM regression: a Float32 arithmetic op with a bare float LITERAL operand mis-emitted
+/// the literal at its Float64 default (an `f64.const` beside an `f32.add`) — `wasm-tools` rejected the
+/// module ("expected f32, found f64"). This hit TRIVIAL, idiomatic code (`(+. x 1.0)` over a Float32
+/// `x`), the float analogue of the narrow-int operand miscompile. Fixed by grounding each float-arith
+/// operand to the OP width at the consuming site (`emit_float_operand`): a bare literal materializes at
+/// f32 directly, a control-flow operand whose slot disagrees demotes/promotes. Sound because a genuine
+/// Float32-vs-Float64 disagreement faults (CDZ0301) before emit. Values verified by IEEE bits at f32.
+#[test]
+fn a_float32_arith_op_grounds_a_bare_literal_operand_to_f32() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // Each op with a bare literal on the RIGHT (`x <op> C`) over a Float32 param — was invalid wasm.
+    for (op, x, c, want) in [
+        ("+.", 2.5f32, 1.0f32, 3.5f32),
+        ("-.", 5.5f32, 2.0f32, 3.5f32),
+        ("*.", 3.5f32, 2.0f32, 7.0f32),
+        ("/.", 7.0f32, 2.0f32, 3.5f32),
+    ] {
+        let src = format!(
+            "(module m (def (f (: x Float32)) ({op} x {c:?})) (export f))",
+            c = c as f64
+        );
+        let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+        let got: f32 = run_returns_with(&bytes, "f", &[Val::Float32(x)]);
+        assert_eq!(
+            got.to_bits(),
+            want.to_bits(),
+            "Float32 {op} with a bare literal must compute at f32"
+        );
+    }
+    // Literal on the LEFT (`C <op> x`) — position-independent.
+    let left = "(module m (def (f (: x Float32)) (+. 1.0 x)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(left))).expect("compile");
+    let got: f32 = run_returns_with(&bytes, "f", &[Val::Float32(2.5f32)]);
+    assert_eq!(got.to_bits(), 3.5f32.to_bits(), "left literal grounds to f32");
+    // A CONTROL-FLOW operand (an `if` of two bare literals) also grounds to the op width.
+    let cf = "(module m (def (f (: c Bool) (: x Float32)) (+. x (if c 1.0 2.0))) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(cf))).expect("compile");
+    let got: f32 = run_returns_with(&bytes, "f", &[Val::Bool(true), Val::Float32(1.0f32)]);
+    assert_eq!(got.to_bits(), 2.0f32.to_bits(), "if-operand grounds to f32");
+    // The Float64 path is UNCHANGED (the literal was always f64 there).
+    let f64src = "(module m (def (f (: x Float64)) (+. x 1.0)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(f64src))).expect("compile");
+    let got: f64 = run_returns_with(&bytes, "f", &[Val::Float64(2.5)]);
+    assert_eq!(got.to_bits(), 3.5f64.to_bits(), "Float64 unchanged");
+}
+
 /// The explicit INT→FLOAT conversion `Float64.of-int` over a RUNTIME integer emits
 /// `f64.convert_i64_s` (a constant folds instead). `(def (f (: n Int64)) (Float64.of-int n))` run with
 /// 42 returns 42.0; a large Int64 rounds to the nearest f64 — total, never trapping.
