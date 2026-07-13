@@ -869,7 +869,15 @@ fn resolve_from(from: Option<Fmt>, file: Option<&str>) -> Result<Format, String>
     }
     match file {
         Some(path) if path != "-" => Format::from_extension(path).ok_or_else(|| {
-            format!("cannot infer input format from `{path}`; pass --from (binary|sexpr|ml)")
+            // No inferable extension. Distinguish the two reasons so the message is actionable: a path
+            // that DOES NOT EXIST is a missing-file typo (say so — the `--from` advice would send the
+            // user chasing a format when the real fix is the path), whereas a file that EXISTS but has
+            // an unknown/absent extension genuinely needs `--from`.
+            if !std::path::Path::new(path).exists() {
+                format!("no such file `{path}`")
+            } else {
+                format!("cannot infer input format from `{path}`; pass --from (binary|sexpr|ml)")
+            }
         }),
         _ => Err("reading stdin requires --from (binary|sexpr|ml)".to_string()),
     }
@@ -896,5 +904,35 @@ fn read_input(file: Option<&str>) -> Result<Vec<u8>, String> {
             Ok(buf)
         }
         Some(path) => std::fs::read(path).map_err(|e| format!("reading {path}: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_from_distinguishes_a_missing_file_from_an_unknown_extension() {
+        // No `--from` + no inferable extension: a path that DOES NOT EXIST is a missing-file typo (the
+        // `--from` advice would misdirect), while an EXISTING extensionless file genuinely needs `--from`.
+        let missing = resolve_from(None, Some("/tmp/cdz-nope-extensionless")).unwrap_err();
+        assert!(
+            missing.contains("no such file"),
+            "a nonexistent extensionless path is a missing-file error; got {missing}"
+        );
+        // An EXISTING extensionless file → the format-inference error (needs --from).
+        let dir = std::env::temp_dir().join("cdz_resolve_from_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let existing = dir.join("noext");
+        std::fs::write(&existing, b"(module m)").unwrap();
+        let unknown = resolve_from(None, Some(&existing.to_string_lossy())).unwrap_err();
+        assert!(
+            unknown.contains("cannot infer input format"),
+            "an existing extensionless file needs --from; got {unknown}"
+        );
+        // A path WITH a known extension resolves regardless of existence (the read error, if any, comes
+        // later) — so a nonexistent `.sexp` still infers sexpr here.
+        assert!(resolve_from(None, Some("/tmp/cdz-nope.sexp")).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
