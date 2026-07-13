@@ -1,4 +1,4 @@
-import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
+import { H1, Lede, H2, P, C } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
@@ -89,29 +89,55 @@ export default function Errors() {
 (def (main) (describe (Some 0)))`}
       />
 
-      <Note>
-        <C>Result</C> works the same way for operations that fail with a <em>reason</em>: <C>(Ok value)</C>{" "}
-        or <C>(Err e)</C>, matched exactly like <C>Option</C>.
-      </Note>
+      <H2>Failing with a reason: <C>Result</C></H2>
+      <P>
+        An <C>Option</C> says <em>whether</em> there's an answer; sometimes you also want to say{" "}
+        <em>why</em> there isn't. <C>Result</C> is the sum for that — <C>(Ok value)</C> when it worked,{" "}
+        <C>(Err e)</C> carrying a reason when it didn't — and you take it apart with <C>match</C> exactly
+        like an <C>Option</C>. Here <C>safe-div</C> reports the offending divisor on failure:
+      </P>
+      <Runnable
+        source={`(def (safe-div a b)
+  (if (= b 0) (Err b) (Ok (/ a b))))
+(def (main)
+  (match (safe-div 20 4)
+    ((Ok q) q)
+    ((Err e) (- 0 1))))`}
+      />
+      <P>
+        This takes the <C>Ok</C> arm for <C>20 / 4 = 5</C>. Change the <C>4</C> to <C>0</C> and Run: the{" "}
+        <C>Err</C> arm fires instead, and <C>e</C> is bound to the reason (here the divisor, <C>0</C>) —
+        the same exhaustive <C>match</C>, now with a payload that explains the failure.
+      </P>
 
       <H2>Your turn</H2>
       <Exercise
         id="errors:1"
-        prompt={<>Finish <C>safe-div</C>'s empty case so <C>(safe-div 20 4)</C> gives <C>5</C>.</>}
-        starter={`(def (safe-div a b)
-  (if (= b 0) ? (Some (/ a b))))
+        prompt={
+          <>
+            <C>check</C> returns <C>(Err 8)</C> for this input. Finish the <C>Err</C> arm to hand back the
+            reason it carries, so the result is <C>8</C>.
+          </>
+        }
+        starter={`(def (check n)
+  (if (= n 0) (Ok n) (Err n)))
 (def (main)
-  (match (safe-div 20 4)
-    ((Some q) q)
-    ((None _) (- 0 1))))`}
-        solution={`(def (safe-div a b)
-  (if (= b 0) (None unit) (Some (/ a b))))
+  (match (check 8)
+    ((Ok v) v)
+    ((Err e) ?)))`}
+        solution={`(def (check n)
+  (if (= n 0) (Ok n) (Err n)))
 (def (main)
-  (match (safe-div 20 4)
-    ((Some q) q)
-    ((None _) (- 0 1))))`}
-        expected="5"
-        hint={<>When the divisor is zero there's no answer — return <C>(None unit)</C>.</>}
+  (match (check 8)
+    ((Ok v) v)
+    ((Err e) e)))`}
+        expected="8"
+        hint={
+          <>
+            The <C>Err</C> arm binds its payload to <C>e</C> — return that binding to surface the reason:{" "}
+            just <C>e</C>.
+          </>
+        }
       />
 
       <Exercise
