@@ -3761,6 +3761,37 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             }
             Some(b.list(children))
         }
+        // A CONSTANT map value — `(map (k1 v1) (k2 v2) …)` — its entries rendered in CANONICAL KEY ORDER
+        // (collections-and-text.md §A Map Renders As Its Entries In Canonical Key Order), independent of
+        // insertion order and DISTINGUISHABLE from a record (`map` head, `(key value)` pairs). The
+        // constant map already has each key at most once (the `Map.insert` fold replaced by key value);
+        // sort the entries by their canonical KEY order (`const_key_order`), then render each pair. A
+        // non-constant key/value makes an entry non-constant → `None`, declining the escape (a genuinely
+        // runtime map's escape is the deferred looping walker). This is the constant-escape (R1) companion
+        // of the map value — a fully-constant map crosses by baked bytes here.
+        Core::MapNew { entries, .. } => {
+            let mut sorted: Vec<(StructId, StructId)> = entries.clone();
+            // Sort by canonical key order. A key that is not orderable-as-a-constant declines the whole
+            // escape (the runtime walker path is deferred), so a failed comparison bails to `None`.
+            let mut orderable = true;
+            sorted.sort_by(|a, b| {
+                const_key_order(db, a.0, b.0).unwrap_or_else(|| {
+                    orderable = false;
+                    std::cmp::Ordering::Equal
+                })
+            });
+            if !orderable {
+                return None;
+            }
+            let head = b.name("map");
+            let mut children = vec![head];
+            for (k, v) in sorted {
+                let kv = const_value_ast(db, b, k)?;
+                let vv = const_value_ast(db, b, v)?;
+                children.push(b.list(vec![kv, vv]));
+            }
+            Some(b.list(children))
+        }
         // A CONSTANT sum value — `(Some 5)`, `(None unit)`, `(Some (Some 5))`. Its canonical form is
         // `(VariantName payload…)` with the variant TAG present (`deterministic-value-form.md`;
         // core-semantics.md §A Constructor Applied To An Argument Is A Sum Value). This holds regardless
@@ -4884,6 +4915,25 @@ pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option
     }
 }
 
+/// The CANONICAL KEY ORDER between two CONSTANT map keys `a`/`b` — the deterministic order a map's
+/// entries render in (collections-and-text.md §A Map Renders As Its Entries In Canonical Key Order). The
+/// compiler owns the sort (the runtime iterates hash order; the canonical form sorts by the key's value).
+/// Scalar keys order by VALUE: an integer by numeric value, a string lexicographically, a bool false<true,
+/// unit is a singleton. `None` when a key is not a compile-time-orderable constant (a nested compound key,
+/// or a runtime key) — the caller then declines the constant escape (the runtime walker is deferred).
+fn const_key_order(db: &mut Db, a: StructId, b: StructId) -> Option<std::cmp::Ordering> {
+    match (core_of(db, a), core_of(db, b)) {
+        // Compare by numeric value. `to_i64` covers the ≤64-bit keys the corpus uses; a wider key
+        // declines the constant sort (deferred to the runtime walker).
+        (Core::ConstInt(x), Core::ConstInt(y)) => Some(x.to_i64()?.cmp(&y.to_i64()?)),
+        (Core::ConstStr(x), Core::ConstStr(y)) => Some(x.cmp(&y)),
+        (Core::ConstBool(x), Core::ConstBool(y)) => Some(x.cmp(&y)),
+        (Core::Unit, Core::Unit) => Some(std::cmp::Ordering::Equal),
+        // A nested-compound or runtime key has no compile-time canonical order here — decline.
+        _ => None,
+    }
+}
+
 /// Whether the operand at `id` has a type the runtime `value-eq` heap walk (`champ_eq`) compares
 /// CORRECTLY — a compound whose leaves are all SCALAR (Int/Bool/Unit), reached through tuples, records,
 /// and sum variants. Such a value is CANONICAL BY CONSTRUCTION: it holds no embedded RRB vector, CHAMP
@@ -5120,12 +5170,66 @@ fn lower_map_insert(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
             "Map.insert result is not a solved map type",
         ));
     };
+    // FOLD onto a compile-time-visible constant map when the KEY is a constant (its value need not be —
+    // the value occurrence carries over regardless, exactly as `List.push` folds onto a constant list).
+    // Add-or-REPLACE by key VALUE: an existing entry whose key is `const_compound_eq` to the new key has
+    // its value replaced IN PLACE (preserving position — the each-key-at-most-once rule); otherwise the
+    // entry is appended. The result is a constant `Core::MapNew` that bakes at escape / renders sorted /
+    // compares by `value-eq`, so a chain `(Map.insert (Map.insert Map.empty 2 20) 1 10)` folds to one
+    // canonical two-entry map. A runtime map operand or a runtime key stays a `Core::MapInsert` (the
+    // persistent CHAMP op). Keys compared by VALUE (`const_compound_eq`), so two names bound to the same
+    // value collapse here just as they do at run time.
+    if let (Core::MapNew { entries, .. }, true) =
+        (core_of(db, map), is_const_value(db, key))
+    {
+        let mut merged = entries.clone();
+        let mut replaced = false;
+        for e in merged.iter_mut() {
+            if const_compound_eq(db, e.0, key) == Some(true) {
+                *e = (e.0, val); // replace the value at this key (keep the key occurrence + position)
+                replaced = true;
+                break;
+            }
+        }
+        if !replaced {
+            merged.push((key, val));
+        }
+        trace!(target: "rcdzc::fold", node = id.0, entries = merged.len(), "Map.insert folds onto a constant map");
+        return Core::MapNew {
+            entries: merged,
+            key_ty,
+            val_ty,
+        };
+    }
     Core::MapInsert {
         map,
         key,
         val,
         key_ty,
         val_ty,
+    }
+}
+
+/// Whether the node at `id` lowers to a compile-time CONSTANT value — a constant scalar/string/float/
+/// unit, or a constant compound (`SumNew`/`Tuple`/`Record`/`ListNew`/`MapNew`) all of whose parts are
+/// constant. Used to decide whether a `Map.insert` key can fold (a constant key merges into a constant
+/// map; a runtime key keeps the persistent op). Mirrors the constant test `const_value_ast` performs.
+fn is_const_value(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::ConstInt(_)
+        | Core::ConstBool(_)
+        | Core::ConstStr(_)
+        | Core::ConstFloat(_)
+        | Core::Unit => true,
+        Core::Tuple { elems } | Core::ListNew { elems } => {
+            elems.iter().all(|&e| is_const_value(db, e))
+        }
+        Core::SumNew { payloads, .. } => payloads.iter().all(|&p| is_const_value(db, p)),
+        Core::Record { fields } => fields.values().all(|&v| is_const_value(db, v)),
+        Core::MapNew { entries, .. } => entries
+            .iter()
+            .all(|&(k, v)| is_const_value(db, k) && is_const_value(db, v)),
+        _ => false,
     }
 }
 
