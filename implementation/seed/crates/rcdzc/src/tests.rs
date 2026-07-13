@@ -25760,8 +25760,9 @@ mod closure_host_resource {
         };
         // order = [mk0, app0, mk1, app1] (4 defs); lifteds appended after.
         let import_base = imports.len() as u32 + 2 * 2; // k + 2 intrinsics × 2 groups
-        // Lifted functype indices: defined_type_base + order.len() + slot. defined_type_base = k+1.
-        let lty = |slot: usize| (imports.len() + 1 + 4 + slot) as u32;
+        // Lifted functype indices: defined_type_base + order.len() + slot. The distinct-sig-rt core emits
+        // 2*G rintr functypes, so defined_type_base = k + 2*G (G=2 here); order.len()=4.
+        let lty = |slot: usize| (imports.len() + 2 * 2 + 4 + slot) as u32;
         let funcs = vec![
             producer(0, fn_ii.clone()),  // mk0 → def 0
             consumer(lty(0), s64.clone()), // app0 → def 1

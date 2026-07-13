@@ -675,3 +675,46 @@
               (export mk) (export app)))
   (call   app (: 0 Int64))
   (output (: 999 Int64)))
+
+; THE DISTINCT-SIGNATURE ROUND-TRIP — the flagship shape unified: a program that both PRODUCES and CONSUMES
+; closures of DIFFERENT signatures. Each signature is its own resource type; a producer mints its closure
+; and the matching consumer (paired by resource type) applies it. Here `adder`+`appa` work with `(-> Int64
+; Int64)` (resource t0) and `isz`+`appb` with `(-> Int64 Bool)` (resource t1), all in one component. The
+; host produces from the producer whose result resource type matches the consumer's closure param, then
+; threads the handle in. This composes the round-trip (host-as-custodian) with N-resource-type grouping.
+
+(case "a distinct-signature round-trip applies the Int64->Int64 closure"
+  (doc    "`adder : (Int64) -> (-> Int64 Int64)` + `appa : ((-> Int64 Int64), Int64) -> Int64` (resource
+           t0), alongside `isz` + `appb` on `(-> Int64 Bool)` (resource t1). Calling `appa` produces from
+           `adder(10)` (its matching producer, by resource type) → a handle → `appa(handle, 5)` = 15. Pins
+           that a round trip mixing signatures pairs each consumer with the producer of its resource type.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (def (appb (: h (-> Int64 Bool)) (: x Int64)) (h x))
+              (export adder) (export appa) (export isz) (export appb)))
+  (call   appa (: 10 Int64) (: 5 Int64))
+  (output (: 15 Int64)))
+
+(case "a distinct-signature round-trip applies the Int64->Bool closure"
+  (doc    "The same four-export program, now calling `appb` (the `(-> Int64 Bool)` consumer, resource t1):
+           produced from `isz()` → a handle → `appb(handle, 0)` = true. The Bool-signature closure round-
+           trips through its OWN resource type, distinct from the Int64 one.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (def (appb (: h (-> Int64 Bool)) (: x Int64)) (h x))
+              (export adder) (export appa) (export isz) (export appb)))
+  (call   appb (: 0 Int64))
+  (output (: true Bool)))
+
+(case "a distinct-signature round-trip's Bool closure on a nonzero input"
+  (doc    "The same program, `appb(handle, 5)` = false (5 ≠ 0) — the t1 closure's result tracks its input,
+           distinct from the t0 group. Confirms both resource types dispatch their own closures.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (isz) (fn ((: x Int64)) (= x 0)))
+              (def (appb (: h (-> Int64 Bool)) (: x Int64)) (h x))
+              (export adder) (export appa) (export isz) (export appb)))
+  (call   appb (: 5 Int64))
+  (output (: false Bool)))

@@ -2044,15 +2044,26 @@ pub fn distinct_sig_roundtrip_core_module(
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         t
     };
-    type_items.extend_from_slice(&i32_to_i32);
+    // Emit 2*G resource-intrinsic functypes (all identical `(i32)->i32`, one per `resource-new-<g>`/
+    // `resource-rep-<g>` import), so `defined_type_base = k + 2*G = import_count`. This ALIGNS the type
+    // layout with `import_base` (= k + 2*G), which is what a SELECTED consumer body assumes when it embeds
+    // `call_indirect(layout.lifted_type_index(slot, import_base))` — otherwise the consumer's indirect-call
+    // type index would be off by 2*G-1 (a "function failed to validate" in wasmtime). The rintr imports all
+    // reference `rintr_type_idx = k` (the first of these), which is fine — they are all the same shape.
+    for _ in 0..(2 * g) {
+        type_items.extend_from_slice(&i32_to_i32);
+    }
     let rintr_type_idx = k as u32;
-    let defined_type_base = k + 1;
+    let defined_type_base = k + 2 * g;
     for f in funcs {
         type_items.extend_from_slice(&functype(f)?);
     }
-    // Per group: make functype(s), then consumer functype(s). Record each function's type index, flat.
-    let mut make_type_idx: Vec<u32> = Vec::new();
-    let mut cons_type_idx: Vec<u32> = Vec::new();
+    // ALL FUNCTION SECTIONS USE ONE ORDER: per group, its makes then its consumers (matching the envelope's
+    // per-group alias order). `fn_type_idx` records each function's core type index in that exact flat
+    // order, so the function/export/code sections stay consistent (an earlier cut interleaved the type build
+    // per-group but listed functions makes-flat-then-consumers-flat → the envelope's per-group aliases got
+    // the wrong functype).
+    let mut fn_type_idx: Vec<u32> = Vec::new();
     let mut next_type = defined_type_base + n;
     for gr in groups {
         for mk in &gr.makes {
@@ -2061,7 +2072,7 @@ pub fn distinct_sig_roundtrip_core_module(
             t.extend_from_slice(&wasm_vec(params.len(), &params));
             t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
             type_items.extend_from_slice(&t);
-            make_type_idx.push(next_type as u32);
+            fn_type_idx.push(next_type as u32);
             next_type += 1;
         }
         for c in &gr.consumers {
@@ -2070,7 +2081,7 @@ pub fn distinct_sig_roundtrip_core_module(
             t.extend_from_slice(&wasm_vec(params.len(), &params));
             t.extend_from_slice(&wasm_vec(1, &[vt_byte(c.ret_vt)]));
             type_items.extend_from_slice(&t);
-            cons_type_idx.push(next_type as u32);
+            fn_type_idx.push(next_type as u32);
             next_type += 1;
         }
     }
@@ -2097,15 +2108,12 @@ pub fn distinct_sig_roundtrip_core_module(
     }
     let import_sec = section(2, &wasm_vec(k + 2 * g, &import_items));
 
-    // ── Function section ── defined bodies, then makes, then consumers (flat, group order).
+    // ── Function section ── defined bodies, then the group functions in per-group order (`fn_type_idx`).
     let mut func_items = Vec::new();
     for i in 0..n {
         uleb128((defined_type_base + i) as u64, &mut func_items);
     }
-    for &ti in &make_type_idx {
-        uleb128(ti as u64, &mut func_items);
-    }
-    for &ti in &cons_type_idx {
+    for &ti in &fn_type_idx {
         uleb128(ti as u64, &mut func_items);
     }
     let func_sec = section(
@@ -2113,8 +2121,8 @@ pub fn distinct_sig_roundtrip_core_module(
         &wasm_vec(n + total_makes + total_cons, &func_items),
     );
     let import_count = k + 2 * g;
-    let make_abs_base = (import_count + n) as u32;
-    let cons_abs_base = make_abs_base + total_makes as u32;
+    // The group functions start at core-func `import_count + n`, in per-group (makes then consumers) order.
+    let group_fn_abs_base = (import_count + n) as u32;
 
     // ── Table + Element ── the ONE funcref table (all groups' lifteds share it).
     let n_lifted = layout.lifted.len();
@@ -2150,16 +2158,15 @@ pub fn distinct_sig_roundtrip_core_module(
             b
         };
         let mut items = Vec::new();
-        let mut mi = 0u32;
-        let mut ci = 0u32;
+        let mut fi = 0u32; // running per-group function index (makes then consumers per group)
         for gr in groups {
             for mk in &gr.makes {
-                items.extend_from_slice(&export(&mk.export_name, make_abs_base + mi));
-                mi += 1;
+                items.extend_from_slice(&export(&mk.export_name, group_fn_abs_base + fi));
+                fi += 1;
             }
             for c in &gr.consumers {
-                items.extend_from_slice(&export(&c.export_name, cons_abs_base + ci));
-                ci += 1;
+                items.extend_from_slice(&export(&c.export_name, group_fn_abs_base + fi));
+                fi += 1;
             }
         }
         section(
@@ -2168,13 +2175,14 @@ pub fn distinct_sig_roundtrip_core_module(
         )
     };
 
-    // ── Code section ── defined bodies, then makes (using group's rnew), then consumers (group's rrep).
+    // ── Code section ── defined bodies, then PER GROUP its makes (using group's rnew) then its consumers
+    // (group's rrep) — the SAME per-group order as the function/export sections.
     let mut code_items = Vec::new();
     for f in funcs {
         code_items.extend_from_slice(&code_entry(f, &import_index));
     }
-    // makes, flat in group order.
     for (gi, gr) in groups.iter().enumerate() {
+        // this group's makes.
         for mk in &gr.makes {
             let mut inner = uleb_bytes(0);
             for p in 0..mk.param_vts.len() {
@@ -2190,9 +2198,7 @@ pub fn distinct_sig_roundtrip_core_module(
             e.extend_from_slice(&inner);
             code_items.extend_from_slice(&e);
         }
-    }
-    // consumers, flat in group order — each closure param rep'd via THIS group's rrep, then dropped.
-    for (gi, gr) in groups.iter().enumerate() {
+        // this group's consumers — each closure param rep'd via THIS group's rrep, then dropped.
         for c in &gr.consumers {
             let nparams = c.params.len() as u32;
             let n_closures = c

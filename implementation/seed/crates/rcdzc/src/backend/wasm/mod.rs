@@ -263,6 +263,23 @@ pub fn emit(
         .iter()
         .any(|e| e.params.iter().any(|(_, t)| matches!(t, crate::ty::Ty::Fn(_, _))))
     {
+        // Collect every closure SIGNATURE the program touches — a producer's result + each consumer's
+        // closure param. If they are all the SAME, the single-resource round-trip handles it; if there is
+        // MORE THAN ONE distinct signature, route to the N-resource-type distinct-sig round-trip.
+        let mut sigs: Vec<&crate::ty::Ty> = Vec::new();
+        for e in &layout.exports {
+            if matches!(e.result, crate::ty::Ty::Fn(_, _)) && !sigs.contains(&&e.result) {
+                sigs.push(&e.result);
+            }
+            for (_, t) in &e.params {
+                if matches!(t, crate::ty::Ty::Fn(_, _)) && !sigs.contains(&t) {
+                    sigs.push(t);
+                }
+            }
+        }
+        if sigs.len() > 1 {
+            return emit_distinct_sig_roundtrip_resource(db, layout, spans);
+        }
         return emit_roundtrip_resource(db, layout, spans);
     }
 
@@ -2076,6 +2093,253 @@ fn emit_roundtrip_resource(
         &abi_makes,
         &abi_consumers,
         None,
+    ))
+}
+
+/// Emit the DISTINCT-SIGNATURE ROUND-TRIP component: producers + consumers of G DIFFERENT closure
+/// signatures, each crossing as its own resource type. The round-trip emit generalized to N groups: group
+/// exports by signature (a producer by its result, a consumer by its closure-param type), then per group
+/// build an `RtSigGroup` (serializer) + `RtSigGroupAbi` (envelope) carrying that group's makes + consumers.
+/// Each group's `resource-new-<g>`/`resource-rep-<g>` intrinsics are supplied by the envelope. Same shape
+/// as `emit_roundtrip_resource` but partitioned by signature (so a program mixing `(-> Int64 Int64)` and
+/// `(-> Int64 Bool)` producers+consumers now compiles, where it used to decline "mixing DIFFERENT signatures").
+fn emit_distinct_sig_roundtrip_resource(
+    db: &mut Db,
+    layout: &Layout,
+    _spans: Option<&crate::spans::SpanData>,
+) -> Result<Vec<u8>, Reject> {
+    use crate::backend::wasm::lir::valtype_of;
+    // A producer's signature is its result; a consumer's is its (sole) closure-param type. Build the group
+    // list (distinct signatures, first-seen order) and, per export, its group + role.
+    let producer_sig = |e: &crate::layout::ExportPlan| -> Option<crate::ty::Ty> {
+        matches!(e.result, crate::ty::Ty::Fn(_, _)).then(|| e.result.clone())
+    };
+    let consumer_sigs = |e: &crate::layout::ExportPlan| -> Vec<crate::ty::Ty> {
+        e.params
+            .iter()
+            .filter(|(_, t)| matches!(t, crate::ty::Ty::Fn(_, _)))
+            .map(|(_, t)| t.clone())
+            .collect()
+    };
+    // A closure TRANSFORMER (both a closure result AND a closure param) is out of scope here too.
+    if let Some(t) = layout.exports.iter().find(|e| {
+        producer_sig(e).is_some() && !consumer_sigs(e).is_empty()
+    }) {
+        return Err(Reject::decline(format!(
+            "the export `{}` both receives and returns a closure (a closure transformer) — not yet \
+             supported (DESIGN-closure-host-resource-rcdzc.md, closure transformers)",
+            t.name
+        )));
+    }
+    // Collect the distinct signatures (first-seen), and validate a consumer has exactly one closure param.
+    let mut sigs: Vec<crate::ty::Ty> = Vec::new();
+    let group_of = |s: &crate::ty::Ty, sigs: &mut Vec<crate::ty::Ty>| -> usize {
+        sigs.iter().position(|x| x == s).unwrap_or_else(|| {
+            sigs.push(s.clone());
+            sigs.len() - 1
+        })
+    };
+    for e in &layout.exports {
+        if let Some(s) = producer_sig(e) {
+            group_of(&s, &mut sigs);
+        }
+        let cs = consumer_sigs(e);
+        if !cs.is_empty() {
+            if cs.len() != 1 {
+                return Err(Reject::decline(
+                    "a distinct-signature round-trip consumer with more than one closure parameter is \
+                     not yet supported",
+                ));
+            }
+            group_of(&cs[0], &mut sigs);
+        }
+    }
+    // Effect-escape fence.
+    {
+        let mut escaping = Vec::new();
+        for l in &layout.lifted {
+            host::collect_host_imports(db, l.body, &mut escaping);
+        }
+        if let Some(h) = escaping.first() {
+            return Err(Reject::coded(
+                crate::diag::Code::ClosureEscapesEffect,
+                format!(
+                    "a closure that performs an effect ({}.{}) cannot cross the host boundary — the \
+                     closure's handler context does not travel with it (closures escaping effects are \
+                     not supported)",
+                    h.effect, h.op
+                ),
+            ));
+        }
+    }
+    // Validate every group's signature crosses as scalars (arg + result).
+    for s in &sigs {
+        let mut cur = s.clone();
+        while let crate::ty::Ty::Fn(dom, rng) = cur {
+            closure_boundary_byte(&dom).ok_or_else(|| closure_boundary_reject("argument", &dom))?;
+            cur = *rng;
+        }
+        closure_boundary_byte(&cur).ok_or_else(|| closure_boundary_reject("result", &cur))?;
+    }
+
+    // Per export: its make/consume spec + which group. Collected before the build moves the layout.
+    struct MakeS {
+        def: usize,
+        group: usize,
+        name: String,
+        param_vts: Vec<crate::backend::wasm::lir::ValType>,
+        param_bytes: Vec<u8>,
+    }
+    struct ConsS {
+        def: usize,
+        group: usize,
+        name: String,
+        params: Vec<serialize::ConsumeParam>,
+        abi_params: Vec<envelope::ConsumeParamAbi>,
+        ret_vt: crate::backend::wasm::lir::ValType,
+        result_byte: u8,
+    }
+    let mut makes: Vec<MakeS> = Vec::new();
+    let mut cons: Vec<ConsS> = Vec::new();
+    for e in &layout.exports {
+        if let Some(s) = producer_sig(e) {
+            let group = sigs.iter().position(|x| *x == s).unwrap();
+            let param_vts: Vec<_> = e
+                .params
+                .iter()
+                .map(|(_, t)| valtype_of(t).ok_or_else(|| Reject::decline("producer param has no valtype")))
+                .collect::<Result<_, _>>()?;
+            let param_bytes: Vec<u8> = e
+                .params
+                .iter()
+                .map(|(_, t)| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t)))
+                .collect::<Result<_, _>>()?;
+            makes.push(MakeS { def: e.def, group, name: e.name.clone(), param_vts, param_bytes });
+        } else {
+            let cs = consumer_sigs(e);
+            if cs.is_empty() {
+                return Err(Reject::decline(
+                    "a distinct-signature round-trip export is neither a producer nor a consumer",
+                ));
+            }
+            let group = sigs.iter().position(|x| *x == cs[0]).unwrap();
+            let mut params = Vec::new();
+            let mut abi_params = Vec::new();
+            for (_, t) in &e.params {
+                if matches!(t, crate::ty::Ty::Fn(_, _)) {
+                    params.push(serialize::ConsumeParam::Closure);
+                    abi_params.push(envelope::ConsumeParamAbi::Closure);
+                } else {
+                    let vt = valtype_of(t).ok_or_else(|| Reject::decline("consumer scalar param has no valtype"))?;
+                    let byte = closure_boundary_byte(t)
+                        .ok_or_else(|| closure_boundary_reject("parameter", t))?;
+                    params.push(serialize::ConsumeParam::Scalar(vt));
+                    abi_params.push(envelope::ConsumeParamAbi::Scalar(byte));
+                }
+            }
+            let ret_vt = valtype_of(&e.result).ok_or_else(|| Reject::decline("consumer result has no valtype"))?;
+            let result_byte = closure_boundary_byte(&e.result)
+                .ok_or_else(|| closure_boundary_reject("result", &e.result))?;
+            cons.push(ConsS { def: e.def, group, name: e.name.clone(), params, abi_params, ret_vt, result_byte });
+        }
+    }
+    // Require at least one producer per group (a consumer group with no producer would need a host-made
+    // closure — out of scope).
+    for gi in 0..sigs.len() {
+        if !makes.iter().any(|m| m.group == gi) {
+            return Err(Reject::decline(
+                "a distinct-signature round-trip has a consumer whose closure signature no producer mints \
+                 (a host-fabricated closure is out of scope)",
+            ));
+        }
+    }
+
+    // Lifted-body ops + build with 2*G intrinsics.
+    let lifted_bodies: Vec<crate::ast::StructId> = layout
+        .lifted
+        .iter()
+        .enumerate()
+        .filter(|(code, _)| layout.lifted_reached.get(*code).copied().unwrap_or(true))
+        .map(|(_, l)| l.body)
+        .collect();
+    let mut lifted_ops: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    for &body in &lifted_bodies {
+        select::collect_used_ops(db, body, &mut lifted_ops);
+    }
+    let intrinsics = (2 * sigs.len()) as u32;
+    let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
+        used.insert("arr-get");
+        used.insert("get-int");
+        used.insert("drop");
+        used.extend(lifted_ops.iter().copied());
+    })?;
+    if layout.lifted.is_empty() {
+        return Err(Reject::decline("a distinct-signature round-trip produced no lifted lambda"));
+    }
+    for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
+        let env_key = db.push_name("$closure-env");
+        let mut params = vec![(env_key, crate::ty::Ty::Bytes)];
+        params.extend(lifted.params.iter().cloned());
+        if layout.lifted_reached.get(code).copied().unwrap_or(true) {
+            funcs.push(select_function_of(db, lifted.body, &params, &layout, None)?);
+        } else {
+            funcs.push(select::stub_function(&params, &lifted.ret_ty));
+        }
+    }
+
+    // Build the per-group serializer + envelope specs, in group order.
+    let mut ser_groups: Vec<serialize::RtSigGroup> = Vec::new();
+    let mut abi_groups: Vec<envelope::RtSigGroupAbi> = Vec::new();
+    for gi in 0..sigs.len() {
+        let mut ser_makes = Vec::new();
+        let mut abi_makes = Vec::new();
+        for m in makes.iter().filter(|m| m.group == gi) {
+            let export_abs = layout
+                .abs(m.def)
+                .ok_or_else(|| Reject::decline("a producer is not in the emission order"))?;
+            ser_makes.push(serialize::ClosureMake {
+                export_name: m.name.clone(),
+                export_abs,
+                param_vts: m.param_vts.clone(),
+            });
+            abi_makes.push(envelope::ClosureMakeAbi {
+                name: m.name.clone(),
+                make_param_bytes: m.param_bytes.clone(),
+            });
+        }
+        let mut ser_cons = Vec::new();
+        let mut abi_cons = Vec::new();
+        for c in cons.iter().filter(|c| c.group == gi) {
+            let consume_abs = layout
+                .abs(c.def)
+                .ok_or_else(|| Reject::decline("a consumer is not in the emission order"))?;
+            ser_cons.push(serialize::ClosureConsume {
+                export_name: c.name.clone(),
+                consume_abs,
+                params: c.params.clone(),
+                ret_vt: c.ret_vt,
+            });
+            abi_cons.push(envelope::ClosureConsumeAbi {
+                name: c.name.clone(),
+                params: c.abi_params.clone(),
+                result_byte: c.result_byte,
+            });
+        }
+        ser_groups.push(serialize::RtSigGroup { makes: ser_makes, consumers: ser_cons });
+        abi_groups.push(envelope::RtSigGroupAbi { makes: abi_makes, consumers: abi_cons });
+    }
+
+    let main_core =
+        serialize::distinct_sig_roundtrip_core_module(&funcs, &imports, &ser_groups, &layout)
+            .map_err(Reject::decline)?;
+    let dtor_core = serialize::resource_dtor_module_with_drop();
+    let import_name = runtime_import_name();
+    Ok(envelope::assemble_distinct_sig_roundtrip_resource(
+        &main_core,
+        &dtor_core,
+        &imports,
+        &import_name,
+        &abi_groups,
     ))
 }
 
