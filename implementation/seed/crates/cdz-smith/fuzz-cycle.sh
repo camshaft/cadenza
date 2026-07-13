@@ -28,11 +28,19 @@
 set -uo pipefail
 
 # ── locate the checkouts ──────────────────────────────────────────────────────────────────────
-# This script lives at <root>/implementation/seed/crates/cdz-smith/fuzz-cycle.sh; walk up to <root>.
+# Resolve the MAIN repo root from the shared .git common-dir — robust no matter which worktree this
+# script is invoked from (the parent of `.git`). Falls back to a path-walk from the script location.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+COMMON_DIR="$(git -C "$SCRIPT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+if [ -n "$COMMON_DIR" ]; then
+  DEFAULT_ROOT="$(dirname "$COMMON_DIR")"
+else
+  DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+fi
 MAIN="${CDZ_SMITH_MAIN:-$DEFAULT_ROOT}"
-WORKTREE="${CDZ_SMITH_WORKTREE:-$MAIN/.claude/worktrees/cdz-smith}"
+# The fuzzing worktree gets its OWN path + branch so it never collides with a human/dev worktree
+# that might also be named `cdz-smith`.
+WORKTREE="${CDZ_SMITH_WORKTREE:-$MAIN/.claude/worktrees/cdz-smith-fuzz}"
 FINDINGS="$MAIN/spec/semantics/failures"
 
 ITERATIONS="${CDZ_SMITH_ITERATIONS:-50000}"
