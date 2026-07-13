@@ -1441,6 +1441,22 @@ pub fn match_nonexhaustive_fault(db: &mut Db, id: StructId) -> Option<Reject> {
 /// scrutinee covered by both a `true` arm and a `false` arm needs no wildcard. A match that covers
 /// neither way is rejected (CDZ0210), not compiled to a fallthrough with no defined value.
 fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // A ZERO-ARM match is the DEGENERATE base case of exhaustiveness: it is well-formed ONLY when the
+    // scrutinee is UNINHABITED (`Never` — a diverging expression), for which no arm is needed to cover
+    // every variant, there being none (`type-system.md §Never Is The Empty Sum`, 4th sentence). The
+    // scrutinee still evaluates (its divergence IS the match's outcome), so lower it: a scrutinee that
+    // provably DIVERGES lowers to `Core::Trap` / a poison — return that (the match diverges through the
+    // scrutinee, exactly as `(match (never-returns))` traps). A zero-arm match on an INHABITED scrutinee
+    // is genuinely non-exhaustive (`Code::NonExhaustive`), NOT the malformed "no arms" it was before.
+    if arms.is_empty() {
+        return match core_of(db, scrutinee) {
+            c @ (Core::Trap | Core::Poison(_)) => c,
+            _ => Core::Poison(Reject::coded(
+                Code::NonExhaustive,
+                "a zero-arm match is exhaustive only on an uninhabited (Never) scrutinee; this scrutinee has values a case must cover",
+            )),
+        };
+    }
     // A COMPOUND scrutinee — a SUM, a TUPLE, or a RECORD — is matched by the DECISION TREE, not the
     // scalar-probe path. A sum dispatches on the discriminant; a tuple has no discriminant, so its match
     // is a chain of `Elem`-path binders / literal tests; a RECORD has neither a discriminant NOR a
