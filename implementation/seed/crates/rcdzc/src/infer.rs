@@ -2295,25 +2295,39 @@ fn total_conversion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, 
     }
 }
 
-/// The `(prefix, suffix, verb)` of the CHECKED integer conversion `(<Expected>.of …)` when an integer of
-/// one width is supplied where a DIFFERENT integer width is `expected` — the numeric-model coercion wrap
-/// (`06-numeric-model.sexp` — `(+ 2 (Int64.of 1))`). Shared by every site the same int-width mismatch
-/// surfaces: an operator/ctor argument, a value/param `(: … T)` annotation, and an annotated let-binder.
-/// GATED to an ALIASED expected width ({8,16,32,64}) — only those render to a BOUND type name, so
-/// `(<Expected>.of …)` resolves; a non-aliased `(Int 48)` would suggest an unbound `Int48.of`, worse than
-/// no fix. The wrap text is a member-access spelling the resolver handles generically, not a hard-coded
-/// name. Heuristic: `.of` is CHECKED (traps out of range), and which operand to convert is the author's
-/// intent. `None` unless both types are integers and the expected width is aliased.
+/// The `(prefix, suffix, verb)` of the conversion `(<Expected>.of …)` when a NUMERIC value of one
+/// width/precision is supplied where a DIFFERENT one of the SAME numeric kind is `expected` — the
+/// numeric-model coercion wrap (`06-numeric-model.sexp` — `(+ 2 (Int64.of 1))`). Covers BOTH an INTEGER
+/// width mismatch (`Int8`/`Int64`) and a FLOAT precision mismatch (`Float32`/`Float64`); shared by every
+/// site the same mismatch surfaces — an operator/ctor argument, a value/param `(: … T)` annotation, and an
+/// annotated let-binder. GATED to an ALIASED expected width/precision (int {8,16,32,64}, float {32,64}) —
+/// only those render to a BOUND type name, so `(<Expected>.of …)` resolves; a non-aliased `(Int 48)` would
+/// suggest an unbound `Int48.of`, worse than no fix. The wrap text is a member-access spelling the resolver
+/// handles generically, not a hard-coded name. Heuristic: which value to convert is the author's intent —
+/// and the int `.of` is CHECKED (traps out of range) while the float `.of` is TOTAL (widen exact, narrow
+/// rounds), reflected in the verb. `None` unless both types are the same numeric kind at an aliased width.
 fn int_coercion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, String)> {
-    if let (Ty::Int(exp), Ty::Int(_)) = (expected, actual)
-        && crate::ty::ALIASED_INT_WIDTHS.contains(&exp.ground_width())
-    {
+    let (kind_matches, aliased, checked) = match (expected, actual) {
+        (Ty::Int(exp), Ty::Int(_)) => (
+            true,
+            crate::ty::ALIASED_INT_WIDTHS.contains(&exp.ground_width()),
+            true,
+        ),
+        (Ty::Float(exp), Ty::Float(_)) => (
+            true,
+            crate::ty::ADMITTED_FLOAT_WIDTHS.contains(&exp.ground_width()),
+            false,
+        ),
+        _ => (false, false, false),
+    };
+    if kind_matches && aliased {
         let n = expected.render_name();
-        return Some((
-            format!("({n}.of "),
-            ")".to_string(),
-            format!("convert to {n} with `{n}.of` (checked)"),
-        ));
+        let verb = if checked {
+            format!("convert to {n} with `{n}.of` (checked)")
+        } else {
+            format!("convert to {n} with `{n}.of`")
+        };
+        return Some((format!("({n}.of "), ")".to_string(), verb));
     }
     None
 }

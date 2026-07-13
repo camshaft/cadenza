@@ -165,7 +165,7 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
         // conflict; a deferred literal (`Deferred` on both axes) grounds to whatever it meets.
         (Ty::Int(ia), Ty::Int(ib)) => {
             unify_sign(subst, ia.sign, ib.sign, &a, &b)?;
-            unify_width(subst, ia.width, ib.width)
+            unify_width(subst, ia.width, ib.width, NumericKind::Int)
         }
         (Ty::Fn(pa, ra), Ty::Fn(pb, rb)) => {
             unify(subst, pa, pb)?;
@@ -313,7 +313,9 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
         // a width variable). So `Float32`/`Float64` are distinct (two fixed widths conflict → CDZ0301),
         // a deferred/variable float width solves. A float does NOT unify with `Ty::Int` (it falls to the
         // `mismatch` below, coded CDZ0301 as two-different-numeric), so `(+ 2 2.0)` is rejected.
-        (Ty::Float(fa), Ty::Float(fb)) => unify_width(subst, fa.width, fb.width),
+        (Ty::Float(fa), Ty::Float(fb)) => {
+            unify_width(subst, fa.width, fb.width, NumericKind::Float)
+        }
         // Two quantities unify iff their UNITS are EQUAL and their INNER numeric types unify. A unit is a
         // concrete compile-time value (never a variable), so it is not solved by unification — it is a
         // side condition, exactly like a sum's `decl`. Unequal units are a DIMENSIONAL mismatch, but the
@@ -381,7 +383,7 @@ fn resolve_sign(subst: &Subst, s: Sign) -> Sign {
 }
 
 /// Unify two widths — a variable/deferred width takes the other; two different fixed widths conflict.
-fn unify_width(subst: &mut Subst, a: Width, b: Width) -> Result<(), Reject> {
+fn unify_width(subst: &mut Subst, a: Width, b: Width, kind: NumericKind) -> Result<(), Reject> {
     let a = resolve_width(subst, a);
     let b = resolve_width(subst, b);
     match (a, b) {
@@ -404,15 +406,31 @@ fn unify_width(subst: &mut Subst, a: Width, b: Width) -> Result<(), Reject> {
         (Width::Fixed(x), Width::Fixed(y)) if x == y => Ok(()),
         (Width::Fixed(x), Width::Fixed(y)) => {
             trace!(target: "rcdzc::unify", lhs = x, rhs = y, "width conflict (CDZ0301, no silent promotion)");
-            Err(Reject::coded(
-                Code::NumericMismatch,
-                format!(
+            // The message names the RIGHT numeric domain: an integer width vs a floating-point precision.
+            // A `Float32`/`Float64` mismatch used to read "integer widths differ … never silently widens
+            // or narrows an INTEGER", which is wrong (the values are floats) — `kind` picks the wording.
+            let msg = match kind {
+                NumericKind::Int => format!(
                     "integer widths differ: {x}-bit vs {y}-bit — convert explicitly (Cadenza never \
                      silently widens or narrows an integer)"
                 ),
-            ))
+                NumericKind::Float => format!(
+                    "floating-point precisions differ: {x}-bit vs {y}-bit — convert explicitly \
+                     (Cadenza never silently widens or narrows a float)"
+                ),
+            };
+            Err(Reject::coded(Code::NumericMismatch, msg))
         }
     }
+}
+
+/// Which numeric domain a width belongs to — so a width conflict names the right thing (an integer's
+/// WIDTH vs a float's PRECISION). Threaded into [`unify_width`] by its two callers (the `Ty::Int` and
+/// `Ty::Float` unify arms); nothing else about the width algebra depends on it.
+#[derive(Clone, Copy)]
+enum NumericKind {
+    Int,
+    Float,
 }
 
 fn resolve_width(subst: &Subst, w: Width) -> Width {

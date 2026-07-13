@@ -16466,6 +16466,44 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_float_precision_mismatch_names_floats_and_offers_an_of_conversion_fix() {
+        // A `Float32`/`Float64` mismatch is CDZ0301 like the integer-width case — but its message must name
+        // the FLOAT domain: "floating-point precisions differ … never silently widens or narrows a FLOAT",
+        // NOT the "integer widths differ … an integer" the shared width-unify used to (mis)report. And it
+        // carries the same `(<Type>.of …)` coercion fix (the float `.of` is total, not "checked").
+        let d = first_error("(module m (def (f (: a Float32) (: b Float64)) (+. a b)) (export f))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
+        assert!(
+            d.message.contains("floating-point precisions differ")
+                && d.message.contains("a float")
+                && !d.message.contains("integer"),
+            "the message names the FLOAT domain, not integer: {}",
+            d.message
+        );
+        let fix = d.fix.expect("a float coercion fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            fix.replacement,
+            format!("(Float32.of {})", crate::abi::WRAP_HOLE),
+            "wraps the operand in the expected float type's `.of`"
+        );
+        // The float `.of` is TOTAL (no trap), so the verb OMITS "(checked)".
+        assert!(
+            !fix.label.contains("checked"),
+            "float `.of` is total, not checked: {}",
+            fix.label
+        );
+        // The annotation position mirrors it: `(: n Float64)` for `n : Float32` → `(Float64.of n)`.
+        let a = first_error("(module m (def (f (: n Float32)) (: n Float64)) (export f))");
+        assert_eq!(
+            a.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some(format!("(Float64.of {})", crate::abi::WRAP_HOLE)).as_deref(),
+            "annotation-position float coercion: {}",
+            a.message
+        );
+    }
+
+    #[test]
     fn a_non_aliased_int_width_target_carries_no_conversion_fix() {
         // The conversion is GATED to an ALIASED width ({8,16,32,64}) — those are the only BOUND names. The
         // TARGET is the FIRST operand's type (the one the operator pins); with a non-aliased `(Int 48)`
