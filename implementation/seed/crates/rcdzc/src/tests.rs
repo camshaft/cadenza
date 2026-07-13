@@ -6597,6 +6597,43 @@ mod match_engine {
     }
 
     #[test]
+    fn symbol_of_a_non_string_reports_one_error_not_a_misleading_runtime_string_decline() {
+        // `(Symbol.of 5)` is a type error (`Symbol.of : String → Symbol`, applied to Int64) — CDZ0203.
+        // It used to ALSO emit the emit-path decline "Symbol.of on a runtime string is not yet interned",
+        // which is a LIE (5 is not a string at all) AND a second `error:`. Now the decline is suppressed
+        // (an uncoded decline at a node that carries a coded reject is shadowed by it), so the type error
+        // is the ONE story. A genuine runtime STRING still declines honestly elsewhere.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) (Symbol.of 5)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "Symbol.of on a non-string = one type error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0203"));
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("runtime string")),
+            "the misleading 'runtime string' decline must not accompany the type error"
+        );
+    }
+
+    #[test]
     fn constant_symbol_of_equality_and_to_string_fold() {
         // 17-symbols inc 1: `Symbol.of` interns a String → Symbol (content-derived identity), and equality
         // is String equality lifted through the Symbol tag. A CONSTANT symbol reuses the underlying

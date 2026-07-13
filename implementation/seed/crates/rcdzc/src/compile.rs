@@ -575,6 +575,17 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
         .filter(|r| r.at.is_some())
         .map(|r| (r.code, r.message.as_str()))
         .collect();
+    // The GENERAL shadowing rule (subsumes the specific ones above for the same-node case): a node that
+    // carries a CODED reject already has its authoritative, actionable "no"; an UNCODED decline anchored
+    // at that SAME node is the weaker consequence of the same defect (`reference-compiler.md` §Outcomes
+    // Are Ordered By Safety — a coded rejection dominates a decline). Drop it. E.g. `(Symbol.of 5)`: the
+    // CDZ0203 type error and the emit path's "runtime string" decline both anchor the call node → keep
+    // only the CDZ0203. A decline at a node with NO coded reject (a genuinely-unbuilt construct) survives.
+    let coded_nodes: std::collections::HashSet<u32> = faults
+        .iter()
+        .filter(|r| r.code.is_some())
+        .filter_map(|r| r.at.map(|s| s.0))
+        .collect();
     let mut seen: std::collections::HashSet<(Option<Code>, Option<u32>, Option<String>)> =
         std::collections::HashSet::new();
     faults
@@ -607,6 +618,10 @@ fn dedup_faults(faults: Vec<Reject>) -> Vec<Reject> {
             // An unanchored fault that also appears ANCHORED (same code + message) is that fault minus
             // its location — drop it, the anchored copy already carries the issue with a line:col.
             if r.at.is_none() && anchored_keys.contains(&(r.code, r.message.as_str())) {
+                return false;
+            }
+            // A DECLINE anchored at a node that also carries a CODED reject is shadowed by it — drop it.
+            if r.is_decline() && r.at.is_some_and(|s| coded_nodes.contains(&s.0)) {
                 return false;
             }
             // An anchored fault is identified by (code, node); an unanchored one by (code, message)
