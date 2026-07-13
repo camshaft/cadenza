@@ -477,6 +477,43 @@
   (call   main (: 10 Int64))
   (output (: 23 Int64)))
 
+; A runtime closure whose body CALLS A RECURSIVE TOP-LEVEL FUNCTION. `(fn (x) (fact x))` is lifted (it is
+; passed to the recursive `ap`, so it cannot fold), and its body invokes the recursive `fact` — a
+; `Core::Call` to a standalone wasm function nested inside a `call_indirect`ed closure body. This is the
+; canonical "map a recursive function over a structure" shape a real compiler needs: the closure survives
+; as a runtime value AND its body drives an ordinary recursive call. `ap (fn (x) (fact x)) 3` sums
+; fact(3)+fact(2)+fact(1) = 6+2+1 = 9.
+
+(case "a runtime closure whose body calls a recursive top-level function"
+  (doc    "`(fn (x) (fact x))` is a runtime closure (passed to the recursive `ap`) whose body calls the
+           recursive `fact`. The lifted closure body holds a `Core::Call` to `fact` — a recursive wasm
+           function invoked from inside a call_indirect'd closure. `ap g 3` = fact(3)+fact(2)+fact(1) =
+           6+2+1 = 9. Pins that a lifted closure's body can drive an ordinary recursive call.")
+  (input  (do
+            (def (fact (: m Int64)) (if (= m 0) 1 (* m (fact (- m 1)))))
+            (def (ap (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (ap g (- n 1)))))
+            (def (main (: n Int64)) (ap (fn ((: x Int64)) (fact x)) n))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 9 Int64)))
+
+; A runtime closure that COMPARES its argument to a CAPTURED value in an `if`. `(fn (x) (if (= x k) 1 0))`
+; captures `k` and branches on `x == k` — the captured `k` feeds a comparison whose boolean drives an `if`
+; inside the lifted body. `ap g 3` with k=2 counts how many of 3,2,1 equal 2, weighted 1 each = 1.
+
+(case "a runtime closure compares its argument to a captured value in a branch"
+  (doc    "`(fn (x) (if (= x k) 1 0))` captures `k` and compares its parameter against it, branching on
+           the result. Through the recursive `ap` with k=2 over 3,2,1: only x=2 matches, so the sum is 1.
+           Pins that a captured value drives a comparison + branch inside a lifted closure body.")
+  (input  (do
+            (def (ap (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (ap g (- n 1)))))
+            (def (main (: k Int64)) (ap (fn ((: x Int64)) (if (= x k) 1 0)) 3))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 1 Int64)))
+
 ; A closure that captures a BOOLEAN. The captured value's TYPE decides the runtime op that unboxes it
 ; from the env cell — an integer capture reads `get-int`, a boolean reads `get-bool`. That op is emitted
 ; ONLY inside the LIFTED closure body, never in a top-level def, so the module's import set (which is

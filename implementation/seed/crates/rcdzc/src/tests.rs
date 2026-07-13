@@ -12963,6 +12963,43 @@ mod stage1 {
     }
 
     #[test]
+    fn a_runtime_closure_body_calls_a_recursive_top_level_function() {
+        // A lifted closure whose body drives an ordinary RECURSIVE CALL — `(fn (x) (fact x))` (passed to
+        // the recursive `ap`, so it cannot fold) invokes the recursive `fact`. The lifted body holds a
+        // `Core::Call` to `fact` nested inside a `call_indirect`ed closure — the canonical "map a recursive
+        // function over a structure" shape. `ap g 3` = fact(3)+fact(2)+fact(1) = 6+2+1 = 9.
+        let src = "(module m \
+            (def (fact (: m Int64)) (if (= m 0) 1 (* m (fact (- m 1))))) \
+            (def (ap (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (ap g (- n 1))))) \
+            (def (main (: n Int64)) (ap (fn ((: x Int64)) (fact x)) n)) (export main))";
+        let Some(r) = run_closure(src, 3) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "9"); // fact(3)+fact(2)+fact(1)
+        assert_eq!(run_closure(src, 5).unwrap(), "153"); // 120+24+6+2+1
+    }
+
+    #[test]
+    fn a_runtime_closure_compares_its_argument_to_a_captured_value() {
+        // A captured value drives a COMPARISON + BRANCH inside the lifted body: `(fn (x) (if (= x k) 1 0))`
+        // captures `k` and branches on `x == k`. Through the recursive `ap` with k=2 over 3,2,1, only x=2
+        // matches, so the sum is 1. (A different k selects a different element — k=3 → 1 at x=3.)
+        let src = "(module m \
+            (def (ap (: g (-> Int64 Int64)) (: n Int64)) \
+              (if (= n 0) 0 (+ (g n) (ap g (- n 1))))) \
+            (def (main (: k Int64)) (ap (fn ((: x Int64)) (if (= x k) 1 0)) 3)) (export main))";
+        let Some(r) = run_closure(src, 2) else {
+            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(r, "1"); // only x=2 matches k=2
+        assert_eq!(run_closure(src, 3).unwrap(), "1"); // only x=3 matches k=3
+        assert_eq!(run_closure(src, 9).unwrap(), "0"); // none of 3,2,1 equal 9
+    }
+
+    #[test]
     fn a_closure_that_captures_a_boolean_imports_the_ops_its_lifted_body_uses() {
         // A runtime op used ONLY inside a LIFTED closure body must still be imported. The used-op set that
         // fixes the module's import layout was walked over the top-level defs ONLY, NOT the lambda-lifted
