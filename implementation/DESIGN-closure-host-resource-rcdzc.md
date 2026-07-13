@@ -499,11 +499,22 @@ the component type. The new work:
   `Ty::String | Ty::Bytes` (both peeling nominals). The `call` copies the UTF-8 bytes out as `list<u8>`; the
   host gets the raw encoded bytes (not a decoded string), same render as `Bytes`. +3 corpus (constant
   `"hi"`→`(104 105)`, runtime `concat`→`(97 98 99)`, capturing). Gate 1362p/0f.
+- **✅ MULTI-EXPORT byte-rope-result closures COMPLETE `@ba4c9864`.** N same-signature closures each
+  returning a `Bytes`/`String` share ONE `call` that returns `list<u8>` — the multi-export shape extended to
+  the compound-result `call`. `serialize::multi_closure_bytes_resource_core_module` (N makes + one shared
+  bytes-`call` = memory + cabi_realloc + the copy loop) + `envelope::assemble_multi_closure_bytes_resource` +
+  `resource_inner_component_multi_closure_bytes` (list-result `call`, running-type-counter layout);
+  `emit_multi_closure_resource` routes a byte-rope shared result (`ret_is_bytes`) here. ⚠ found+fixed a
+  `wasm_vec` miscount: the bytes alias section is `nmk+3` (N makes + call + memory + cabi_realloc), not
+  `nmk+2` → "section size mismatch". +3 corpus (two same-sig Bytes closures both driven, two same-sig String
+  closures). Gate 1364p/0f.
 - **REMAINING (all optional, none blocking):** a tuple/list/record closure RESULT (needs the escape's
   `encode` walker + value-form framing instead of the raw byte copy — the render would then be the typed
-  `(: … T)` form, not a bare byte list); a compound closure ARG (host→guest decode — harder); a
-  compound-RESULT plain export alongside a closure; a closure TRANSFORMER (`own<t>` both directions — cleanly
-  declined); the wasmtime-blocked `borrow<t>` repeated-call handle. Everything else DONE.
+  `(: … T)` form, not a bare byte list); a byte-rope result on the MIXED path (closure + plain export —
+  `assemble_mixed_closure_resource` not yet extended) OR the DISTINCT-sig path; a compound closure ARG
+  (host→guest decode — harder); a compound-RESULT plain export alongside a closure; a closure TRANSFORMER
+  (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call handle.
+  Everything else DONE.
 
 ## Risks / open questions
 
