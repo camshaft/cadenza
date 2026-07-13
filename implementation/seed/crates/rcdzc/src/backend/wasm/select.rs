@@ -4779,35 +4779,44 @@ fn emit_machine_overflow_guard(
             out.push(Lir::IfUnreachableEnd);
         }
         Prim::Mul => {
-            // CONSTANT-MULTIPLIER FAST PATH (full-width signed `(* a C)`, `C` a compile-time constant
-            // with `C > 1` and not a power of two — a power of two is already strength-reduced to a shift
-            // before reaching here, and `C ∈ {0, 1}` folds in `lower`). The general guard runs a `div_s`
-            // (the slowest integer op) on EVERY multiply; but for a known `C > 0` the product overflows
-            // iff `a` is outside `[MIN/C, MAX/C]` (truncated-toward-zero constants — the largest/smallest
-            // `a` whose `a*C` still fits). So two compile-time-constant compares — `a > MAX/C` or
-            // `a < MIN/C` → trap — replace the divide. Full-width only (the machine slot extremes ARE the
-            // type bounds); `C < 0` (sign flip, plus the `*-1` MIN case) and unsigned and a narrow width
-            // keep the `div_s` round-trip below. `MAX/C`/`MIN/C` use Rust's `/` (trunc toward zero),
-            // matching the boundary exactly (`(MAX/C)*C <= MAX < (MAX/C+1)*C`).
+            // CONSTANT-MULTIPLIER FAST PATH (full-width signed `(* a C)`, `C` a compile-time constant).
+            // The general guard runs a `div_s` (the slowest integer op) on EVERY multiply; but for a
+            // known `C` the product `a*C` overflows iff `a` leaves the interval of `a`-values whose
+            // product fits — a compile-time-constant interval, tested with TWO compares. `MAX/C` and
+            // `MIN/C` truncate toward zero (Rust `/`), which is exactly the interval endpoints
+            // (brute-verified at every boundary, both signs of C):
+            //   C > 0: `aC` grows with `a` → fits iff `MIN/C <= a <= MAX/C`; trap iff `a > MAX/C || a < MIN/C`.
+            //   C < 0: `aC` shrinks with `a` → fits iff `MAX/C <= a <= MIN/C`; trap iff `a < MAX/C || a > MIN/C`.
+            // Eligible when `|C| >= 2` (`C ∈ {-1,0,1}` excluded: 0/1 fold in `lower`, and `C == -1` is the
+            // negation whose `MIN/-1 = 2^63` bound is NOT i64-representable — `i64::MIN / -1` even panics —
+            // so `-1` keeps the `div_s` guard) AND `C` is not a POSITIVE power of two (already
+            // strength-reduced to a shift; a NEGATIVE power like `-2`/`-4` is not, so it IS eligible here).
+            // Full-width only (the machine slot extremes ARE the type bounds); unsigned and narrow keep the
+            // `div_s` round-trip below.
             if !m.narrow()
                 && m.signed
                 && let Some((a_src, c)) = const_operand_split(Prim::Mul, sa, sb)
-                && c > 1
-                && (c & (c - 1)) != 0
+                && c.unsigned_abs() >= 2
+                && !(c > 0 && (c & (c - 1)) == 0)
             {
                 let (slot_min, slot_max) = if m.slot32 {
                     (i32::MIN as i64, i32::MAX as i64)
                 } else {
                     (i64::MIN, i64::MAX)
                 };
-                // a > MAX/C → trap.
+                // The interval endpoints (both trunc-toward-zero); which compare traps depends on C's sign.
+                // C>0: a > MAX/C (upper) or a < MIN/C (lower). C<0: a < MAX/C (lower) or a > MIN/C (upper).
+                let (lt_bound, gt_bound) = if c > 0 {
+                    (slot_min / c, slot_max / c) // trap if a < MIN/C  or  a > MAX/C
+                } else {
+                    (slot_max / c, slot_min / c) // trap if a < MAX/C  or  a > MIN/C
+                };
                 a_src.push(out);
-                out.push(m.konst(slot_max / c));
+                out.push(m.konst(gt_bound));
                 out.push(m.gt_s());
                 out.push(Lir::IfUnreachableEnd);
-                // a < MIN/C → trap.
                 a_src.push(out);
-                out.push(m.konst(slot_min / c));
+                out.push(m.konst(lt_bound));
                 out.push(m.lt_s());
                 out.push(Lir::IfUnreachableEnd);
                 return;

@@ -2314,6 +2314,49 @@ fn a_constant_multiplier_bound_check_traps_at_the_exact_boundary() {
     );
 }
 
+/// The const-multiplier bound check extends to a NEGATIVE constant `C <= -2`: `a*C` shrinks as `a`
+/// grows, so it fits iff `MAX/C <= a <= MIN/C` and traps iff `a < MAX/C || a > MIN/C` (both
+/// trunc-toward-zero). `(* a -3)`: `a = MIN/-3` (positive) fits, `+1` overflows; `a = MAX/-3` (negative)
+/// fits, `-1` overflows. A negative POWER of two (`-2`) is eligible too (only positive powers become a
+/// shift). BUT `C = -1` is EXCLUDED — `MIN/-1 = 2^63` is not i64-representable — so it keeps the `div_s`
+/// guard, and `MIN * -1` still traps through it.
+#[test]
+fn a_negative_constant_multiplier_bound_check_traps_at_the_exact_boundary() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let src = "(module m (def (f (: a Int64)) (* a -3)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let max_over_neg3 = i64::MAX / -3; // -3074457345618258602 (the negative lower endpoint)
+    let min_over_neg3 = i64::MIN / -3; // 3074457345618258602 (the positive upper endpoint)
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "f", &[Val::S64(min_over_neg3)]),
+        min_over_neg3 * -3
+    );
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "f", &[Val::S64(max_over_neg3)]),
+        max_over_neg3 * -3
+    );
+    assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(5)]), -15);
+    assert!(
+        call_traps(&bytes, "f", &[Val::S64(min_over_neg3 + 1)]),
+        "a*-3 just past MIN/-3 must trap"
+    );
+    assert!(
+        call_traps(&bytes, "f", &[Val::S64(max_over_neg3 - 1)]),
+        "a*-3 just past MAX/-3 must trap"
+    );
+    // `* -1` is the excluded case — it keeps the div_s guard; `MIN * -1` must still trap (overflow), a
+    // small value negates. This pins that C=-1 did NOT take the bound-check path (which would have
+    // panicked the compiler computing MIN/-1) and still traps correctly.
+    let neg1 = "(module m (def (f (: a Int64)) (* a -1)) (export f))";
+    let nb = compile_component(&crate::codec::encode(&parse(neg1))).expect("compile");
+    assert_eq!(run_returns_with::<i64>(&nb, "f", &[Val::S64(5)]), -5);
+    assert!(
+        call_traps(&nb, "f", &[Val::S64(i64::MIN)]),
+        "MIN * -1 overflows and must trap"
+    );
+}
+
 /// A NESTED runtime checked op composes and traps correctly — `(* (+ a b) c)` computes in range and
 /// the shared scratch pool does not corrupt across the nesting.
 #[test]
@@ -7027,8 +7070,9 @@ mod stage1 {
                      (def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) \
                         (IntList.Cons (tuple n (count (- n 1)))))) \
                      (def (main) (count 3)) (export main))";
-        let err = compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("a nullary recursive-sum return declines (no looping value-form walker yet)");
+        let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "a nullary recursive-sum return declines (no looping value-form walker yet)",
+        );
         assert!(
             !err.message.contains("takes a parameter"),
             "a NULLARY recursive-sum return must NOT be misdiagnosed as parameterized, got: {}",
