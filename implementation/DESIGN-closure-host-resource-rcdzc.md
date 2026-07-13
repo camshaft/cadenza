@@ -388,6 +388,25 @@ the component type. The new work:
   = import_base` — else a SELECTED consumer body's `call_indirect(lifted_type_index)` was off by 2*G-1.
   e2e: appa(t0,I64->I64) adder(10)+appa(5)=15; appb(t1,I64->Bool) isz()+appb(0)=true/appb(5)=false. +3
   corpus (→54). ⚠ still declines: a closure TRANSFORMER, a >1-closure-param consumer.
+- **✅ CAMELCASE / NON-KEBAB EXPORT NAMES COMPLETE `@f577fe72`.** A component-model extern name MUST be
+  kebab-case, but a Cadenza source identifier may be camelCase or snake_case (`mkA`, `appA`, `makeAdder`).
+  The single-closure escape already used FIXED boundary names (`make`/`call`), but the multi-export,
+  distinct-sig, and round-trip shapes published the SOURCE name verbatim as the PUBLIC inner-component
+  export name → a camelCase closure program emitted a component wasmtime rejects ("not in kebab case").
+  Fix, two parts: (1) the PRIVATE per-func wiring names are now INDEX-derived (`import-func-f<n>`) instead
+  of `import-func-<source-name>`, so a source name never reaches a wiring name — each inner-component
+  import is paired with its instantiate arg by the same `f<n>` sequence, in the same order (a NEW helper
+  `import_wire_name(f)` at every make/call/consumer wiring site across multi-export, distinct-sig,
+  round-trip, and distinct-sig round-trip); (2) `export_func_ascribed_item` — the ONE path that emits a
+  PUBLIC closure-interface export name — kebab-normalizes via `kebab_extern_name`, the SAME rule
+  `comp_export_item` uses for a bare scalar export. Already-kebab names (`make`, `call`, `call-g0`,
+  `make-adder`) are the IDENTITY, so every existing corpus case is byte-for-byte unchanged. `cdz-run`
+  resolves the caller's SOURCE name through the SAME `kebab_extern_name` rule in the round-trip,
+  distinct-sig, and multi-export lookups, so `(call appA …)` still finds the `app-a` export. +2 corpus
+  (a camelCase round-trip `mkA`/`appA`→15; a camelCase same-sig multi-export `makeAdder`/`makeScaler`→12).
+  Gate 1261p/0f. 🔑 This is the THIRD sighting of the kebab-extern-name gotcha (after `call-0`→`call-g<n>`
+  and the effect-boundary names spec fixed at `@371a8d32`): ANY name minted at the component boundary must
+  pass `kebab_extern_name`; PRIVATE wiring names should be index-derived so a source identifier can't leak.
 - **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG-or-RESULT (recursion
   into the value-heap escape's encode/decode); a closure exported ALONGSIDE a non-closure export; a closure
   TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call
