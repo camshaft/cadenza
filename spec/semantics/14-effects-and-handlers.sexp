@@ -399,6 +399,20 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match 1 (0 5) (_ (+ 1 (Amb.flip)))))) (export main)))
   (output (: 12 Int64)))
 
+(case "a handler arm that resumes NON-tail folds a perform in a short-circuit connective right operand"
+  (doc    "A perform in an `and`/`or` RIGHT operand (a conditionally-run position) folds by composition: the
+           connective desugars to `if` — `(and l r)` is `(if l r false)`, `(or l r)` is `(if l true r)` —
+           and the `if`-branch perform then distributes (the pure-conditioned tail conditional case). The
+           short-circuit is preserved because the right operand becomes a conditionally-taken branch: it runs
+           only when the left operand selects it. Here `(and (< 3 5) (< (Amb.flip) 5))` with arm `(not (resume
+           10 s))`: the left `(< 3 5)` is true, so the right runs — `C = (< [] 5)`, `(resume 10 s)` = `(< 10
+           5)` = false, and `(not false)` = true.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (not (resume 10 s)))) (and (< 3 5) (< (Amb.flip) 5)))) (export main)))
+  (output (: true Bool)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the

@@ -291,6 +291,7 @@ pass	a handle body reads an enclosing function parameter
 pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm for an operation the effect does not declare is rejected
 pass	a handler arm that resumes NON-tail folds a perform in a match arm body by handler distribution
+pass	a handler arm that resumes NON-tail folds a perform in a short-circuit connective right operand
 pass	a handler arm that resumes NON-tail folds a perform in an if branch by handler distribution
 pass	a handler arm that resumes NON-tail folds through a PURE one-hole continuation
 pass	a handler arm that resumes NON-tail folds when the perform is in a let init

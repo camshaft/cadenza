@@ -22683,6 +22683,40 @@ mod stage1 {
     }
 
     #[test]
+    fn a_non_tail_resume_in_a_connective_rhs_folds_via_the_if_desugar_and_distribution() {
+        // A perform in an `and`/`or` RIGHT operand (a conditionally-run position) folds: `and`/`or` desugars
+        // to `if` (`(and l r)` ≡ `(if l r false)`), and the resulting `if`-branch perform then distributes
+        // (the branch is the pure-conditioned tail conditional case). `(and (< 3 5) (< (Amb.flip) 5))` with
+        // arm `(not (resume 10 s))`: lhs `(< 3 5)`=true → rhs runs → C=(< □ 5), resume 10 → (< 10 5)=false →
+        // (not false)=true.
+        let and_rhs = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (not (resume 10 s)))) (and (< 3 5) (< (Amb.flip) 5)))) (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(and_rhs)))
+                    .expect("a perform in an and rhs folds via the if desugar + distribution"),
+                "main"
+            ),
+            "lhs true → rhs runs → (< 10 5)=false → (not false)=true"
+        );
+        // SHORT-CIRCUIT preserved: `(or true (< (Amb.flip) 5))` — lhs true, so the rhs `(Amb.flip)` must NOT
+        // run. `(or l r)` ≡ `(if l true r)`; lhs true selects the `true` branch, the rhs branch (with the
+        // perform) is DEAD, so no perform fires and the whole handle is `true` (its body). If the perform
+        // wrongly ran it would still be `true` here, but the point is the elided branch's perform must not
+        // execute — witnessed by the value being the body's `true`, not the arm's `(not …)`.
+        let or_short = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (not (resume 10 s)))) (or true (< (Amb.flip) 5)))) (export main))";
+        assert!(
+            run_returns::<bool>(
+                &compile_component(&crate::codec::encode(&parse(or_short)))
+                    .expect("an or with a performing rhs folds, short-circuit preserved"),
+                "main"
+            ),
+            "lhs true short-circuits → the rhs perform is elided → the handle is its body value true"
+        );
+    }
+
+    #[test]
     fn two_performs_across_a_let_decline_the_pure_one_hole_fold() {
         // ADVERSARIAL: a hole in a let INIT and another in the BODY is a TWO-hole context — `pure_hole_seq`
         // over the init values + body finds a second hole → Impure → decline (needs sequential threading /
