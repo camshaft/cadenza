@@ -140,6 +140,11 @@ mod tag {
     /// as a sidecar request, not a `--debug` flag: a driver puts this in the request list (and supplies
     /// the `spans` input for the DWARF increments) rather than passing a build flag. Its artifact is a
     /// `component`, decorated and strippable (§5). (Mode S — a separate `dwarf` file — is `EMIT_DWARF`.)
+    ///
+    /// Debug output is thus OPT-IN: absent this request (and `EMIT_DWARF`), a build emits an undecorated
+    /// artifact, so a build includes or excludes the capability by whether it names a debug target.
+    //= spec/capabilities/debug-information.md#this-capability-is-optional
+    //# Debug-information emission MUST be an optional capability a build may include or exclude, in accordance with the build's declared defaults.
     pub const EMIT_WASM_DEBUG: u8 = 0x03;
     /// Emit a DETACHED DWARF sidecar (Mode S of `DESIGN-debug-info-rcdzc.md` §9.2) — a `Target::Dwarf`,
     /// a separate `kind == "dwarf"` artifact carrying only the `.debug_*` sections. The second

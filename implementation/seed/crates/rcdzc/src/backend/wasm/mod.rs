@@ -120,6 +120,12 @@ fn kebab_export_collision(layout: &Layout) -> Option<Reject> {
 /// user bodies — which lead the escape core's code section — so a compound-returning program is
 /// debuggable too (the synthesized `make`/`t-encode` walker funcs have no `src_body`, so they get no
 /// row). A fully-CONSTANT compound bakes its bytes with no user body, so it carries no `.debug_*`.
+///
+//= spec/capabilities/debug-information.md#emitting-debug-information-does-not-change-observable-behavior
+//# Emitting debug information for a program MUST NOT change the program's observable behavior.
+///
+//= spec/capabilities/debug-information.md#emitting-debug-information-does-not-change-observable-behavior
+//# The portion of an artifact that the runtime executes MUST be byte-identical whether or not debug information is emitted for it, so that debug information occupies a region of the artifact the runtime does not execute rather than altering the code that runs.
 pub fn emit(
     db: &mut Db,
     layout: &Layout,
@@ -455,11 +461,15 @@ pub fn emit(
             .map_err(Reject::decline)?
     };
 
-    // DEBUG (Mode E, D2): append the `.debug_*` DWARF custom sections to the embedded core module, so a
-    // debugger can STEP through Cadenza source. Function-granularity: one line row + one subprogram DIE
-    // per emitted function, its code-offset range from `code_ranges` (D1b) and its source line from the
-    // `spans` side-table (D1a). Inert + strippable — appended after the executed sections, so `debug =
-    // None` is byte-identical to today and `wasm-tools strip` recovers it. (`name` rode in `core_module`.)
+    // DEBUG (Mode E, D2/D3): append the `.debug_*` DWARF custom sections to the embedded core module, so
+    // a debugger can STEP through Cadenza source and inspect scalar locals. One subprogram DIE per emitted
+    // function, its code-offset range from `code_ranges` (D1b); its line program carries a row per
+    // distinct source POSITION the body visits (per-construct, from the `stmt_lines` markers — a
+    // single-construct body falls back to one function-entry row), and its scalar params/`let`-locals /
+    // match-binder scopes become `DW_TAG_formal_parameter`/`variable`/`lexical_block` children (D3), all
+    // keyed off the `spans` side-table (D1a). Inert + strippable — appended after the executed sections, so
+    // `debug = None` is byte-identical to today and `wasm-tools strip` recovers it. (`name` rode in
+    // `core_module` historically; `append_debug_sections` now emits BOTH `name` and `.debug_*` from one place.)
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut core);
 
     // A lean component paired with a DETACHED DWARF sidecar (Mode S, `Emit(Wasm)` + `Emit(Dwarf)` in one
@@ -641,6 +651,9 @@ fn host_op_comp_functype(h: &host::HostImport) -> Vec<u8> {
 /// walks the real bytes for the base — regardless of how many synthesized funcs (a resource walker's
 /// `make`/`t-encode`) trail them. Inert + strippable (appended after the executed sections); a `None`
 /// `spans` or a core with no code section leaves `core` untouched (byte-identical to a no-debug build).
+///
+//= spec/capabilities/debug-information.md#stripping-debug-information-recovers-the-undecorated-artifact
+//# Removing the debug information from an artifact that carries it MUST yield the byte-identical artifact the same source derives when debug information is excluded, so that debug information is a strippable addition to the runnable form rather than a modification of it.
 fn append_debug_sections(
     db: &Db,
     layout: &Layout,
@@ -798,20 +811,6 @@ fn dwarf_funcs_for(
     out
 }
 
-/// Emit a standalone DWARF SIDECAR module (Mode S of `DESIGN-debug-info-rcdzc.md` §9.2) — a
-/// `kind == "dwarf"` artifact separate from the runnable component. It is a minimal core wasm module
-/// carrying ONLY the four `.debug_*` custom sections; the runnable component (emitted separately by a
-/// sibling `Emit(WasmDebug)` or `Emit(Wasm)` request) stays lean, and a debugger loads this file
-/// alongside it. Because Mode E appends its debug sections AFTER the code section (inert), a function's
-/// code offset is the same whether DWARF is embedded or here — so this reuses the exact same
-/// `core_module` + `code_ranges` + `code_section_payload_base` computation, then wraps the sections in
-/// a bare module header instead of appending them to the runnable core.
-///
-/// Requires `spans` (guaranteed present by `compile`'s §9.4 check for a `needs_spans()` target). The
-/// resource-escape shapes (a nullary compound export) are handled by `resource_escape_dwarf` FIRST — it
-/// rebuilds the matching resource core (whose different layout Mode E attributes over identically) and
-/// derives the sidecar from that, so a compound-returning export gets a sidecar whose offsets match the
-/// embedded form. Only a runtime shape with no value-form walker yet (a runtime list) still declines.
 /// DWARF descriptors for a nullary-compound RESOURCE-ESCAPE export, for the detached sidecar (Mode S).
 ///
 /// A single nullary export returning a compound crosses through the resource-escape core, NOT the
@@ -1040,6 +1039,20 @@ fn resource_dwarf_from_core(
     ))
 }
 
+/// Emit a standalone DWARF SIDECAR module (Mode S of `DESIGN-debug-info-rcdzc.md` §9.2) — a
+/// `kind == "dwarf"` artifact separate from the runnable component. It is a minimal core wasm module
+/// carrying ONLY the four `.debug_*` custom sections; the runnable component (emitted separately by a
+/// sibling `Emit(WasmDebug)` or `Emit(Wasm)` request) stays lean, and a debugger loads this file
+/// alongside it. Because Mode E appends its debug sections AFTER the code section (inert), a function's
+/// code offset is the same whether DWARF is embedded or here — so this reuses the exact same
+/// `core_module` + `code_ranges` + `code_section_payload_base` computation, then wraps the sections in
+/// a bare module header instead of appending them to the runnable core.
+///
+/// Requires `spans` (guaranteed present by `compile`'s §9.4 check for a `needs_spans()` target). The
+/// resource-escape shapes (a nullary compound export) are handled by [`resource_escape_dwarf`] FIRST —
+/// it rebuilds the matching resource core (whose different layout Mode E attributes over identically) and
+/// derives the sidecar from that, so a compound-returning export gets a sidecar whose offsets match the
+/// embedded form. Only a runtime shape with no value-form walker yet (a runtime list) still declines.
 pub fn emit_dwarf(
     db: &mut Db,
     layout: &Layout,
