@@ -308,17 +308,31 @@ pub fn run_prepared(
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => std::cmp::Ordering::Equal,
     });
+    // One LINE-START INDEX per span table, built ONCE — so rendering each diagnostic's `line:col` is a
+    // binary search, not `line_at`/`col_at`'s O(byte_off) scan from the start of the source. A program
+    // with MANY diagnostics (e.g. an unused-binding warning per def in a wide module) mapped each fault's
+    // offset over the whole source → O(faults × source_len) = O(N²); the index makes it linear. Matched
+    // to the located table by pointer identity (`locate` returns a borrow into `span_tables`).
+    let line_starts: Vec<(&crate::spans::SpanData, crate::spans::LineStarts)> = span_tables
+        .iter()
+        .map(|(_, s)| (s, s.line_starts()))
+        .collect();
     for d in ordered {
         let sev = match d.severity {
             Severity::Error => "error",
             Severity::Warning => "warning",
         };
         // Prefer a source location from the spans: locate the node (via the linked demux or the direct
-        // lookup), then render `path:line:col`. Fall back to `(node N)` when no spans were supplied, or
-        // to nothing when the diagnostic carries no node.
+        // lookup), then render `path:line:col` via the prebuilt per-table line-start index. Fall back to
+        // `(node N)` when no spans were supplied, or to nothing when the diagnostic carries no node.
         let located = d.node.and_then(|n| {
             locate(n).map(|(s, start)| {
-                format!("{}:{}:{}", s.module_path, s.line_at(start), s.col_at(start))
+                let (line, col) = line_starts
+                    .iter()
+                    .find(|(t, _)| std::ptr::eq(*t, s))
+                    .map(|(_, idx)| idx.line_col(start))
+                    .unwrap_or_else(|| (s.line_at(start), s.col_at(start)));
+                format!("{}:{}:{}", s.module_path, line, col)
             })
         });
         match (located, d.node) {
