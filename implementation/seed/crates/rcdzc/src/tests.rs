@@ -2800,6 +2800,98 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_self_comparison_of_a_scalar_folds_to_a_constant() {
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let no_cmp = |c: &[Lir]| {
+            !c.iter().any(|i| {
+                matches!(
+                    i,
+                    Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS | Lir::I64Eq | Lir::I64Ne
+                )
+            })
+        };
+        // `x < x` / `x > x` → false; `x <= x` / `x >= x` / `x = x` → true — no runtime compare emitted.
+        // (`(let ((y x)) …)` copy-propagates so both operands are the same `x`.)
+        for (op, want) in [
+            ("<", false),
+            (">", false),
+            ("<=", true),
+            (">=", true),
+            ("=", true),
+        ] {
+            let c = lir("(: x Int64)", &format!("(let ((y x)) ({op} y y))"));
+            assert!(
+                c.contains(&Lir::ConstI32(want as i32)) && no_cmp(&c),
+                "(x {op} x) folds to {want} with no compare; got {c:?}"
+            );
+        }
+        // DISTINCT operands do NOT fold — a real compare stays.
+        let distinct = lir("(: a Int64) (: b Int64)", "(< a b)");
+        assert!(
+            distinct.iter().any(|i| matches!(i, Lir::I64LtS)),
+            "(< a b) keeps the compare; got {distinct:?}"
+        );
+        // A TRAPPING operand is NOT discarded — `(< (/ a b) (/ a b))` keeps the div so b==0 still traps.
+        let trapping = lir("(: a Int64) (: b Int64)", "(< (/ a b) (/ a b))");
+        assert!(
+            trapping.iter().any(|i| matches!(i, Lir::I64DivS)),
+            "a trapping self-comparison keeps its operand's div; got {trapping:?}"
+        );
+
+        // VALUE PARITY.
+        assert!(!run::<bool>(
+            "(: x Int64)",
+            "(let ((y x)) (< y y))",
+            &[Val::S64(7)]
+        ));
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(let ((y x)) (<= y y))",
+            &[Val::S64(7)]
+        ));
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(let ((y x)) (= y y))",
+            &[Val::S64(-3)]
+        ));
+        // The trapping form still traps on b==0, and computes false otherwise.
+        assert!(traps(
+            "(: a Int64) (: b Int64)",
+            "(< (/ a b) (/ a b))",
+            &[Val::S64(1), Val::S64(0)]
+        ));
+        assert!(!run::<bool>(
+            "(: a Int64) (: b Int64)",
+            "(< (/ a b) (/ a b))",
+            &[Val::S64(10), Val::S64(2)]
+        ));
+    }
+
+    #[test]
     fn a_comparison_against_a_narrow_types_own_bound_is_simplified() {
         use crate::backend::wasm::lir::Lir;
         use crate::backend::wasm::select::select_function;

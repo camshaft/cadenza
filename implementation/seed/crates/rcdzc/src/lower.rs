@@ -5284,6 +5284,19 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 return Core::ConstBool(eq);
             }
             if is_scalar(db, args[0]) && is_scalar(db, args[1]) {
+                // SELF-COMPARISON: the two operands are the SAME value (`core_equiv`), so the ordering is
+                // fixed regardless of what that value is — `x < x`/`x > x` → false, `x <= x`/`x >= x`/`x =
+                // x` → true. Sound ONLY for a TOTAL order and a TRAP-FREE operand: `is_scalar` is Int/Bool
+                // (a total order — Float, where `NaN < NaN` etc. is false and `NaN = NaN` is false, is NOT
+                // scalar and never reaches here), and the operand must be trap-free since the fold DISCARDS
+                // it — `(< (/ a b) (/ a b))` must still trap on b==0 (`core_equiv` matches pure cores, but a
+                // matched pure compare/arith can still wrap a trapping `/`). `compare_ord` gives the result
+                // for each operator at `Ordering::Equal`.
+                if core_equiv(db, args[0], args[1]) && is_trap_free(db, args[0]) {
+                    let r = compare_ord(op, std::cmp::Ordering::Equal);
+                    trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "self-comparison folds to a constant (x is a total-order scalar)");
+                    return Core::ConstBool(r);
+                }
                 // TYPE-BOUND simplification: a comparison of a runtime integer against a constant AT its
                 // own type's min/max is (partly) decidable — `v < min`/`v > max` are unsatisfiable, `v >=
                 // min`/`v <= max` are tautologies, and `v <= min`/`v >= max` rewrite to `v == bound` (the
