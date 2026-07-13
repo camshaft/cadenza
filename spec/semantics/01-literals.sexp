@@ -264,6 +264,23 @@
   (input  -0.0)
   (output (: -0.0 Float64)))
 
+; A float literal whose magnitude exceeds the largest FINITE Float64 (~1.8e308) denotes no
+; representable value: rounding it to the nearest binary64 gives an infinity, and the language provides
+; no `inf` spelling, so the value would have no written form that reads back. numeric-model.md §"A
+; Floating-Point Literal That Denotes No Representable Value Is Malformed" makes it a malformed literal
+; (CDZ0201) at the reader boundary — the exact float analogue of the out-of-range INTEGER literal
+; `9223372036854775808` above. This closes the prior spec gap where `1e400` silently produced `inf`.
+
+(case "an out-of-range float literal is a malformed literal, not a non-finite value"
+  (doc    "1e400 is far past Float64.max (~1.8e308): rounding it to binary64 gives +infinity, which has
+           no written form the reader accepts. A digit-led token with a `.`/exponent is a float literal;
+           a float literal outside the finite range is malformed (CDZ0201), NOT silently saturated to a
+           non-finite value nor a name. The float companion of the `9223372036854775808` out-of-range
+           integer case — the reader classifies it as numeric and rejects the magnitude, rather than
+           producing `inf` (which cannot be written back) or falling through to `unbound name`.")
+  (input    1e400)
+  (error    CDZ0201))
+
 (case "the boolean literals"
   (input  true)
   (output (: true Bool)))

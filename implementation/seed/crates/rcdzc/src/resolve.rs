@@ -159,10 +159,22 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // constant (lowers to a `Core::BytesOf` of its bytes, so it bakes/compares/slices exactly
             // like `(Bytes.of (list …))`, and renders back `b"…"`). The companion of the `Str` literal.
             Leaf::Bytes(bs) => Resolved::Bytes(bs.clone()),
-            // A FLOAT literal — types as `Ty::Float`, distinct from `Ty::Int` (so mixing rejects, no
-            // silent promotion). Its VALUE does not run yet (`core_of` declines): a pure-float program
-            // declines, an int↔float mix rejects at the type check.
-            Leaf::Float(d) => Resolved::Float(d.clone()),
+            // A FLOAT literal — types as `Ty::Float`, distinct from `Ty::Int` (so an int↔float mix
+            // rejects, no silent promotion). A literal whose magnitude exceeds the finite Float64 range
+            // rounds to `±inf`, which has no written form the reader accepts — so it is a MALFORMED
+            // literal (CDZ0201), the float analogue of the out-of-range integer literal
+            // `9223372036854775808` (numeric-model.md §A Floating-Point Literal That Denotes No
+            // Representable Value Is Malformed). A finite literal resolves to its exact `Decimal`.
+            Leaf::Float(d) => {
+                if d.is_finite_f64() {
+                    Resolved::Float(d.clone())
+                } else {
+                    Resolved::Poison(Reject::coded(
+                        Code::Malformed,
+                        "float literal out of the Float64 range".to_string(),
+                    ))
+                }
+            }
             // A bad-escape MARKER the reader emitted for a string literal with an UNRECOGNIZED escape
             // (`"\q"`). The reader cannot report through the artifact channel (its stderr is not the
             // diagnostic surface), so the COMPILER is where the lexical defect becomes a coded rejection:
