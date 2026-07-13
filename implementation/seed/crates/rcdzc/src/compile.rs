@@ -305,6 +305,13 @@ pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
     out
 }
 
+/// The FIXED registry of module-directive keys the specification defines (`modules-and-namespaces.md` §A
+/// Module Directive Is Drawn From A Fixed Set). The single source of truth for BOTH the `(pragma …)`
+/// validation (a key not here is CDZ0601) and the "did you mean?" suggestion an unknown key gets — so the
+/// suggestion can never drift from the accepted set. Small and closed today (`default-integer`); a new
+/// spec directive adds its key here.
+const PRAGMA_REGISTRY: &[&str] = &["default-integer"];
+
 /// Every fault across the program's definitions. Well-formedness — scope resolution and type
 /// checking — is UNCONDITIONAL: it holds over EVERY top-level definition's body, not only the ones
 /// reachable from an export, because a program is well-formed or not regardless of what is asked to
@@ -380,18 +387,28 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                     );
                 }
             }
-            // A key the fixed registry does not define — rejected, not ignored.
+            // A key the fixed registry does not define — rejected, not ignored. If the typo'd key is a
+            // near-miss for a registry key (`default-integr` → `default-integer`), name it AND carry a
+            // replace fix on the KEY occurrence — the same closed-set "did you mean?" an unbound name /
+            // absent field / undeclared handler op gets (`spec/capabilities/diagnostics.md` §A Diagnostic
+            // Carries A Route To A Fix). The candidate pool is the registry itself, so a suggestion can
+            // never name a key the validator would then reject.
             Some(other) => {
-                faults.push(
-                    Reject::coded(
-                        Code::UnknownDirective,
-                        format!(
-                            "`{other}` is not a module directive this specification defines (the pragma \
-                             registry is a fixed set; an unknown key is rejected, not ignored)"
-                        ),
-                    )
-                    .at(form),
-                );
+                let mut reject = Reject::coded(
+                    Code::UnknownDirective,
+                    format!(
+                        "`{other}` is not a module directive this specification defines (the pragma \
+                         registry is a fixed set; an unknown key is rejected, not ignored)"
+                    ),
+                )
+                .at(form);
+                if let Some(candidate) =
+                    crate::diag::suggest::nearest(other, PRAGMA_REGISTRY.iter().copied())
+                    && let Some(&key_occ) = ptail.first()
+                {
+                    reject = reject.with_fix(crate::diag::Fix::replace_heuristic(key_occ, candidate));
+                }
+                faults.push(reject);
             }
             // `(pragma)` with no key at all — structurally malformed.
             None => {
