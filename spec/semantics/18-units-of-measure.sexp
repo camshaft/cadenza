@@ -492,7 +492,6 @@
   (doc    "`(+ (Qty.of v kilometre) (Qty.of 500 metre))` with `v` a runtime Int64 parameter: km converts
            to the reference metre by *1000 emitted at run time, so v=1 → 1000 + 500 = 1500 m. Pins that
            the conversion works on a NON-constant magnitude, not only a compile-time literal.")
-  (needs  units-of-measure)
   (input  (do
             (def (main (: v Int64))
               (Qty.value (+ (Qty.of v (Unit.prefix kilo (Unit.base #"metre")))
@@ -505,7 +504,6 @@
   (doc    "`(Unit.in metre (Qty.of v kilometre))` with `v` a runtime Int64: converts v km to metres by
            *1000 at run time, so v=3 → 3000 m. The explicit-conversion companion of the runtime mixed
            sum.")
-  (needs  units-of-measure)
   (input  (do
             (def (main (: v Int64))
               (Qty.value (Unit.in (Unit.of #"metre") (Qty.of v (Unit.of #"kilometre")))))

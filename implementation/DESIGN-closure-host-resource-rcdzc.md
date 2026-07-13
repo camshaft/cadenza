@@ -277,9 +277,26 @@ the component type. The new work:
   the call, + a 3-export parameterized-capturing set) + a multi-export serializer unit test + an
   end-to-end `a_compiled_multi_closure_program_is_driven_by_the_host` (make-inc→6, make-triple→15 via the
   shared call). Baseline 1318, gate 1146p/0f.
-- **C-HOST-4 — the round-trip (Direction 2).** A second export takes `borrow<closure-sig>`;
-  `cdz-run` threads a handle returned by one export back into another; inside, the param is
-  `resource.rep`'d to the cell and applied via `Core::CallClosure`. Proves host-as-custodian.
+- **✅ ROUND-TRIP ORACLE LANDED `@a3d80334` (byte anchor, test-only).** Proves C-HOST-4's shape RUNS
+  under wasmtime before hand-emitting — same oracle-first rhythm as C-HOST-1 / multi-export. A
+  `ComponentBuilder` component exports `make : () -> own<t>` AND a SEPARATE consumer `apply : (g:
+  own<t>, x: s64) -> s64` whose PARAMETER is the closure resource. The test drives the round trip:
+  host `make()` → a handle it holds → threaded BACK into `apply(handle, 5)` = 6 (dispatched via the
+  guest's `call_indirect` from a handle that crossed OUT of one export and IN to another). 🔑 The
+  dispatch (`resource.rep` → slot → `call_indirect`) is IDENTICAL to the `call` method; what is new is
+  the handle originates in one export call and is consumed by another. 🔑 KEY REALIZATION for hand-emit:
+  producer + consumer are in the SAME core module, so the closure's lifted lambda IS in-program —
+  `closure_type_index` CAN match it by signature (given the producer created a lambda of that
+  signature). Test fns: `roundtrip_core`, `roundtrip_inner_component`, `oracle_roundtrip_component`,
+  `a_closure_handle_round_trips_through_a_consumer_export`.
+- **C-HOST-4 HAND-EMIT (next).** The `own<closure>` export-PARAMETER ABI: (1) lower `(g x)` where `g` is
+  a closure-typed param — `Core::CallClosure` with a `Core::Param` closure operand; the param's wasm
+  local is the resource handle, so insert `resource.rep` to recover the cell before the existing
+  `arr-get(cell,0)`→`get-int`→`call_indirect` (the type index resolves against the in-program lifted
+  lambda by signature — no host-origin lambda needed since producer+consumer share the core module);
+  (2) a producer+consumer envelope (`make` + a consumer export taking `own<t>`); (3) `cdz-run` threads a
+  `ResourceAny` returned by one export call into a second export call. mod.rs still DECLINES any
+  closure-typed export param ("passed AS A PARAMETER") — that guard is what the hand-emit replaces.
 - **C-HOST-5 — the `borrow<t>` / dtor fix (shared with the escape).** Root-cause the
   wasmtime-37 borrow trap; switch `call` to `borrow<t>` and the export result to a properly
   dtor'd `own<t>`; retire the deliberate leak. Also fixes the value-heap `encode` leak
