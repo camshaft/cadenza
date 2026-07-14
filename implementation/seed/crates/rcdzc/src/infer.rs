@@ -3858,6 +3858,29 @@ fn definite_non_tuple(ty: &Ty) -> bool {
     !matches!(ty, Ty::Tuple(_) | Ty::Any | Ty::Var(_))
 }
 
+/// Whether `ty` is DEFINITELY not an integer — a `bin` int/bits segment value must be an integer. An
+/// `Any`/`Var` (a binder, an unreduced param, a bin-pattern binder that types as the decoded int) is
+/// NOT definite, so it is never flagged.
+fn definite_non_int(ty: &Ty) -> bool {
+    !matches!(ty, Ty::Int(_) | Ty::Any | Ty::Var(_))
+}
+
+/// Whether `ty` DEFINITELY conflicts with `want` — a concrete type that is neither `want` nor an
+/// unconstrained `Any`/`Var`. Used to check a `bin` utf8/bytes segment's value against its required kind.
+fn definite_conflicts_with(ty: &Ty, want: &Ty) -> bool {
+    !matches!(ty, Ty::Any | Ty::Var(_)) && ty != want
+}
+
+/// The surface NAME of a bin segment kind (`int`/`bits`/`bytes`/`utf8`) for a diagnostic message.
+fn seg_kind_name(kind: &crate::resolved::SegKind) -> &'static str {
+    match kind {
+        crate::resolved::SegKind::Int { .. } => "integer",
+        crate::resolved::SegKind::Bits { .. } => "bit-field",
+        crate::resolved::SegKind::Bytes { .. } => "bytes",
+        crate::resolved::SegKind::Utf8 { .. } => "utf8",
+    }
+}
+
 /// The surface NAME of a TUPLE row-operation prim (`cat`/`split-at`/`pop`) whose operand(s) must be a
 /// `Ty::Tuple`; `None` otherwise. `cat` takes two tuple operands, `split-at`/`pop` one.
 fn tuple_row_op_name(prim: Option<crate::resolved::Prim>) -> Option<&'static str> {
@@ -6282,6 +6305,41 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     }
                 }
                 collect(db, seg.slot, out);
+                // A segment's VALUE must match its KIND: an `Int`/`Bits` segment takes an integer, a
+                // `Utf8` segment a String, a `Bytes` segment a Bytes. An int segment fed a String
+                // (`(bin (u8 "x"))`) was silently accepted at BUILD (the int-segment lowering never
+                // type-checked its slot), emitting garbage bytes; a `Bytes` slot mismatch was caught only
+                // at compile ("not a Bytes value"). Check the slot's type here (so it surfaces in `cdz
+                // check` too), flagging ONLY a DEFINITE wrong kind — an `Any`/`Var` slot (a binder, an
+                // unreduced param, or — crucially — a bin PATTERN's binder, which types as the decoded
+                // value) is never flagged, so a valid `(bin …)` pattern/construction stays clean.
+                let (want, ok): (&str, bool) = match &seg.kind {
+                    crate::resolved::SegKind::Int { .. }
+                    | crate::resolved::SegKind::Bits { .. } => {
+                        ("an integer", !definite_non_int(&type_of(db, seg.slot)))
+                    }
+                    crate::resolved::SegKind::Utf8 { .. } => (
+                        "a String",
+                        !definite_conflicts_with(&type_of(db, seg.slot), &Ty::String),
+                    ),
+                    crate::resolved::SegKind::Bytes { .. } => (
+                        "a Bytes",
+                        !definite_conflicts_with(&type_of(db, seg.slot), &Ty::Bytes),
+                    ),
+                };
+                if !ok {
+                    out.push(
+                        Reject::coded(
+                            Code::IllFormedBinary,
+                            format!(
+                                "a bin {} segment takes {want} value, but this value is {}",
+                                seg_kind_name(&seg.kind),
+                                type_of(db, seg.slot).render_name()
+                            ),
+                        )
+                        .at(seg.slot),
+                    );
+                }
                 match &seg.kind {
                     crate::resolved::SegKind::Bytes { size: Some(n) } => collect(db, *n, out),
                     crate::resolved::SegKind::Utf8 { size } => collect(db, *size, out),
