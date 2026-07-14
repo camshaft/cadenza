@@ -84,7 +84,7 @@ export default function Floats() {
         Putting it together — the area of a circle, all in floating-point. Edit the radius and Run.
       </P>
       <Runnable
-        source={`(def (area r)
+        source={`(def (area (: r Float64))
   (* 3.14159 (* r r)))
 (def (main) (area 2.0))`}
       />

@@ -171,6 +171,23 @@ export default function MapsSets() {
         Take a key that isn't there and <C>.0</C> is <C>(None unit)</C> while <C>.1</C> equals the original —
         removal stays total, and you learn it held nothing in the same step.
       </P>
+      <P>
+        <C>Map.insert</C> has the same value-yielding twin, <C>Map.swap</C>: it inserts (or replaces) and
+        reports what the key held <em>before</em>, again as a <C>(prior-value . new-map)</C> tuple. So
+        swapping key <C>1</C> — already <C>10</C> — for <C>99</C> hands back the old <C>10</C> in <C>.0</C>,
+        no separate lookup needed:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (match (. (Map.swap (Map.insert (Map.empty) 1 10) 1 99) 0)
+    ((Some old) old)
+    ((None _) (- 0 1))))`}
+      />
+      <P>
+        Swap a key that's new and <C>.0</C> is <C>(None unit)</C> — nothing was replaced. Between them,{" "}
+        <C>take</C> reports what a remove <em>dropped</em> and <C>swap</C> what an insert <em>overwrote</em>,
+        each in a single step.
+      </P>
 
       <H2>Your turn</H2>
       <Exercise
