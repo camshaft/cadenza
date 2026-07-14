@@ -51711,7 +51711,12 @@ mod cross_component_oracle {
             (def (main (: x Int64)) (host (M) (host (P) (M.neg (. (P.pair x) 0))))) \
             (export main))";
         let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-            .unwrap_or_else(|d| panic!("two-interface consumer compiles: {} [{:?}]", d.message, d.code));
+            .unwrap_or_else(|d| {
+                panic!(
+                    "two-interface consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
+            });
         {
             let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
             v.validate_all(&consumer)
