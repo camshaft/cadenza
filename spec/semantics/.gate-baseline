@@ -275,6 +275,7 @@ pass	a distinct-signature round-trip's Bool closure on a nonzero input
 pass	a diverging expression unifies with an integer position
 pass	a division whose divisor folds to zero still traps
 pass	a do-local function declaration is recursive
+pass	a do-local generic function is instantiated per type
 pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
 pass	a duplicate match arm is dead code but the program still runs
@@ -502,6 +503,7 @@ pass	a multi-variant-sum binding pattern is refutable and rejected
 pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
+pass	a mutually-recursive generic group is instantiated per type
 pass	a name bound to a string keys a map by its value, not the literal name
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
@@ -686,6 +688,7 @@ pass	a recursive function counts down through a stateful effect and bails at zer
 pass	a recursive function folds a linked list of runtime-determined length
 pass	a recursive function folds a runtime linked list to a scalar
 pass	a recursive function in a nested module runs through the projection chain
+pass	a recursive function over a generic recursive sum is monomorphized per element type
 pass	a recursive function sums a range it walks by performing a fresh-index effect
 pass	a recursive function that installs a fresh handler on each call grows its context without bound
 pass	a recursive function that threads a tuple accumulator returns it
@@ -817,6 +820,7 @@ pass	a runtime wrapper sum whose payload is a variant is matched by a nested con
 pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a runtime-built generic user sum escapes with its parametric type frame
 pass	a runtime-built string crosses the boundary as its value form
+pass	a runtime-computed BigInt result crosses the host boundary
 pass	a runtime-magnitude quantity raised to a negative power emits the reciprocal
 pass	a runtime-magnitude quantity raised to a power emits the repeated multiply
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
@@ -875,6 +879,7 @@ pass	a sum type can mix nullary and payload-carrying variants
 pass	a sum type is declared with named variants
 pass	a sum type variant can carry data
 pass	a sum value annotated as a scalar type is rejected
+pass	a sum whose variants are named after target-language keywords constructs and matches
 pass	a sum-match recursion that accumulates a built-in list returns a list
 pass	a sum-payload-wrapped self-application is rejected in bounded time, not a compiler stack overflow
 pass	a sum-type value is constructed through a variant
@@ -1017,6 +1022,7 @@ pass	an annotated tuple-pattern parameter still checks its annotation against th
 pass	an annotated value takes a narrower integer width
 pass	an annotation by a reflected type that contradicts the value is rejected
 pass	an annotation that contradicts the value is rejected
+pass	an arbitrary-precision integer multiplication does not overflow
 pass	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 pass	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
@@ -1722,7 +1728,6 @@ todo	a nominal record compared to a plain record of the same shape is a type err
 todo	a plain record compared to a nominal record of the same shape is a type error
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
-todo	an arbitrary-precision integer multiplication does not overflow
 todo	an explicit annotation overrides the default-integer pragma
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result

@@ -210,9 +210,22 @@
            each equal to Int64.max — a product far beyond 64 bits — and yields the exact BigInt
            85070591730234615847396907784232501249, NOT a trap and NOT a wrap (numeric-model.md #An
            Arbitrary-Precision Integer Has Unbounded Range). The same product over Int64 traps
-           (`integer overflow`); BigInt's representation grows instead. THE reason the type exists.")
+           (`integer overflow`); BigInt's representation grows instead. THE reason the type exists.
+           Computed on the RUNTIME limb library (the compiler does NOT fold BigInt arithmetic — a
+           repeated-squaring chain would blow up at compile time), then rendered at the host boundary via
+           the `value-encode` walker (`Shape::BigInt`, a variable-length KIND_INT leaf).")
   (input  (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807)))
   (output (: 85070591730234615847396907784232501249 BigInt)))
+
+(case "a runtime-computed BigInt result crosses the host boundary"
+  (doc    "`(+ (BigInt.of 40) (BigInt.of 2))` is a RUNTIME BigInt add (the compiler does not fold BigInt
+           arithmetic — it emits `bigint-add`), whose result crosses to the host as its value form `42`
+           via the `value-encode` walker (a nullary export returning a BigInt, the runtime-computed
+           analogue of the constant-BigInt escape). Pins the small in-range case of the same escape path
+           the overflow product exercises — a BigInt result is a variable-length leaf, so it routes
+           through the looping `value-encode` (like a runtime collection), not the fixed hole-template.")
+  (input  (+ (BigInt.of 40) (BigInt.of 2)))
+  (output (: 42 BigInt)))
 
 (case "an arbitrary-precision literal beyond 64 bits is an exact BigInt"
   (doc    "`(: 100000000000000000000 BigInt)` annotates a literal larger than Int64.max as a BigInt — an

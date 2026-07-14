@@ -5874,6 +5874,18 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
             let framed = builder.push(ShapeNode::Framed(type_node, inner));
             Some(builder.encode(framed))
         }
+        // A RUNTIME-computed `BigInt`/`Rational` result: its value form is VARIABLE-length (a BigInt
+        // magnitude is however many bytes the value needs — the fixed-hole `runtime_value_form_template`
+        // cannot serve it), so it escapes via the SAME runtime `value-encode` walker as a collection. The
+        // runtime already renders `Shape::BigInt` (tag 17) / `Shape::Rational` as a `KIND_INT` leaf / a
+        // `{num,den}` record. Wrap in a `Framed(<type-node>, …)` frame so the value form is `(: N BigInt)`
+        // (the `Named` bare-name frame the constant escape uses), the type node observable.
+        crate::ty::Ty::BigInt | crate::ty::Ty::Rational => {
+            let type_node = type_node_of(ty)?;
+            let inner = builder.shape_of(db, ty)?;
+            let framed = builder.push(ShapeNode::Framed(type_node, inner));
+            Some(builder.encode(framed))
+        }
         // A TUPLE/RECORD result whose value shape is renderable but which contains a VARIABLE-length element
         // (a list/map/set, or a sum) — `runtime_value_form_template` returns `None` for it (no fixed-size
         // static template), so it escapes via the same runtime `value-encode` walker as a collection. Wrap in
