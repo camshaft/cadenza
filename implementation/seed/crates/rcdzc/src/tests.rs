@@ -22254,6 +22254,101 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_binary_operator_over_or_under_application_on_a_function_param_surfaces_in_the_query() {
+        // The binop-ARITY twin of the mistyped-variant case above. A fixed-arity operator applied to a
+        // count other than 2 has a CLEAR operator-specific CDZ0201 "+ takes exactly 2 operands" (with a
+        // delete-surplus fix on an over-application) — but it was produced ONLY by the emit-path lowering
+        // walk (nullary-EXPORTED bodies). So in a PARAMETERIZED body, `cdz check` reported only the GENERIC
+        // CDZ0203 "applied N arguments to a function of arity M …" for the over-application and NOTHING for
+        // the under-application, while `compile` rejected both with the operator message. `collect`'s Apply
+        // arm now surfaces the operator CDZ0201 whether the def takes parameters or not.
+
+        // OVER-application `(+ n 1 2)` on a parameter: one CDZ0201 with the operator message + delete fix,
+        // and the generic CDZ0203 is deduped away (reported exactly once, not twice).
+        let over = "(module m (def (g (: n Int64)) (+ n 1 2)) (export g))";
+        let d: Vec<_> = crate::diagnostics(&mut Db::load(parse(over)))
+            .into_iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            d.len(),
+            1,
+            "one arity fault, generic CDZ0203 deduped: {d:?}"
+        );
+        assert_eq!(d[0].code.as_deref(), Some("CDZ0201"));
+        assert!(
+            d[0].message.contains("takes exactly 2 operands"),
+            "the clear operator message, not the generic arity phrasing: {}",
+            d[0].message
+        );
+        let fix = d[0].fix.as_ref().expect("carries the delete-surplus fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+
+        // UNDER-application `(+ n)` on a parameter: the same operator CDZ0201 (previously check was SILENT
+        // while compile rejected it — no unary operator form exists, so this is a genuine arity error).
+        let under = "(module m (def (g (: n Int64)) (+ n)) (export g))";
+        let du: Vec<_> = crate::diagnostics(&mut Db::load(parse(under)))
+            .into_iter()
+            .filter(|d| {
+                d.severity == crate::abi::Severity::Error && d.code.as_deref() == Some("CDZ0201")
+            })
+            .collect();
+        assert_eq!(
+            du.len(),
+            1,
+            "under-application reports the operator fault once: {du:?}"
+        );
+        assert!(
+            du[0].message.contains("takes exactly 2 operands"),
+            "{}",
+            du[0].message
+        );
+
+        // A comparison and a float operator take the same path (the message names the operator).
+        for (src, op) in [
+            ("(module m (def (g (: n Int64)) (< n 1 2)) (export g))", "<"),
+            (
+                "(module m (def (g (: x Float64)) (+. x 1.0 2.0)) (export g))",
+                "+.",
+            ),
+        ] {
+            let dc: Vec<_> = crate::diagnostics(&mut Db::load(parse(src)))
+                .into_iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .collect();
+            assert_eq!(dc.len(), 1, "{op}: one arity fault: {dc:?}");
+            assert_eq!(dc[0].code.as_deref(), Some("CDZ0201"));
+            assert!(
+                dc[0]
+                    .message
+                    .contains(&format!("{op} takes exactly 2 operands")),
+                "{op}: names the operator: {}",
+                dc[0].message
+            );
+        }
+
+        // A WELL-FORMED 2-operand application on a parameter stays clean — no false positive.
+        let ok = "(module m (def (g (: n Int64)) (+ n 1)) (export g))";
+        assert!(
+            crate::diagnostics(&mut Db::load(parse(ok)))
+                .iter()
+                .all(|d| d.code.as_deref() != Some("CDZ0201")),
+            "a correct 2-operand application produces no arity fault"
+        );
+
+        // A USER-function over-application keeps its OWN generic CDZ0203 (no operator CDZ0201 is minted for
+        // a non-operator head) — the accessor is scoped to the fixed-arity binary operators.
+        let userfn =
+            "(module m (def (f (: x Int64)) x) (def (g (: n Int64)) (f n 1 2)) (export g))";
+        let df: Vec<_> = crate::diagnostics(&mut Db::load(parse(userfn)))
+            .into_iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(df.len(), 1, "user-fn over-app reports once: {df:?}");
+        assert_eq!(df[0].code.as_deref(), Some("CDZ0203"), "{}", df[0].message);
+    }
+
+    #[test]
     fn an_unbound_name_anchors_to_a_user_node() {
         // The diagnostic for an unbound name carries a node index, and it is a genuine USER node (below
         // the program's node count) — the front-end can map it to the `nope` occurrence.
@@ -28109,15 +28204,41 @@ mod stage1 {
     }
 
     #[test]
-    fn two_performs_in_the_handle_body_decline_the_pure_one_hole_fold() {
-        // ADVERSARIAL: the pure one-hole fold requires EXACTLY ONE discharged perform on the spine. Two
-        // performs `(+ (Amb.flip) (Amb.flip))` is a TWO-hole context — `pure_hole` returns Impure and the
-        // fold declines (this needs sequential state threading / real continuations, not a single splice).
+    fn two_performs_in_the_handle_body_fold_via_the_one_shot_refold() {
+        // E5 TWO-HOLE (general one-shot): `(+ (Amb.flip) (Amb.flip))` under a ONE-SHOT non-tail arm
+        // `(+ 1 (resume 10 s))` folds by RE-REDUCING the continuation. In a DEEP handler, `resume v s'`
+        // returns into `C[v]` WITH THE HANDLER STILL ACTIVE, so the SECOND flip in `C[v]` is handled too:
+        // leading flip → `C1 = (+ □ (Amb.flip))`; resume 10 → reduce_handle of `(+ 10 (Amb.flip))` (a pure
+        // one-hole → `(+ 1 (+ 10 10))` = 21); the outer arm `(+ 1 21)` = 22. Each refold removes one
+        // perform, so it terminates. (Was previously a clean decline; the refold makes it fold.)
         let src = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ (Amb.flip) (Amb.flip)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a one-shot two-hole body folds via the refold"),
+                "main"
+            ),
+            22
+        );
+        // THREE holes compose the same way (the refold recurses): 1+(1+(1+30)) with each flip=10 → 33.
+        let three = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ (Amb.flip) (+ (Amb.flip) (Amb.flip))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(three)))
+                    .expect("a three-hole one-shot body folds via the refold"),
+                "main"
+            ),
+            33
+        );
+        // MULTI-shot two-hole STILL DECLINES: splicing a continuation that itself performs, more than once,
+        // duplicates the inner effect — the frame vertical's job, not the frame-free refold.
+        let multi = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Amb.flip) (Amb.flip)))) (export main))";
         assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "two performs in the handle body must decline the single-hole fold"
+            compile_component(&crate::codec::encode(&parse(multi))).is_err(),
+            "a MULTI-shot two-hole body must decline (a performing continuation spliced twice)"
         );
     }
 

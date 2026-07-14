@@ -2797,3 +2797,22 @@
               (export inc) (export dbl) (export two)))
   (call   two)
   (output (: 2 Int64)))
+
+; A HIGHER-ORDER capture crossing the boundary: a producer whose returned closure CAPTURES another closure
+; (built in-guest). The captured inner closure is an ordinary funcref-table value on the heap; the outer
+; closure's cell holds it, and the round-trip consumer dispatches the outer via `call_indirect`, which in
+; turn dispatches the inner. Only the OUTER handle crosses the host boundary as a resource; the inner closure
+; never leaves the guest. (Contrast the `own<t>` TRANSFORMER, still declined: there the HOST supplies the
+; inner closure OVER the boundary, which needs a closure-resource passed INTO a call.)
+
+(case "round-trip: a producer's returned closure captured an inner closure built in-guest"
+  (doc    "`mk : () -> (-> Int64 Int64)` returns `(fn (x) (let ((f (fn (y) (+ y 1)))) (f (f x))))` — the
+           returned closure CAPTURES the inner `f` (a closure) and applies it twice. `app` applies the
+           handed-back closure: `app(handle, 5)` → the returned closure on 5 → f(f(5)) = 7. Pins a
+           higher-order CAPTURE (a closure whose cell holds another closure) crossing the round-trip boundary,
+           dispatched entirely in-guest.")
+  (input  (do (def (mk) (fn ((: x Int64)) (let ((f (fn ((: y Int64)) (+ y 1)))) (f (f x)))))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: 7 Int64)))

@@ -294,6 +294,36 @@ impl Big {
         }
     }
 
+    /// The checked i64 narrowing DIRECTLY from the canonical sign-magnitude heap-leaf bytes — the same
+    /// result as `from_sign_magnitude_bytes(bytes).to_i64_checked()` but with NO heap `Big` (no limb
+    /// `Vec`) allocated. The runtime `bigint-to-i64-checked` op reads the leaf's `raw` slice and calls
+    /// this, so the READ-ONLY narrowing is allocation-free (like `cmp_sign_magnitude_bytes`). Bytes are
+    /// `[sign][LE magnitude, trailing-zeros-stripped]`; a value needing >8 magnitude bytes cannot fit i64.
+    /// Differential-tested against `to_i64_checked`.
+    pub fn i64_checked_from_sign_magnitude_bytes(bytes: &[u8]) -> Option<i64> {
+        let neg = bytes.first().copied().unwrap_or(0) != 0;
+        let mag = bytes.get(1..).unwrap_or(&[]); // LE magnitude bytes
+        if mag.len() > 8 {
+            return None; // needs >64 bits — cannot fit i64
+        }
+        let mut m: u64 = 0;
+        for (i, &byte) in mag.iter().enumerate() {
+            m |= (byte as u64) << (8 * i);
+        }
+        if neg {
+            // Negative: fits iff m <= 2^63 (that boundary is exactly i64::MIN).
+            if m <= (i64::MAX as u64) + 1 {
+                Some((m as i128 * -1) as i64)
+            } else {
+                None
+            }
+        } else if m <= i64::MAX as u64 {
+            Some(m as i64)
+        } else {
+            None
+        }
+    }
+
     // ─── sign-magnitude bytes (the HEAP-LEAF form) ──────────────────────────────────────────────
     // byte 0: sign (0 = non-negative, 1 = negative). bytes 1..: magnitude as LITTLE-ENDIAN bytes with
     // no trailing zero bytes. Zero is exactly `[0x00]` (sign 0, empty magnitude). Canonical.
@@ -587,6 +617,13 @@ mod tests {
                 Big::cmp_sign_magnitude_bytes(&a.to_sign_magnitude_bytes(), &b.to_sign_magnitude_bytes()),
                 ord,
                 "byte-form cmp agrees with Big::cmp {a:?} {b:?}"
+            );
+            // The BYTE-form i64 narrowing (what `bigint-to-i64-checked` runs on the operand's raw slice,
+            // no `Big` decode) must give the SAME result as `Big::to_i64_checked`.
+            assert_eq!(
+                Big::i64_checked_from_sign_magnitude_bytes(&a.to_sign_magnitude_bytes()),
+                a.to_i64_checked(),
+                "byte-form i64-narrow agrees with to_i64_checked {a:?}"
             );
 
             if !b.is_zero() {

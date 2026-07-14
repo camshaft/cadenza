@@ -455,6 +455,20 @@
               (twice 5))))
   (output (: 7 Int64)))
 
+(case "a closure captures another closure and applies it at RUNTIME"
+  (doc    "The same higher-order capture but with a RUNTIME argument, so nothing folds: `(def (main (: n
+           Int64)) …)` binds `inc = (fn (x) (+ x 1))` and `twice = (fn (y) (inc (inc y)))` (which CAPTURES
+           `inc`), then `(twice n)`. With `n = 5` → inc(inc(5)) = 7, computed at run time — `twice`'s cell
+           holds the captured `inc` handle, dispatched via `call_indirect` at each use. Complements the folded
+           case above: the captured closure value survives on the heap and is applied without inlining.")
+  (input  (do (def (main (: n Int64))
+                (let ((inc (fn ((: x Int64)) (+ x 1))))
+                  (let ((twice (fn ((: y Int64)) (inc (inc y)))))
+                    (twice n))))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 7 Int64)))
+
 (case "a closure argument is another closure's result"
   (doc    "The argument to one closure is the result of applying another: `((fn (x) (+ x k)) ((fn (y)
            (* y 2)) 3))` with k = 10 → (fn x)(6) = 16. Composing two closure applications — the inner
