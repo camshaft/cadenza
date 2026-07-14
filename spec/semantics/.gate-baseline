@@ -28,6 +28,7 @@ pass	a Bytes-returning closure alongside a plain export — the closure runs
 pass	a Bytes-returning closure alongside a plain export — the plain runs
 pass	a Bytes-returning closure on a different argument
 pass	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
+pass	a CAPTURING closure returning a List
 pass	a CAPTURING closure returning a tuple
 pass	a CBOR atom decodes each scalar major type to its value
 pass	a CBOR head decodes its major type and big-endian argument from the input bytes
@@ -36,6 +37,7 @@ pass	a CBOR simple value that is not a known boolean is classified as not-a-bool
 pass	a CBOR skip steps over a tagged item to the value it wraps
 pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a Char-payload sum value escapes across the boundary in its canonical form
+pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
 pass	a HOF callback matching a tuple argument computes through the nested reduction
 pass	a HOF callback matching its sum argument reaches the nullary arm
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
@@ -143,7 +145,11 @@ pass	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
 pass	a closure returning Bytes crosses to the host as list<u8>
+pass	a closure returning a List crosses as the value form
+pass	a closure returning a Map — canonical key order
+pass	a closure returning a NESTED List
 pass	a closure returning a NESTED tuple
+pass	a closure returning a Set — canonical member order
 pass	a closure returning a boolean is called by the host
 pass	a closure returning a constant String crosses as its UTF-8 bytes
 pass	a closure returning a nominal-over-Bool erases to bool at the boundary
@@ -153,6 +159,7 @@ pass	a closure returning a runtime String (concat) crosses as its bytes
 pass	a closure returning a tuple crosses as the typed value form
 pass	a closure returning a tuple with a Bool leaf
 pass	a closure returning a tuple with a negative int leaf
+pass	a closure returning an EMPTY List
 pass	a closure returning an empty Bytes crosses as the empty list
 pass	a closure returning an empty String crosses as the empty list
 pass	a closure taking a nominal-over-scalar argument receives the underlying scalar
