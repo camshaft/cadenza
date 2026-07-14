@@ -16809,12 +16809,69 @@ mod match_engine {
                 d.fix
             );
         }
-        // TOO FEW (a missing `if` else / a 1-operand `and`) has nothing to delete — no fix.
-        let few = find("(module m (def (main) (if true 1)) (export main))");
+        // TOO FEW for `and`/`or`/`not` (a 1-operand `and`) has nothing to delete — no fix. (A missing-else
+        // `if` is the SPECIAL case: it gets an add-else fix, asserted separately in
+        // `an_if_missing_its_else_branch_offers_to_add_one`.)
+        let few = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) (and true)) (export main))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("takes exactly"))
+        .expect("a 1-operand `and` reports an arity fault");
         assert!(
             few.fix.is_none(),
-            "a too-few `if` has no surplus to delete: {:?}",
+            "a too-few `and` has no surplus to delete: {:?}",
             few.fix
+        );
+    }
+
+    #[test]
+    fn an_if_missing_its_else_branch_offers_to_add_one() {
+        // `(if b then)` — the reflex of a language where `if` without `else` is a statement — is a
+        // wrong-arity `if` in Cadenza, where `if` is an EXPRESSION (both branches must produce a value).
+        // Rather than the generic "if takes exactly 3 operands" (which reads as a count nit), name the real
+        // situation and carry the actionable repair: append an `(trap "TODO")` else. `trap : ∀a. String → a`
+        // inhabits any type, so the completed `(if b then (trap "TODO"))` type-checks against the then-branch
+        // whatever its type — the `if` twin of the non-exhaustive-match add-arm fix.
+        let d = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: b Bool)) (if b 1)) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0201"))
+        .expect("a missing-else if rejects");
+        assert!(
+            d.message.contains("no else branch") && d.message.contains("expression"),
+            "names the missing else + why (if is an expression): {}",
+            d.message
+        );
+        let fix = d.fix.as_ref().expect("an add-else fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::InsertInto);
+        assert!(
+            fix.replacement.contains("(trap \"TODO\")"),
+            "the fix appends a placeholder else branch: {:?}",
+            fix.replacement
+        );
+        // The completed if compiles (the placeholder inhabits the then-branch's type).
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (def (f (: b Bool)) (if b 1 (trap \"TODO\"))) (export f))"
+            )))
+            .is_ok(),
+            "the if with an added else branch compiles"
+        );
+        // A 1-operand `(if b)` — no then either — is NOT a clean add-else (both branches missing), so it
+        // stays the generic arity message with no fix.
+        let lone = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: b Bool)) (if b)) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0201"))
+        .expect("a 1-operand if rejects");
+        assert!(
+            lone.message.contains("takes exactly 3 operands") && lone.fix.is_none(),
+            "a lone-cond if keeps the generic arity message, no fix: {} fix={:?}",
+            lone.message,
+            lone.fix
         );
     }
 
