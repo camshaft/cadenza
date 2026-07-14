@@ -927,6 +927,20 @@
                 (match (Look.find 41) ((Some v) v) (None 0)))) (export main)))
   (output (: 42 Int64)))
 
+(case "a TUPLE-returning operation resumes a pair built from the handler state, then projected"
+  (doc    "An operation whose declared RESULT is a `(Tuple Int64 Int64)`, resumed with a pair BUILT from the
+           handler state. `P.pair : Unit -> (Tuple Int64 Int64)`; the arm resumes `(tuple s (+ s 1))` — a
+           pair of the current state and its successor. Seeded 5, `(P.pair)` yields `(5, 6)`, and `(. (P.pair)
+           1)` projects the second element, 6. Pins that a compound (tuple) resume value built from the
+           handler state crosses the pure one-hole fold and is projectable — the tuple companion of the
+           sum-result case above, the shape of a stateful op returning several derived values at once.")
+  (input  (do
+            (effect P (op pair (-> Unit (Tuple Int64 Int64))))
+            (def (main)
+              (handle P 5 ((pair (u) s (resume (tuple s (+ s 1)) s)))
+                (. (P.pair) 1))) (export main)))
+  (output (: 6 Int64)))
+
 (case "a handler whose STATE is a sum destructures it in the arm"
   (doc    "The handler's threaded STATE is a SUM (`Option Int64`), and the arm DESTRUCTURES it with a `match`
            to decide the resume value — the state-as-sum analogue of the scalar-countdown handlers. Seeded
@@ -1629,6 +1643,23 @@
                   (handle C 300 ((c (u) s (resume s (+ s 1))))
                     (walk 2))))) (export main)))
   (output (: 1203 Int64)))
+
+(case "an inner handler's INIT state is computed by performing an enclosing effect"
+  (doc    "The seed of an inner handler is itself a PERFORM of an OUTER effect — the two handlers compose
+           through the init position, not just the body. `(handle Seed 0 ((s (u) t (resume 50 t))) (handle
+           Ask (Seed.s) …))`: the inner `Ask` handler's INIT is `(Seed.s)`, discharged by the enclosing
+           `Seed` handler to 50. So `Ask` is seeded 50, and `(Ask.get)` (its arm resumes the state) reads 50.
+           Pins that a handler init is an ordinary strict expression the outer handler's fold threads — the
+           inner handler's starting state can be COMPUTED by an effect, the shape of a pass whose scratch
+           state is initialized from a queried piece of outer context.")
+  (input  (do
+            (effect Seed (op s (-> Unit Int64)))
+            (effect Ask (op get (-> Unit Int64)))
+            (def (main)
+              (handle Seed 0 ((s (u) t (resume 50 t)))
+                (handle Ask (Seed.s) ((get (u) st (resume st st)))
+                  (Ask.get)))) (export main)))
+  (output (: 50 Int64)))
 
 (case "a mutually-recursive group threads two nested handlers' states at once"
   (doc    "The two-nested-handler state-threading of the case above, but over a MUTUALLY-RECURSIVE group

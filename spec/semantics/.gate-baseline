@@ -191,6 +191,7 @@ pass	a String-returning closure alongside a parameterized plain export — the p
 pass	a THREE-argument closure round-trips — flat arrow spelling
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
 pass	a TRIPLY-nested Record ARG crosses the direct-call boundary
+pass	a TUPLE-returning operation resumes a pair built from the handler state, then projected
 pass	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)
 pass	a Tuple ARG BEFORE a scalar arg crosses the direct-call boundary (tuple, then scalar)
 pass	a Tuple ARG BEFORE a scalar with a LIST result crosses the direct-call boundary
@@ -1407,6 +1408,7 @@ pass	an in-range constant argument to a narrow parameter computes at the paramet
 pass	an inline-never definition is emitted once and called
 pass	an inline-never definition with a const dictionary still monomorphizes the dictionary
 pass	an inner binding shadows an outer one only within its scope
+pass	an inner handler's INIT state is computed by performing an enclosing effect
 pass	an inner lambda captures an enclosing match-arm binder and is applied
 pass	an inner lambda captures an enclosing tuple-pattern binder and is applied
 pass	an int match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
