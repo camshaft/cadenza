@@ -911,6 +911,12 @@ pub fn collect_used_ops(
             out.insert(OP_ARR_GET);
             if let Ok(Some(op)) = get_op(db, id) {
                 out.insert(op);
+                // RECLAMATION (U13): a scalar projection off an OWNED-temporary aggregate `drop`s the
+                // aggregate after the borrowing read — mirror the emit's reclaim condition so `drop` is
+                // imported. (A borrowed-operand projection reclaims nothing, matching the emit.)
+                if matches!(heap_operand_ownership(db, operand), Ok(HandleOwnership::Owned)) {
+                    out.insert(OP_DROP);
+                }
             }
             collect_used_ops(db, operand, out);
         }
@@ -5081,12 +5087,46 @@ fn emit(
         // to its scalar: `<operand handle> ; i32.const i ; arr-get ; get-<T>`. The result type (this
         // node's solved type) chooses the unbox op.
         Core::Proj { operand, index } => {
+            // RECLAMATION (U13): if the projected `operand` is a fresh OWNED temporary (a peer/host call
+            // result, a constructor — `heap_operand_ownership` == Owned) rather than a BORROW of a live
+            // binding (a `Param`/`LocalRef`, reclaimed by its owner), the aggregate would otherwise LEAK —
+            // `arr-get` borrows it to read the element but nothing releases it. Reclaim it, but ONLY when
+            // the element is SCALAR (`get_op` Some): `get-int`/`get-bool` COPY the value out, so the parent
+            // can be dropped safely. A NESTED-COMPOUND element is the child handle itself (an `arr-get`
+            // borrow INTO the parent), so dropping the parent could cascade-reclaim the returned child —
+            // that case is left as-is (a deferred leak, never a use-after-free). Stash the aggregate in a
+            // scratch i32 slot so it survives the read for the post-read drop. `heap_operand_ownership`
+            // declines an operand whose ownership it cannot prove, so an unhandled shape rejects (Owned only
+            // on a proven-fresh producer), never leaks wrongly or double-frees.
+            let scalar_elem = get_op(db, id)?;
+            let reclaim = scalar_elem.is_some()
+                && matches!(heap_operand_ownership(db, operand), Ok(HandleOwnership::Owned));
+            if reclaim {
+                let agg_slot = base;
+                if agg_slot + 1 > *high {
+                    *high = agg_slot + 1;
+                }
+                scratch_ty.insert(agg_slot, ValType::I32);
+                emit(db, operand, slots, base + 1, high, scratch_ty, layout, out)?; // [handle]
+                out.push(Lir::LocalTee(agg_slot)); // [handle], agg_slot = the owned aggregate
+                out.push(Lir::ConstI32(index as i32)); // [handle, i]
+                out.push(Lir::CallImport(OP_ARR_GET)); // → [elem-handle] (BORROWS the aggregate)
+                let op = scalar_elem.expect("reclaim implies a scalar element");
+                out.push(Lir::CallImport(op)); // → [scalar (i64 for an int, i32 for a bool)]
+                if needs_get_int_narrow(db, id) {
+                    out.push(Lir::I32WrapI64);
+                }
+                // The scalar is now a COPY on the stack; release the owned aggregate (rc--, cascades).
+                out.push(Lir::LocalGet(agg_slot));
+                out.push(Lir::CallImport(OP_DROP)); // [scalar] (unchanged; aggregate reclaimed)
+                return Ok(());
+            }
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [handle]
             out.push(Lir::ConstI32(index as i32)); // [handle, i]
             out.push(Lir::CallImport(OP_ARR_GET)); // → [elem-handle]
             // A scalar element unboxes (`get-int`/`get-bool`, then a NARROW int narrows i64→i32); a
             // nested compound: the handle `arr-get` yields IS the nested compound — use it as-is.
-            if let Some(op) = get_op(db, id)? {
+            if let Some(op) = scalar_elem {
                 out.push(Lir::CallImport(op)); // → [scalar (i64 for an int, i32 for a bool)]
                 if needs_get_int_narrow(db, id) {
                     out.push(Lir::I32WrapI64);
@@ -6619,6 +6659,11 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         | Core::RationalOfInts { .. }
         | Core::RationalOfIntWiden { .. }
         | Core::RationalBinOp { .. }
+        // A HOST/PEER call returning a COMPOUND yields a fresh OWNED handle (a peer-bound effect returns a
+        // runtime value the consumer now owns — the shared-runtime handle transport, U5/U11), exactly like
+        // a defined-func `Call`. So a peer-returned compound projected/consumed here is an owned temporary
+        // the enclosing op reclaims (U13) rather than leaking until run-end.
+        | Core::HostCall { .. }
         | Core::Call { .. } => Ok(HandleOwnership::Owned),
         // A CONSTANT typed `BigInt` materializes to a FRESH owned handle at `emit` (the `Core::ConstInt`
         // arm routes a BigInt-typed constant through `bigint-of-i64`), exactly like `ConstStr` above — so

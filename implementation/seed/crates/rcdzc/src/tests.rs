@@ -50870,6 +50870,59 @@ mod closure_host_resource {
     }
 }
 
+/// U13 — RECLAMATION across the cross-component boundary: a peer-returned COMPOUND that the consumer
+/// projects a scalar field out of must be `drop`'d (rc--, cascade-reclaim) after the borrowing read, or it
+/// LEAKS until run-end (a leak for a long-lived host). The `Core::Proj` emit reclaims the aggregate when it
+/// is a fresh OWNED temporary (`heap_operand_ownership` == Owned — a peer/host call result, a constructor)
+/// and the element is scalar; a projection off a BORROWED binding (a param the owner reclaims) drops nothing.
+#[test]
+fn u13_a_scalar_projection_off_an_owned_temporary_reclaims_it() {
+    use crate::backend::wasm::select::collect_used_ops;
+    use crate::db::Db;
+    use crate::testkit::parse;
+    // OWNED temporary: a peer-bound effect `P.pair x` returns a fresh `(Tuple Int64 Int64)` the consumer
+    // owns; `(. (P.pair x) 0)` reads element 0 (scalar) and must reclaim the tuple → `drop` is emitted.
+    let src = "(do \
+        (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) \
+        (bind P \"cadenza:pairs/api\") \
+        (def (main (: x Int64)) (host (P) (. (P.pair x) 0))) \
+        (export main))";
+    let mut db = Db::load(parse(src));
+    let main = db
+        .defs
+        .iter()
+        .find(|d| d.name == "main")
+        .and_then(|d| d.body)
+        .expect("main");
+    let mut ops = std::collections::BTreeSet::new();
+    collect_used_ops(&mut db, main, &mut ops);
+    assert!(
+        ops.contains("drop"),
+        "a scalar projection off an owned peer-returned tuple reclaims it (drop); got {ops:?}"
+    );
+    assert!(
+        ops.contains("arr-get"),
+        "the projection still reads the element via arr-get; got {ops:?}"
+    );
+
+    // BORROWED binding: projecting element 0 out of a PARAMETER tuple `t` reclaims NOTHING — `t`'s owner
+    // (the caller) reclaims it, so dropping here would be a double-free. No `drop` from the projection.
+    let src2 = "(do (def (fst (: t (Tuple Int64 Int64))) (. t 0)) (export fst))";
+    let mut db2 = Db::load(parse(src2));
+    let fst = db2
+        .defs
+        .iter()
+        .find(|d| d.name == "fst")
+        .and_then(|d| d.body)
+        .expect("fst");
+    let mut ops2 = std::collections::BTreeSet::new();
+    collect_used_ops(&mut db2, fst, &mut ops2);
+    assert!(
+        !ops2.contains("drop"),
+        "a projection off a BORROWED param must NOT drop it (the owner reclaims it); got {ops2:?}"
+    );
+}
+
 /// X1 — the cross-component composition ORACLE (`DESIGN-cross-component-interop-rcdzc.md`).
 ///
 /// De-risks the shared-runtime cross-component transport BEFORE any compiler change, the oracle-first

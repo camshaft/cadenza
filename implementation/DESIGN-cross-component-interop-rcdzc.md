@@ -166,6 +166,20 @@ boundary envelope) → **U3** (compile-request override) → **U4** (remove `ext
   into D. Test `u12_*`: `main(5) = (10+1)+(10+10) = 31`. Confirms the peer-forwarding composes for a
   non-linear graph. 15 cross-component tests.
 
+- **U13 — RECLAIM a peer-returned compound projected across the boundary. ✅ DONE (`spec`).** A peer-bound
+  effect returning a COMPOUND (U5/U11) hands the consumer a fresh OWNED shared-runtime handle; when the
+  consumer projects a scalar field (`(host (P) (. (P.pair x) 0))`), `arr-get` BORROWS the aggregate to read
+  the element but nothing released it — it LEAKED until run-end (harmless one-shot, a leak for a long-lived
+  host). Fix in the `Core::Proj` emit: when the operand is a fresh OWNED temporary (`heap_operand_ownership`
+  == Owned — now including `Core::HostCall` alongside `Core::Call`/constructors) AND the element is SCALAR
+  (`get-int`/`get-bool` COPY the value out), stash the aggregate in a scratch slot, read, then `drop` it
+  (rc--, cascade). A NESTED-COMPOUND element (the `arr-get` borrow IS the child) is left as-is (a deferred
+  leak, never a use-after-free); a projection off a BORROWED binding drops nothing (the owner reclaims it).
+  Byte-neutral for the corpus (an in-process projection off a local constructor optimizes the tuple away
+  before the reclaim path; the leak only existed for an opaque peer-returned compound). Test `u13_*`
+  (peer-effect projection emits `drop`, borrowed-param projection does not); full rcdzc suite 1448/0, gate
+  2152/0/0, all cross-component runs correct under wasmtime (no use-after-free).
+
 🎉 **THE UNIFICATION IS COMPLETE.** Cross-component interop IS the effect system: a contract is an
 `(effect …)`, a peer dependency is that effect `(bind …)`-ed to a peer interface, a test overrides with a
 `(handle …)` or a compile-request `--bind`. ONE concept — an escaping effect the manifest records — for
