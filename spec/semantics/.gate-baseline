@@ -79,6 +79,9 @@ pass	a List-returning closure alongside a plain export — the closure
 pass	a List-returning closure alongside a plain export — the plain
 pass	a MIXED Int-and-Float Tuple closure ARG flattens + rebuilds (box-int + box-float)
 pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
+pass	a MULTI-shot arm folds a perform in a let-bound lambda applied in the body
+pass	a MULTI-shot arm folds a perform wrapped in an inline lambda application
+pass	a MULTI-shot arm keeps a pure applied lambda in its duplicated continuation
 pass	a MULTI-shot handler arm folds a two-hole body by re-reducing per resume
 pass	a MUTUALLY-recursive effectful group is specialized under a state handler
 pass	a Map-returning closure alongside a parameterized plain export — the closure
@@ -685,6 +688,7 @@ pass	a perform in a taken if-branch threads its state to the continuation after 
 pass	a perform in a taken match-arm threads its state to the continuation after the match
 pass	a performed operation composes under a projection and a negation
 pass	a performed operation is the scrutinee of a match that dispatches on its result
+pass	a performing argument to a multiply-using performing callee is not duplicated
 pass	a pipeline chain applies its stages left to right
 pass	a plain number def is unaffected by a following statement (the `as` sugar stays in its statement)
 pass	a plain quote does not evaluate a quasiquote's unquote nested inside it

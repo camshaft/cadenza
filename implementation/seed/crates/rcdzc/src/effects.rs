@@ -1468,6 +1468,21 @@ pub fn reduce_handle(
     } else {
         body
     };
+    // APPLIED-LAMBDA PRE-REDUCTION. A handle body that wraps its perform in a lambda APPLICATION —
+    // `((fn (x) (+ x (Amb.flip))) 100)` or a `let`-bound `(f 100)` where `f`'s body performs — reaches the
+    // pure-one-hole classifier with the raw `Apply` node still present (`pure_hole` does not β-reduce a
+    // lambda-head call, so it sees a non-uniform / effect-reaching call → declines). The `thread`/one-shot
+    // path DOES inline such a call (its `call_reaches_discharged_effect` arm), so the one-shot case folds;
+    // but the MULTI-shot path goes through `pure_hole` and declined. β-reduce these redexes FIRST so the
+    // body becomes `(+ 100 (Amb.flip))` — a single perform in a pure one-hole context the E5 fold serves
+    // under a multi-shot arm too. Same β-reduction the inline arm performs, only sequenced earlier; a
+    // recursive callee is excluded by `call_reaches_discharged_effect` (specialized, not inlined). Gated on
+    // a cheap syntactic check so the common no-such-redex body is untouched.
+    let body = if body_contains_applied_performing_lambda(db, body, &ctx) {
+        reduce_applied_lambdas(db, body, &ctx)
+    } else {
+        body
+    };
     // E5 PURE ONE-HOLE-CONTINUATION fold (general one-shot, the pure-continuation case). When the handle
     // BODY reaches EXACTLY ONE discharged perform `P` through STRICT, UNCONDITIONAL, effect-free positions
     // (`pure_hole`), its delimited continuation is the PURE one-hole context `C = body[P := □]`. Resuming
@@ -1651,6 +1666,80 @@ fn body_contains_nested_handle(db: &mut Db, node: StructId) -> bool {
     }
     match db.ast.get(node).clone() {
         Struct::List(children) => children.iter().any(|&c| body_contains_nested_handle(db, c)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// β-reduce every APPLIED-LAMBDA REDEX in `node` whose callee reaches a discharged operation AND whose
+/// arguments are all STRONGLY PURE — an `((fn (x) …(E.op)…) 100)` or a `let`-bound `(f 100)` where `f`'s
+/// body performs — into its substituted body, recursively. Runs in `reduce_handle` BEFORE the pure-one-hole
+/// classifier so a body that wraps its single perform in a lambda application reaches the fold in reduced
+/// form: `((fn (x) (+ x (Amb.flip))) 100)` becomes `(+ 100 (Amb.flip))`, a single perform in a pure one-hole
+/// context the E5 fold serves — folding under a MULTI-shot arm too (the `thread`/one-shot path already
+/// inlines such a call via its `call_reaches_discharged_effect` arm, but the pure-one-hole/multi-shot path
+/// does not). SOUND: this is a β-reduction with PURE arguments — substituting a pure argument (even into a
+/// param used MANY times) duplicates no effect. A PERFORMING argument is NOT pre-reduced here (the
+/// strongly-pure guard fails): β-substituting it into a multiply-used param would duplicate its effect
+/// (`(mixed (Amb.flip))`, `mixed x = x + x + …` → `flip` per `x`, a miscompile), so it is left for the
+/// `thread` path, which threads the argument's state exactly once before inlining. A RECURSIVE callee is
+/// EXCLUDED (`call_reaches_discharged_effect` returns false — it is specialized, not inlined) so the
+/// reduction terminates. A non-redex node is descended structurally. Bounded by `reduce_handle`'s re-entry
+/// guard (each reduced body is re-walked once).
+fn reduce_applied_lambdas(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> StructId {
+    // An application whose head is a (non-recursive) lambda/ref-to-lambda reaching the discharged effect,
+    // AND whose arguments are all strongly pure (the soundness guard — see the doc comment): β-reduce it
+    // (substitute args for params), then re-walk the reduced body for further nested redexes.
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && is_perform(db, head, ctx).is_none()
+        && args.iter().all(|&a| strongly_pure(db, a, ctx))
+        && call_reaches_discharged_effect(db, head, ctx)
+    {
+        // Reduce each argument's own redexes first (a pure arg won't itself be a performing redex, but keep
+        // the recursion uniform), then β-reduce the call. A parameterized callee substitutes; a nullary def
+        // has no lambda wrapper (its name resolves straight to its body), so fall back to that body.
+        let rargs: Vec<StructId> = args
+            .iter()
+            .map(|&a| reduce_applied_lambdas(db, a, ctx))
+            .collect();
+        let reduced = match crate::eval::apply_lambda(db, head, &rargs).ok().flatten() {
+            Some(r) => r,
+            None => match crate::eval::lambda_body_of_nullary(db, head) {
+                Some(b) => b,
+                None => return node, // not actually reducible — leave it
+            },
+        };
+        return reduce_applied_lambdas(db, reduced, ctx);
+    }
+    // Otherwise descend structurally, reducing any redex in a child.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let rebuilt: Vec<StructId> = children
+                .iter()
+                .map(|&c| reduce_applied_lambdas(db, c, ctx))
+                .collect();
+            db.push_list(rebuilt)
+        }
+        Struct::Atom(_) => node,
+    }
+}
+
+/// Whether `node` IS or CONTAINS an applied-lambda redex the pre-reduction will reduce — a call whose
+/// callee reaches a discharged operation and whose arguments are all strongly pure. The gate for the
+/// applied-lambda pre-reduction, so a body with no such redex skips the pass (the common case). Mirrors
+/// `reduce_applied_lambdas`'s own guard (incl. the strongly-pure-args soundness condition) so the gate and
+/// the reducer agree on exactly which redexes fire.
+fn body_contains_applied_performing_lambda(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && is_perform(db, head, ctx).is_none()
+        && args.iter().all(|&a| strongly_pure(db, a, ctx))
+        && call_reaches_discharged_effect(db, head, ctx)
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| body_contains_applied_performing_lambda(db, c, ctx)),
         Struct::Atom(_) => false,
     }
 }
@@ -3714,6 +3803,16 @@ fn strongly_pure(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
         && !call_is_effect_free_nonrecursive(db, head)
     {
         return false;
+    }
+    // A LAMBDA VALUE is strongly pure — CONSTRUCTING a closure performs nothing; its body's effects fire
+    // only when it is APPLIED (a separate `Apply` node, checked at ITS site). Do NOT descend into the
+    // lambda body (the same reasoning as `subtree_performs`): a `let`-bound performing lambda left behind
+    // after its application was pre-reduced (`reduce_applied_lambdas`) is a pure binding, so the pure
+    // one-hole context around it stays strongly pure. Splicing a closure VALUE many times (a multi-shot
+    // resume) duplicates only the closure, not any effect — the effect is at the application, which lives
+    // in the context and is classified there.
+    if matches!(resolved_of(db, node), Resolved::Lambda { .. }) {
+        return true;
     }
     // Descend structurally — every child must be strongly pure. For an admitted application the head is a
     // name atom (pure) and this checks each argument; the effect-free callee's own body is NOT spliced (the

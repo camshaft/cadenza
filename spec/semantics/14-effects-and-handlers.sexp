@@ -450,6 +450,72 @@
               (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Amb.flip) (Amb.flip)))) (export main)))
   (output (: 12 Int64)))
 
+(case "a MULTI-shot arm folds a perform wrapped in an inline lambda application"
+  (doc    "A perform WRAPPED IN A LAMBDA APPLICATION folds under a multi-shot arm. `((fn (x) (+ x (Amb.flip)))
+           100)` is a β-redex: applying the lambda substitutes `x := 100`, giving `(+ 100 (Amb.flip))` — a
+           single perform in a pure one-hole context `C = (+ 100 [])`. The fold PRE-REDUCES applied-lambda
+           redexes before classifying (`reduce_applied_lambdas`), so the multi-shot path serves it exactly as
+           the reduced body: the arm `(+ (resume 1 s) (resume 2 s))` yields `(+ (+ 100 1) (+ 100 2))` = 203.
+           (The one-shot/threading path already inlines such a call via its cross-function inline arm; this
+           extends the same β-reduction to the multi-shot pure-one-hole path.) A lambda VALUE is pure at
+           construction — its body's effects fire only when APPLIED — so duplicating the reduced context per
+           resumption duplicates no closure effect.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s))))
+                ((fn (x) (+ x (Amb.flip))) 100))) (export main)))
+  (output (: 203 Int64)))
+
+(case "a MULTI-shot arm folds a perform in a let-bound lambda applied in the body"
+  (doc    "The let-bound form of the preceding case, composing the applied-lambda pre-reduction with the
+           lambda-value-is-pure purity rule. `(let ((f (fn (x) (+ x (Amb.flip))))) (f 100))` binds a
+           performing lambda (pure at construction) and applies it; pre-reduction β-reduces `(f 100)` to
+           `(+ 100 (Amb.flip))`, leaving the now-unused binding whose lambda init is strongly pure (the
+           purity walk does not descend a lambda body). `C = (+ 100 [])` under the multi-shot arm yields
+           `(+ (+ 100 1) (+ 100 2))` = 203. Pins that a let-bound performing lambda folds under a multi-shot
+           resume, not only a one-shot one.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s))))
+                (let ((f (fn (x) (+ x (Amb.flip))))) (f 100)))) (export main)))
+  (output (: 203 Int64)))
+
+(case "a MULTI-shot arm keeps a pure applied lambda in its duplicated continuation"
+  (doc    "The soundness anchor for the lambda-value purity rule under a MULTI-shot resume: an EFFECT-FREE
+           let-bound lambda `k = (fn (y) (* y 2))` is APPLIED in the continuation `C` alongside the single
+           perform. `C = (+ (k 3) [])` is strongly pure — `(k 3)` re-runs an effect-free computation, and the
+           lambda value itself carries no effect — so duplicating `C` per resumption is safe: `(k 3)` = 6, and
+           the arm yields `(+ (+ 6 1) (+ 6 2))` = 15. Confirms the purity walk skipping a lambda body does NOT
+           over-admit — a performing applied lambda (a genuine second hole) still declines as non-uniform,
+           while a pure applied lambda folds.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s))))
+                (let ((k (fn (y) (* y 2)))) (+ (k 3) (Amb.flip))))) (export main)))
+  (output (: 15 Int64)))
+
+(case "a performing argument to a multiply-using performing callee is not duplicated"
+  (doc    "The SOUNDNESS ANCHOR for the applied-lambda pre-reduction: a call is β-reduced early (before the
+           pure-one-hole classifier) ONLY when its arguments are strongly PURE. Here the argument itself
+           PERFORMS — `(mixed (Amb.flip))` where `mixed x = (+ x (+ x (Amb.flip)))` uses its parameter `x`
+           TWICE. β-substituting the performing argument textually would run `(Amb.flip)` once PER use of
+           `x` — three performs instead of two — a miscompile. Cadenza is strict (call-by-value): the
+           argument evaluates EXACTLY ONCE to a value the two uses of `x` share. The pre-reduction declines
+           this redex (its argument is not strongly pure) and the state-threading path binds the argument's
+           single resume value once. Handler seed 0, `flip` resumes `s+1` threading `s+1`: the argument flip
+           reads 0→1 (so `x` = 1, state→1), the body flip reads 1→2, giving `(+ 1 (+ 1 2))` = 4. Pins that a
+           performing argument is evaluated once, never duplicated by early β-reduction.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (mixed (: x Int64)) (+ x (+ x (Amb.flip))))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (resume (+ s 1) (+ s 1))))
+                (mixed (Amb.flip)))) (export main)))
+  (output (: 4 Int64)))
+
 (case "a one-shot two-hole body folds across a let binding"
   (doc    "The one-shot re-reducing fold descends the STRICT spine of a `let` (its inits then its body, run
            unconditionally in sequence), so a body with a perform in the let INIT and another in the let
