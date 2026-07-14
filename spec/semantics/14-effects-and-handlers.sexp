@@ -1287,6 +1287,18 @@
             (def (main) (host (foo) 5)) (export main)))
   (error  CDZ0201))
 
+(case "an effect operation declared with no name is rejected"
+  (doc    "An operation clause is `(op <name> <type>)` — the name is a bare identifier, the type its arrow.
+           `(op (-> Unit Int64))` puts the TYPE where the name belongs, declaring a NAMELESS operation:
+           there is no `E.op` to project, so the operation is unreachable. An operation must be named, like a
+           definition or a sum variant (an effect's operations are a closed, named set,
+           capabilities-and-effects.md #An Effect Declaration Names The Effect And Types Its Operations), so
+           this is rejected at compile time (CDZ0201) rather than silently registered with an empty name.")
+  (input  (do
+            (effect E (op (-> Unit Int64)))
+            (def (main) 5) (export main)))
+  (error  CDZ0201))
+
 (case "an effect operation reached with neither a handler nor a delegation is rejected"
   (doc    "`Ask` is a routing-agnostic effect; `main` performs `(Ask.ask)` with no enclosing handler and
            no enclosing entrypoint `host` delegation, so the effect would escape ungranted — rejected at

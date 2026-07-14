@@ -1035,6 +1035,7 @@ pass	an arithmetic operator with a single operand is rejected, not a crash
 pass	an association list is searched by key with a tuple-carrying Option match
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 pass	an effect discharged by a handler does not escape to the manifest
+pass	an effect operation declared with no name is rejected
 pass	an effect operation reached with neither a handler nor a delegation is rejected
 pass	an effect performed in a callee is discharged by the caller's handler
 pass	an effect resolves past an intermediate frame that installs no handler

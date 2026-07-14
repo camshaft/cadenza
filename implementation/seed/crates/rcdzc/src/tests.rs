@@ -28575,6 +28575,33 @@ mod stage1 {
     }
 
     #[test]
+    fn an_effect_operation_with_no_name_is_rejected() {
+        // An operation clause is `(op <name> <type>)`; its name must be a bare name. `(op (-> Unit Int64))`
+        // puts the TYPE where the name belongs — `scan_effect_decl` recorded it with an EMPTY name and a
+        // `name_occ` at the type node, silently registering a nameless (unreachable) operation. Now
+        // `collect_faults` rejects it CDZ0201: an operation must be named, like a def or a variant.
+        let d = compile_component(&crate::codec::encode(&parse(
+            "(module m (effect E (op (-> Unit Int64))) (def (main) 5) (export main))",
+        )))
+        .expect_err("a nameless effect operation must be rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("named") && d.message.contains("op"),
+            "the message explains an operation must be named: {}",
+            d.message
+        );
+        // A well-formed effect declaration still compiles (regression).
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (effect E (op get (-> Unit Int64))) \
+                 (def (main) (handle E 0 ((get (u) s (resume s s))) (E.get))) (export main))",
+            )))
+            .is_ok(),
+            "a well-formed effect declaration must compile"
+        );
+    }
+
+    #[test]
     fn an_abortive_perform_in_a_tail_if_branch_under_a_let_folds_per_branch() {
         // E4 branch-tail fold, the `let`-body case: a `let`'s VALUE is its BODY's value, so a `let` body is
         // in the same tail position as the `let`. An abortive perform in the tail of an `if` branch inside a

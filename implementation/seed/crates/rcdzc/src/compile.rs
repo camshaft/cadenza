@@ -1094,6 +1094,28 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // …)") — a non-canonical spelling that garbles downstream, so reject it AT THE DECLARATION with the
     // wrap fix (`garbage render = not canonical → fix the source`). Collected separately so the arrow-arm
     // type-position walk above stays the sole caller of `validate_type_position` for op types.
+    // A NAMELESS operation. Each op clause is `(op NAME TYPE)`; its NAME must be a bare name. `(op (-> Unit
+    // Int64))` has a TYPE where the name should be — `scan_effect_decl` recorded it with an empty name and a
+    // `name_occ` pointing at the non-name element, silently registering a nameless operation (unreachable —
+    // `E.` has nothing to project). Reject it CDZ0201 at the offending element: an operation must be named,
+    // like a def or a variant. (Collected from `name_occ`, which is the op clause's first element.)
+    let nameless_ops: Vec<StructId> = db
+        .effect_decls
+        .iter()
+        .flat_map(|e| e.ops.iter())
+        .filter(|op| db.ast.as_name(op.name_occ).is_none())
+        .map(|op| op.name_occ)
+        .collect();
+    for occ in nameless_ops {
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                "an effect operation must be named — an operation is `(op <name> (-> Arg… Result))`, \
+                 e.g. `(op emit (-> Int64 Unit))`",
+            )
+            .at(occ),
+        );
+    }
     let mut non_arrow_op_types: Vec<StructId> = Vec::new();
     for e in &db.effect_decls {
         for op in &e.ops {
