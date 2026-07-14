@@ -14697,7 +14697,25 @@ mod match_engine {
                 "names Float32 + the overflow-to-inf cause: {}",
                 d.message
             );
+            // The retype fix: `Float64` holds the value (the literal's own default width), the float twin
+            // of the integer width-widen / BigInt fix. Replaces the annotation.
+            assert_eq!(
+                d.fix.as_ref().map(|f| f.replacement.as_str()),
+                Some("Float64"),
+                "retypes the annotation to the wider float: {}",
+                d.message
+            );
         }
+        // The `(Float 32)` COMPOUND spelling gets the same `Float64` retype (the fix rewrites the whole
+        // type-expr, either spelling).
+        let compound = reject_full("(module m (def (main) (: 1.0e40 (Float 32))) (export main))")
+            .expect("a (Float 32) overflow is rejected");
+        assert_eq!(
+            compound.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Float64"),
+            "the compound (Float 32) spelling also retypes to Float64: {}",
+            compound.message
+        );
         // NO false positive: a value that FITS Float32, and the SAME magnitude annotated Float64 (its
         // finite range holds it), both compile clean.
         assert!(reject_full("(module m (def (main) (: 3.0e38 Float32)) (export main))").is_none());
