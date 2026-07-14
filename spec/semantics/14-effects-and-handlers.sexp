@@ -288,6 +288,26 @@
               (handle Bail 0 ((bail (n) s n)) (a 5))) (export main)))
   (output (: 99 Int64)))
 
+(case "an abortive perform under THREE nested handlers abandons the two resumptive frames above it"
+  (doc    "The abortive class composed with DEEP nesting: an abort fires inside a body that also performs two
+           OTHER effects (`A`, `B`) discharged by enclosing resumptive handlers. `(+ (A.a) (+ (B.b)
+           (Bail.bail 99)))` under `handle A … (handle B … (handle Bail …))`: `A.a` resumes (=1), `B.b`
+           resumes (=2), then `Bail.bail 99` — a NON-resuming arm — ABANDONS the pending `(+ (A.a) (+ (B.b)
+           …)))` frames and yields the arm value 99 as the whole handle's value (NOT 1+2+99). Pins that a
+           non-local exit unwinds past the resumptive frames of OTHER, differently-effect handlers stacked
+           above it — the abort is the value of the outermost handle, and the intervening resumptive
+           computations (already run for their effect) do not observe it.")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect B (op b (-> Unit Int64)))
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle A 1 ((a (u) s (resume s s)))
+                (handle B 2 ((b (u) s (resume s s)))
+                  (handle Bail 0 ((bail (n) s n))
+                    (+ (A.a) (+ (B.b) (Bail.bail 99))))))) (export main)))
+  (output (: 99 Int64)))
+
 (case "when two abortive performs sit on one spine the FIRST (leftmost) abort wins"
   (doc    "Refines the abortive class for MULTIPLE performs. Operands evaluate LEFT-TO-RIGHT, and an
            abortive perform ABANDONS the rest of the computation, so on `(+ (Bail.bail 7) (Bail.bail 9))` the
@@ -921,6 +941,21 @@
               (handle St (Some 5) ((get (u) s (match s ((Some n) (resume n s)) (None (resume 0 s)))))
                 (+ 1 (St.get)))) (export main)))
   (output (: 6 Int64)))
+
+(case "an arm chooses its resume value by an if on the handler state"
+  (doc    "A handler arm whose body is NOT a bare `(resume …)` but an `if` on the STATE that resumes a
+           different value per branch — a CONDITIONAL resume. `(get (u) s (if (> s 5) (resume 100 s) (resume
+           200 s)))`: the arm inspects its state `s` and resumes 100 when `s > 5`, else 200. Seeded 7,
+           `7 > 5` holds, so `(Ask.get)` resumes 100 and the body `(+ 1 (Ask.get))` = `(+ 1 100)` = 101.
+           Pins that the fold serves an arm that branches on its state to pick the resume value (each branch
+           a tail resume) — the scalar-`if` companion of the sum-state `match` arm above, the shape of a
+           handler that answers differently depending on the accumulated context.")
+  (input  (do
+            (effect Ask (op get (-> Unit Int64)))
+            (def (main)
+              (handle Ask 7 ((get (u) s (if (> s 5) (resume 100 s) (resume 200 s))))
+                (+ 1 (Ask.get)))) (export main)))
+  (output (: 101 Int64)))
 
 (case "a performed operation composes under a projection and a negation"
   (doc    "Witnesses that an effect operation composes under the STRICT one-operand forms — a tuple
