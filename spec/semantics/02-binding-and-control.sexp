@@ -1032,6 +1032,23 @@
             (def (main) (g (None unit))) (export main)))
   (trap   "m"))
 
+(case "expect on a RUNTIME-absent optional traps with the canonical unreachable kind"
+  (doc    "The runtime (non-const-folded) absent expect: `main`'s parameter feeds a runtime `Option Int64`
+           that is always `None`, so `(Option.expect o \"…\")` sees the None discriminant AT RUN TIME and
+           traps (core-semantics.md #Requiring The Value Of An Optional Traps On Absence). The trap's
+           canonical KIND is `unreachable` — the SAME on every backend: wasm's `SumExpect` absent branch is
+           an `unreachable` instruction, and the Rust backend panics with a reason classifying as
+           `unreachable` (matching the explicit-`trap` lowering). Pins that a RUNTIME expect-on-absent traps
+           consistently across backends (distinct from the const-folded case above, whose recorded message
+           is a custom string the trap-kind grader does not classify).")
+  (input  (do
+            (def (g (: o (Option Int64))) (Option.expect o "boom"))
+            (def (main (: k Int64)) (g (if (> k 0) (Option.None) (Option.None))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (trap   "unreachable"))
+
 (case "expect makes a checked-arithmetic result trap on overflow"
   (doc    "The compiler idiom expect exists for: turn a non-trapping `Int64.checked-add` into a TRAPPING
            add. `(add-ck a b) = (Option.expect (Int64.checked-add a b) \"overflow\")` yields the sum when
