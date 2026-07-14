@@ -4313,6 +4313,66 @@
   (call   twice (: 21 Int64))
   (output (: 42 Int64)))
 
+; DIFFERENT-WIDTH RESULT ARG: a `(Result ok err)` whose ok/err payloads have DIFFERENT core widths (one i64,
+; one i32 — e.g. `(Result Int64 Int32)`) now crosses. The canonical ABI flattens `result<s64,s32>` to `(disc:
+; i32, payload: JOIN)` where the payload core valtype is the JOIN of the two sides = the WIDER core (i64). The
+; narrow side arrives SIGN-EXTENDED into that joined i64 slot; the guest `call` recovers it with `i32.wrap_i64`
+; (its low 32 bits) before the arm's own extend, then boxes it into the sum cell via `sum-new`. The
+; `SumArgArm.wrap_join` flag drives this (set on whichever side's core is narrower than the join). Same-width
+; Result (both i64, or both i32) reads the join directly (unchanged, byte-neutral). Proven runnable by the
+; `a_diff_width_result_scalar_closure_arg_crosses_by_native_flattening` oracle, incl. a NEGATIVE narrow payload.
+; Result payload avoids a runtime `T.of` widen (not yet emitted) by returning Bool (`> 0`) — the ARG crossing,
+; not the body, is what these exercise.
+
+(case "DIFF-WIDTH RESULT: (Result Int64 Int32) arg, drive Ok with a big s64"
+  (doc    "`mk : (-> (Result Int64 Int32) Bool)`. The ok side is s64 (i64 core), the err side s32 (i32 core);
+           the flattened payload join is i64. Driving `Ok(5_000_000_000)` (a value that does NOT fit in i32,
+           proving the ok side reads the full i64 join directly): `x > 0` → true.")
+  (input  (do (def (mk) (fn ((: r (Result Int64 Int32))) (match r ((Ok x) (> x 0)) ((Err e) (> e 0)))))
+              (export mk)))
+  (call   mk (: (Ok 5000000000) (Result Int64 Int32)))
+  (output (: true Bool)))
+
+(case "DIFF-WIDTH RESULT: (Result Int64 Int32) arg, drive Err with a NEGATIVE narrow payload"
+  (doc    "The SAME closure, driving `Err(-7)` — the narrow s32 err arrives sign-extended into the joined i64;
+           the guest `i32.wrap_i64`s to recover it, then the arm re-extends. `e > 0` on `-7` → false. Pins the
+           sign is preserved through the wider join (a bug that read the raw join or zero-extended would give
+           true).")
+  (input  (do (def (mk) (fn ((: r (Result Int64 Int32))) (match r ((Ok x) (> x 0)) ((Err e) (> e 0)))))
+              (export mk)))
+  (call   mk (: (Err -7) (Result Int64 Int32)))
+  (output (: false Bool)))
+
+(case "DIFF-WIDTH RESULT: (Result Int32 Int64) — the NARROW side is Ok, negative"
+  (doc    "The mirror shape: the narrow (s32, i32-core) side is now `Ok`, the wide (s64) side `Err`. The join
+           is still i64; `Ok(-3)` arrives sign-extended and is recovered by `wrap_join` on the OK arm. `x > 0`
+           on `-3` → false. Confirms `wrap_join` is set per-arm by which side is narrower, not fixed to `err`.")
+  (input  (do (def (mk) (fn ((: r (Result Int32 Int64))) (match r ((Ok x) (> x 0)) ((Err e) (> e 0)))))
+              (export mk)))
+  (call   mk (: (Ok -3) (Result Int32 Int64)))
+  (output (: false Bool)))
+
+(case "DIFF-WIDTH RESULT: two same-sig (Result Int64 Int32) closures share one call"
+  (doc    "Different-width Result composes with the MULTI-EXPORT shape (N same-sig closures sharing one `call`):
+           `mk-a`/`mk-b` both take `(Result Int64 Int32)`. Driving `mk-b` with `Err(-7)`: `e < 0` → true. The
+           join + `wrap_join` recovery threads through the shared `call` unchanged.")
+  (input  (do (def (mk-a) (fn ((: r (Result Int64 Int32))) (match r ((Ok x) (> x 0)) ((Err e) (> e 0)))))
+              (def (mk-b) (fn ((: r (Result Int64 Int32))) (match r ((Ok x) (< x 0)) ((Err e) (< e 0)))))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: (Err -7) (Result Int64 Int32)))
+  (output (: true Bool)))
+
+(case "DIFF-WIDTH RESULT: a (Result Int64 Int32) group + a (Result Int32 Int64) group, distinct-sig"
+  (doc    "Different-width Result composes with the DISTINCT-SIG shape: two closures of DIFFERENT Result
+           signatures (opposite narrow sides) cross as two resource types, each minting its own `result<…>`
+           boundary type + `wrap_join` recovery. Driving the second group `mk-q : (-> (Result Int32 Int64)
+           Bool)` with `Ok(-3)`: `x > 0` → false.")
+  (input  (do (def (mk-p) (fn ((: r (Result Int64 Int32))) (match r ((Ok x) (> x 0)) ((Err e) (> e 0)))))
+              (def (mk-q) (fn ((: r (Result Int32 Int64))) (match r ((Ok x) (> x 0)) ((Err e) (> e 0)))))
+              (export mk-p) (export mk-q)))
+  (call   mk-q (: (Ok -3) (Result Int32 Int64)))
+  (output (: false Bool)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner

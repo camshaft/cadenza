@@ -1963,17 +1963,24 @@ fn fixed_shape_option_scalar_arg(
                     arm_true: SumArgArm {
                         decl_disc: payload_i,
                         payload_box: Some((box_op, extend)),
+                        wrap_join: false, // option has a single payload — no wider join to recover
                     },
                     arm_false: SumArgArm {
                         decl_disc: nullary_i,
                         payload_box: None,
+                        wrap_join: false,
                     },
                 },
             ))
         }
         // RESULT shape: two single-scalar-payload variants (Ok a, Err b). Crosses as `result<ok,err>` — the
-        // FIRST-declared variant is `ok` (boundary disc 0), the second `err` (disc 1). Both payloads must be
-        // the SAME core width (their flattened join is one param); `resolve_scalar_payload` gives each's box op.
+        // FIRST-declared variant is `ok` (boundary disc 0), the second `err` (disc 1). `resolve_scalar_payload`
+        // gives each's box op. The canonical ABI flattens `result<ok,err>` to `(disc: i32, payload: JOIN)` where
+        // the payload core valtype is the JOIN of the two sides — the WIDER core (i64 if either side is i64,
+        // else i32). When the two sides are the same core width, both read the join directly (the original
+        // same-width case). When they DIFFER (one i64, one i32-core — e.g. `Result Int64 Int32`), the narrow
+        // side arrives widened into the joined i64 and must `i32.wrap_i64` to recover its bits before its own
+        // (re-)extend — the `wrap_join` flag. Proven by the diff-width Result oracle.
         [1, 1] => {
             let (ok_ty, ok_box, ok_ext) = resolve_scalar_payload(db, variant_payloads[0][0])?;
             let (err_ty, err_box, err_ext) = resolve_scalar_payload(db, variant_payloads[1][0])?;
@@ -1981,22 +1988,32 @@ fn fixed_shape_option_scalar_arg(
             let err_byte = closure_boundary_byte(&err_ty)?;
             let ok_vt = crate::backend::wasm::lir::valtype_of(&ok_ty)?;
             let err_vt = crate::backend::wasm::lir::valtype_of(&err_ty)?;
-            if ok_vt != err_vt {
-                return None; // different-width ok/err payloads → a wider flattened join (a later widening)
-            }
+            use crate::backend::wasm::lir::ValType;
+            // The joined payload core valtype: i64 if EITHER side is i64, else i32 (both i32-core). Floats are
+            // their own core width; a float↔int mix has no common numeric join here, so decline.
+            let join_vt = match (ok_vt, err_vt) {
+                (a, b) if a == b => a,
+                (ValType::I64, ValType::I32) | (ValType::I32, ValType::I64) => ValType::I64,
+                _ => return None, // f32↔f64 / int↔float mixed join — a later widening
+            };
+            // A side whose own core is NARROWER than the join arrives widened into it → wrap to recover.
+            let ok_wrap = ok_vt != join_vt;
+            let err_wrap = err_vt != join_vt;
             Some((
                 ArgSlot::Result(ok_byte, err_byte),
-                ok_vt,
+                join_vt,
                 SumArgRebuild {
                     base_param: 1,
                     boundary_true_disc: 0, // component `result<ok,err>` sends Ok=0
                     arm_true: SumArgArm {
                         decl_disc: 0, // Ok = the first-declared variant
                         payload_box: Some((ok_box, ok_ext)),
+                        wrap_join: ok_wrap,
                     },
                     arm_false: SumArgArm {
                         decl_disc: 1, // Err = the second
                         payload_box: Some((err_box, err_ext)),
+                        wrap_join: err_wrap,
                     },
                 },
             ))
