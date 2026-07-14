@@ -987,7 +987,8 @@ pub fn assemble_extern(
         section(sec::ALIAS, &wasm_vec(m, &items))
     };
 
-    // sec 7 (second): one component functype per boundary export → component types `1..=m`.
+    // sec 7 (second): one component functype per boundary export → component types `g..g+m` (after the g
+    // peer instance-types `0..g`; `g == 1` gives `1..=m`, the X3 shape).
     let boundary_type_sec = {
         let mut items = Vec::new();
         for e in exports {
@@ -1000,12 +1001,12 @@ pub fn assemble_extern(
         section(sec::COMPONENT_TYPE, &wasm_vec(m, &items))
     };
 
-    // sec 8 (second): lift each boundary core func (`p+j`) using its component type (`1+j`) → component
+    // sec 8 (second): lift each boundary core func (`p+j`) using its component type (`g+j`) → component
     // funcs `p..p+m`.
     let lift_sec = {
         let mut items = Vec::new();
         for j in 0..m {
-            items.extend_from_slice(&canon_lift_item((p + j) as u32, (1 + j) as u32));
+            items.extend_from_slice(&canon_lift_item((p + j) as u32, (g + j) as u32));
         }
         section(sec::CANON, &wasm_vec(m, &items))
     };
