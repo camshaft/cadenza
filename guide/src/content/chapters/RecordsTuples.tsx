@@ -59,6 +59,24 @@ export default function RecordsTuples() {
         expect="error"
       />
 
+      <H2>Combining two records</H2>
+      <P>
+        Where <C>extend</C> adds one field, <C>Record.merge</C> combines two whole records into one whose
+        fields are the <em>union</em> of both. Merge a record of sizes with a record of colours and you can
+        reach any field of either side:
+      </P>
+      <Runnable source={`(. (Record.merge (record (w 4) (h 5)) (record (r 255))) r)`} />
+      <P>
+        The result has all three fields — <C>w</C>, <C>h</C>, and <C>r</C> — so <C>.r</C> reads <C>255</C>.
+        And the same no-clobber discipline applies: the two records must have <em>disjoint</em> fields. Ask
+        to merge two records that both define <C>x</C> and the compiler refuses rather than silently pick a
+        winner:
+      </P>
+      <Runnable
+        source={`(. (Record.merge (record (x 1)) (record (x 2))) x)`}
+        expect="error"
+      />
+
       <H2>Nesting</H2>
       <P>
         Records and tuples nest freely — a field can hold another record, a tuple can hold a record,
