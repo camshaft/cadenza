@@ -440,6 +440,10 @@ pub fn emit(
     //# The set of host operations a component imports MUST be the union of the escaping rows its entrypoints acknowledge, so that a component instantiated once carries a single import surface serving every entrypoint it exports, as the component model requires.
     //= spec/capabilities/capabilities-and-effects.md#each-entrypoint-acknowledges-its-own-escaping-row
     //# The authority an entrypoint reaches MUST be determined by the operations reachable from its own body under its own delegations, so that co-locating a pure entrypoint with an effectful one in the same component does not grant the pure entrypoint any authority.
+    //= spec/capabilities/capabilities-and-effects.md#the-program-manifest-is-the-union-of-its-entrypoints-delegations
+    //# A program's capability manifest MUST be the union of the host delegations its entrypoints declare, so that the manifest is a projection of where authority actually enters the program and not of every effect any module declares.
+    //= spec/capabilities/capabilities-and-effects.md#the-program-manifest-is-the-union-of-its-entrypoints-delegations
+    //# Dependency resolution MUST NOT introduce a capability that no entrypoint in the program delegated.
     let mut host_imports: Vec<host::HostImport> = Vec::new();
     for &def in &layout.order {
         let body = def_body(db, def)?;
