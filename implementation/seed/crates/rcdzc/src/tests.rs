@@ -27134,6 +27134,28 @@ mod stage1 {
     }
 
     #[test]
+    fn a_type_declaration_may_carry_a_leading_doc_ignored_for_the_variants() {
+        // A `(doc "…")` form right after the type NAME documents the type and is NOT a variant — the ML
+        // reader attaches a `///` doc comment on a `type` this way (`parser.rs` `type_expr`), the type
+        // analogue of a def's leading doc. `scan_type_decl` skips it (like `strip_def_docs` for a def);
+        // before, the doc was mis-read AS a variant → CDZ0201 "variant `doc` declared more than once".
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (type Color (doc \"an RGB channel tag\") Red Green Blue) \
+               (def (main) (match Color.Green ((Color.Red) 0) ((Color.Green) 1) ((Color.Blue) 2))) \
+               (export main))",
+        )))
+        .expect("a type decl may carry a leading doc");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 1);
+        // A PAYLOAD-carrying documented sum works too — the doc does not shift the variant discriminants.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (type Box (doc \"a one-field wrapper\") (Mk Int64)) \
+               (def (main) (match (Box.Mk 7) ((Box.Mk n) n))) (export main))",
+        )))
+        .expect("a documented payload sum compiles");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
+    }
+
+    #[test]
     fn a_do_local_declaration_scope_is_backward_only() {
         // Sequential scope: a form sees only the declarations BEFORE it. A FORWARD reference (`y`'s value
         // `(+ x 1)` references `x` declared AFTER it) is unbound — a declaration does not see later ones.

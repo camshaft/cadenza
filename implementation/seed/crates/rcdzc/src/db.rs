@@ -3078,6 +3078,13 @@ pub(crate) fn scan_type_decl(ast: &Arenas, item: StructId) -> Option<TypeDecl> {
         .to_string();
     let mut variants = Vec::new();
     for &v in tail.iter().skip(1) {
+        // A leading `(doc "…")` metadata form (the ML reader attaches a `///` doc comment on a type as a
+        // `(doc …)` form after the type NAME — `parser.rs` `type_expr`) is NOT a variant: skip it, exactly
+        // as `strip_def_docs` drops a leading doc on a `(def …)`. Without this, `///`-documented type
+        // declarations mis-parse the doc as a bogus `doc` variant (CDZ0201 "declared more than once").
+        if ast.as_form(v, "doc").is_some() {
+            continue;
+        }
         let (name_occ, payloads) = match ast.get(v) {
             // A bare nullary variant name — no payloads.
             Struct::Atom(_) => (v, Vec::new()),
