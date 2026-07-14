@@ -50955,6 +50955,252 @@ mod closure_host_resource {
         assert_eq!(out2[0], Val::S64(0), "match None → 0");
     }
 
+    /// RESULT-ARG oracle core: a closure `(fn (r) (match r ((Ok x) x) ((Err e) (- 0 e))))` whose ONE argument
+    /// is a `(Result Int64 Int64)` — a TWO-PAYLOAD-variant sum (unlike Option's one-payload+nullary). The
+    /// HYPOTHESIS: it crosses as a component `result<s64, s64>` (the `0x6a` former — a general `variant` must
+    /// be NAMED, but `result`/`option` are anonymous-allowed), which the canonical ABI FLATTENS into `(disc:
+    /// i32, payload: i64)` — the payload slot the JOIN of ok/err scalars (both s64). So the guest `call`
+    /// receives `(i32 self, i32 disc, i64 payload)` and branches on disc (0=ok→x, 1=err→-e — the canonical
+    /// `result` disc order, INDEPENDENT of Cadenza's decl). If this validates + runs, a `(Result scalar
+    /// scalar)` arg is an implementation gap (a `result<…>` former + per-case rebuild), NOT an ABI wall.
+    /// Standalone (no heap): the match is a bare i32 branch on the flattened disc.
+    fn closure_variant_arg_call_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        // 0 = resource-new/rep (i32)->i32; 1 = make ()->i32; 2 = call (i32 self, i32 disc, i64 payload)->i64.
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types.ty().function(vec![], vec![ValType::I32]); // 1 make
+        types.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I64],
+            vec![ValType::I64],
+        ); // 2 call
+        m.section(&types);
+
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew = 0u32;
+
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // make
+        funcs.function(2); // call
+        m.section(&funcs);
+        let f_make = 2u32;
+        let f_call = 3u32;
+
+        let mut exports = ExportSection::new();
+        exports.export("make", ExportKind::Func, f_make);
+        exports.export("call", ExportKind::Func, f_call);
+        m.section(&exports);
+
+        let mut code = CodeSection::new();
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(0));
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+        code.function(&make);
+        // call(self, disc, payload) = if disc==0 { payload } else { 0 - payload }  — `(match r ((Ok x) x)
+        // ((Err e) (- 0 e)))` over the flattened variant (Ok=disc 0, Err=disc 1).
+        let mut call = Function::new(vec![]);
+        call.instruction(&Instruction::LocalGet(1)); // disc
+        call.instruction(&Instruction::I32Const(0)); // Ok's discriminant
+        call.instruction(&Instruction::I32Eq);
+        call.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+        call.instruction(&Instruction::LocalGet(2)); // payload (x)
+        call.instruction(&Instruction::Else);
+        call.instruction(&Instruction::I64Const(0));
+        call.instruction(&Instruction::LocalGet(2)); // payload (e)
+        call.instruction(&Instruction::I64Sub); // 0 - e
+        call.instruction(&Instruction::End);
+        call.instruction(&Instruction::End);
+        code.function(&call);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The inner re-export component for the VARIANT-ARG (Result) closure: like the option one but `call`'s
+    /// argument is a `variant { ok(s64), err(s64) }` DEFINED TYPE.
+    fn inner_reexport_component_variant_arg() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty));
+        let (var_imp, od_v) = c.type_defined();
+        od_v.result(
+            Some(ComponentValType::Primitive(PrimitiveValType::S64)),
+            Some(ComponentValType::Primitive(PrimitiveValType::S64)),
+        );
+        let (own_imp2, od2) = c.type_defined();
+        od2.own(imp_t);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_imp2)),
+            ("r", ComponentValType::Type(var_imp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_fn = c.import("import-func-call", ComponentTypeRef::Func(call_ty));
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        let (own_exp, od3) = c.type_defined();
+        od3.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        let (var_exp, od_v2) = c.type_defined();
+        od_v2.result(
+            Some(ComponentValType::Primitive(PrimitiveValType::S64)),
+            Some(ComponentValType::Primitive(PrimitiveValType::S64)),
+        );
+        let (own_exp2, od4) = c.type_defined();
+        od4.own(exp_t);
+        let (call_exp_ty, mut cf2) = c.type_function();
+        cf2.params([
+            ("self", ComponentValType::Type(own_exp2)),
+            ("r", ComponentValType::Type(var_exp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        c.export(
+            "call",
+            ComponentExportKind::Func,
+            call_fn,
+            Some(ComponentTypeRef::Func(call_exp_ty)),
+        );
+        c
+    }
+
+    /// The outer oracle component for the VARIANT-ARG (Result) closure: `call` lifted against `(self: own<t>,
+    /// r: variant{ok(s64),err(s64)}) -> s64`, NO canon options — the flatten hypothesis is `(i32 disc, i64
+    /// payload)`.
+    fn oracle_closure_variant_arg_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew_core),
+            ("resource-rep", ExportKind::Func, rrep_core),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let call_core = c.core_alias_export(prog_inst, "call", ExportKind::Func);
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        let (own_t2, odef2) = c.type_defined();
+        odef2.own(res_ty);
+        let (var_t, odef_v) = c.type_defined();
+        odef_v.result(
+            Some(ComponentValType::Primitive(PrimitiveValType::S64)),
+            Some(ComponentValType::Primitive(PrimitiveValType::S64)),
+        );
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_t2)),
+            ("r", ComponentValType::Type(var_t)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_comp = c.lift_func(call_core, call_ty, []);
+        let inner_idx = c.component(inner_reexport_component_variant_arg());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-call", ComponentExportKind::Func, call_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// THE REFUTATION ATTEMPT: does a `(Result Int64 Int64)` closure ARGUMENT cross by NATIVE variant
+    /// flattening (`variant{ok(s64),err(s64)}` → `(disc: i32, payload: i64)`)? `make()`, then
+    /// `call(handle, Ok(7))` → 7 and a fresh `call(h2, Err(3))` → -3. If it validates + runs, a two-payload
+    /// `(Result scalar scalar)` arg is an implementation gap (a `variant<…>` former + per-case rebuild), NOT
+    /// an ABI wall.
+    #[test]
+    fn a_result_scalar_closure_arg_crosses_by_native_flattening() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_closure_variant_arg_component(&closure_variant_arg_call_core());
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("variant-arg closure component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make export");
+        let call_idx = instance
+            .get_export_index(&mut store, Some(&iface), "call")
+            .expect("call export");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let call = instance.get_func(&mut store, call_idx).expect("call func");
+
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle).expect("make call");
+        make.post_return(&mut store).expect("make post_return");
+
+        // call(handle, Ok(7)) → 7 (own<t> is single-use — consumes the handle).
+        let ok_arg = Val::Result(Ok(Some(Box::new(Val::S64(7)))));
+        let mut out = [Val::Bool(false)];
+        call.call(&mut store, &[handle[0].clone(), ok_arg], &mut out)
+            .expect("call(handle, Ok(7))");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(out[0], Val::S64(7), "match Ok(7) → 7");
+
+        // A fresh handle for Err: call(h2, Err(3)) → -3.
+        let mut handle2 = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle2)
+            .expect("make call 2");
+        make.post_return(&mut store).expect("make post_return 2");
+        let err_arg = Val::Result(Err(Some(Box::new(Val::S64(3)))));
+        let mut out2 = [Val::Bool(false)];
+        call.call(&mut store, &[handle2[0].clone(), err_arg], &mut out2)
+            .expect("call(handle, Err(3))");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(out2[0], Val::S64(-3), "match Err(3) → -3");
+    }
+
     /// NESTED-COMPOUND oracle core: a closure `(fn (p) (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))` whose ONE
     /// argument is a NESTED fixed-shape tuple `(Tuple Int64 (Tuple Int64 Int64))`. The HYPOTHESIS: the canonical
     /// ABI flattens a nested `tuple<s64, tuple<s64,s64>>` RECURSIVELY into THREE leaf core params `(i64, i64,

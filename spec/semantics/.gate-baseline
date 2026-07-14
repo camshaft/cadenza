@@ -122,6 +122,8 @@ pass	a CAPTURING closure returning a List
 pass	a CAPTURING closure returning a tuple
 pass	a CAPTURING closure taking TWO Tuple args
 pass	a CAPTURING closure taking TWO Tuple args with a LIST result
+pass	a CAPTURING closure taking a Result Int64 Int64 ARG crosses the direct-call boundary
+pass	a CAPTURING closure taking a Result Int64 Int64 ARG — Err arm uses the captured value
 pass	a CAPTURING closure taking a Tuple ARG crosses the DIRECT-CALL boundary
 pass	a CAPTURING closure taking an Option Int64 ARG crosses the direct-call boundary
 pass	a CAPTURING closure taking an Option Int64 ARG — None takes the captured value
@@ -352,6 +354,9 @@ pass	a closure returning a tuple with a negative int leaf
 pass	a closure returning an EMPTY List
 pass	a closure returning an empty Bytes crosses as the empty list
 pass	a closure returning an empty String crosses as the empty list
+pass	a closure taking a Result Bool Bool ARG crosses the direct-call boundary
+pass	a closure taking a Result Int64 Int64 ARG — Err crosses the direct-call boundary
+pass	a closure taking a Result Int64 Int64 ARG — Ok crosses the direct-call boundary
 pass	a closure taking a nominal-over-scalar argument receives the underlying scalar
 pass	a closure taking an Option Bool ARG crosses the direct-call boundary
 pass	a closure taking an Option Float64 ARG crosses the direct-call boundary

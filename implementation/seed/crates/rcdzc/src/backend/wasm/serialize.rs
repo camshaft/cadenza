@@ -1548,69 +1548,52 @@ impl FieldRebuild {
     }
 }
 
-/// How a closure `call` reassembles ONE flattened fixed-shape SUM argument (an `Option`/`Result` — a
-/// two-variant sum where the payload-bearing variant carries ≤1 aliased-width scalar payload) into the single
-/// value-heap CELL its lifted body expects. The sum crosses the DIRECT-CALL boundary as a native component
-/// `option<T>`/`variant<…>`, which the canonical ABI FLATTENS into `(disc: i32, payload…)` core params — the
-/// disc at `base_param`, the payload leaf (when present) at `base_param + 1`. This descriptor tells the `call`
-/// body to rebuild that cell in-guest: branch on the flattened disc; for the payload variant box the payload
-/// param + `sum-new(payload_disc, boxed)`; for the nullary variant `sum-new(nullary_disc, IMM_UNIT)` — the
-/// exact `Core::SumNew` build shape (`select.rs`) — and push the resulting handle in place of the raw params.
-/// Proven runnable by the `an_option_scalar_closure_arg_crosses_by_native_flattening` oracle. This increment
-/// scopes a TWO-VARIANT sum with a nullary variant + a ≤1-scalar-payload variant (Option/Result).
+/// One arm of a two-arm [`SumArgRebuild`]: how the guest builds ONE variant's sum cell from the flattened
+/// payload param. `decl_disc` is the variant's index in Cadenza's decl (what `sum-new` stamps); `payload_box`
+/// is `Some((box_op, extend))` when this variant carries one aliased-width scalar payload (boxed into the
+/// cell), or `None` for a nullary variant (the inline-unit payload). Both `Option`'s `Some`/`None` and
+/// `Result`'s `Ok`/`Err` are two-arm sums; a nullary arm has `payload_box: None`.
 #[derive(Clone)]
-pub struct SumArgRebuild {
-    /// The CORE-PARAM index the flattened sum's `disc` (i32) lands at; the payload (if any) is at
-    /// `base_param + 1`. `1` when the sum is the SOLE closure arg (after `self`=0).
-    pub base_param: u32,
-    /// The discriminant the COMPONENT boundary type sends for the PAYLOAD-bearing variant — the value the
-    /// flattened `disc` param carries when the payload is present. For a component `option<T>` this is ALWAYS
-    /// `1` (the canonical `variant { none, some(T) }` order — Some=1), INDEPENDENT of Cadenza's decl order.
-    /// The guest branches `disc == boundary_payload_disc` to pick the payload arm.
-    pub boundary_payload_disc: u32,
-    /// The discriminant of the PAYLOAD-bearing variant IN CADENZA'S DECL — the disc `sum-new` builds the cell
-    /// with (may differ from `boundary_payload_disc`: Cadenza's `(Some a) None` has Some=0, but the boundary
-    /// option sends Some=1). This is what a guest `match` on the rebuilt cell dispatches on.
-    pub payload_disc: u32,
-    /// The `box_op` for the single scalar payload (`"box-int"`/`"box-bool"`/`"box-float"`/`"box-float32"`) +
-    /// whether a NARROW int payload needs an i32→i64 extend before `box-int`. `None` when the payload variant
-    /// is ALSO nullary (a two-nullary-variant sum, e.g. a bare enum) — then both variants build the unit.
+pub struct SumArgArm {
+    /// This variant's discriminant IN CADENZA'S DECL — `sum-new(decl_disc, …)` stamps it (a later guest
+    /// `match` on the rebuilt cell dispatches on this). May differ from the boundary disc.
+    pub decl_disc: u32,
+    /// `Some((box_op, extend))` for a single scalar payload; `None` for a nullary variant (builds IMM_UNIT).
     pub payload_box: Option<(&'static str, Option<bool>)>,
-    /// The DECL discriminant of the NULLARY variant (`None`) — builds `sum-new(nullary_disc, IMM_UNIT)`.
-    pub nullary_disc: u32,
-    /// The i32 core valtype of the flattened payload param, when present (for the guest `if` result type is
-    /// always i32 — a sum handle — so this is unused for the block type; retained for documentation/future).
-    #[allow(dead_code)]
-    pub payload_is_i32_param: bool,
 }
 
-/// Emit the SUM-arg CELL REBUILD for a closure `call` body: reassemble the single fixed-shape sum argument
-/// (which crossed FLATTENED as `(disc, payload…)` core params) into the one i32 sum-cell handle the lifted
-/// body expects, leaving the handle on the stack AND stashed in `sum_local` (dropped after `call_indirect`).
-/// Emits `if disc == payload_disc { sum-new(payload_disc, box(payload)) } else { sum-new(nullary_disc, UNIT) }`.
-/// `imp(name) -> import index`. See [`SumArgRebuild`].
-fn emit_sum_arg_rebuild(
-    rebuild: &SumArgRebuild,
-    sum_local: u32,
-    imp: &dyn Fn(&str) -> u64,
-    out: &mut Vec<u8>,
-) {
+/// How a closure `call` reassembles ONE flattened fixed-shape SUM argument (an `Option`/`Result` — a
+/// two-variant sum, each variant nullary OR carrying ≤1 aliased-width scalar payload) into the single
+/// value-heap CELL its lifted body expects. The sum crosses the DIRECT-CALL boundary as a native component
+/// `option<T>` (one payload + one nullary) or `result<ok,err>` (two payloads), which the canonical ABI
+/// FLATTENS into `(disc: i32, payload)` core params — the disc at `base_param`, the payload leaf at
+/// `base_param + 1` (the payload slot is the JOIN of both cases' scalars). This descriptor tells the `call`
+/// body to branch on the flattened boundary disc and build each arm's cell via `sum-new` (the exact
+/// `Core::SumNew` shape), pushing the resulting handle in place of the raw params. Proven runnable by the
+/// `an_option_scalar_closure_arg_crosses_by_native_flattening` + `a_result_scalar_closure_arg_crosses_by_
+/// native_flattening` oracles. 🪤 the disc has TWO conventions: the guest BRANCHES on the boundary disc
+/// (`option`/`result` send case-1 for the 2nd case), but BUILDS with each arm's DECL disc.
+#[derive(Clone)]
+pub struct SumArgRebuild {
+    /// The CORE-PARAM index the flattened sum's `disc` (i32) lands at; the payload is at `base_param + 1`.
+    /// `1` when the sum is the SOLE closure arg (after `self`=0).
+    pub base_param: u32,
+    /// The boundary disc value that selects `arm_true` — the value the flattened `disc` carries for that
+    /// case. For `option<T>` this is `1` (Some); for `result<ok,err>` `0` (Ok). The guest branches
+    /// `disc == boundary_true_disc ? arm_true : arm_false`.
+    pub boundary_true_disc: u32,
+    /// The arm built when `disc == boundary_true_disc` (Some for option, Ok for result).
+    pub arm_true: SumArgArm,
+    /// The arm built otherwise (None for option, Err for result).
+    pub arm_false: SumArgArm,
+}
+
+/// Emit ONE arm's cell build: `sum-new(decl_disc, box(payload) | IMM_UNIT)`. Leaves `[sum-handle]` on stack.
+fn emit_sum_arm(arm: &SumArgArm, payload_param: u32, imp: &dyn Fn(&str) -> u64, out: &mut Vec<u8>) {
     use crate::backend::wasm::wasm_abi::op;
-    let disc_param = rebuild.base_param;
-    let payload_param = rebuild.base_param + 1;
-    // Branch on the BOUNDARY disc (the component option's Some=1), NOT the decl disc — the flattened `disc`
-    // param carries the component-model convention, which may differ from Cadenza's decl order.
-    out.push(op::LOCAL_GET);
-    uleb128(disc_param as u64, out);
     out.push(op::I32_CONST);
-    crate::backend::wasm::encode::sleb128(rebuild.boundary_payload_disc as i64, out);
-    out.push(op::I32_EQ);
-    out.push(op::IF);
-    out.push(wasm_abi::CORE_I32); // block type: → i32 (the sum handle)
-    // PAYLOAD variant: sum-new(payload_disc, box(payload)) — or the unit when the payload variant is nullary.
-    out.push(op::I32_CONST);
-    crate::backend::wasm::encode::sleb128(rebuild.payload_disc as i64, out); // [disc]
-    if let Some((box_op, extend)) = &rebuild.payload_box {
+    crate::backend::wasm::encode::sleb128(arm.decl_disc as i64, out); // [disc]
+    if let Some((box_op, extend)) = &arm.payload_box {
         out.push(op::LOCAL_GET);
         uleb128(payload_param as u64, out); // [disc, payload-leaf]
         if let Some(signed) = extend {
@@ -1631,14 +1614,32 @@ fn emit_sum_arg_rebuild(
     }
     out.push(op::CALL);
     uleb128(imp("sum-new"), out); // [sum-handle]
+}
+
+/// Emit the SUM-arg CELL REBUILD for a closure `call` body: reassemble the single fixed-shape sum argument
+/// (which crossed FLATTENED as `(disc, payload)` core params) into the one i32 sum-cell handle the lifted
+/// body expects, leaving the handle on the stack AND stashed in `sum_local` (dropped after `call_indirect`).
+/// `if disc == boundary_true_disc { arm_true } else { arm_false }`, each arm via [`emit_sum_arm`].
+fn emit_sum_arg_rebuild(
+    rebuild: &SumArgRebuild,
+    sum_local: u32,
+    imp: &dyn Fn(&str) -> u64,
+    out: &mut Vec<u8>,
+) {
+    use crate::backend::wasm::wasm_abi::op;
+    let disc_param = rebuild.base_param;
+    let payload_param = rebuild.base_param + 1;
+    // Branch on the BOUNDARY disc (the component-model convention), NOT the decl disc.
+    out.push(op::LOCAL_GET);
+    uleb128(disc_param as u64, out);
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(rebuild.boundary_true_disc as i64, out);
+    out.push(op::I32_EQ);
+    out.push(op::IF);
+    out.push(wasm_abi::CORE_I32); // block type: → i32 (the sum handle)
+    emit_sum_arm(&rebuild.arm_true, payload_param, imp, out);
     out.push(op::ELSE);
-    // NULLARY variant: sum-new(nullary_disc, IMM_UNIT).
-    out.push(op::I32_CONST);
-    crate::backend::wasm::encode::sleb128(rebuild.nullary_disc as i64, out); // [disc]
-    out.push(op::I32_CONST);
-    crate::backend::wasm::encode::sleb128(crate::backend::wasm::runtime_abi::IMM_UNIT as i64, out); // [disc, unit]
-    out.push(op::CALL);
-    uleb128(imp("sum-new"), out); // [sum-handle]
+    emit_sum_arm(&rebuild.arm_false, payload_param, imp, out);
     out.push(op::END);
     // stash for the post-dispatch drop; leaves [sum-handle] on the stack.
     out.push(op::LOCAL_TEE);
@@ -1762,7 +1763,10 @@ fn emit_closure_call_args_with_sums(
         {
             emit_sum_arg_rebuild(rebuild, sum_local + si as u32, imp, out);
             // disc (1) + the payload leaf (1) when the payload variant carries a scalar.
-            a += 1 + if rebuild.payload_box.is_some() { 1 } else { 0 };
+            // An Option/Result flattens to `(disc, payload)` = 2 core params (the payload slot is the join of
+            // both arms' scalars; a nullary arm's slot is present but unused). `rebuild` is bound below.
+            let _ = rebuild;
+            a += 2;
         } else {
             get(a, out);
             a += 1;

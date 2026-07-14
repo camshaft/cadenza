@@ -1879,24 +1879,27 @@ fn closure_boundary_byte(ty: &crate::ty::Ty) -> Option<u8> {
     }
 }
 
-/// A FIXED-SHAPE `(Option scalar)` closure ARGUMENT that crosses the DIRECT-CALL boundary as a native
-/// component `option<payload>` (the canonical ABI flattens it to `(disc: i32, payload)` core params). Returns,
-/// for such a `ty`: the payload's component boundary byte (the `option<…>` type's payload valtype), the
-/// payload's core valtype (the flattened `payload` param — the `disc` param is always i32), and the
-/// [`serialize::SumArgRebuild`] the core `call` uses to reassemble the sum cell by branching on the disc +
-/// `sum-new`. `None` unless `ty` is a TWO-variant sum with exactly one payload-bearing variant (≤1 aliased-
-/// width scalar payload) + one nullary variant — the `Option`/`Result`-with-nullary shape (the built-in
-/// `Option` is the common case). The disc of each variant is its DECLARATION index (`db.type_decl_by_occ`).
+/// A FIXED-SHAPE SUM closure ARGUMENT — an `(Option scalar)` OR a `(Result scalar scalar)` — that crosses the
+/// DIRECT-CALL boundary as a native component `option<payload>` / `result<ok,err>` (the canonical ABI flattens
+/// either to `(disc: i32, payload)` core params, the payload slot the JOIN of both cases' scalars). Returns
+/// the `ArgSlot` (`OptionScalar`/`Result`, minting the boundary type), the flattened payload's core valtype
+/// (the `disc` is always i32), and the [`serialize::SumArgRebuild`] the core `call` uses to rebuild the cell
+/// (branch on the boundary disc → `sum-new`). `None` unless `ty` is a two-variant Option/Result whose
+/// payload-bearing variant(s) each carry ONE aliased-width scalar; a nullary+payload sum is Option, two
+/// payloads is Result. A general user sum needs a NAMED `variant<…>` (out of scope). For Result, both
+/// payloads must be the SAME core width (their flattened join is one param). Discs are DECL indices; the
+/// boundary disc is the component-model convention (option Some=1; result Ok=0/Err=1).
 #[allow(clippy::type_complexity)]
 fn fixed_shape_option_scalar_arg(
     db: &mut Db,
     ty: &crate::ty::Ty,
 ) -> Option<(
-    u8,
+    crate::backend::wasm::envelope::ArgSlot,
     crate::backend::wasm::lir::ValType,
     crate::backend::wasm::serialize::SumArgRebuild,
 )> {
-    use crate::backend::wasm::serialize::SumArgRebuild;
+    use crate::backend::wasm::envelope::ArgSlot;
+    use crate::backend::wasm::serialize::{SumArgArm, SumArgRebuild};
     use crate::ty::Ty;
     let Ty::Sum { decl, args, .. } = ty.strip_nominal() else {
         return None;
@@ -1905,9 +1908,8 @@ fn fixed_shape_option_scalar_arg(
     // reads below don't overlap the `decl_ref` borrow.
     let (params, variant_payloads): (Vec<String>, Vec<Vec<crate::ast::StructId>>) = {
         let decl_ref = db.type_decl_by_occ(*decl)?;
-        // EXACTLY two variants: one nullary + one carrying a single scalar payload. (Option = `(Some a) None`.)
         if decl_ref.variants.len() != 2 {
-            return None;
+            return None; // EXACTLY two variants (Option = `(Some a) None`; Result = `(Ok a) (Err b)`).
         }
         (
             decl_ref.params.clone(),
@@ -1918,62 +1920,89 @@ fn fixed_shape_option_scalar_arg(
                 .collect(),
         )
     };
-    // Classify each variant → (disc, Option<payload_ty>). The payload type is the variant's ONE payload
-    // occurrence, mapped through the sum's generic params to the instantiated `args` when it is a type var.
-    let mut payload_variant: Option<(u32, crate::ty::Ty)> = None;
-    let mut nullary_disc: Option<u32> = None;
-    for (i, payloads) in variant_payloads.iter().enumerate() {
-        match payloads.len() {
-            0 => {
-                if nullary_disc.is_some() {
-                    return None; // two nullary variants — a bare enum, not an Option-shape payload sum
-                }
-                nullary_disc = Some(i as u32);
-            }
-            1 => {
-                if payload_variant.is_some() {
-                    return None; // two payload-bearing variants — out of this increment
-                }
-                // Resolve the payload's type. A generic param name (`a` in `(Some a)`) binds to `args` at its
-                // param index. We accept only the generic-var case (the built-in Option/Result shape); a
-                // concrete-payload user sum is a later widening.
-                let pname = db
-                    .ast
-                    .head_name(payloads[0])
-                    .or_else(|| db.ast.as_name(payloads[0]))?
-                    .to_string();
-                let pi = params.iter().position(|p| *p == pname)?;
-                let pty = args.get(pi)?.clone();
-                payload_variant = Some((i as u32, pty));
-            }
-            _ => return None, // a multi-payload variant — out of this increment
-        }
-    }
-    let (payload_disc, payload_ty) = payload_variant?;
-    let nullary_disc = nullary_disc?;
-    // The payload must be an aliased-width scalar (Int/Bool/Float) — the shapes `option<T>` flattens + the
-    // guest boxes with a single op. `scalar_field_rebuild` gives the box op + narrow-int extend.
-    let payload_byte = closure_boundary_byte(&payload_ty)?;
-    let payload_vt = crate::backend::wasm::lir::valtype_of(&payload_ty)?;
-    let crate::backend::wasm::serialize::FieldRebuild::Scalar { box_op, extend } =
-        scalar_field_rebuild(&payload_ty)?
-    else {
-        return None;
+    // The instantiated scalar-field-rebuild for a variant's ONE generic payload (a param `a` → `args[pi]`).
+    // Returns `(payload_ty, box_op, extend)`; `None` if the variant is not exactly one aliased-width scalar.
+    let resolve_scalar_payload = |db: &mut Db,
+                                  occ: crate::ast::StructId|
+     -> Option<(crate::ty::Ty, &'static str, Option<bool>)> {
+        let pname = db
+            .ast
+            .head_name(occ)
+            .or_else(|| db.ast.as_name(occ))?
+            .to_string();
+        let pi = params.iter().position(|p| *p == pname)?;
+        let pty = args.get(pi)?.clone();
+        let crate::backend::wasm::serialize::FieldRebuild::Scalar { box_op, extend } =
+            scalar_field_rebuild(&pty)?
+        else {
+            return None;
+        };
+        Some((pty, box_op, extend))
     };
-    Some((
-        payload_byte,
-        payload_vt,
-        SumArgRebuild {
-            base_param: 1, // the sum is the SOLE closure arg → disc at param 1, payload at 2 (after self=0)
-            // The component `option<T>` always sends Some=1 (canonical `variant { none, some(T) }`),
-            // regardless of Cadenza's decl order — the guest branches on this boundary disc.
-            boundary_payload_disc: 1,
-            payload_disc,
-            payload_box: Some((box_op, extend)),
-            nullary_disc,
-            payload_is_i32_param: matches!(payload_vt, crate::backend::wasm::lir::ValType::I32),
-        },
-    ))
+    // Two nullary → a bare enum (not option/result); handle by payload counts.
+    let counts: Vec<usize> = variant_payloads.iter().map(|p| p.len()).collect();
+    match counts.as_slice() {
+        // OPTION shape: exactly one nullary + one single-scalar-payload variant. Crosses as `option<payload>`
+        // (Some=boundary disc 1). arm order: which decl index is the payload variant.
+        [0, 1] | [1, 0] => {
+            let (payload_i, nullary_i) = if counts[0] == 1 {
+                (0u32, 1u32)
+            } else {
+                (1u32, 0u32)
+            };
+            let (payload_ty, box_op, extend) =
+                resolve_scalar_payload(db, variant_payloads[payload_i as usize][0])?;
+            let payload_byte = closure_boundary_byte(&payload_ty)?;
+            let payload_vt = crate::backend::wasm::lir::valtype_of(&payload_ty)?;
+            Some((
+                ArgSlot::OptionScalar(payload_byte),
+                payload_vt,
+                SumArgRebuild {
+                    base_param: 1,
+                    boundary_true_disc: 1, // component `option<T>` sends Some=1
+                    arm_true: SumArgArm {
+                        decl_disc: payload_i,
+                        payload_box: Some((box_op, extend)),
+                    },
+                    arm_false: SumArgArm {
+                        decl_disc: nullary_i,
+                        payload_box: None,
+                    },
+                },
+            ))
+        }
+        // RESULT shape: two single-scalar-payload variants (Ok a, Err b). Crosses as `result<ok,err>` — the
+        // FIRST-declared variant is `ok` (boundary disc 0), the second `err` (disc 1). Both payloads must be
+        // the SAME core width (their flattened join is one param); `resolve_scalar_payload` gives each's box op.
+        [1, 1] => {
+            let (ok_ty, ok_box, ok_ext) = resolve_scalar_payload(db, variant_payloads[0][0])?;
+            let (err_ty, err_box, err_ext) = resolve_scalar_payload(db, variant_payloads[1][0])?;
+            let ok_byte = closure_boundary_byte(&ok_ty)?;
+            let err_byte = closure_boundary_byte(&err_ty)?;
+            let ok_vt = crate::backend::wasm::lir::valtype_of(&ok_ty)?;
+            let err_vt = crate::backend::wasm::lir::valtype_of(&err_ty)?;
+            if ok_vt != err_vt {
+                return None; // different-width ok/err payloads → a wider flattened join (a later widening)
+            }
+            Some((
+                ArgSlot::Result(ok_byte, err_byte),
+                ok_vt,
+                SumArgRebuild {
+                    base_param: 1,
+                    boundary_true_disc: 0, // component `result<ok,err>` sends Ok=0
+                    arm_true: SumArgArm {
+                        decl_disc: 0, // Ok = the first-declared variant
+                        payload_box: Some((ok_box, ok_ext)),
+                    },
+                    arm_false: SumArgArm {
+                        decl_disc: 1, // Err = the second
+                        payload_box: Some((err_box, err_ext)),
+                    },
+                },
+            ))
+        }
+        _ => None, // two nullary (bare enum), or a multi-payload variant — out of scope
+    }
 }
 
 /// A FIXED-SHAPE SCALAR tuple/record closure ARGUMENT that crosses the DIRECT-CALL boundary as a native
@@ -2496,12 +2525,13 @@ fn emit_closure_resource(
     } else {
         None
     };
-    // A SOLE `(Option scalar)` closure ARG crosses as a native `option<payload>` the canonical ABI flattens to
-    // `(disc: i32, payload)` core params; the core `call` rebuilds the sum cell via `SumArgRebuild`, the
-    // envelope mints `option<…>` via `ArgSlot::OptionScalar`. Detected only when no tuple classifier fired.
-    // Scoped: the SOLE arg, scalar result, no build-time host effect (each a clean later widening).
+    // A SOLE `(Option scalar)`/`(Result scalar scalar)` closure ARG crosses as a native `option<payload>`/
+    // `result<ok,err>` the canonical ABI flattens to `(disc: i32, payload)` core params; the core `call`
+    // rebuilds the sum cell via `SumArgRebuild`, the envelope mints the boundary type via the returned
+    // `ArgSlot`. Detected only when no tuple classifier fired. Scoped: the SOLE arg, scalar result, no
+    // build-time host effect (each a clean later widening).
     let sum_arg: Option<(
-        u8,
+        crate::backend::wasm::envelope::ArgSlot,
         crate::backend::wasm::lir::ValType,
         crate::backend::wasm::serialize::SumArgRebuild,
     )> = if host_imports.is_empty()
@@ -2750,12 +2780,14 @@ fn emit_closure_resource(
                 }
             }
         }
-        // A SOLE `(Option scalar)` arg: the `call` rebuilds the sum cell via `sum-new` (branching on disc),
-        // boxing the payload with its box op (a Bool/Float payload needs `box-bool`/`box-float`).
+        // A SOLE `(Option/Result scalar)` arg: the `call` rebuilds the sum cell via `sum-new` (branching on
+        // disc), boxing each arm's payload with its box op (a Bool/Float payload needs `box-bool`/`box-float`).
         if let Some((_, _, rebuild)) = &sum_arg {
             used.insert("sum-new");
-            if let Some((box_op, _)) = rebuild.payload_box {
-                used.insert(box_op);
+            for arm in [&rebuild.arm_true, &rebuild.arm_false] {
+                if let Some((box_op, _)) = arm.payload_box {
+                    used.insert(box_op);
+                }
             }
         }
         used.extend(lifted_ops.iter().copied());
@@ -2864,11 +2896,11 @@ fn emit_closure_resource(
             Some(slots),
         ));
     }
-    // A SOLE `(Option scalar)` closure ARG with a SCALAR result: the sum crosses as a native `option<payload>`
-    // the canonical ABI flattens to `(disc:i32, payload)`. The core `call` rebuilds the sum cell (branch on
-    // disc → `sum-new`); the envelope mints `option<payload>` via `ArgSlot::OptionScalar`. A LIST result over a
-    // sum arg is a later widening (the list cores don't thread sums) — falls through + declines.
-    if let Some((payload_byte, _payload_vt, rebuild)) = &sum_arg
+    // A SOLE `(Option scalar)`/`(Result scalar scalar)` closure ARG with a SCALAR result: the sum crosses as a
+    // native `option<payload>`/`result<ok,err>` the canonical ABI flattens to `(disc:i32, payload)`. The core
+    // `call` rebuilds the sum cell (branch on disc → `sum-new`); the envelope mints the boundary type via the
+    // classifier's `ArgSlot`. A LIST result over a sum arg is a later widening (list cores don't thread sums).
+    if let Some((slot, _payload_vt, rebuild)) = &sum_arg
         && !ret_is_bytes
         && !ret_is_compound
         && !ret_is_collection
@@ -2905,9 +2937,7 @@ fn emit_closure_resource(
             &[],  // prefix unused
             &[],  // suffix unused
             None, // nested shape unused
-            Some(&[crate::backend::wasm::envelope::ArgSlot::OptionScalar(
-                *payload_byte,
-            )]),
+            Some(std::slice::from_ref(slot)),
         ));
     }
     // A `Bytes`-result closure crosses `call` as `list<u8>` (through linear memory): the bytes-result core

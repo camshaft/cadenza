@@ -1392,6 +1392,34 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
                 Val::Option(Some(Box::new(coerce_one(inner, &ot.ty())?)))
             }
         }
+        // A `(Result ok-scalar err-scalar)` argument (the direct-call SUM-arg path): crosses as a component
+        // `result<ok,err>` the ABI flattens to `(disc, payload)`. The corpus writes `(Ok <value>)` / `(Err
+        // <value>)`; coerce the payload against `result.ok()` / `result.err()`.
+        Type::Result(rt) => {
+            let t = s.trim();
+            let body = t
+                .strip_prefix('(')
+                .and_then(|x| x.strip_suffix(')'))
+                .map(str::trim)
+                .ok_or_else(|| {
+                    anyhow!("argument `{s}`: expected a result literal `(Ok <value>)` or `(Err <value>)`")
+                })?;
+            if let Some(v) = body.strip_prefix("Ok").map(str::trim) {
+                let ty = rt
+                    .ok()
+                    .ok_or_else(|| anyhow!("argument `{s}`: result has no ok payload type"))?;
+                Val::Result(Ok(Some(Box::new(coerce_one(v, &ty)?))))
+            } else if let Some(v) = body.strip_prefix("Err").map(str::trim) {
+                let ty = rt
+                    .err()
+                    .ok_or_else(|| anyhow!("argument `{s}`: result has no err payload type"))?;
+                Val::Result(Err(Some(Box::new(coerce_one(v, &ty)?))))
+            } else {
+                return Err(anyhow!(
+                    "argument `{s}`: expected a result literal `(Ok <value>)` or `(Err <value>)`"
+                ));
+            }
+        }
         other => {
             return Err(anyhow!(
                 "argument `{s}`: compound parameter type {other:?} is not supported by cdz-run yet"
