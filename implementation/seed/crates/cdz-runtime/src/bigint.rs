@@ -599,6 +599,59 @@ mod tests {
         assert!(!five.sub(&five).neg);
     }
 
+    /// The `Big` primitives compose into a correct RATIONAL normalization (DESIGN §7: lowest terms via
+    /// `gcd`, denominator strictly positive, sign on the numerator). This is the algorithm the pending
+    /// `Rational` (B4) vertical will run over two BigInt components — validating that `gcd` (added for
+    /// exactly this) + `divmod` (exact division by the gcd) + `neg` compose canonically, so B4's runtime
+    /// piece is a thin layer over these, not new bignum work. NOT dead code: it exercises the dormant
+    /// `gcd` in its intended use and pins the canonicalization contract (a zero denom is rejected upstream,
+    /// so it is not exercised here).
+    #[test]
+    fn gcd_and_divmod_compose_into_rational_normalization() {
+        // Normalize (num, den) → lowest terms, denominator > 0, sign on numerator. `den != 0` (the
+        // Rational.of trap handles zero before this). Returns the canonical (num', den').
+        fn normalize(num: &Big, den: &Big) -> (Big, Big) {
+            assert!(!den.is_zero(), "the caller rejects a zero denominator before normalizing");
+            let g = num.gcd(den); // non-negative; gcd(0, d) = |d|
+            // Divide both by the gcd (exact — g divides both). divmod's quotient carries each operand's sign.
+            let (mut n, _) = num.divmod(&g).expect("gcd is nonzero when den != 0");
+            let (mut d, _) = den.divmod(&g).expect("gcd is nonzero when den != 0");
+            // Denominator strictly positive: if it came out negative, flip BOTH signs (value unchanged).
+            if d.neg {
+                n = n.neg();
+                d = d.neg();
+            }
+            (n, d)
+        }
+        // Build a rational's value as num/den in exact arithmetic (for the cross-check: a/b == c/d iff a*d == c*b).
+        let cross_eq = |n1: &Big, d1: &Big, n2: &Big, d2: &Big| n1.mul(d2).cmp(&n2.mul(d1)) == Ordering::Equal;
+        let cases: &[(i64, i64)] = &[
+            (1, 2), (2, 4), (6, 8), (-1, 2), (1, -2), (-6, -8), (0, 5), (10, 5), (-10, 5), (7, 1),
+            (100, -35), (-100, 35), (i64::MAX, 3), (3, i64::MAX),
+        ];
+        for &(n, d) in cases {
+            let (nn, nd) = normalize(&Big::from_i64(n), &Big::from_i64(d));
+            // (1) denominator strictly positive (never zero — den != 0 — and never negative).
+            assert!(!nd.neg && !nd.is_zero(), "normalized denominator is strictly positive for {n}/{d}");
+            // (2) lowest terms: gcd(|num'|, den') == 1 (or num' == 0 with den' == 1).
+            let g = nn.gcd(&nd);
+            if nn.is_zero() {
+                assert_eq!(nd, Big::from_i64(1), "0/d normalizes to 0/1 for {n}/{d}");
+            } else {
+                assert_eq!(g, Big::from_i64(1), "num'/den' is in lowest terms for {n}/{d}");
+            }
+            // (3) value preserved: num'/den' == n/d (cross-multiply).
+            assert!(cross_eq(&nn, &nd, &Big::from_i64(n), &Big::from_i64(d)), "value preserved for {n}/{d}");
+            // (4) canonical: normalizing an already-normalized pair is a fixpoint.
+            let (nn2, nd2) = normalize(&nn, &nd);
+            assert_eq!((nn2, nd2), (nn, nd), "normalization is idempotent for {n}/{d}");
+        }
+        // Two equal-value pairs normalize to the SAME canonical form (the map-key property Rational needs).
+        let (a_n, a_d) = normalize(&Big::from_i64(6), &Big::from_i64(8));
+        let (b_n, b_d) = normalize(&Big::from_i64(-9), &Big::from_i64(-12)); // == 6/8 == 3/4
+        assert_eq!((a_n, a_d), (b_n, b_d), "6/8 and -9/-12 normalize identically (both 3/4)");
+    }
+
     #[test]
     fn i64_round_trip_and_bounds() {
         for &v in &[0i64, 1, -1, 42, -42, i64::MAX, i64::MIN, 1 << 40, -(1 << 40), 0xffff_ffff, -0xffff_ffff] {
