@@ -28,8 +28,12 @@
 //!   same shape a variant constructor / operator record has, so a performance rides the ordinary
 //!   `(meta apply)` dispatch:
 //!     - `(meta t)` — the operation's TYPE, the arrow `(-> Param Result)` written after the name. Read
-//!       when the operation is applied, so a perform-argument mismatch is an ordinary type error
+//!       when the operation is applied, so a performance `(Diag.emit code)` checks `code` against the
+//!       declared parameter type and yields the declared result type — typed exactly as an ordinary
+//!       function application, a perform-argument mismatch being an ordinary type error
 //!       (`capabilities-and-effects.md` §Performing An Operation Is Typed).
+//= spec/capabilities/capabilities-and-effects.md#performing-an-operation-is-typed-and-contributes-to-the-row
+//# Performing an operation MUST check its arguments against the operation's declared parameter types and yield the operation's declared result type, so that an effect operation is typed exactly as an ordinary function application is.
 //!     - `(meta apply)` — the `(intrinsic perform)` marker. Applying an operation projects this; it is
 //!       NOT a known `Prim` yet, so a perform that reaches lowering with no enclosing handler DECLINES
 //!       (E0 recognizes the surface; E1 resolves a perform to its handler and rewrites it away).
@@ -43,6 +47,24 @@
 //! `(meta effect-op)` carry the [`EffectDecl`]'s occurrence, so two effects that declare a same-named
 //! operation never collide (`capabilities-and-effects.md` §An Operation Is Reached Through Its Declaring
 //! Effect).
+//!
+//! An `(effect NAME (op f (-> A B)) …)` names the effect and binds each of its operations to an
+//! operation type, so an effect's operation set is a CLOSED, statically-known set of fields (not an open
+//! collection of ad-hoc names). Each operation is reached only THROUGH its declaring effect record
+//! (`Diag.emit` is member access off `Diag`), keyed by the declaration occurrence, so two effects may
+//! declare a same-named operation without collision and every performance names an unambiguous op.
+//= spec/capabilities/capabilities-and-effects.md#an-effect-declaration-names-the-effect-and-types-its-operations
+//# A program MUST be able to declare an effect that names it and binds each of its operations to an operation type, so that the set of operations an effect offers is a closed, statically-known set rather than an open collection of ad-hoc names.
+//= spec/capabilities/capabilities-and-effects.md#an-effect-declaration-names-the-effect-and-types-its-operations
+//# An operation MUST be reached through its declaring effect, so that two effects may each declare an operation of the same name without collision and the effect an operation belongs to is unambiguous at every performance and every handler arm.
+//!
+//! The synthesized record is ROUTING-AGNOSTIC: it binds operation names to types and identities but
+//! carries NO host binding, so declaring (or performing) an effect grants no capability on its own — a
+//! reached operation with no enclosing handler and no entrypoint delegation declines (the no-home
+//! check), and authority enters only where an entrypoint delegates. A library that declares or performs
+//! an effect therefore cannot enlarge the authority of a program that uses it.
+//= spec/capabilities/capabilities-and-effects.md#an-entrypoint-delegates-the-capabilities-it-grants-to-the-host
+//# Declaring an effect and its operations MUST NOT by itself grant any host capability: an effect declaration is a routing-agnostic contract, and only an entrypoint's delegation routes an effect's operations to the host, so that a library that declares or performs an effect cannot enlarge the authority of a program that uses it.
 //!
 //! **Deferred to E1.** These records carry the op TYPE + identity; the `(meta apply)` perform intrinsic
 //! declines at lowering until E1 makes the compile-time evaluator handler-context-aware and rewrites a
@@ -806,47 +828,49 @@ pub fn perform_host_target(
 /// ancestor was erased by a `reduce_handle` node synthesis. Memoized-free but cheap (a handful of
 /// exports, walked once per residual host perform).
 fn program_delegates_effect(db: &mut Db, decl: crate::ast::StructId) -> bool {
-    // Memoized per `decl`: the delegation set is a pure function of the export bodies, but this is a
-    // FALLBACK consulted once per residual host-perform — recomputing the O(export-body) walk per perform
-    // was O(N²) for a program with N performs / a wide N-op effect handler. First query computes, rest hit.
-    if let Some(&hit) = db.delegates_effect_cache.get(&decl) {
-        return hit;
+    // The delegation SET is a pure function of the export bodies, but this is a FALLBACK consulted once per
+    // residual host-perform. Keying a cache by `decl` was still O(N²) for N DISTINCT delegated effects:
+    // each decl missed once → N full export-body walks. Instead materialize the WHOLE set in ONE walk on
+    // first query, then answer every query (including for effects NOT delegated) by O(1) membership.
+    if db.delegated_effects.is_none() {
+        let export_bodies: Vec<StructId> = db
+            .exports
+            .iter()
+            .filter_map(|e| e.def.and_then(|d| db.defs[d].body))
+            .collect();
+        let mut set = crate::fxhash::FxHashSet::default();
+        for b in export_bodies {
+            collect_host_delegated(db, b, 0, &mut set);
+        }
+        db.delegated_effects = Some(set);
     }
-    let export_bodies: Vec<StructId> = db
-        .exports
-        .iter()
-        .filter_map(|e| e.def.and_then(|d| db.defs[d].body))
-        .collect();
-    let delegates = export_bodies
-        .into_iter()
-        .any(|b| body_has_host_delegating(db, b, decl, 0));
-    db.delegates_effect_cache.insert(decl, delegates);
-    delegates
+    db.delegated_effects.as_ref().unwrap().contains(&decl)
 }
 
-/// Whether the subtree at `node` contains a `(host (E…) …)` delegating the effect `decl`. A structural
-/// walk (bounded); a `host` node's effect list is checked, then the walk descends every child.
-fn body_has_host_delegating(
+/// Collect into `out` every effect-declaration occurrence delegated by a `(host (E…) …)` in the subtree at
+/// `node` — the set-building twin of the old per-`decl` `body_has_host_delegating` probe, run ONCE over the
+/// export bodies so N distinct delegated effects cost one walk, not N. A structural walk (bounded); a
+/// `host` node's effect list contributes its decls, then the walk descends every child.
+fn collect_host_delegated(
     db: &mut Db,
     node: StructId,
-    decl: crate::ast::StructId,
     depth: u32,
-) -> bool {
+    out: &mut crate::fxhash::FxHashSet<crate::ast::StructId>,
+) {
     if depth > 128 {
-        return false;
+        return;
     }
-    if let Resolved::Host { effects, .. } = resolved_of(db, node)
-        && effects
-            .iter()
-            .any(|&e| effect_decl_of_host_name(db, e) == Some(decl))
-    {
-        return true;
+    if let Resolved::Host { effects, .. } = resolved_of(db, node) {
+        for e in effects.iter() {
+            if let Some(decl) = effect_decl_of_host_name(db, *e) {
+                out.insert(decl);
+            }
+        }
     }
-    match db.ast.get(node).clone() {
-        Struct::List(children) => children
-            .iter()
-            .any(|&c| body_has_host_delegating(db, c, decl, depth + 1)),
-        Struct::Atom(_) => false,
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for c in children {
+            collect_host_delegated(db, c, depth + 1, out);
+        }
     }
 }
 
@@ -991,14 +1015,18 @@ fn check_no_home_walk(
             // (`capabilities-and-effects.md` §Host Delegation Is An Entrypoint's Prerogative). Check each
             // delegated effect is reached by a perform in the body; if not, CDZ0404 (anchored at the
             // delegation's effect-name occurrence).
+            // Compute the SET of effects the body reaches ONCE (one walk), then test each delegated effect
+            // by O(1) membership — not one full-body walk per delegated effect (which was O(N²) for an
+            // N-effect delegation: `body_reaches_effect` re-walked the whole O(N) body N times).
+            let reached = body_reached_effects(db, body);
             for &(occ, decl) in &added {
                 // Suppress CDZ0404 when the body has a MEMBER ACCESS on this effect that just does not
                 // resolve as a perform — a MISSPELLED op (`(E.emitt …)`). That is a cascade of the typo's
                 // primary CDZ0201 ("did you mean `emit`?"), not a genuine unreached-effect: the author
                 // DID intend to reach `E`. Fixing the typo makes both vanish, so report only the root.
-                if !body_reaches_effect(db, body, decl, 0)
-                    && !body_has_effect_member_access(db, body, decl)
-                {
+                // (`body_has_effect_member_access` runs only for an UNREACHED effect — rare, so its per-
+                // effect body walk is not on the hot path a valid all-reached delegation takes.)
+                if !reached.contains(&decl) && !body_has_effect_member_access(db, body, decl) {
                     // The repair is to DROP the unreached effect from the manifest — a delete edit on the
                     // effect-name occurrence (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A
                     // Route To A Fix). The effect's name (for the label) comes from its declaration.
@@ -1037,15 +1065,49 @@ fn check_no_home_walk(
     }
 }
 
-/// Whether the resolved subtree at `node` performs an operation of the effect whose declaration
-/// occurrence is `decl` — following calls into their callee bodies (the perform may be cross-function).
-/// A RECURSIVE callee IS followed (its body walked ONCE), guarded by a `visited` set of callee-body
-/// occurrences so a self-/mutual-recursive cycle terminates. Used by the CDZ0404 latent-authority check:
-/// following a recursive callee is required so `(host (log) (go 1))` where `go` recursively performs
+/// The SET of effect declarations the body subtree at `node` reaches by a perform — following calls into
+/// their callee bodies (the perform may be cross-function), and following a RECURSIVE callee's body ONCE
+/// (guarded by a `visited` set of callee-body occurrences so a self-/mutual-recursive cycle terminates).
+/// Following a recursive callee is required so `(host (log) (go 1))` where `go` recursively performs
 /// `log.emit` is NOT falsely flagged as latent authority (its perform IS reached, through the recursion).
-fn body_reaches_effect(db: &mut Db, node: StructId, decl: u32, depth: u32) -> bool {
+/// The latent-authority check (CDZ0404) uses this so a `(host (E0 … EN) body)` delegating N effects does
+/// ONE body walk + N O(1) set lookups, not N full body walks — which was O(N²) (an N-effect delegation
+/// over an O(N) body = 2s at 1600 effects, ~81% in the per-effect walk).
+fn body_reached_effects(db: &mut Db, node: StructId) -> std::collections::HashSet<u32> {
+    let mut reached = std::collections::HashSet::new();
     let mut visited = std::collections::HashSet::new();
-    body_reaches_effect_visited(db, node, decl, depth, &mut visited)
+    body_reached_effects_walk(db, node, 0, &mut reached, &mut visited);
+    reached
+}
+
+fn body_reached_effects_walk(
+    db: &mut Db,
+    node: StructId,
+    depth: u32,
+    reached: &mut std::collections::HashSet<u32>,
+    visited: &mut std::collections::HashSet<StructId>,
+) {
+    if depth > 64 {
+        return;
+    }
+    if let Resolved::Apply { head, .. } = resolved_of(db, node) {
+        if let Some((d, _idx)) = crate::eval::effect_op_of(db, head) {
+            reached.insert(d.0);
+        }
+        // Follow a (possibly recursive) callee's body ONCE — `visited.insert` false on re-entry stops a
+        // cycle. Mirrors `body_reaches_effect_visited`'s call-following so the reached set is identical.
+        if let Some(callee) = crate::eval::lambda_body(db, head)
+            .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+            && visited.insert(callee)
+        {
+            body_reached_effects_walk(db, callee, depth + 1, reached, visited);
+        }
+    }
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for c in children {
+            body_reached_effects_walk(db, c, depth, reached, visited);
+        }
+    }
 }
 
 /// Whether the body subtree at `node` contains a MEMBER ACCESS `(. E k)` whose operand resolves to the
@@ -1070,40 +1132,6 @@ fn body_has_effect_member_access(db: &mut Db, node: StructId, decl: u32) -> bool
         Struct::List(children) => children
             .iter()
             .any(|&c| body_has_effect_member_access(db, c, decl)),
-        Struct::Atom(_) => false,
-    }
-}
-
-fn body_reaches_effect_visited(
-    db: &mut Db,
-    node: StructId,
-    decl: u32,
-    depth: u32,
-    visited: &mut std::collections::HashSet<StructId>,
-) -> bool {
-    if depth > 64 {
-        return false;
-    }
-    if let Resolved::Apply { head, .. } = resolved_of(db, node)
-        && let Some((d, _idx)) = crate::eval::effect_op_of(db, head)
-        && d.0 == decl
-    {
-        return true;
-    }
-    if let Resolved::Apply { head, .. } = resolved_of(db, node)
-        && let Some(callee) = crate::eval::lambda_body(db, head)
-            .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
-        // Walk the callee's body ONCE — `visited.insert` is false on a re-entry (a recursive cycle),
-        // which stops the descent so a self-/mutual-recursive callee terminates.
-        && visited.insert(callee)
-        && body_reaches_effect_visited(db, callee, decl, depth + 1, visited)
-    {
-        return true;
-    }
-    match db.ast.get(node).clone() {
-        Struct::List(children) => children
-            .iter()
-            .any(|&c| body_reaches_effect_visited(db, c, decl, depth, visited)),
         Struct::Atom(_) => false,
     }
 }
@@ -1247,21 +1275,22 @@ pub fn reduce_handle(
     // hoist requires every preceding sibling pure. Runs to a fixpoint (bounded). A shape it cannot lift
     // (a perform under a conditional the hoist could not raise to tail) is left as-is and declines below.
     let body = hoist_resumptive_conditional(db, body, &ctx);
-    // E5 HANDLER DISTRIBUTION over a pure-conditioned tail `if` (a commuting conversion). When the handle
-    // BODY is an `if` whose CONDITION is strongly pure but a BRANCH performs a discharged op, the pure
-    // one-hole fold below declines (a branch perform is a NON-uniform continuation — it runs only on the
-    // taken path). But the `if` IS the whole handle body (tail position), so the handler distributes into
-    // each branch — `(handle E s arms (if c t e))` ≡ `(if c (handle E s arms t) (handle E s arms e))`: the
-    // condition runs exactly ONCE (it is pure, evaluated before either branch, advancing no state), and
-    // each branch becomes a SMALLER handle body the fold already serves (only one branch runs at runtime,
-    // seeing the seed state — nothing advanced it). Recurse `reduce_handle` on each branch and rebuild the
-    // `if`; if either branch is a shape the fold cannot serve, the whole distribution declines (`?`) and we
-    // fall through to the ordinary decline. GATED to the NON-tail-resumptive regime (all arms non-tail,
-    // none abortive) — a tail-resumptive branch perform is already handled by the threading path, and an
-    // abortive one by `hoist_conditional_abort`; distributing there would only duplicate working paths.
+    // E5 HANDLER DISTRIBUTION over a pure-conditioned tail conditional (a commuting conversion). When the
+    // handle BODY is an `if`/`match` whose CONDITION/SCRUTINEE is strongly pure but a BRANCH / ARM BODY
+    // performs a discharged op, the pure one-hole fold below declines (a branch perform is a NON-uniform
+    // continuation — it runs only on the taken path). But the conditional IS the whole handle body (tail
+    // position), so the handler distributes into each branch — `(handle E s arms (if c t e))` ≡ `(if c
+    // (handle E s arms t) (handle E s arms e))`, `(handle E s arms (match k (p b)…))` ≡ `(match k (p (handle
+    // E s arms b))…)`: the condition/scrutinee runs exactly ONCE (pure, evaluated first, advancing no
+    // state), and each branch becomes a SMALLER handle body the fold already serves (only one runs at
+    // runtime, seeing the seed state — nothing advanced it). Recurse `reduce_handle` on each; if any branch
+    // is a shape the fold cannot serve, the whole distribution declines (`?`) and we fall through to the
+    // ordinary decline. GATED to the NON-tail-resumptive regime (all arms non-tail, none abortive) — a
+    // tail-resumptive branch perform is already handled by the threading path, and an abortive one by
+    // `hoist_conditional_abort`; distributing there would only duplicate working paths.
     if ctx.abortive.is_empty()
         && ctx.arms.values().all(|a| tail_resume(db, a.body).is_none())
-        && let Some(distributed) = distribute_handler_over_if(db, init, arms, body, &ctx)
+        && let Some(distributed) = distribute_handler_over_conditional(db, init, arms, body, &ctx)
     {
         return Some(distributed);
     }
@@ -1358,49 +1387,100 @@ pub fn reduce_handle(
 /// (else an outer-param body over-declines with a spurious unbound-name fault). A no-op if `body` is the
 /// arena root (no parent) — a top-level handle body has no enclosing scope to reach anyway.
 fn reparent_under_handle_site(db: &mut Db, folded: StructId, body: StructId) {
-    if let Some(parent) = db.parent_of(body) {
-        db.reparent(folded, Some(parent), db.child_ix_of(body) as u32);
+    let Some(parent) = db.parent_of(body) else {
+        return; // a top-level handle body — no enclosing scope to reach
+    };
+    // When the handle body being reduced is the SECOND child of a 2-element `(x body)` pair — a `match`
+    // ARM `(pattern body)` (the distribution case) or a `let` binding `(name init)` — the binder scope
+    // check (`resolve::match_arm_binds`) reads the pair's RECORDED body child (`pb[1]`) and demands the
+    // reference ascend from THAT node. Parenting `folded` directly under the pair leaves `pb[1]` as the
+    // ORIGINAL body, so the ascended-from child (`folded`) would not match and a binder-referencing arm
+    // body would over-decline. Rebuild a fresh `(x folded)` pair in the original pair's slot so `folded`
+    // IS the recorded body child — then the binder resolves against the reduced body. (A non-pair parent —
+    // the `handle` node itself, or an `if` node in a distributed branch — is reached by ascending THROUGH
+    // it to the enclosing binder form, so it needs no rebuild: parent `folded` directly.)
+    if let Struct::List(children) = db.ast.get(parent).clone()
+        && children.len() == 2
+        && children[1] == body
+        && let Some(grandparent) = db.parent_of(parent)
+    {
+        let fresh_pair = db.push_list(vec![children[0], folded]);
+        db.reparent(fresh_pair, Some(grandparent), db.child_ix_of(parent) as u32);
+        return;
     }
+    db.reparent(folded, Some(parent), db.child_ix_of(body) as u32);
 }
 
-/// HANDLER DISTRIBUTION over a pure-conditioned tail `if` (a commuting conversion). If `body` is an `(if c
-/// t e)` whose CONDITION `c` is strongly pure (advances no state, so it need not thread through the
-/// handler) but whose fold otherwise declines because a BRANCH performs a discharged op, distribute the
-/// handler into each branch: `(handle E s arms (if c t e))` ≡ `(if c (handle E s arms t) (handle E s arms
-/// e))`. Each branch is re-`reduce_handle`d with the SAME init/arms (only one branch runs at runtime,
-/// seeing the seed state — the condition advanced nothing). Returns the rebuilt `if`, or `None` if the
-/// body is not such an `if`, the condition is not strongly pure, or either branch's fold declines (so the
-/// caller falls through to the ordinary decline — never a partial rewrite). The branch handles are
-/// synthesized with fresh `(handle E seed (arm…) branch)` nodes carrying the ORIGINAL arm/init occurrences
-/// (a structural copy so each branch owns its subtree), then reduced; a reduced branch's free names
-/// re-parent under the rebuilt `if` by the caller's `reparent` at the lowering site.
-fn distribute_handler_over_if(
+/// HANDLER DISTRIBUTION over a pure-conditioned tail conditional (a commuting conversion). If `body` is an
+/// `(if c t e)` or a `(match scrut arms…)` whose CONDITION/SCRUTINEE is strongly pure (runs once, advances
+/// no state, so it need not thread through the handler) but whose fold otherwise declines because a
+/// BRANCH / ARM BODY performs a discharged op, distribute the handler into each branch:
+///   `(handle E s arms (if c t e))`     ≡ `(if c (handle E s arms t) (handle E s arms e))`
+///   `(handle E s arms (match k (p b)…))` ≡ `(match k (p (handle E s arms b))…)`
+/// Each branch / arm body is re-`reduce_handle`d with the SAME init/arms (only one runs at runtime, seeing
+/// the seed state — the condition/scrutinee advanced nothing). Returns the rebuilt conditional, or `None`
+/// if the body is neither shape, the condition/scrutinee is not strongly pure, or any branch's fold
+/// declines (so the caller falls through to the ordinary decline — never a partial rewrite). A `match`
+/// PATTERN is reused verbatim in the rebuilt arm, so its binder still scopes the (re-anchored) reduced arm
+/// body — `reduce_handle`'s `reparent_under_handle_site` anchors the reduced body under the ORIGINAL arm
+/// pair while it type-checks, so a binder-referencing arm body resolves; the final rebuild then re-parents
+/// each reduced body under its new arm pair.
+fn distribute_handler_over_conditional(
     db: &mut Db,
     init: StructId,
     arms: &[HandleArm],
     body: StructId,
     ctx: &HandlerCtx,
 ) -> Option<StructId> {
-    let Resolved::If { cond, then_, else_ } = resolved_of(db, body) else {
-        return None;
-    };
-    // The condition must be strongly pure — it runs once, before either branch, and must not itself
-    // perform (a performing condition is the `pure_hole` if-cond case, handled by the fold below, or a
-    // shape the threading path serves; distributing it would duplicate nothing useful and risk moving a
-    // perform). Only distribute when a BRANCH performs (else the fold already serves the body directly).
-    if !strongly_pure(db, cond, ctx) {
-        return None;
+    match resolved_of(db, body) {
+        Resolved::If { cond, then_, else_ } => {
+            // The condition must be strongly pure — it runs once, before either branch. A performing
+            // condition is the `pure_hole` if-cond case (folds below) or a threading shape; distributing it
+            // would risk moving a perform. Only distribute when a BRANCH performs (else the fold serves the
+            // body directly).
+            if !strongly_pure(db, cond, ctx) {
+                return None;
+            }
+            if !subtree_performs(db, then_, ctx) && !subtree_performs(db, else_, ctx) {
+                return None;
+            }
+            // Reduce each branch as its own handle body (init/arm occurrences are only READ + copied on
+            // substitution, so sharing them across the branch reductions is safe). Either branch declining
+            // makes the whole distribution decline — no partial rewrite.
+            let then_r = reduce_handle(db, init, arms, then_)?;
+            let else_r = reduce_handle(db, init, arms, else_)?;
+            let if_head = db.push_name("if");
+            Some(db.push_list(vec![if_head, cond, then_r, else_r]))
+        }
+        Resolved::Match {
+            scrutinee,
+            arms: match_arms,
+        } => {
+            // The SCRUTINEE must be strongly pure (evaluated once, before any arm). Only distribute when an
+            // ARM BODY performs. A pattern is a binder position (no perform), so `subtree_performs` on the
+            // arm bodies is the trigger.
+            if !strongly_pure(db, scrutinee, ctx) {
+                return None;
+            }
+            if !match_arms
+                .iter()
+                .any(|&(_, arm_body)| subtree_performs(db, arm_body, ctx))
+            {
+                return None;
+            }
+            // Rebuild `(match scrutinee (pat body')…)`: reduce each arm body under the same init/arms, reuse
+            // each pattern verbatim (its binder scopes the reduced body — see `reparent_under_handle_site`).
+            // Any arm's fold declining declines the whole distribution.
+            let match_head = db.push_name("match");
+            let mut children = vec![match_head, scrutinee];
+            for &(pat, arm_body) in match_arms.iter() {
+                let reduced = reduce_handle(db, init, arms, arm_body)?;
+                children.push(db.push_list(vec![pat, reduced]));
+            }
+            Some(db.push_list(children))
+        }
+        _ => None,
     }
-    if !subtree_performs(db, then_, ctx) && !subtree_performs(db, else_, ctx) {
-        return None;
-    }
-    // Reduce each branch as its own handle body with the same init + arms (the init/arm occurrences are
-    // only READ and are copied when substituted, so sharing them across the two branch reductions is
-    // safe). A branch the fold cannot serve makes the whole distribution decline — no partial rewrite.
-    let then_r = reduce_handle(db, init, arms, then_)?;
-    let else_r = reduce_handle(db, init, arms, else_)?;
-    let if_head = db.push_name("if");
-    Some(db.push_list(vec![if_head, cond, then_r, else_r]))
 }
 
 /// Whether applying `head` (a non-perform application head) reaches an abortive operation through the

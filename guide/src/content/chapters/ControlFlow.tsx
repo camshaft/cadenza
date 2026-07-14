@@ -75,15 +75,25 @@ export default function ControlFlow() {
       <H2>Your turn</H2>
       <Exercise
         id="control-flow:1"
-        prompt={<>Fix the base case so <C>sm</C> correctly sums 1..5 to <C>15</C>.</>}
-        starter={`(def (sm n)
-  (if (= n 0) ? (+ n (sm (- n 1)))))
-(def (main) (sm 5))`}
-        solution={`(def (sm n)
-  (if (= n 0) 0 (+ n (sm (- n 1)))))
-(def (main) (sm 5))`}
-        expected="15"
-        hint={<>When <C>n</C> reaches 0, there is nothing left to add — the sum of no numbers is <C>0</C>.</>}
+        prompt={
+          <>
+            Write the recursive step of <C>fact</C> (factorial). The base case is done; fill in the step
+            so <C>(fact 5)</C> gives <C>120</C> — that's <C>5 × 4 × 3 × 2 × 1</C>.
+          </>
+        }
+        starter={`(def (fact n)
+  (if (= n 0) 1 ?))
+(def (main) (fact 5))`}
+        solution={`(def (fact n)
+  (if (= n 0) 1 (* n (fact (- n 1)))))
+(def (main) (fact 5))`}
+        expected="120"
+        hint={
+          <>
+            Factorial multiplies where the sum added: the step is <C>n</C> times the factorial of one
+            less — <C>(* n (fact (- n 1)))</C>.
+          </>
+        }
       />
 
       <Exercise

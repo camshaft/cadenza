@@ -1955,6 +1955,25 @@
   (call   main)
   (output (: (P 5 (Some 5)) W)))
 
+(case "a multi-payload variant with a scalar AND two recursive payloads escapes flat"
+  (doc    "The multi-way-recursive counterpart of the flat multi-payload list: a `Node` variant carries a
+           SCALAR and TWO recursive `T` payloads as separate payloads — `(Node Int64 T T)`, matched `(Node
+           v l r)` — NOT one `(Tuple Int64 T T)` payload. Built at run time and returned, it escapes with
+           each `Node`'s three payloads spread FLAT under the variant head: `(Node 2 (Node 1 (Leaf 0) (Leaf
+           1)) (Leaf 2))`, not `(Node (tuple 2 … …))`. Pins that the spread-flatten walk recurses into BOTH
+           recursive payload positions (each its own `T`) at every level, the tree analogue of the flat
+           cons-list — a walk that tuple-wrapped, or descended only one recursive child, would render a
+           wrong structure.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type T (Leaf Int64) (Node Int64 T T))
+            (def (build (: n Int64)) (if (= n 0)
+                                         (T.Leaf n)
+                                         (T.Node n (build (- n 1)) (T.Leaf n))))
+            (def (main) (build 2)) (export main)))
+  (call   main)
+  (output (: (Node 2 (Node 1 (Leaf 0) (Leaf 1)) (Leaf 2)) T)))
+
 ; The case above dispatches a nested Sum by matching the outer variant then a SEPARATE inner match on
 ; the bound payload. A nested pattern deconstructs both tags in ONE arm — `(Ok (Ok n))` matches an Ok
 ; whose payload is an Ok, binding the innermost payload directly (02-binding "nested patterns
@@ -3386,6 +3405,24 @@
             (export main)))
   (output (: 11 Int64)))
 
+(case "a runtime-built generic user sum escapes with its parametric type frame"
+  (doc    "A GENERIC user sum whose value is BUILT AT RUNTIME (so it lives on the value heap, not folded)
+           and returned as the program result escapes with its full PARAMETRIC type frame `(Box Int64)` —
+           the instantiation's type argument OBSERVABLE, the sum analogue of a runtime `(List Int64)`
+           escaping `(: (list …) (List Int64))`. `(mk 42)` is `(Box.W 42)` at `(Box Int64)`; the escape
+           renders `(: (W 42) (Box Int64))`, the variant BARE with the type frame naming both the sum and
+           its argument. The generic cases above fold to scalars; this pins the escape-render descriptor
+           carries a user generic sum's instantiation to the host, distinct from a monomorphic sum (whose
+           frame is a bare name) and matching the parametric frame a runtime List/Map/Set already gets.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Box (W a) (E))
+            (def (mk (: b Int64)) (if (> b 0) (Box.W b) (Box.E)))
+            (def (main) (: (mk 42) (Box Int64)))
+            (export main)))
+  (call   main)
+  (output (: (W 42) (Box Int64))))
+
 (case "an all-nullary enum dispatches its runtime-selected variant and escapes"
   (doc    "An enum whose variants are ALL nullary — `(type Color Red Green Blue)` — each variant is the
            inline-unit CONSTANT (no arr-alloc(0) payload). A function selects one at runtime via nested
@@ -3474,6 +3511,24 @@
             (def (depth e) (match e ((Expr.Lit n) 0) ((Expr.Neg x) (+ 1 (depth x)))))
             (def (main)    (depth (Expr.Neg (Expr.Lit 5)))) (export main)))
   (output (: 1 Int64)))
+
+(case "a bare prelude-colliding variant name matches as the local variant"
+  (doc    "`(type T (Int Int64))` declares a variant named `Int`, colliding with the prelude `Int` type
+           constructor. In a MATCH the scrutinee's type is known, so a bare `((Int n) …)` pattern head
+           resolves against T's variant set FIRST — reaching T's `Int` variant, not the prelude `Int` —
+           exactly as a non-colliding name (`Foo`) and the qualified form (`T.Int`) already do. Without
+           this, the bare pattern head resolved (scope→def→prelude) to the prelude `Int` and the ctor
+           check rejected CDZ0203 'this constructor pattern is not the constructor of the matched type T',
+           breaking bare pattern-matching on an AST sum whose variants (`Int`/`Name`/`List`) collide with
+           prelude names. `f (T.Int 42)` matches the `Int` arm → 42. (The construct position still writes
+           the qualified `T.Int`: a bare `(Int 42)` in value position has no scrutinee to disambiguate it
+           and stays the prelude type constructor, per the deliberate variant-shadows-prelude design.)")
+  (input  (do
+            (type T (Int Int64))
+            (def (f (: t T)) (match t ((Int n) n)))
+            (def (main) (f (T.Int 42)))
+            (export main)))
+  (output (: 42 Int64)))
 
 (case "a bare nullary constructor is the nullary sum value"
   (doc    "A nullary variant used as a VALUE may be written BARE — `NNil`, not `(Node.NNil unit)`. A

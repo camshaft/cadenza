@@ -403,6 +403,11 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
     if matches!(ty, crate::ty::Ty::Int(_) | crate::ty::Ty::BigInt) {
         return None;
     }
+    // No mechanical fix is offered here even though the domain error is clear: the `default-integer`
+    // pragma's EFFECT is not yet modeled, so EVERY `(pragma default-integer <T>)` — even a well-formed
+    // `Int64` one — declines downstream as an unmodeled top-level form. Suggesting `Int64` would merely
+    // trade CDZ0303 for that decline (a cascade), which `--verify-fixes` rightly refuses. Honest-no-fix:
+    // the prose already says "must name an integer type"; a fix waits until the pragma actually compiles.
     Some(
         Reject::coded(
             Code::NonIntegerDefault,
@@ -465,10 +470,10 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // so the OUTCOME is unchanged; only the message stops misleading.
     let defined_names: Vec<String> = db.defs.iter().map(|d| d.name.clone()).collect();
     for (head, occ) in db.unknown_top_forms() {
-        let hint = match crate::diag::suggest::nearest(&head, &defined_names) {
-            Some(near) => format!(" — did you mean `{near}`?"),
-            None => String::new(),
-        };
+        // A two-tier "did you mean?": a confident single suggestion for a plausible typo, else the closest
+        // few defined names (never nothing when defs exist) — a message-only hint (no fix here, unlike the
+        // export-name site which carries a single-replace fix and so keeps the confident-only `nearest`).
+        let hint = crate::diag::suggest::did_you_mean(&head, &defined_names, 3);
         faults.push(
             Reject::decline(format!(
                 "unbound name `{head}` at the top level{hint} (if `{head}` is meant as a declaration, \
@@ -1098,20 +1103,34 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
     let has_type_export_reject = faults
         .iter()
         .any(|r| r.code.is_some() && r.message.contains(crate::diag::TYPE_EXPORT_MARKER));
-    // A "record has no field `k`" fault reported by BOTH the infer member check (with a did-you-mean
-    // fix) AND the emit-side member fold, at two DIFFERENT nodes (the `.k` projection vs an enclosing
-    // `(R.k …)` apply), is ONE fault shown twice. The messages are IDENTICAL up to the fix suffix, so key
-    // the duplicate by the `record has no field \`k\`` core (prefix + the backticked key, which both
-    // versions carry): if ANY copy carries a fix (the infer one), drop the OTHER anchored copies of the
-    // same field-fault. Keeps the richer, fix-bearing report; collapses the bare duplicate. Narrow to the
-    // no-field family so two genuinely-distinct same-message faults elsewhere are never merged.
+    // A "record has no field `k`" fault reported by BOTH the infer member check (with a did-you-mean fix)
+    // AND the emit-side member fold (fix-less) is ONE fault shown twice. Where the member node is a USER
+    // node, both copies now anchor at that SAME node (`lower`'s `Member::NoField` poison carries an
+    // explicit `.at(id)`, symmetric with `infer::no_field_reject`), so a NODE-keyed drop collapses them
+    // without touching a genuinely-distinct absent-field fault on ANOTHER record that happens to name the
+    // same missing field (`(. r fild)` near-miss + `(. s fild)` far-miss sit at DIFFERENT nodes). But when
+    // the member access is INLINED (a helper `(def (getx a) (. a k))` β-reduced at its call site), the
+    // emit copy's member node is SYNTHESIZED — `sanitize_origin` clears its anchor to `None` at the ABI
+    // edge — so it is NOT at infer's user-node and the node-keyed rule cannot see it; the fix suffix also
+    // makes its (code, message) differ from infer's, so the general anchored/unanchored dedup misses it
+    // too. A NAME-keyed fallback catches that copy, but ONLY when it is UNANCHORED (a located far fault on
+    // a distinct record keeps its own node, so it is never in this branch). Together: node-keyed for the
+    // ordinary same-node case (no false-merge), name-keyed-when-unanchored for the inlined/synthesized twin.
     fn no_field_key(msg: &str) -> Option<&str> {
         // The invariant core is `record has no field \`k\`` — strip an optional ` — did you mean …?` tail.
         msg.strip_prefix(crate::diag::NO_FIELD_PREFIX)
             .map(|rest| rest.split(" — ").next().unwrap_or(rest))
     }
-    // A field-fault CORE the program reports WITH a fix (the infer did-you-mean copy) — its fix-less twin
-    // is dropped below (keep the richer copy).
+    // The NODES at which a no-field fault carries a fix (the infer did-you-mean copy) — a fix-less no-field
+    // fault at one of these same nodes is that copy's twin and is dropped below (keep the richer copy).
+    let fixed_field_nodes: std::collections::HashSet<u32> = faults
+        .iter()
+        .filter(|r| r.fix.is_some() && no_field_key(&r.message).is_some())
+        .filter_map(|r| r.at.map(|s| s.0))
+        .collect();
+    // The field-name CORES a no-field fault carries a fix for — used ONLY to drop an UNANCHORED fix-less
+    // twin (the inlined/synthesized emit copy, sanitized to no location); a located far fault on a
+    // different record is never unanchored, so this name-level set cannot false-merge it.
     let fixed_field_cores: std::collections::HashSet<&str> = faults
         .iter()
         .filter(|r| r.fix.is_some())
@@ -1262,13 +1281,17 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             if r.is_decline() && r.at.is_some_and(|s| coded_nodes.contains(&s.0)) {
                 return false;
             }
-            // A FIX-LESS "record has no field `k`" copy whose SAME field-fault appears WITH a fix
-            // elsewhere (infer's did-you-mean copy) is the emit-side duplicate — drop it, keep the fix.
-            // (Scoped to the fix-vs-no-fix pair, so two DISTINCT same-name field faults — neither with a
-            // fix — are never merged; the `R.make`-with-no-near-field duplicate is handled at its source
-            // in `lower`, not here.)
+            // A FIX-LESS "record has no field `k`" copy that is the emit-side duplicate of infer's
+            // did-you-mean copy — drop it, keep the fix. Two shapes: (1) at the SAME member NODE as a fixed
+            // twin (the ordinary case, both anchored at the user member node); (2) UNANCHORED with the same
+            // field-name core as a fixed twin (the INLINED case — the synthesized member node was
+            // sanitized to no location). Both are keyed so a genuinely-distinct absent-field fault on
+            // another record — which stays ANCHORED at its OWN node — is never dropped by either branch.
             if r.fix.is_none()
-                && no_field_key(&r.message).is_some_and(|k| fixed_field_cores.contains(k))
+                && no_field_key(&r.message).is_some_and(|k| match r.at {
+                    Some(s) => fixed_field_nodes.contains(&s.0),
+                    None => fixed_field_cores.contains(k),
+                })
             {
                 return false;
             }
@@ -1929,6 +1952,16 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
     for di in 0..db.defs.len() {
         let params = db.defs[di].params.clone();
         let body = db.defs[di].body;
+        // The SET of parameter NAMES the body references — collected in ONE walk of the body, not one
+        // per-parameter walk (which was O(params × body) = O(N²) for a wide-param def). `param_is_used`'s
+        // verdict is purely NAME-based (`resolves_to_param` accepts ANY param, so a body reference marks
+        // its parameter used by matching NAME), and a def's parameter names are unique (CDZ0102 rejects a
+        // repeated one), so a name-keyed set reproduces the per-parameter check EXACTLY. Skipped entirely
+        // when the def has no user parameters to check.
+        let referenced: std::collections::HashSet<String> = match body {
+            Some(b) if !params.is_empty() => used_param_names(db, b),
+            _ => std::collections::HashSet::new(),
+        };
         for p in params {
             // The parameter's NAME occurrence (a bare `a` or the inner name of `(: a T)`).
             let name_occ = param_name_occ(db, p);
@@ -1940,14 +1973,13 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
             if name.starts_with('_') {
                 continue;
             }
-            let used_in_body = body.is_some_and(|b| param_is_used(db, b, name_occ, &name));
-            if !used_in_body {
+            if !referenced.contains(&name) {
                 binders.push(Binder {
                     name_occ,
                     target: name_occ,
                     name,
                     kind: "parameter",
-                    precomputed_unused: true, // decided by `param_is_used`, not the `used` set
+                    precomputed_unused: true, // decided by the reference-name set, not the `used` set
                 });
             }
         }
@@ -2039,34 +2071,36 @@ fn param_name_occ(db: &Db, param: StructId) -> StructId {
 /// use OF THIS parameter, not a same-named inner binding that shadows it. This is synthesis-INDEPENDENT
 /// (it keys on the reference's own resolution kind, not the resolved-to occurrence id), so it is not
 /// fooled by a recursive function freshening the parameter binder into a synthesized copy.
-fn param_is_used(db: &mut Db, body: StructId, param_occ: StructId, name: &str) -> bool {
-    // The body subtree's node range: a def body and everything under it. The arena is built so a
-    // subtree's descendants are not contiguous by id, so walk structurally.
-    fn walk(db: &mut Db, id: StructId, param_occ: StructId, name: &str) -> bool {
-        // A matching name occurrence (not the declaration) that is a genuine REFERENCE — not itself a
-        // BINDER position (a `let` binding's name resolves to the outer param too, but it is a
-        // declaration, not a use — so a param shadowed by a same-named inner `let` is NOT "used"). A
-        // reference resolves to a `Param` (its own) or a `Ref`-to-`Param` (recursion may freshen the
-        // binder → the KIND, not the target occ, is the signal).
-        if id != param_occ
-            && db.ast.as_name(id) == Some(name)
+/// The SET of parameter NAMES that the def body subtree at `body` references — ONE structural walk
+/// collecting every name occurrence that resolves to a parameter, so the wide-param unused check is O(body)
+/// once, not O(body) per parameter (which was O(params × body) = O(N²) for a def with many parameters). A
+/// name is collected iff it is a genuine REFERENCE resolving to a parameter — NOT a `let` binding's name
+/// position (a same-named inner `let` binder resolves to the outer param but is a declaration, not a use,
+/// so a param shadowed by it is NOT used). `resolves_to_param` accepts a `Param` or a `Ref`-to-`Param`
+/// (recursion may freshen the binder → the resolution KIND is the signal, not the target occ). This
+/// reproduces the old per-parameter `param_is_used` verdict EXACTLY: it was name-based (matched a param's
+/// NAME anywhere in the body), and a def's parameter names are unique (CDZ0102). The old `id != param_occ`
+/// declaration guard is subsumed — a parameter's own declaration occurrence lives in the SIGNATURE, not in
+/// the body walked here.
+fn used_param_names(db: &mut Db, body: StructId) -> std::collections::HashSet<String> {
+    fn walk(db: &mut Db, id: StructId, out: &mut std::collections::HashSet<String>) {
+        if let Some(name) = db.ast.as_name(id).map(str::to_string)
             && !is_let_binding_name(db, id)
             && resolves_to_param(db, id)
         {
-            return true;
+            out.insert(name);
         }
         // Recurse into children (a user node's subtree). Clone the child list to avoid holding a
         // borrow across the recursive `&mut` call.
         if let crate::ast::Struct::List(kids) = db.ast.get(id) {
             for c in kids.clone() {
-                if walk(db, c, param_occ, name) {
-                    return true;
-                }
+                walk(db, c, out);
             }
         }
-        false
     }
-    walk(db, body, param_occ, name)
+    let mut out = std::collections::HashSet::new();
+    walk(db, body, &mut out);
+    out
 }
 
 /// Whether `id` resolves to a parameter — its own `Param`, or a `Ref` to one (a body reference is a

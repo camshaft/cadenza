@@ -281,6 +281,8 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
     //# The order in which the compiler emits definitions, data, and interface entries MUST be a deterministic function of the source.
     //= spec/contracts/reproducible-derivation.md#codegen-order-is-source-determined
     //# The compiler MUST NOT let filesystem enumeration order or nondeterministic collection iteration affect the order of its output.
+    //= constitution.md#ii-compilation-is-reproducible
+    //# The compiler MUST emit its output in an order that is a function of the source alone, independent of filesystem enumeration order or nondeterministic collection iteration.
     // `order` keeps the emission SEQUENCE (exports first, then reachable callees); `in_order` is the
     // O(1) membership check that goes with it. A plain `order.contains(&x)` here is an O(len) scan, and
     // it runs once per export AND once per discovered callee — O(N²) on a program with many exports or

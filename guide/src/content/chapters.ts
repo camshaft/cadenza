@@ -95,7 +95,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Lists",
     blurb: "Ordered, immutable sequences of values.",
     section: "Fundamentals",
-    exercises: 2,
+    exercises: 3,
     Component: lazy(() => import("./chapters/Lists.tsx")),
   },
   {
