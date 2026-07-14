@@ -757,6 +757,7 @@ pass	a recursive predicate with the self-call in the then branch is a Bool condi
 pass	a recursive reader decodes a CBOR application tree and evaluates it by head index
 pass	a recursive resolver transforms one runtime sum tree into another, then consumes it
 pass	a recursive resolver whose dead arm builds a trapping compound compiles
+pass	a recursive sum built then folded by a NESTED recursive call composes on every backend
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
 pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
@@ -797,6 +798,8 @@ pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime BigInt remainder takes the dividend's sign
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
+pass	a runtime Rational built from a parameter compares by its exact value
+pass	a runtime Rational comparison of a parameter is false when it should be
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bin match binds the tail after a fixed header via a final rest segment
@@ -1585,6 +1588,7 @@ pass	round-trip: an UNANNOTATED inner closure with a List param via the context 
 pass	runtime BigInt addition runs on the arbitrary-precision runtime
 pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime
+pass	runtime Rational arithmetic adds two parameter-built fractions exactly
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
@@ -1713,6 +1717,7 @@ pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuple elements are accessed by index
 pass	tuples are deconstructed by pattern matching
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
+pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity
 pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two adjacent modules declared inside a function body compose
 pass	two constant records with the same fields in different written order are equal

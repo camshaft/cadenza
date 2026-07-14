@@ -184,6 +184,15 @@ const OP_BIGINT_REM: &str = "bigint-rem";
 /// `bigint-cmp(a, b) -> s64` — the three-way compare (`-1`/`0`/`1` for `a<b`/`a=b`/`a>b`), which the
 /// BigInt comparison operators `<`/`>`/`<=`/`>=`/`=` lower to + a fixed signed compare-with-zero (B3c).
 const OP_BIGINT_CMP: &str = "bigint-cmp";
+/// The runtime Rational ops (R3a) the compiler emits for RUNTIME-valued Rational (a constant folds in
+/// `lower`). A Rational is a normalized 2-BigInt-handle node. `rational-of` CONSUMES its two BigInt
+/// operand handles; the arithmetic/compare BORROW. Spellings MUST match `runtime.wit`/`runtime_abi.rs`.
+const OP_RATIONAL_OF: &str = "rational-of";
+const OP_RATIONAL_ADD: &str = "rational-add";
+const OP_RATIONAL_SUB: &str = "rational-sub";
+const OP_RATIONAL_MUL: &str = "rational-mul";
+const OP_RATIONAL_DIV: &str = "rational-div";
+const OP_RATIONAL_CMP: &str = "rational-cmp";
 /// `bytes-slice(buf, start, len) -> handle` — `len` bytes from `start` (consumes buf; `start+len >
 /// bytes-len` TRAPS, so the caller bounds-checks first and returns `None` instead).
 const OP_BYTES_SLICE: &str = "bytes-slice";
@@ -356,6 +365,18 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         }
         Core::BigIntOfI64 { value } => binding_escapes(db, value, binder, false),
         Core::BigIntToI64 { operand } => binding_escapes(db, operand, binder, true),
+        // The runtime Rational arithmetic/comparison ops BORROW their operand handles (`rational-add`/…/
+        // `rational-cmp` unbox-read without consuming; the borrow helpers drop only an OWNED temporary), so
+        // a binding used DIRECTLY as an operand does NOT escape (`tail_borrowed: true`, like the BigInt
+        // arith). `RationalOfInts`'s num/den + `RationalOfIntWiden`'s value are i64 SCALARS (no heap ref) —
+        // always consuming, `false`.
+        Core::RationalBinOp { lhs, rhs, .. } | Core::RationalCmp { lhs, rhs, .. } => {
+            binding_escapes(db, lhs, binder, true) || binding_escapes(db, rhs, binder, true)
+        }
+        Core::RationalOfInts { num, den } => {
+            binding_escapes(db, num, binder, false) || binding_escapes(db, den, binder, false)
+        }
+        Core::RationalOfIntWiden { value } => binding_escapes(db, value, binder, false),
         Core::BytesSlice {
             bytes, start, len, ..
         } => {
@@ -1170,6 +1191,38 @@ pub fn collect_used_ops(
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
         }
+        // `Rational.of n d` on runtime ints — widen each to a BigInt (`bigint-of-i64`) then `rational-of`.
+        Core::RationalOfInts { num, den } => {
+            out.insert(OP_BIGINT_OF_I64);
+            out.insert(OP_RATIONAL_OF);
+            collect_used_ops(db, num, out);
+            collect_used_ops(db, den, out);
+        }
+        // `Rational.of-int n` — widen `n` + the constant `1` to BigInt, then `rational-of`.
+        Core::RationalOfIntWiden { value } => {
+            out.insert(OP_BIGINT_OF_I64);
+            out.insert(OP_RATIONAL_OF);
+            collect_used_ops(db, value, out);
+        }
+        // The borrowing Rational arithmetic ops import their op + `drop` (reclaim an owned-temporary
+        // operand after the borrowing call — the `emit_rational_borrow_binary` helper).
+        Core::RationalBinOp { op, lhs, rhs } => {
+            out.insert(match op {
+                crate::core::RationalOp::Add => OP_RATIONAL_ADD,
+                crate::core::RationalOp::Sub => OP_RATIONAL_SUB,
+                crate::core::RationalOp::Mul => OP_RATIONAL_MUL,
+                crate::core::RationalOp::Div => OP_RATIONAL_DIV,
+            });
+            out.insert(OP_DROP);
+            collect_used_ops(db, lhs, out);
+            collect_used_ops(db, rhs, out);
+        }
+        Core::RationalCmp { lhs, rhs, .. } => {
+            out.insert(OP_RATIONAL_CMP);
+            out.insert(OP_DROP);
+            collect_used_ops(db, lhs, out);
+            collect_used_ops(db, rhs, out);
+        }
         Core::BytesSlice {
             bytes, start, len, ..
         } => {
@@ -1395,6 +1448,13 @@ pub fn collect_used_ops(
         // path and never reaches `emit`, but importing an unused op is harmless if it did.)
         Core::ConstInt(_) if matches!(type_of(db, id), Ty::BigInt) => {
             out.insert(OP_BIGINT_OF_I64);
+        }
+        // A constant Rational used as an in-body runtime value MATERIALIZES via `bigint-of-i64` (×2 the
+        // components) + `rational-of` at `emit` — declare those imports to match. (A component beyond i64
+        // declines at emit; a whole-export constant Rational takes the baked path and doesn't reach here.)
+        Core::ConstRational(n, d) if n.to_i64().is_some() && d.to_i64().is_some() => {
+            out.insert(OP_BIGINT_OF_I64);
+            out.insert(OP_RATIONAL_OF);
         }
         // Leaves and references emit no runtime op. `trap` emits `unreachable` (a core instruction, not a
         // runtime import), so it adds nothing.
@@ -2788,13 +2848,27 @@ fn emit(
         Core::ConstChar(_) => Err(Reject::decline(
             "a runtime char value is not yet built (only a constant char folds; boundary crossing is later)",
         )),
-        // A constant `Rational` reaching `emit` as an in-body VALUE has no machine slot form yet — its
-        // arithmetic/comparison FOLD in `lower` (never reaching here), and it does not yet cross the
-        // boundary (the `{numerator, denominator}` record value-form + a runtime rational compound are a
-        // later B4 slice). Declines cleanly, like a constant char used as a runtime value.
-        Core::ConstRational(_, _) => Err(Reject::decline(
-            "a runtime Rational value is not yet built (only a constant Rational folds; boundary crossing is later)",
-        )),
+        // A constant `Rational` reaching `emit` as an in-body RUNTIME VALUE (a call arg, a map/set element,
+        // an operand of a runtime rational op) MATERIALIZES to a runtime rational node: box each component
+        // (num, den) as a BigInt leaf via `bigint-of-i64`, then `rational-of` (which consumes the two
+        // handles + normalizes — the pair is already normalized, so this is idempotent). Both components
+        // fit i64 for a materializable constant; a component beyond i64 declines (the arbitrary-magnitude
+        // rational-component leaf is a later slice — no current case builds one). The whole-export constant
+        // Rational takes the baked-bytes `constant_value_form` path and never reaches here — this is the
+        // in-body runtime-value use, the analogue of the `Core::ConstInt`-typed-BigInt materialization.
+        Core::ConstRational(n, d) => match (n.to_i64(), d.to_i64()) {
+            (Some(nv), Some(dv)) => {
+                out.push(Lir::ConstI64(nv));
+                out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // [num-big]
+                out.push(Lir::ConstI64(dv));
+                out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // [num-big, den-big]
+                out.push(Lir::CallImport(OP_RATIONAL_OF)); // → [rational handle]
+                Ok(())
+            }
+            _ => Err(Reject::decline(
+                "a constant Rational with a component beyond i64 is not yet materialized at run time",
+            )),
+        },
         // The canonical NaN emits an `f64.const`/`f32.const` of the canonical NaN bit pattern at the
         // node's solved width — the same machine-slot value a returned NaN leaves on the stack (a NaN is a
         // real Float value that crosses the boundary, unlike a char). `f32::NAN`/`f64::NAN` are the one
@@ -3891,6 +3965,80 @@ fn emit(
                 // compiler invariant violation.
                 _ => {
                     return Err(Reject::decline("BigIntCmp carries a non-comparison prim"));
+                }
+            }
+            Ok(())
+        }
+        // `Rational.of n d` on runtime ints — widen EACH int operand to a BigInt leaf (`bigint-of-i64`),
+        // then `rational-of` (which CONSUMES both BigInt handles, normalizes, and builds the 2-handle
+        // rational node; traps on a zero denominator at run time). Both `num`/`den` are i64 scalars (no
+        // heap ref), so nothing to drop — the two fresh BigInt handles are consumed by `rational-of`.
+        Core::RationalOfInts { num, den } => {
+            emit(db, num, slots, base, high, scratch_ty, layout, out)?; // [num : i64]
+            out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // [num-big : i32]
+            let den_base = base.max(*high);
+            emit(db, den, slots, den_base, high, scratch_ty, layout, out)?; // [num-big, den : i64]
+            out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // [num-big, den-big]
+            out.push(Lir::CallImport(OP_RATIONAL_OF)); // → [rational handle : i32]
+            Ok(())
+        }
+        // `Rational.of-int n` — the whole rational `n/1`: widen `n` and the constant `1` to BigInt, then
+        // `rational-of`. `n` is an i64 scalar.
+        Core::RationalOfIntWiden { value } => {
+            emit(db, value, slots, base, high, scratch_ty, layout, out)?; // [n : i64]
+            out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // [n-big : i32]
+            out.push(Lir::ConstI64(1));
+            out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // [n-big, 1-big]
+            out.push(Lir::CallImport(OP_RATIONAL_OF)); // → [rational handle]
+            Ok(())
+        }
+        // A runtime Rational `+`/`-`/`*`/`/` — the runtime op BORROWS both operand handles and returns a
+        // FRESH normalized rational; each OWNED-temporary operand is dropped after the call. Same
+        // borrow-and-reclaim shape as the BigInt arithmetic (reuses `emit_bigint_borrow_binary`, which is
+        // op-generic — it just threads two handle operands, drops owned temporaries, and leaves the result).
+        Core::RationalBinOp { op, lhs, rhs } => {
+            let import = match op {
+                crate::core::RationalOp::Add => OP_RATIONAL_ADD,
+                crate::core::RationalOp::Sub => OP_RATIONAL_SUB,
+                crate::core::RationalOp::Mul => OP_RATIONAL_MUL,
+                crate::core::RationalOp::Div => OP_RATIONAL_DIV,
+            };
+            emit_bigint_borrow_binary(db, lhs, rhs, import, high, slots, scratch_ty, layout, out)
+        }
+        // A runtime Rational COMPARISON — `rational-cmp` (three-way `-1`/`0`/`1`) BORROWS both operands,
+        // then the operator's signed i64 compare-with-zero (`=`→`i64.eqz`), exactly like `BigIntCmp`.
+        Core::RationalCmp { op, lhs, rhs } => {
+            emit_bigint_borrow_binary(
+                db,
+                lhs,
+                rhs,
+                OP_RATIONAL_CMP,
+                high,
+                slots,
+                scratch_ty,
+                layout,
+                out,
+            )?; // → [cmp : i64]
+            match op {
+                Prim::Eq => out.push(Lir::I64Eqz),
+                Prim::Lt => {
+                    out.push(Lir::ConstI64(0));
+                    out.push(Lir::I64LtS);
+                }
+                Prim::Gt => {
+                    out.push(Lir::ConstI64(0));
+                    out.push(Lir::I64GtS);
+                }
+                Prim::Le => {
+                    out.push(Lir::ConstI64(0));
+                    out.push(Lir::I64LeS);
+                }
+                Prim::Ge => {
+                    out.push(Lir::ConstI64(0));
+                    out.push(Lir::I64GeS);
+                }
+                _ => {
+                    return Err(Reject::decline("RationalCmp carries a non-comparison prim"));
                 }
             }
             Ok(())
@@ -5444,12 +5592,21 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // so it is not a heap operand and never reaches here.)
         | Core::BigIntOfI64 { .. }
         | Core::BigIntBinOp { .. }
+        // A Rational PRODUCER likewise returns a fresh owned handle: `rational-of` (`RationalOfInts`/
+        // `RationalOfIntWiden`) builds a new 2-handle node, and each `rational-add`/…-`div` re-normalizes
+        // into a new node. So a Rational operand that is itself a Rational op's result is owned.
+        | Core::RationalOfInts { .. }
+        | Core::RationalOfIntWiden { .. }
+        | Core::RationalBinOp { .. }
         | Core::Call { .. } => Ok(HandleOwnership::Owned),
         // A CONSTANT typed `BigInt` materializes to a FRESH owned handle at `emit` (the `Core::ConstInt`
         // arm routes a BigInt-typed constant through `bigint-of-i64`), exactly like `ConstStr` above — so
         // as a borrowing-op operand it is Owned and the emit drops it. This is what lets `Int64.of (if c
         // (BigInt.of 1) (BigInt.of 2))` narrow a BigInt-valued `if` whose branches are constant BigInts.
         Core::ConstInt(_) if matches!(type_of(db, id), Ty::BigInt) => Ok(HandleOwnership::Owned),
+        // A CONSTANT Rational likewise materializes to a FRESH owned handle at `emit` (`bigint-of-i64` ×2
+        // + `rational-of`), so as a borrowing-op operand it is Owned.
+        Core::ConstRational(_, _) => Ok(HandleOwnership::Owned),
         // A reference to a parameter or a kept `let`-binding — the owner elsewhere reclaims it.
         Core::Param { .. } | Core::LocalRef { .. } => Ok(HandleOwnership::Borrowed),
         // A payload/element READ (`sum-payload`/`arr-get`) BORROWS its operand — the enclosing compound

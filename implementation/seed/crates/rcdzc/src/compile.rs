@@ -2335,12 +2335,17 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
             collect_reached_poisons(db, lhs, out);
             collect_reached_poisons(db, rhs, out);
         }
-        Core::BigIntBinOp { lhs, rhs, .. } | Core::BigIntCmp { lhs, rhs, .. } => {
+        Core::BigIntBinOp { lhs, rhs, .. }
+        | Core::BigIntCmp { lhs, rhs, .. }
+        | Core::RationalOfInts { num: lhs, den: rhs }
+        | Core::RationalBinOp { lhs, rhs, .. }
+        | Core::RationalCmp { lhs, rhs, .. } => {
             collect_reached_poisons(db, lhs, out);
             collect_reached_poisons(db, rhs, out);
         }
         Core::BigIntOfI64 { value } => collect_reached_poisons(db, value, out),
         Core::BigIntToI64 { operand } => collect_reached_poisons(db, operand, out),
+        Core::RationalOfIntWiden { value } => collect_reached_poisons(db, value, out),
         Core::BytesSlice {
             bytes, start, len, ..
         } => {
