@@ -3968,7 +3968,7 @@ pub(crate) fn read_record_fields(
 /// wildcard `T.*`, or a `(. T key)` that named it). The message names the type + constructor, states the
 /// handle-exported-but-this-constructor-withheld reason, and steers to the module's exported functions —
 /// the machine-actionable "use the door" fix (Amendment 0.5.0 / `diagnostics.md`).
-//= spec/capabilities/modules-and-namespaces.md#a-types-handle-and-its-constructors-are-independently-visible
+//= spec/capabilities/modules-and-namespaces.md#a-type-s-handle-and-its-constructors-are-independently-visible
 //# A module that makes a type's handle visible without making a constructor visible MUST render that constructor unreachable outside the module — a construction or a match through that constructor in another module MUST be a compile-time rejection carrying the machine-readable code for a withheld constructor — so that a value of such a type is built and deconstructed outside the module only through the functions the module exports, and an invariant the module's constructor establishes cannot be bypassed by another module fabricating a value directly.
 fn withheld_ctor_reject(db: &Db, id: StructId, ty: &str, key: &Symbol) -> Option<Reject> {
     if !db.is_linked_package() {

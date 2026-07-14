@@ -363,9 +363,9 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
                 //  - `(. T *)` → the WILDCARD: publish the handle `T` + mark its ctors `All` (concrete).
                 //  - `(. T A)` → publish the handle `T` + mark ctor `A` exported (`Named`).
                 // A malformed element is left for the well-formedness pass (`malformed_exports`).
-                //= spec/capabilities/modules-and-namespaces.md#a-types-handle-and-its-constructors-are-independently-visible
+                //= spec/capabilities/modules-and-namespaces.md#a-type-s-handle-and-its-constructors-are-independently-visible
                 //# A sum type's handle — the name that denotes the type itself — and its constructors MUST be independently exportable, so that a module can publish a type for other modules to name and hold values of without publishing the way to construct or take those values apart.
-                //= spec/capabilities/modules-and-namespaces.md#a-types-handle-and-its-constructors-are-independently-visible
+                //= spec/capabilities/modules-and-namespaces.md#a-type-s-handle-and-its-constructors-are-independently-visible
                 //# A module MUST be able to make every constructor of a type visible in one act that also makes the type's handle visible, so that publishing a type together with its whole constructor set does not require enumerating the constructors one by one and does not drift as the constructor set changes.
                 for &s in tail.iter() {
                     if let Some(name) = ast.as_name(s) {
