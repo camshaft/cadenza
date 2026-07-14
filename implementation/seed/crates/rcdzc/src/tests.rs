@@ -30443,6 +30443,93 @@ mod stage1 {
     }
 
     #[test]
+    fn the_effect_fold_pure_classifier_scales_linearly_over_a_wide_context() {
+        // REGRESSION (perf): the frame-free effect fold classifies pure one-hole contexts via
+        // `effects::strongly_pure`, which called `subtree_performs` — a full recursive subtree walk — at
+        // its entry AND at every node its own structural descent reached. So over a wide/deep handle body
+        // the SAME node's perform-verdict was recomputed O(size) times: `strongly_pure` was O(size²) and
+        // the fold super-linear (a width-400 pure `+`-spine around one perform: `cdz check` ~170ms and
+        // growing ~O(n^1.7); a depth-N nested-`let` perform chain was ~O(N³)). FIX: memoize
+        // `subtree_performs` per `(node, handler-context-key)` in `db.subtree_performs_cache` — whether a
+        // subtree performs is a pure function of the node and the discharged-op set — so each verdict
+        // computes once. The wide context is now LINEAR (width-400 ~25ms), the deep chain ~halved.
+        //
+        // Correctness: a chain of N performs, each bound by a nested `let`, threaded under a counter
+        // handler (`resume s (+ s 1)`, seed 0) — the i-th read is `i`, so the sum is 0+1+…+(N-1).
+        fn nested_chain(n: usize) -> String {
+            let mut summ = String::from("0");
+            for i in 0..n {
+                summ = format!("(+ a{i} {summ})");
+            }
+            let mut inner = summ;
+            for i in (0..n).rev() {
+                inner = format!("(let ((a{i} ((. Ask get)))) {inner})");
+            }
+            format!(
+                "(do (effect Ask (op get (-> Unit Int64))) \
+                   (def (main) (handle Ask 0 ((get () s (resume s (+ s 1)))) {inner})) \
+                   (export main))"
+            )
+        }
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(&nested_chain(6))))
+                    .expect("a 6-perform nested-let chain folds and compiles"),
+                "main"
+            ),
+            0 + 1 + 2 + 3 + 4 + 5,
+            "the i-th of N threaded performs reads i (counter seeded 0), so the chain sums to N(N-1)/2"
+        );
+        // Growth guard on a WIDE pure context — `(+ 0 (+ 1 … (Ask.get)))`, one perform at the bottom of an
+        // N-wide `+`-spine that `strongly_pure`/`pure_hole` must classify. It is SHALLOW (no deep recursion,
+        // so no interaction with the fold's reduction-depth backstop) and its classification cost is the
+        // memoized `subtree_performs` — the cleanest signal for this fix. Was O(n^1.7) (the per-node
+        // re-walk); now linear. Timed as the MIN of several PAIRED back-to-back (width n, width 2n) runs so
+        // transient contention under the parallel harness cancels in the ratio (the technique
+        // `scope_resolution_deep_let_chain` uses). Linear ⇒ ~2×; the old re-walk ⇒ ≥3.3×. Threshold 2.7×.
+        fn wide_pure(n: usize) -> String {
+            let mut e = String::from("((. Ask get))");
+            for i in 0..n {
+                e = format!("(+ {i} {e})");
+            }
+            format!(
+                "(do (effect Ask (op get (-> Unit Int64))) \
+                   (def (main) (handle Ask 5 ((get () s (resume s s))) {e})) \
+                   (export main))"
+            )
+        }
+        // The wide context folds to `sum(0..n) + 5` — pin the value at a small width too.
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(&wide_pure(4))))
+                    .expect("a wide pure context around one perform folds and compiles"),
+                "main"
+            ),
+            0 + 1 + 2 + 3 + 5,
+            "the wide `+`-spine sums 0..4 plus the perform's resumed state 5"
+        );
+        fn check_ms(src: &str) -> f64 {
+            let start = std::time::Instant::now();
+            let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            start.elapsed().as_secs_f64() * 1000.0
+        }
+        let (narrow, wide) = (wide_pure(200), wide_pure(400));
+        check_ms(&narrow); // warm lazy one-time init before the first timed pair
+        let mut best = f64::INFINITY;
+        for _ in 0..6 {
+            let t200 = check_ms(&narrow);
+            let t400 = check_ms(&wide);
+            best = best.min(t400 / t200.max(0.1));
+        }
+        assert!(
+            best < 2.7,
+            "the effect fold's pure classifier must scale LINEARLY over a wide context (was O(n²) via a \
+             per-node whole-subtree `subtree_performs` re-walk; now memoized): width 200→400 grew {best:.1}× \
+             (min paired ratio); linear is ~2×, the old re-walk was ≥3.3×"
+        );
+    }
+
+    #[test]
     fn a_branch_perform_threads_its_state_to_the_continuation() {
         // A `perform` in an `if`/`match` BRANCH must thread its state advance OUT to the continuation
         // after the conditional — the branch-out-state is a runtime phi realized by distributing the

@@ -4054,6 +4054,23 @@ fn is_unit_param(db: &mut Db, param: StructId) -> bool {
 /// Whether the subtree at `node` performs an operation `ctx` discharges — a fast pre-check so a
 /// perform-free subtree is copied wholesale rather than threaded position-by-position. Structural walk.
 fn subtree_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    // MEMOIZE per `(node, ctx.key)`: the classifiers `strongly_pure`/`pure_hole` call this at MANY nodes
+    // as they descend a handle body, and `strongly_pure` in particular re-ran this WHOLE-subtree walk at
+    // every node it visited — so a deep body (an N-perform nested-`let` chain) recomputed the same node's
+    // verdict O(depth) times, making the scan O(N²) and the fold O(N³). Whether a subtree performs is a
+    // pure function of the node and the DISCHARGED-OP SET (`ctx.key`, the resolved-identity string), so a
+    // memo collapses the repeats to O(1). (Node ids are never reused with a different meaning; a synthesized
+    // node gets a fresh id, so a stale entry cannot mislead.)
+    let cache_key = (node, ctx.key.clone());
+    if let Some(&v) = db.subtree_performs_cache.get(&cache_key) {
+        return v;
+    }
+    let v = subtree_performs_uncached(db, node, ctx);
+    db.subtree_performs_cache.insert(cache_key, v);
+    v
+}
+
+fn subtree_performs_uncached(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
     if let Resolved::Apply { head, .. } = resolved_of(db, node)
         && is_perform(db, head, ctx).is_some()
     {

@@ -989,6 +989,16 @@ pub struct Db {
     /// index of the synthesized specialization, so the same call under the same context reuses one def.
     pub(crate) effect_specializations: crate::fxhash::FxHashMap<(StructId, String), usize>,
 
+    /// Memo of `effects::subtree_performs` — whether the subtree at a node reaches a discharged perform (a
+    /// `resume`, or a call into a discharged effect) under a given handler context. Keyed by `(node,
+    /// handler-context-key)` (the same resolved-identity string `effect_specializations` uses). The
+    /// frame-free effect fold's `strongly_pure`/`pure_hole` classifiers call `subtree_performs` at MANY
+    /// nodes as they descend a handle body — `strongly_pure` re-ran the WHOLE-subtree walk at every node it
+    /// visited, so a deep body (an N-perform nested-`let` chain) was O(N²) in the scan and the fold O(N³).
+    /// The memo makes each node's verdict compute once, so repeat queries are O(1). Keyed on the context
+    /// so a node reused under a different discharged-op set is not conflated.
+    pub(crate) subtree_performs_cache: crate::fxhash::FxHashMap<(StructId, String), bool>,
+
     /// Memo of TYPE MONOMORPHIZATIONS (`crate::lower`, recursive-generic monomorphization): a recursive
     /// GENERIC function called at concrete argument types is emitted ONCE per `(def-body-occ,
     /// instantiation-key)` as a synthesized copy whose parameters are re-annotated with the concrete
@@ -1310,6 +1320,7 @@ impl Db {
             types: Column::new(),
             core: Column::new(),
             effect_specializations: crate::fxhash::FxHashMap::default(),
+            subtree_performs_cache: crate::fxhash::FxHashMap::default(),
             type_specializations: crate::fxhash::FxHashMap::default(),
             range_refinements: Vec::new(),
         };
