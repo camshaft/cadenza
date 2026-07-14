@@ -32309,6 +32309,40 @@ mod stage1 {
             db_.message,
             db_.fix
         );
+        // NESTED: a typo inside a SHARED field whose want/got are both records — the field sets agree at the
+        // top level, so the rename DRILLS into `inner`'s literal (`inner.fooo`→`foo`). The field-typo twin of
+        // the numeric-leaf drill.
+        let nested = "(module m \
+                      (def (g (: r (Record (inner (Record (foo Int64)))))) (. r inner)) \
+                      (def (main) (g (record (inner (record (fooo 1)))))) (export main))";
+        let dn = compile_component(&crate::codec::encode(&parse(nested))).expect_err("must reject");
+        let nfix = dn.fix.as_ref().expect("a nested rename fix is carried");
+        assert!(
+            nfix.replacement.contains("foo"),
+            "the nested field typo drills to a rename: {} fix={:?}",
+            dn.message,
+            nfix.replacement
+        );
+        // The renamed nested record compiles.
+        let nested_fixed = "(module m \
+                            (def (g (: r (Record (inner (Record (foo Int64)))))) (. r inner)) \
+                            (def (main) (g (record (inner (record (foo 1)))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(nested_fixed))).is_ok(),
+            "the renamed nested record compiles"
+        );
+        // NO false rename: a genuinely-missing NESTED field (not a typo) gets no fix.
+        let nested_missing = "(module m \
+                              (def (g (: r (Record (inner (Record (a Int64) (b Int64)))))) (. r inner)) \
+                              (def (main) (g (record (inner (record (a 1)))))) (export main))";
+        let dnm = compile_component(&crate::codec::encode(&parse(nested_missing)))
+            .expect_err("must reject");
+        assert!(
+            dnm.fix.is_none(),
+            "a genuinely-missing nested field gets no rename: {} fix={:?}",
+            dnm.message,
+            dnm.fix
+        );
     }
 
     #[test]

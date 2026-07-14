@@ -4152,18 +4152,57 @@ fn record_field_typo_fix(db: &mut Db, expected: &Ty, actual: &Ty, arg: StructId)
         .filter(|k| !got.contains_key(*k))
         .map(|k| k.name.as_str())
         .collect();
-    // A CONFIDENT single pairing only: exactly one extra field, and it is the nearest typo of some missing
-    // one. (More than one extra/missing is not a single mechanical rename — the field-set-diff message
-    // still guides the reader; we just don't auto-fix an ambiguous multi-field slip.)
-    let [typo] = extra.as_slice() else {
-        return None;
-    };
-    let intended = crate::diag::suggest::nearest(typo, missing.iter().copied())?;
-    // Find the KEY occurrence of the typo'd field in the WRITTEN record literal — the `k` in a `(k v)`
-    // entry — so the fix rewrites exactly that token. `None` if the value is not an inline literal (a
-    // name-bound record has no editable key node), matching the honest-no-fix rule.
-    let key_occ = record_field_key_occ(db, arg, typo)?;
-    Some(Fix::replace_heuristic(key_occ, intended))
+    // A CONFIDENT single pairing at THIS level: exactly one extra field that is the nearest typo of some
+    // missing one. (More than one extra/missing is not a single mechanical rename — the field-set-diff
+    // message still guides; we just don't auto-fix an ambiguous multi-field slip.)
+    if let [typo] = extra.as_slice()
+        && let Some(intended) = crate::diag::suggest::nearest(typo, missing.iter().copied())
+        // Find the KEY occurrence of the typo'd field in the WRITTEN record literal — the `k` in a `(k v)`
+        // entry — so the fix rewrites exactly that token. `None` if the value is not an inline literal (a
+        // name-bound record has no editable key node), matching the honest-no-fix rule.
+        && let Some(key_occ) = record_field_key_occ(db, arg, typo)
+    {
+        return Some(Fix::replace_heuristic(key_occ, intended));
+    }
+    // No typo at THIS level. If the field SETS agree, a typo may live inside a shared field whose want/got
+    // are BOTH records that differ — DRILL into that field's value literal and recurse (the field-typo twin
+    // of `compound_inner_coercion_fix`'s nested-leaf drill, so `(record (inner (record (fooo 1))))` against
+    // `(Record (inner (Record (foo Int64))))` renames the deep `inner.fooo`→`foo`). Only when the field sets
+    // are identical (no top-level extra/missing) — otherwise the top-level set diff is the real fault.
+    if extra.is_empty() && missing.is_empty() {
+        for (k, wt) in want.iter() {
+            let gt = got.get(k)?;
+            if let (Ty::Record(_), Ty::Record(_)) = (wt, gt)
+                && !wt.agrees_with(gt)
+                && let Some(sub_arg) = record_field_value_occ(db, arg, &k.name)
+                && let Some(fix) = record_field_typo_fix(db, wt, gt, sub_arg)
+            {
+                return Some(fix);
+            }
+        }
+    }
+    None
+}
+
+/// The VALUE occurrence (`v` in a `(k v)` entry) of the field named `field` in a WRITTEN record literal
+/// `expr` — the companion of [`record_field_key_occ`] that returns the field's value node, so a nested
+/// typo fix can recurse into a sub-record literal. `None` if `expr` is not an inline record literal or has
+/// no such field.
+fn record_field_value_occ(db: &Db, expr: StructId, field: &str) -> Option<StructId> {
+    let entries = db
+        .ast
+        .as_ctor_form(expr, "record")
+        .or_else(|| db.ast.as_form(expr, "record"))?;
+    for &entry in entries {
+        if let crate::ast::Struct::List(kv) = db.ast.get(entry)
+            && kv.len() == 2
+            && let Some(sym) = crate::resolve::read_key(db, kv[0])
+            && sym.name == field
+        {
+            return Some(kv[1]);
+        }
+    }
+    None
 }
 
 /// The KEY occurrence (`k` in a `(k v)` entry) of the field named `field` in a WRITTEN record literal
