@@ -304,7 +304,15 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // emits no `sum-payload` — DROP it from the path the backend walks. `erase_nominal_steps`
                 // walks the scrutinee type + heads and keeps only the real (boxed-sum / tuple) steps, so
                 // the existing backend (wasm + rust) needs no nominal awareness: an empty path reads the
-                // scrutinee value directly (`(Mk n)` binds `n` to the whole erased value).
+                // scrutinee value directly (`(Mk n)` binds `n` to the whole erased value). This is HOW a
+                // program strips the name tag — a `(Mk n)` destructure is the explicit ask that yields the
+                // underlying structural value — and because the `Payload` step erases to nothing, the
+                // stripped value IS the same runtime value the nominal already was: a compile-time
+                // reinterpretation, not a copy or conversion.
+                //= spec/capabilities/type-system.md#a-nominal-value-is-convertible-to-its-underlying-structural-value
+                //# A program MUST be able to strip a nominal type's name tag to obtain the underlying structural value, so that a value declared nominal can be compared or used structurally when the program explicitly asks for it rather than silently.
+                //= spec/capabilities/type-system.md#a-nominal-value-is-convertible-to-its-underlying-structural-value
+                //# The stripped structural value MUST be the same value the nominal value already is at runtime, so that removing the tag is a compile-time reinterpretation and not a copy or conversion of the value.
                 let path = erase_nominal_steps(db, scrutinee, &steps, &heads);
                 Core::SumPayload { scrutinee, path }
             }
@@ -368,8 +376,8 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             }
         }
         // A record value — kept as a compound; folds away only when a member reads a field of it.
-        // `Resolved::Record.fields` and `Core::Record.fields` are BOTH `Arc<BTreeMap<…>>`, so SHARE the
-        // map by an Arc clone (a refcount bump) — no O(fields) copy at all, and `Core::Record`'s own
+        // `Resolved::Record.fields` and `Core::Record.fields` are BOTH `Rc<BTreeMap<…>>`, so SHARE the
+        // map by an Rc clone (a refcount bump) — no O(fields) copy at all, and `Core::Record`'s own
         // per-read clone is likewise O(1).
         Resolved::Record { fields } => {
             let vals: Vec<StructId> = fields.values().copied().collect();
@@ -1206,6 +1214,26 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: Rational arithmetic");
                     lower_rational_arith(db, prim, args[0], args[1])
                 }
+                // A `+`/`-`/`*`/`/` over FLOAT operands — floating-point arithmetic written with the ONE
+                // arithmetic operator (there is no distinct `+.`). Remap the integer prim to its float
+                // counterpart and route to `lower_float_arith` (fold two constant floats at the solved
+                // width, else emit the machine `f64.add`…), exactly as the Qty-inner-float arm does.
+                // Checked before the generic int-arith path (which would range-check against a fixed
+                // width — wrong for a float). Dispatch on the OPERAND type being `Ty::Float`, like the
+                // BigInt/Rational arms; a float/int mix never reaches here (rejected CDZ0301 in
+                // `check_application`). `%`/bit-ops/shift are integer-only and fall through to `is_arith`.
+                Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
+                    if args.len() == 2 && float_operand(db, &args) =>
+                {
+                    let fprim = match prim {
+                        Prim::Add => Prim::FAdd,
+                        Prim::Sub => Prim::FSub,
+                        Prim::Mul => Prim::FMul,
+                        _ => Prim::FDiv,
+                    };
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: Float arithmetic (operand is Float)");
+                    lower_float_arith(db, id, fprim, &args)
+                }
                 Some(prim) if prim.is_arith() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: arithmetic prim");
                     lower_arith(db, id, prim, &args)
@@ -1397,6 +1425,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // unit)`, NEVER a trap. A runtime Bytes declines (the runtime deserializer is a later
                 // increment).
                 Some(Prim::AstDecode) if args.len() == 1 => lower_ast_decode(db, id, args[0]),
+                // `print` — render a compile-time-visible `Ast` value to its canonical re-readable TEXT
+                // (`Core::ConstStr`). The text analogue of `Ast.encode`; a runtime Ast declines.
+                Some(Prim::Print) if args.len() == 1 => lower_print(db, args[0]),
+                // `read` — the inverse: parse a compile-time-visible `Core::ConstStr` as one s-expression
+                // and reify it into the `Ast` `Core::SumNew` tree it denotes. A runtime String declines.
+                Some(Prim::Read) if args.len() == 1 => lower_read(db, args[0]),
                 Some(Prim::ListConcat) if args.len() == 2 => {
                     match (core_of(db, args[0]), core_of(db, args[1])) {
                         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
@@ -1978,6 +2012,222 @@ fn lower_ast_encode(db: &mut Db, id: StructId, ast_val: StructId) -> Core {
     }
 }
 
+/// Lower `(print t)` — FOLD a compile-time-visible `Ast` value to the `Core::ConstStr` of its canonical
+/// re-readable s-expression text (`(Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)))` → `"(+ 1
+/// 2)"`). The text analogue of `Ast.encode`. A runtime `Ast` (no visible `Core::SumNew`) declines; a
+/// poison operand propagates. Paired with `lower_read` so `read(print(v)) == v`.
+fn lower_print(db: &mut Db, ast_val: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, ast_val) {
+        return Core::Poison(r);
+    }
+    let Some(disc) = ast_variant_discs(db) else {
+        return Core::Poison(Reject::decline(
+            "print: the built-in Ast sum is unavailable",
+        ));
+    };
+    let mut text = String::new();
+    if print_ast_value(db, ast_val, &disc, &mut text).is_none() {
+        return Core::Poison(Reject::decline(
+            "print of a runtime AST value is not yet computed (constant AST values only)",
+        ));
+    }
+    Core::ConstStr(text)
+}
+
+/// Render a compile-time-visible `Ast` value (a `Core::SumNew` at an Int/Name/List disc) as canonical
+/// s-expression text into `out`. Returns `None` if the value is not a fully-constant AST. The canonical
+/// spelling is the ordinary s-expression form: `Ast.Int` → the decimal, `Ast.Name` → the bare identifier,
+/// `Ast.List` → `(elem elem …)` space-separated. This is the exact inverse `SexprReader` (in `lower_read`)
+/// parses back, so `read(print(v)) == v`.
+fn print_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut String) -> Option<()> {
+    let Core::SumNew { disc: d, payloads } = core_of(db, node) else {
+        return None;
+    };
+    if d == disc.int && payloads.len() == 1 {
+        let Core::ConstInt(v) = core_of(db, payloads[0]) else {
+            return None;
+        };
+        out.push_str(&v.to_i64()?.to_string());
+        Some(())
+    } else if d == disc.name && payloads.len() == 1 {
+        let Core::ConstStr(s) = core_of(db, payloads[0]) else {
+            return None;
+        };
+        out.push_str(&s);
+        Some(())
+    } else if d == disc.list && payloads.len() == 1 {
+        let Core::ListNew { elems } = core_of(db, payloads[0]) else {
+            return None;
+        };
+        out.push('(');
+        for (i, e) in elems.iter().enumerate() {
+            if i > 0 {
+                out.push(' ');
+            }
+            print_ast_value(db, *e, disc, out)?;
+        }
+        out.push(')');
+        Some(())
+    } else {
+        None
+    }
+}
+
+/// Lower `(read s)` — the inverse of `print`: FOLD a compile-time-visible `Core::ConstStr` by parsing it
+/// as ONE s-expression and reifying it into the `Ast` value it denotes (`"(+ 1 2)"` → `(Ast.List (list
+/// (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)))`). A runtime `String` (no visible `Core::ConstStr`) declines;
+/// a poison operand propagates. Text that does not parse, or that mentions a leaf the `Ast` sum cannot
+/// carry (only Int/Name/List — an integer, a bare atom, or a parenthesized list), declines — never a
+/// miscompile. Parses with a SELF-CONTAINED reader for exactly the Int/Name/List subset (the rcdzc lib is
+/// dependency-free — it carries no general s-expression reader), the minimal inverse of `print_ast_value`.
+fn lower_read(db: &mut Db, str_val: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, str_val) {
+        return Core::Poison(r);
+    }
+    let Core::ConstStr(text) = core_of(db, str_val) else {
+        return Core::Poison(Reject::decline(
+            "read of a runtime string is not yet computed (constant strings only)",
+        ));
+    };
+    let Some(disc) = ast_variant_discs(db) else {
+        return Core::Poison(Reject::decline("read: the built-in Ast sum is unavailable"));
+    };
+    let mut r = SexprReader::new(&text);
+    let parsed = r.read_node();
+    // Exactly one node must consume the whole input (trailing content is ill-formed).
+    match parsed {
+        Some(node) if r.at_end() => reify_read_ast(db, &node, &disc),
+        Some(_) => Core::Poison(Reject::decline(
+            "read of text with trailing content after the first s-expression",
+        )),
+        None => Core::Poison(Reject::decline(
+            "read of text that is not a well-formed s-expression over the Ast subset",
+        )),
+    }
+}
+
+/// A parsed s-expression over the `Ast`-value subset: an integer, a bare atom (name), or a list. The
+/// minimal grammar `read` accepts — exactly the shapes `print_ast_value` emits, so the two round-trip.
+enum SNode {
+    Int(i64),
+    Name(String),
+    List(Vec<SNode>),
+}
+
+/// Reify a parsed [`SNode`] into the `Ast` value (`Core::SumNew` tree) it denotes and return its Core —
+/// the inverse of `print_ast_value`. `Int` → `Ast.Int`, `Name` → `Ast.Name` (identifier as a String
+/// payload), `List` → `Ast.List` of the reified children. The `Core`-building twin of `quote::reify`.
+fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
+    match node {
+        SNode::Int(n) => {
+            let payload = synth_core(
+                db,
+                Core::ConstInt(IntValue::from_i64(*n)),
+                crate::ty::Ty::int64(),
+            );
+            Core::SumNew {
+                disc: disc.int,
+                payloads: vec![payload],
+            }
+        }
+        SNode::Name(name) => {
+            let payload = synth_core(db, Core::ConstStr(name.clone()), crate::ty::Ty::String);
+            Core::SumNew {
+                disc: disc.name,
+                payloads: vec![payload],
+            }
+        }
+        SNode::List(items) => {
+            let elems = items
+                .iter()
+                .map(|e| {
+                    let core = reify_read_ast(db, e, disc);
+                    synth_core(db, core, disc.ty.clone())
+                })
+                .collect();
+            let payload = synth_core(
+                db,
+                Core::ListNew { elems },
+                crate::ty::Ty::List(Box::new(disc.ty.clone())),
+            );
+            Core::SumNew {
+                disc: disc.list,
+                payloads: vec![payload],
+            }
+        }
+    }
+}
+
+/// A minimal recursive s-expression reader for the `Ast`-value subset — integers, bare atoms (names), and
+/// parenthesized lists. Self-contained (the rcdzc lib carries no general reader): whitespace-separated
+/// tokens, `(`/`)` nesting, a leading-`-`/digit token that fully parses as `i64` is an `Int`, any other
+/// bare token is a `Name`. A token the subset cannot represent (a string/float literal) surfaces as a
+/// `Name` of its raw spelling — harmless, since only `print`'s own output is ever round-tripped here.
+struct SexprReader<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+impl<'a> SexprReader<'a> {
+    fn new(text: &'a str) -> Self {
+        SexprReader {
+            bytes: text.as_bytes(),
+            pos: 0,
+        }
+    }
+    fn skip_ws(&mut self) {
+        while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_whitespace() {
+            self.pos += 1;
+        }
+    }
+    fn at_end(&mut self) -> bool {
+        self.skip_ws();
+        self.pos >= self.bytes.len()
+    }
+    /// Parse ONE node from the current position, or `None` on a malformed input (unbalanced parens, an
+    /// empty stray `)`, or an empty token).
+    fn read_node(&mut self) -> Option<SNode> {
+        self.skip_ws();
+        if self.pos >= self.bytes.len() {
+            return None;
+        }
+        if self.bytes[self.pos] == b'(' {
+            self.pos += 1; // consume '('
+            let mut items = Vec::new();
+            loop {
+                self.skip_ws();
+                if self.pos >= self.bytes.len() {
+                    return None; // unterminated list
+                }
+                if self.bytes[self.pos] == b')' {
+                    self.pos += 1; // consume ')'
+                    return Some(SNode::List(items));
+                }
+                items.push(self.read_node()?);
+            }
+        }
+        if self.bytes[self.pos] == b')' {
+            return None; // a stray close-paren
+        }
+        // A bare token: run to the next whitespace or paren.
+        let start = self.pos;
+        while self.pos < self.bytes.len() {
+            let b = self.bytes[self.pos];
+            if b.is_ascii_whitespace() || b == b'(' || b == b')' {
+                break;
+            }
+            self.pos += 1;
+        }
+        if self.pos == start {
+            return None; // empty token
+        }
+        let tok = std::str::from_utf8(&self.bytes[start..self.pos]).ok()?;
+        match tok.parse::<i64>() {
+            Ok(n) => Some(SNode::Int(n)),
+            Err(_) => Some(SNode::Name(tok.to_string())),
+        }
+    }
+}
+
 /// The Int/Name/List discriminants of the built-in `Ast` sum (read by name so a reordering does not
 /// silently mis-tag). `None` if the sum or a variant is missing.
 struct AstDiscs {
@@ -2275,7 +2525,7 @@ pub fn match_pattern_fault(db: &mut Db, id: StructId) -> Option<Reject> {
 }
 
 /// The OPERATOR-SPECIFIC wrong-arity fault of an application whose head is a fixed-arity binary operator
-/// applied to a number of operands other than 2 — an OVER-application (`(+ 1 2 3)`, `(< n 1 2)`, `(+. x 1.0
+/// applied to a number of operands other than 2 — an OVER-application (`(+ 1 2 3)`, `(< n 1 2)`, `(+ x 1.0
 /// 2.0)`) or an UNDER-application (`(+ n)`, `(-)`) — the CDZ0201 "+ takes exactly 2 operands"
 /// (`binop_arity_reject`), carrying a delete-surplus fix on the over-application. Surfaced for
 /// `type_errors` so `cdz check` reports the CLEAR operator message in EVERY body, not only the
@@ -2718,7 +2968,425 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
 // scrutinee (infer.rs `RestFrom`), so a recursive function may match it again.
 //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
 //# Each element position and the rest binder MUST be a binder position in the sense of *Patterns Compose*, so an element MAY itself be any pattern (a wildcard, a name, a tuple pattern, a constructor pattern, or a nested element pattern) matched recursively, and the whole pattern MUST remain linear (`CDZ0102`). The rest binder MUST bind a value of the same list type as the scrutinee, so a recursive function MAY match it again.
+/// If `elem_pat` is a REFUTABLE SCALAR/STRING LITERAL leading list-element sub-pattern (an `Int`/`Bool`/
+/// `Str`/`Float`/`Bytes` — matches one value, not every value of its type), `true`. Such an element cannot
+/// be handled by the length-dispatch matcher directly (it dispatches only on length), but it desugars to a
+/// fresh binder at that position plus a `(= binder <lit>)` value test conjoined into the arm's guard — see
+/// `desugar_refutable_literal_list_elements`. A multi-variant CONSTRUCTOR element is ALSO refutable but
+/// needs discriminant refinement (a different mechanism), so it is NOT rewritten here and still declines.
+fn is_refutable_literal_element(db: &mut Db, elem_pat: StructId) -> bool {
+    matches!(
+        crate::resolve::resolved_of(db, elem_pat),
+        crate::resolved::Resolved::Int(_)
+            | crate::resolved::Resolved::Bool(_)
+            | crate::resolved::Resolved::Str(_)
+            | crate::resolved::Resolved::Float(_)
+            | crate::resolved::Resolved::Bytes(_)
+    )
+}
+
+/// A FRESH copy of the literal-atom node `e` (an `Int`/`Bool`/`Str`/`Float`/`Bytes`/`Sym`/`Char` leaf) — a
+/// new `StructId` carrying an identical `Leaf`, with its OWN empty parent/resolve/type memos. Used to move
+/// a pattern-position literal into an expression position (the `=` RHS of a synthesized value test): the
+/// original node's resolve memo classifies it as a PATTERN literal, which would mis-resolve as an operand;
+/// a fresh atom re-resolves cleanly as a value. Falls back to reusing `e` for a non-atom (never happens for
+/// a literal element, but keeps the helper total).
+fn clone_literal_atom(db: &mut Db, e: StructId) -> StructId {
+    match db.ast.get(e) {
+        crate::ast::Struct::Atom(lid) => {
+            let leaf = db.ast.leaf(*lid).clone();
+            db.push_atom(leaf)
+        }
+        _ => e,
+    }
+}
+
+/// PRE-PASS for `lower_match_list`: rewrite every arm whose list pattern has a refutable SCALAR/STRING
+/// LITERAL leading element into an equivalent guarded arm the length-dispatch matcher already handles.
+///
+/// A literal leading element `(list 0 a .. r)` is an element-VALUE refinement `Core::MatchList` cannot
+/// express (it dispatches only on LENGTH). But it is exactly a fresh binder at that position PLUS a guard
+/// testing that binder equals the literal: `(list 0 a .. r)` ≡ `(guard (list __le0 a .. r) (= __le0 0))`.
+/// This reuses the ENTIRE Inc-5 guard pipeline (resolve Case 6l/6lg binds `__le0`→`Elem(0)`; `ListArm.guard`
+/// gates the arm; a false guard falls through; a guarded arm is EXCLUDED from length-coverage
+/// exhaustiveness — correct, since a literal test may not match, so a `_`/rest catch-all stays required) —
+/// NO new IR, NO backend change. Multiple literal elements in one arm conjoin with `and`; an existing arm
+/// guard is conjoined too (the literal tests AND the author's guard). This is the list-element analogue of
+/// the Inc-8 runtime-string desugar and the case-of-match rewrite — synthesize the AST, re-resolve the new
+/// subtree, and lower it. Returns `Some(Core)` iff at least one arm had a literal element (so the rewrite
+/// fired); `None` leaves the existing path untouched (no cost when no arm needs it).
+fn desugar_refutable_literal_list_elements(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    // Detect whether ANY arm's list pattern has a refutable literal LEADING element. Scan the arm patterns
+    // (peeling a `(guard …)` wrapper), find each `(list …)`'s leading positions (before a `..` marker), and
+    // check each for a scalar/string literal. Bail early if none — the common case pays only this scan.
+    let arm_pats: Vec<StructId> = arms.iter().map(|&(pat, _)| pat).collect();
+    let mut any_literal = false;
+    for &pat in &arm_pats {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        let Some(es) = db
+            .ast
+            .as_ctor_form(inner, "list")
+            .or_else(|| db.ast.as_form(inner, "list"))
+            .map(<[_]>::to_vec)
+        else {
+            continue;
+        };
+        let lead = es
+            .iter()
+            .position(|&e| db.ast.as_name(e) == Some(".."))
+            .unwrap_or(es.len());
+        for &e in &es[..lead] {
+            if is_refutable_literal_element(db, e) {
+                any_literal = true;
+            }
+        }
+    }
+    if !any_literal {
+        return None;
+    }
+    // Rewrite each arm. For a list pattern with literal leading elements, replace each such element with a
+    // fresh binder `__le{arm}_{pos}` (unique per arm+position so distinct arms never collide, and it is
+    // unspellable so it cannot shadow a user name) and collect a `(= __le{arm}_{pos} <lit>)` test. The
+    // arm's new guard is the conjunction of those tests AND any pre-existing guard.
+    let mut new_arms: Vec<StructId> = Vec::with_capacity(arms.len());
+    for (ai, &(pat, body)) in arms.iter().enumerate() {
+        let (inner, existing_guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            _ => (pat, None),
+        };
+        let list_es = db
+            .ast
+            .as_ctor_form(inner, "list")
+            .or_else(|| db.ast.as_form(inner, "list"))
+            .map(<[_]>::to_vec);
+        let Some(es) = list_es else {
+            // Not a list pattern (a bare binder / `_` catch-all) — reuse the arm verbatim.
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        };
+        let head = db.ast.get(inner);
+        // The `(list …)` head token (a `Name` "list" or the reserved `Str` "list") — preserve it so the
+        // rewritten pattern re-resolves as a list pattern exactly as the original did.
+        let list_head = match head {
+            crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+            _ => db.push_name("list"),
+        };
+        let lead = es
+            .iter()
+            .position(|&e| db.ast.as_name(e) == Some(".."))
+            .unwrap_or(es.len());
+        let mut new_es: Vec<StructId> = Vec::with_capacity(es.len());
+        let mut tests: Vec<StructId> = Vec::new();
+        for (pos, &e) in es.iter().enumerate() {
+            if pos < lead && is_refutable_literal_element(db, e) {
+                let name = format!("__le{ai}_{pos}");
+                // TWO DISTINCT occurrences of the fresh binder: one in the PATTERN position (the element
+                // binder) and a SEPARATE reference in the guard-cond. A single node cannot have two parents
+                // — `push_list` reparents — so reusing one node would leave the guard reference parented to
+                // the LIST, where `is_list_pattern_element_occurrence` classifies it as an inert pattern
+                // binder (`Resolved::Unit`), and its type would be `Unit` not the element type (so `=` would
+                // wrongly route to a heap `value-eq`). The pattern binder is inert; the guard reference
+                // resolves via Case 6lg to the element's `SumPayload` read.
+                let binder = db.push_name(&name);
+                let binder_ref = db.push_name(&name);
+                let eq_head = db.push_name("=");
+                // `(= __le{pos} <lit>)`. The literal RHS is a FRESH copy of the element node (not the
+                // original `e` reused): the original `e` sits at a pattern ELEMENT position (its resolve
+                // memo classifies it as a pattern literal); reusing it as an EXPRESSION operand would carry
+                // that stale pattern-context resolution. A fresh literal atom re-resolves cleanly as a value.
+                let lit = clone_literal_atom(db, e);
+                let eq = db.push_list(vec![eq_head, binder_ref, lit]);
+                tests.push(eq);
+                new_es.push(binder);
+            } else {
+                new_es.push(e);
+            }
+        }
+        // Reassemble the list pattern with the literal elements replaced by fresh binders.
+        let mut list_children = vec![list_head];
+        list_children.extend(new_es);
+        let new_list = db.push_list(list_children);
+        // Combine the value tests (left-to-right `and`) with any existing guard into the arm's new guard.
+        let mut guard: Option<StructId> = existing_guard;
+        for test in tests {
+            guard = Some(match guard {
+                None => test,
+                Some(g) => {
+                    let and_head = db.push_name("and");
+                    db.push_list(vec![and_head, g, test])
+                }
+            });
+        }
+        let new_pat = match guard {
+            Some(g) => {
+                let guard_head = db.push_name("guard");
+                db.push_list(vec![guard_head, new_list, g])
+            }
+            None => new_list,
+        };
+        new_arms.push(db.push_list(vec![new_pat, body]));
+    }
+    // Rebuild `(match scrutinee arm…)`, re-resolve the synthesized subtree (so each fresh binder's Elem read
+    // and each `(= __le <lit>)` guard resolve against their new positions — exactly as the case-of-match
+    // rewrite re-resolves), and lower it through the ordinary path (which routes back to `lower_match_list`,
+    // now with no literal elements → the guarded-arm path handles them).
+    let match_head = db.push_name("match");
+    let mut items = vec![match_head, scrutinee];
+    items.extend(new_arms);
+    let rewritten = db.push_list(items);
+    crate::resolve::resolve_subtree(db, rewritten);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with refutable literal elements → fresh-binder + value-test guards");
+    Some(core_of(db, rewritten))
+}
+
+/// If `elem_pat` is a REFUTABLE MULTI-VARIANT CONSTRUCTOR leading list-element sub-pattern — a `(C.V …)` /
+/// `(V …)` / bare-member `(. Sum V)` whose owning sum has ≥2 variants — return `Some(head)` (the ctor head
+/// occurrence). Such an element matches only when the element's DISCRIMINANT is `V`, so — like a literal —
+/// it is refutable and the length-dispatch matcher cannot express it directly; it desugars to a fresh
+/// binder + a discriminant-test guard + a body that re-matches the binder (`desugar_refutable_ctor_list_
+/// elements`). A SINGLE-variant ctor is IRREFUTABLE (handled inline by `list_element_irrefutable_or_decline`
+/// / Inc-1), so it returns `None` here. A non-ctor element (literal, tuple, bare binder) returns `None`.
+fn refutable_ctor_element_head(db: &mut Db, elem_pat: StructId) -> Option<StructId> {
+    // The ctor head: a bare name / member `(. Sum V)` used whole, or a `(head arg…)` application's head —
+    // the same head extraction `classify_binding_ctor` performs.
+    let head = match db.ast.get(elem_pat) {
+        crate::ast::Struct::Atom(_) => elem_pat,
+        crate::ast::Struct::List(children) => match children.first().copied() {
+            Some(first) if db.ast.as_name(first) == Some(".") => elem_pat,
+            Some(first) => first,
+            None => return None,
+        },
+    };
+    let decl = crate::eval::variant_owner_decl(db, head)?;
+    let variant_count = db.type_decl_by_occ(decl).map(|d| d.variants.len())?;
+    (variant_count > 1).then_some(head)
+}
+
+/// PRE-PASS for `lower_match_list` (the CONSTRUCTOR twin of `desugar_refutable_literal_list_elements`):
+/// rewrite an arm whose list pattern has a refutable MULTI-VARIANT CONSTRUCTOR leading element into an
+/// equivalent guarded arm the length-dispatch matcher already handles. This is the compiler tree-walk idiom
+/// — matching a list of tagged nodes by the head's TAG: `(match instrs ((list (Op.Add x) .. r) …) ((list
+/// (Op.Neg x) .. r) …) (_ …))`.
+///
+/// A ctor element `(C.V p…)` at leading position `i` is refutable (matches only a `C.V`-discriminant
+/// element) AND binds payload sub-patterns — so unlike a literal (a pure `=` test) it needs BOTH a
+/// discriminant test for fall-through AND payload binding for the body. The desugar splits those across the
+/// guard and a body re-match, reusing the Inc-5 guard pipeline + the ordinary sum matcher:
+///   `((list (C.V p…) rest… .. r) body)`  ≡
+///   `((guard (list __lc rest… .. r) (match __lc ((C.V …wildcards) true) (_ false)))
+///       (match __lc ((C.V p…) body) (_ (trap …))))`
+/// The GUARD's discriminant test gates the arm (a non-`C.V` element → false → FALL THROUGH to the next arm,
+/// exactly as the length-dispatch matcher wants); the BODY re-matches the SAME element binder to bind the
+/// payload sub-patterns `p…` for `body` (the inner `_ → trap` arm is DEAD — the guard already proved the
+/// discriminant — but keeps the inner match exhaustive). A guarded arm is EXCLUDED from length-coverage
+/// exhaustiveness, so the outer match still needs a `_`/rest catch-all (correct — a discriminant test may
+/// fail). Three distinct occurrences of the fresh name `__lc{arm}` (the Inc-11 two-parents lesson): the
+/// inert PATTERN-position element binder, the guard-cond match scrutinee, and the body-rematch scrutinee.
+///
+/// Scope: ONE refutable-ctor element per arm (the overwhelmingly common tree-walk shape). An arm with ≥2
+/// refutable-ctor elements DECLINES honestly (its body-rematch nesting + payload-scope interleaving is a
+/// later increment). NO new IR, NO backend change. Returns `Some(Core)` iff the rewrite fired.
+fn desugar_refutable_ctor_list_elements(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    // Detect whether ANY arm's list pattern has a refutable multi-variant-ctor LEADING element. Bail early
+    // if none (the common case pays only this scan).
+    let leading_of = |db: &mut Db, pat: StructId| -> Option<Vec<StructId>> {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        let es = db
+            .ast
+            .as_ctor_form(inner, "list")
+            .or_else(|| db.ast.as_form(inner, "list"))
+            .map(<[_]>::to_vec)?;
+        let lead = es
+            .iter()
+            .position(|&e| db.ast.as_name(e) == Some(".."))
+            .unwrap_or(es.len());
+        Some(es[..lead].to_vec())
+    };
+    let mut any_ctor = false;
+    for &(pat, _) in arms {
+        if let Some(leading) = leading_of(db, pat) {
+            for e in leading {
+                if refutable_ctor_element_head(db, e).is_some() {
+                    any_ctor = true;
+                }
+            }
+        }
+    }
+    if !any_ctor {
+        return None;
+    }
+    // Rewrite each arm.
+    let mut new_arms: Vec<StructId> = Vec::with_capacity(arms.len());
+    for (ai, &(pat, body)) in arms.iter().enumerate() {
+        let (inner, existing_guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            _ => (pat, None),
+        };
+        let list_es = db
+            .ast
+            .as_ctor_form(inner, "list")
+            .or_else(|| db.ast.as_form(inner, "list"))
+            .map(<[_]>::to_vec);
+        let Some(es) = list_es else {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        };
+        let lead = es
+            .iter()
+            .position(|&e| db.ast.as_name(e) == Some(".."))
+            .unwrap_or(es.len());
+        // Locate the refutable-ctor leading element positions.
+        let ctor_positions: Vec<usize> = (0..lead)
+            .filter(|&p| refutable_ctor_element_head(db, es[p]).is_some())
+            .collect();
+        if ctor_positions.is_empty() {
+            // No ctor element in this arm — reuse verbatim (a literal-only / irrefutable arm; a literal
+            // element is handled by the literal desugar pass which runs after this one).
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        }
+        if ctor_positions.len() > 1 {
+            // ≥2 refutable-ctor elements in one arm — the body-rematch nesting + payload-scope interleaving
+            // is a later increment. Decline honestly (rare shape; the common tree-walk matches ONE tagged
+            // head per arm).
+            return Some(Core::Poison(Reject::decline(
+                "a list arm with more than one refutable constructor element is not yet supported \
+                 (match one tagged element per arm)",
+            )));
+        }
+        let cpos = ctor_positions[0];
+        let ctor_pat = es[cpos]; // the original `(C.V p…)` element pattern
+        let head = db.ast.get(inner);
+        let list_head = match head {
+            crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+            _ => db.push_name("list"),
+        };
+        let name = format!("__lc{ai}");
+        // Rebuild the list pattern with the ctor element replaced by a fresh bare binder.
+        let mut new_es: Vec<StructId> = Vec::with_capacity(es.len());
+        for (p, &e) in es.iter().enumerate() {
+            if p == cpos {
+                new_es.push(db.push_name(&name)); // the inert pattern-position element binder
+            } else {
+                new_es.push(e);
+            }
+        }
+        let mut list_children = vec![list_head];
+        list_children.extend(new_es);
+        let new_list = db.push_list(list_children);
+        // The DISCRIMINANT-TEST guard: `(match __lc (<ctor-with-wildcard-payloads> true) (_ false))`. Build a
+        // wildcard-payload copy of the ctor pattern so it tests ONLY the discriminant (no payload binding in
+        // the guard). The guard scrutinee is a fresh occurrence of `__lc`.
+        let disc_scrut = db.push_name(&name);
+        let disc_pat = ctor_pattern_with_wildcard_payloads(db, ctor_pat);
+        // `true`/`false` are BOOL LITERAL atoms (`Leaf::Bool`), NOT bare names — a `push_name("true")`
+        // resolves fine in `check` but the emit path reports CDZ0101 "unbound name `true`".
+        let true_node = db.push_atom(crate::ast::Leaf::Bool(true));
+        let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
+        let disc_true_arm = db.push_list(vec![disc_pat, true_node]);
+        let wild = db.push_name("_");
+        let disc_false_arm = db.push_list(vec![wild, false_node]);
+        let disc_match_head = db.push_name("match");
+        let disc_test = db.push_list(vec![
+            disc_match_head,
+            disc_scrut,
+            disc_true_arm,
+            disc_false_arm,
+        ]);
+        // Combine with any existing guard (AND): the discriminant must hold AND the author's guard.
+        let guard_cond = match existing_guard {
+            None => disc_test,
+            Some(g) => {
+                let and_head = db.push_name("and");
+                db.push_list(vec![and_head, g, disc_test])
+            }
+        };
+        let guard_head = db.push_name("guard");
+        let new_pat = db.push_list(vec![guard_head, new_list, guard_cond]);
+        // The BODY re-match: `(match __lc (<original ctor pattern> <body>) (_ (trap …)))` — binds the ctor's
+        // payload sub-patterns for the original body; the `_` arm is dead (the guard proved the discriminant)
+        // but keeps the inner match exhaustive. The scrutinee + fall-through are fresh nodes.
+        let body_scrut = db.push_name(&name);
+        let body_true_arm = db.push_list(vec![ctor_pat, body]);
+        let trap_head = db.push_name("trap");
+        let trap_msg =
+            db.push_str("unreachable: list-ctor-element discriminant already gated by guard");
+        let trap = db.push_list(vec![trap_head, trap_msg]);
+        let wild_b = db.push_name("_");
+        let body_false_arm = db.push_list(vec![wild_b, trap]);
+        let body_match_head = db.push_name("match");
+        let new_body = db.push_list(vec![
+            body_match_head,
+            body_scrut,
+            body_true_arm,
+            body_false_arm,
+        ]);
+        new_arms.push(db.push_list(vec![new_pat, new_body]));
+    }
+    let match_head = db.push_name("match");
+    let mut items = vec![match_head, scrutinee];
+    items.extend(new_arms);
+    let rewritten = db.push_list(items);
+    crate::resolve::resolve_subtree(db, rewritten);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with a refutable ctor element → fresh-binder + disc-test guard + body re-match");
+    Some(core_of(db, rewritten))
+}
+
+/// A copy of the constructor pattern `ctor_pat` (`(C.V p0 p1)` / `(. Sum V)` / a bare variant name) with
+/// every PAYLOAD argument replaced by a wildcard `_` — the discriminant-only test pattern for the guard.
+/// A bare-name / bare-member ctor (nullary, or a whole `(. Sum V)`) has no payload args, so it is reused
+/// verbatim. An applied ctor `(C.V p…)` keeps its HEAD and replaces each arg with a fresh `_`.
+fn ctor_pattern_with_wildcard_payloads(db: &mut Db, ctor_pat: StructId) -> StructId {
+    match db.ast.get(ctor_pat) {
+        crate::ast::Struct::List(children) => {
+            let children = children.clone();
+            match children.first().copied() {
+                // A bare member `(. Sum V)` used whole — no payload args, reuse verbatim.
+                Some(first) if db.ast.as_name(first) == Some(".") => ctor_pat,
+                Some(head) => {
+                    let mut new_children = vec![head];
+                    for _ in 1..children.len() {
+                        new_children.push(db.push_name("_"));
+                    }
+                    db.push_list(new_children)
+                }
+                None => ctor_pat,
+            }
+        }
+        // A bare-name nullary ctor — no payload, reuse verbatim.
+        crate::ast::Struct::Atom(_) => ctor_pat,
+    }
+}
+
 fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // PRE-PASS (ctor): a refutable MULTI-VARIANT CONSTRUCTOR leading element (`(list (Op.Add x) .. r)`) —
+    // the tree-walk-tagged-nodes idiom — desugars to a fresh binder + a discriminant-test guard + a body
+    // re-match binding the payload. Run BEFORE the literal pass: it rebuilds the match and recurses through
+    // `core_of` → `lower_match_list`, where the literal pass then handles any remaining literal elements.
+    if let Some(core) = desugar_refutable_ctor_list_elements(db, scrutinee, arms) {
+        return core;
+    }
+    // PRE-PASS: a refutable SCALAR/STRING LITERAL leading element (`(list 0 a .. r)`, `(list "add" x)`) is
+    // an element-VALUE refinement the length-dispatch matcher cannot express directly. Desugar it to a
+    // fresh binder + a `(= binder <lit>)` guard (the Inc-5 guard machinery handles the rest), then this
+    // function re-runs with no literal elements. Fires only when some arm actually has a literal element.
+    if let Some(core) = desugar_refutable_literal_list_elements(db, scrutinee, arms) {
+        return core;
+    }
     // Each arm's length condition + an optional GUARD (a boolean the arm's binders are in scope for). A
     // guarded arm fires only when its length holds AND the guard is true; on a false guard it FALLS THROUGH
     // to the next arm, and it does NOT count toward length-coverage exhaustiveness (its guard may fail) —
@@ -2771,10 +3439,15 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
                 match es.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
                     Some(i) => {
                         if i + 2 != es.len() {
-                            return Core::Poison(Reject::coded(
-                                Code::Malformed,
-                                "a list rest pattern is `(list p… .. rest)` — exactly one binder after `..`",
-                            ));
+                            // Anchor at the offending list PATTERN, not the enclosing match, so the
+                            // squiggle lands on `(list … .. …)` rather than the whole `(match …)`.
+                            return Core::Poison(
+                                Reject::coded(
+                                    Code::Malformed,
+                                    "a list rest pattern is `(list p… .. rest)` — exactly one binder after `..`",
+                                )
+                                .at(pat),
+                            );
                         }
                         // The rest binder itself must be a bare name / `_` (it binds the tail SUBLIST — a
                         // nested pattern over the rest is a further increment).
@@ -2962,6 +3635,43 @@ fn list_element_irrefutable_or_decline(
     elem_pat: StructId,
     elem_ty: &crate::ty::Ty,
 ) -> Result<(), Reject> {
+    // A NESTED LIST element `(list …)` is refutable UNLESS it is the zero-leading rest form `(list .. r)`
+    // (which matches every inner list — truly irrefutable, `RestFrom(0)` reads the whole inner list safely
+    // even when empty). A LEADING-element nested list `(list a .. r1)` / `(list a b)` is length-refutable
+    // (`(list a .. r1)` misses the EMPTY inner list — `core-semantics.md §A List Is Deconstructed`: "a
+    // single-leading-element-plus-rest pattern MUST match any NON-empty list"), and the length-dispatch
+    // matcher tests only the OUTER length — so binding `a` = `Elem(i), Elem(0)` on an empty inner list
+    // would TRAP instead of falling through to the next arm. Matching it soundly needs an INNER-length
+    // guard (the list-element analogue of the Inc-11/12 refutable-element desugars) — a later increment; for
+    // now DECLINE the leading-element nested-list case honestly rather than emit a latent trap-on-empty
+    // miscompile. (The BINDER resolution for both forms is in place — `find_leading_binder_in_list_pattern`
+    // descends a nested `(list …)` element via `find_binder_in_list` — so once the guard lands the body
+    // reads its nested binders with no further resolve work.)
+    if is_list_pattern(db, elem_pat) {
+        let has_leading = db
+            .ast
+            .as_form(elem_pat, "list")
+            .or_else(|| db.ast.as_ctor_form(elem_pat, "list"))
+            .map(|es| {
+                let dd = es.iter().position(|&e| db.ast.as_name(e) == Some(".."));
+                match dd {
+                    // A rest form `(list p… .. rest)` with ≥1 leading element is refutable.
+                    Some(k) => k > 0,
+                    // No `..` → a fixed-arity nested list `(list a b)` is refutable (a specific length).
+                    None => !es.is_empty(),
+                }
+            })
+            .unwrap_or(false);
+        if has_leading {
+            return Err(Reject::decline(
+                "a nested list element with leading positions (e.g. `(list a .. rest)`) is refutable — it \
+                 needs an inner-length guard the length-dispatch matcher does not yet emit; only the \
+                 zero-leading rest form `(list .. rest)` is irrefutable here",
+            ));
+        }
+        // The zero-leading rest form `(list .. rest)` is irrefutable — fall through to `check_binding_pattern`
+        // (which accepts it and validates the rest binder), so the nested rest binder resolves + folds.
+    }
     match check_binding_pattern(db, elem_pat, elem_ty) {
         Ok(()) => Ok(()),
         // A refutable element (literal / multi-variant ctor) → not-yet-supported in a length-dispatch list
@@ -3387,7 +4097,7 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     }
     // Compile the matrix into a decision tree rooted at the scrutinee (path `[]`, type `scrut_ty`).
     let mut path_types: PathTypes = std::collections::HashMap::new();
-    path_types.insert(Vec::new(), std::sync::Arc::new(scrut_ty));
+    path_types.insert(Vec::new(), std::rc::Rc::new(scrut_ty));
     match build_tree(db, scrutinee, &rows, &mut path_types) {
         // The whole match reduces to one body (a top-level catch-all, or a fully constant-folded tree).
         Ok(crate::core::SumCont::Leaf(body)) => core_of(db, body),
@@ -3402,13 +4112,13 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     }
 }
 
-/// A match-decision PATH shared across nesting levels — an `Arc<[PathStep]>`, not a bare `Vec`:
+/// A match-decision PATH shared across nesting levels — an `Rc<[PathStep]>`, not a bare `Vec`:
 /// `build_tree`'s partition loop re-clones every surviving row's constraint/lit-test paths at EACH nesting
 /// level, and `build_tree` recurses once per level. With `Vec<PathStep>` paths a deeply-nested pattern
 /// (`(Some (Some … x))`) deep-copied its O(depth)-long paths at every one of `depth` levels = O(depth³) (a
-/// depth-800 nested match: ~2s, ~37% in `Vec::clone`). `Arc` makes each per-level path clone a pointer
-/// bump, dropping the rebuild to O(depth²). (Same fix as `PathTypes`' `Arc<Ty>` values.)
-type MatchPath = std::sync::Arc<[crate::core::PathStep]>;
+/// depth-800 nested match: ~2s, ~37% in `Vec::clone`). `Rc` makes each per-level path clone a pointer
+/// bump, dropping the rebuild to O(depth²). (Same fix as `PathTypes`' `Rc<Ty>` values.)
+type MatchPath = std::rc::Rc<[crate::core::PathStep]>;
 /// A discriminant CONSTRAINT: the sub-value at this `MatchPath` must have this variant discriminant.
 type PathConstraint = (MatchPath, u32);
 /// A LITERAL test: the sub-value at this `MatchPath` must equal this literal probe.
@@ -3936,7 +4646,8 @@ fn pattern_constraints(
             return Err(Reject::coded(
                 Code::Malformed,
                 "a guarded pattern must be (guard <pattern> <cond>)",
-            ));
+            )
+            .at(pat));
         }
         return pattern_constraints(db, g[0], ty, path, lit_tests);
     }
@@ -3977,7 +4688,8 @@ fn pattern_constraints(
                     lit_ty.render_with_article(),
                     ty.render_name()
                 ),
-            ));
+            )
+            .at(pat));
         }
         lit_tests.push((path.into(), probe));
         return Ok(Vec::new());
@@ -4030,6 +4742,9 @@ fn pattern_constraints(
                 return Ok(out);
             }
             _ => {
+                // Anchor at the offending PATTERN node (`pat`), not the enclosing match — the squiggle
+                // then points at `(tuple a b c)`, the actual wrong construct, rather than the whole
+                // `(match … )`. (Without `.at`, `collect_reached_poisons` stamps the coarse match node.)
                 return Err(Reject::coded(
                     Code::Malformed,
                     format!(
@@ -4037,7 +4752,8 @@ fn pattern_constraints(
                         elems.len(),
                         ty.render_name()
                     ),
-                ));
+                )
+                .at(pat));
             }
         };
         let mut out = Vec::new();
@@ -4078,10 +4794,12 @@ fn pattern_constraints(
             Some(_) => {
                 // A `..` that is not the second-to-last element is malformed (a rest binds the whole tail,
                 // so it must be final). CDZ0201 — the same shape rule a top-level list pattern enforces.
+                // Anchored at the offending list PATTERN, not the enclosing match.
                 return Err(Reject::coded(
                     Code::Malformed,
                     "a list rest pattern `.. rest` must be the final element",
-                ));
+                )
+                .at(pat));
             }
             None => (&raw[..], false),
         };
@@ -4095,7 +4813,8 @@ fn pattern_constraints(
                         "a list pattern does not match the payload type {}",
                         ty.render_name()
                     ),
-                ));
+                )
+                .at(pat));
             }
         };
         // The LENGTH test — exactly `leads.len()` for a fixed pattern, AT LEAST `leads.len()` when a
@@ -4184,7 +4903,8 @@ fn pattern_constraints(
                     "this constructor pattern is not the constructor of the matched type {}",
                     ty.render_name()
                 ),
-            ));
+            )
+            .at(pat));
         }
         let inner = (**inner).clone();
         return match args.len() {
@@ -4210,7 +4930,8 @@ fn pattern_constraints(
                                 args.len(),
                                 ts.len()
                             ),
-                        ));
+                        )
+                        .at(pat));
                     }
                     _ => {
                         return Err(Reject::coded(
@@ -4220,7 +4941,8 @@ fn pattern_constraints(
                                 args.len(),
                                 inner.render_name()
                             ),
-                        ));
+                        )
+                        .at(pat));
                     }
                 };
                 let mut payload_path = path;
@@ -4529,21 +5251,20 @@ fn variant_disc_by_name(db: &mut Db, ty: &crate::ty::Ty, name: &str) -> Option<u
 /// that variant's payload type at `switch_path + [Payload]`). Keyed per-branch (not global), because the
 /// SAME path under different parent variants has different types (`Result`'s `[Payload]` is `a` in the
 /// `Ok` arm, `e` in the `Err` arm) — a global map would collide; a branch-local one is always consistent.
-// The value at each path is an `Arc<Ty>`, NOT a bare `Ty`. `build_tree` threads ONE shared map with scoped
+// The value at each path is an `Rc<Ty>`, NOT a bare `Ty`. `build_tree` threads ONE shared map with scoped
 // insert/restore per arm (see its arm loop): entering a variant arm inserts the arm's payload-path types
 // (recording each key's prior value), recurses, then restores — so sibling arms don't share a mutation
-// without cloning the whole map. An `Arc<Ty>` value keeps a restored prior entry a pointer-bump rather than
+// without cloning the whole map. An `Rc<Ty>` value keeps a restored prior entry a pointer-bump rather than
 // a deep `Ty` copy. (An earlier version CLONED the whole map per arm per level → O(depth³) on a nested
-// pattern; the shared-map + `Arc`-path fixes dropped that whole factor.)
-type PathTypes =
-    std::collections::HashMap<Vec<crate::core::PathStep>, std::sync::Arc<crate::ty::Ty>>;
+// pattern; the shared-map + `Rc`-path fixes dropped that whole factor.)
+type PathTypes = std::collections::HashMap<Vec<crate::core::PathStep>, std::rc::Rc<crate::ty::Ty>>;
 /// A path-type ADDITION a variant arm makes: `(path, sub-value type)`. `path` is a plain `Vec` (a `Vec` key
-/// the `PathTypes` map owns), the type an `Arc` (shared, so a restore is a pointer bump).
-type PathTypeEntry = (Vec<crate::core::PathStep>, std::sync::Arc<crate::ty::Ty>);
+/// the `PathTypes` map owns), the type an `Rc` (shared, so a restore is a pointer bump).
+type PathTypeEntry = (Vec<crate::core::PathStep>, std::rc::Rc<crate::ty::Ty>);
 /// A saved-for-restore `PathTypes` slot: the key, and its value BEFORE the arm's insert (`None` = absent).
 type PathTypeRestore = (
     Vec<crate::core::PathStep>,
-    Option<std::sync::Arc<crate::ty::Ty>>,
+    Option<std::rc::Rc<crate::ty::Ty>>,
 );
 
 /// Compile a pattern MATRIX (`rows`) into a decision-tree CONTINUATION for the value at `scrutinee`. If
@@ -4689,10 +5410,10 @@ fn build_tree(
     // sum-payload descent seeded it. (`path_types` still wins where present — a variant payload's
     // instantiated type is more precise than a raw type-walk.)
     let switch_path = shallowest_path(rows);
-    // The switch sub-value's type, as an `Arc` — the seeded case SHARES the map's `Arc` (a pointer bump,
+    // The switch sub-value's type, as an `Rc` — the seeded case SHARES the map's `Rc` (a pointer bump,
     // not a deep clone of an O(depth)-nested `Ty`), so descending a deeply-nested pattern does not re-clone
     // the growing type at every level. The computed fallback wraps its fresh `Ty` once.
-    let sub_ty: std::sync::Arc<crate::ty::Ty> = match path_types.get(&switch_path[..]) {
+    let sub_ty: std::rc::Rc<crate::ty::Ty> = match path_types.get(&switch_path[..]) {
         Some(t) => t.clone(),
         // Not seeded exactly: try a raw type-walk from the scrutinee, then (for a path that descends
         // through a boxed-sum `Payload` a raw walk can't cross) walk the SUFFIX from the longest seeded
@@ -4701,7 +5422,7 @@ fn build_tree(
         None => match type_at_path(db, scrutinee, &switch_path)
             .or_else(|| type_from_seeded_prefix(path_types, &switch_path))
         {
-            Some(t) => std::sync::Arc::new(t),
+            Some(t) => std::rc::Rc::new(t),
             None => {
                 return Err(Reject::decline(
                     "compound match switch path has no solved type",
@@ -5029,25 +5750,25 @@ fn path_type_additions(
             for (i, elem_ty) in elems.iter().enumerate() {
                 let mut elem_path = child.clone();
                 elem_path.push(crate::core::PathStep::Elem(i));
-                out.push((elem_path, std::sync::Arc::new(elem_ty.clone())));
+                out.push((elem_path, std::rc::Rc::new(elem_ty.clone())));
             }
         }
-        out.push((child, std::sync::Arc::new(payload_ty)));
+        out.push((child, std::rc::Rc::new(payload_ty)));
     }
     out
 }
 
 /// The shallowest (shortest, then by `path_cmp`) path any row constrains — the switch site. Returns a
-/// SHARED `Arc<[PathStep]>` (a pointer-bump clone of the winner), not a fresh `Vec`: the old code cloned
+/// SHARED `Rc<[PathStep]>` (a pointer-bump clone of the winner), not a fresh `Vec`: the old code cloned
 /// EVERY path just to `min_by` them, which — since `build_tree` recurses once per pattern level — re-cloned
 /// the O(depth)-long constraint paths at every level = O(depth³). Selecting by reference + returning the
-/// winner's `Arc` makes each call an O(constraints × path-len) COMPARE with no path deep-copy.
+/// winner's `Rc` makes each call an O(constraints × path-len) COMPARE with no path deep-copy.
 fn shallowest_path(rows: &[MatchRow]) -> MatchPath {
     rows.iter()
         .flat_map(|r| r.constraints.iter().map(|(p, _)| p))
         .min_by(|a, b| a.len().cmp(&b.len()).then_with(|| path_cmp(a, b)))
         .cloned()
-        .unwrap_or_else(|| std::sync::Arc::from(&[][..]))
+        .unwrap_or_else(|| std::rc::Rc::from(&[][..]))
 }
 
 /// A total order on paths for a deterministic switch choice (Payload < Elem < RestFrom, each by index).
@@ -7714,6 +8435,18 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         let text = b.atom_leaf(Leaf::Str(s));
         return Some(b.list(vec![symbol_of, text]));
     }
+    // A TYPE-VALUE renders its concrete type's NAME surface — `(: Int64 Type)`, whose VALUE node is the
+    // atom `Int64` (the type node is `Type`, built by `type_ast`'s `Ty::Type` arm). A type is a first-class
+    // value that can be returned and inspected at run time (core-semantics.md §Types Are First-Class
+    // Values), and it is FULLY compile-time-known, so its boundary form is baked from the reduced type
+    // rather than a runtime representation — recover the concrete `Ty` with `typeval_of` (the same reducer
+    // `Type.of`/`Type.eq`/an annotation position use) and render its type surface as the value node.
+    // Checked FIRST (before the core match) because the erased core of a type expression is not a scalar.
+    if matches!(crate::infer::type_of(db, id), crate::ty::Ty::Type)
+        && let Some(concrete) = crate::eval::typeval_of(db, id)
+    {
+        return type_ast(b, &concrete);
+    }
     match core_of(db, id) {
         Core::ConstInt(v) => Some(b.atom_leaf(Leaf::Int {
             value: v,
@@ -8124,9 +8857,14 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         // the name, not its underlying shape (like a monomorphic sum). The value itself renders as the
         // underlying value form (built by the value walker, which sees through the tag).
         Ty::Nominal { name, .. } => Some(b.name(name.clone())),
-        // A function/type-value has no boundary value form, so no type surface. A program that would
-        // escape one declines before reaching the escape.
-        Ty::Fn(_, _) | Ty::Type | Ty::Var(_) | Ty::Any => None,
+        // The TYPE OF TYPES — the type surface of a type-VALUE (`(: Int64 Type)`). A type is a first-class
+        // value that can be returned and inspected at run time (core-semantics.md §Types Are First-Class
+        // Values), so a bare type-value crosses the boundary; its TYPE node is the atom `Type` (the value
+        // node is the concrete type's name, built by `const_value_ast`'s `Ty::Type` arm). `render_name`.
+        Ty::Type => Some(b.name("Type".to_string())),
+        // A function has no boundary value form, so no type surface. A still-free type variable / `Any`
+        // has no determined serialization. A program that would escape one declines before the escape.
+        Ty::Fn(_, _) | Ty::Var(_) | Ty::Any => None,
     }
 }
 
@@ -8365,9 +9103,10 @@ fn lower_runtime_combine(
             ));
         }
     };
-    // Build `(op-name lconv rconv)` with the ORDINARY numeric operator (float ops for a float inner) so
-    // it lowers through the ordinary arith/comparison path — the converted operands are bare numerics.
-    let op_name = combine_op_name(op, is_float);
+    // Build `(op-name lconv rconv)` with the ONE arithmetic/comparison operator (a float inner routes it
+    // to float arithmetic by operand type) so it lowers through the ordinary arith/comparison path — the
+    // converted operands are bare numerics.
+    let op_name = combine_op_name(op);
     let head = db.push_name(op_name);
     let app = db.push_list(vec![head, lconv, rconv]);
     core_of(db, app)
@@ -8390,18 +9129,19 @@ fn convert_operand_ast(
     if num == 1 && den == 1 {
         return Some(value);
     }
-    let (mul, div) = if is_float { ("*.", "/.") } else { ("*", "/") };
+    // The ONE arithmetic operator `*`/`/` — a float `num.0` operand routes it to float arithmetic by the
+    // operand type (there is no distinct `*.`/`/.`); `is_float` only picks the literal spelling.
     // `(* value num)` — multiply by the scale numerator (a `num.0` float literal for a float inner).
     let mut node = value;
     if num != 1 {
         let n_lit = num_literal(db, num, is_float);
-        let mul_head = db.push_name(mul);
+        let mul_head = db.push_name("*");
         node = db.push_list(vec![mul_head, node, n_lit]);
     }
     // `(/ … den)` — divide by the denominator.
     if den != 1 {
         let d_lit = num_literal(db, den, is_float);
-        let div_head = db.push_name(div);
+        let div_head = db.push_name("/");
         node = db.push_list(vec![div_head, node, d_lit]);
     }
     Some(node)
@@ -8428,14 +9168,13 @@ fn num_literal(db: &mut Db, v: i128, is_float: bool) -> StructId {
     }
 }
 
-/// The ordinary numeric operator NAME for a mixed-unit combine `op` at the inner type — the float
-/// operators (`+.`/`-.`/`<`/…) for a float inner, the integer ones otherwise. Comparisons share one
-/// spelling across inners (they are polymorphic over the operand type).
-fn combine_op_name(op: Prim, is_float: bool) -> &'static str {
+/// The ordinary arithmetic/comparison operator NAME for a mixed-unit combine `op` — the ONE operator
+/// spelling per prim (`+`/`-`/`<`/…). A float inner routes `+`/`-` to float arithmetic by the operand
+/// type at lowering (no distinct `+.`), so the spelling is inner-type-independent, exactly as the
+/// comparisons already were.
+fn combine_op_name(op: Prim) -> &'static str {
     match op {
-        Prim::Add if is_float => "+.",
         Prim::Add => "+",
-        Prim::Sub if is_float => "-.",
         Prim::Sub => "-",
         Prim::Lt => "<",
         Prim::Gt => ">",
@@ -8596,23 +9335,20 @@ fn lower_qty_pow(db: &mut Db, q: StructId, exp: StructId) -> Core {
             ));
         }
     };
-    // Build `value^|n|` = `(* (* … value value) value)` — `|n|` copies, left-nested — with the inner
-    // type's multiply (`*.` float / `*` int).
-    let mul = if inner_is_float { "*." } else { "*" };
+    // Build `value^|n|` = `(* (* … value value) value)` — `|n|` copies, left-nested — with the ONE
+    // multiply operator `*`; a float `value` routes it to float arithmetic by the operand type at
+    // lowering (no distinct `*.`), so the spelling is inner-type-independent.
     let mut node = value;
     for _ in 1..n.unsigned_abs() {
-        let mul_head = db.push_name(mul);
+        let mul_head = db.push_name("*");
         node = db.push_list(vec![mul_head, node, value]);
     }
-    // A negative exponent is the reciprocal `1 / value^|n|`, dividing in the inner type (`/.` float / `/`
-    // int); a positive one is the power itself. Lower the synthesized node through the ordinary arith
-    // path (so the constant case folds and a runtime magnitude emits the multiplies/division).
+    // A negative exponent is the reciprocal `1 / value^|n|` (the ONE `/` operator, float-dispatched by
+    // its operand type); a positive one is the power itself. Lower the synthesized node through the
+    // ordinary arith path (so the constant case folds and a runtime magnitude emits the multiplies/div).
     if n < 0 {
-        let (one, div) = (
-            num_literal(db, 1, inner_is_float),
-            if inner_is_float { "/." } else { "/" },
-        );
-        let div_head = db.push_name(div);
+        let one = num_literal(db, 1, inner_is_float);
+        let div_head = db.push_name("/");
         node = db.push_list(vec![div_head, one, node]);
     }
     core_of(db, node)
@@ -8668,7 +9404,7 @@ fn fold_int_combine(op: Prim, l: i128, r: i128) -> Core {
 
 /// The wrong-arity CDZ0201 reject shared by the fixed-arity BINARY operators — integer arithmetic
 /// (`lower_arith`), FLOAT arithmetic (`lower_float_arith`), and COMPARISON (`lower_comparison`). All three
-/// take exactly 2 operands; an OVER-application (`(+ 1 2 3)`, `(< 1 2 3)`, `(+. 1.0 2.0 3.0)`) has a
+/// take exactly 2 operands; an OVER-application (`(+ 1 2 3)`, `(< 1 2 3)`, `(+ 1.0 2.0 3.0)`) has a
 /// mechanical repair: DELETE the first surplus operand (`args[2]`) — the fixpoint removes each extra until
 /// exactly 2 remain. A TOO-FEW application (`(+ 1)`) has nothing to delete → no fix. Carrying the delete
 /// fix on THIS authoritative CDZ0201 is what lets `dedup_faults` drop the sibling CDZ0203 over-application
@@ -8891,6 +9627,16 @@ fn rational_operand(db: &mut Db, args: &[StructId]) -> bool {
 fn bigint_operand(db: &mut Db, args: &[StructId]) -> bool {
     args.iter()
         .any(|&a| matches!(crate::infer::type_of(db, a), crate::ty::Ty::BigInt))
+}
+
+/// True iff either operand of a binary op has solved type `Ty::Float` — the signal to remap `+`/`-`/`*`/
+/// `/` to the float prim (`FAdd`…) and route to `lower_float_arith` instead of the integer fold. There is
+/// no distinct `+.`; floating-point arithmetic is dispatched here on the operand type, like the BigInt/
+/// Rational operands. (A `Float`/int mix never reaches lowering — `check_application` rejected it CDZ0301
+/// — so if ONE operand is a Float the other is too.)
+fn float_operand(db: &mut Db, args: &[StructId]) -> bool {
+    args.iter()
+        .any(|&a| matches!(crate::infer::type_of(db, a), crate::ty::Ty::Float(_)))
 }
 
 /// Lower a BigInt `+`/`-`/`*`/`/` to a runtime `Core::BigIntBinOp` (the runtime `bigint-*` op). Unlike
@@ -10871,7 +11617,11 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::TypeOf
         | Prim::TypeEq
         // `trap` is the diverging primitive (lowered to `Core::Trap`), never an integer binary operation.
-        | Prim::Trap => {
+        | Prim::Trap
+        // `print`/`read` are the AST-value text printer/reader (`Ast → String` / `String → Ast`), folded
+        // in `lower_print`/`lower_read`, never an integer binary operation.
+        | Prim::Print
+        | Prim::Read => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -13456,7 +14206,7 @@ fn lower_record_project(
         .collect();
     trace!(target: "rcdzc::fold", node = id.0, n = kept.len(), drop, "record project/without folds a constant record to its result fields");
     Core::Record {
-        fields: std::sync::Arc::new(kept),
+        fields: std::rc::Rc::new(kept),
     }
 }
 
@@ -13476,7 +14226,7 @@ fn lower_record_merge(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Co
             }
             trace!(target: "rcdzc::fold", node = id.0, n = union.len(), "Record.merge folds two constant records to their union");
             Core::Record {
-                fields: std::sync::Arc::new(union),
+                fields: std::rc::Rc::new(union),
             }
         }
         _ => Core::Poison(Reject::decline(
@@ -13510,7 +14260,7 @@ fn lower_record_insert(db: &mut Db, id: StructId, record: StructId, pair: Struct
     out.insert(label, value);
     trace!(target: "rcdzc::fold", node = id.0, n = out.len(), "Record.extend/with folds an insert into a constant record");
     Core::Record {
-        fields: std::sync::Arc::new(out),
+        fields: std::rc::Rc::new(out),
     }
 }
 
@@ -13554,9 +14304,9 @@ fn lower_record_pop(db: &mut Db, id: StructId, record: StructId, name: StructId)
     let rest_record = synth_core(
         db,
         Core::Record {
-            fields: std::sync::Arc::new(rest),
+            fields: std::rc::Rc::new(rest),
         },
-        crate::ty::Ty::Record(std::sync::Arc::new(rest_ty)),
+        crate::ty::Ty::Record(std::rc::Rc::new(rest_ty)),
     );
     trace!(target: "rcdzc::fold", node = id.0, "Record.pop folds to a (value, remaining-record) tuple");
     Core::Tuple {
@@ -15000,6 +15750,8 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::AstSpliceLift => "ast-splice-lift",
         Prim::AstEncode => "ast-encode",
         Prim::AstDecode => "ast-decode",
+        Prim::Print => "print",
+        Prim::Read => "read",
         Prim::ListCtor => "List",
         Prim::BytesOf => "bytes-of",
         Prim::BytesLen => "bytes-len",
@@ -15022,10 +15774,12 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::CheckedMul => "checked-mul",
         Prim::WrappingAdd => "wrapping-add",
         Prim::WrappingMul => "wrapping-mul",
-        Prim::FAdd => "+.",
-        Prim::FSub => "-.",
-        Prim::FMul => "*.",
-        Prim::FDiv => "/.",
+        // The F* prims are the float MODE of the ONE arithmetic operator — a float `+`, not a distinct
+        // `+.` — so a user-facing message (arity fault) names the undotted operator the author wrote.
+        Prim::FAdd => "+",
+        Prim::FSub => "-",
+        Prim::FMul => "*",
+        Prim::FDiv => "/",
         Prim::FloatCtor => "Float",
         Prim::FloatOfInt => "of-int",
         Prim::FloatOf => "of",

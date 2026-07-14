@@ -130,6 +130,91 @@ boundary envelope) → **U3** (compile-request override) → **U4** (remove `ext
   asserted by dependency-free byte inspection (the `cdz-run --peer` consumer-run half needs wasmtime + the
   store, kept in `cdz-run`; `u6_*` proves the full run). Byte-neutral; gate 2105/0/0.
 
+- **U9 — a consumer binds TWO+ DISTINCT PEER INTERFACES. ✅ DONE (`spec`).** Lifts the single-interface
+  decline (`mod.rs`). Generalized `assemble_extern`/`assemble_extern_runtime` to take `op_ifaces: &[&str]`
+  (the interface each op in `extern_order` is imported from) instead of one `peer_iface`: the distinct
+  interfaces (first-appearance order) become component instances/types `0..g`, each op aliases out of ITS
+  interface's instance, and the boundary lift's comp-type index shifts `1`→`g` (peer-only) / `2`→`g+1`
+  (peer+runtime). The core module is UNCHANGED — the one merged `"peer"` core instance still exports every
+  lowered op FLAT by name, so op names must be globally unique across the bound interfaces; a cross-interface
+  collision DECLINES (`mod.rs`, "unique across the peer interfaces"). G=1 reproduces the byte-exact X3/X5
+  shape (gate 2107/0/0, byte-neutral). Helpers `distinct_ifaces`/`iface_index`/`peer_group_ops`. Tests:
+  `u9_*` — a consumer binds M→`cadenza:math/api` (scalar `neg`) AND P→`cadenza:pairs/api` (compound `pair`),
+  `main(9)=neg(pair(9).0)=-9` (a value from EACH peer, via `assemble_extern_runtime` g=2) — plus `u9b_*` the
+  same-op-name collision decline. 12 cross-component tests.
+
+- **U10 → U11 — a MIDDLE component is BOTH consumer AND provider (an A→B→C chain). ✅ DONE (`spec`).**
+  U10 first made the consumer+provider combination an honest DECLINE; U11 turned it into a working feature.
+  A component B that binds a peer (A) AND is compiled with `--component-name` now imports A's interface,
+  computes, and BUNDLES its own boundary export into a named interface instance for a downstream consumer
+  (C) — the fused envelope. Implemented as an `Option<&str> publish_iface` param on `assemble_extern` /
+  `assemble_extern_runtime`: `None` (a pure consumer) exports each boundary func TOP-LEVEL (byte-identical
+  to X3/X5), `Some(iface)` bundles the lifted funcs into a component instance (the `assemble_provider`
+  shape — comp instance `g` peer-only / `g+1` with runtime) and exports it under `iface`. The runner
+  (`run_with_peers`) now binds each EARLIER peer's interface into later peers' linkers (peers in dependency
+  order, `bind_peer_ifaces_into`), so B (a peer) can import A (a peer). Test `u11_*`: A publishes
+  `cadenza:pairs/api` (`pair`), B binds it + publishes `cadenza:mid/api` (`mid x = pair(x).0 + 1`), C binds
+  `cadenza:mid/api` → `main(9)=10`, a value flowing A→B→C. Byte-neutral (`publish_iface=None` is the old
+  shape); gate 2141/0/0. 14 cross-component tests + 8 cdz-run tests.
+
+- **U12 — a DIAMOND graph: one shared provider feeds two middles. ✅ DONE (`spec`, test-only).** Composes
+  the multi-interface consumer (U9) with the fused consumer+provider chain (U11) over a SHARED base: a
+  provider A (`base x = x*2`, `cadenza:base/api`) is consumed by TWO middle components B (`bee x = base(x)+1`,
+  `cadenza:b/api`) AND C (`cee x = base(x)+10`, `cadenza:c/api`), and a top component D binds BOTH B and C
+  (`main x = bee(x)+cee(x)`). No compiler change — the U11 runner (each EARLIER peer's interface bound into
+  later peers' linkers, dependency order) already forwards A into BOTH B's and C's linkers and both middles
+  into D. Test `u12_*`: `main(5) = (10+1)+(10+10) = 31`. Confirms the peer-forwarding composes for a
+  non-linear graph. 15 cross-component tests.
+
+- **U13 — RECLAIM a peer-returned compound projected across the boundary. ✅ DONE (`spec`).** A peer-bound
+  effect returning a COMPOUND (U5/U11) hands the consumer a fresh OWNED shared-runtime handle; when the
+  consumer projects a scalar field (`(host (P) (. (P.pair x) 0))`), `arr-get` BORROWS the aggregate to read
+  the element but nothing released it — it LEAKED until run-end (harmless one-shot, a leak for a long-lived
+  host). Fix in the `Core::Proj` emit: when the operand is a fresh OWNED temporary (`heap_operand_ownership`
+  == Owned — now including `Core::HostCall` alongside `Core::Call`/constructors) AND the element is SCALAR
+  (`get-int`/`get-bool` COPY the value out), stash the aggregate in a scratch slot, read, then `drop` it
+  (rc--, cascade). A NESTED-COMPOUND element (the `arr-get` borrow IS the child) is left as-is (a deferred
+  leak, never a use-after-free); a projection off a BORROWED binding drops nothing (the owner reclaims it).
+  Byte-neutral for the corpus (an in-process projection off a local constructor optimizes the tuple away
+  before the reclaim path; the leak only existed for an opaque peer-returned compound). Test `u13_*`
+  (peer-effect projection emits `drop`, borrowed-param projection does not); full rcdzc suite 1448/0, gate
+  2152/0/0, all cross-component runs correct under wasmtime (no use-after-free).
+
+- **U14 — reclaim across a NESTED-COMPOUND projection. ✅ DONE (`spec`).** Extends U13 to the case U13 left
+  as a deferred leak: projecting a COMPOUND field out of an owned peer-returned aggregate. The `arr-get`
+  result IS the borrowed child, so the `Core::Proj` emit now `dup`s the returned child (rc++) so it survives,
+  THEN `drop`s the parent — the parent's storage + every other child is reclaimed and the returned child
+  stays live under its own retained reference. `collect_used_ops` imports `dup` for a nested-compound
+  reclaim. Test `u14_*`: a peer returns `((x,x+1), x+2)`, the consumer `(. (. (P.nest x) 0) 1)` projects the
+  inner tuple (nested → dup+drop-parent) then reads its scalar (→ drop-inner) → `main(9)=10`, verified under
+  wasmtime (the inner tuple stays live across the outer's drop — no use-after-free). The `u13_*` unit test
+  also asserts the nested case emits both `dup` and `drop`. Full rcdzc 1453/0, gate 2157/0/0.
+
+- **U15 — a LET-BOUND peer-returned compound read twice then reclaimed. ✅ DONE (`spec`, test-only).**
+  Confirms the general Perceus `let`-drop machinery (`Core::Let` emit: a dead heap binding is `drop`'d at
+  scope end unless `binding_escapes`) already reclaims a peer-RESULT binding — no origin special-case needed.
+  Test `u15_*`: `(let ((t (P.pair x))) (+ (. t 0) (. t 1)))` binds the owned peer tuple, reads BOTH fields
+  via borrowing `arr-get`s off the `LocalRef` (so U13/U14 add no drop — a borrowed operand), both reads see
+  a LIVE tuple (no premature drop between them), and the dead binding is reclaimed once at scope end →
+  `main(9)=18` under wasmtime. Locks the corner as a regression test. 17 cross-component tests, gate 2169/0/0.
+
+- **U16 — a compound ARGUMENT crosses TO a peer (the inbound direction). ✅ DONE (`spec`, test-only).**
+  U5/U6/U11 cross compound RESULTS out of a peer; U16 closes the other direction — the CONSUMER builds a
+  runtime tuple and passes it INTO the peer's op, crossing as its `u32` handle over the shared runtime (NOT
+  marshaled bytes, so no `value-decode` needed), and the PROVIDER reads both fields. The collect-time wiring
+  (`extern_abi_val_type` on a peer-bound op's PARAMS, `host.rs`) has existed since U5 but was never exercised
+  end-to-end for an argument. Test `u16_*`: provider `sum t = (. t 0)+(. t 1)` over `cadenza:adder/api`,
+  consumer `(host (S) (S.sum (tuple x (+ x 1))))` → `main(9)=sum((9,10))=19` under wasmtime. Completes the
+  "value crosses BOTH directions" story for Transport B. 18 cross-component tests, gate 2173/0/0.
+
+- **U17 — HANDLE PASS-THROUGH: a peer-produced handle flows straight to another peer. ✅ DONE (`spec`,
+  test-only).** Composes U16 (compound arg in) with U5 (compound result out) across TWO boundary crossings
+  in ONE body: `(host (P) (host (S) (S.sum (P.pair x))))` — the tuple A mints flows straight into B, never
+  inspected by the consumer. Exercises ownership-transfer-on-argument: the handle is in a CONSUMING position,
+  so the consumer NEITHER drops it (double-free) NOR leaks it — ownership transfers to B. Test `u17_*`:
+  producer `pair x = (x, x+1)` / consumer `sum t = (. t 0)+(. t 1)` → `main(9)=sum(pair(9))=19` under
+  wasmtime (correct across two crossings, no double-free/leak). 19 cross-component tests, gate 2176/0/0.
+
 🎉 **THE UNIFICATION IS COMPLETE.** Cross-component interop IS the effect system: a contract is an
 `(effect …)`, a peer dependency is that effect `(bind …)`-ed to a peer interface, a test overrides with a
 `(handle …)` or a compile-request `--bind`. ONE concept — an escaping effect the manifest records — for

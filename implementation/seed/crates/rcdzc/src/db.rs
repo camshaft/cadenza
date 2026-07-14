@@ -50,6 +50,22 @@ thread_local! {
     /// (a wall-clock ratio is diluted by the rest of `check`) — see the lock-in test.
     pub(crate) static COLLECT_REDUCED_CALLABLES_VISITS: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
+
+    /// Test-only: total node-visits by `effects::check_no_home_walk` (the CDZ0401 no-home check) since the
+    /// last reset. Following a callee body had NO dedup, so a helper called from N sites re-walked its
+    /// O(N)-body once per site = O(N²); the `(callee, handled-set)` follow-dedup makes it O(N). The
+    /// noise-free regression signal (a wall-clock ratio is diluted by the rest of `check`) — see the
+    /// `check_no_home_follows_a_shared_callee_body_once_per_handler_context` lock-in test.
+    pub(crate) static CHECK_NO_HOME_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+
+    /// Test-only: total record-field KEYS enumerated while building `record_field_index` entries since the
+    /// last reset. `eval::runtime_member_index` found a field's sorted slot by a LINEAR `keys().position()`
+    /// scan — O(fields) PER projection, so a wide record projected field-by-field was O(N²). The per-type
+    /// index map (built once, keyed by the type `Rc`) makes the total keys enumerated O(fields) regardless
+    /// of projection count. This counter is the noise-free regression signal (a wall-clock ratio is diluted
+    /// by inference's own cost) — see the `runtime_record_field_projection_indexes_in_bounded_time` test.
+    pub(crate) static RECORD_FIELD_INDEX_KEYS_SCANNED: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
@@ -432,6 +448,12 @@ pub struct ModuleDecl {
     /// with no such pragma. Like `default_int`, kept as the un-reduced occurrence; the load-time
     /// `default_fraction_literals` map records which literals it applies to.
     pub default_fraction: Option<StructId>,
+    /// The TYPE-EXPRESSION occurrence of a `(pragma default-float <T>)` member, if the module declares one
+    /// — the floating-point type an otherwise-unconstrained bare DECIMAL literal WRITTEN in this module
+    /// defaults to, instead of `Float64` (`numeric-model.md` §A Module May Declare Its Default Float
+    /// Literal Type). The float twin of `default_int`. `None` for a module with no such pragma. Kept as the
+    /// un-reduced occurrence; the load-time `default_float_literals` map records which literals it applies to.
+    pub default_float: Option<StructId>,
 }
 
 /// The bound on β-reduction nesting depth — a backstop. A recursive function is caught STATICALLY
@@ -518,6 +540,18 @@ pub(crate) type CallSiteIndex = crate::fxhash::FxHashMap<usize, Vec<(StructId, V
 /// or `— closest matches: …`).
 pub(crate) type NoFieldSuggestion = (Option<String>, String);
 
+/// A cached record-type field index (`Db::record_field_index`): a `guard` `Rc` pinning the record type's
+/// `BTreeMap` allocation alive (so its `as_ptr` key cannot be reused) plus the `field-name → sorted-slot`
+/// map built once from its sorted keys. Reading `index.get(key)` replaces the O(fields) `.position()` scan.
+pub(crate) struct RecordFieldIndex {
+    /// Held ONLY to keep the record type's `BTreeMap` allocation alive so its `as_ptr` cache KEY cannot be
+    /// reused by a later, different `BTreeMap` (ABA safety) — never read directly.
+    #[allow(dead_code)]
+    pub(crate) guard:
+        std::rc::Rc<std::collections::BTreeMap<crate::resolved::Symbol, crate::ty::Ty>>,
+    pub(crate) index: crate::fxhash::FxHashMap<crate::resolved::Symbol, usize>,
+}
+
 /// The compiler's whole state for one program: the AST, the top-level index, and the lazily-filled
 /// columns. Constructed once per subject program; every query is a free function in a query module
 /// that takes `&mut Db`. The columns are `pub(crate)` so a query module can fill its own and read the
@@ -598,6 +632,18 @@ pub struct Db {
     /// `Core::ConstRational` (via `rational_from_literal`); an explicit annotation still wins, and
     /// no-promotion still holds (the default fixes a type, not a coercion).
     pub default_fraction_literals: crate::fxhash::FxHashMap<StructId, StructId>,
+
+    /// Each bare DECIMAL-LITERAL node WRITTEN inside a `(module … (pragma default-float <T>) …)` → the
+    /// pragma's `<T>` type-expression occurrence. A literal in this map defaults to `<T>` (a float width)
+    /// instead of `Float64` (`numeric-model.md` §A Module May Declare Its Default Float Literal Type). The
+    /// float twin of `default_int_literals` — but it marks DECIMAL literals only (an integer-written literal
+    /// keeps its integer default; a default float width governs how a written-decimal literal grounds, not
+    /// how an integer does). Built ONCE at load by an ARENA walk (`collect_default_float_literals`), keyed
+    /// by the ORIGINAL source-literal node (β-copy-robust). DEFINITION-SITE scoped. `infer::compute`
+    /// consults it to give the literal its starting float type; an explicit annotation still wins and
+    /// no-promotion still holds (the default fixes a type, not a coercion — like the integer default, a
+    /// float default keeps the value form a `ConstFloat`, so no annotated-literal guard is needed).
+    pub default_float_literals: crate::fxhash::FxHashMap<StructId, StructId>,
 
     /// The declaration occurrences of sums that are C-style ENUMS — MORE than one variant, EVERY variant
     /// nullary (no payloads). Such a value carries no data beyond WHICH variant it is, so it needs no heap
@@ -964,6 +1010,17 @@ pub struct Db {
     /// — so a shared canonical scheme is correct for all uses. `None` caches "has no scheme". Mirrors
     /// `recursive`/`callee_edges` (a pure fact keyed by node identity).
     pub(crate) scheme_cache: crate::fxhash::FxHashMap<StructId, Option<crate::ty::Scheme>>,
+
+    /// Memo of a RECORD TYPE's `field-name → sorted-position` index (`eval::runtime_member_index`), keyed
+    /// by the identity of the type's shared `Rc<BTreeMap<Symbol, Ty>>` (its `Rc::as_ptr` address). A field
+    /// read on a RUNTIME record `(. r f)` lowers to a `Core::Proj` at `f`'s sorted slot, which was found by
+    /// a LINEAR `fields.keys().position(|k| k == key)` scan — O(fields) per projection, so a wide record
+    /// projected field-by-field was O(N²) (a 3200-field record: 644ms, ~O(N²) growth). The field order is a
+    /// pure function of the (immutable) record type, and every projection of the same record shares its type
+    /// `Rc`, so building the full name→index map ONCE per record type and reading it O(1) removes the
+    /// per-projection scan. The stored `guard` `Rc` keeps that allocation alive, so its `as_ptr` address
+    /// cannot be reused by a different `BTreeMap` while the entry is cached (ABA safety).
+    pub(crate) record_field_index: crate::fxhash::FxHashMap<usize, RecordFieldIndex>,
 
     /// Memo for the wasm backend's `mutual_loop_group(self_def)` — the tail-recursive SCC a def compiles
     /// its shared loop over. `select_function_of` computes it for EVERY def, and the computation is a
@@ -1430,6 +1487,27 @@ impl Db {
         // Returns the quote-PATTERN nodes with a NON-FINAL `,@` splice (ill-formed — a rest binds the
         // tail, meaningful only last), which `collect_faults` reports CDZ0221.
         let nonfinal_splice_patterns = crate::quote::reify_quotes(&mut ast);
+        // Desugar every `(eval AST)` whose argument is a compile-time-visible `Ast` construction into the
+        // SOURCE form that AST denotes — the inverse of the reification just run, so `(eval (quote (+ 1
+        // 2)))` (now `(eval (Ast.List …))`) becomes `(+ 1 2)` and folds to `3` through the ordinary path
+        // (`metaprogramming.md` §Eval Is Optional / §Compile-Time Evaluation Is One Tier). Runs AFTER
+        // `reify_quotes` (so a quoted argument is already `Ast.*`) and BEFORE the parent index (so the
+        // spliced-in source resolves like hand-written code). A non-constant/runtime AST argument is left
+        // untouched for `resolve` to decline (the compiler does not execute a dynamically-built AST).
+        crate::eval_ast::desugar_eval(&mut ast);
+        // Every expansion above (handle desugar, quote reification, eval reconstruction) runs HERE at
+        // load, BEFORE resolve/type/lower/compile — it produces ordinary AST the rest of the pipeline then
+        // type-checks, capability-checks (the manifest is `collect_host_imports` over the EXPANDED AST, so
+        // an expanded form reaches no capability the manifest does not enumerate), and determinism-checks
+        // exactly as if that AST had been written directly. Expansion precedes and feeds the core guarantees.
+        //= spec/capabilities/metaprogramming.md#expansion-precedes-and-feeds-the-core-guarantees
+        //# The expanded representation MUST be subject to type checking exactly as if it had been written directly.
+        //= spec/capabilities/metaprogramming.md#expansion-precedes-and-feeds-the-core-guarantees
+        //# The expanded representation MUST be subject to capability checking exactly as if it had been written directly.
+        //= spec/capabilities/metaprogramming.md#expansion-precedes-and-feeds-the-core-guarantees
+        //# The expanded representation MUST be subject to the determinism guarantees exactly as if it had been written directly.
+        //= spec/capabilities/metaprogramming.md#expansion-precedes-and-feeds-the-core-guarantees
+        //# A macro MUST NOT be able to produce an expanded representation that reaches a capability the program's manifest does not enumerate.
         // ACCUMULATOR INTRODUCTION: rewrite a linear NON-tail recursion (`f n = if base 0 (+ n (f (- n
         // 1)))`) into a tail-recursive accumulator def (which `select`'s loop transform then compiles to a
         // constant-stack `loop`). Synthesizes a fresh accumulator def and re-seeds the original — appending
@@ -1635,6 +1713,15 @@ impl Db {
                 );
             }
         }
+        // Map each bare DECIMAL literal written inside a `(pragma default-float <T>)` module to its default
+        // float type-expr — the floating-point analogue of the integer map (decimals only; an integer
+        // literal keeps its integer default).
+        let mut default_float_literals = crate::fxhash::FxHashMap::default();
+        for m in &modules {
+            if let Some(ty_expr) = m.default_float {
+                collect_default_float_literals(&ast, m.occ, ty_expr, &mut default_float_literals);
+            }
+        }
         let mut db = Db {
             ast,
             defs,
@@ -1647,6 +1734,7 @@ impl Db {
             newtype_inner: crate::fxhash::FxHashMap::default(),
             default_int_literals,
             default_fraction_literals,
+            default_float_literals,
             enum_disc: crate::fxhash::FxHashSet::default(),
             parent,
             child_ix,
@@ -1682,6 +1770,7 @@ impl Db {
             reaches_host_call: crate::fxhash::FxHashMap::default(),
             callee_edges: crate::fxhash::FxHashMap::default(),
             scheme_cache: crate::fxhash::FxHashMap::default(),
+            record_field_index: crate::fxhash::FxHashMap::default(),
             mutual_loop_cache: crate::fxhash::FxHashMap::default(),
             reduce_cache: crate::fxhash::FxHashMap::default(),
             collect_cache: crate::fxhash::FxHashMap::default(),
@@ -2646,6 +2735,19 @@ impl Db {
         out
     }
 
+    /// The TOP-LEVEL `(bind …)` peer-binding directives — the same scope `scan_effect_bindings` reads. A
+    /// `(bind …)` is a top-level DIRECTIVE (like `def`/`export`/`effect`); a `(bind …)` list appearing
+    /// NESTED (e.g. a handler arm for an effect operation named `bind` — `((bind (k) s body) …)`) is NOT a
+    /// peer-binding and MUST NOT be scanned as one. The malformed-`(bind …)` diagnostic uses this so it
+    /// matches the binding scanner's scope exactly (an arena-wide scan misreads a nested `(bind …)` arm as
+    /// a malformed directive → a spurious CDZ0201 on a legal `bind` operation name).
+    pub fn top_bind_forms(&self) -> Vec<StructId> {
+        top_items(&self.ast)
+            .into_iter()
+            .filter(|&item| self.ast.as_form(item, "bind").is_some())
+            .collect()
+    }
+
     /// Malformed elements of top-level `(export …)` clauses. An export clause names one or more
     /// definitions — `(export a)` / `(export a b …)` (the multi-name surface) — so EVERY tail element must
     /// be a bare NAME. A NON-name element — `(export (g x))`, `(export 5)`, `(export a 5)` — and an EMPTY
@@ -3275,10 +3377,11 @@ fn strip_const_params(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId> {
     const_params
 }
 
-/// The three known annotation NAMES `strip_annotations` consumes off a `(@ NAME (def …))` wrapper —
-/// the inline-policy pair and the unit-test marker. A `@`-annotation whose name is NOT one of these is
-/// left in place (a later pass or a reject handles it), so this pool is the single source of truth for
-/// "which annotations the compiler models today".
+/// The three known annotation NAMES `strip_annotations` records into a policy set off a `(@ NAME (def …))`
+/// wrapper — the inline-policy pair and the unit-test marker — the single source of truth for "which
+/// annotations carry compiler SEMANTICS today". An annotation whose name is NOT one of these is still
+/// UNWRAPPED (the def takes effect) but recorded nowhere: a transparent, inert marker. So a future
+/// `@deprecated`/`@lint`/… works as a no-op the day it is written and gains meaning by joining this list.
 pub(crate) const KNOWN_ANNOTATIONS: &[&str] = &["inline-never", "inline-always", "test"];
 /// The strippable annotations a definition carries, each a set of the annotated defs' BODY occurrences.
 pub(crate) struct StrippedAnnotations {
@@ -3290,23 +3393,26 @@ pub(crate) struct StrippedAnnotations {
     pub(crate) tests: crate::fxhash::FxHashSet<StructId>,
 }
 
-/// Unwrap every known `@`-ANNOTATION on a definition — `(@ inline-never (def …))`, `(@ inline-always
-/// (def …))`, `(@ test (def …))` — in place, returning the sets of the annotated defs' BODY occurrences
+/// Unwrap EVERY `@`-ANNOTATION on a definition — `(@ inline-never (def …))`, `(@ inline-always (def …))`,
+/// `(@ test (def …))`, and any `(@ <other-name> (def …))` — in place, returning the sets of the
+/// annotated defs' BODY occurrences for the names in [`KNOWN_ANNOTATIONS`]
 /// (`DESIGN-recursive-generic-monomorphization-rcdzc.md` Addendum 4). `@` is the GENERAL-PURPOSE
-/// annotation head (`(@ NAME FORM)`, from the ML `@name form` sigil); this pass consumes the names in
-/// [`KNOWN_ANNOTATIONS`] and leaves any other annotation for a later pass / reject. An annotation is a
-/// declaration a build phase consumes (the emitter's inline policy, the `cdz test` hoist) — not part of
-/// the def shape every reader walks — so it is removed here BEFORE `scan_top_level`, exactly as
-/// `strip_def_docs`/`strip_const_params` remove their wrappers, leaving every downstream reader a plain
-/// `(def …)`.
+/// annotation head (`(@ NAME FORM)`, from the ML `@name form` sigil); a KNOWN name records its def into a
+/// policy set, an UNKNOWN name is unwrapped just the same but recorded nowhere (a transparent no-op marker,
+/// so a future `@deprecated`/… works the day it is written). An annotation is a declaration a build phase
+/// consumes (the emitter's inline policy, the `cdz test` hoist) — not part of the def shape every reader
+/// walks — so it is removed here BEFORE `scan_top_level`, exactly as `strip_def_docs`/`strip_const_params`
+/// remove their wrappers, leaving every downstream reader a plain `(def …)`.
 ///
 /// The annotation NODE is rewritten IN PLACE to BE the inner `(def SIG BODY)` (it adopts the def's
 /// children), so its `StructId` now identifies the def and every parent that already pointed at the
 /// annotation needs no update — the inner def node is left orphaned (harmless; unreferenced). The
 /// recorded key is the def's BODY occurrence (`def` tail index 1 = child index 2), the identity
-/// `lower`/`layout` key on (`def_index_by_body`). An annotation around a NON-def (or a malformed def), or
-/// one whose name is not known, is left untouched. A SINGLE annotation per def is the modeled case (as
-/// with the original inline-policy pass); stacking two known annotations on one def is not relied on here.
+/// `lower`/`layout` key on (`def_index_by_body`). An UNKNOWN annotation name (or a non-name head) whose
+/// inner IS a def is STILL unwrapped — recorded in no policy set, a transparent no-op — so the def takes
+/// effect; only its (unmodeled) name is ignored. An annotation around a NON-def (or a malformed def) is
+/// left untouched (a well-formedness concern elsewhere). A SINGLE annotation per def is the modeled case
+/// (as with the original inline-policy pass); stacking two known annotations on one def is not relied on.
 fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
     let mut inline_never: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
     let mut inline_always: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
@@ -3321,10 +3427,16 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         let (Some(&name_occ), Some(&inner)) = (tail.first(), tail.get(1)) else {
             continue;
         };
-        let name = match ast.as_name(name_occ) {
-            Some(n) if KNOWN_ANNOTATIONS.contains(&n) => n.to_string(),
-            _ => continue,
-        };
+        // The annotation NAME, if it is a bare name at all. A KNOWN name (in `KNOWN_ANNOTATIONS`) records
+        // its def into a policy set below; an UNKNOWN name is TRANSPARENT — the wrapper is still unwrapped
+        // to the inner def (so the def registers and resolves), the name simply ignored. This is the
+        // `@`-sigil's advertised extensibility (`7221f7bc`: "future annotations `@deprecated`, `@test` layer
+        // in with no new lexer/parser/resolver rules" / "leaves other annotations in place") — "in place"
+        // means the annotated FORM still takes effect, NOT that the `(@ …)` node survives to resolve (where
+        // `@` has no declaration arm → the whole def would be DROPPED with a misleading "unbound name `@`"
+        // plus a phantom unbound-name for the def it wrapped). A future annotation that needs real semantics
+        // adds its name to `KNOWN_ANNOTATIONS` + a set here; until then it is an inert, unwrapped marker.
+        let name = ast.as_name(name_occ).map(str::to_string);
         // The inner must be a `(def SIG BODY …)` — read its children to adopt them + find the BODY occ.
         let Some(def_tail) = ast.as_form(inner, "def") else {
             continue; // an annotation around a non-def — leave untouched (a well-formedness concern elsewhere)
@@ -3338,17 +3450,29 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
             continue;
         };
         ast.structure[i] = Struct::List(inner_children);
-        match name.as_str() {
-            "inline-never" => {
+        // The match arms below record exactly the SEMANTIC annotations; `KNOWN_ANNOTATIONS` is the
+        // published catalog of those names. Assert the two agree, so adding a name to one without the other
+        // trips in debug (a known name that falls to the transparent `_ => {}` would silently lose its
+        // policy). An unknown name is intentionally not in the catalog → the `_` arm's inert unwrap.
+        debug_assert!(
+            name.as_deref()
+                .is_none_or(|n| KNOWN_ANNOTATIONS.contains(&n)
+                    == matches!(n, "inline-never" | "inline-always" | "test")),
+            "KNOWN_ANNOTATIONS and the strip_annotations match arms disagree on `{name:?}`"
+        );
+        match name.as_deref() {
+            Some("inline-never") => {
                 inline_never.insert(body);
             }
-            "inline-always" => {
+            Some("inline-always") => {
                 inline_always.insert(body);
             }
-            "test" => {
+            Some("test") => {
                 tests.insert(body);
             }
-            _ => unreachable!("filtered to KNOWN_ANNOTATIONS above"),
+            // An unknown annotation name (or a non-name annotation head): unwrapped above, recorded in no
+            // policy set — a transparent no-op marker so the wrapped def still takes effect.
+            _ => {}
         }
     }
     StrippedAnnotations {
@@ -3711,14 +3835,15 @@ fn collect_module_decl(
     // obligation blocking registration. A `(pragma …)` with any OTHER key is still unmodeled (blocks) —
     // the modeled set is exactly the keys whose meaning the compiler realizes.
     // A `(pragma <key> …)` member is MODELED for a key whose EFFECT the compiler realizes: `default-integer`
-    // (a bare literal defaults to `<T>`) and `default-fraction` (a bare numeric literal grounds to the
-    // exact rational `<T>`). Both are realized via a `ModuleDecl` field + a load-time literal map, so they
-    // don't block registration; any OTHER pragma key stays unmodeled (blocks).
+    // (a bare literal defaults to `<T>`), `default-fraction` (a bare numeric literal grounds to the exact
+    // rational `<T>`), and `default-float` (a bare decimal literal defaults to the float type `<T>`). Each
+    // is realized via a `ModuleDecl` field + a load-time literal map, so they don't block registration; any
+    // OTHER pragma key stays unmodeled (blocks).
     let is_modeled_pragma = |member: StructId| {
         ast.as_form(member, "pragma").is_some_and(|t| {
             matches!(
                 t.first().and_then(|&k| ast.as_name(k)),
-                Some("default-integer" | "default-fraction")
+                Some("default-integer" | "default-fraction" | "default-float")
             )
         })
     };
@@ -3741,6 +3866,7 @@ fn collect_module_decl(
     };
     let default_int = pragma_ty("default-integer");
     let default_fraction = pragma_ty("default-fraction");
+    let default_float = pragma_ty("default-float");
     if all_modeled
         && let Some(&name) = mod_tail.first()
         && let Some(name_str) = ast.as_name(name)
@@ -3751,6 +3877,7 @@ fn collect_module_decl(
             synth: None,
             default_int,
             default_fraction,
+            default_float,
         });
     }
     for &member in &members {
@@ -3870,6 +3997,54 @@ fn mark_numeric_literals(
     }
 }
 
+/// The `default-float` analogue of [`collect_default_int_literals`]: record every bare DECIMAL literal in
+/// the DEF-BODY subtrees of a `(pragma default-float <T>)` module → the pragma's `<T>` occurrence.
+/// DEFINITION-SITE scoped (own `(def …)` bodies only; a nested module has its own scope). Keyed by the
+/// ORIGINAL literal node (β-copy-robust). Like the integer twin, this is a MEANING-CHANGING directive read
+/// from the module's CANONICAL AST alone, so a module's meaning does not depend on a compilation option.
+fn collect_default_float_literals(
+    ast: &Arenas,
+    mod_form: StructId,
+    ty_expr: StructId,
+    out: &mut crate::fxhash::FxHashMap<StructId, StructId>,
+) {
+    let Some(mod_tail) = ast.as_form(mod_form, "module") else {
+        return;
+    };
+    for &member in mod_tail.get(1..).unwrap_or(&[]) {
+        if let Some(def_tail) = ast.as_form(member, "def")
+            && let Some(&def_body) = def_tail.get(1)
+        {
+            mark_float_literals(ast, def_body, ty_expr, out);
+        }
+    }
+}
+
+/// Mark every DECIMAL-literal node (via `as_float`) reachable from `node` (recursively) with `ty_expr`,
+/// WITHOUT descending into a nested `(module …)`. The float analogue of [`mark_int_literals`] — a default
+/// float width governs how a WRITTEN-DECIMAL literal grounds (`3.14` → `Float32`), not how an integer
+/// literal does (an integer keeps its integer default), so ONLY float leaves are marked. A literal already
+/// recorded is left as-is.
+fn mark_float_literals(
+    ast: &Arenas,
+    node: StructId,
+    ty_expr: StructId,
+    out: &mut crate::fxhash::FxHashMap<StructId, StructId>,
+) {
+    if ast.as_float(node).is_some() {
+        out.entry(node).or_insert(ty_expr);
+        return;
+    }
+    if ast.as_form(node, "module").is_some() {
+        return;
+    }
+    if let Struct::List(children) = ast.get(node) {
+        for &c in children {
+            mark_float_literals(ast, c, ty_expr, out);
+        }
+    }
+}
+
 /// Scan the top-level `(Unit.define #"name" base-unit-expr num den)` forms into
 /// `(name, base-unit-occurrence, scale-num, scale-den)` entries — the user family-declaration surface.
 /// `Unit.define` reads as the member-access head `(. Unit define)` applied to four args: a symbol name,
@@ -3978,7 +4153,7 @@ fn subst_template_vars(template: &crate::ty::Ty, args: &[crate::ty::Ty]) -> crat
             Box::new(subst_template_vars(p, args)),
             Box::new(subst_template_vars(r, args)),
         ),
-        Ty::Record(fields) => Ty::Record(std::sync::Arc::new(
+        Ty::Record(fields) => Ty::Record(std::rc::Rc::new(
             fields
                 .iter()
                 .map(|(k, t)| (k.clone(), subst_template_vars(t, args)))

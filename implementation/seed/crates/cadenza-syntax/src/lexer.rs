@@ -100,6 +100,17 @@ impl<'a> Lexer<'a> {
                 });
             }
             '#' => Kind::Hash,
+            // `@!` is the PRAGMA sugar (`@!default-float Float32` -> `(pragma default-float Float32)`) —
+            // the inner-attribute twin of `@` (an annotation applies to the item BELOW it, a pragma to the
+            // enclosing MODULE, mirroring Rust's `#[…]` vs `#![…]`). Glued: `@` immediately followed by `!`
+            // is ONE token, checked before the bare `@` below.
+            '@' if self.peek() == Some('!') => {
+                let b = self.bump().unwrap(); // the `!`
+                return Some(Token {
+                    kind: Kind::AtBang,
+                    span: a.span.merge(b.span),
+                });
+            }
             // A bare `@` is the ANNOTATION sigil (`@inline-never def …`); the parser wraps the
             // following form as `(@ name form)`. (The `,@` splice is a `,`-led token, handled above,
             // so a lone `@` only ever reaches here as an annotation prefix.)
@@ -746,6 +757,19 @@ mod tests {
         );
         assert_eq!(kinds(",x"), vec![Kind::Comma, Kind::Ident]);
         assert_eq!(kinds(",@xs"), vec![Kind::UnquoteSplice, Kind::Ident]);
+    }
+
+    #[test]
+    fn annotation_and_pragma_sigils() {
+        // A bare `@` is the annotation sigil; `@!` is the pragma sugar — glued, maximal-munch (the `@!` is
+        // ONE token, not `@` then `!`), and distinct from the `,@` splice above.
+        assert_eq!(kinds("@inline-never"), vec![Kind::At, Kind::Ident]);
+        assert_eq!(kinds("@!default-float"), vec![Kind::AtBang, Kind::Ident]);
+        // The `@` and `@!` spans are exact (one/two chars), so the printer's sigil round-trips.
+        assert_eq!(
+            spanned_text("@!key"),
+            vec![("@!", Kind::AtBang), ("key", Kind::Ident)]
+        );
     }
 
     #[test]

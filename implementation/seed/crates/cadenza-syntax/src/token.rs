@@ -73,6 +73,7 @@ pub enum Kind {
     Arrow,   // `->`
     Hash,    // `#`
     At, // `@` — the ANNOTATION sigil (`@name form` -> `(@ name form)`); distinct from `,@` below
+    AtBang, // `@!` — the PRAGMA sugar (`@!key arg` -> `(pragma key arg)`); the inner-attribute twin of `@`
     Backtick, // `` ` `` beginning a `` `{ … } `` quasiquote
     UnquoteSplice, // `,@`
 

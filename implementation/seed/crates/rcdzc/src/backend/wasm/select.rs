@@ -596,6 +596,25 @@ fn box_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
     box_op_ty(db, &ty)
 }
 
+/// The box op for a collection ELEMENT/KEY/VALUE node, given the collection's DECLARED slot type. Prefers
+/// the collection's declared type (which grounds a bare-literal element to the collection's width), but
+/// FALLS BACK to the element NODE's own concrete type when the declared type is an unresolved `Var`/`Any`.
+/// A collection built EMPTY — `(Set.of (list))`, `(Map.empty)` — leaves its element/key type an
+/// unconstrained var: inference never unifies a later `Set.insert`/`Map.insert`'s element type back onto
+/// the empty collection's element var, so the declared type stays `Var`. `box_op_ty` defaults a `Var` to
+/// `box-int` (the uniform heap cell — correct for a genuinely-dead phantom position), which WRONGLY boxes
+/// a live HEAP-HANDLE element (a String, a nested compound) as an integer → an invalid module. The
+/// inserted element is a live value with a SOLVED type, so box it by that — exactly as `Core::Tuple` boxes
+/// each element by its own node type via `box_op`. (A resolved declared type is authoritative and used
+/// as-is; only an unresolved declared type defers to the element node.)
+fn box_op_for(db: &mut Db, node: StructId, declared: &Ty) -> Result<Option<&'static str>, Reject> {
+    if matches!(declared, Ty::Var(_) | Ty::Any) {
+        box_op(db, node)
+    } else {
+        box_op_ty(db, declared)
+    }
+}
+
 /// The box op for a solved TYPE directly (not a node) — used where a map's key/value type is known but
 /// no representative node is at hand (a `Map.lookup` value unbox reads `val_ty`). Mirrors [`box_op`].
 fn box_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
@@ -890,8 +909,22 @@ pub fn collect_used_ops(
         }
         Core::Proj { operand, .. } => {
             out.insert(OP_ARR_GET);
-            if let Ok(Some(op)) = get_op(db, id) {
+            let scalar_elem = get_op(db, id);
+            if let Ok(Some(op)) = scalar_elem {
                 out.insert(op);
+            }
+            // RECLAMATION (U13/U14): a projection off an OWNED-temporary aggregate reclaims it after the
+            // borrowing read — mirror the emit's reclaim condition so the ops are imported. A SCALAR element
+            // `drop`s the parent; a NESTED-COMPOUND element `dup`s the returned child then `drop`s the parent.
+            // (A borrowed-operand projection reclaims nothing, matching the emit.)
+            if matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            ) {
+                out.insert(OP_DROP);
+                if matches!(scalar_elem, Ok(None)) {
+                    out.insert(OP_DUP);
+                }
             }
             collect_used_ops(db, operand, out);
         }
@@ -1814,33 +1847,34 @@ pub fn select_function_of(
         };
         code.push(Lir::Loop(block_ty));
     }
-    // STRAIGHT-LINE CSE: for a NON-looping, NON-mutual, straight-line body, compute each shared trap-free
-    // scalar subexpression (a node referenced ≥2× — the residue of β-substituting a multiply-used param's
-    // argument at each use) ONCE into a slot up-front, so `emit`'s node-keyed `slots.get(&id)` fast path
-    // reads the slot at each use instead of re-emitting the whole computation. Gated to straight-line +
-    // trap-free + scalar (see the pass docs) so hoisting to the top is unconditionally sound. Skipped for a
-    // looping body (its control flow makes it non-straight-line anyway) and the mutual dispatch.
-    if !loops && !mutual && body_is_straight_line(db, body) {
-        for node in collect_cse_candidates(db, body) {
-            // Already assigned a slot (a nested candidate emitted as part of an earlier, larger one that
-            // got its slot first)? Skip — its uses already read that slot. (Inner-first ordering makes this
-            // rare, but a node reachable through two candidate parents could be seen after one claimed it.)
-            if slot_of.contains_key(&node) {
-                continue;
-            }
-            let Some(vt) = valtype_of(&type_of(db, node)) else {
+    // DOMINATOR CSE: for a NON-looping, NON-mutual body, compute each shared scalar subexpression that is
+    // ALWAYS EVALUATED (in the dominating frontier — the body if straight-line, or an `if` condition /
+    // match scrutinee that runs before any branch) ONCE into a slot up-front, so `emit`'s node-keyed
+    // `slots.get(&id)` fast path reads the slot at each use (in the cond AND both branches) instead of
+    // re-emitting. `collect_cse_candidate_groups` requires a dominating member per class, so a value shared
+    // only across branches is NOT hoisted (that would speculate work/a trap onto a path that skips it).
+    // Skipped for a looping body (the loop transform owns its slots) and the mutual dispatch.
+    if !loops && !mutual {
+        for group in collect_cse_candidate_groups(db, body) {
+            // A group is a VALUE-EQUIVALENCE class (all members `core_eq` — the same computation). Emit ONE
+            // representative into a slot and point every member at it. Pick a representative NOT already
+            // slotted (a member could be a sub-node of an earlier, larger class's representative that got
+            // its slot first — its uses already read that slot).
+            let Some(&rep) = group.iter().find(|&&m| !slot_of.contains_key(&m)) else {
+                continue; // every member already reads a slot (nested in an earlier class) — nothing to do.
+            };
+            let Some(vt) = valtype_of(&type_of(db, rep)) else {
                 continue;
             };
             let slot = body_base;
             body_base += 1;
             high = high.max(body_base);
             scratch_ty.insert(slot, vt);
-            // Emit the shared computation ONCE (transient scratch above the reserved slots), store it, and
-            // register `(node → slot)` so every occurrence in the body reads the slot. A nested shared node
-            // was registered earlier (inner-first), so this emit already reads ITS slot — no double-compute.
+            // Emit the representative's computation ONCE (transient scratch above the reserved slots). A
+            // nested class was slotted earlier (inner-first), so this emit reads ITS slot — no recompute.
             emit(
                 db,
-                node,
+                rep,
                 &slot_of,
                 body_base,
                 &mut high,
@@ -1849,7 +1883,13 @@ pub fn select_function_of(
                 &mut code,
             )?;
             code.push(Lir::LocalSet(slot));
-            slot_of.insert(node, slot);
+            // Point EVERY member of the class at this one slot — each occurrence, wherever it is in the
+            // body, now reads the slot via `emit`'s node-keyed `slots.get(&id)` fast path instead of
+            // recomputing. (Members already slotted keep their own slot — harmless; they are `core_eq` so
+            // the value is identical, and re-inserting would only redirect a read to an equal value.)
+            for &member in &group {
+                slot_of.entry(member).or_insert(slot);
+            }
         }
     }
     // The body is emitted in TAIL position: a `Core::Call` in the body's result position becomes a
@@ -2381,55 +2421,80 @@ fn licm_children(db: &mut Db, id: StructId) -> Vec<StructId> {
 // Emitted INNER-FIRST (smaller subtrees first) so a nested shared node's slot is registered before an
 // enclosing shared node reads it.
 
-/// Whether the body at `id` is STRAIGHT-LINE — contains no control-flow construct (`If`/`Match`/
-/// `MatchList`/`MatchSum`) anywhere in the value positions CSE would hoist across. A `let` is fine (its
-/// bindings/body are straight-line value positions). Conservative: any unanalyzed compound is walked via
-/// `licm_children`; a construct that introduces conditional evaluation returns false so CSE stays off.
-fn body_is_straight_line(db: &mut Db, id: StructId) -> bool {
-    match core_of(db, id) {
-        Core::If { .. } | Core::Match { .. } | Core::MatchList { .. } | Core::MatchSum { .. } => {
-            false
-        }
-        _ => licm_children(db, id)
-            .into_iter()
-            .all(|c| body_is_straight_line(db, c)),
+/// Collect the DOMINATING FRONTIER of the body at `id` — the set of node occurrences that are ALWAYS
+/// EVALUATED on entry, regardless of which branch any control flow takes. This is the emit-position
+/// dominance set a CSE hoist to the top is sound against: a node in it runs before the rest of the body no
+/// matter what, so computing it once up-front adds no work on any path and moves no trap (its trap, if any,
+/// fires at the same first-occurrence point). The walk descends UNCONDITIONALLY-reached positions only: a
+/// pure operator's operands and a `let`'s bindings+body are always evaluated, but an `If` conditionally
+/// runs its branches — so descend ONLY its `cond` (always evaluated); likewise a `Match`/`MatchList`/
+/// `MatchSum` runs only the selected arm, so descend ONLY its scrutinee. (A whole straight-line body is its
+/// own frontier — no control flow prunes anything — so this subsumes the old `body_is_straight_line` gate.)
+fn collect_dominating_frontier(
+    db: &mut Db,
+    id: StructId,
+    out: &mut std::collections::HashSet<StructId>,
+) {
+    if !out.insert(id) {
+        return; // already visited this occurrence
+    }
+    let unconditional: Vec<StructId> = match core_of(db, id) {
+        // Control flow: only the DECIDING sub-value is always evaluated; the branches/arms are conditional.
+        Core::If { cond, .. } => vec![cond],
+        Core::Match { scrutinee, .. }
+        | Core::MatchList { scrutinee, .. }
+        | Core::MatchSum { scrutinee, .. } => vec![scrutinee],
+        // Everything else `licm_children` enumerates evaluates ALL its children unconditionally (a pure
+        // operator's operands, a `let`'s bindings + body, a call's args, a compound's elements).
+        _ => licm_children(db, id),
+    };
+    for child in unconditional {
+        collect_dominating_frontier(db, child, out);
     }
 }
 
-/// Count, per node `StructId`, how many times it is REFERENCED in the tree at `id` (a shared occurrence —
-/// same `StructId` reached through multiple parents — is counted once per parent edge). Walks the same
-/// value-position children `licm_children` enumerates. Used to find the ≥2-reference nodes CSE names.
-fn count_node_refs(db: &mut Db, id: StructId, counts: &mut HashMap<StructId, u32>) {
-    *counts.entry(id).or_insert(0) += 1;
-    // Only descend the FIRST time a node is seen — a shared subtree's interior is identical, so counting
-    // its children once per visit would over-count nested nodes and (for a deep DAG) blow up. We want the
-    // reference count of the node ITSELF (how many parents point at it), which the entry-increment above
-    // captures; its children are walked once.
-    if counts[&id] == 1 {
+/// Walk the value-position tree at `id` (via `licm_children`), recording per-StructId a REFERENCE COUNT
+/// (how many parent edges point at it — a node reached twice counts 2) into `counts`, and the distinct
+/// StructIds in first-seen order into `order`. A shared subtree's interior is walked ONCE (the count above
+/// captures the node's own multiplicity); descending per visit would over-count nested nodes / blow up on
+/// a deep DAG.
+fn collect_node_refs(
+    db: &mut Db,
+    id: StructId,
+    counts: &mut HashMap<StructId, u32>,
+    order: &mut Vec<StructId>,
+) {
+    let n = counts.entry(id).or_insert(0);
+    *n += 1;
+    if *n == 1 {
+        order.push(id);
         for child in licm_children(db, id) {
-            count_node_refs(db, child, counts);
+            collect_node_refs(db, child, counts, order);
         }
     }
 }
 
-/// Collect the CSE candidates in the straight-line body `id`: nodes referenced ≥2×, trap-free, non-
-/// trivial, with a SCALAR (non-heap) machine result. Returned INNER-FIRST (by ascending subtree size) so
-/// emitting them in order registers a nested shared node's slot before an enclosing one reads it.
-fn collect_cse_candidates(db: &mut Db, body: StructId) -> Vec<StructId> {
+/// Collect the CSE candidate GROUPS of the body `id`: each returned `Vec<StructId>` is a VALUE-EQUIVALENCE
+/// CLASS (all members pairwise `core_eq` — the SAME computation) of shareable, non-trivial, SCALAR nodes
+/// whose TOTAL reference count across the class is ≥2 AND that has ≥1 member in the DOMINATING FRONTIER
+/// (an always-evaluated position). The dominance requirement is what makes hoisting sound across control
+/// flow: the class is computed anyway on entry (its dominating occurrence), so pulling it to a slot up-
+/// front adds no work on any path and moves no trap — the other occurrences (in branches / anywhere) then
+/// read the slot. `(if (> (* a b) 0) (* a b) (- 0 (* a b)))`: the `(* a b)` in the cond dominates, so the
+/// two branch copies collapse to slot reads (3 muls → 1). A class shared ONLY across branches (no
+/// dominating member) is NOT hoisted — that would speculate work / a trap onto a path that skips it.
+/// Two sources of ≥2 refs both qualify (a single β-shared node ref'd twice, or distinct `core_eq`
+/// occurrences), value-numbering unifies them. Groups INNER-FIRST (ascending representative subtree size)
+/// so a nested class's slot is registered before an enclosing class's representative reads it.
+fn collect_cse_candidate_groups(db: &mut Db, body: StructId) -> Vec<Vec<StructId>> {
     let mut counts: HashMap<StructId, u32> = HashMap::new();
-    count_node_refs(db, body, &mut counts);
-    // The ≥2-referenced nodes, then filter to trap-free / non-trivial / scalar-result. Collect the ids
-    // first (releasing the `counts` borrow) so each predicate can take `&mut db` in a plain loop.
-    let multi: Vec<StructId> = counts
-        .iter()
-        .filter(|&(_, &n)| n >= 2)
-        .map(|(&id, _)| id)
-        .collect();
+    let mut order: Vec<StructId> = Vec::new();
+    collect_node_refs(db, body, &mut counts, &mut order);
+    let mut dominating: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+    collect_dominating_frontier(db, body, &mut dominating);
+    // Keep only the shareable / non-trivial / scalar distinct nodes (in first-seen order for determinism).
     let mut cands: Vec<StructId> = Vec::new();
-    for id in multi {
-        // Shareable = a pure deterministic SCALAR computation (the `core_eq` pure set, incl. checked
-        // arith — sound here since the straight-line body has no branch to speculate a trap past), and
-        // non-trivial (a bare param/const is already free). A heap result is excluded (needs dup/drop).
+    for id in order {
         if licm_trivial(db, id) || !is_cse_shareable(db, id) {
             continue;
         }
@@ -2439,10 +2504,35 @@ fn collect_cse_candidates(db: &mut Db, body: StructId) -> Vec<StructId> {
         }
         cands.push(id);
     }
-    // INNER-FIRST: a smaller subtree is nested inside (or independent of) a larger one, never encloses it,
-    // so ordering by subtree node-count puts a shared inner node before any shared node that contains it.
-    cands.sort_by_key(|&id| subtree_size(db, id));
-    cands
+    // Partition into value-equivalence classes by `core_eq` (a small O(n²) pairwise scan — a body has few
+    // CSE candidates). A distinct node joins the first class it is `core_eq` to.
+    let mut classes: Vec<Vec<StructId>> = Vec::new();
+    for id in cands {
+        let mut placed = false;
+        for class in classes.iter_mut() {
+            if core_eq(db, class[0], id) {
+                class.push(id);
+                placed = true;
+                break;
+            }
+        }
+        if !placed {
+            classes.push(vec![id]);
+        }
+    }
+    // Keep a class iff (a) its TOTAL reference count (summing each distinct member's multiplicity) is ≥2 —
+    // an actual repeat worth naming — AND (b) ≥1 member is in the DOMINATING FRONTIER (always evaluated),
+    // so hoisting it to the top is sound on every path. INNER-FIRST by representative size so emitting a
+    // class's representative reads any already-slotted nested class instead of recomputing.
+    let mut groups: Vec<Vec<StructId>> = classes
+        .into_iter()
+        .filter(|c| {
+            c.iter().map(|m| counts[m]).sum::<u32>() >= 2
+                && c.iter().any(|m| dominating.contains(m))
+        })
+        .collect();
+    groups.sort_by_key(|c| subtree_size(db, c[0]));
+    groups
 }
 
 /// The number of nodes in the value-position subtree at `id` (via `licm_children`) — the CSE ordering key
@@ -2468,17 +2558,30 @@ fn subtree_size(db: &mut Db, id: StructId) -> u32 {
 /// (`is_heap_type`); this predicate is purely about determinism/effect-freedom.
 fn is_cse_shareable(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
-        Core::ConstInt(_)
-        | Core::ConstBool(_)
-        | Core::Unit
-        | Core::Param { .. }
-        | Core::LocalRef { .. } => true,
+        Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit | Core::Param { .. } => true,
+        // A `let`-LOCAL reference is NOT shareable by this pass: its slot is established only when the
+        // `let` binding is emitted INSIDE the body, but CSE hoists a candidate to BEFORE the body — so a
+        // hoisted `(* k k)` over a let-local `k` would read an unbound slot ("let-binding reference has no
+        // local slot"). Params (slots `0..n`, live up front) are fine; a let-local is excluded so its
+        // enclosing subexpression is never hoisted. (The `let`-binding-level CSE — `should_keep_binding`
+        // — already names a multiply-used let value; a computation OVER a let-local stays in place.)
+        Core::LocalRef { .. } => false,
         Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {
             is_cse_shareable(db, lhs) && is_cse_shareable(db, rhs)
         }
         Core::Convert { operand, .. } | Core::Not { operand } | Core::Proj { operand, .. } => {
             is_cse_shareable(db, operand)
         }
+        // A COLLECTION COUNT (`List.len`/`Bytes.len`/`Map.size`/`Set.len`) is a TOTAL O(1) BORROWING read
+        // returning a SCALAR (a `vec-len`/`bytes-len`/`champ-size` runtime import — no refcount change, no
+        // effect, deterministic). Sharing two identical counts of the same collection is observably
+        // identical to reading twice (same value, no trap), and the RESULT is a scalar so the caller's
+        // `is_heap_type` filter admits it (we CSE the count, not the collection handle). The operand must
+        // itself be shareable (a param handle / another shareable read) so the read is well-formed at the
+        // hoist point. Mirrors `is_trap_free`'s treatment of these counts.
+        Core::ListLen { operand } | Core::BytesLen { operand } => is_cse_shareable(db, operand),
+        Core::MapSize { map } => is_cse_shareable(db, map),
+        Core::SetLen { set } => is_cse_shareable(db, set),
         Core::SumPayload { scrutinee, .. } => is_cse_shareable(db, scrutinee),
         Core::If {
             cond, then_, else_, ..
@@ -2952,6 +3055,7 @@ fn emit_tail(
             // in tail pos.
             let emit_tail_branch = |db: &mut Db,
                                     b: StructId,
+                                    bbase: u32,
                                     high: &mut u32,
                                     st: &mut HashMap<u32, ValType>,
                                     out: &mut Emit|
@@ -2959,9 +3063,9 @@ fn emit_tail(
                 if matches!(core_of(db, b), Core::ConstInt(_))
                     && let Ty::Int(rit) = &result
                 {
-                    emit_operand(db, b, *rit, slots, branch_base, high, st, layout, out)
+                    emit_operand(db, b, *rit, slots, bbase, high, st, layout, out)
                 } else {
-                    emit_tail(db, b, slots, branch_base, high, st, layout, out, inner_tl)
+                    emit_tail(db, b, slots, bbase, high, st, layout, out, inner_tl)
                 }
             };
             // FLOW-SENSITIVE RANGE REFINEMENT (see the non-tail `Core::If` arm): push the branch's
@@ -2971,13 +3075,24 @@ fn emit_tail(
             let base_frame = db.current_refinements();
             let then_frame = refined_frame_for_branch(db, cond, true, base_frame.clone());
             db.push_range_refinements(then_frame);
-            let then_res = emit_tail_branch(db, then_, high, scratch_ty, out);
+            let then_res = emit_tail_branch(db, then_, branch_base, high, scratch_ty, out);
             db.pop_range_refinements();
             then_res?;
             out.push(Lir::Else);
+            // The else branch starts its scratch ABOVE the then branch's high-water, NOT back at
+            // `branch_base`. The two branches are mutually exclusive, so REUSING slot indices would be sound
+            // for a wasm STACK value — but a scratch slot's TYPE is recorded once in `scratch_ty`, and the
+            // two arms can want the SAME index at DIFFERENT widths: a collection-carrying recursion's base
+            // arm materializes a fallible-read Option HANDLE (i32) while its recursive arm's `(- n 1)` uses
+            // an i64 temp — sharing `branch_base` sets one local at both types → the validator rejects it
+            // (`expected i32, found i64`). Advancing past the then branch's `*high` hands the else branch
+            // fresh, never-typed slots — the same disjoint-by-width discipline call args / tuple elements /
+            // match arms already apply. (When the then branch used no scratch, `*high == branch_base`, so
+            // this is byte-identical for the common scalar-`if`.)
+            let else_base = branch_base.max(*high);
             let else_frame = refined_frame_for_branch(db, cond, false, base_frame);
             db.push_range_refinements(else_frame);
-            let else_res = emit_tail_branch(db, else_, high, scratch_ty, out);
+            let else_res = emit_tail_branch(db, else_, else_base, high, scratch_ty, out);
             db.pop_range_refinements();
             else_res?;
             out.push(Lir::End);
@@ -3005,6 +3120,14 @@ fn emit_tail(
                 let vt = valtype_of(&ty).ok_or_else(|| {
                     Reject::decline("a let binding's type has no machine representation")
                 })?;
+                // RESERVE the binding slot BEFORE the initializer emits — see the non-tail `Core::Let` arm:
+                // the initializer emits at `slot + 1`, and its inner scratch floats off `*high`, so `*high`
+                // must already cover the binding slot or a compound/`if` initializer reuses the binding's
+                // own slot at the wrong width (the let-bound-if-tuple invalid-wasm miscompile).
+                scratch_ty.insert(slot, vt);
+                if slot + 1 > *high {
+                    *high = slot + 1;
+                }
                 emit(
                     db,
                     *value,
@@ -3016,10 +3139,6 @@ fn emit_tail(
                     out,
                 )?;
                 out.push(Lir::LocalSet(slot));
-                scratch_ty.insert(slot, vt);
-                if slot + 1 > *high {
-                    *high = slot + 1;
-                }
                 // DEBUG (D3 locals): a SCALAR binding with a source name lives in this slot for its whole
                 // scope — record it so a `DW_TAG_variable` DIE lets a debugger `print` the local. The
                 // binder key is the initializer occurrence, so recover the name from its `(name init)`
@@ -4311,7 +4430,7 @@ fn emit(
             out.push(Lir::CallImport(OP_MAP_EMPTY)); // → [map]
             for &(k, v) in &entries {
                 emit(db, k, slots, base, high, scratch_ty, layout, out)?; // [map, key]
-                if let Some(op) = box_op_ty(db, &key_ty)? {
+                if let Some(op) = box_op_for(db, k, &key_ty)? {
                     emit_box_i32_to_i64_extend(db, k, out);
                     out.push(Lir::CallImport(op)); // [map, key-handle]
                 }
@@ -4319,7 +4438,7 @@ fn emit(
                     out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
                 }
                 emit(db, v, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
-                if let Some(op) = box_op_ty(db, &val_ty)? {
+                if let Some(op) = box_op_for(db, v, &val_ty)? {
                     emit_box_i32_to_i64_extend(db, v, out);
                     out.push(Lir::CallImport(op)); // [map, key, val-handle]
                 }
@@ -4339,7 +4458,7 @@ fn emit(
         } => {
             emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
-            if let Some(op) = box_op_ty(db, &key_ty)? {
+            if let Some(op) = box_op_for(db, key, &key_ty)? {
                 emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
@@ -4347,7 +4466,7 @@ fn emit(
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf (champ contract)
             }
             emit(db, val, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
-            if let Some(op) = box_op_ty(db, &val_ty)? {
+            if let Some(op) = box_op_for(db, val, &val_ty)? {
                 emit_box_i32_to_i64_extend(db, val, out);
                 out.push(Lir::CallImport(op)); // [map, key, val-handle]
             }
@@ -4360,7 +4479,7 @@ fn emit(
         Core::MapRemove { map, key, key_ty } => {
             emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
-            if let Some(op) = box_op_ty(db, &key_ty)? {
+            if let Some(op) = box_op_for(db, key, &key_ty)? {
                 emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
@@ -4386,7 +4505,7 @@ fn emit(
             out.push(Lir::CallImport(OP_SET_EMPTY)); // → [set]
             for &e in &elems {
                 emit(db, e, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
-                if let Some(op) = box_op_ty(db, &elem_ty)? {
+                if let Some(op) = box_op_for(db, e, &elem_ty)? {
                     emit_box_i32_to_i64_extend(db, e, out);
                     out.push(Lir::CallImport(op)); // [set, elem-handle]
                 }
@@ -4402,7 +4521,7 @@ fn emit(
         Core::SetInsert { set, elem, elem_ty } => {
             emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
-            if let Some(op) = box_op_ty(db, &elem_ty)? {
+            if let Some(op) = box_op_for(db, elem, &elem_ty)? {
                 emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
             }
@@ -4418,7 +4537,7 @@ fn emit(
         Core::SetRemove { set, elem, elem_ty } => {
             emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
-            if let Some(op) = box_op_ty(db, &elem_ty)? {
+            if let Some(op) = box_op_for(db, elem, &elem_ty)? {
                 emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
             }
@@ -4447,7 +4566,7 @@ fn emit(
             scratch_ty.insert(elem_slot, ValType::I32);
             emit(db, set, slots, base + 1, high, scratch_ty, layout, out)?; // [set]
             emit(db, elem, slots, base + 1, high, scratch_ty, layout, out)?; // [set, elem]
-            if let Some(op) = box_op_ty(db, &elem_ty)? {
+            if let Some(op) = box_op_for(db, elem, &elem_ty)? {
                 emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
             }
@@ -4497,7 +4616,7 @@ fn emit(
             scratch_ty.insert(val_slot, ValType::I32);
             emit(db, map, slots, base + 2, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base + 2, high, scratch_ty, layout, out)?; // [map, key]
-            if let Some(op) = box_op_ty(db, &key_ty)? {
+            if let Some(op) = box_op_for(db, key, &key_ty)? {
                 emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
@@ -4998,12 +5117,68 @@ fn emit(
         // to its scalar: `<operand handle> ; i32.const i ; arr-get ; get-<T>`. The result type (this
         // node's solved type) chooses the unbox op.
         Core::Proj { operand, index } => {
+            // RECLAMATION (U13/U14): if the projected `operand` is a fresh OWNED temporary (a peer/host call
+            // result, a constructor — `heap_operand_ownership` == Owned) rather than a BORROW of a live
+            // binding (a `Param`/`LocalRef`, reclaimed by its owner), the aggregate would otherwise LEAK —
+            // `arr-get` borrows it to read the element but nothing releases it. Two element cases:
+            //   • SCALAR element (`get_op` Some): `get-int`/`get-bool` COPY the value out, so after the read
+            //     the parent can be dropped directly (U13).
+            //   • NESTED-COMPOUND element (`get_op` None): the `arr-get` result IS the child handle, a BORROW
+            //     into the parent. `dup` the child (rc++) so it survives the parent's drop, THEN drop the
+            //     parent — the parent's storage + every OTHER child is reclaimed, and the returned child
+            //     stays live under its own retained reference (U14).
+            // Stash the aggregate in a scratch i32 slot so it survives the read for the post-read drop.
+            // `heap_operand_ownership` declines an operand whose ownership it cannot prove, so an unhandled
+            // shape rejects (Owned only on a proven-fresh producer), never leaks wrongly or double-frees.
+            let scalar_elem = get_op(db, id)?;
+            let reclaim = matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            );
+            if reclaim {
+                let agg_slot = base;
+                if agg_slot + 1 > *high {
+                    *high = agg_slot + 1;
+                }
+                scratch_ty.insert(agg_slot, ValType::I32);
+                emit(db, operand, slots, base + 1, high, scratch_ty, layout, out)?; // [handle]
+                out.push(Lir::LocalTee(agg_slot)); // [handle], agg_slot = the owned aggregate
+                out.push(Lir::ConstI32(index as i32)); // [handle, i]
+                out.push(Lir::CallImport(OP_ARR_GET)); // → [elem-handle] (BORROWS the aggregate)
+                match scalar_elem {
+                    Some(op) => {
+                        out.push(Lir::CallImport(op)); // → [scalar (i64 for an int, i32 for a bool)]
+                        if needs_get_int_narrow(db, id) {
+                            out.push(Lir::I32WrapI64);
+                        }
+                        // The scalar is now a COPY on the stack; release the owned aggregate (rc--, cascades).
+                        out.push(Lir::LocalGet(agg_slot));
+                        out.push(Lir::CallImport(OP_DROP)); // [scalar] (unchanged; aggregate reclaimed)
+                    }
+                    None => {
+                        // A NESTED-COMPOUND element: retain the returned child (rc++) so it outlives the
+                        // parent, then drop the parent. `dup` POPS its handle, so re-read the child from a
+                        // scratch slot for the dup and leave the original copy on the stack as the result.
+                        let child_slot = base + 1;
+                        if child_slot + 1 > *high {
+                            *high = child_slot + 1;
+                        }
+                        scratch_ty.insert(child_slot, ValType::I32);
+                        out.push(Lir::LocalTee(child_slot)); // [child], child_slot = child
+                        out.push(Lir::LocalGet(child_slot)); // [child, child]
+                        out.push(Lir::CallImport(OP_DUP)); // pops the 2nd copy, rc++ → [child]
+                        out.push(Lir::LocalGet(agg_slot));
+                        out.push(Lir::CallImport(OP_DROP)); // drop the parent; the dup'd child survives → [child]
+                    }
+                }
+                return Ok(());
+            }
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [handle]
             out.push(Lir::ConstI32(index as i32)); // [handle, i]
             out.push(Lir::CallImport(OP_ARR_GET)); // → [elem-handle]
             // A scalar element unboxes (`get-int`/`get-bool`, then a NARROW int narrows i64→i32); a
             // nested compound: the handle `arr-get` yields IS the nested compound — use it as-is.
-            if let Some(op) = get_op(db, id)? {
+            if let Some(op) = scalar_elem {
                 out.push(Lir::CallImport(op)); // → [scalar (i64 for an int, i32 for a bool)]
                 if needs_get_int_narrow(db, id) {
                     out.push(Lir::I32WrapI64);
@@ -5289,18 +5464,17 @@ fn emit(
             db.pop_range_refinements();
             then_res?;
             out.push(Lir::Else);
+            // The else branch starts its scratch ABOVE the then branch's high-water (see the TAIL `Core::If`
+            // arm for the full rationale): the two mutually-exclusive branches may want the same slot index
+            // at DIFFERENT widths (a base arm's i32 Option handle vs a recursive arm's i64 temp), and a
+            // slot's type is recorded ONCE — sharing `branch_base` sets one local at both types (invalid
+            // module). Advancing past `*high` gives the else branch fresh slots; byte-identical when the
+            // then branch used no scratch (`*high == branch_base`).
+            let else_base = branch_base.max(*high);
             let else_frame = refined_frame_for_branch(db, cond, false, base_frame);
             db.push_range_refinements(else_frame);
             let else_res = emit_branch(
-                db,
-                else_,
-                &result,
-                slots,
-                branch_base,
-                high,
-                scratch_ty,
-                layout,
-                out,
+                db, else_, &result, slots, else_base, high, scratch_ty, layout, out,
             );
             db.pop_range_refinements();
             else_res?;
@@ -5500,6 +5674,21 @@ fn emit(
                 let vt = valtype_of(&ty).ok_or_else(|| {
                     Reject::decline("a let binding's type has no machine representation")
                 })?;
+                // RESERVE the binding slot BEFORE emitting the initializer: record its type and lift `*high`
+                // past it now. The initializer emits at `slot + 1`, but many emit sites float their own
+                // scratch off `*high` (a tuple/record element `elem_base = *high`, an `if`-branch base, a
+                // call arg) — those all ASSUME `*high >= base`. Without pre-reserving, `*high` still LAGS at
+                // the pre-let value (< `slot + 1`), so an initializer whose value is an `if`/compound would
+                // hand its inner scratch the binding's OWN slot: `(let ((r (if … (tuple (+ p 5) …) …)))
+                // (+ (. r 0) (. r 1)))` teed the i64 `(+ p 5)` into slot `r` (declared i32, the tuple
+                // handle) → invalid wasm (`expected i32, found i64`). Reserving keeps every inner scratch
+                // strictly above the binding slot. (`scratch_ty` for `slot` is set here; the `LocalSet`
+                // below stores into it. A `match`-producer initializer already worked because `MatchSum`
+                // pre-advances `*high` for its own handle slot — this brings the general `let` in line.)
+                scratch_ty.insert(slot, vt);
+                if slot + 1 > *high {
+                    *high = slot + 1;
+                }
                 // Emit the value into scratch ABOVE this persistent slot (its own scratch floats), then
                 // store it once. The value sees the earlier bindings via `extended`.
                 emit(
@@ -5513,10 +5702,6 @@ fn emit(
                     out,
                 )?;
                 out.push(Lir::LocalSet(slot));
-                scratch_ty.insert(slot, vt);
-                if slot + 1 > *high {
-                    *high = slot + 1;
-                }
                 if is_heap_type(&ty) {
                     heap_bindings.push((*binder, slot));
                 }
@@ -6525,6 +6710,11 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         | Core::RationalOfInts { .. }
         | Core::RationalOfIntWiden { .. }
         | Core::RationalBinOp { .. }
+        // A HOST/PEER call returning a COMPOUND yields a fresh OWNED handle (a peer-bound effect returns a
+        // runtime value the consumer now owns — the shared-runtime handle transport, U5/U11), exactly like
+        // a defined-func `Call`. So a peer-returned compound projected/consumed here is an owned temporary
+        // the enclosing op reclaims (U13) rather than leaking until run-end.
+        | Core::HostCall { .. }
         | Core::Call { .. } => Ok(HandleOwnership::Owned),
         // A CONSTANT typed `BigInt` materializes to a FRESH owned handle at `emit` (the `Core::ConstInt`
         // arm routes a BigInt-typed constant through `bigint-of-i64`), exactly like `ConstStr` above — so
@@ -7015,8 +7205,15 @@ fn try_emit_scalar_br_table(
     out.push(Lir::BrTable(targets, default_depth));
 
     // Emit each covered arm's body after its label's `end`, innermost (arm 0) first, then `br` its value
-    // to $join. After `End`ing $a_0..$a_k, the enclosing blocks (inner→outer) are a_{k+1}…a_{n-1},
-    // default, join — so $join is at depth `(n_arms - 1 - k) + 1 + 1 = n_arms - k + 1`.
+    // to $join. After `End`ing $a_0..$a_k, the enclosing blocks (inner→outer) are a_{k+1}…a_{n-1} (that is
+    // `n_arms - 1 - k` blocks), then $default (1 block), then $join — so $join sits at DEPTH
+    // `(n_arms - 1 - k) + 1 = n_arms - k` (the count of blocks BEFORE it; $join is AT that depth, not one
+    // past). This mirrors `try_emit_disc_br_table`'s `(m - 1 - k) + join_from_arm_extra` with the always-
+    // present $default block (extra = 1). A bare `n_arms - k + 1` branched ONE BLOCK TOO FAR — past $join
+    // to the FUNCTION-result label, so in NON-tail position the arm value escaped the whole function and the
+    // consuming code (`+ 100`, a `bytes-concat`, a `let` body) never ran (a silent wrong value; the default
+    // arm, which falls through to $join with no `br`, was unaffected — masking the bug in tail position
+    // where the function result IS $join).
     for (k, arm) in int_arms.iter().enumerate() {
         out.push(Lir::End); // close $a_k → br_table target `k` lands here
         emit_arm_body(
@@ -7031,7 +7228,7 @@ fn try_emit_scalar_br_table(
             out,
             TailPos::NonTail,
         )?;
-        out.push(Lir::Br(n_arms - k as u32 + 1)); // → $join, carrying the value
+        out.push(Lir::Br(n_arms - k as u32)); // → $join, carrying the value
     }
     // Close $default; emit the default body (falls through to $join's end — no `br` needed).
     out.push(Lir::End); // close $default
@@ -8015,7 +8212,7 @@ fn reject_oversize_branch_constant(db: &mut Db, id: StructId, it: IntTy) -> Resu
 
 /// Emit a FLOAT operation's OPERAND at the operation's width `w` (32 or 64). The float analogue of
 /// [`emit_operand`]: a bare float LITERAL is width-polymorphic (it defaults to Float64 = an f64 slot
-/// when typed on its own), so `(+. x 1.0)` over a `Float32` `x` would otherwise push the literal as an
+/// when typed on its own), so `(+ x 1.0)` over a `Float32` `x` would otherwise push the literal as an
 /// f64 beside `x`'s f32 and produce invalid wasm (`expected f32, found f64`). Materialize a bare-literal
 /// operand (or the canonical NaN) DIRECTLY at the op width `w` — the width unification the per-node
 /// `type_of` does not thread back to the operand. Any other operand emits normally, then a slot
@@ -8632,6 +8829,15 @@ fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {
                 index: iy,
             },
         ) => ix == iy && core_eq(db, px, py),
+        // A COLLECTION COUNT (`List.len`/`Bytes.len`/`Map.size`/`Set.len`) is a TOTAL O(1) BORROWING read
+        // returning a SCALAR — pure, no rc change, deterministic — so two counts of an equal collection
+        // yield the same value and share safely (the count analogue of `Proj`/`SumPayload`). This lets CSE
+        // compute a repeated `(List.len xs)` — a `vec-len` runtime import — ONCE across `(+ (len xs) (* (len
+        // xs) 3))`. Each takes ONE operand handle; equal iff those handles are `core_eq`.
+        (Core::ListLen { operand: ox }, Core::ListLen { operand: oy })
+        | (Core::BytesLen { operand: ox }, Core::BytesLen { operand: oy }) => core_eq(db, ox, oy),
+        (Core::MapSize { map: mx }, Core::MapSize { map: my }) => core_eq(db, mx, my),
+        (Core::SetLen { set: sx }, Core::SetLen { set: sy }) => core_eq(db, sx, sy),
         // A sum-variant payload read: equal iff the SAME path off an equal (runtime) scrutinee — the
         // pattern-binder analogue of `Proj`. `sum-payload`/`get-*` BORROW the handle and are pure (no rc
         // change, no effect), so two reads of the same payload yield the same value; sharing them lets the
@@ -10880,6 +11086,118 @@ mod tests {
             f.code.iter().filter(|i| **i == Lir::I64Mul).count(),
             2,
             "single-use arg inlines (2 muls: the arg + `* s 5`), got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn straight_line_cse_value_numbers_distinct_occurrences_across_ops() {
+        // VALUE-NUMBERING (not node identity): two DISTINCT `(* a b)` occurrences across DIFFERENT ops —
+        // `(+ (* a b) (* (* a b) 3))` — are `core_eq`, so straight-line CSE computes the product ONCE and
+        // shares it. Exactly TWO muls remain: the shared `(* a b)` + the `(* … 3)`. Before value-numbering
+        // (node-identity only) this was THREE (each hand-written `(* a b)` emitted separately).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (+ (* a b) (* (* a b) 3))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code.iter().filter(|i| **i == Lir::I64Mul).count(),
+            2,
+            "value-equal `(* a b)` across ops is computed once (2 muls), got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn straight_line_cse_does_not_hoist_a_let_local_subexpression() {
+        // A shared subexpression over a `let`-LOCAL — `(let ((k (+ a b))) (+ (* k k) (* k k)))` — must NOT
+        // be hoisted before the body: the local `k`'s slot is only established when the `let` binding is
+        // emitted INSIDE the body, so a hoisted `(* k k)` would read an unbound slot ("let-binding reference
+        // has no local slot"). `is_cse_shareable` excludes `Core::LocalRef`, so a computation over a
+        // let-local is left in place. This must COMPILE (a regression guard — an early value-numbering
+        // version crashed here) and value-check. `(let ((k 7)) (+ (* k k) (* k k)))` = 49+49 = 98.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (let ((k (+ a b))) (+ (* k k) (* k k)))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        // The key assertion is that selection SUCCEEDS (no "no local slot" crash from a bad hoist).
+        select_function(&mut db, body, &params, &layout)
+            .expect("a let-local subexpression must not be hoisted before its binding");
+    }
+
+    #[test]
+    fn dominator_cse_hoists_a_condition_dominated_subexpression() {
+        // `(if (> (* a b) 0) (* a b) (- 0 (* a b)))` — the `(* a b)` in the CONDITION is always evaluated
+        // (it DOMINATES both branches), so all three value-equal `(* a b)` collapse to ONE computed slot
+        // read in the cond + both branches. Exactly ONE `i64.mul` (was 3). The dominance requirement is
+        // what makes hoisting across the `if` sound: the class runs on entry regardless of the branch taken.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (> (* a b) 0) (* a b) (- 0 (* a b)))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code.iter().filter(|i| **i == Lir::I64Mul).count(),
+            1,
+            "a condition-dominated `(* a b)` is computed once and shared across cond+branches, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn dominator_cse_does_not_hoist_a_branch_only_subexpression() {
+        // `(if (> c 0) (* a b) (- 0 (* a b)))` — `(* a b)` appears ONLY in the two BRANCHES, never in the
+        // (always-evaluated) condition, so it is NOT in the dominating frontier. Hoisting it would SPECULATE
+        // the product (and, for a trapping op, its trap) onto the code path that runs before the branch is
+        // chosen — unsound. So it must be left in place: exactly TWO `i64.mul` (one per branch), not one.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64) (: c Int64)) (if (> c 0) (* a b) (- 0 (* a b)))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code.iter().filter(|i| **i == Lir::I64Mul).count(),
+            2,
+            "a branch-only shared `(* a b)` (no dominating occurrence) is NOT hoisted, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn cse_shares_a_repeated_collection_count() {
+        // `(List.len xs)` is a TOTAL O(1) BORROWING scalar read (a `vec-len` runtime import — no rc change,
+        // deterministic). Two identical counts of the same list param `(+ (List.len xs) (* (List.len xs) 3))`
+        // are `core_eq` and dominate (straight-line body), so CSE computes the `vec-len` ONCE and shares it
+        // → exactly ONE `vec-len` CallImport (was two). `xs` is a real PARAM (a list handle live up front),
+        // so the read is well-formed at the hoist point. Selects `f` directly (its param is an i32 handle).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: xs (List Int64))) (+ ((. List len) xs) (* ((. List len) xs) 3))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code
+                .iter()
+                .filter(|i| matches!(i, Lir::CallImport(op) if *op == OP_VEC_LEN))
+                .count(),
+            1,
+            "a repeated `(List.len xs)` is computed once and shared, got: {:?}",
             f.code
         );
     }

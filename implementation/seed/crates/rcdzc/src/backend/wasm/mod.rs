@@ -157,6 +157,13 @@ fn crosses_as_resource_escape(ty: &crate::ty::Ty) -> bool {
             | Ty::Rational
             | Ty::Nominal { .. }
             | Ty::Qty { .. }
+            // A TYPE-VALUE is a first-class value that crosses the boundary (core-semantics.md §Types Are
+            // First-Class Values — "returned from a function, and inspected at runtime"). It is fully
+            // compile-time-known, so it crosses via the CONSTANT value-form escape: `constant_value_form`
+            // bakes `(: <TypeName> Type)` from the reduced type (nullary export only — a type-valued export
+            // has no parameter to depend on). Its runtime footprint is nil (the type is erased); the escape
+            // carries only the baked rendering.
+            | Ty::Type
     )
 }
 
@@ -828,18 +835,41 @@ pub fn emit(
         });
     }
 
-    // A CROSS-COMPONENT consumer (X4b) takes the extern-import envelope shape: the peer interface is a
+    // A CROSS-COMPONENT consumer (X4b) takes the extern-import envelope shape: each peer interface is a
     // component INTERFACE, its operations imported funcs the composition resolves (bound under `"peer"`).
-    // X4b-3 scope: a SINGLE peer interface (every extern import shares one interface name); a consumer
-    // binding two distinct peer interfaces declines (the multi-interface shape is a later increment).
+    // U9: a consumer may bind MORE THAN ONE distinct peer interface — each becomes its own imported
+    // component instance, and each op aliases out of its interface's instance. The one `"peer"` core
+    // instance exports every lowered op FLAT by name, so op names must be globally UNIQUE across the bound
+    // interfaces; a cross-interface collision declines (the merged instance would export the name twice).
     if !extern_imports.is_empty() {
-        let iface = extern_imports[0].interface.clone();
-        if extern_imports.iter().any(|e| e.interface != iface) {
-            return Err(Reject::decline(
-                "binding more than one peer interface is not yet emitted (one interface per envelope; \
-                 the multi-interface extern shape is a later increment)",
-            ));
+        // A MIDDLE-OF-CHAIN component is BOTH a consumer (binds a peer) AND a provider (compiled with a
+        // `--component-name`): it imports its peer(s), computes, and PUBLISHES its own boundary as a named
+        // interface instance for a downstream consumer (U11). `publish_iface` = `db.component_name`; when
+        // set, the extern envelope bundles the consumer's lifted boundary funcs into an instance exported
+        // under that name instead of exporting them top-level. `None` (a pure consumer) is byte-identical
+        // to the X3/X5 top-level-export shape. This makes an A→B→C chain work: B binds A's interface and
+        // publishes its own for C.
+        let publish_iface = db.component_name.clone();
+        let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for e in &extern_imports {
+            if let Some(&prior) = seen.get(e.op.as_str())
+                && prior != e.interface.as_str()
+            {
+                return Err(Reject::decline(format!(
+                    "peer operation `{}` is offered by two bound interfaces (`{}` and `{}`); an \
+                     operation name must be unique across the peer interfaces a component binds — \
+                     rename one so each peer op has a distinct name",
+                    e.op, prior, e.interface
+                )));
+            }
+            seen.insert(e.op.as_str(), e.interface.as_str());
         }
+        // Each op's interface, PARALLEL to `extern_fns` (i.e. `extern_order`) — the envelope groups the ops
+        // by interface into per-interface imported instances.
+        let op_ifaces: Vec<&str> = extern_imports
+            .iter()
+            .map(|e| e.interface.as_str())
+            .collect();
         let extern_fns: Vec<envelope::HostFn> = extern_imports
             .iter()
             .map(|e| envelope::HostFn {
@@ -849,25 +879,26 @@ pub fn emit(
             })
             .collect();
         // A consumer that ALSO uses the value-heap runtime (it inspects a compound `value` handle the
-        // peer returned) composes BOTH imports — `assemble_extern_runtime` imports the peer (as `"peer"`)
-        // AND the runtime (as `"heap"`), matching the core's dual import (X5). Otherwise the peer-only
-        // envelope (X3).
+        // peer returned) composes BOTH imports — `assemble_extern_runtime` imports the peer(s) AND the
+        // runtime (as `"heap"`), matching the core's dual import (X5). Otherwise the peer-only envelope (X3).
         if !imports.is_empty() {
             let import_name = runtime_import_name();
             return Ok(envelope::assemble_extern_runtime(
                 &core,
                 &boundary,
-                &iface,
+                &op_ifaces,
                 &extern_fns,
                 &imports,
                 &import_name,
+                publish_iface.as_deref(),
             ));
         }
         return Ok(envelope::assemble_extern(
             &core,
             &boundary,
-            &iface,
+            &op_ifaces,
             &extern_fns,
+            publish_iface.as_deref(),
         ));
     }
 
@@ -913,6 +944,23 @@ pub fn emit(
 /// arg is ignored; the walk descends every child so a host call nested anywhere is found. Mirrors
 /// `host::collect_host_imports`' descent but gathers the arg strings rather than the op signatures.
 fn collect_host_arg_strings(db: &mut Db, id: crate::ast::StructId, out: &mut Vec<String>) {
+    // WALK-DEPTH GUARD — like the other core walks (`collect_host_imports`, `collect_closure_codes`): this
+    // drives `core_of` at every node, so a non-normalizing self-application would overflow the stack.
+    if db.walk_depth >= crate::db::WALK_DEPTH_LIMIT {
+        return;
+    }
+    db.walk_depth += 1;
+    collect_host_arg_strings_at(db, id, out);
+    db.walk_depth -= 1;
+}
+
+/// The CORE walk of [`collect_host_arg_strings`] — the sibling of `host::collect_host_imports`, laying the
+/// same discipline: descend the LOWERED core (NOT the AST), so a constant string argument of a `HostCall`
+/// reached through an INLINED helper — a `report/Test.fail("msg")` where the message became a `ConstStr`
+/// on β-substitution of the helper's param — is laid in the data segment. Was AST-walked, so an inlined
+/// helper's host-arg string was missed ("a host-arg string was not laid in the data segment"). Exhaustive
+/// (no wildcard) so a new `Core` variant is a compile error, not a silently-unlaid string.
+fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut Vec<String>) {
     use crate::core::Core;
     match crate::lower::core_of(db, id) {
         Core::HostCall { args, .. } => {
@@ -925,11 +973,208 @@ fn collect_host_arg_strings(db: &mut Db, id: crate::ast::StructId, out: &mut Vec
                 collect_host_arg_strings(db, a, out);
             }
         }
-        _ => {
-            if let crate::ast::Struct::List(children) = db.ast.get(id).clone() {
-                for c in children {
-                    collect_host_arg_strings(db, c, out);
+        Core::Call { args, .. } => {
+            for a in args {
+                collect_host_arg_strings(db, a, out);
+            }
+        }
+        Core::CallClosure { closure, args } => {
+            collect_host_arg_strings(db, closure, out);
+            for a in args {
+                collect_host_arg_strings(db, a, out);
+            }
+        }
+        // A closure's CAPTURES may include a host-call result carrying a string arg — walk them (the body
+        // is walked as its own lifted function). Mirrors `collect_host_imports`'s `Core::Closure` arm.
+        Core::Closure { captures, .. } => {
+            for c in captures {
+                collect_host_arg_strings(db, c, out);
+            }
+        }
+        Core::If { cond, then_, else_ } => {
+            collect_host_arg_strings(db, cond, out);
+            collect_host_arg_strings(db, then_, out);
+            collect_host_arg_strings(db, else_, out);
+        }
+        Core::Let { bindings, body } => {
+            for (_, value) in bindings {
+                collect_host_arg_strings(db, value, out);
+            }
+            collect_host_arg_strings(db, body, out);
+        }
+        Core::Seq { stmts, tail } => {
+            for s in stmts {
+                collect_host_arg_strings(db, s, out);
+            }
+            collect_host_arg_strings(db, tail, out);
+        }
+        Core::Arith { lhs, rhs, .. }
+        | Core::Compare { lhs, rhs, .. }
+        | Core::ValueEq { lhs, rhs }
+        | Core::And { lhs, rhs, .. }
+        | Core::ListConcat { lhs, rhs }
+        | Core::BytesConcat { lhs, rhs }
+        | Core::BigIntBinOp { lhs, rhs, .. }
+        | Core::BigIntCmp { lhs, rhs, .. }
+        | Core::RationalOfInts { num: lhs, den: rhs }
+        | Core::RationalBinOp { lhs, rhs, .. }
+        | Core::RationalCmp { lhs, rhs, .. } => {
+            collect_host_arg_strings(db, lhs, out);
+            collect_host_arg_strings(db, rhs, out);
+        }
+        Core::BigIntOfI64 { value } => collect_host_arg_strings(db, value, out),
+        Core::BigIntToI64 { operand } => collect_host_arg_strings(db, operand, out),
+        Core::RationalOfIntWiden { value } => collect_host_arg_strings(db, value, out),
+        Core::ListPush { list, elem } => {
+            collect_host_arg_strings(db, list, out);
+            collect_host_arg_strings(db, elem, out);
+        }
+        Core::ListUpdate { list, index, elem } => {
+            collect_host_arg_strings(db, list, out);
+            collect_host_arg_strings(db, index, out);
+            collect_host_arg_strings(db, elem, out);
+        }
+        Core::ListAt { list, index, .. } => {
+            collect_host_arg_strings(db, list, out);
+            collect_host_arg_strings(db, index, out);
+        }
+        Core::MapNew { entries, .. } => {
+            for (k, v) in entries {
+                collect_host_arg_strings(db, k, out);
+                collect_host_arg_strings(db, v, out);
+            }
+        }
+        Core::MapInsert { map, key, val, .. } => {
+            collect_host_arg_strings(db, map, out);
+            collect_host_arg_strings(db, key, out);
+            collect_host_arg_strings(db, val, out);
+        }
+        Core::MapLookup { map, key, .. } | Core::MapRemove { map, key, .. } => {
+            collect_host_arg_strings(db, map, out);
+            collect_host_arg_strings(db, key, out);
+        }
+        Core::MapSize { map } => collect_host_arg_strings(db, map, out),
+        Core::SetOf { elems, .. } => {
+            for e in elems {
+                collect_host_arg_strings(db, e, out);
+            }
+        }
+        Core::SetContains { set, elem, .. }
+        | Core::SetInsert { set, elem, .. }
+        | Core::SetRemove { set, elem, .. } => {
+            collect_host_arg_strings(db, set, out);
+            collect_host_arg_strings(db, elem, out);
+        }
+        Core::SetLen { set } => collect_host_arg_strings(db, set, out),
+        Core::SetAlgebra { lhs, rhs, .. } => {
+            collect_host_arg_strings(db, lhs, out);
+            collect_host_arg_strings(db, rhs, out);
+        }
+        Core::BytesAt { bytes, index, .. } => {
+            collect_host_arg_strings(db, bytes, out);
+            collect_host_arg_strings(db, index, out);
+        }
+        Core::StrAt { string, index, .. } => {
+            collect_host_arg_strings(db, string, out);
+            collect_host_arg_strings(db, index, out);
+        }
+        Core::BytesSlice {
+            bytes, start, len, ..
+        } => {
+            collect_host_arg_strings(db, bytes, out);
+            collect_host_arg_strings(db, start, out);
+            collect_host_arg_strings(db, len, out);
+        }
+        Core::BytesCompact { operand }
+        | Core::Convert { operand, .. }
+        | Core::Not { operand }
+        | Core::ListLen { operand }
+        | Core::BytesLen { operand } => collect_host_arg_strings(db, operand, out),
+        Core::Match { scrutinee, arms } => {
+            collect_host_arg_strings(db, scrutinee, out);
+            for arm in arms {
+                if let Some(g) = arm.guard {
+                    collect_host_arg_strings(db, g, out);
                 }
+                collect_host_arg_strings(db, arm.body, out);
+            }
+        }
+        Core::Record { fields } => {
+            for value in fields.values() {
+                collect_host_arg_strings(db, *value, out);
+            }
+        }
+        Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
+            for e in elems {
+                collect_host_arg_strings(db, e, out);
+            }
+        }
+        Core::BinBuild { segs } => {
+            for s in segs {
+                collect_host_arg_strings(db, s.value, out);
+            }
+        }
+        Core::BinBitsBuild { fields } => {
+            for f in fields {
+                collect_host_arg_strings(db, f.value, out);
+            }
+        }
+        Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
+            collect_host_arg_strings(db, bytes, out)
+        }
+        Core::Proj { operand, .. } => collect_host_arg_strings(db, operand, out),
+        Core::SumNew { payloads, .. } => {
+            for p in payloads {
+                collect_host_arg_strings(db, p, out);
+            }
+        }
+        Core::MatchSum { scrutinee, root } => {
+            collect_host_arg_strings(db, scrutinee, out);
+            collect_cont_host_arg_strings(db, &root, out);
+        }
+        Core::MatchList { scrutinee, arms } => {
+            collect_host_arg_strings(db, scrutinee, out);
+            for arm in &arms {
+                collect_host_arg_strings(db, arm.body, out);
+            }
+        }
+        Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
+            collect_host_arg_strings(db, scrutinee, out)
+        }
+        // Leaves / references carry no host-arg string.
+        Core::ConstInt(_)
+        | Core::ConstRational(_, _)
+        | Core::ConstBool(_)
+        | Core::ConstStr(_)
+        | Core::ConstChar(_)
+        | Core::ConstFloat(_)
+        | Core::ConstFloatNan
+        | Core::Unit
+        | Core::Trap
+        | Core::Param { .. }
+        | Core::Captured { .. }
+        | Core::LocalRef { .. }
+        | Core::Poison(_) => {}
+    }
+}
+
+/// Walk a sum-match continuation for the host-arg strings its arm bodies carry — the analogue of
+/// `collect_cont_host_imports` for the data-segment string pass.
+fn collect_cont_host_arg_strings(db: &mut Db, cont: &crate::core::SumCont, out: &mut Vec<String>) {
+    match cont {
+        crate::core::SumCont::Leaf(body) => collect_host_arg_strings(db, *body, out),
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            collect_host_arg_strings(db, *cond, out);
+            collect_host_arg_strings(db, *body, out);
+            collect_cont_host_arg_strings(db, els, out);
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            collect_cont_host_arg_strings(db, then_, out);
+            collect_cont_host_arg_strings(db, els, out);
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            for arm in arms {
+                collect_cont_host_arg_strings(db, &arm.cont, out);
             }
         }
     }
@@ -1254,6 +1499,7 @@ fn resource_escape_dwarf(
             export_abs,
             serialize::EscapeForm::Sum(&tpl),
             &[],
+            &[],
         )
         .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
@@ -1294,6 +1540,7 @@ fn resource_escape_dwarf(
                 serialize::CoreMethod::ToBytes,
             ],
             &[], // nullary sidecar — `make` forwards no params
+            &[], // …and no compound-param rebuild
         )
         .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
@@ -1316,7 +1563,7 @@ fn resource_escape_dwarf(
             .abs(export_def)
             .ok_or_else(|| Reject::decline("the escaping export is not in the emission order"))?;
         let main_core =
-            serialize::runtime_resource_core_module(&funcs, &imports, export_abs, &tpl, &[])
+            serialize::runtime_resource_core_module(&funcs, &imports, export_abs, &tpl, &[], &[])
                 .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
             db, &layout, &funcs, &imports, &main_core, span_data,
@@ -1491,11 +1738,18 @@ fn emit_runtime_resource(
     tpl: &crate::lower::ValueFormTemplate,
     spans: Option<&crate::spans::SpanData>,
 ) -> Result<Vec<u8>, Reject> {
+    // The `make`-forwarded params: a compound parameter is rebuilt in-guest from its flattened leaves,
+    // so its rebuild ops join the import set (frozen below).
+    let make_params = export_make_params(db, layout, export_def)?;
+
     // Ops the reachable bodies emit (construction: arr-alloc/arr-set/box-*), PLUS the ops the walker
     // `t-encode` calls (arr-get + get-int/get-bool per template leaf). The walker ops are added here
     // because they appear only in the synthesized encode body, not in any reachable Core.
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
     collect_module_used_ops(db, layout, &mut used)?;
+    make_params.collect_rebuild_ops(&mut |op| {
+        used.insert(op);
+    });
     // The walker's ops: `arr-get` to descend a nested path, and per leaf its `get-*` accessor.
     if tpl.leaves.iter().any(|l| !l.path.is_empty()) {
         used.insert("arr-get");
@@ -1545,10 +1799,15 @@ fn emit_runtime_resource(
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the escaping export is not in the emission order"))?;
 
-    let (make_param_vts, make_param_bytes) = export_make_params(db, layout, export_def)?;
-    let mut main_core =
-        serialize::runtime_resource_core_module(&funcs, &imports, export_abs, tpl, &make_param_vts)
-            .map_err(Reject::decline)?;
+    let mut main_core = serialize::runtime_resource_core_module(
+        &funcs,
+        &imports,
+        export_abs,
+        tpl,
+        &make_params.leaf_vts,
+        &make_params.core_slots(),
+    )
+    .map_err(Reject::decline)?;
     // DEBUG: a compound-returning program is debuggable too. The user function bodies lead the escape
     // core's code section (the synthesized `make`/`t-encode`/`cabi_realloc` follow), so `code_ranges`
     // over `funcs` gives their correct payload-relative offsets and `code_section_payload_base` walks
@@ -1564,7 +1823,7 @@ fn emit_runtime_resource(
         &dtor_core,
         &imports,
         &import_name,
-        &make_param_bytes,
+        &make_params.boundary_slots(),
     ))
 }
 
@@ -1618,6 +1877,103 @@ fn closure_boundary_byte(ty: &crate::ty::Ty) -> Option<u8> {
         Ty::Int(_) | Ty::Bool | Ty::Float(_) => crate::backend::wasm::lir::comp_valtype_of(ty),
         _ => None,
     }
+}
+
+/// A FIXED-SHAPE `(Option scalar)` closure ARGUMENT that crosses the DIRECT-CALL boundary as a native
+/// component `option<payload>` (the canonical ABI flattens it to `(disc: i32, payload)` core params). Returns,
+/// for such a `ty`: the payload's component boundary byte (the `option<…>` type's payload valtype), the
+/// payload's core valtype (the flattened `payload` param — the `disc` param is always i32), and the
+/// [`serialize::SumArgRebuild`] the core `call` uses to reassemble the sum cell by branching on the disc +
+/// `sum-new`. `None` unless `ty` is a TWO-variant sum with exactly one payload-bearing variant (≤1 aliased-
+/// width scalar payload) + one nullary variant — the `Option`/`Result`-with-nullary shape (the built-in
+/// `Option` is the common case). The disc of each variant is its DECLARATION index (`db.type_decl_by_occ`).
+#[allow(clippy::type_complexity)]
+fn fixed_shape_option_scalar_arg(
+    db: &mut Db,
+    ty: &crate::ty::Ty,
+) -> Option<(
+    u8,
+    crate::backend::wasm::lir::ValType,
+    crate::backend::wasm::serialize::SumArgRebuild,
+)> {
+    use crate::backend::wasm::serialize::SumArgRebuild;
+    use crate::ty::Ty;
+    let Ty::Sum { decl, args, .. } = ty.strip_nominal() else {
+        return None;
+    };
+    // Snapshot the decl's params + per-variant payload-occurrence lists into owned data, so the `db.ast`
+    // reads below don't overlap the `decl_ref` borrow.
+    let (params, variant_payloads): (Vec<String>, Vec<Vec<crate::ast::StructId>>) = {
+        let decl_ref = db.type_decl_by_occ(*decl)?;
+        // EXACTLY two variants: one nullary + one carrying a single scalar payload. (Option = `(Some a) None`.)
+        if decl_ref.variants.len() != 2 {
+            return None;
+        }
+        (
+            decl_ref.params.clone(),
+            decl_ref
+                .variants
+                .iter()
+                .map(|v| v.payloads.clone())
+                .collect(),
+        )
+    };
+    // Classify each variant → (disc, Option<payload_ty>). The payload type is the variant's ONE payload
+    // occurrence, mapped through the sum's generic params to the instantiated `args` when it is a type var.
+    let mut payload_variant: Option<(u32, crate::ty::Ty)> = None;
+    let mut nullary_disc: Option<u32> = None;
+    for (i, payloads) in variant_payloads.iter().enumerate() {
+        match payloads.len() {
+            0 => {
+                if nullary_disc.is_some() {
+                    return None; // two nullary variants — a bare enum, not an Option-shape payload sum
+                }
+                nullary_disc = Some(i as u32);
+            }
+            1 => {
+                if payload_variant.is_some() {
+                    return None; // two payload-bearing variants — out of this increment
+                }
+                // Resolve the payload's type. A generic param name (`a` in `(Some a)`) binds to `args` at its
+                // param index. We accept only the generic-var case (the built-in Option/Result shape); a
+                // concrete-payload user sum is a later widening.
+                let pname = db
+                    .ast
+                    .head_name(payloads[0])
+                    .or_else(|| db.ast.as_name(payloads[0]))?
+                    .to_string();
+                let pi = params.iter().position(|p| *p == pname)?;
+                let pty = args.get(pi)?.clone();
+                payload_variant = Some((i as u32, pty));
+            }
+            _ => return None, // a multi-payload variant — out of this increment
+        }
+    }
+    let (payload_disc, payload_ty) = payload_variant?;
+    let nullary_disc = nullary_disc?;
+    // The payload must be an aliased-width scalar (Int/Bool/Float) — the shapes `option<T>` flattens + the
+    // guest boxes with a single op. `scalar_field_rebuild` gives the box op + narrow-int extend.
+    let payload_byte = closure_boundary_byte(&payload_ty)?;
+    let payload_vt = crate::backend::wasm::lir::valtype_of(&payload_ty)?;
+    let crate::backend::wasm::serialize::FieldRebuild::Scalar { box_op, extend } =
+        scalar_field_rebuild(&payload_ty)?
+    else {
+        return None;
+    };
+    Some((
+        payload_byte,
+        payload_vt,
+        SumArgRebuild {
+            base_param: 1, // the sum is the SOLE closure arg → disc at param 1, payload at 2 (after self=0)
+            // The component `option<T>` always sends Some=1 (canonical `variant { none, some(T) }`),
+            // regardless of Cadenza's decl order — the guest branches on this boundary disc.
+            boundary_payload_disc: 1,
+            payload_disc,
+            payload_box: Some((box_op, extend)),
+            nullary_disc,
+            payload_is_i32_param: matches!(payload_vt, crate::backend::wasm::lir::ValType::I32),
+        },
+    ))
 }
 
 /// A FIXED-SHAPE SCALAR tuple/record closure ARGUMENT that crosses the DIRECT-CALL boundary as a native
@@ -2140,14 +2496,33 @@ fn emit_closure_resource(
     } else {
         None
     };
+    // A SOLE `(Option scalar)` closure ARG crosses as a native `option<payload>` the canonical ABI flattens to
+    // `(disc: i32, payload)` core params; the core `call` rebuilds the sum cell via `SumArgRebuild`, the
+    // envelope mints `option<…>` via `ArgSlot::OptionScalar`. Detected only when no tuple classifier fired.
+    // Scoped: the SOLE arg, scalar result, no build-time host effect (each a clean later widening).
+    let sum_arg: Option<(
+        u8,
+        crate::backend::wasm::lir::ValType,
+        crate::backend::wasm::serialize::SumArgRebuild,
+    )> = if host_imports.is_empty()
+        && tuple_arg.is_none()
+        && nested_tuple.is_none()
+        && multi_args.is_none()
+        && arg_tys.len() == 1
+    {
+        fixed_shape_option_scalar_arg(db, &arg_tys[0])
+    } else {
+        None
+    };
     // Boundary bytes (component valtypes) for the `call` method's ARGS — aliased scalar widths (a compound
     // closure arg on the direct-call path is handled by `tuple_arg` above, when it is a fixed-shape scalar
     // tuple/record; any other compound arg declines here — host→guest decode is not supported).
     let arg_bytes: Vec<u8> = if tuple_arg.is_some()
         || nested_tuple.is_some()
         || multi_args.is_some()
+        || sum_arg.is_some()
     {
-        Vec::new() // the flattened fields are carried by tuple_arg/nested_tuple/multi_args, not arg_bytes
+        Vec::new() // the flattened fields are carried by tuple_arg/nested_tuple/multi_args/sum_arg, not arg_bytes
     } else {
         arg_tys
             .iter()
@@ -2252,6 +2627,9 @@ fn emit_closure_resource(
         leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
     } else if let Some((_, all_vts, _)) = &multi_args {
         all_vts.clone() // the flattened leaves of EVERY tuple/scalar arg, in order (N-compound-args)
+    } else if let Some((_, payload_vt, _)) = &sum_arg {
+        // A sum arg flattens to `(disc: i32, payload)` core params — the shared `call` signature.
+        vec![crate::backend::wasm::lir::ValType::I32, *payload_vt]
     } else {
         arg_tys
             .iter()
@@ -2372,6 +2750,14 @@ fn emit_closure_resource(
                 }
             }
         }
+        // A SOLE `(Option scalar)` arg: the `call` rebuilds the sum cell via `sum-new` (branching on disc),
+        // boxing the payload with its box op (a Bool/Float payload needs `box-bool`/`box-float`).
+        if let Some((_, _, rebuild)) = &sum_arg {
+            used.insert("sum-new");
+            if let Some((box_op, _)) = rebuild.payload_box {
+                used.insert(box_op);
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     let export_abs = layout
@@ -2459,6 +2845,7 @@ fn emit_closure_resource(
             &layout,
             false, // own<t> (single-use) — every rebuilt-arg cell drop is unconditional, so leak-free
             rebuilds,
+            &[], // no sum arg (this is a tuple/multi-tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_closure_resource_borrow_tuple(
@@ -2475,6 +2862,52 @@ fn emit_closure_resource(
             &[],  // single-tuple suffix unused
             None, // single-tuple nested shape unused
             Some(slots),
+        ));
+    }
+    // A SOLE `(Option scalar)` closure ARG with a SCALAR result: the sum crosses as a native `option<payload>`
+    // the canonical ABI flattens to `(disc:i32, payload)`. The core `call` rebuilds the sum cell (branch on
+    // disc → `sum-new`); the envelope mints `option<payload>` via `ArgSlot::OptionScalar`. A LIST result over a
+    // sum arg is a later widening (the list cores don't thread sums) — falls through + declines.
+    if let Some((payload_byte, _payload_vt, rebuild)) = &sum_arg
+        && !ret_is_bytes
+        && !ret_is_compound
+        && !ret_is_collection
+    {
+        let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
+            &funcs,
+            &imports,
+            &[],
+            &[serialize::ClosureMake {
+                export_name: "make".to_string(),
+                export_abs,
+                param_vts: make_param_vts.clone(),
+            }],
+            &[],
+            &arg_vts,
+            ret_vt,
+            lifted_type_idx,
+            &layout,
+            false, // own<t> (single-use) — the rebuilt sum cell drop is unconditional, so leak-free
+            &[],   // no tuple arg
+            std::slice::from_ref(rebuild),
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_closure_resource_borrow_tuple(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &make_param_bytes,
+            &arg_bytes, // empty — the flattened disc/payload are carried by the slot list
+            result_byte,
+            false,
+            None, // single-tuple flat path unused
+            &[],  // prefix unused
+            &[],  // suffix unused
+            None, // nested shape unused
+            Some(&[crate::backend::wasm::envelope::ArgSlot::OptionScalar(
+                *payload_byte,
+            )]),
         ));
     }
     // A `Bytes`-result closure crosses `call` as `list<u8>` (through linear memory): the bytes-result core
@@ -2605,6 +3038,7 @@ fn emit_closure_resource(
             &layout,
             false, // own<t> (single-use) — the rebuilt-arg cell drop is unconditional, so still leak-free
             std::slice::from_ref(rebuild),
+            &[], // no sum arg (single flat/nested tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_closure_resource_borrow_tuple(
@@ -2646,6 +3080,7 @@ fn emit_closure_resource(
             &layout,
             false, // own<t> (single-use) — the rebuilt-arg cell drop is unconditional, so still leak-free
             std::slice::from_ref(rebuild),
+            &[], // no sum arg (single flat/nested tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_closure_resource_borrow_tuple(
@@ -3338,6 +3773,7 @@ fn emit_multi_closure_resource(
             &layout,
             false,
             rebuilds,
+            &[], // no sum arg (this is a tuple/multi-tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
@@ -3374,6 +3810,7 @@ fn emit_multi_closure_resource(
             &layout,
             false,
             std::slice::from_ref(rebuild),
+            &[], // no sum arg (single flat/nested tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
@@ -3410,6 +3847,7 @@ fn emit_multi_closure_resource(
             &layout,
             false,
             std::slice::from_ref(rebuild),
+            &[], // no sum arg (single flat/nested tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
@@ -4001,6 +4439,7 @@ fn emit_mixed_closure_resource(
             &layout,
             false,
             rebuilds,
+            &[], // no sum arg (this is a tuple/multi-tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
@@ -4037,6 +4476,7 @@ fn emit_mixed_closure_resource(
             &layout,
             false,
             std::slice::from_ref(rebuild),
+            &[], // no sum arg (single flat/nested tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
@@ -4073,6 +4513,7 @@ fn emit_mixed_closure_resource(
             &layout,
             false,
             std::slice::from_ref(rebuild),
+            &[], // no sum arg (single flat/nested tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
@@ -4177,6 +4618,15 @@ fn emit_distinct_sig_resource(
         /// fields but the lifted lambda takes ONE i32 tuple-cell handle, so this is `[I32]` (the cell), NOT the
         /// flattened fields. The `call-<g>` wrapper flattens/rebuilds between the boundary and the lambda.
         match_vts: Vec<ValType>,
+        /// N-COMPOUND-ARGS for this group: `Some((slots, rebuilds))` when its closure takes ≥2 fixed-shape
+        /// tuple/record args. `slots` drives the per-group `call-<g>` functype mint (the `ArgSlot` model);
+        /// `rebuilds` is one `TupleArgRebuild` per tuple, threaded into the core's `SigGroup.tuples`. `None`
+        /// unless ≥2 tuple args (the ≤1-tuple cases stay `tuple_arg`/`nested_shape`).
+        #[allow(clippy::type_complexity)]
+        multi_args: Option<(
+            Vec<crate::backend::wasm::envelope::ArgSlot>,
+            Vec<crate::backend::wasm::serialize::TupleArgRebuild>,
+        )>,
     }
     let mut ginfos: Vec<GroupInfo> = Vec::new();
     for sig in &sigs {
@@ -4208,16 +4658,31 @@ fn emit_distinct_sig_resource(
         } else {
             nested_sole_or_among_scalars(arg_tys.as_slice())
         };
-        let arg_bytes: Vec<u8> = if group_tuple_arg.is_some() || group_nested.is_some() {
-            Vec::new() // the flattened tuple fields are carried by `tuple_arg`/`nested_shape`
+        // ≥2 fixed-shape tuple/record args for this group (the N-compound-args path): the per-group `call-<g>`
+        // rebuilds each cell (a slice of `TupleArgRebuild`) + mints N `tuple<…>` types via the `ArgSlot` model.
+        // Detected only when neither single-tuple classifier fired.
+        #[allow(clippy::type_complexity)]
+        let group_multi_args: Option<(
+            Vec<crate::backend::wasm::envelope::ArgSlot>,
+            Vec<crate::backend::wasm::lir::ValType>,
+            Vec<crate::backend::wasm::serialize::TupleArgRebuild>,
+        )> = if group_tuple_arg.is_none() && group_nested.is_none() {
+            multi_compound_args(arg_tys.as_slice())
         } else {
-            arg_tys
-                .iter()
-                .map(|t| {
-                    closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t))
-                })
-                .collect::<Result<_, _>>()?
+            None
         };
+        let arg_bytes: Vec<u8> =
+            if group_tuple_arg.is_some() || group_nested.is_some() || group_multi_args.is_some() {
+                Vec::new() // the flattened fields are carried by tuple_arg/nested_shape/multi_args
+            } else {
+                arg_tys
+                    .iter()
+                    .map(|t| {
+                        closure_boundary_byte(t)
+                            .ok_or_else(|| closure_boundary_reject("argument", t))
+                    })
+                    .collect::<Result<_, _>>()?
+            };
         // A byte-rope (`Bytes`/`String`) result crosses `call-<g>` as `list<u8>` (not an inline scalar), so
         // it skips the scalar-boundary-byte check; `result_byte` is a placeholder (unused for byte-rope).
         let ret_is_bytes = matches!(
@@ -4254,6 +4719,8 @@ fn emit_distinct_sig_resource(
             all_vts.clone()
         } else if let Some((_, all_vts, _, _, _, _)) = &group_nested {
             all_vts.clone() // prefix scalars, then the nested tuple's depth-first leaves, then suffix scalars
+        } else if let Some((_, all_vts, _)) = &group_multi_args {
+            all_vts.clone() // the flattened leaves of EVERY tuple/scalar arg, in order (N-compound-args)
         } else {
             arg_tys
                 .iter()
@@ -4271,23 +4738,25 @@ fn emit_distinct_sig_resource(
         // The lifted lambda's own param shape: it takes each ARG's OWN valtype — a tuple arg is ONE i32
         // tuple-cell handle (the `call-<g>` wrapper rebuilds it from the flattened fields), scalars are
         // themselves. So `match_vts` is per-arg (NOT the flattened boundary fields in `arg_vts`).
-        let match_vts: Vec<ValType> = if group_tuple_arg.is_some() || group_nested.is_some() {
-            // Each ARG's OWN lambda-param valtype: a fixed-shape tuple/record (flat OR nested) is ONE i32 cell
-            // handle the `call-<g>` wrapper rebuilds; a scalar is its own valtype.
-            arg_tys
-                .iter()
-                .map(|t| {
-                    if tuple_field_abi(t).is_some() || nested_fixed_shape_tuple_arg(t).is_some() {
-                        Some(ValType::I32)
-                    } else {
-                        valtype_of(t)
-                    }
-                    .ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
-                })
-                .collect::<Result<_, _>>()?
-        } else {
-            arg_vts.clone()
-        };
+        let match_vts: Vec<ValType> =
+            if group_tuple_arg.is_some() || group_nested.is_some() || group_multi_args.is_some() {
+                // Each ARG's OWN lambda-param valtype: a fixed-shape tuple/record (flat OR nested) is ONE i32 cell
+                // handle the `call-<g>` wrapper rebuilds; a scalar is its own valtype.
+                arg_tys
+                    .iter()
+                    .map(|t| {
+                        if tuple_field_abi(t).is_some() || nested_fixed_shape_tuple_arg(t).is_some()
+                        {
+                            Some(ValType::I32)
+                        } else {
+                            valtype_of(t)
+                        }
+                        .ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
+                    })
+                    .collect::<Result<_, _>>()?
+            } else {
+                arg_vts.clone()
+            };
         // A nested group carries its recursive rebuild + prefix/suffix in `tuple_arg` (field_bytes unused) + its
         // shape in `nested_shape`; a flat group carries the field bytes + rebuild in `tuple_arg`, `nested_shape`
         // None.
@@ -4297,6 +4766,8 @@ fn emit_distinct_sig_resource(
         let tuple_arg = group_tuple_arg
             .map(|(fb, _, pre, suf, rb)| (fb, pre, suf, rb))
             .or_else(|| group_nested.map(|(_, _, rb, _, pre, suf)| (Vec::new(), pre, suf, rb)));
+        // ≥2 tuple args: carry the slot list (for the per-group envelope mint) + the rebuilds (for the core).
+        let multi_args = group_multi_args.map(|(slots, _, rebuilds)| (slots, rebuilds));
         ginfos.push(GroupInfo {
             arg_vts,
             ret_vt,
@@ -4308,6 +4779,7 @@ fn emit_distinct_sig_resource(
             tuple_arg,
             nested_shape,
             match_vts,
+            multi_args,
         });
     }
     // Effect-escape fence: no lifted body may perform a host effect.
@@ -4433,10 +4905,22 @@ fn emit_distinct_sig_resource(
                     });
                 }
             }
+            // ≥2 tuple args: each tuple's rebuild box ops (a Bool/Float field in any of them).
+            if let Some((_, rebuilds)) = gi.multi_args.as_ref() {
+                for rb in rebuilds {
+                    for f in &rb.fields {
+                        f.collect_box_ops(&mut |bop| {
+                            ops.insert(bop);
+                        });
+                    }
+                }
+            }
         }
         ops
     };
-    let any_tuple_arg = ginfos.iter().any(|gi| gi.tuple_arg.is_some());
+    let any_tuple_arg = ginfos
+        .iter()
+        .any(|gi| gi.tuple_arg.is_some() || gi.multi_args.is_some());
     let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
         used.insert("arr-get");
         used.insert("get-int");
@@ -4526,6 +5010,16 @@ fn emit_distinct_sig_resource(
                 make_param_bytes: m.param_bytes.clone(),
             });
         }
+        // The core's per-group tuple rebuilds: ≥2 args carries one rebuild per tuple; a single flat/nested arg
+        // carries exactly one; a scalar-arg group carries none.
+        let group_tuples: Vec<serialize::TupleArgRebuild> =
+            if let Some((_, rebuilds)) = &ginfos[gi].multi_args {
+                rebuilds.clone()
+            } else if let Some((_, _, _, rb)) = &ginfos[gi].tuple_arg {
+                vec![rb.clone()]
+            } else {
+                Vec::new()
+            };
         ser_groups.push(serialize::SigGroup {
             makes: ser_makes,
             arg_vts: ginfos[gi].arg_vts.clone(),
@@ -4534,10 +5028,7 @@ fn emit_distinct_sig_resource(
             ret_is_bytes: ginfos[gi].ret_is_bytes,
             ret_template: ginfos[gi].ret_template.clone(),
             ret_descriptor: ginfos[gi].ret_descriptor.clone(),
-            tuple_arg: ginfos[gi]
-                .tuple_arg
-                .as_ref()
-                .map(|(_, _, _, rb)| rb.clone()),
+            tuples: group_tuples,
         });
         abi_groups.push(envelope::SigGroupAbi {
             makes: abi_makes,
@@ -4563,6 +5054,11 @@ fn emit_distinct_sig_resource(
                 .map(|(_, _, suf, _)| suf.clone())
                 .unwrap_or_default(),
             tuple_shape: ginfos[gi].nested_shape.clone(),
+            // ≥2 tuple args → the slot list drives the per-group `call-<g>` mint; ≤1-tuple groups leave it None.
+            call_arg_slots: ginfos[gi]
+                .multi_args
+                .as_ref()
+                .map(|(slots, _)| slots.clone()),
         });
     }
 
@@ -5549,7 +6045,13 @@ fn emit_runtime_bytes_resource(
         serialize::CoreMethod::IsEmpty,
         serialize::CoreMethod::ToBytes,
     ];
-    let (make_param_vts, make_param_bytes) = export_make_params(db, layout, export_def)?;
+    let (make_param_vts, make_param_bytes) =
+        export_make_params(db, layout, export_def)?.scalars_only()?;
+    // Scalar-param-only shape: one `MakeCoreSlot::Scalar` per param, so `make` forwards each leaf directly.
+    let make_core_slots: Vec<serialize::MakeCoreSlot> = make_param_vts
+        .iter()
+        .map(|_| serialize::MakeCoreSlot::Scalar)
+        .collect();
     let mut main_core = serialize::runtime_resource_core_module_form_ex(
         &funcs,
         &imports,
@@ -5557,6 +6059,7 @@ fn emit_runtime_bytes_resource(
         serialize::EscapeForm::RuntimeBytes(form),
         &core_methods,
         &make_param_vts,
+        &make_core_slots,
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat/sum resource paths — the user bodies lead the escape core's code section,
@@ -5662,7 +6165,13 @@ fn emit_runtime_sum_resource(
     let export_abs = layout
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the escaping sum export is not in the emission order"))?;
-    let (make_param_vts, make_param_bytes) = export_make_params(db, layout, export_def)?;
+    let (make_param_vts, make_param_bytes) =
+        export_make_params(db, layout, export_def)?.scalars_only()?;
+    // Scalar-param-only shape: one `MakeCoreSlot::Scalar` per param, so `make` forwards each leaf directly.
+    let make_core_slots: Vec<serialize::MakeCoreSlot> = make_param_vts
+        .iter()
+        .map(|_| serialize::MakeCoreSlot::Scalar)
+        .collect();
 
     let mut main_core = serialize::runtime_resource_core_module_form(
         &funcs,
@@ -5670,6 +6179,7 @@ fn emit_runtime_sum_resource(
         export_abs,
         serialize::EscapeForm::Sum(tpl),
         &make_param_vts,
+        &make_core_slots,
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat resource path — the user bodies lead the code section, so the D2/D3
@@ -5677,12 +6187,17 @@ fn emit_runtime_sum_resource(
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
+    // The sum-result escape is scalar-param-only (`scalars_only` above), so every slot is a scalar byte.
+    let make_slots: Vec<envelope::ArgSlot> = make_param_bytes
+        .iter()
+        .map(|&b| envelope::ArgSlot::Scalar(b))
+        .collect();
     Ok(envelope::assemble_runtime_resource(
         &main_core,
         &dtor_core,
         &imports,
         &import_name,
-        &make_param_bytes,
+        &make_slots,
     ))
 }
 
@@ -5701,6 +6216,10 @@ fn emit_recursive_sum_resource(
     descriptor: &[u8],
     spans: Option<&crate::spans::SpanData>,
 ) -> Result<Vec<u8>, Reject> {
+    // The `make`-forwarded params: a compound parameter is rebuilt in-guest from its flattened leaves, so
+    // its `arr-alloc`/`arr-set`/box-* ops must join the import set BEFORE it is frozen below.
+    let make_params = export_make_params(db, layout, export_def)?;
+
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
     for &def in &layout.order {
         let body = def_body(db, def)?;
@@ -5718,6 +6237,10 @@ fn emit_recursive_sum_resource(
     ] {
         used.insert(op);
     }
+    // A compound `make` param rebuilds each cell with `arr-alloc`/`arr-set` + a box op per scalar leaf.
+    make_params.collect_rebuild_ops(&mut |op| {
+        used.insert(op);
+    });
     let imports: Vec<&runtime_abi::RtOp> = used
         .iter()
         .map(|name| {
@@ -5744,14 +6267,14 @@ fn emit_recursive_sum_resource(
     let export_abs = layout.abs(export_def).ok_or_else(|| {
         Reject::decline("the escaping recursive-sum export is not in the emission order")
     })?;
-    let (make_param_vts, make_param_bytes) = export_make_params(db, layout, export_def)?;
 
     let mut main_core = serialize::runtime_resource_core_module_form(
         &funcs,
         &imports,
         export_abs,
         serialize::EscapeForm::RecursiveSum(descriptor),
-        &make_param_vts,
+        &make_params.leaf_vts,
+        &make_params.core_slots(),
     )
     .map_err(Reject::decline)?;
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
@@ -5762,7 +6285,7 @@ fn emit_recursive_sum_resource(
         &dtor_core,
         &imports,
         &import_name,
-        &make_param_bytes,
+        &make_params.boundary_slots(),
     ))
 }
 
@@ -5832,31 +6355,163 @@ fn export_make_params(
     db: &mut Db,
     layout: &Layout,
     export_def: usize,
-) -> Result<(Vec<crate::backend::wasm::lir::ValType>, Vec<u8>), Reject> {
+) -> Result<MakeParams, Reject> {
     let params = match layout.export_plan(export_def) {
         Some(e) => e.params.clone(),
         None => crate::layout::def_params(db, export_def),
     };
-    let mut vts = Vec::with_capacity(params.len());
-    let mut bytes = Vec::with_capacity(params.len());
+    // Each parameter is either a genuine SCALAR (Int/Bool/Float — one flattened leaf, forwarded directly)
+    // or a fixed-shape scalar TUPLE/RECORD (crosses as a native component `tuple<…>` the canonical ABI
+    // flattens into a run of scalar leaves, which `make` rebuilds into the cell). Params compose freely:
+    // any mix of scalar + compound, any number of each. The flattened leaves run left-to-right across all
+    // params; each compound slot's rebuild reads its own run (a leaf cursor threaded across slots at emit).
+    let mut leaf_vts = Vec::new();
+    let mut slots: Vec<MakeSlot> = Vec::new();
     for (_, t) in &params {
-        let vt = crate::backend::wasm::lir::valtype_of(t);
-        let byte = closure_boundary_byte(t);
-        match (vt, byte) {
-            (Some(vt), Some(byte)) => {
-                vts.push(vt);
-                bytes.push(byte);
+        match t.strip_nominal() {
+            crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) => {
+                // A fixed-shape compound param — including NESTED ones (a tuple-of-tuples, a record with a
+                // tuple field): `nested_fixed_shape_tuple_arg` flattens the whole tree to its depth-first
+                // scalar leaves, the recursive `FieldRebuild` that rebuilds the (nested) cell, and the
+                // `TupleFieldShape` tree the envelope mints the nested `tuple<…>` types from. A VARIABLE-
+                // length field (a `List`/`Map`/`Set` inside the compound) or a non-scalar leaf → `None`,
+                // which declines (a runtime-decoded field param is a separate, harder gap).
+                let Some((_field_bytes, field_vts, rebuild_fields, shape)) =
+                    nested_fixed_shape_tuple_arg(t)
+                else {
+                    return Err(Reject::decline(format!(
+                        "a parameterized heap-return export's compound parameter `{}` is not a fixed-shape \
+                         tuple/record of scalars (a variable-length field — a list/map/set inside the \
+                         compound — is not yet supported)",
+                        t.render_name()
+                    )));
+                };
+                leaf_vts.extend(field_vts);
+                slots.push(MakeSlot::Tuple {
+                    shape,
+                    rebuild: rebuild_fields,
+                });
             }
-            _ => {
-                return Err(Reject::decline(format!(
-                    "a parameterized heap-return export forwards scalar params only; parameter of type \
-                     `{}` has no scalar boundary type (a compound-param heap return is not yet supported)",
-                    t.render_name()
-                )));
-            }
+            _ => match (
+                crate::backend::wasm::lir::valtype_of(t),
+                closure_boundary_byte(t),
+            ) {
+                (Some(vt), Some(byte)) => {
+                    leaf_vts.push(vt);
+                    slots.push(MakeSlot::Scalar(byte));
+                }
+                _ => {
+                    return Err(Reject::decline(format!(
+                        "a parameterized heap-return export forwards scalar params and fixed-shape scalar \
+                         tuple/record params only; parameter of type `{}` has no boundary representation",
+                        t.render_name()
+                    )));
+                }
+            },
         }
     }
-    Ok((vts, bytes))
+    Ok(MakeParams { leaf_vts, slots })
+}
+
+/// The `make`-forwarded parameter plan for a heap-returning export's resource escape: the flattened CORE
+/// leaf valtypes `make` takes (all params' leaves, left-to-right) plus a per-parameter [`MakeSlot`] (a
+/// scalar leaf, or a fixed-shape tuple/record the leaves rebuild). A nullary export gives empty vecs. Any
+/// MIX of scalar + compound params, and any number of compound params, composes — the leaf cursor threads
+/// across slots at emit; the envelope mints one `tuple<…>` type per compound slot in param order.
+struct MakeParams {
+    /// The flattened core valtypes `make` receives (every param's leaves, in param order).
+    leaf_vts: Vec<crate::backend::wasm::lir::ValType>,
+    /// One entry per PARAMETER, in order: a scalar leaf (forwarded) or a compound (rebuilt from its leaves).
+    slots: Vec<MakeSlot>,
+}
+
+/// One `make` parameter: a scalar leaf (its component boundary byte) or a fixed-shape tuple/record — its
+/// (possibly NESTED) `TupleFieldShape` tree the envelope mints the `tuple<…>` type(s) from, and the
+/// recursive per-field rebuild the core cell build uses. The count of flattened leaves a slot consumes is
+/// 1 for a scalar, else the depth-first leaf count of the shape/rebuild.
+enum MakeSlot {
+    Scalar(u8),
+    Tuple {
+        shape: Vec<crate::backend::wasm::envelope::TupleFieldShape>,
+        rebuild: Vec<crate::backend::wasm::serialize::FieldRebuild>,
+    },
+}
+
+impl MakeParams {
+    /// Whether ANY parameter is a compound — the resource shapes that don't yet emit the per-slot rebuild
+    /// (sum/bytes) decline via [`Self::scalars_only`] when this is true.
+    fn any_compound(&self) -> bool {
+        self.slots
+            .iter()
+            .any(|s| matches!(s, MakeSlot::Tuple { .. }))
+    }
+
+    /// The (core leaf valtypes, inline scalar boundary bytes) for an ALL-SCALAR param set — declines if any
+    /// parameter is a compound (the caller's emitter path doesn't yet emit the tuple-arg rebuild). Used by
+    /// the sum/bytes escape emitters; the recursive-sum + flat emitters handle compounds via the slot model.
+    fn scalars_only(self) -> Result<(Vec<crate::backend::wasm::lir::ValType>, Vec<u8>), Reject> {
+        if self.any_compound() {
+            return Err(Reject::decline(
+                "a compound parameter on this heap-return shape is not yet emitted (only a runtime \
+                 collection / recursive-sum / BigInt / Rational / fixed-compound result supports a \
+                 compound parameter this increment)",
+            ));
+        }
+        let bytes = self
+            .slots
+            .iter()
+            .map(|s| match s {
+                MakeSlot::Scalar(b) => *b,
+                MakeSlot::Tuple { .. } => unreachable!("guarded by any_compound above"),
+            })
+            .collect();
+        Ok((self.leaf_vts, bytes))
+    }
+
+    /// The envelope-side per-parameter boundary slots — a scalar byte, or a `tuple<…>` shape the envelope
+    /// mints. Shared with the closure slot-model helpers (`mint_call_arg_tuple_types` /
+    /// `make_functype_slots`).
+    fn boundary_slots(&self) -> Vec<crate::backend::wasm::envelope::ArgSlot> {
+        use crate::backend::wasm::envelope::ArgSlot;
+        self.slots
+            .iter()
+            .map(|s| match s {
+                MakeSlot::Scalar(b) => ArgSlot::Scalar(*b),
+                MakeSlot::Tuple { shape, .. } => ArgSlot::Tuple(shape.clone()),
+            })
+            .collect()
+    }
+
+    /// Feed each runtime op a COMPOUND param's cell rebuild references (`arr-alloc`/`arr-set` + a box op
+    /// per scalar leaf) into `out`, so the emitter imports them. A no-op when every param is a scalar.
+    fn collect_rebuild_ops(&self, out: &mut impl FnMut(&'static str)) {
+        let mut any = false;
+        for s in &self.slots {
+            if let MakeSlot::Tuple { rebuild, .. } = s {
+                any = true;
+                for f in rebuild {
+                    f.collect_box_ops(out);
+                }
+            }
+        }
+        if any {
+            out("arr-alloc");
+            out("arr-set");
+        }
+    }
+
+    /// The per-parameter cell rebuilds `make`'s core body threads (one per param; a scalar contributes an
+    /// empty rebuild it forwards directly). Paired with [`Self::boundary_slots`] positionally.
+    fn core_slots(&self) -> Vec<crate::backend::wasm::serialize::MakeCoreSlot> {
+        use crate::backend::wasm::serialize::MakeCoreSlot;
+        self.slots
+            .iter()
+            .map(|s| match s {
+                MakeSlot::Scalar(_) => MakeCoreSlot::Scalar,
+                MakeSlot::Tuple { rebuild, .. } => MakeCoreSlot::Tuple(rebuild.clone()),
+            })
+            .collect()
+    }
 }
 
 /// The runtime ops every emitted function will call, into `used`. Walks BOTH the top-level defs

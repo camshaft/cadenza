@@ -219,11 +219,19 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // access coexist.
     names.insert("Symbol".to_string(), symbol_module(ast));
 
-    // The binary INTEGER operators — records whose META channel carries their type (`(meta t)`, a
+    // The binary ARITHMETIC operators — records whose META channel carries their type (`(meta t)`, a
     // compile-time type-lambda) and their reduction (`(meta apply)`, the intrinsic). `(+ a b)` is the
     // application of the value `+` resolves to — the SAME mechanism every application uses, dispatched
     // by the head's meta channel, never by an operator name the resolver special-cases. Arithmetic,
     // division, shift, and bitwise all share the width-generic `∀a. (Int a) → (Int a) → (Int a)` type.
+    // `+`/`-`/`*`/`/` are the ONE arithmetic-operator spelling across EVERY numeric type: the `(Int a)`
+    // scheme is the fixed-width-integer case, and `infer`/`lower` route a `Float`/`BigInt`/`Rational`/
+    // `Qty` operand to that type's arithmetic by the SOLVED operand type (a dedicated `apply_type` arm +
+    // a `lower` dispatch, never an operator-name special-case). Both operands must be ONE numeric type —
+    // a mix (`(+ 2 2.0)`) is CDZ0301 from that dispatch, not a coercion (numeric-model.md §An Arithmetic
+    // Operator Requires Both Operands To Be One Numeric Type). `%`/`<<`/`>>`/`&`/`|`/`^` are integer-only.
+    //= spec/capabilities/numeric-model.md#an-arithmetic-operator-requires-both-operands-to-be-one-numeric-type
+    //# An arithmetic operator MUST be a single symbol whose result type and operation are resolved from its operand types, rather than a set of type-specific symbols the author selects by hand — the same operator writes integer, arbitrary-precision, exact-rational, and floating-point arithmetic, dispatched on what its operands are.
     for op in ["+", "-", "*", "/", "%", "<<", ">>", "&", "|", "^"] {
         names.insert(op.to_string(), operator_record(ast, op, OpShape::IntBinary));
     }
@@ -267,20 +275,32 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
         names.insert("trap".to_string(), list_op_record(ast, "trap", lambda));
     }
 
-    // The FLOATING-POINT binary operators `+.` `-.` `*.` `/.` — spelled distinctly from the integer
-    // `+`/`-`/`*`/`/` (OCaml-style dot suffix) so no operator silently mixes an integer and a float
-    // operand. Each is a width-generic `∀a. (Float a) → (Float a) → (Float a)` — the SAME operator-record
-    // mechanism as the integer arithmetic, differing only in the `Float` type constructor. An integer
-    // operand fails to unify (`(+. 2 2.0)` → CDZ0301). These names tokenize as plain atoms in the s-expr
-    // surface.
-    //= spec/capabilities/numeric-model.md#a-floating-point-operation-uses-a-floating-point-operator
-    //# An arithmetic operation on floating-point values MUST be written with a floating-point operator distinct from the integer arithmetic operator, so that no operator silently accepts one integer and one floating-point operand and no integer operator coerces a floating-point operand.
-    for op in ["+.", "-.", "*.", "/."] {
+    // `print` / `read` — the compiler-exposed PRINTER and READER over the `Ast` value type (self-hosting-
+    // surface.md §Text Is A Projection Reached By A Reader And A Printer). `print : Ast → String` renders an
+    // AST value as its canonical re-readable text; `read : String → Ast` parses that text back. Bare-name
+    // operator records (like `trap`), MONOMORPHIC — a zero-parameter `(fn () (-> …))` wrapper so `scheme_of`
+    // reads a monomorphic scheme, not a bare type-value. `(meta apply)` = the `print`/`read` intrinsic
+    // (`Prim::Print`/`Prim::Read`), folded on a compile-time-visible operand in `lower`. Reading the text a
+    // printer produced round-trips: `read(print(v)) == v` (the invariant the corpus witnesses).
+    //= spec/capabilities/self-hosting-surface.md#a-printer-renders-the-canonical-representation-as-re-readable-text
+    //# Reading the text a printer produced for a value MUST yield a value equal to the original under structural equality, so that the reader and printer round-trip.
+    {
+        let print_lambda = mono_op_type_lambda(ast, "Ast", "String");
         names.insert(
-            op.to_string(),
-            operator_record(ast, op, OpShape::FloatBinary),
+            "print".to_string(),
+            list_op_record(ast, "print", print_lambda),
         );
+        let read_lambda = mono_op_type_lambda(ast, "String", "Ast");
+        names.insert("read".to_string(), list_op_record(ast, "read", read_lambda));
     }
+
+    // Floating-point arithmetic reuses the ONE `+`/`-`/`*`/`/` operator above — there is no distinct
+    // float operator. A `Float`-typed operand routes the `Add`/`Sub`/`Mul`/`Div` prim to the machine
+    // float op by the SOLVED operand type (`infer::apply_type` types it `Float`; `lower` remaps to
+    // `Prim::FAdd`… and folds/emits `f64.add`…), exactly as a `BigInt`/`Rational`/`Qty` operand routes to
+    // its own arithmetic. A mixed integer/float application is CDZ0301 (numeric-model.md §An Arithmetic
+    // Operator Requires Both Operands To Be One Numeric Type) — the mismatch follows from the operands
+    // disagreeing, not from the operator naming a type.
 
     // `Float` — the float-TYPE constructor: `(Float 32)` / `(Float 64)` in type position builds the
     // float type-value, applied via `(meta apply)` exactly as `Int`/`UInt`. A width outside the admitted
@@ -1813,6 +1833,20 @@ fn trap_type_lambda(ast: &mut Arenas) -> StructId {
     list_type_lambda(ast, body)
 }
 
+/// Build the MONOMORPHIC operator scheme `(fn () (-> FROM TO))` — a zero-parameter type-lambda over the
+/// concrete named types `FROM`/`TO`. The `(fn () …)` wrapper is REQUIRED even with no quantified
+/// variables so `scheme_of` reads a monomorphic SCHEME rather than collapsing the bare arrow to
+/// `Ty::Type` (the same reason the fixed-width `checked_field`/float `of-int` schemes wrap a `(fn () …)`).
+/// Used for `print : Ast → String` and `read : String → Ast`.
+fn mono_op_type_lambda(ast: &mut Arenas, from: &str, to: &str) -> StructId {
+    let from_ty = push_atom(ast, Leaf::Name(from.to_string()));
+    let to_ty = push_atom(ast, Leaf::Name(to.to_string()));
+    let body = arrow_type(ast, from_ty, to_ty); // (-> FROM TO)
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]); // zero parameters — monomorphic
+    push_list(ast, vec![fn_head, params, body])
+}
+
 /// Build `(List a)` — the list type applied to the element parameter `a`, a shared shape in the `List`
 /// operation type-lambdas (each occurrence is a fresh `(List a)` referencing the same parameter name).
 fn list_a_type(ast: &mut Arenas) -> StructId {
@@ -1847,10 +1881,6 @@ enum OpShape {
     Comparison,
     /// `∀a. a → a → Ordering` — the three-way `compare` (bare operand var, `Ordering` sum result).
     Compare,
-    /// `∀a. (Float a) → (Float a) → (Float a)` — the width-generic FLOAT binary operators (`+.` `-.`
-    /// `*.` `/.`). The float analogue of `IntBinary`; only the type constructor differs (`Float` vs
-    /// `Int`), so an integer operand fails to unify (`(+. 2 2.0)` → CDZ0301).
-    FloatBinary,
 }
 
 /// An operator record `(record ((meta t) TYPE-LAMBDA) ((meta apply) (intrinsic PRIM)))`. `(meta t)`
@@ -1875,7 +1905,6 @@ fn operator_record(ast: &mut Arenas, op: &str, shape: OpShape) -> StructId {
         OpShape::IntBinary => binop_type_lambda(ast),
         OpShape::Comparison => comparison_type_lambda(ast),
         OpShape::Compare => compare_type_lambda(ast),
-        OpShape::FloatBinary => float_binop_type_lambda(ast),
     };
     let t_field = meta_field(ast, "t", lambda);
     let prim = intrinsic_node(ast, op);
@@ -1906,32 +1935,6 @@ fn binop_type_lambda(ast: &mut Arenas) -> StructId {
     let inner = arrow(ast, ia2, ia3);
     let body = arrow(ast, ia1, inner);
     // `(fn (a) BODY)`.
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
-    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
-    let params = push_list(ast, vec![a_param]);
-    push_list(ast, vec![fn_head, params, body])
-}
-
-/// The type-lambda `(fn (a) (-> (Float a) (-> (Float a) (Float a))))` shared by the FLOAT binary
-/// operators `+.`/`-.`/`*.`/`/.` — the float analogue of [`binop_type_lambda`], generic over the float
-/// width `a`. Identical shape, only the type constructor differs (`Float` vs `Int`), so `infer` reads it
-/// as the scheme `∀a. (Float a) → (Float a) → (Float a)` and an integer operand fails to unify with
-/// `Float` (`(+. 2 2.0)` → CDZ0301, no silent promotion).
-fn float_binop_type_lambda(ast: &mut Arenas) -> StructId {
-    let float_a = |ast: &mut Arenas| -> StructId {
-        let float = push_atom(ast, Leaf::Name("Float".to_string()));
-        let a = push_atom(ast, Leaf::Name("a".to_string()));
-        push_list(ast, vec![float, a])
-    };
-    let arrow = |ast: &mut Arenas, l: StructId, r: StructId| -> StructId {
-        let arr = push_atom(ast, Leaf::Name("->".to_string()));
-        push_list(ast, vec![arr, l, r])
-    };
-    let fa1 = float_a(ast);
-    let fa2 = float_a(ast);
-    let fa3 = float_a(ast);
-    let inner = arrow(ast, fa2, fa3);
-    let body = arrow(ast, fa1, inner);
     let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     let a_param = push_atom(ast, Leaf::Name("a".to_string()));
     let params = push_list(ast, vec![a_param]);

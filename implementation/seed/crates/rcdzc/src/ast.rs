@@ -847,7 +847,7 @@ impl Decimal {
     }
 
     /// Build a `Decimal` from a computed `f64` so that `to_f64_bits()` returns EXACTLY this value's
-    /// bits — the inverse used by the float-arithmetic fold to represent a computed result (`(+. 0.1
+    /// bits — the inverse used by the float-arithmetic fold to represent a computed result (`(+ 0.1
     /// 0.2)` → the f64 `0.30000000000000004`) as a `Core::ConstFloat`. `None` for a NON-FINITE result
     /// (`±inf`/NaN): a `Decimal` holds only finite values, and inf/NaN have no written form the reader
     /// accepts (the float-literal-overflow gap), so a fold producing one DECLINES rather than inventing

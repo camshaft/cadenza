@@ -114,6 +114,26 @@ struct QuotePlan {
 /// value (see the module docs). Runs during `Db::load`, before the parent index — so the emitted
 /// `(. Ast …)` projections and `(list …)` forms resolve like hand-written source. Returns the
 /// quote-PATTERN nodes with a NON-FINAL `,@` splice (ill-formed), which `collect_faults` reports CDZ0221.
+///
+/// So `(quote <expr>)` evaluates to an `Ast` sum VALUE representing `<expr>`'s structure without
+/// evaluating `<expr>` (the reification builds the constructor application, never runs the quoted form),
+/// and that `Ast` is an ordinary sum type deconstructible by pattern matching like any other sum.
+//= spec/capabilities/metaprogramming.md#quote-produces-an-ast-value
+//# The expression `(quote <expr>)` MUST evaluate to an AST sum type value representing the structure of `<expr>`, without evaluating `<expr>` itself.
+//= spec/capabilities/metaprogramming.md#quote-produces-an-ast-value
+//# The AST MUST be a sum type with variants for each syntactic form, deconstructible by pattern matching like any other sum type.
+// Quasiquote is the same reification with SELECTIVE evaluation: a depth counter (Bawden) tracks active
+// positions — the body starts at depth 1, each nested `quasiquote` bumps it, each `unquote` drops it; an
+// `unquote` reached at depth 1 is ACTIVE (its operand stays live, evaluated + inserted into the built
+// AST), a deeper one is reified inertly — so `` `(+ ,,x)`` evaluates the inner `,` and quasiquote nests.
+// (An active `,@` unquote-SPLICING is a later increment — it bails here — so §…-selective-evaluation's
+// splice sentence stays uncited.)
+//= spec/capabilities/metaprogramming.md#quasiquote-constructs-ast-with-selective-evaluation
+//# The expression `` `<template>`` (quasiquote) MUST produce an AST value like `quote`, but with selective evaluation at marked positions.
+//= spec/capabilities/metaprogramming.md#quasiquote-constructs-ast-with-selective-evaluation
+//# Any subexpression `,<expr>` (unquote) within a quasiquote template MUST evaluate `<expr>` normally and insert its result into the AST being constructed at that position.
+//= spec/capabilities/metaprogramming.md#quasiquote-constructs-ast-with-selective-evaluation
+//# Quasiquote MUST nest, so that ``` ``(+ ,,x)``` evaluates the inner `,` to produce `` `(+ ,<x-value>)``.
 pub fn reify_quotes(ast: &mut Arenas) -> Vec<StructId> {
     // Snapshot the pre-existing node count: only ORIGINAL nodes can be a source quote, and reification
     // APPENDS (ids >= this bound), so the scan must not consider its own output. Descending id order so
@@ -496,6 +516,25 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
 ///  - `(unquote-splicing name)` as the FINAL element of a compound → a `.. name` REST binder in the list
 ///    pattern (binds the remaining elements); anywhere else → bail (a non-final splice is CDZ0221).
 ///  - compound `(a b c)` → `(Ast.List (list <pat a> <pat b> <pat c>))` — a fixed-arity list pattern.
+///
+/// Because this desugars a quasiquote pattern to the EQUIVALENT `Ast.*` sum-constructor pattern, matching
+/// through it is indistinguishable (by structural equality or encoding) from matching through the
+/// constructors directly; a literal subterm matches by equality, a `,<P>` unquote matches its sub-tree
+/// against `P` (binding when `P` is a name), and a final `,@name` splice binds the remaining list
+/// elements; exhaustiveness is the ordinary match rule (an all-quote-pattern match needs a catch-all or
+/// is CDZ0210); and it layers over the untyped `Ast` substrate so it destructures arbitrary tree shape.
+//= spec/capabilities/metaprogramming.md#a-quasiquote-in-pattern-position-destructures-an-ast
+//# A quasiquote template `` `<template>`` appearing in pattern position MUST destructure an abstract-syntax-tree scrutinee, matching the template's structure against the tree.
+//= spec/capabilities/metaprogramming.md#a-quasiquote-in-pattern-position-destructures-an-ast
+//# A quasiquote pattern MUST be equivalent to the pattern formed from the corresponding abstract-syntax-tree sum constructors, so that a value matched through a quasiquote pattern cannot be distinguished by structural equality or by the encoding from the same value matched through the constructors.
+//= spec/capabilities/metaprogramming.md#a-quasiquote-in-pattern-position-destructures-an-ast
+//# A literal subterm within a quasiquote pattern MUST match the abstract-syntax-tree node it denotes by equality, and a `,<pattern>` (unquote) subterm MUST match the sub-tree at its position against `<pattern>`, binding the sub-tree when `<pattern>` is a name.
+//= spec/capabilities/metaprogramming.md#a-quasiquote-in-pattern-position-destructures-an-ast
+//# A `,@<name>` (unquote-splicing) subterm within a quasiquote pattern MUST bind the remaining elements of its enclosing list as a list, and MUST appear only as the final element of its template.
+//= spec/capabilities/metaprogramming.md#a-quasiquote-in-pattern-position-destructures-an-ast
+//# A match over an abstract-syntax-tree scrutinee whose arms are quasiquote patterns MUST be subject to the exhaustiveness rule exactly as any other match, so that a quasiquote pattern is not a special case (core-semantics.md §"Matching Is Exhaustive Or Rejected").
+//= spec/capabilities/metaprogramming.md#a-quasiquote-in-pattern-position-destructures-an-ast
+//# A quasiquote pattern MUST layer over the untyped abstract-syntax-tree analysis substrate, so that it may destructure arbitrary tree structure — the dual of the construction quote, which carries the type of the expression it builds (§"A Typed Quote Carries The Type Of The Expression It Builds").
 fn reify_pattern(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<StructId> {
     let Struct::List(items) = ast.get(node) else {
         // A leaf: an integer/name literal reifies exactly as construction (matches by equality). A leaf

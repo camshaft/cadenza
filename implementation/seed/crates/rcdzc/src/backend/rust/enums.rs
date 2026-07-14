@@ -599,7 +599,7 @@ fn ground_free_vars(ty: &crate::ty::Ty) -> crate::ty::Ty {
         Ty::Var(n) if *n < PARAM_SENTINEL_BASE => Ty::Unit,
         Ty::Any => Ty::Unit,
         Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(ground_free_vars).collect()),
-        Ty::Record(fields) => Ty::Record(std::sync::Arc::new(
+        Ty::Record(fields) => Ty::Record(std::rc::Rc::new(
             fields
                 .iter()
                 .map(|(k, v)| (k.clone(), ground_free_vars(v)))

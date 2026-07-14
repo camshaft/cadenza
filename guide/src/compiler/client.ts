@@ -60,6 +60,13 @@ export function renderSyntax(text: string, from: Surface, to: RenderTarget): Pro
   return client().renderSyntax(text, from, to);
 }
 
+/// Like `renderSyntax`, but renders the ML target for human DISPLAY (a rational bare, a quantity in its
+/// concise `<value> <unit>` surface, the result type annotation dropped). Used by the calculator to show
+/// a result readably; the playground keeps the canonical, re-readable `renderSyntax`.
+export function renderSyntaxDisplay(text: string, from: Surface, to: RenderTarget): Promise<string> {
+  return client().renderSyntaxDisplay(text, from, to);
+}
+
 export function renderValue(bytes: Uint8Array): Promise<string> {
   return client().renderValue(bytes);
 }

@@ -753,6 +753,27 @@ pub fn render_syntax(text: &str, from: &str, to: &str) -> Result<String, JsError
     String::from_utf8(bytes).map_err(|_| JsError::new("rendered output was not valid UTF-8"))
 }
 
+/// Like [`render_syntax`], but renders the ML target for human DISPLAY (the spec's "typed-result-to-
+/// text" surface): a `Rational` prints bare (`1/4`), a quantity in its concise `<value> <unit>` form,
+/// and an outer result type annotation is dropped. Used by the calculator to render a result readably;
+/// the playground keeps the canonical, re-readable [`render_syntax`]. For a non-ML target this is
+/// identical to `render_syntax` (display is an ML-printer concern).
+#[wasm_bindgen]
+pub fn render_syntax_display(text: &str, from: &str, to: &str) -> Result<String, JsError> {
+    let from = parse_format(from)?;
+    let to = parse_format(to)?;
+    // Read to the canonical arena, then write with display enabled (ML) or plainly (any other target).
+    let arenas = convert::read(text.as_bytes(), from)
+        .map_err(|e| JsError::new(&format!("read {}: {}", from.name(), e.0)))?;
+    let opts = convert::Options {
+        display: true,
+        ..Default::default()
+    };
+    let bytes = convert::write_with(&arenas, to, opts)
+        .map_err(|e| JsError::new(&format!("write {}: {}", to.name(), e.0)))?;
+    String::from_utf8(bytes).map_err(|_| JsError::new("rendered output was not valid UTF-8"))
+}
+
 /// Decode canonical value-form bytes (the `list<u8>` an emitted compound program returns from its
 /// `encode` accessor) into their `(: value type)` display text.
 ///

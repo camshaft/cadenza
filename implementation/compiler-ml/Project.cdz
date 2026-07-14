@@ -1,0 +1,24 @@
+// The project manifest for the Cadenza-in-Cadenza compiler port, written in Cadenza itself.
+// `cdz` reads these well-known top-level defs to know how to build / run / test the project
+// (a def is the manifest — no new syntax, no per-command flags).
+//
+//   cdz test          — search up for this Project.cdz and run its suite (like cargo)
+//   cdz test .        — same, naming this directory
+//
+// A file-list entry may be a literal name OR a glob (`*.cdz`, `src/*.cdz`, `**/x.cdz`).
+
+def name = "compiler-ml"
+
+// The port's library modules — every source file under src/ (a wildcard, so a new pass just drops
+// into src/ and is picked up automatically). As the pipeline grows (decode / resolve / infer / lower
+// / emit) each new src/*.cdz joins modules + tests with no manifest edit.
+def modules = ["src/*.cdz"]
+
+// The modules whose `@test` definitions form the suite. Same-file with their code for now (a cross-file
+// test cannot yet construct a type whose variant shadows a prelude name — see repros/).
+def tests = ["src/*.cdz"]
+
+// Files removed from the globs above (a demo/fixture a wildcard would otherwise sweep up). Empty here —
+// the framework DEMO `tests-example.cdz` lives OUTSIDE src/, so `src/*.cdz` never matches it — but the
+// field is supported: e.g. `def exclude = ["src/scratch.cdz"]`.
+def exclude = []

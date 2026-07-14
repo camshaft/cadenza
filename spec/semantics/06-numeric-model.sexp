@@ -96,10 +96,12 @@
 
 (case "an explicit conversion makes the operation well-typed"
   (doc    "Witnesses numeric-model.md #Exact Arithmetic Is Exact (2nd sentence): the conversion
-           Float64.of-int is written explicitly, then the two Float64 operands are added with the FLOAT
-           operator `+.` (numeric-model.md #A Floating-Point Operation Uses A Floating-Point Operator) —
-           the integer `+` would reject even two Float64 operands, since `+` is int-only.")
-  (input  (+. (Float64.of-int 1) 2.0))
+           Float64.of-int is written explicitly, then the two Float64 operands are added with the ONE
+           arithmetic operator `+` (numeric-model.md #An Arithmetic Operator Requires Both Operands To Be
+           One Numeric Type) — `+` over two Float64 operands is float addition, dispatched on the operand
+           type. The unconverted `(+ 1 2.0)` would reject (an Int64/Float64 mix), which is why the `1` is
+           converted first.")
+  (input  (+ (Float64.of-int 1) 2.0))
   (output (: 3.0 Float64)))
 
 (case "wrapping arithmetic uses the named wrapping form of the operator"
@@ -770,79 +772,83 @@
 (case "floating-point uses the fixed rounding mode"
   (doc    "The round-to-nearest-even sum under the pinned deterministic float mode
            (contracts/determinism-and-fuel.md); byte-identical on every conforming runtime. Written with
-           the FLOAT operator `+.` — 0.1 and 0.2 are Float64, and `+.` is the float addition distinct
-           from the integer `+` (numeric-model.md #A Floating-Point Operation Uses A Floating-Point
-           Operator). The famous non-exact sum: 0.1 + 0.2 rounds to 0.30000000000000004, not 0.3.")
-  (input  (+. 0.1 0.2))
+           the ONE arithmetic operator `+` — 0.1 and 0.2 are Float64, so `+` is float addition, dispatched
+           on the operand type (numeric-model.md #An Arithmetic Operator Requires Both Operands To Be One
+           Numeric Type). The famous non-exact sum: 0.1 + 0.2 rounds to 0.30000000000000004, not 0.3.")
+  (input  (+ 0.1 0.2))
   (output (: 0.30000000000000004 Float64)))
 
-; --- Float arithmetic uses the DISTINCT float operators `+.` `-.` `*.` `/.` --------------------------
-; numeric-model.md #A Floating-Point Operation Uses A Floating-Point Operator: float arithmetic is
-; spelled distinctly from integer arithmetic, so no operator silently mixes an integer and a float
-; operand. The integer `+`/`-`/`*`/`/` are int-only (a float operand → CDZ0301, the mixing cases above);
-; the float `+.`/`-.`/`*.`/`/.` are float-only (an integer operand → CDZ0301). These pin the float
-; operators over Float64 operands, and that an integer operand to a float operator is rejected.
+; --- Float arithmetic uses the ONE arithmetic operator `+` `-` `*` `/` -------------------------------
+; numeric-model.md #An Arithmetic Operator Requires Both Operands To Be One Numeric Type: there is a
+; SINGLE arithmetic-operator spelling; the operand type selects the operation. `+`/`-`/`*`/`/` over two
+; Float64 operands is float arithmetic; over two Int64 operands it is integer arithmetic. Both operands
+; must be one numeric type — a mix (a float and an integer) → CDZ0301 (the mixing cases above), in EITHER
+; operand order. These pin `+`/`-`/`*`/`/` over Float64 operands and the mixed-operand rejection.
 
-(case "float multiplication uses the float operator"
-  (doc    "`(*. 6.0 7.0)` = 42.0 : Float64 — float multiplication under `*.`, the float companion of the
-           integer `*`. Result is a Float64 (42.0), not the Int64 42 the integer `(* 6 7)` gives.")
-  (input  (*. 6.0 7.0))
+(case "float multiplication uses the arithmetic operator"
+  (doc    "`(* 6.0 7.0)` = 42.0 : Float64 — float multiplication under `*`, dispatched on the Float64
+           operands. Result is a Float64 (42.0), not the Int64 42 the integer `(* 6 7)` gives — the same
+           operator, the operand type deciding.")
+  (input  (* 6.0 7.0))
   (output (: 42.0 Float64)))
 
-(case "float subtraction uses the float operator"
-  (doc    "`(-. 5.5 2.0)` = 3.5 : Float64 — float subtraction under `-.`.")
-  (input  (-. 5.5 2.0))
+(case "float subtraction uses the arithmetic operator"
+  (doc    "`(- 5.5 2.0)` = 3.5 : Float64 — float subtraction under `-`, dispatched on the Float64 operands.")
+  (input  (- 5.5 2.0))
   (output (: 3.5 Float64)))
 
 (case "float division rounds under the fixed mode"
-  (doc    "`(/. 1.0 4.0)` = 0.25 : Float64 — float division under `/.`, which ROUNDS (unlike integer `/`
-           which truncates and rational `/` which is exact). 1/4 is exactly representable, so 0.25.")
-  (input  (/. 1.0 4.0))
+  (doc    "`(/ 1.0 4.0)` = 0.25 : Float64 — float division under `/` over Float64 operands, which ROUNDS
+           (unlike integer `/` over Int64 which truncates and rational `/` which is exact — the same
+           operator, the operand type deciding). 1/4 is exactly representable, so 0.25.")
+  (input  (/ 1.0 4.0))
   (output (: 0.25 Float64)))
 
 (case "float division that does not divide evenly rounds to nearest"
-  (doc    "`(/. 1.0 3.0)` = 0.3333333333333333 : Float64 — 1/3 is not exactly representable in binary64,
+  (doc    "`(/ 1.0 3.0)` = 0.3333333333333333 : Float64 — 1/3 is not exactly representable in binary64,
            so the quotient rounds to the nearest representable value under the fixed round-to-nearest-even
-           mode. Pins that float `/.` rounds deterministically.")
-  (input  (/. 1.0 3.0))
+           mode. Pins that float `/` (Float64 operands) rounds deterministically.")
+  (input  (/ 1.0 3.0))
   (output (: 0.3333333333333333 Float64)))
 
-(case "the float operator rejects an integer operand and does not promote it"
-  (doc    "`(+. 2 2.0)` supplies an Int64 `2` where the float `+.` wants a Float64 — the operand types do
-           not unify, so it is rejected (CDZ0301), NOT promoted to `2.0` (numeric-model.md #Numeric Types
-           Do Not Silently Promote, and #A Floating-Point Operation Uses A Floating-Point Operator). The
-           dual of `(+ 2 2.0)` (an int operator rejecting a float operand): neither operator coerces.")
-  (input  (+. 2 2.0))
+(case "the arithmetic operator rejects a float-first mixed operand pair"
+  (doc    "`(+ 2.0 2)` supplies a Float64 `2.0` and an Int64 `2` — two distinct numeric types under the ONE
+           arithmetic operator — so it is rejected (CDZ0301), NOT promoted (numeric-model.md #An Arithmetic
+           Operator Requires Both Operands To Be One Numeric Type; #Numeric Types Do Not Silently Promote).
+           The operand-order dual of `(+ 2 2.0)` above (integer-first): the rejection follows from the
+           operands disagreeing, regardless of which operand comes first — neither operand's type wins.")
+  (input  (+ 2.0 2))
   (error  CDZ0301))
 
 ; --- Runtime float operands: the EMITTED machine op, not the constant fold -----------------------
 ; The float-arithmetic cases above use CONSTANT operands, so the compiler folds them at build time. A
-; value that arrives at RUN TIME (an argument to the exported entry) cannot be folded, so the float
-; operator is emitted as a real machine instruction (`f64.add`/…). These `(call <export> <arg>…)` cases
-; run each float operator over runtime Float64 operands and pin that the emitted path AGREES with the
-; folded constant cases. Unlike the integer arithmetic these emit NO overflow guard — a float op never
-; traps (IEEE overflow → inf). CORE cases (the seed realizes runtime Float64 operators).
+; value that arrives at RUN TIME (an argument to the exported entry) cannot be folded, so the arithmetic
+; operator is emitted as a real machine instruction (`f64.add`/…) — dispatched to the float op by the
+; Float64 operand type. These `(call <export> <arg>…)` cases run each arithmetic operator over runtime
+; Float64 operands and pin that the emitted path AGREES with the folded constant cases. Unlike the integer
+; arithmetic these emit NO overflow guard — a float op never traps (IEEE overflow → inf). CORE cases (the
+; seed realizes runtime Float64 operators).
 
 (case "a runtime float addition emits the machine add"
-  (doc    "`(def (main (: a Float64) (: b Float64)) (+. a b))` called with (0.1, 0.2). The addition cannot
+  (doc    "`(def (main (: a Float64) (: b Float64)) (+ a b))` called with (0.1, 0.2). The addition cannot
            fold (both operands are runtime), so it is emitted as `f64.add` — the non-exact IEEE sum
-           0.30000000000000004, matching the folded `(+. 0.1 0.2)` case. Pins the emitted float-add path.")
-  (input  (do (def (main (: a Float64) (: b Float64)) (+. a b)) (export main)))
+           0.30000000000000004, matching the folded `(+ 0.1 0.2)` case. Pins the emitted float-add path.")
+  (input  (do (def (main (: a Float64) (: b Float64)) (+ a b)) (export main)))
   (call   main (: 0.1 Float64) (: 0.2 Float64))
   (output (: 0.30000000000000004 Float64)))
 
 (case "a runtime float multiplication emits the machine mul"
-  (doc    "`(*. a b)` over runtime Float64 operands emits `f64.mul`; `(6.0, 7.0)` = 42.0, matching the
-           folded `(*. 6.0 7.0)`. Pins the emitted float-multiply path.")
-  (input  (do (def (main (: a Float64) (: b Float64)) (*. a b)) (export main)))
+  (doc    "`(* a b)` over runtime Float64 operands emits `f64.mul`; `(6.0, 7.0)` = 42.0, matching the
+           folded `(* 6.0 7.0)`. Pins the emitted float-multiply path.")
+  (input  (do (def (main (: a Float64) (: b Float64)) (* a b)) (export main)))
   (call   main (: 6.0 Float64) (: 7.0 Float64))
   (output (: 42.0 Float64)))
 
 (case "a runtime float division rounds under the fixed mode"
-  (doc    "`(/. a b)` over runtime operands emits `f64.div`, which rounds under the fixed round-to-
-           nearest-even mode; `(1.0, 3.0)` = 0.3333333333333333, matching the folded `(/. 1.0 3.0)`. Pins
+  (doc    "`(/ a b)` over runtime Float64 operands emits `f64.div`, which rounds under the fixed round-to-
+           nearest-even mode; `(1.0, 3.0)` = 0.3333333333333333, matching the folded `(/ 1.0 3.0)`. Pins
            the emitted float-divide path and that it rounds deterministically (not a trap on inexactness).")
-  (input  (do (def (main (: a Float64) (: b Float64)) (/. a b)) (export main)))
+  (input  (do (def (main (: a Float64) (: b Float64)) (/ a b)) (export main)))
   (call   main (: 1.0 Float64) (: 3.0 Float64))
   (output (: 0.3333333333333333 Float64)))
 
@@ -851,7 +857,7 @@
            The explicit int→float conversion (numeric-model.md #A Conversion Involving A Floating-Point
            Type Is Explicit) is TOTAL — an integer always has a float image (a large magnitude rounds to
            the nearest representable float, it does not trap). Pins the emitted int→float convert path,
-           the runtime dual of the folded `(Float64.of-int 1)` inside the `(+. …)` case above.")
+           the runtime dual of the folded `(Float64.of-int 1)` conversion.")
   (input  (do (def (main (: n Int64)) (Float64.of-int n)) (export main)))
   (call   main (: 42 Int64))
   (output (: 42.0 Float64)))
@@ -895,12 +901,12 @@
   (output (: 1.5 Float64)))
 
 (case "mixing two float widths without a conversion does not silently promote"
-  (doc    "`(+. (: 1.5 Float32) (: 2.0 Float64))` mixes a Float32 and a Float64 — two distinct float
+  (doc    "`(+ (: 1.5 Float32) (: 2.0 Float64))` mixes a Float32 and a Float64 — two distinct float
            types — so it is rejected (CDZ0301) rather than silently widening the Float32 to Float64
            (numeric-model.md #Numeric Types Do Not Silently Promote; #A Conversion Involving A
            Floating-Point Type Is Explicit). The float-width analogue of the integer-width no-promotion
            case; to add them a program converts one side (`(Float64.of …)`).")
-  (input  (+. (: 1.5 Float32) (: 2.0 Float64)))
+  (input  (+ (: 1.5 Float32) (: 2.0 Float64)))
   (error  CDZ0301))
 
 ; --- Explicit conversion between float widths: Float64.of promotes, Float32.of demotes ------------
@@ -928,11 +934,11 @@
   (output (: 0.10000000149011612 Float32)))
 
 (case "an explicit float-width conversion makes a mixed-width operation well-typed"
-  (doc    "The no-promotion rejection `(+. (: 1.5 Float32) (: 2.0 Float64))` is resolved by converting
-           the Float32 up explicitly: `(+. (Float64.of (: 1.5 Float32)) 2.0)` = 3.5 : Float64 — both
-           operands are now Float64, so `+.` type-checks and adds. Pins that the explicit conversion is
+  (doc    "The no-promotion rejection `(+ (: 1.5 Float32) (: 2.0 Float64))` is resolved by converting
+           the Float32 up explicitly: `(+ (Float64.of (: 1.5 Float32)) 2.0)` = 3.5 : Float64 — both
+           operands are now Float64, so `+` type-checks and adds. Pins that the explicit conversion is
            the sanctioned way to combine two float widths.")
-  (input  (+. (Float64.of (: 1.5 Float32)) 2.0))
+  (input  (+ (Float64.of (: 1.5 Float32)) 2.0))
   (output (: 3.5 Float64)))
 
 (case "converting a float to its own width is the identity"

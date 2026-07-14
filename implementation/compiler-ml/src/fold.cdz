@@ -1,0 +1,83 @@
+type Ast =
+  | Int(Int64)
+  | Str(String)
+  | Bool(Bool)
+  | Name(String)
+  | List(List(Ast))
+
+def apply-op(op: String, x: Int64, y: Int64) =
+  if op == "+" then x + y else if op == "-" then x - y else if op == "*" then x * y else 0
+
+def known-op(op: String) = if op == "+" then true else if op == "-" then true else op == "*"
+
+def fold(node: Ast) = match node with
+  | Ast.List(es) => fold-app(fold-list(es))
+  | _ => node
+
+def fold-list(es: List(Ast)) = match es with
+  | [] => []
+  | [h, .. r] => List.concat([fold(h)], fold-list(r))
+
+def fold-app(es: List(Ast)) = match es with
+  | [a, b, c] => (match a with
+    | Ast.Name(op) => (match b with
+      | Ast.Int(x) => (match c with
+        | Ast.Int(y) => (if known-op(op) then Ast.Int(apply-op(op, x, y)) else Ast.List(es))
+        | _ => Ast.List(es)
+      )
+      | _ => Ast.List(es)
+    )
+    | _ => Ast.List(es)
+  )
+  | _ => Ast.List(es)
+
+def as-int(node: Ast) = match node with
+  | Ast.Int(n) => n
+  | _ => -999
+
+@test
+def fold-add() =
+  if as-int(fold(Ast.List([Ast.Name("+"), Ast.Int(1), Ast.Int(2)]))) == 3 then
+    unit
+  else
+    trap("1+2=3")
+
+@test
+def fold-mul() =
+  if as-int(fold(Ast.List([Ast.Name("*"), Ast.Int(4), Ast.Int(5)]))) == 20 then
+    unit
+  else
+    trap("4*5=20")
+
+@test
+def fold-sub() =
+  if as-int(fold(Ast.List([Ast.Name("-"), Ast.Int(9), Ast.Int(4)]))) == 5 then
+    unit
+  else
+    trap("9-4=5")
+
+@test
+def fold-nested() =
+  if as-int(
+        fold(
+          Ast.List([Ast.Name("+"), Ast.List([Ast.Name("*"), Ast.Int(2), Ast.Int(3)]), Ast.Int(4)])
+        )
+      ) == 10 then
+    unit
+  else
+    trap("(+ (* 2 3) 4)=10")
+
+@test
+def fold-leaf() = if as-int(fold(Ast.Int(7))) == 7 then unit else trap("leaf 7")
+
+@test
+def fold-unknown-op() = match fold(Ast.List([Ast.Name("foo"), Ast.Int(1), Ast.Int(2)])) with
+  | Ast.List(_) => unit
+  | _ => trap("unknown op stays a list")
+
+@test
+def fold-non-const() = match fold(Ast.List([Ast.Name("+"), Ast.Name("x"), Ast.Int(2)])) with
+  | Ast.List(_) => unit
+  | _ => trap("non-const stays a list")
+
+export { fold }

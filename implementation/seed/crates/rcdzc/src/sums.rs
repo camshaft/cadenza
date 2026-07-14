@@ -103,7 +103,12 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
     // QUALIFIED (`Ast.Int` = `(. Ast Int)`), NOT bare — its variant names `Int`/`Name`/`List` collide with
     // prelude type/module names, and the `variant_ctor_index` build (`db.rs`) skips a prelude-colliding
     // variant so it never shadows the built-in. Nothing privileged — the same `scan_type_decl` +
-    // `synthesize` path as Option/Result/Sign/Ordering.
+    // `synthesize` path as Option/Result/Sign/Ordering, so `Ast` is CONSTRUCTED by the ordinary
+    // variant-constructor mechanism (`Ast.Int` is member access + `sum-new`) and DECONSTRUCTED by the
+    // ordinary variant-pattern match (`crate::quote::reify_pattern`) — no reflection primitive; a
+    // compiler written in the language walks a program's `Ast` value exactly as it walks any sum.
+    //= spec/capabilities/type-system.md#the-abstract-syntax-tree-is-an-ordinary-sum-type
+    //# The AST sum type MUST be constructed and deconstructed by the same variant-construction and match mechanisms as any other sum type, so that a compiler written in the language walks a program as data with no reflection primitive.
     let ast_decl = {
         let int_pay = push_atom(ast, Leaf::Name("Int64".to_string()));
         let name_pay = push_atom(ast, Leaf::Name("String".to_string()));

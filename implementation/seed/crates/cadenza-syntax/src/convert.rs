@@ -228,17 +228,24 @@ pub fn read(input: &[u8], from: Format) -> Result<Arenas, ConvertError> {
     }
 }
 
-/// Output options. Currently just the ML target line width.
+/// Output options for a `write`.
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
     /// Target line width for the ML pretty-printer.
     pub width: usize,
+    /// Render for human DISPLAY rather than for re-reading (ML target only). When set, a value's ML
+    /// text drops the round-trip ceremony — a `Rational` prints bare (`1/4`), a quantity in its
+    /// concise `<value> <unit>` surface, and an outer result type annotation is stripped — the spec's
+    /// "typed-result-to-text" display conversion (self-hosting-surface.md). `false` (the default) is
+    /// the canonical, re-readable printer that `cdz convert` and the round-trip gate rely on.
+    pub display: bool,
 }
 
 impl Default for Options {
     fn default() -> Options {
         Options {
             width: crate::printer::DEFAULT_WIDTH,
+            display: false,
         }
     }
 }
@@ -256,6 +263,9 @@ pub fn write_with(arenas: &Arenas, to: Format, opts: Options) -> Result<Vec<u8>,
         // `width`), the same width knob the ML printer uses — a single-line dump is unreadable for
         // anything but the smallest forms.
         Format::Sexpr => Ok(sexpr::print_pretty_width(arenas, opts.width).into_bytes()),
+        Format::Ml if opts.display => {
+            Ok(crate::printer::print_display(arenas, opts.width).into_bytes())
+        }
         Format::Ml => Ok(crate::printer::print(arenas, opts.width).into_bytes()),
         // A `(document …)` arena prints back to CommonMark; a NON-document root (a bare program handed
         // to `--to markdown`) is wrapped in a single ```cdz fence over its ML rendering (see
@@ -484,13 +494,31 @@ mod tests {
     fn ml_width_option_controls_wrapping() {
         let src = b"(outer (inner aaaa bbbb) (inner cccc dddd))";
         // wide: one line
-        let wide = convert_with(src, Format::Sexpr, Format::Ml, Options { width: 100 }).unwrap();
+        let wide = convert_with(
+            src,
+            Format::Sexpr,
+            Format::Ml,
+            Options {
+                width: 100,
+                ..Options::default()
+            },
+        )
+        .unwrap();
         assert_eq!(
             String::from_utf8(wide).unwrap(),
             "outer(inner(aaaa, bbbb), inner(cccc, dddd))"
         );
         // narrow: breaks
-        let narrow = convert_with(src, Format::Sexpr, Format::Ml, Options { width: 20 }).unwrap();
+        let narrow = convert_with(
+            src,
+            Format::Sexpr,
+            Format::Ml,
+            Options {
+                width: 20,
+                ..Options::default()
+            },
+        )
+        .unwrap();
         assert!(String::from_utf8(narrow).unwrap().contains('\n'));
     }
 

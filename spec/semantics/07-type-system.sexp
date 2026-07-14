@@ -400,7 +400,12 @@
   (doc    "Witnesses core-semantics.md #Types Are First-Class Values (1st sentence): a Type can be
            bound to a name, passed as an argument, returned from a function. A Type is an ordinary
            first-class value whose type is the type of types (type-system.md #Types Are First-Class
-           Values Whose Type Is The Type Of Types).")
+           Values Whose Type Is The Type Of Types). Here `Int64` is bound to `t` and RETURNED — the
+           value the program produces is that type-value, which crosses the boundary as `(: Int64 Type)`
+           (the type of a type-value is `Type`). A type-value is fully compile-time-known, so its
+           boundary form is baked from the reduced type — it flows OUT of a nullary export directly,
+           never from runtime data (a parameterized or not-fully-determined type has no boundary form
+           and is rejected).")
   (input  (let ((t Int64)) t))
   (output (: Int64 Type)))
 

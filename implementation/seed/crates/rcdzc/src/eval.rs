@@ -264,7 +264,7 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                         let t = type_in_env(db, pair[1], env)?;
                         fields.insert(Symbol::plain(name), t);
                     }
-                    Some(Ty::Record(std::sync::Arc::new(fields)))
+                    Some(Ty::Record(std::rc::Rc::new(fields)))
                 }
                 _ => None,
             }
@@ -1269,7 +1269,7 @@ fn syntactic_lambda(db: &Db, id: StructId) -> Option<(Vec<StructId>, StructId)> 
 /// function) AND reduces an `Apply` head (a function RETURNED by another application — `(adder 10)`
 /// reduces to the inner `(fn (x) …)`, so `((adder 10) 5)` applies it). This is what makes curried and
 /// returned functions work: the head of an application is itself evaluated to a lambda first.
-fn lambda_of(db: &mut Db, id: StructId) -> Option<(std::sync::Arc<[StructId]>, StructId)> {
+fn lambda_of(db: &mut Db, id: StructId) -> Option<(std::rc::Rc<[StructId]>, StructId)> {
     match resolved_of(db, id) {
         Resolved::Lambda { params, body } => Some((params, body)),
         Resolved::Ref { value } => lambda_of(db, value),
@@ -1458,7 +1458,7 @@ pub fn project_meta(db: &mut Db, id: StructId, key: &str) -> Option<StructId> {
     let rec = reduce_to_record_id(db, id)?;
     // `reduce_to_record_id` has already resolved `rec` (it dispatches on its `resolved_of`), so the
     // resolved column is FILLED — BORROW it rather than `resolved_of(db, rec)` again, which would CLONE
-    // the whole `Resolved` (for a `Resolved::Record`, an `Arc<BTreeMap>` refcount bump + drop = two atomic
+    // the whole `Resolved` (for a `Resolved::Record`, an `Rc<BTreeMap>` refcount bump + drop = two refcount
     // ops per call). `project_meta` is on the hot per-node path (`meta_apply_of`/`variant_disc_of` during
     // `collect`/`type_errors` — ~42% inclusive on a realistic module), so avoiding the per-call clone is a
     // broad win. `Column::get` returns a borrow, so the fields map is read in place.
@@ -1656,10 +1656,30 @@ pub fn record_field_names(db: &mut Db, operand: StructId) -> Vec<String> {
 pub fn runtime_member_index(db: &mut Db, operand: StructId, key: &Symbol) -> Option<usize> {
     // A NOMINAL newtype over a record IS that record handle at run time (the tag is erased), so a field
     // read on a runtime nominal operand indexes the inner record's sorted position — strip the tag.
-    match crate::infer::type_of(db, operand).strip_nominal() {
-        crate::ty::Ty::Record(fields) => fields.keys().position(|k| k == key),
-        _ => None,
-    }
+    let operand_ty = crate::infer::type_of(db, operand);
+    let crate::ty::Ty::Record(fields) = operand_ty.strip_nominal() else {
+        return None;
+    };
+    // The sorted slot of `key` was a LINEAR `fields.keys().position(…)` scan — O(fields) PER projection, so
+    // a wide record projected field-by-field was O(N²). The field order is a pure function of the record
+    // type, and every projection of the same record shares its type `Rc`, so build the whole
+    // `name → sorted-slot` map ONCE per record type (keyed by the `Rc`'s address) and read it O(1). The
+    // `guard` `Rc` pins the allocation so its address can't be reused while cached (ABA safety).
+    let ptr = std::rc::Rc::as_ptr(fields) as usize;
+    let entry = db.record_field_index.entry(ptr).or_insert_with(|| {
+        #[cfg(test)]
+        crate::db::RECORD_FIELD_INDEX_KEYS_SCANNED.with(|c| c.set(c.get() + fields.len() as u64));
+        let index = fields
+            .keys()
+            .enumerate()
+            .map(|(i, k)| (k.clone(), i))
+            .collect();
+        crate::db::RecordFieldIndex {
+            guard: std::rc::Rc::clone(fields),
+            index,
+        }
+    });
+    entry.index.get(key).copied()
 }
 
 /// Reduce the value at `id` to the element occurrences of a COMPILE-TIME-VISIBLE tuple, if it reduces
@@ -1672,7 +1692,7 @@ pub fn runtime_member_index(db: &mut Db, operand: StructId, key: &Symbol) -> Opt
 /// A `Ref` to a binding that was KEPT as a runtime `Core::Let` is NOT followed (the value lives in a
 /// slot at run time, not visibly here) — so a multi-use `let`-bound tuple projects at run time. A
 /// single-use / propagated binding's ref IS followed (it inlines to the tuple literal, which folds).
-pub fn reduce_to_tuple_elems(db: &mut Db, id: StructId) -> Option<std::sync::Arc<[StructId]>> {
+pub fn reduce_to_tuple_elems(db: &mut Db, id: StructId) -> Option<std::rc::Rc<[StructId]>> {
     match resolved_of(db, id) {
         Resolved::Tuple { elems } => Some(elems),
         Resolved::Ref { value } => {
@@ -1724,11 +1744,7 @@ pub fn reduce_to_tuple_elems(db: &mut Db, id: StructId) -> Option<std::sync::Arc
 
 /// The condition occurrence and the two branches' element occurrences of an `if` whose branches both
 /// reduce to same-arity visible tuples — the result of [`reduce_to_if_of_tuples`].
-type IfOfTuples = (
-    StructId,
-    std::sync::Arc<[StructId]>,
-    std::sync::Arc<[StructId]>,
-);
+type IfOfTuples = (StructId, std::rc::Rc<[StructId]>, std::rc::Rc<[StructId]>);
 
 /// If `id` reduces (through refs/annotations) to an `(if cond then else)`, return its three child
 /// occurrences `(cond, then_, else_)`. This is the substrate for pushing a CONSUMER (a projection, a
@@ -2042,7 +2058,7 @@ pub fn reduce_ctor(
                     .ok_or_else(|| format!("Record field `{name}` is not a type"))?;
                 fields.insert(crate::resolved::Symbol::plain(name), t);
             }
-            let rec = crate::ty::Ty::Record(std::sync::Arc::new(fields));
+            let rec = crate::ty::Ty::Record(std::rc::Rc::new(fields));
             trace!(target: "rcdzc::eval", ty = %rec.render_name(), "ctor (Record): built record type-value");
             Ok(encode_typeval(db, &rec))
         }
@@ -2272,6 +2288,19 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
         return Some(crate::ty::Ty::Var(binder.0));
     }
     match resolved_of(db, id) {
+        // A `let`-bound (or otherwise referenced) name whose init IS a type expression — `(let ((t Int64))
+        // t)`, the body `t` a `Ref` to the binding's init `Int64`. Follow the reference to its value and
+        // reduce THAT, so a type-value flows through a binding exactly as a unit does through `unit_of`'s
+        // `Ref` arm. Guarded to a Ref whose OWN `(meta t)` projection is absent (a ground-type MODULE
+        // record like `Int64` is also `Resolved::Ref`-shaped but reduces via its `(meta t)` below), so the
+        // module path is unchanged; only a binding-to-a-type-expression takes this follow-through.
+        Resolved::Ref { value }
+            if value != id
+                && project_meta(db, id, "t").is_none()
+                && variant_disc_of(db, id).is_none() =>
+        {
+            typeval_of(db, value)
+        }
         // A ground-type record: read its `(meta t)`, which holds the type-value.
         Resolved::Record { .. } | Resolved::Ref { .. } => {
             // A VARIANT-CONSTRUCTOR record is NOT a type-value even though it carries a `(meta t)` — its
@@ -2303,6 +2332,11 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
         Resolved::Prim(p) => p.ground_type(),
         // A built `(typeval …)` node carries the type directly.
         Resolved::TypeVal(t) => Some(t),
+        // A `let` whose BODY is a type expression — `(let ((t Int64)) t)` evaluates to the body's value,
+        // a type-value. The bindings are pure (they only introduce names the body's `Ref`s resolve
+        // through), so the `let`'s type-value IS its body's. Reduce the body (its `t` reference follows to
+        // the binding's init `Int64` via the `Ref` arm above). Lets a bound type flow to a boundary export.
+        Resolved::Let { body, .. } => typeval_of(db, body),
         // A type-constructor application — reduce it, then read the built value's type.
         Resolved::Apply { head, args } => {
             let prim = meta_apply_of(db, head)?;

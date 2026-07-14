@@ -1,0 +1,82 @@
+type Ast =
+  | Int(Int64)
+  | Str(String)
+  | Bool(Bool)
+  | Name(String)
+  | List(List(Ast))
+
+def ast-eq(a: Ast, b: Ast) = match a with
+  | Ast.Int(x) => (match b with
+    | Ast.Int(y) => x == y
+    | _ => false
+  )
+  | Ast.Str(x) => (match b with
+    | Ast.Str(y) => x == y
+    | _ => false
+  )
+  | Ast.Bool(x) => (match b with
+    | Ast.Bool(y) => x == y
+    | _ => false
+  )
+  | Ast.Name(x) => (match b with
+    | Ast.Name(y) => x == y
+    | _ => false
+  )
+  | Ast.List(xs) => match b with
+    | Ast.List(ys) => list-eq(xs, ys)
+    | _ => false
+
+def list-eq(xs: List(Ast), ys: List(Ast)) = match xs with
+  | [] => (match ys with
+    | [] => true
+    | _ => false
+  )
+  | [x, .. xr] => match ys with
+    | [] => false
+    | [y, .. yr] => if ast-eq(x, y) then list-eq(xr, yr) else false
+
+@test
+def eq-int-same() = if ast-eq(Ast.Int(5), Ast.Int(5)) then unit else trap("5=5")
+
+@test
+def eq-int-diff() = if ast-eq(Ast.Int(5), Ast.Int(6)) then trap("5!=6") else unit
+
+@test
+def eq-type-mismatch() = if ast-eq(Ast.Int(5), Ast.Name("5")) then trap("Int != Name") else unit
+
+@test
+def eq-name-same() = if ast-eq(Ast.Name("x"), Ast.Name("x")) then unit else trap("x=x")
+
+@test
+def eq-name-diff() = if ast-eq(Ast.Name("x"), Ast.Name("y")) then trap("x!=y") else unit
+
+@test
+def eq-list-same() =
+  if ast-eq(Ast.List([Ast.Int(1), Ast.Name("a")]), Ast.List([Ast.Int(1), Ast.Name("a")])) then
+    unit
+  else
+    trap("lists equal")
+
+@test
+def eq-list-diff-len() =
+  if ast-eq(Ast.List([Ast.Int(1)]), Ast.List([Ast.Int(1), Ast.Int(2)])) then
+    trap("diff length")
+  else
+    unit
+
+@test
+def eq-list-diff-elem() =
+  if ast-eq(Ast.List([Ast.Int(1)]), Ast.List([Ast.Int(9)])) then trap("diff elem") else unit
+
+@test
+def eq-nested() =
+  if ast-eq(Ast.List([Ast.List([Ast.Int(1)])]), Ast.List([Ast.List([Ast.Int(1)])])) then
+    unit
+  else
+    trap("nested equal")
+
+@test
+def eq-empty-lists() =
+  if ast-eq(Ast.List([]), Ast.List([])) then unit else trap("empty lists equal")
+
+export { ast-eq }

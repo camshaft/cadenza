@@ -1,0 +1,5 @@
+import { T, sz } from "lib"
+
+def main() = if sz(T.List([T.Foo(1)])) == 2 then 0 else 1
+
+export { main }

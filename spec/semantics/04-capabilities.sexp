@@ -131,6 +131,23 @@
             (= (. m (meta capabilities)) (list "log" "trace"))))
   (output (: true Bool)))
 
+(case "the manifest is DERIVED from what entrypoints delegate, not from effect declarations"
+  (doc    "Witnesses capabilities-and-effects.md #Undeclared Capability Is A Compile-Time Error (2nd
+           sentence): the compiler MUST determine a program's required capabilities from the operations its
+           entrypoints ACTUALLY reach and delegate, NOT from a separately-asserted list. The module declares
+           TWO effects — `Used` and `Unused` — but `main` only delegates `Used` (`(host (Used) …)`); `Unused`
+           is declared yet never delegated or performed. So the manifest `(. m (meta capabilities))` is
+           exactly `(list \"Used\")` — the declared-but-unreached `Unused` does NOT inflate it. Pins that the
+           capability row is DERIVED from actual delegation (a declaration alone grants nothing), so an
+           idle declaration can never overstate the component's authority.")
+  (input  (do
+            (module m
+              (effect Used (op u (-> Unit Int64)))
+              (effect Unused (op x (-> Unit Int64)))
+              (def (main) (host (Used) (Used.u))))
+            (= (. m (meta capabilities)) (list "Used"))))
+  (output (: true Bool)))
+
 (case "one entrypoint's host authority is not reachable by another that does not delegate it"
   (doc    "Witnesses capabilities-and-effects.md #Authority Availability Is Not Authority: authority is
            per-entrypoint, not per-component. Entrypoint `a` delegates `ask` to the host (`(host (ask) …)`),
