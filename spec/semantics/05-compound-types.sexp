@@ -1869,6 +1869,40 @@
             (def (main) (classify (one -5))) (export main)))
   (output (: 2 Int64)))
 
+(case "a guarded list-match arm body reads its element binder"
+  (doc    "A guarded list arm's BODY may READ the list pattern's binders — the obvious reason to bind them.
+           `((guard (list x .. rest) (> x 0)) x)` on `[7]`: the guard holds (`x = 7 > 0`) and the body
+           returns the bound leading element `x` = 7. The guard machinery wires the guard CONDITION's binder
+           resolution (a guard `(> x 0)` reads `x`) and an UNGUARDED list arm body reads `x` fine — but a
+           GUARDED list arm's body reference to the same binder was spuriously rejected `CDZ0101 unbound
+           name x` (the guard-peel routed the pattern + cond occurrences but not the body occurrence), so
+           the guarded-list-arm feature was usable ONLY with constant bodies (the case above). Fix: route the
+           guarded arm body's list-binder occurrences through the same SumPayload path the guard cond and the
+           unguarded arm body use. Holds for every list shape (fixed / rest / leading+rest / nested body).")
+  (input  (do
+            (def (f (: xs (List Int64)))
+              (match xs
+                ((guard (list x .. rest) (> x 0)) x)
+                (_ 0)))
+            (def (main) (f (list 7)))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "a guarded list-match arm whose guard fails falls through to the catch-all"
+  (doc    "The fall-through companion of the body-binder case above: the SAME arm `((guard (list x .. rest)
+           (> x 100)) x)`, but the guard `(> 7 100)` is FALSE, so the guarded arm does NOT fire and the
+           match falls through to the `(_ 0)` catch-all → 0. Together they prove the guarded list arm reads
+           its binder in the body AND still gates on the guard (the body-binder routing did not disturb the
+           length/guard/fall-through machinery, which the constant-body twin already exercised).")
+  (input  (do
+            (def (f (: xs (List Int64)))
+              (match xs
+                ((guard (list x .. rest) (> x 100)) x)
+                (_ 0)))
+            (def (main) (f (list 7)))
+            (export main)))
+  (output (: 0 Int64)))
+
 (case "an expression tree built at run time is evaluated by matching its node variants"
   (doc    "The compiler's own expression-evaluator shape: a multi-variant recursive sum `Expr` — the
            canonical little AST — is built at run time by `build` (its structure decided by a runtime

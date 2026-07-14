@@ -19203,6 +19203,66 @@ mod match_engine {
     }
 
     #[test]
+    fn a_guarded_list_arm_body_reads_its_pattern_binders() {
+        // A guarded list arm's BODY may READ the list pattern's binders — the obvious reason to bind them.
+        // The guard machinery wired the guard CONDITION's binder resolution (resolve Case 6lg) and an
+        // UNGUARDED list arm's body reads its binders, but a GUARDED list arm's body reference to the same
+        // binder was spuriously rejected `CDZ0101 unbound name` (`a_list_match_arm_may_carry_a_guard` only
+        // ever used CONSTANT bodies). `list_pattern_element_binds`/`_rest_binds` now peel the `(guard …)`
+        // wrapper on the body-ascent path, so a guarded arm body resolves its binders exactly as the guard
+        // cond and the unguarded arm body do.
+        //
+        // First, COMPILE (no spurious `unbound`) for every list shape reading a binder in the body:
+        let ok = |src: &str| {
+            assert!(
+                reject_code(src).is_none(),
+                "must compile (no unbound binder): {src}"
+            )
+        };
+        // Leading element in the body.
+        ok(
+            "(module m (def (f (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 0)) x) (_ 0))) (def (main) (f (list 7))) (export main))",
+        );
+        // Fixed two-element list, body reads a bound element.
+        ok(
+            "(module m (def (f (: xs (List Int64))) (match xs ((guard (list a b) (> a 0)) a) (_ 0))) (def (main) (f (list 7 8))) (export main))",
+        );
+        // The REST binder in the body.
+        ok(
+            "(module m (def (f (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 0)) ((. List len) rest)) (_ 0))) (def (main) (f (list 7 8 9))) (export main))",
+        );
+        // A binder NESTED in the body expression.
+        ok(
+            "(module m (def (f (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 0)) (if (> x 5) x 0)) (_ 0))) (def (main) (f (list 7))) (export main))",
+        );
+
+        // Then RUN: the guard holds → the body returns the bound leading element (7), and the guard FAILS →
+        // the arm falls through to the catch-all (0), so the body-binder routing did not disturb the guard.
+        let Some(v) = run_heap_value(
+            "(module m (def (f (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 0)) x) (_ 0))) \
+               (def (main) (f (list 7))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping guarded-list-arm-body-binder run");
+            return;
+        };
+        assert_eq!(
+            v, "7",
+            "a guarded list arm body returns its bound leading element"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (f (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 100)) x) (_ 0))) \
+                   (def (main) (f (list 7))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "a guarded list arm whose guard fails falls through to the catch-all (body binder did not break the guard)"
+        );
+    }
+
+    #[test]
     fn a_guarded_list_arm_does_not_count_toward_exhaustiveness() {
         // A guarded list arm may fail its guard, so it covers NO length unconditionally — a match whose only
         // tail-covering arm is GUARDED is non-exhaustive (CDZ0210), exactly as a guarded scalar/sum tail is.

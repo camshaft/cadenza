@@ -1807,7 +1807,16 @@ fn list_pattern_element_binds(
     if pb.len() != 2 || pb[1] != from {
         return None; // must be `(pattern body)` ascended from the body
     }
-    let (path, heads) = find_leading_binder_in_list_pattern(db, pb[0], name)?;
+    // Peel a `(guard <list-pattern> <cond>)` wrapper: a GUARDED list arm's pattern is the guard's INNER
+    // pattern, so its body binder resolves against that inner `(list …)` exactly as an unguarded arm's does
+    // (Case 6lg wires the guard COND's reference; this wires the arm BODY's, ascended from `body`). Without
+    // this peel a guarded list arm body's `(list x .. rest)` binder fell through to the global scope →
+    // CDZ0101, though the constant-body twin + the guard cond + the unguarded arm body all resolve it.
+    let list_pat = match db.ast.as_form(pb[0], "guard") {
+        Some(g) if g.len() == 2 => g[0],
+        _ => pb[0],
+    };
+    let (path, heads) = find_leading_binder_in_list_pattern(db, list_pat, name)?;
     let parent = db.parent_of(form)?;
     let mtail = db.ast.as_form(parent, "match")?;
     let scrutinee = *mtail.first()?;
@@ -1833,7 +1842,14 @@ fn list_pattern_rest_binds(
     if pb.len() != 2 || pb[1] != from {
         return None; // must be `(pattern body)` ascended from the body
     }
-    let dd = find_rest_binder_in_list_pattern(db, pb[0], name)?;
+    // Peel a `(guard <list-pattern> <cond>)` wrapper — a guarded list arm's REST binder resolves against
+    // the guard's inner `(list …)` in the arm body, the rest-sublist companion of the leading-element peel
+    // in `list_pattern_element_binds` (Case 6lg handles the guard COND's rest reference).
+    let list_pat = match db.ast.as_form(pb[0], "guard") {
+        Some(g) if g.len() == 2 => g[0],
+        _ => pb[0],
+    };
+    let dd = find_rest_binder_in_list_pattern(db, list_pat, name)?;
     let parent = db.parent_of(form)?;
     let mtail = db.ast.as_form(parent, "match")?;
     let scrutinee = *mtail.first()?;
