@@ -243,7 +243,11 @@ A `resolve` pass (lexical scope-check accumulating unbound-variable diagnostics 
 threaded down, a `List String` of faults threaded through, `Let` binding + shadowing) is written and
 `cdz check`s clean; its logic runs correctly when exported singly, but the FULL module's `@test` suite
 DECLINES on the borrow-ownership gap at the test-emit layout (threshold-dependent — 1 test compiles, the
-full suite doesn't). Kept as `repros/decline-borrow-scope-resolver-test-emit-threshold.cdz`.
+full suite doesn't). Kept as `repros/decline-borrow-scope-resolver-test-emit-threshold.cdz`. A newer
+SCOPE-CHECKER over the CANONICAL `Ast` (`let`/`fn` binders, a `Set String` scope) `cdz check`s clean and
+its `fn`+leaf tests PASS, but its `let` tests MISCOMPILE (the extended scope is LOST through the recursion
+— the mutual-recursion still-live face); withheld as `repros/blocked-scopecheck-mutual-recursion-scope-
+loss.cdz`.
 
 The `infer` pass (HM inference over an expression language, composing `unify`) is written and `cdz
 check`s clean but currently lives in `repros/blocked-infer-cross-file-hm-borrow.cdz` — its `@test`s
@@ -342,6 +346,18 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   `let x=1 in (let x=10 in x) + x` → 20 not 11 (the inner `Map.insert(env,"x",10)` corrupts the env the
   sibling `Var x` reads); `repros/miscompile-env-interpreter-shadow-corrupts-outer-binding.cdz`. Inserting
   a DIFFERENT key is correct — only same-key SHADOW + sibling self-call corrupts.
+  🔬 MUTUAL-RECURSION FACE (iter 42) — `repros/miscompile-node-payload-consumed-by-mutual-recursion-
+  corrupts-sibling-read.cdz`: a `fc(node)` that matches `node` binding its child list `elems`, reads the
+  whole `node` again in one operand (`head-of(node)`), AND passes `elems` to a list-walker `fl` that
+  recurses BACK into `fc` (mutual `fc↔fl`) — the mutual walk consumes the shared `elems` payload,
+  corrupting the sibling `head-of(node)`. `fc (List [Name "a", Int 5])` → 1 not 101 (head reads None). An
+  INLINE walk that does NOT call `fc` back is correct — it is the `fc↔fl` cycle over the shared payload.
+  This is the IDIOMATIC homoiconic-Ast resolver shape (`check`/`check-list`), so a scope-checker over the
+  canonical `Ast` can't be written the natural way — WITHHELD as `repros/blocked-scopecheck-mutual-
+  recursion-scope-loss.cdz` (a `let`-binder resolver whose extended `Set` scope is LOST through the
+  recursion: `free-vars (let ((x 5)) (+ x x))` → 3 not 1, the bound `x`s read as free — even rewritten as
+  a single index-walk fn). Fix locus: dup the aggregate/collection operand of a (mutual-)recursive call
+  whose callee consumes a payload/scope a sibling still reads.
 
 - **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value, iter 37): `List.concat` corrupts its still-live
   LHS where `List.push` does NOT — a DISTINCT face of the still-live-binding family.**
