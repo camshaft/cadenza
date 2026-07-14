@@ -665,6 +665,7 @@ pass	a list pattern in a sum-variant payload matches a runtime node by its child
 pass	a list value consumed by two operations in one function is not freed early
 pass	a list with a runtime element is returned as a program result
 pass	a list-arm constructor element over a runtime-built list
+pass	a list-arm map element whose key is absent falls through
 pass	a list-carrying recursion whose base arm does a fallible indexed read compiles
 pass	a list-concatenating helper threads lists through a call
 pass	a literal in a let binder is refutable and rejected
@@ -697,6 +698,7 @@ pass	a map grown by a recursive accumulator is looked up by a runtime key
 pass	a map literal with keys of two different types is a type error
 pass	a map mixing integer and float values is a type error
 pass	a map operation applies to a map passed as a function parameter
+pass	a map pattern as a list-arm element binds its value binder
 pass	a map pattern binds the rest of the map after the named key
 pass	a map pattern falls through when the key is absent
 pass	a map pattern matches a present key and binds its value
