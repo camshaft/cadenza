@@ -2056,14 +2056,33 @@ pub fn def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
     if db.solving_params.contains(&def) {
         return None;
     }
-    // RE-ENTRY GUARD. Computing a recursive def's scheme demands `type_of` of its body, whose self-call
-    // demands this def's scheme AGAIN before the memo is filled. Seed a `None` sentinel FIRST, so the
-    // re-entrant call reads `None` (a self-call types as `Any`, absorbed by the base case — the same
-    // behavior as the β-reduction recursion guard) rather than looping forever. The real scheme
-    // overwrites the sentinel once the body solve completes.
-    db.def_schemes.insert(def, None);
+    // RE-ENTRY GUARD (self- AND mutual recursion). Computing a def's scheme demands `type_of` of its
+    // body, whose recursive call — to THIS def or a mutually-recursive sibling — demands a scheme not yet
+    // computed. Track in-progress solves in `solving_schemes`: a demand for a def already on the stack
+    // returns `None` (the call types as `Any`, absorbed by the base case — the same behavior as the
+    // β-reduction recursion guard) rather than looping forever. Kept in a SEPARATE set from the
+    // `def_schemes` memo so an in-progress solve is not indistinguishable from a determined-`None`
+    // scheme (the old `None`-sentinel-in-`def_schemes` conflated the two and poisoned mutual dispatchers,
+    // below).
+    if db.solving_schemes.contains(&def) {
+        return None;
+    }
+    let reentrant_solve = !db.solving_schemes.is_empty();
+    db.solving_schemes.insert(def);
     let scheme = compute_def_scheme(db, def);
-    db.def_schemes.insert(def, scheme.clone());
+    db.solving_schemes.remove(&def);
+    // CACHE, EXCEPT a spurious mutual-recursion `None`. A `None` computed while ANOTHER scheme solve was
+    // still on the stack may have read that sibling's in-progress (as-yet-`None`) signature as `Any` — as
+    // a mutually-recursive PURE DISPATCHER does, whose body is ENTIRELY the sibling call (e.g.
+    // `(def (od (: n Int64)) (ev (- n 1)))` where the sibling `ev` performs an effect and is the entry
+    // demanded first). Caching that `None` would poison the dispatcher permanently, even once `ev` is
+    // determined. Leave it uncached so the next demand — once the sibling's real scheme is memoized —
+    // recomputes the true signature. A `Some` scheme, or a `None` reached at the TOP of the stack (a
+    // genuinely undetermined signature), caches exactly as before (the common non-mutual case is
+    // byte-identical: a top-level demand has an empty stack, so `reentrant_solve` is false).
+    if scheme.is_some() || !reentrant_solve {
+        db.def_schemes.insert(def, scheme.clone());
+    }
     scheme
 }
 
@@ -3086,6 +3105,18 @@ fn member_op_head_name(db: &Db, head: StructId) -> Option<(String, String)> {
     Some((module, member))
 }
 
+/// The source NAME of an application head that is a bare VARIANT CONSTRUCTOR — `(Mk 1 2)` → `"Mk"`. Used
+/// to name the constructor in an OVER-APPLICATION diagnostic ("`Mk` takes 2 arguments, but 3 were given")
+/// so a bare ctor reads as well as the member-access spelling `(. P Mk)` does (which `member_op_head_name`
+/// already covers). `None` when the head is not a bare-name variant constructor — an ordinary function, an
+/// operator, or a member-access head (that path names itself). Reads the head's source name first, then
+/// confirms it constructs a variant via `variant_disc_of` (the same predicate the wrong-type-payload
+/// branch uses) — GENERIC, no hard-coded ctor list (`no-keys-outside-the-prelude`).
+fn variant_ctor_head_name(db: &mut Db, head: StructId) -> Option<String> {
+    let name = db.ast.as_name(head)?.to_string();
+    crate::eval::variant_disc_of(db, head).map(|_| name)
+}
+
 fn option_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     if let Ty::Sum { name, args, .. } = actual
         && name == "Option"
@@ -3101,14 +3132,64 @@ fn option_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     None
 }
 
-/// An actionable message TAIL when `expected` and `actual` are BOTH records that differ in their FIELD
-/// SET — the value is MISSING a field the type requires, and/or carries an EXTRA one the type has no
-/// place for. Naming both full record types (`(Record (x Int64) (y Int64))` vs `(Record (x Int64))`)
-/// buries the actual difference; this names the specific fields instead (rustc's "missing field `y`" /
-/// "no field `z`"). `None` unless both are records AND their field-name sets differ (a same-fields
-/// different-field-TYPE mismatch — `(x Int64)` vs `(x Bool)` — is a per-field type error the full render
-/// already shows clearly, not a set difference, so it is left alone). Field names are compared as SETS
-/// (the `BTreeMap` keys), so the hint is deterministic (sorted) and order-independent.
+/// Drill through two SAME-SHAPE nested compounds (records with the same field set, tuples of the same
+/// arity) to the DEEPEST single leaf where the types actually differ, returning the relative access PATH
+/// to that leaf and the leaf's expected-vs-actual types. `(Record (a (Record (b Int64))))` vs `(… (b
+/// Bool))` drills to `("a.b", Int64, Bool)` so a caller can say "field `a.b` should be Int64, but this one
+/// is Bool" instead of re-rendering the whole differing sub-record. Segments are dotted — a record field
+/// contributes its name, a tuple position its 0-based index (`pt.1` = field `pt`, element 1) — matching
+/// the member-access spelling. `None` when the two types are NOT further drillable at this level: a scalar
+/// (or other) leaf, a field-SET / arity difference, or a cross-kind clash — in those cases the caller
+/// keeps its own single-level phrasing (naming the immediate member + rendering the two sub-types, whose
+/// difference the render then shows). Terminates because each step descends into a strictly smaller
+/// structural sub-type (a `Ty::Nominal`/collection is a non-drillable leaf, so a recursive nominal stops).
+fn deep_leaf_delta<'a>(want: &'a Ty, got: &'a Ty) -> Option<(String, &'a Ty, &'a Ty)> {
+    match (want, got) {
+        (Ty::Record(w), Ty::Record(g)) => {
+            // Only drill a SAME field-set record; a field-set difference is not a single-leaf type diff
+            // (the caller renders the sub-record, whose missing/extra field the render shows).
+            if w.len() != g.len() || !w.keys().all(|k| g.contains_key(k)) {
+                return None;
+            }
+            let (k, wt) = w
+                .iter()
+                .find(|(k, wt)| g.get(k).is_some_and(|gt| !wt.agrees_with(gt)))?;
+            let gt = &g[k];
+            Some(match deep_leaf_delta(wt, gt) {
+                Some((sub, lw, lg)) => (format!("{}.{sub}", k.name), lw, lg),
+                None => (k.name.clone(), wt, gt),
+            })
+        }
+        (Ty::Tuple(w), Ty::Tuple(g)) => {
+            if w.len() != g.len() {
+                return None; // an arity difference is reported at this level, not drilled
+            }
+            let (i, (wt, gt)) = w
+                .iter()
+                .zip(g.iter())
+                .enumerate()
+                .find(|(_, (wt, gt))| !wt.agrees_with(gt))?;
+            Some(match deep_leaf_delta(wt, gt) {
+                Some((sub, lw, lg)) => (format!("{i}.{sub}"), lw, lg),
+                None => (i.to_string(), wt, gt),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// An actionable message TAIL when `expected` and `actual` are BOTH records that differ. Two shapes,
+/// each pointing at the SPECIFIC difference instead of leaving the reader to diff two full record renders:
+///  • a FIELD-SET difference — the value is MISSING a field the type requires, and/or carries an EXTRA one
+///    the type has no place for (rustc's "missing field `y`" / "no field `z`"); OR
+///  • a same-field-set PER-FIELD TYPE difference — the field names all match but some field's TYPE differs
+///    (`(x Int64)` vs `(x Bool)`), named as "field `x` should be Int64, but this one is Bool" (rustc's
+///    "expected `Int64`, found `Bool`" anchored on the field). Buried in a 3-field render otherwise — the
+///    reader must diff `(Record (x Int64) (y Int64) (z Int64))` against `(… (y Bool) …)` to spot `y`.
+/// `None` unless both are records AND some difference is found. Field names are compared as SETS (the
+/// `BTreeMap` keys) and the differing-type fields are visited in sorted key order, so the hint is
+/// deterministic and order-independent. A field-set difference takes precedence (a record with both a
+/// wrong field-set AND a type mismatch on a shared field is first told which fields to add/remove).
 fn record_field_diff_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     let (Ty::Record(want), Ty::Record(got)) = (expected, actual) else {
         return None;
@@ -3124,7 +3205,27 @@ fn record_field_diff_hint(expected: &Ty, actual: &Ty) -> Option<String> {
         .map(|k| k.name.as_str())
         .collect();
     if missing.is_empty() && extra.is_empty() {
-        return None; // same field names — a per-field type mismatch, not a set difference
+        // Same field-name set — look for the FIRST field (sorted key order) whose type differs and name
+        // it. `agrees_with` is the same relation `unify` uses, so we only flag a genuine clash (a deferred
+        // `Var`/`Any` field agrees and is skipped). Naming one field is enough to point the fix; the full
+        // render still carries the complete picture for a multi-field clash. When the differing field is
+        // itself a same-shape nested compound, DRILL to the deepest scalar leaf so the hint reads "field
+        // `a.b.c` should be Int64, but this one is Bool" instead of re-rendering the whole sub-record.
+        let culprit = want
+            .iter()
+            .find(|(k, wt)| got.get(k).is_some_and(|gt| !wt.agrees_with(gt)));
+        return culprit.map(|(k, wt)| {
+            let gt = &got[k];
+            let (path, lw, lg) = match deep_leaf_delta(wt, gt) {
+                Some((sub, lw, lg)) => (format!("{}.{sub}", k.name), lw, lg),
+                None => (k.name.clone(), wt, gt),
+            };
+            format!(
+                " — field `{path}` should be {}, but this one is {}",
+                lw.render_name(),
+                lg.render_name()
+            )
+        });
     }
     let quote = |names: &[&str]| {
         names
@@ -3148,17 +3249,22 @@ fn record_field_diff_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     Some(format!(" — {}", parts.join("; ")))
 }
 
-/// An actionable message TAIL when `expected` and `actual` are BOTH tuples of DIFFERENT ARITY — the value
-/// has more or fewer elements than the type. Naming both full tuple types (`(Tuple Int64 Int64 Int64)` vs
-/// `(Tuple Int64 Int64)`) buries the count difference; this names the arities (rustc's "expected a tuple
-/// with 3 elements, found one with 2"). `None` unless both are tuples with DIFFERENT lengths (a
-/// same-arity per-position TYPE mismatch — `(Tuple Int64 Bool)` vs `(Tuple Int64 Int64)` — is left to the
-/// full render, which already shows the differing element clearly, exactly as the record helper leaves a
-/// same-field-set type mismatch alone).
+/// An actionable message TAIL when `expected` and `actual` are BOTH tuples that differ. Two shapes,
+/// mirroring the record hint, each pointing at the SPECIFIC difference:
+///  • DIFFERENT ARITY — the value has more or fewer elements than the type ("expected a tuple with 3
+///    elements, but this one has 2", rustc's arity message); OR
+///  • same-arity PER-POSITION TYPE difference — a `(Tuple Int64 Bool)` where `(Tuple Int64 Int64)` is
+///    wanted, named as "element 1 should be Int64, but this one is Bool" (0-indexed, matching the tuple
+///    projection `(. t 1)` and the out-of-range "tuple index N" message). Buried in the full render
+///    otherwise for a wide tuple.
+/// `None` unless both are tuples AND some difference is found. Positions are visited left-to-right, so the
+/// hint is deterministic (the first differing position). `agrees_with` (the relation `unify` uses) gates
+/// the per-position check, so a deferred `Var`/`Any` position is skipped.
 fn tuple_arity_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
-    if let (Ty::Tuple(want), Ty::Tuple(got)) = (expected, actual)
-        && want.len() != got.len()
-    {
+    let (Ty::Tuple(want), Ty::Tuple(got)) = (expected, actual) else {
+        return None;
+    };
+    if want.len() != got.len() {
         let plural = |n: usize| if n == 1 { "" } else { "s" };
         return Some(format!(
             " — expected a tuple with {} element{}, but this one has {}",
@@ -3167,7 +3273,113 @@ fn tuple_arity_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
             got.len(),
         ));
     }
-    None
+    // Same arity — name the FIRST position whose type differs (0-indexed). When that position is itself a
+    // same-shape nested compound, DRILL to the deepest scalar leaf ("element 0.x should be …") rather than
+    // re-rendering the whole sub-compound.
+    want.iter()
+        .zip(got.iter())
+        .enumerate()
+        .find(|(_, (wt, gt))| !wt.agrees_with(gt))
+        .map(|(i, (wt, gt))| {
+            let (path, lw, lg) = match deep_leaf_delta(wt, gt) {
+                Some((sub, lw, lg)) => (format!("{i}.{sub}"), lw, lg),
+                None => (i.to_string(), wt, gt),
+            };
+            format!(
+                " — element {path} should be {}, but this one is {}",
+                lw.render_name(),
+                lg.render_name()
+            )
+        })
+}
+
+/// An actionable message TAIL when `expected` and `actual` are the SAME collection KIND (both `List`, both
+/// `Map`, or both `Set`) but an ELEMENT / KEY / VALUE type differs — the collection analogue of the
+/// record/tuple per-member hint. Naming both full types (`(Map String Int64)` vs `(Map Int64 Int64)`)
+/// makes the reader diff two renders to see it is the KEY axis that differs; this names the axis and its
+/// expected-vs-actual type ("its keys should be String, but these are Int64"). For a `Map` the KEY is
+/// checked before the VALUE (report the leftmost differing axis, deterministic). `agrees_with` (the
+/// relation `unify` uses) gates each axis, so a deferred `Var`/`Any` element is skipped. `None` unless
+/// both are the same collection kind AND some axis genuinely differs. Tail only — the repair is retyping
+/// the offending element(s), which the author must supply, so no mechanical fix (like the record/tuple
+/// per-member hints).
+fn collection_element_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+    let axis = |role: &str, want: &Ty, got: &Ty, plural: &str| {
+        (!want.agrees_with(got)).then(|| {
+            format!(
+                " — its {role} should be {}, but {plural} {}",
+                want.render_name(),
+                got.render_name()
+            )
+        })
+    };
+    match (expected, actual) {
+        (Ty::List(want), Ty::List(got)) => axis("elements", want, got, "these are"),
+        (Ty::Set(want), Ty::Set(got)) => axis("elements", want, got, "these are"),
+        (Ty::Map(wk, wv), Ty::Map(gk, gv)) => {
+            // KEY axis first, then VALUE — report the leftmost differing axis.
+            axis("keys", wk, gk, "these are").or_else(|| axis("values", wv, gv, "these are"))
+        }
+        _ => None,
+    }
+}
+
+/// The combined per-member structural-delta TAIL for two SAME-KIND compound types that differ inside — a
+/// record field-set / per-field type, a tuple arity / per-position type, or a collection element/key/value
+/// type. This bundles the three per-member hints (`record_field_diff_hint`, `tuple_arity_mismatch_hint`,
+/// `collection_element_mismatch_hint`) behind one call so the JOIN sites — a list literal, an `if`'s
+/// branches, a `match`'s arms — can point at the SPECIFIC differing sub-part exactly as the annotation-
+/// mismatch site does, instead of rendering two whole compound types the reader must diff. The `first`
+/// argument is the type the join is unifying against (the first element / then-branch / first arm); the
+/// hints phrase it as "should be <first>, but this one is <other>", which reads correctly for a join (the
+/// first occurrence sets the type the rest must match). `None` when the two types are not the same
+/// structured kind or agree on every member. No mechanical fix (the repair is retyping a value the author
+/// supplies), matching the per-member hints it composes.
+///
+/// This is how a compound-type rejection names the MINIMAL conflict rather than an arbitrary casualty: it
+/// points at the one differing field / position / element axis (the constraint that actually failed),
+/// leaving the agreeing members out of the blame, instead of rendering two whole compound types that share
+/// most of their structure.
+//= spec/capabilities/type-system.md#a-type-rejection-reports-the-minimal-conflict-at-both-sites
+//# A rejection for a failed unification MUST report the minimal unsatisfiable set of constraints rather than the first constraint that failed, so that the diagnostic names the actual conflict and not an arbitrary casualty of it.
+fn structural_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
+    record_field_diff_hint(first, other)
+        .or_else(|| tuple_arity_mismatch_hint(first, other))
+        .or_else(|| collection_element_mismatch_hint(first, other))
+}
+
+/// An actionable message TAIL when `actual` is a FUNCTION value used where a NON-function `expected` is
+/// required — the "forgot to call it" slip. A partial application `(h 1)` (h takes 2) or a bare function
+/// name `h` used as a value has type `(-> … …)`; the generic "type mismatch: Int64 and (-> Int64 Int64)"
+/// reads like an internal clash and never says the value is simply an UNAPPLIED function. This names the
+/// slip and how to fix it — SUPPLY the missing arguments (rustc's "you might have forgotten to call this
+/// function"). Fires ONLY when applying the function to its remaining N argument(s) would yield the
+/// expected type (the fully-applied result `agrees_with` expected) — then "just apply it" is the true
+/// repair. If the fully-applied result would STILL differ (a deeper mismatch), there is no "call it"
+/// story, so no hint (honest-no-fix). No mechanical `Fix` — we cannot know WHICH argument values the
+/// author meant — so this is a tail only, like `option_payload_mismatch_hint`. `expected` must be a
+/// DEFINITE non-function (not a `Var`/`Any` that could still unify with the arrow, and not a `Fn` — a
+/// fn-vs-fn signature mismatch is a real clash reported on its own terms, not a missing application).
+fn fn_not_applied_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+    if !matches!(actual, Ty::Fn(..)) || matches!(expected, Ty::Fn(..) | Ty::Var(_) | Ty::Any) {
+        return None;
+    }
+    // Peel the curried arrows: how many arguments remain, and what the fully-applied result would be.
+    let mut result = actual;
+    let mut remaining = 0usize;
+    while let Ty::Fn(_, r) = result {
+        remaining += 1;
+        result = r;
+    }
+    if !result.agrees_with(expected) {
+        return None; // supplying the args would not produce the expected type — no "just call it" fix
+    }
+    let plural = if remaining == 1 { "" } else { "s" };
+    Some(format!(
+        " — the value is a function that hasn't been fully applied; apply it to {remaining} more \
+         argument{plural} to get {}",
+        expected.render_with_article()
+    ))
 }
 
 /// The `(prefix, suffix, verb)` of a prelude CONVERSION that turns a value of type `actual` into the
@@ -3200,6 +3412,21 @@ fn total_conversion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, 
             "(Rational.of-int ".to_string(),
             ")".to_string(),
             "convert the integer to a Rational with `Rational.of-int`".to_string(),
+        )),
+        // A Char where Int64 is expected — `(+ #\a 1)`. `Char.to-int : Char → Int64` is TOTAL (a char's
+        // scalar value), so wrap it. Only when the expected width is the Int64 `Char.to-int` yields (a
+        // narrower target would still mismatch after the wrap — leave that to the author).
+        (Ty::Int(exp), Ty::Char) if exp.ground_signed() && exp.ground_width() == 64 => Some((
+            "(Char.to-int ".to_string(),
+            ")".to_string(),
+            "convert the char to its Int64 scalar value with `Char.to-int`".to_string(),
+        )),
+        // A Symbol where a String is expected — `Symbol.to-string : Symbol → String` is TOTAL (recovers
+        // the symbol's underlying content), so wrap it. The text-model twin of the String→Bytes case.
+        (Ty::String, Ty::Symbol) => Some((
+            "(Symbol.to-string ".to_string(),
+            ")".to_string(),
+            "recover the symbol's content string with `Symbol.to-string`".to_string(),
         )),
         _ => None,
     }
@@ -3601,6 +3828,47 @@ fn definite_non_sum_scalar(ty: &Ty) -> bool {
     )
 }
 
+/// Whether `ty` is DEFINITELY not a record — a record row operation (`Record.project`/`without`/`merge`/
+/// `extend`/`with`) over it is a kind error, the same way member access on a non-record is. A NOMINAL
+/// newtype over a record erases to that record, so strip the tag first (a member access sees through it).
+/// An unconstrained `Any`/`Var` (a bare, not-yet-inlined parameter) is NOT definite — its real type flows
+/// in at the call site — so it is not flagged here (mirrors the member-access `Ty::Any => {}` arm).
+fn definite_non_record(ty: &Ty) -> bool {
+    !matches!(ty.strip_nominal(), Ty::Record(_) | Ty::Any | Ty::Var(_))
+}
+
+/// The surface NAME of a RECORD row-operation prim (`project`/`without`/`merge`/`extend`/`with`), used to
+/// render the "`Record.<op>` requires a record" message; `None` for any other prim. The set of record
+/// row ops whose record operand must be a `Ty::Record`.
+fn record_row_op_name(prim: Option<crate::resolved::Prim>) -> Option<&'static str> {
+    match prim {
+        Some(crate::resolved::Prim::RecordProject) => Some("project"),
+        Some(crate::resolved::Prim::RecordWithout) => Some("without"),
+        Some(crate::resolved::Prim::RecordMerge) => Some("merge"),
+        Some(crate::resolved::Prim::RecordExtend) => Some("extend"),
+        Some(crate::resolved::Prim::RecordWith) => Some("with"),
+        _ => None,
+    }
+}
+
+/// Whether `ty` is DEFINITELY not a tuple — the tuple twin of [`definite_non_record`]. A tuple row op
+/// (`cat`/`split-at`/`pop`) over it is a kind error. `Any`/`Var` (an unconstrained param) is not definite.
+/// (A tuple is structural, never nominal, so no `strip_nominal` is needed here.)
+fn definite_non_tuple(ty: &Ty) -> bool {
+    !matches!(ty, Ty::Tuple(_) | Ty::Any | Ty::Var(_))
+}
+
+/// The surface NAME of a TUPLE row-operation prim (`cat`/`split-at`/`pop`) whose operand(s) must be a
+/// `Ty::Tuple`; `None` otherwise. `cat` takes two tuple operands, `split-at`/`pop` one.
+fn tuple_row_op_name(prim: Option<crate::resolved::Prim>) -> Option<&'static str> {
+    match prim {
+        Some(crate::resolved::Prim::TupleCat) => Some("cat"),
+        Some(crate::resolved::Prim::TupleSplitAt) => Some("split-at"),
+        Some(crate::resolved::Prim::TuplePop) => Some("pop"),
+        _ => None,
+    }
+}
+
 /// Whether the match PATTERN at `pat` is headed by a VARIANT CONSTRUCTOR — `(C.Red)`, `(Some x)`, a bare
 /// nullary variant name `None`, or such a pattern under a `(guard <pat> <cond>)` wrapper. Peels the guard,
 /// then reads the pattern's constructor head the way the binding-pattern classifier does (a bare atom /
@@ -3802,25 +4070,36 @@ pub(crate) fn check_unit_defines(db: &mut Db, out: &mut Vec<Reject>) {
 /// a did-you-mean over the KNOWN unit names (families + user defines), so `5gram` points at a near unit.
 /// Well-formedness independent of reachability — checked over every `(Unit.of #"…")` occurrence.
 pub(crate) fn check_unknown_units(db: &mut Db, out: &mut Vec<Reject>) {
-    // The known unit vocabulary: built-in families + every user `Unit.define` name.
-    let mut known: Vec<String> = db.unit_families.keys().cloned().collect();
-    known.extend(db.unit_defines.iter().map(|(n, _, _, _)| n.clone()));
+    // The known unit vocabulary (built-in families + every user `Unit.define` name) is built LAZILY — only
+    // when a first candidate `(Unit.of …)` is actually found — so a program with NO unit applications (the
+    // common case) never allocates it.
+    let mut known: Option<Vec<String>> = None;
     let node_count = db.ast.structure.len();
     for id in (0..node_count as u32).map(StructId) {
-        // A `(Unit.of #"name")` application whose name is a symbol/string literal.
-        let crate::resolved::Resolved::Apply { head, args } = resolved_of(db, id) else {
-            continue;
+        // A `(Unit.of #"name")` application whose name is a symbol/string literal. Dispatch through
+        // `resolved_ref` (a BORROW, not a `resolved_of` clone): this scans EVERY node of every program, and
+        // the vast majority are not `Apply`, so cloning the whole `Resolved` per node just to test the
+        // variant was pure churn (on a large unit-FREE program this whole pass was ~30% of compile). The
+        // `head` is Copy; `args.first()` is read through the borrow (no `args` Arc clone needed here).
+        let (head, name_occ) = match crate::resolve::resolved_ref(db, id) {
+            crate::resolved::Resolved::Apply { head, args } => match args.first() {
+                Some(&name_occ) => (*head, name_occ),
+                None => continue,
+            },
+            _ => continue,
         };
         if crate::eval::meta_apply_of(db, head) != Some(crate::resolved::Prim::UnitOf) {
             continue;
         }
-        let Some(&name_occ) = args.first() else {
-            continue;
-        };
         let name = match resolved_of(db, name_occ) {
             crate::resolved::Resolved::SymbolConst(s) | crate::resolved::Resolved::Str(s) => s,
             _ => continue, // a non-literal unit argument — not a static unknown-unit case
         };
+        let known = known.get_or_insert_with(|| {
+            let mut v: Vec<String> = db.unit_families.keys().cloned().collect();
+            v.extend(db.unit_defines.iter().map(|(n, _, _, _)| n.clone()));
+            v
+        });
         if known.contains(&name) {
             continue; // a known family / user-defined unit
         }
@@ -4522,10 +4801,15 @@ fn check_application(
                     // unifies at the float type. The literal may be on EITHER side — the FIRST element
                     // (`(list 1 2.0)`, fix `first`) or THIS one (`(list 1.0 2)`, fix `e`); offer the fix on
                     // whichever side is the int literal (a computed integer expression yields no fix).
+                    // When the two element types are the SAME structured kind but differ INSIDE (records of
+                    // one field's type, tuples of one position, a nested collection axis), name the specific
+                    // differing sub-part instead of rendering two whole compounds — the join-site reuse of
+                    // the annotation-mismatch per-member hints.
+                    let delta = structural_delta_hint(&first_ty, &et).unwrap_or_default();
                     let mut reject = Reject::coded(
                         code,
                         format!(
-                            "list elements must share one type: {} and {}",
+                            "list elements must share one type: {} and {}{delta}",
                             first_ty.render_name(),
                             et.render_name()
                         ),
@@ -4780,16 +5064,28 @@ fn check_application(
                 // faults β-reduction INTRODUCED — the ones absent from the unreduced body, which are exactly
                 // the argument-induced faults this check exists to catch (`(if x …)` → `(if 5 …)`,
                 // `(+ x 1)` → `(+ true 1)`). Diff by (code, message): a renumbering-invariant identity, the
-                // same key `dedup_faults` uses. The unreduced collect is memoized (cache hit after the def's
-                // own check), so this costs nothing on the hot deep-call-chain path.
+                // same key `dedup_faults` uses.
+                //
+                // GUARD: only compute the baseline when the reduced body actually HAS faults to filter — an
+                // empty `body_faults` (the well-typed common case) has nothing to diff, so skip the baseline
+                // collect entirely. This matters for a NESTED-LAMBDA chain `((fn a0) ((fn a1) …) 1) 0)`: the
+                // reduced body and the unreduced callee body BOTH contain the inner nested application, so
+                // collecting BOTH re-reduced the inner chain twice per level → O(2^depth) (a depth-20 chain:
+                // ~28s). The reduced-body collect alone is unavoidable, but the baseline was pure waste when
+                // there are no faults to filter — and a well-typed deep chain has none. (A body WITH faults
+                // still computes the baseline, so a genuine callee-defect is still de-duplicated exactly.)
                 let baseline: std::collections::HashSet<(Option<crate::diag::Code>, String)> =
-                    match crate::eval::lambda_body(g, head) {
-                        Some(callee_body) => {
-                            let mut unreduced = Vec::new();
-                            collect(g, callee_body, &mut unreduced);
-                            unreduced.into_iter().map(|f| (f.code, f.message)).collect()
+                    if body_faults.is_empty() {
+                        std::collections::HashSet::new()
+                    } else {
+                        match crate::eval::lambda_body(g, head) {
+                            Some(callee_body) => {
+                                let mut unreduced = Vec::new();
+                                collect(g, callee_body, &mut unreduced);
+                                unreduced.into_iter().map(|f| (f.code, f.message)).collect()
+                            }
+                            None => std::collections::HashSet::new(),
                         }
-                        None => std::collections::HashSet::new(),
                     };
                 for mut f in body_faults {
                     if baseline.contains(&(f.code, f.message.clone())) {
@@ -5058,6 +5354,18 @@ fn check_application(
                             reject = reject.with_fix(fix);
                         }
                         out.push(reject);
+                    } else if let Some(hint) = fn_not_applied_hint(&sparam, &sat) {
+                        // The ARGUMENT is an UNAPPLIED function where a non-function param is wanted — a
+                        // partial application `(+ (h 1) 2)` (h takes 2, applied to 1) passed to `+`, which
+                        // wants an Int64. This falls through the bare-operator path to the generic unify
+                        // "Int64 and (-> Int64 Int64) must be the same type here" (an internal-clash read).
+                        // Append the "forgot to call it — apply N more argument(s)" hint, the arg-site twin
+                        // of the annotation-mismatch fn hint. No mechanical fix (which values were meant is
+                        // unknown), so tail only, added to the unify-produced message.
+                        out.push(Reject {
+                            message: format!("{}{hint}", reject.message),
+                            ..reject
+                        });
                     } else {
                         out.push(reject);
                     }
@@ -5082,15 +5390,33 @@ fn check_application(
                     trace!(target: "rcdzc::infer", head = head.0, arity = arg_index, args = args.len(), "apply: over-applied a scheme-typed head (CDZ0203)");
                     // `arg_index` args were consumed before the arrow ran out, so `args[arg_index]` is the
                     // FIRST surplus — DELETE it (the fixpoint removes each extra in turn). Anchor + fix there.
-                    let mut reject = Reject::coded(
-                        Code::TypeMismatch,
-                        format!(
+                    // NAME the operation when the head is a `(. Module member)` — `(List.push xs 1 2)` reads
+                    // "`List.push` takes 2 arguments, but 3 were given" instead of the anonymous "a function
+                    // of arity 2", the over-application companion of the M95 wrong-type-arg member-op message.
+                    // A bare VARIANT CONSTRUCTOR (`(Mk 1 2 3)`) reads as well as the member-access spelling
+                    // `(. P Mk)` (handled by `member_op_head_name`) — name it too. `name_of` prefers the
+                    // dotted member spelling, then falls back to a bare ctor name; either yields the "`X`
+                    // takes N arguments, but M were given" phrasing (so `MEMBER_OVER_APPLICATION_MARKER`
+                    // still deduplicates the emit-path decline). An ordinary over-applied function/operator
+                    // keeps the anonymous "function of arity N".
+                    let name_of = member_op_head_name(db, head)
+                        .map(|(m, k)| format!("{m}.{k}"))
+                        .or_else(|| variant_ctor_head_name(db, head));
+                    let message = match name_of {
+                        Some(name) => format!(
+                            "`{name}` takes {arg_index} argument{}, but {} {} given",
+                            if arg_index == 1 { "" } else { "s" },
+                            args.len(),
+                            if args.len() == 1 { "was" } else { "were" },
+                        ),
+                        None => format!(
                             "applied {} arguments to a function of arity {} — it is not a function after \
                              its arguments are consumed",
                             args.len(),
                             arg_index
                         ),
-                    );
+                    };
+                    let mut reject = Reject::coded(Code::TypeMismatch, message);
                     if let Some(&surplus) = args.get(arg_index) {
                         reject = reject
                             .at(surplus)
@@ -5656,10 +5982,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     Code::TypeMismatch
                 };
                 trace!(target: "rcdzc::infer", node = id.0, then_ty = %then_ty.render_name(), else_ty = %else_ty.render_name(), ?code, "fault: if branches differ");
+                let delta = structural_delta_hint(&then_ty, &else_ty).unwrap_or_default();
                 let mut reject = Reject::coded(
                     code,
                     format!(
-                        "if branches differ: {} vs {}",
+                        "if branches differ: {} vs {}{delta}",
                         then_ty.render_name(),
                         else_ty.render_name()
                     ),
@@ -6076,10 +6403,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 for (_, body) in arms.iter().skip(1) {
                     let bt = type_of(db, *body);
                     if !first_ty.agrees_with(&bt) {
+                        let delta = structural_delta_hint(&first_ty, &bt).unwrap_or_default();
                         let mut reject = Reject::coded(
                             Code::TypeMismatch,
                             format!(
-                                "match arms differ: {} vs {}",
+                                "match arms differ: {} vs {}{delta}",
                                 first_ty.render_name(),
                                 bt.render_name()
                             ),
@@ -6253,6 +6581,41 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             "a map entry is a (key value) pair",
                         ));
                     }
+                }
+            } else if let Some(rec_op) = record_row_op_name(crate::eval::meta_apply_of(db, head))
+                && !args.is_empty()
+                && {
+                    // A record row op over a DEFINITE NON-RECORD operand — `(Record.project n (x))` for
+                    // `n : Int64` — is a kind error, exactly like member access on a non-record. It was
+                    // check-INVISIBLE (the per-op field checks below only fire for a `Ty::Record` operand,
+                    // silently skipping a non-record) and on compile gave a MISLEADING "a record row
+                    // operation over a runtime record is not yet built" (the operand is not a record at
+                    // all). `merge` checks BOTH operands; the rest check `args[0]`. Report "requires a
+                    // record, found <T>" — the row-op twin of the member-access message — and skip the
+                    // field checks (a non-record has no fields to check). `Any`/`Var` (an unconstrained
+                    // param) is NOT definite, so it is not flagged (its real type flows in at the call site).
+                    let operands: &[StructId] = if rec_op == "merge" { &args } else { &args[..1] };
+                    operands
+                        .iter()
+                        .any(|&o| definite_non_record(&type_of(db, o)))
+                }
+            {
+                let operands: &[StructId] = if rec_op == "merge" { &args } else { &args[..1] };
+                for &o in operands {
+                    let ot = type_of(db, o);
+                    if definite_non_record(&ot) {
+                        out.push(
+                            Reject::coded(
+                                Code::Malformed,
+                                format!(
+                                    "`Record.{rec_op}` requires a record, found {}",
+                                    ot.render_name()
+                                ),
+                            )
+                            .at(o),
+                        );
+                    }
+                    collect(db, o, out);
                 }
             } else if matches!(
                 crate::eval::meta_apply_of(db, head),
@@ -6522,6 +6885,39 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     )),
                     _ => {}
                 }
+            } else if let Some(tup_op) = tuple_row_op_name(crate::eval::meta_apply_of(db, head))
+                && !args.is_empty()
+                && {
+                    // A tuple row op over a DEFINITE NON-TUPLE operand — `(Tuple.pop n)` for `n : Int64` —
+                    // is a kind error, the tuple twin of the record-row-op check. It was check-INVISIBLE
+                    // and compiled to a MISLEADING "Tuple.<op> over a runtime tuple is not yet built" (the
+                    // operand is not a tuple at all). `cat` checks BOTH operands; `split-at`/`pop` check
+                    // `args[0]` (`split-at`'s `args[1]` is a position literal, not a tuple). Report
+                    // "requires a tuple, found <T>" (the tuple-projection message already exists for `(. n
+                    // N)`); `Any`/`Var` (an unconstrained param) is not flagged.
+                    let operands: &[StructId] = if tup_op == "cat" { &args } else { &args[..1] };
+                    operands
+                        .iter()
+                        .any(|&o| definite_non_tuple(&type_of(db, o)))
+                }
+            {
+                let operands: &[StructId] = if tup_op == "cat" { &args } else { &args[..1] };
+                for &o in operands {
+                    let ot = type_of(db, o);
+                    if definite_non_tuple(&ot) {
+                        out.push(
+                            Reject::coded(
+                                Code::Malformed,
+                                format!(
+                                    "`Tuple.{tup_op}` requires a tuple, found {}",
+                                    ot.render_name()
+                                ),
+                            )
+                            .at(o),
+                        );
+                    }
+                    collect(db, o, out);
+                }
             } else if matches!(
                 crate::eval::meta_apply_of(db, head),
                 Some(crate::resolved::Prim::TupleSplitAt)
@@ -6736,6 +7132,14 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     //# An explicit type annotation MUST participate in inference as an additional constraint unified with the type the system infers, rather than override it.
                     //= spec/capabilities/type-system.md#annotations-constrain-never-contradict
                     //# A program whose annotation cannot be unified with the type inference determines MUST be rejected rather than have the annotation silently replace the inferred type.
+                    // The same check realizes the compile-time half of core-semantics §Types Are First-Class
+                    // Values: the annotation is validated against the expression's static type here, and a
+                    // mismatch is rejected before the program runs (the runtime-inspection half — a Type as a
+                    // value inspected at runtime — is not realized; the seed erases types).
+                    //= spec/capabilities/core-semantics.md#types-are-first-class-values
+                    //# The compiler MUST validate a type annotation against the annotated expression's static type at compile time.
+                    //= spec/capabilities/core-semantics.md#types-are-first-class-values
+                    //# The compiler MUST reject a program in which a type annotation's declared type does not match the annotated expression's static type before that program runs.
                     let expr_ty = type_of(db, expr);
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
@@ -6869,11 +7273,40 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             } else {
                                 None
                             };
+                            // The value is an UNAPPLIED function where a non-function is annotated — a
+                            // partial application `(h 1)` or a bare fn name `h` used as a value. The
+                            // "annotation Int64 does not match value (-> Int64 Int64)" render never says
+                            // the value is simply a function you forgot to finish calling; name the slip
+                            // and how many arguments remain. Tail only (no mechanical fix — which argument
+                            // values were meant is unknown), after the wrap/option/record chain found none.
+                            let fn_tail =
+                                if wrap.is_none() && option_tail.is_none() && record_tail.is_none()
+                                {
+                                    fn_not_applied_hint(&annot_ty, &expr_ty)
+                                } else {
+                                    None
+                                };
+                            // Same collection KIND (both List/Map/Set) but an element/key/value TYPE
+                            // differs — `(Map String Int64)` where `(Map Int64 Int64)` is annotated. Name
+                            // the differing AXIS instead of leaving the reader to diff two full renders, the
+                            // collection twin of the record/tuple per-member hint. Tail only (no fix — the
+                            // repair is retyping the elements). Last in the chain, after the others found none.
+                            let collection_tail = if wrap.is_none()
+                                && option_tail.is_none()
+                                && record_tail.is_none()
+                                && fn_tail.is_none()
+                            {
+                                collection_element_mismatch_hint(&annot_ty, &expr_ty)
+                            } else {
+                                None
+                            };
                             let tail = wrap
                                 .as_ref()
                                 .map(|w| w.3.clone())
                                 .or(option_tail)
                                 .or(record_tail)
+                                .or(fn_tail)
+                                .or(collection_tail)
                                 .unwrap_or_default();
                             let mut reject = Reject::coded(
                                 Code::TypeMismatch,

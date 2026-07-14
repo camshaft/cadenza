@@ -345,6 +345,21 @@ interface heap {
   //    by the SAME `divmod` as `bigint-div` (it returns both quotient and remainder). APPENDED at the end
   //    (frozen-contract APPEND-only rule — a new op goes last so no existing op's index shifts).
   bigint-rem: func(a: u32, b: u32) -> u32;             // 73 — a % b (remainder, dividend's sign; traps on /0)
+
+  // ── Exact rational (indices 74+) — a `Rational` is a NORMALIZED 2-handle node `[num, den]`, each child
+  //    a BigInt leaf (lowest terms, sign on numerator, denom > 0). `rational-of` builds one from two
+  //    BigInt handles (CONSUMES them), trapping on a zero denominator; `rational-num`/`rational-den`
+  //    recover a component as a fresh BigInt handle (for narrowing/rendering); add/sub/mul/div are exact
+  //    (never overflow — BigInt components), `div` traps on a zero result-denominator; `rational-cmp` is
+  //    the three-way compare the `<`/`=`/`>` operators lower to. APPENDED last (frozen-contract rule).
+  rational-of: func(num: u32, den: u32) -> u32;        // 74 — normalize (num, den) → rational (traps on den=0)
+  rational-num: func(r: u32) -> u32;                   // 75 — numerator as a fresh BigInt handle
+  rational-den: func(r: u32) -> u32;                   // 76 — denominator as a fresh BigInt handle
+  rational-add: func(a: u32, b: u32) -> u32;           // 77 — a + b (exact, normalized)
+  rational-sub: func(a: u32, b: u32) -> u32;           // 78 — a - b
+  rational-mul: func(a: u32, b: u32) -> u32;           // 79 — a * b
+  rational-div: func(a: u32, b: u32) -> u32;           // 80 — a / b (traps on a zero divisor)
+  rational-cmp: func(a: u32, b: u32) -> s64;           // 81 — three-way compare: -1 / 0 / 1
 }
 
 world runtime {

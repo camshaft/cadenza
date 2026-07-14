@@ -929,12 +929,88 @@ the component type. The new work:
   tuple-cell handle) NOT the flattened `arg_vts` — else "no matching lifted lambda". A tuple arg + a byte-rope/
   compound/collection result declines cleanly. Corpus: mk-sum(→Int64) + mk-eq(→Bool) both taking a Tuple;
   `call(sum,(3,4))`→7 AND `call(eq,(5,5))`→true e2e. gate 1741p/0f.
-- **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path — FIXED-SHAPE
-  SCALAR tuple/record is DONE for single-export, multi-export, mixed, AND distinct-sig (above); still to
-  widen: a compound arg ALONGSIDE other args (the `TupleArgRebuild` currently assumes the tuple is the SOLE
-  arg — needs interleaving flattened-tuple fields with pass-through scalars), a VARIABLE-LENGTH collection arg
-  (needs a `value-decode` runtime op that does not exist), a tuple arg on a byte-rope/compound/collection-
-  RESULT group. (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
+- **🐛→✅ MISCOMPILE FIXED: a compound ARG + a compound/byte-rope/collection RESULT now DECLINES** (`@68ac2bd8`,
+  baseline `@e7b00e12`). A latent miscompile across single/multi/mixed direct-call paths (distinct-sig already
+  guarded): a fixed-shape compound ARG detection set `arg_vts` to the flattened fields, but the list-returning
+  RESULT cores (`closure_bytes_/value_/value_encode_resource_core_module`) inline their own `call` bodies +
+  do NOT thread the `TupleArgRebuild`, and their envelopes take the scalar `arg_bytes` (empty for a tuple arg)
+  — so the two combined emitted a scalar-arg envelope over a flattened-field core (wasmtime "lowered param
+  types [I32] do not match [I32,I64,I64]" / "failed to parse"). Guards in `emit_closure_resource`/
+  `emit_multi_closure_resource`/`emit_mixed_closure_resource` now decline cleanly; a scalar-result compound
+  arg still emits. +1 corpus todo anchor + `a_compound_arg_with_a_compound_result_declines_not_miscompiles`.
+  🔑 the FIX for this = thread `TupleArgRebuild` through the 3 list-result serializers + their envelopes (the
+  next real widening); this tick made it an honest decline first (correctness over the miscompile).
+- **✅ TUPLE ARG + BYTE-ROPE RESULT (single-export)** (`@5e97fafe`, baseline `@c4299d05`). The FIRST of the
+  compound-arg + list-result widenings: a closure taking a fixed-shape scalar tuple/record arg AND returning
+  Bytes/String now compiles + runs. Factored `serialize::emit_tuple_rebuild` + `emit_tuple_rebuilt_drop` free
+  helpers (shared by every `call` body); threaded `tuple_arg` into `closure_bytes_resource_core_module_borrow`
+  (rebuild the cell before dispatch, drop after the copy). Envelope: `closure_call_list_tuple_arg_functype` +
+  `assemble_closure_bytes_resource_borrow_tuple` + `resource_inner_component_closure_bytes_borrow_tuple` mint
+  the `tuple<…>` type before the `list<u8>` result type (running type counter, both import + export sides).
+  `emit_closure_resource`'s guard relaxed to allow byte-rope + tuple arg (still declines compound/collection
+  result). Corpus: `(fn (p) (bin (u8 (.p 0)) (u8 (.p 1))))`, `call(handle,(5,6))`→(5 6) e2e.
+- **✅ TUPLE ARG + FIXED-SHAPE COMPOUND RESULT (single-export)** (`@db6110b9`, baseline `@6a59dc64`). The
+  SECOND widening: a closure taking a fixed-shape scalar tuple/record arg AND returning a fixed-shape compound
+  (tuple/record/sum) now compiles + runs. Threaded `tuple_arg` into `closure_value_resource_core_module_borrow`
+  (reusing the shared `emit_tuple_rebuild`/`_drop` helpers) + routed the compound-result branch to the shared
+  list<u8> tuple envelope. 🪤 the i64 `scratch` local sits AFTER all i32 locals → its index = `cell + n_i32`
+  (a tuple arg adds a 3rd i32, shifting scratch by 1); getting it wrong gave a wasmparser "expected i64, found
+  i32". Corpus: tuple-arg → `(tuple 13 7)`, record-arg → `(record (diff 7) (sum 13))`; a tuple-arg + List
+  result decline anchor.
+- **✅✅ TUPLE ARG + COLLECTION RESULT (single-export) — the single-export tuple-arg result matrix is CLOSED**
+  (`@8a1a539b`, baseline `@3fca5268`). The final single-export widening: a closure taking a fixed-shape scalar
+  tuple/record arg AND returning a variable-length collection (List/Map/Set) now compiles + runs. Threaded
+  `tuple_arg` into `closure_value_encode_resource_core_module_borrow` (reusing `emit_tuple_rebuild`/`_drop`; a
+  7th i32 local for the rebuilt arg cell) + routed the value-encode branch to the shared list<u8> tuple
+  envelope. The `emit_closure_resource` result-shape decline guard is GONE — a single-export tuple arg composes
+  with EVERY result shape (scalar / byte-rope / fixed-compound / collection). Corpus: tuple-arg → `(list 10 3)`,
+  Map → `(map (1 100) (2 200))`. 🎯 SINGLE-EXPORT: a fixed-shape scalar compound arg × every result shape DONE.
+- **✅ TUPLE ARG × LIST-RESULT on the MULTI-EXPORT path** (`@8f1a08f1`, baseline `@72cb720e`). Extended the
+  tuple-arg × list-result composition to N same-sig closures sharing one list-returning `call`. Threaded
+  `tuple_arg` into all three multi list-result cores (`multi_closure_bytes_/value_/value_encode_resource_core_
+  module`, shared helpers) + `assemble_multi_closure_bytes_resource_borrow_tuple` +
+  `resource_inner_component_multi_closure_bytes_borrow_tuple` (running type counter mints the `tuple<…>` before
+  `list<u8>`). The `emit_multi_closure_resource` list-result decline guard is GONE. Corpus: mk-rev → (list 3
+  10), mk-sum → (tuple 13 7).
+- **✅ TUPLE ARG × LIST-RESULT on the MIXED path** (`@a57eba46`, baseline `@7cf64e35`). The trivial follow-on:
+  a list-returning tuple-arg closure ALONGSIDE a plain export reuses the SAME multi list-result cores + the
+  shared multi list<u8> tuple envelope. Pure ROUTING — `emit_mixed_closure_resource`'s list-result guard GONE,
+  its 3 branches thread `tuple_arg` + route to the tuple envelope with the plain exports riding alongside.
+  Corpus: a List-returning tuple-arg closure `mk` + plain `twice` → closure (list 10 3) + plain twice(21)=42.
+- **✅✅ TUPLE ARG × LIST-RESULT on the DISTINCT-SIG path — the tuple-arg × RESULT × EXPORT matrix is CLOSED**
+  (`@ed3e160e`, baseline `@fbe5f259`). The last list-result gap: closures of DIFFERENT signatures each taking a
+  fixed-shape scalar tuple arg AND returning a list<u8>-crossing result, each per-group `call-g<n>` rebuilding
+  its own flattened tuple arg. Threaded `gr.tuple_arg` into all three per-group list-result `call-g` branches
+  (collection/value-form/byte-rope, shared helpers); the per-group envelope functype sites (outer + inner
+  import/export) emit a 4-type block (handle + tuple + list<u8> + `(self,tuple)->list<u8>`) for a both-group,
+  `n_bytes + n_tuple` counting the extra types. `emit_distinct_sig_resource`'s guard GONE + the used-ops set
+  gains the rebuild ops (arr-alloc/arr-set + per-field box ops the groups reference — else `import_index` panic
+  for a group whose body builds no cell). Corpus: mk-a (Tuple Int64 Int64 → List) + mk-b (Tuple Int64 Bool →
+  List) of distinct sigs → (list 10 3) / (list 7). 🎯 A FIXED-SHAPE SCALAR compound closure ARG now composes
+  with EVERY result shape (scalar/byte-rope/fixed-compound/collection) across ALL FOUR export shapes
+  (single/multi/mixed/distinct-sig). The direct-call tuple-arg surface is complete.
+- **✅ A fixed-shape scalar tuple ARG can sit AMONG scalar args** (`@e934430d`, baseline `@54ee91ff`; single-
+  export, scalar result). Generalized the arg model from "the tuple is the SOLE arg" to "exactly one tuple at
+  ANY position among aliased-width scalars". `TupleArgRebuild` gained `base_param` (the core-param index the
+  flattened fields start at = `1 + prefix-scalar-count`); `emit_tuple_rebuild` reads `base_param + i`; the
+  shared scalar `call` body pushes prefix scalars, the rebuilt tuple, suffix scalars, in the closure's arg
+  order. Envelope: `closure_call_tuple_arg_functype_interleaved` (self + prefix bytes + tuple + suffix bytes);
+  `assemble_closure_resource_borrow_tuple` + the inner re-export thread `tuple_prefix_bytes`/`tuple_suffix_
+  bytes`. `single_compound_among_scalars` detects it. 🪤 the envelope's `tuple<…>` type takes the tuple's OWN
+  field bytes (NOT the full flattened list) — else a param-count mismatch. Corpus: scalar-then-tuple → 113,
+  tuple-then-scalar → 113, scalar-tuple-scalar → 114. Still declines: an among-scalars tuple with a LIST result
+  (list-result cores don't yet interleave — a follow-on); multi/mixed/distinct-sig among-scalars.
+- **✅ tuple-among-scalars on the MULTI-EXPORT path (scalar result)** (`@a7f5470f`, baseline `@b5c84cd3`). N
+  same-sig closures each taking a tuple among scalars share one interleaving `call`. `emit_multi_closure_
+  resource` uses `single_compound_among_scalars`; `assemble_mixed_closure_resource_borrow_tuple` +
+  `resource_inner_component_multi_closure_borrow_tuple` thread `tuple_prefix_bytes`/`tuple_suffix_bytes` into
+  the shared `call` functype (via `closure_call_tuple_arg_functype_interleaved`). Corpus: mk-a → 113, mk-b →
+  87. Mixed keeps sole-tuple only; among-scalars + list result still declines.
+- **REMAINING (all optional, none blocking):** on the DIRECT-CALL path — an among-scalars tuple on the
+  MIXED/distinct-sig paths OR with a list<u8>-crossing result (the interleaving generalization applied to
+  those cores' arg-push + functypes — mechanical, the helpers exist); a
+  VARIABLE-LENGTH collection arg
+  (needs a `value-decode` runtime op that does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
   direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-resource passed
   INTO a call); a closure TRANSFORMER (`own<t>` both directions — cleanly declined). **The entire byte-rope
   (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND

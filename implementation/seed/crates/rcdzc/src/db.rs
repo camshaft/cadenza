@@ -705,6 +705,16 @@ pub struct Db {
     /// exploding exponentially in appended nodes when its body branches.
     pub(crate) recursive: crate::fxhash::FxHashMap<StructId, bool>,
 
+    /// Memo of `lower::subtree_reaches_host_call` — whether the subtree at a node reaches a `Core::HostCall`
+    /// (an observable effect that DCE must keep). A pure function of the fixed AST/core structure, keyed by
+    /// node `StructId`. WITHOUT it the predicate re-walks a node's WHOLE subtree calling `core_of` per node,
+    /// and it is called from TWO hot passes over overlapping subtrees — the `do`/`let` lowering
+    /// (per do-block) and `collect_discarded_value_warnings` (per non-final statement) — so a `do` block's
+    /// statement subtrees were re-walked repeatedly. On the real corpus workload this pair was ~45% of
+    /// compile time (`subtree_reaches_host_call` + its per-node `core_of`). The memo makes each node's
+    /// verdict O(1) after first computation. `None` until computed.
+    pub(crate) reaches_host_call: crate::fxhash::FxHashMap<StructId, bool>,
+
     /// Memo of one function body's DIRECT callee edges (`eval::collect_callees`): for a body/callee
     /// occurrence, the list of callee bodies its code calls (excluding nested `fn` boundaries). A pure
     /// function of the fixed resolved structure — the same node's edges never change — so it caches by
@@ -807,6 +817,16 @@ pub struct Db {
     /// signature rather than re-triggering; this set is the defensive backstop that a demand landing
     /// mid-solve returns without recomputing. Holds the def indices whose solve is on the stack.
     pub(crate) solving_params: crate::fxhash::FxHashSet<usize>,
+
+    /// The def indices whose SCHEME solve is currently on the stack — the re-entry backstop for
+    /// `def_scheme` (a self-call demanding the scheme mid-compute reads `None`, typing as `Any`, the
+    /// same behavior the base case absorbs). Distinct from a cached `None` in `def_schemes`: a genuine
+    /// undetermined scheme and an in-progress one both look like `None` in the map, so re-entry can't be
+    /// read from there. It ALSO gates caching — a `None` computed while a SIBLING scheme solve is still
+    /// on this stack may be spurious (it read the sibling's provisional in-progress signature as `Any`,
+    /// as a mutually-recursive pure dispatcher does), so it is NOT cached and a later demand recomputes
+    /// it once the sibling is determined.
+    pub(crate) solving_schemes: crate::fxhash::FxHashSet<usize>,
     pub(crate) seed_transitive: crate::fxhash::FxHashSet<usize>,
 
     /// CALL-SITE index for `infer::call_site_arg_types`: `callee def index → the argument-occurrence lists
@@ -1221,6 +1241,7 @@ impl Db {
             reached_clipped: false,
             build_cache: crate::fxhash::FxHashMap::default(),
             recursive: crate::fxhash::FxHashMap::default(),
+            reaches_host_call: crate::fxhash::FxHashMap::default(),
             callee_edges: crate::fxhash::FxHashMap::default(),
             scheme_cache: crate::fxhash::FxHashMap::default(),
             mutual_loop_cache: crate::fxhash::FxHashMap::default(),
@@ -1242,6 +1263,7 @@ impl Db {
             def_schemes: crate::fxhash::FxHashMap::default(),
             param_types: crate::fxhash::FxHashMap::default(),
             solving_params: crate::fxhash::FxHashSet::default(),
+            solving_schemes: crate::fxhash::FxHashSet::default(),
             seed_transitive: crate::fxhash::FxHashSet::default(),
             call_sites_by_callee: None,
             resolved: Column::new(),

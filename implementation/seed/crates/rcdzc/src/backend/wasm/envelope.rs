@@ -1625,6 +1625,8 @@ pub fn assemble_closure_resource_borrow(
         result_byte,
         call_borrow,
         None,
+        &[],
+        &[],
     )
 }
 
@@ -1646,6 +1648,10 @@ pub fn assemble_closure_resource_borrow_tuple(
     result_byte: u8,
     call_borrow: bool,
     tuple_arg_bytes: Option<&[u8]>,
+    // The scalar boundary bytes BEFORE / AFTER the tuple arg (in the closure's original arg order) when the
+    // tuple sits AMONG scalar args; both empty when the tuple is the SOLE arg (or `tuple_arg_bytes` is None).
+    tuple_prefix_bytes: &[u8],
+    tuple_suffix_bytes: &[u8],
 ) -> Vec<u8> {
     let k = imports.len();
     let mut out = Vec::new();
@@ -1781,7 +1787,13 @@ pub fn assemble_closure_resource_borrow_tuple(
         let n_items: usize;
         if let Some(fields) = tuple_arg_bytes {
             items.extend_from_slice(&tuple_defined_type(fields)); // type 5
-            items.extend_from_slice(&closure_call_tuple_arg_functype(4, 5, result_byte)); // type 6
+            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                4,
+                tuple_prefix_bytes,
+                5,
+                tuple_suffix_bytes,
+                result_byte,
+            )); // type 6
             call_ft_idx = 6;
             n_items = 3;
         } else {
@@ -1807,6 +1819,8 @@ pub fn assemble_closure_resource_borrow_tuple(
             result_byte,
             call_borrow,
             tuple_arg_bytes,
+            tuple_prefix_bytes,
+            tuple_suffix_bytes,
         ),
     ));
     out.extend_from_slice(&section(
@@ -2095,6 +2109,34 @@ pub fn assemble_closure_bytes_resource_borrow(
     arg_bytes: &[u8],
     call_borrow: bool,
 ) -> Vec<u8> {
+    assemble_closure_bytes_resource_borrow_tuple(
+        main_core,
+        dtor_core,
+        imports,
+        import_name,
+        make_param_bytes,
+        arg_bytes,
+        call_borrow,
+        None,
+    )
+}
+
+/// [`assemble_closure_bytes_resource_borrow`] with an optional fixed-shape scalar tuple ARGUMENT: when
+/// `tuple_arg_bytes` is `Some(field_bytes)`, `call`'s single argument is a native `tuple<field_bytes…>`
+/// (minted before the `list<u8>` result type on both the outer lift + the nested re-export, shifting the
+/// `list<u8>` + call-functype indices up by 1) instead of `arg_bytes`'s inline scalars. Pairs with a bytes
+/// core serialized with a matching `TupleArgRebuild`. `None` = the scalar-arg path (byte-identical).
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_closure_bytes_resource_borrow_tuple(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    make_param_bytes: &[u8],
+    arg_bytes: &[u8],
+    call_borrow: bool,
+    tuple_arg_bytes: Option<&[u8]>,
+) -> Vec<u8> {
     let k = imports.len();
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
@@ -2202,30 +2244,48 @@ pub fn assemble_closure_bytes_resource_borrow(
         sec::CANON,
         &wasm_vec(1, &canon_lift_item((k + 3) as u32, 3)),
     ));
-    // sec 7: `own<t>`/`borrow<t>` (type 4), `list<u8>` (type 5), then the `call` functype `(self: <handle<t>>,
-    // args…) -> list<u8>` (type 6). `borrow<t>` → the host keeps the handle across calls (repeatable).
+    // sec 7: `own<t>`/`borrow<t>` (type 4), then — for a TUPLE arg — the `tuple<…>` type (type 5), then
+    // `list<u8>`, then the `call` functype `(self, args…) -> list<u8>`. A tuple arg shifts `list<u8>` + the
+    // call functype up by 1 (the tuple sits between); the scalar-arg path keeps `list<u8>`=5, call-ft=6.
+    let call_ft_idx: u32;
     out.extend_from_slice(&{
         let mut items = if call_borrow {
             borrow_item(1)
         } else {
             own_item(1)
         };
-        items.extend_from_slice(&list_u8_defined_type());
-        items.extend_from_slice(&closure_call_list_functype(4, arg_bytes, 5));
-        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+        let n_items: usize;
+        if let Some(fields) = tuple_arg_bytes {
+            items.extend_from_slice(&tuple_defined_type(fields)); // type 5
+            items.extend_from_slice(&list_u8_defined_type()); // type 6
+            items.extend_from_slice(&closure_call_list_tuple_arg_functype(4, 5, 6)); // type 7
+            call_ft_idx = 7;
+            n_items = 4;
+        } else {
+            items.extend_from_slice(&list_u8_defined_type()); // type 5
+            items.extend_from_slice(&closure_call_list_functype(4, arg_bytes, 5)); // type 6
+            call_ft_idx = 6;
+            n_items = 3;
+        }
+        section(sec::COMPONENT_TYPE, &wasm_vec(n_items, &items))
     });
-    // sec 8: lift `call` (core func k+4) against functype type 6 WITH Memory 0 + Realloc (core func k+5) →
+    // sec 8: lift `call` (core func k+4) against the call functype WITH Memory 0 + Realloc (core func k+5) →
     // component func k+1. The compound result crosses through linear memory by the canonical ABI.
     out.extend_from_slice(&section(
         sec::CANON,
         &wasm_vec(
             1,
-            &canon_lift_list_item((k + 4) as u32, 0, (k + 5) as u32, 6),
+            &canon_lift_list_item((k + 4) as u32, 0, (k + 5) as u32, call_ft_idx),
         ),
     ));
     // sec 4/5/11: nested re-export component; instantiate (comp type 1 + comp funcs k, k+1); export.
     out.extend_from_slice(&component_section(
-        &resource_inner_component_closure_bytes_borrow(make_param_bytes, arg_bytes, call_borrow),
+        &resource_inner_component_closure_bytes_borrow_tuple(
+            make_param_bytes,
+            arg_bytes,
+            call_borrow,
+            tuple_arg_bytes,
+        ),
     ));
     out.extend_from_slice(&section(
         sec::COMPONENT_INSTANCE,
@@ -2386,6 +2446,8 @@ pub fn assemble_mixed_closure_resource_borrow(
         plain,
         call_borrow,
         None,
+        &[],
+        &[],
     )
 }
 
@@ -2409,6 +2471,10 @@ pub fn assemble_mixed_closure_resource_borrow_tuple(
     plain: &[PlainExportAbi],
     call_borrow: bool,
     tuple_arg_bytes: Option<&[u8]>,
+    // Scalar boundary bytes BEFORE / AFTER the tuple arg (closure arg order) when the tuple sits AMONG scalar
+    // args; both empty for a sole tuple. Only the SCALAR-result shared `call` interleaves them this increment.
+    tuple_prefix_bytes: &[u8],
+    tuple_suffix_bytes: &[u8],
 ) -> Vec<u8> {
     let k = imports.len();
     let nmk = makes.len();
@@ -2552,9 +2618,11 @@ pub fn assemble_mixed_closure_resource_borrow_tuple(
         if let Some(fields) = tuple_arg_bytes {
             let tup_ty = (3 + 2 * nmk) as u32;
             items.extend_from_slice(&tuple_defined_type(fields));
-            items.extend_from_slice(&closure_call_tuple_arg_functype(
+            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
                 call_own_ty,
+                tuple_prefix_bytes,
                 tup_ty,
+                tuple_suffix_bytes,
                 result_byte,
             ));
         } else {
@@ -2602,6 +2670,8 @@ pub fn assemble_mixed_closure_resource_borrow_tuple(
             result_byte,
             call_borrow,
             tuple_arg_bytes,
+            tuple_prefix_bytes,
+            tuple_suffix_bytes,
         ),
     ));
     out.extend_from_slice(&section(
@@ -2670,6 +2740,36 @@ pub fn assemble_multi_closure_bytes_resource_borrow(
     arg_bytes: &[u8],
     plain: &[PlainExportAbi],
     call_borrow: bool,
+) -> Vec<u8> {
+    assemble_multi_closure_bytes_resource_borrow_tuple(
+        main_core,
+        dtor_core,
+        imports,
+        import_name,
+        makes,
+        arg_bytes,
+        plain,
+        call_borrow,
+        None,
+    )
+}
+
+/// [`assemble_multi_closure_bytes_resource_borrow`] with an optional fixed-shape scalar tuple ARGUMENT: when
+/// `tuple_arg_bytes` is `Some(field_bytes)`, the shared `call`'s single argument is a native `tuple<…>` minted
+/// just before the `list<u8>` result type (shifting the `list<u8>` + call functype + every plain functype up
+/// by 1) on both the outer lift + the nested re-export. `None` = the scalar-arg path (byte-identical). Pairs
+/// with a multi list-result core serialized with a matching `TupleArgRebuild`.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_multi_closure_bytes_resource_borrow_tuple(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    makes: &[ClosureMakeAbi],
+    arg_bytes: &[u8],
+    plain: &[PlainExportAbi],
+    call_borrow: bool,
+    tuple_arg_bytes: Option<&[u8]>,
 ) -> Vec<u8> {
     let k = imports.len();
     let nmk = makes.len();
@@ -2796,13 +2896,31 @@ pub fn assemble_multi_closure_bytes_resource_borrow(
             own_item(1)
         });
         let call_own_ty = (2 + 2 * nmk) as u32;
-        let list_ty = (3 + 2 * nmk) as u32;
-        items.extend_from_slice(&list_u8_defined_type());
-        items.extend_from_slice(&closure_call_list_functype(call_own_ty, arg_bytes, list_ty));
+        // For a TUPLE arg, mint `tuple<…>` (3+2N) before `list<u8>` (4+2N) + the call functype (5+2N) — +1
+        // extra type vs the scalar-arg layout (list<u8> 3+2N, call-ft 4+2N).
+        let n_call_types = if tuple_arg_bytes.is_some() { 3 } else { 2 };
+        if let Some(fields) = tuple_arg_bytes {
+            let tup_ty = (3 + 2 * nmk) as u32;
+            let list_ty = (4 + 2 * nmk) as u32;
+            items.extend_from_slice(&tuple_defined_type(fields));
+            items.extend_from_slice(&list_u8_defined_type());
+            items.extend_from_slice(&closure_call_list_tuple_arg_functype(
+                call_own_ty,
+                tup_ty,
+                list_ty,
+            ));
+        } else {
+            let list_ty = (3 + 2 * nmk) as u32;
+            items.extend_from_slice(&list_u8_defined_type());
+            items.extend_from_slice(&closure_call_list_functype(call_own_ty, arg_bytes, list_ty));
+        }
         for p in plain {
             items.extend_from_slice(&params_result_functype(&p.param_bytes, &[p.result_byte]));
         }
-        section(sec::COMPONENT_TYPE, &wasm_vec(2 * nmk + 3 + np, &items))
+        section(
+            sec::COMPONENT_TYPE,
+            &wasm_vec(2 * nmk + 1 + n_call_types + np, &items),
+        )
     });
     // sec 8: lift make[i] (core func k+3+i) against functype 3+2i → comp func k+i; lift `call` (core func
     // k+3+N) against functype 4+2N WITH Memory 0 + Realloc (core func k+4+N) → comp func k+N; lift each PLAIN
@@ -2814,8 +2932,11 @@ pub fn assemble_multi_closure_bytes_resource_borrow(
             let functype = (3 + 2 * i) as u32;
             items.extend_from_slice(&canon_lift_item(core_fn, functype));
         }
+        // A TUPLE arg minted one extra defined type before the call functype, so the call functype (and every
+        // plain functype after it) shifts by +1.
+        let tuple_shift = if tuple_arg_bytes.is_some() { 1 } else { 0 };
         let call_core_fn = (k + 3 + nmk) as u32;
-        let call_functype = (4 + 2 * nmk) as u32;
+        let call_functype = (4 + 2 * nmk + tuple_shift) as u32;
         let realloc_fn = (k + 4 + nmk) as u32;
         items.extend_from_slice(&canon_lift_list_item(
             call_core_fn,
@@ -2825,7 +2946,7 @@ pub fn assemble_multi_closure_bytes_resource_borrow(
         ));
         for j in 0..np {
             let core_fn = (k + 5 + nmk + j) as u32;
-            let functype = (5 + 2 * nmk + j) as u32;
+            let functype = (5 + 2 * nmk + tuple_shift + j) as u32;
             items.extend_from_slice(&canon_lift_item(core_fn, functype));
         }
         section(sec::CANON, &wasm_vec(nmk + 1 + np, &items))
@@ -2833,7 +2954,12 @@ pub fn assemble_multi_closure_bytes_resource_borrow(
     // sec 4/5/11: nested re-export component (list-result `call`); instantiate; export the closure interface,
     // then each PLAIN export as an ordinary top-level comp func (comp func k+nmk+1+j).
     out.extend_from_slice(&component_section(
-        &resource_inner_component_multi_closure_bytes_borrow(makes, arg_bytes, call_borrow),
+        &resource_inner_component_multi_closure_bytes_borrow_tuple(
+            makes,
+            arg_bytes,
+            call_borrow,
+            tuple_arg_bytes,
+        ),
     ));
     out.extend_from_slice(&section(
         sec::COMPONENT_INSTANCE,
@@ -2874,11 +3000,50 @@ fn resource_inner_component_multi_closure_bytes_borrow(
     arg_bytes: &[u8],
     call_borrow: bool,
 ) -> Vec<u8> {
+    resource_inner_component_multi_closure_bytes_borrow_tuple(makes, arg_bytes, call_borrow, None)
+}
+
+/// [`resource_inner_component_multi_closure_bytes_borrow`] with an optional fixed-shape scalar tuple ARGUMENT:
+/// when `tuple_arg_bytes` is `Some`, the shared `call`'s single arg is a native `tuple<…>` minted before the
+/// `list<u8>` result type on both the import and export sides — each `call` type block then holds handle +
+/// tuple + list + functype (4 types, vs the scalar-arg handle + list + functype = 3). A running type counter
+/// keeps both shapes consistent (the exported-resource index R absorbs the extra import-side type). `None` =
+/// the scalar-arg path (byte-identical).
+fn resource_inner_component_multi_closure_bytes_borrow_tuple(
+    makes: &[ClosureMakeAbi],
+    arg_bytes: &[u8],
+    call_borrow: bool,
+    tuple_arg_bytes: Option<&[u8]>,
+) -> Vec<u8> {
     let call_handle = |idx: u32| -> Vec<u8> {
         if call_borrow {
             borrow_item(idx)
         } else {
             own_item(idx)
+        }
+    };
+    // Emit the shared `call` type block (self handle wrapping `resource_ty`, [tuple], list<u8>, functype) at
+    // `block_base`. Returns the emitted items + the CALL FUNCTYPE index + how many types the block added
+    // (3 scalar / 4 tuple).
+    let call_type_block = |resource_ty: u32, block_base: u32| -> (Vec<u8>, u32, u32) {
+        let handle_ty = block_base;
+        let mut items = call_handle(resource_ty);
+        if let Some(fields) = tuple_arg_bytes {
+            let tup_ty = block_base + 1;
+            let list_ty = block_base + 2;
+            let ft_ty = block_base + 3;
+            items.extend_from_slice(&tuple_defined_type(fields));
+            items.extend_from_slice(&list_u8_defined_type());
+            items.extend_from_slice(&closure_call_list_tuple_arg_functype(
+                handle_ty, tup_ty, list_ty,
+            ));
+            (items, ft_ty, 4)
+        } else {
+            let list_ty = block_base + 1;
+            let ft_ty = block_base + 2;
+            items.extend_from_slice(&list_u8_defined_type());
+            items.extend_from_slice(&closure_call_list_functype(handle_ty, arg_bytes, list_ty));
+            (items, ft_ty, 3)
         }
     };
     let n = makes.len();
@@ -2907,22 +3072,18 @@ fn resource_inner_component_multi_closure_bytes_borrow(
         ));
         ty += 2;
     }
-    // Shared call: own<0> (ty) + list<u8> (ty+1) + call functype (ty+2); import func N.
+    // Shared call (import side): self handle wrapping the imported resource (type 0); import func N.
     {
-        let own_ty = ty;
-        let list_ty = ty + 1;
-        let ft_ty = ty + 2;
-        out.extend_from_slice(&{
-            let mut items = call_handle(0);
-            items.extend_from_slice(&list_u8_defined_type());
-            items.extend_from_slice(&closure_call_list_functype(own_ty, arg_bytes, list_ty));
-            section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
-        });
+        let (items, ft_ty, added) = call_type_block(0, ty);
+        out.extend_from_slice(&section(
+            sec::COMPONENT_TYPE,
+            &wasm_vec(added as usize, &items),
+        ));
         out.extend_from_slice(&section(
             sec::COMPONENT_IMPORT,
             &wasm_vec(1, &import_func_item(&import_wire_name(n), ft_ty)),
         ));
-        ty += 3;
+        ty += added;
     }
     // sec 11: RE-EXPORT the imported resource type 0 DIRECTLY as `t` → exported type `ty` (call it R).
     let r = ty;
@@ -2951,17 +3112,13 @@ fn resource_inner_component_multi_closure_bytes_borrow(
         ));
         ty += 2;
     }
-    // Shared call: own<R>/borrow<R> (ty) + list<u8> (ty+1) + call functype re-typed (ty+2); export `call`.
+    // Shared call (export side): self handle wrapping the re-exported resource (type R); export `call`.
     {
-        let own_ty = ty;
-        let list_ty = ty + 1;
-        let ft_ty = ty + 2;
-        out.extend_from_slice(&{
-            let mut items = call_handle(r);
-            items.extend_from_slice(&list_u8_defined_type());
-            items.extend_from_slice(&closure_call_list_functype(own_ty, arg_bytes, list_ty));
-            section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
-        });
+        let (items, ft_ty, _added) = call_type_block(r, ty);
+        out.extend_from_slice(&section(
+            sec::COMPONENT_TYPE,
+            &wasm_vec(_added as usize, &items),
+        ));
         out.extend_from_slice(&section(
             sec::COMPONENT_EXPORT,
             &wasm_vec(
@@ -3286,18 +3443,32 @@ pub fn assemble_distinct_sig_resource_mixed_borrow(
                 ti += 2;
             }
             if gr.ret_is_bytes {
-                // call-<g>: own/borrow<t_g> (ti) + list<u8> (ti+1) + `(self, args…) -> list<u8>` functype.
+                // call-<g> returns `list<u8>`. With a TUPLE arg: own/borrow<t_g> (ti) + tuple<…> (ti+1) +
+                // list<u8> (ti+2) + `(self, tuple) -> list<u8>` functype (ti+3) — 4 types. Without: own/borrow
+                // (ti) + list<u8> (ti+1) + `(self, args…) -> list<u8>` functype (ti+2) — 3 types.
                 items.extend_from_slice(&call_handle(rty));
                 let own_ty = ti;
-                let list_ty = ti + 1;
-                items.extend_from_slice(&list_u8_defined_type());
-                items.extend_from_slice(&closure_call_list_functype(
-                    own_ty,
-                    &gr.arg_bytes,
-                    list_ty,
-                ));
-                fn_functype.push(ti + 2);
-                ti += 3;
+                if let Some(fields) = &gr.tuple_arg_bytes {
+                    let tup_ty = ti + 1;
+                    let list_ty = ti + 2;
+                    items.extend_from_slice(&tuple_defined_type(fields));
+                    items.extend_from_slice(&list_u8_defined_type());
+                    items.extend_from_slice(&closure_call_list_tuple_arg_functype(
+                        own_ty, tup_ty, list_ty,
+                    ));
+                    fn_functype.push(ti + 3);
+                    ti += 4;
+                } else {
+                    let list_ty = ti + 1;
+                    items.extend_from_slice(&list_u8_defined_type());
+                    items.extend_from_slice(&closure_call_list_functype(
+                        own_ty,
+                        &gr.arg_bytes,
+                        list_ty,
+                    ));
+                    fn_functype.push(ti + 2);
+                    ti += 3;
+                }
             } else if let Some(fields) = &gr.tuple_arg_bytes {
                 // call-<g>: own/borrow<t_g> (ti) + tuple<…> (ti+1) + `(self, tuple) -> R` functype.
                 items.extend_from_slice(&call_handle(rty));
@@ -4084,6 +4255,8 @@ fn resource_inner_component_closure_borrow(
         result_byte,
         call_borrow,
         None,
+        &[],
+        &[],
     )
 }
 
@@ -4099,6 +4272,8 @@ fn resource_inner_component_closure_borrow_tuple(
     result_byte: u8,
     call_borrow: bool,
     tuple_arg_bytes: Option<&[u8]>,
+    tuple_prefix_bytes: &[u8],
+    tuple_suffix_bytes: &[u8],
 ) -> Vec<u8> {
     // `call`'s self handle type: a `borrow<idx>` (repeatable) or `own<idx>` (single-use) defined-type item.
     let call_handle = |idx: u32| -> Vec<u8> {
@@ -4136,7 +4311,13 @@ fn resource_inner_component_closure_borrow_tuple(
         let n_items: usize;
         if let Some(fields) = tuple_arg_bytes {
             items.extend_from_slice(&tuple_defined_type(fields)); // type 4
-            items.extend_from_slice(&closure_call_tuple_arg_functype(3, 4, result_byte)); // type 5
+            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                3,
+                tuple_prefix_bytes,
+                4,
+                tuple_suffix_bytes,
+                result_byte,
+            )); // type 5
             call_import_ty_idx = 5;
             n_items = 3;
         } else {
@@ -4189,9 +4370,11 @@ fn resource_inner_component_closure_borrow_tuple(
         if let Some(fields) = tuple_arg_bytes {
             let tup_ty = call_handle_ty + 1; // 10
             items.extend_from_slice(&tuple_defined_type(fields));
-            items.extend_from_slice(&closure_call_tuple_arg_functype(
+            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
                 call_handle_ty,
+                tuple_prefix_bytes,
                 tup_ty,
+                tuple_suffix_bytes,
                 result_byte,
             ));
             call_export_ty_idx = tup_ty + 1; // 11
@@ -4238,11 +4421,53 @@ fn resource_inner_component_closure_bytes_borrow(
     arg_bytes: &[u8],
     call_borrow: bool,
 ) -> Vec<u8> {
+    resource_inner_component_closure_bytes_borrow_tuple(
+        make_param_bytes,
+        arg_bytes,
+        call_borrow,
+        None,
+    )
+}
+
+/// [`resource_inner_component_closure_bytes_borrow`] with an optional fixed-shape scalar tuple ARGUMENT.
+/// When `tuple_arg_bytes` is `Some`, `call`'s single arg is a native `tuple<…>` minted just before the
+/// `list<u8>` result type on BOTH the import and export sides — each side's `call` type block adds one extra
+/// type (own/borrow + tuple + list + functype = 4, vs the scalar-arg own + list + functype = 3), which shifts
+/// the re-exported resource type index + all export-side indices up by 1. `None` = the scalar-arg path
+/// (byte-identical). A running type counter keeps both shapes' indices consistent.
+fn resource_inner_component_closure_bytes_borrow_tuple(
+    make_param_bytes: &[u8],
+    arg_bytes: &[u8],
+    call_borrow: bool,
+    tuple_arg_bytes: Option<&[u8]>,
+) -> Vec<u8> {
     let call_handle = |idx: u32| -> Vec<u8> {
         if call_borrow {
             borrow_item(idx)
         } else {
             own_item(idx)
+        }
+    };
+    // Emit the `call` type block (self handle at `block_base` wrapping `resource_ty`; for a tuple arg the
+    // `tuple<…>` type; the `list<u8>` result type; the `(self, arg) -> list<u8>` functype). Returns the
+    // emitted items + the call-functype index + how many types the block added (3 scalar / 4 tuple).
+    let call_type_block = |resource_ty: u32, block_base: u32| -> (Vec<u8>, u32, u32) {
+        let handle_ty = block_base;
+        let mut items = call_handle(resource_ty);
+        if let Some(fields) = tuple_arg_bytes {
+            let tup_ty = block_base + 1;
+            let list_ty = block_base + 2;
+            items.extend_from_slice(&tuple_defined_type(fields));
+            items.extend_from_slice(&list_u8_defined_type());
+            items.extend_from_slice(&closure_call_list_tuple_arg_functype(
+                handle_ty, tup_ty, list_ty,
+            ));
+            (items, list_ty + 1, 4)
+        } else {
+            let list_ty = block_base + 1;
+            items.extend_from_slice(&list_u8_defined_type());
+            items.extend_from_slice(&closure_call_list_functype(handle_ty, arg_bytes, list_ty));
+            (items, list_ty + 1, 3)
         }
     };
     let mut out = Vec::new();
@@ -4262,43 +4487,48 @@ fn resource_inner_component_closure_bytes_borrow(
         sec::COMPONENT_IMPORT,
         &wasm_vec(1, &import_func_item("import-func-make", 2)),
     ));
-    // sec 7: `own<0>`/`borrow<0>` (type 3), `list<u8>` (type 4), imported `call` functype `(self: <handle<3>>,
-    // args…) -> list<u8>` (type 5).
-    out.extend_from_slice(&{
-        let mut items = call_handle(0);
-        items.extend_from_slice(&list_u8_defined_type());
-        items.extend_from_slice(&closure_call_list_functype(3, arg_bytes, 4));
-        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
-    });
+    // sec 7: the imported `call` type block, self handle at type 3 wrapping the imported resource (type 0).
+    let (call_import_items, call_import_ft, import_call_types) = call_type_block(0, 3);
+    out.extend_from_slice(&section(
+        sec::COMPONENT_TYPE,
+        &wasm_vec(import_call_types as usize, &call_import_items),
+    ));
     out.extend_from_slice(&section(
         sec::COMPONENT_IMPORT,
-        &wasm_vec(1, &import_func_item("import-func-call", 5)),
+        &wasm_vec(1, &import_func_item("import-func-call", call_import_ft)),
     ));
-    // sec 11: RE-EXPORT the resource type 0 DIRECTLY as `t` → exported type 6.
+    // sec 11: RE-EXPORT the resource type 0 DIRECTLY as `t` → exported type R = the next free type index
+    // after the import side (3 + import_call_types = 6 scalar / 7 tuple).
+    let r = 3 + import_call_types;
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
         &wasm_vec(1, &export_type_direct_item(RESOURCE_TYPE_NAME, 0)),
     ));
-    // sec 7: `own<6>` (type 7) + `make` functype re-typed against the exported resource (type 8).
+    // sec 7: `own<R>` (type R+1) + `make` functype re-typed against the exported resource (type R+2).
     out.extend_from_slice(&{
-        let mut items = own_item(6);
-        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(7)));
+        let mut items = own_item(r);
+        items.extend_from_slice(&params_result_functype(
+            make_param_bytes,
+            &owned_valtype(r + 1),
+        ));
         section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
     });
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
-        &wasm_vec(1, &export_func_ascribed_item(MAKE_BOUNDARY_NAME, 0, 8)),
+        &wasm_vec(1, &export_func_ascribed_item(MAKE_BOUNDARY_NAME, 0, r + 2)),
     ));
-    // sec 7: `own<6>`/`borrow<6>` (type 9), `list<u8>` (type 10), `call` functype re-typed (type 11).
-    out.extend_from_slice(&{
-        let mut items = call_handle(6);
-        items.extend_from_slice(&list_u8_defined_type());
-        items.extend_from_slice(&closure_call_list_functype(9, arg_bytes, 10));
-        section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
-    });
+    // sec 7: the exported `call` type block, self handle at type R+3 wrapping the exported resource (type R).
+    let (call_export_items, call_export_ft, export_call_types) = call_type_block(r, r + 3);
+    out.extend_from_slice(&section(
+        sec::COMPONENT_TYPE,
+        &wasm_vec(export_call_types as usize, &call_export_items),
+    ));
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
-        &wasm_vec(1, &export_func_ascribed_item(CALL_BOUNDARY_NAME, 1, 11)),
+        &wasm_vec(
+            1,
+            &export_func_ascribed_item(CALL_BOUNDARY_NAME, 1, call_export_ft),
+        ),
     ));
     out
 }
@@ -4335,6 +4565,8 @@ fn resource_inner_component_multi_closure_borrow(
         result_byte,
         call_borrow,
         None,
+        &[],
+        &[],
     )
 }
 
@@ -4350,6 +4582,8 @@ fn resource_inner_component_multi_closure_borrow_tuple(
     result_byte: u8,
     call_borrow: bool,
     tuple_arg_bytes: Option<&[u8]>,
+    tuple_prefix_bytes: &[u8],
+    tuple_suffix_bytes: &[u8],
 ) -> Vec<u8> {
     let call_handle = |idx: u32| -> Vec<u8> {
         if call_borrow {
@@ -4369,9 +4603,11 @@ fn resource_inner_component_multi_closure_borrow_tuple(
         if let Some(fields) = tuple_arg_bytes {
             let tup_ty = block_base + 1; // handle at block_base, tuple next
             items.extend_from_slice(&tuple_defined_type(fields));
-            items.extend_from_slice(&closure_call_tuple_arg_functype(
+            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
                 handle_ty,
+                tuple_prefix_bytes,
                 tup_ty,
+                tuple_suffix_bytes,
                 result_byte,
             ));
             (items, tup_ty + 1, 3)
@@ -4523,25 +4759,46 @@ fn resource_inner_component_distinct_sig_borrow(
             f += 1;
         }
         if gr.ret_is_bytes {
-            // call-<gi> : (self: own<t_gi>, args…) -> list<u8>  → own<t_gi> + list<u8> + functype.
+            // call-<gi> returns list<u8>. With a TUPLE arg: handle + tuple + list<u8> + functype (4 types);
+            // without: handle + list<u8> + functype (3 types).
             let own_ty = ty;
-            let list_ty = ty + 1;
-            let ft_ty = ty + 2;
-            out.extend_from_slice(&{
-                let mut items = call_handle(gi as u32);
-                items.extend_from_slice(&list_u8_defined_type());
-                items.extend_from_slice(&closure_call_list_functype(
-                    own_ty,
-                    &gr.arg_bytes,
-                    list_ty,
+            if let Some(fields) = &gr.tuple_arg_bytes {
+                let tup_ty = ty + 1;
+                let list_ty = ty + 2;
+                let ft_ty = ty + 3;
+                out.extend_from_slice(&{
+                    let mut items = call_handle(gi as u32);
+                    items.extend_from_slice(&tuple_defined_type(fields));
+                    items.extend_from_slice(&list_u8_defined_type());
+                    items.extend_from_slice(&closure_call_list_tuple_arg_functype(
+                        own_ty, tup_ty, list_ty,
+                    ));
+                    section(sec::COMPONENT_TYPE, &wasm_vec(4, &items))
+                });
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_IMPORT,
+                    &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
                 ));
-                section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
-            });
-            out.extend_from_slice(&section(
-                sec::COMPONENT_IMPORT,
-                &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
-            ));
-            ty += 3;
+                ty += 4;
+            } else {
+                let list_ty = ty + 1;
+                let ft_ty = ty + 2;
+                out.extend_from_slice(&{
+                    let mut items = call_handle(gi as u32);
+                    items.extend_from_slice(&list_u8_defined_type());
+                    items.extend_from_slice(&closure_call_list_functype(
+                        own_ty,
+                        &gr.arg_bytes,
+                        list_ty,
+                    ));
+                    section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+                });
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_IMPORT,
+                    &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
+                ));
+                ty += 3;
+            }
         } else if let Some(fields) = &gr.tuple_arg_bytes {
             // call-<gi> : (self: handle<t_gi>, p: tuple<…>) -> R  → handle + tuple + functype.
             let own_ty = ty;
@@ -4615,20 +4872,44 @@ fn resource_inner_component_distinct_sig_borrow(
             f += 1;
         }
         if gr.ret_is_bytes {
-            out.extend_from_slice(&{
-                let mut items = call_handle(exp_rty);
-                items.extend_from_slice(&list_u8_defined_type());
-                items.extend_from_slice(&closure_call_list_functype(ti, &gr.arg_bytes, ti + 1));
-                section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
-            });
-            out.extend_from_slice(&section(
-                sec::COMPONENT_EXPORT,
-                &wasm_vec(
-                    1,
-                    &export_func_ascribed_item(&format!("call-g{gi}"), f as u32, ti + 2),
-                ),
-            ));
-            ti += 3;
+            // list<u8> result. With a TUPLE arg: handle + tuple + list<u8> + functype (4 types); without:
+            // handle + list<u8> + functype (3 types).
+            if let Some(fields) = &gr.tuple_arg_bytes {
+                out.extend_from_slice(&{
+                    let mut items = call_handle(exp_rty);
+                    items.extend_from_slice(&tuple_defined_type(fields));
+                    items.extend_from_slice(&list_u8_defined_type());
+                    items.extend_from_slice(&closure_call_list_tuple_arg_functype(
+                        ti,
+                        ti + 1,
+                        ti + 2,
+                    ));
+                    section(sec::COMPONENT_TYPE, &wasm_vec(4, &items))
+                });
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_EXPORT,
+                    &wasm_vec(
+                        1,
+                        &export_func_ascribed_item(&format!("call-g{gi}"), f as u32, ti + 3),
+                    ),
+                ));
+                ti += 4;
+            } else {
+                out.extend_from_slice(&{
+                    let mut items = call_handle(exp_rty);
+                    items.extend_from_slice(&list_u8_defined_type());
+                    items.extend_from_slice(&closure_call_list_functype(ti, &gr.arg_bytes, ti + 1));
+                    section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+                });
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_EXPORT,
+                    &wasm_vec(
+                        1,
+                        &export_func_ascribed_item(&format!("call-g{gi}"), f as u32, ti + 2),
+                    ),
+                ));
+                ti += 3;
+            }
         } else if let Some(fields) = &gr.tuple_arg_bytes {
             out.extend_from_slice(&{
                 let mut items = call_handle(exp_rty);
@@ -5802,6 +6083,11 @@ fn op_comp_functype(op: &RtOp) -> Vec<u8> {
 //# The mechanism by which a host resolves a call it cannot answer immediately — suspending an in-memory fiber and resuming in place, or discarding the run and re-deriving it from the ordered responses it has recorded — MUST be host runtime policy the language neither prescribes nor represents, so that portable re-derivation and local fiber suspension are both admissible and the emitted component is identical under either.
 //= spec/capabilities/capabilities-and-effects.md#how-a-host-resumes-is-host-policy-not-language
 //# Because a host MAY choose to re-derive a run from its input and recorded responses, a program that is a deterministic function of those (the requirement above) MUST remain resumable under that strategy without carrying any resume state itself; but a host that instead suspends the run in place MAY hold the run's live state, so the language requires determinism rather than statelessness and leaves the choice to the host.
+// The plain functype — no resume parameter, no suspension arm — is also how the seed mandates NOTHING
+// about the host's resume mechanism: determinism is the only boundary requirement, and every faithful
+// resolution strategy (inline, suspend-in-place, tear-down-and-replay) sees these same emitted bytes.
+//= spec/capabilities/capabilities-and-effects.md#a-run-is-a-deterministic-function-of-its-input-and-responses
+//# This determinism MUST be the language's only requirement on the host boundary: the language MUST NOT mandate how a host suspends, resumes, or resolves a call, so that a host is free to answer synchronously, to suspend and resume a run in place, or to tear a run down and re-derive it, and every faithful strategy produces identical observable behavior.
 //= spec/contracts/component-abi.md#the-entry-signature-crosses-the-boundary-by-the-same-rules
 //# The entry's parameter and result types MUST each have a boundary representation fixed by this contract.
 //= spec/contracts/component-abi.md#the-entry-signature-crosses-the-boundary-by-the-same-rules
@@ -5948,19 +6234,130 @@ fn closure_call_tuple_arg_functype(
     tuple_type_idx: u32,
     result_byte: u8,
 ) -> Vec<u8> {
+    // The tuple is the SOLE closure argument (no prefix/suffix scalars).
+    closure_call_tuple_arg_functype_interleaved(
+        self_handle_type_idx,
+        &[],
+        tuple_type_idx,
+        &[],
+        result_byte,
+    )
+}
+
+/// A `call` functype for a closure taking ONE fixed-shape scalar tuple arg AMONG scalar args: `(self:
+/// <handle<t>>, <prefix scalars…>, p: tuple<…>, <suffix scalars…>) -> R`. `prefix_bytes`/`suffix_bytes` are
+/// the scalar boundary bytes BEFORE/AFTER the tuple (in the closure's original arg order); `tuple_type_idx`
+/// the `tuple<…>` defined type. The scalar-result compound-arg path with the tuple at any position.
+fn closure_call_tuple_arg_functype_interleaved(
+    self_handle_type_idx: u32,
+    prefix_bytes: &[u8],
+    tuple_type_idx: u32,
+    suffix_bytes: &[u8],
+    result_byte: u8,
+) -> Vec<u8> {
     let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
     let mut param_items = Vec::new();
     // `self` — the receiver handle (own/borrow<t>), a defined type referenced by index.
     param_items.extend_from_slice(&uleb_bytes("self".len() as u64));
     param_items.extend_from_slice(b"self");
     param_items.extend_from_slice(&owned_valtype(self_handle_type_idx));
-    // the single tuple argument `p`, a defined type referenced by index.
-    param_items.extend_from_slice(&uleb_bytes("p".len() as u64));
-    param_items.extend_from_slice(b"p");
-    param_items.extend_from_slice(&owned_valtype(tuple_type_idx));
-    item.extend_from_slice(&wasm_vec(2, &param_items));
+    let mut pn = 0usize; // positional param name counter (cosmetic)
+    for &vt in prefix_bytes {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        param_items.push(vt);
+        pn += 1;
+    }
+    // the tuple argument, a defined type referenced by index.
+    {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        param_items.extend_from_slice(&owned_valtype(tuple_type_idx));
+        pn += 1;
+    }
+    for &vt in suffix_bytes {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        param_items.push(vt);
+        pn += 1;
+    }
+    item.extend_from_slice(&wasm_vec(
+        1 + prefix_bytes.len() + 1 + suffix_bytes.len(),
+        &param_items,
+    ));
     // One result — the closure's return valtype (a scalar boundary byte).
     item.extend_from_slice(&[0x00, result_byte]);
+    item
+}
+
+/// A `call` functype for a closure that takes a fixed-shape scalar tuple ARGUMENT AND returns a `list<u8>`
+/// (a byte-rope / compound / collection RESULT crossing through linear memory): `(self: <handle<t>>, p:
+/// tuple<…>) -> list<u8>`. Combines [`closure_call_tuple_arg_functype`] (the `tuple<…>` arg by index) with
+/// [`closure_call_list_functype`] (the `list<u8>` result by index). Both `tuple_type_idx` + `list_type_idx`
+/// are defined types laid just before this functype. Its lift carries Memory/Realloc (`canon_lift_list_item`).
+fn closure_call_list_tuple_arg_functype(
+    self_handle_type_idx: u32,
+    tuple_type_idx: u32,
+    list_type_idx: u32,
+) -> Vec<u8> {
+    // The tuple is the SOLE closure argument (no prefix/suffix scalars).
+    closure_call_list_tuple_arg_functype_interleaved(
+        self_handle_type_idx,
+        &[],
+        tuple_type_idx,
+        &[],
+        list_type_idx,
+    )
+}
+
+/// A `call` functype for a closure taking ONE fixed-shape scalar tuple arg AMONG scalar args AND returning a
+/// `list<u8>` (byte-rope / compound / collection result): `(self: <handle<t>>, <prefix scalars…>, p:
+/// tuple<…>, <suffix scalars…>) -> list<u8>`. Combines the interleaved-arg shape of
+/// [`closure_call_tuple_arg_functype_interleaved`] with the `list<u8>` result. Its lift carries Memory/Realloc.
+fn closure_call_list_tuple_arg_functype_interleaved(
+    self_handle_type_idx: u32,
+    prefix_bytes: &[u8],
+    tuple_type_idx: u32,
+    suffix_bytes: &[u8],
+    list_type_idx: u32,
+) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    let mut param_items = Vec::new();
+    param_items.extend_from_slice(&uleb_bytes("self".len() as u64));
+    param_items.extend_from_slice(b"self");
+    param_items.extend_from_slice(&owned_valtype(self_handle_type_idx));
+    let mut pn = 0usize;
+    for &vt in prefix_bytes {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        param_items.push(vt);
+        pn += 1;
+    }
+    {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        param_items.extend_from_slice(&owned_valtype(tuple_type_idx));
+        pn += 1;
+    }
+    for &vt in suffix_bytes {
+        let name = format!("p{pn}");
+        param_items.extend_from_slice(&uleb_bytes(name.len() as u64));
+        param_items.extend_from_slice(name.as_bytes());
+        param_items.push(vt);
+        pn += 1;
+    }
+    item.extend_from_slice(&wasm_vec(
+        1 + prefix_bytes.len() + 1 + suffix_bytes.len(),
+        &param_items,
+    ));
+    // One result — the `list<u8>` defined type, referenced by index.
+    item.push(0x00);
+    uleb128(list_type_idx as u64, &mut item);
     item
 }
 

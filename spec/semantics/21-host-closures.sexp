@@ -2660,6 +2660,220 @@
   (call   mk-eq (: (tuple 5 5) (Tuple Int64 Int64)))
   (output (: true Bool)))
 
+; A fixed-shape compound ARGUMENT now composes with a BYTE-ROPE (`Bytes`/`String`) result: the bytes-result
+; core serializer + its envelope thread the `TupleArgRebuild`, so the `call` rebuilds the flattened tuple cell
+; then copies its byte-rope result out as `list<u8>`. (A COMPOUND value-form or a variable-length COLLECTION
+; result combined with a tuple arg still declines — those two cores don't yet thread the rebuild; see the
+; decline anchor below.)
+
+(case "a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary"
+  (doc    "`(fn (p) (bin (u8 (. p 0)) (u8 (. p 1))))` — a `(Tuple Int64 Int64)` argument AND a `Bytes` result.
+           The tuple crosses flattened as a native `tuple<s64,s64>` the `call` rebuilds in-guest; the closure's
+           `Bytes` result copies out as `list<u8>`. `make()` → handle, `call(handle, (5, 6))` → the two bytes
+           `(5 6)`. Proves the tuple-arg rebuild threads through the byte-rope-result core + envelope.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (bin (u8 (. p 0)) (u8 (. p 1)))))
+              (export mk)))
+  (call   mk (: (tuple 5 6) (Tuple Int64 Int64)))
+  (output (: (5 6) Bytes)))
+
+; A fixed-shape compound ARGUMENT now composes with a fixed-shape COMPOUND result too (the value-form result
+; core + the shared list<u8> envelope thread the `TupleArgRebuild`): the `call` rebuilds the flattened tuple
+; arg cell, dispatches, then walks the closure's returned compound handle into the value-form template. Only a
+; VARIABLE-LENGTH COLLECTION result (List/Map/Set, the value-encode core) combined with a tuple arg still
+; declines — see the anchor below.
+
+(case "a fixed-shape Tuple ARG with a Tuple RESULT crosses the direct-call boundary"
+  (doc    "`(fn (p) (tuple (+ (. p 0) (. p 1)) (- (. p 0) (. p 1))))` — a `(Tuple Int64 Int64)` argument AND a
+           `(Tuple Int64 Int64)` result. The arg crosses flattened as a native `tuple<s64,s64>` the `call`
+           rebuilds in-guest; the closure's returned tuple is walked into the value-form template + crosses as
+           `list<u8>`, decoded to the typed `(: value T)`. `make()` → handle, `call(handle, (10, 3))` →
+           `(tuple 13 7)`. Proves the tuple-arg rebuild threads through the value-form (fixed compound) result
+           core + envelope.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)))
+                         (tuple (+ (. p 0) (. p 1)) (- (. p 0) (. p 1)))))
+              (export mk)))
+  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (tuple 13 7) (Tuple Int64 Int64))))
+
+(case "a fixed-shape Tuple ARG with a RECORD RESULT crosses the direct-call boundary"
+  (doc    "Like the tuple-result case but the closure returns a RECORD `(Record (sum Int64) (diff Int64))` —
+           a fixed-shape compound rendered via the value-form template (fields in canonical sorted-key order).
+           `call(handle, (10, 3))` → `(record (diff 7) (sum 13))`. Confirms a record result rides the same
+           value-form tuple-arg path.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)))
+                         (record (sum (+ (. p 0) (. p 1))) (diff (- (. p 0) (. p 1))))))
+              (export mk)))
+  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (record (diff 7) (sum 13)) (Record (diff Int64) (sum Int64)))))
+
+; A fixed-shape compound ARGUMENT now composes with a VARIABLE-LENGTH COLLECTION result (List/Map/Set) too —
+; the value-encode result core + the shared list<u8> envelope thread the `TupleArgRebuild`. So a single-export
+; tuple-arg closure now works with EVERY result shape: scalar, byte-rope, fixed-shape compound, AND
+; variable-length collection. The `call` rebuilds the flattened tuple arg cell, dispatches, then renders the
+; returned collection via the runtime `value-encode(rep, desc)` op. (The genuinely-unsupported arg shape is a
+; compound arg with a VARIABLE-LENGTH FIELD — no fixed flattened form — which declines at arg detection.)
+
+(case "a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary"
+  (doc    "`(fn (p) (list (. p 0) (. p 1)))` — a `(Tuple Int64 Int64)` argument AND a `(List Int64)` result.
+           The arg crosses flattened as a native `tuple<s64,s64>` the `call` rebuilds in-guest; the returned
+           List renders at run time via `value-encode(rep, desc)`, crossing as `list<u8>`. `make()` → handle,
+           `call(handle, (10, 3))` → `(list 10 3)`. The last single-export list-result core threaded — a
+           tuple-arg closure now composes with EVERY result shape.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
+              (export mk)))
+  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (list 10 3) (List Int64))))
+
+(case "a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary"
+  (doc    "A tuple arg + a `(Map Int64 Int64)` result — a variable-length collection rendered via
+           `value-encode`, keyed in canonical sorted-key order. `(fn (p) (Map.insert (Map.insert (map) (. p 0)
+           100) (. p 1) 200))` with `(1, 2)` → `(map (1 100) (2 200))`. Confirms Map rides the same tuple-arg
+           value-encode path as List.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)))
+                         ((. Map insert) ((. Map insert) (map) (. p 0) 100) (. p 1) 200)))
+              (export mk)))
+  (call   mk (: (tuple 1 2) (Tuple Int64 Int64)))
+  (output (: (map (1 100) (2 200)) (Map Int64 Int64))))
+
+; The tuple-arg × list-result composition extends to the MULTI-EXPORT shape: N same-signature closures sharing
+; ONE list-returning `call` each rebuild the flattened tuple arg cell (the multi bytes/value-form/value-encode
+; cores + the shared multi list<u8> envelope thread the `TupleArgRebuild`).
+
+(case "MULTI-EXPORT: two Tuple-arg closures sharing a List-returning `call`"
+  (doc    "Two same-sig `(-> (Tuple Int64 Int64) (List Int64))` closures (`mk-fwd`, `mk-rev`) share one
+           value-encode `call` that rebuilds the flattened tuple arg. Driving `mk-rev`: `make-rev()` → handle,
+           `call(handle, (10, 3))` → `(list 3 10)`. The multi value-encode core + the shared multi list<u8>
+           envelope thread the tuple rebuild.")
+  (input  (do (def (mk-fwd) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
+              (def (mk-rev) (fn ((: p (Tuple Int64 Int64))) (list (. p 1) (. p 0))))
+              (export mk-fwd) (export mk-rev)))
+  (call   mk-rev (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (list 3 10) (List Int64))))
+
+(case "MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`"
+  (doc    "The same multi-export shape with a fixed-shape COMPOUND (value-form) result: `(-> (Tuple Int64
+           Int64) (Tuple Int64 Int64))`. Driving `mk-sum`: `call(handle, (10, 3))` → `(tuple 13 7)`. The multi
+           value-form core threads the tuple-arg rebuild.")
+  (input  (do (def (mk-sum) (fn ((: p (Tuple Int64 Int64)))
+                          (tuple (+ (. p 0) (. p 1)) (- (. p 0) (. p 1)))))
+              (def (mk-prod) (fn ((: p (Tuple Int64 Int64)))
+                           (tuple (* (. p 0) (. p 1)) (. p 0))))
+              (export mk-sum) (export mk-prod)))
+  (call   mk-sum (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (tuple 13 7) (Tuple Int64 Int64))))
+
+; The tuple-arg × list-result composition extends to the MIXED shape: a List-returning tuple-arg closure
+; ALONGSIDE a plain (non-closure) export. The shared multi list-result core + the shared multi list<u8> tuple
+; envelope thread the `TupleArgRebuild`; the plain export rides alongside as an ordinary top-level func.
+
+(case "MIXED: a List-returning Tuple-arg closure ALONGSIDE a plain export — driving the closure"
+  (doc    "`mk : (-> (Tuple Int64 Int64) (List Int64))` (a tuple-arg closure returning a collection) crosses
+           via make + shared value-encode `call` that rebuilds the flattened tuple arg, WHILE a plain `twice`
+           rides alongside as a top-level func. Driving the closure: `make()` → handle, `call(handle, (10, 3))`
+           → `(list 10 3)`.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk) (export twice)))
+  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (list 10 3) (List Int64))))
+
+(case "MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure"
+  (doc    "The SAME mixed component, driving the plain `twice` — proving it coexists with the tuple-arg
+           list-returning closure interface. `twice(21)` → 42.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk) (export twice)))
+  (call   twice (: 21 Int64))
+  (output (: 42 Int64)))
+
+; The tuple-arg × list-result composition extends to the DISTINCT-SIGNATURE shape — the LAST list-result gap:
+; closures of DIFFERENT signatures each taking a fixed-shape scalar tuple arg AND returning a list<u8>-crossing
+; result (byte-rope / fixed-compound / collection) cross as G resource types, each per-group `call-g<n>`
+; rebuilding ITS OWN flattened tuple arg. All four per-group `call-g` body branches + the per-group envelope
+; functypes now thread the `TupleArgRebuild`.
+
+(case "DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List"
+  (doc    "`mk-a : (-> (Tuple Int64 Int64) (List Int64))` and `mk-b : (-> (Tuple Int64 Bool) (List Int64))` —
+           DIFFERENT tuple-arg signatures, each returning a collection. They cross as TWO resource types, each
+           `call-g<n>` rebuilding its own flattened tuple arg then value-encoding the returned List. Driving
+           the Int64-tuple group: `make-a()` → handle, `call(handle, (10, 3))` → `(list 10 3)`.")
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Bool))) (list (. p 0))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (list 10 3) (List Int64))))
+
+(case "DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair"
+  (doc    "The SAME distinct-sig component, driving `mk-b : (-> (Tuple Int64 Bool) (List Int64))` — its arg
+           tuple has a NARROW Bool field (boxed via `box-bool` in the rebuild). `make-b()` → handle,
+           `call(handle, (7, true))` → `(list 7)`. Exercises a distinct tuple-arg shape per group + a Bool
+           field in the flattened-tuple rebuild.")
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Bool))) (list (. p 0))))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: (tuple 7 true) (Tuple Int64 Bool)))
+  (output (: (list 7) (List Int64))))
+
+; A fixed-shape scalar tuple ARGUMENT can now sit AMONG scalar args (single-export, scalar result): the tuple
+; crosses flattened as a native `tuple<…>` at its own arg position, and the `call` pushes the closure's args in
+; ORDER — prefix scalars, the rebuilt tuple cell, suffix scalars — with the tuple's flattened fields starting
+; at core param `1 + prefix-count` (`TupleArgRebuild.base_param`). The tuple may be at any position.
+
+(case "a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)"
+  (doc    "`(fn (n) (p)) : (-> Int64 (Tuple Int64 Int64) Int64)` — a scalar arg `n` THEN a tuple arg `p`. The
+           `call` receives `[n, p.0, p.1]` flattened; it pushes `n`, rebuilds the tuple from params 2..4
+           (base_param=2), dispatches. `call(handle, 100, (10, 3))` → `n + p.0 + p.1` = 113. The tuple sits
+           after the scalar — a prefix scalar + the rebuilt tuple.")
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
+              (export mk)))
+  (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: 113 Int64)))
+
+(case "a Tuple ARG BEFORE a scalar arg crosses the direct-call boundary (tuple, then scalar)"
+  (doc    "`(fn (p) (n)) : (-> (Tuple Int64 Int64) Int64 Int64)` — the tuple arg `p` FIRST (base_param=1), then
+           a SUFFIX scalar `n`. The `call` rebuilds the tuple from params 1..3, then pushes `n` (param 3).
+           `call(handle, (10, 3), 100)` → `p.0 + p.1 + n` = 113. Confirms the tuple + a suffix scalar.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: n Int64)) (+ (+ (. p 0) (. p 1)) n)))
+              (export mk)))
+  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
+  (output (: 113 Int64)))
+
+(case "a Tuple ARG BETWEEN two scalar args crosses the direct-call boundary (scalar, tuple, scalar)"
+  (doc    "`(fn (a) (p) (b)) : (-> Int64 (Tuple Int64 Int64) Int64 Int64)` — a PREFIX scalar `a`, the tuple `p`
+           (base_param=2), and a SUFFIX scalar `b`. The `call` pushes `a`, rebuilds `p` from params 2..4,
+           pushes `b` (param 4). `call(handle, 1, (10, 3), 100)` → `a + p.0 + p.1 + b` = 114. The tuple at an
+           interior position between prefix + suffix scalars.")
+  (input  (do (def (mk) (fn ((: a Int64) (: p (Tuple Int64 Int64)) (: b Int64))
+                         (+ (+ a (+ (. p 0) (. p 1))) b)))
+              (export mk)))
+  (call   mk (: 1 Int64) (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
+  (output (: 114 Int64)))
+
+; The tuple-among-scalars arg shape extends to the MULTI-EXPORT scalar-result path: N same-sig closures each
+; taking `(-> Int64 (Tuple Int64 Int64) Int64)` share one `call` that interleaves the prefix scalar with the
+; rebuilt tuple. (An among-scalars tuple with a LIST result, or on the mixed/distinct-sig paths, still declines
+; — those cores don't yet interleave prefix/suffix.)
+
+(case "MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg"
+  (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 Int64) Int64)` — a scalar `n` then a tuple `p`, shared across
+           two exports. The shared `call` pushes `n`, rebuilds the tuple, dispatches. Driving `mk-a`: `make-a()`
+           → handle, `call(handle, 100, (10, 3))` → `n + p.0 + p.1` = 113. The tuple-among-scalars interleaving
+           on the multi-export shared `call`.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (- n (+ (. p 0) (. p 1)))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: 113 Int64)))
+
+(case "MULTI-EXPORT: driving the second among-scalars closure (subtract)"
+  (doc    "The SAME multi-export component, driving `mk-b` (subtract): `call(handle, 100, (10, 3))` → `n -
+           (p.0 + p.1)` = 87. Confirms both same-sig among-scalars closures share the one interleaving `call`.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (- n (+ (. p 0) (. p 1)))))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: 87 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner

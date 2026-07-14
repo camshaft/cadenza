@@ -88,6 +88,10 @@ fn module_record(
     // added when non-empty: an empty `(list)` has no determined element type, and a module that delegates
     // nothing carries no capability metadata to observe. Built with the `"list"`/`"record"` STRING heads
     // (like the record itself) so it resolves structurally, independent of any user binding of those names.
+    //= spec/capabilities/core-semantics.md#a-module-carries-its-manifest-and-entry-as-metadata
+    //# A module MUST carry the capabilities it declares as metadata separate from its exported fields, so that a declared capability is not itself an export.
+    //= spec/capabilities/core-semantics.md#a-module-carries-its-manifest-and-entry-as-metadata
+    //# A module's metadata MUST be reachable by a metadata key distinct from every export name, so that metadata access cannot collide with an export.
     let caps = module_capabilities(ast, &members);
     if !caps.is_empty() {
         let list_head = push_atom(ast, Leaf::Str("list".to_string()));

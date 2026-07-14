@@ -217,6 +217,25 @@
               (handle Bail 0 ((bail (n) s n)) (+ 1 (Bail.bail 7)))) (export main)))
   (output (: 7 Int64)))
 
+(case "an abortive perform deep in a call chain unwinds every intervening frame to the top handler"
+  (doc    "The 'bail and catch at the top' pattern across FUNCTIONS (DESIGN-effects-rcdzc.md §4.2 cross-
+           function non-local exit): the abort is performed three calls deep and abandons EVERY pending
+           frame between it and the handler. `main` handles `Bail` and calls `(a 5)`; `a n = (+ 1 (b n))`,
+           `b n = (+ 1 (c n))`, `c n = (+ n (Bail.bail 99))`. Performing `(Bail.bail 99)` at the base
+           abandons `c`'s `(+ n …)`, `b`'s `(+ 1 …)`, and `a`'s `(+ 1 …)` — none of the pending additions
+           runs — so the handle evaluates to the arm value 99, NOT 5+99+1+1. Witnesses that abortion is a
+           non-local exit over the whole call chain, not a per-frame return that the intervening arithmetic
+           could observe. (The callees are non-recursive, so the inline trigger makes the abort unconditional
+           in the inlined body.)")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (c (: n Int64)) (+ n (Bail.bail 99)))
+            (def (b (: n Int64)) (+ 1 (c n)))
+            (def (a (: n Int64)) (+ 1 (b n)))
+            (def (main)
+              (handle Bail 0 ((bail (n) s n)) (a 5))) (export main)))
+  (output (: 99 Int64)))
+
 (case "when two abortive performs sit on one spine the FIRST (leftmost) abort wins"
   (doc    "Refines the abortive class for MULTIPLE performs. Operands evaluate LEFT-TO-RIGHT, and an
            abortive perform ABANDONS the rest of the computation, so on `(+ (Bail.bail 7) (Bail.bail 9))` the
@@ -992,6 +1011,62 @@
               (handle Countdown 3 ((tick (u) s (resume s (- s 1)))) (loop))) (export main)))
   (output (: 3 Int64)))
 
+(case "a MUTUALLY-recursive effectful group is specialized under a state handler"
+  (doc    "Effect-context monomorphization extends past a SINGLE self-recursive function to a MUTUALLY-
+           recursive group. `ev` and `od` call each other, and the effect `Ctr.tick` is reached by `ev`
+           only THROUGH its partner `od` — so detecting that `ev` reaches the effect requires following the
+           RECURSIVE partner call, and specializing it requires tying the two specializations' knot (each
+           partner's recursive call resolves to the other's specialized copy). Seeded 7, `tick` hands back
+           the counter and threads `s - 1`: `ev(4)`→`od(3)` reads 7, `ev(2)`→`od(1)` reads 6, `ev(0)`=0, so
+           the sum is `7 + (6 + 0)` = 13. Recursive-while-performing across a MUTUAL cycle — the same
+           dynamic-extent state fold as the single-recursion countdown, over a call graph rather than a
+           single self-call.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (ev (: n Int64)) (if (= n 0) 0 (od (- n 1))))
+            (def (od (: n Int64)) (+ (Ctr.tick) (ev (- n 1))))
+            (def (main)
+              (handle Ctr 7 ((tick (u) s (resume s (- s 1)))) (ev 4))) (export main)))
+  (output (: 13 Int64)))
+
+(case "a mutually-recursive group performs through a shared non-recursive helper"
+  (doc    "Composes the two cross-function triggers: a mutually-recursive group (`ev`/`od`) where the
+           effect is performed inside a NON-recursive helper `h` that `od` calls, rather than syntactically
+           in `od`'s own body. The helper INLINES (the non-recursive inline trigger) and the mutual pair
+           SPECIALIZES (the recursive trigger), and they compose — `od`'s `(h)` is inlined to `(Ctr.tick)`
+           within the specialized `od#ctx`. Seeded 7, threading `s - 1`, the ticks read 7 then 6, so `ev(4)`
+           = `7 + (6 + 0)` = 13. Pins that specialization detecting the effect through a mutual partner and
+           inlining a performing helper cooperate in one recursive group.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (h) (Ctr.tick))
+            (def (ev (: n Int64)) (if (= n 0) 0 (od (- n 1))))
+            (def (od (: n Int64)) (+ (h) (ev (- n 1))))
+            (def (main)
+              (handle Ctr 7 ((tick (u) s (resume s (- s 1)))) (ev 4))) (export main)))
+  (output (: 13 Int64)))
+
+(case "a mutually-recursive group performs in its entry def while its partner only dispatches"
+  (doc    "The MIRROR of the case above, and the one that pins the mutual-group scheme fixpoint. Here the
+           ENTRY def `ev` (the one the handle body calls, so its scheme is demanded FIRST) is the one that
+           PERFORMS — it recurses through its partner `od`, which is a PURE DISPATCHER whose body is
+           ENTIRELY the sibling call `(ev (- n 1))`. Computing `ev`'s scheme demands `od`'s mid-flight,
+           while `ev`'s own signature is still provisional; `od`'s body — being only `(ev …)` — then reads
+           that provisional `ev` and would type as an undetermined `Any`. The mutual-group scheme solve
+           must NOT cache that provisional `None` for `od` (else the dispatcher is poisoned permanently and
+           the whole group declines); once `ev` resolves via its base case, a re-demand computes `od`'s
+           true `Int64 -> Int64`. Seeded 7, threading `s - 1`, the ticks read 7 then 6, so `ev(4)` =
+           `(Ctr.tick) + od(3)` = `7 + ev(2)` = `7 + ((Ctr.tick) + od(1))` = `7 + (6 + ev(0))` =
+           `7 + 6 + 0` = 13. Recursive-while-performing, so it needs effect-context specialization
+           (`DESIGN-effects-rcdzc.md` §4.2, §4.3).")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (ev (: n Int64)) (if (= n 0) 0 (+ (Ctr.tick) (od (- n 1)))))
+            (def (od (: n Int64)) (ev (- n 1)))
+            (def (main)
+              (handle Ctr 7 ((tick (u) s (resume s (- s 1)))) (ev 4))) (export main)))
+  (output (: 13 Int64)))
+
 (case "a recursive function sums a range it walks by performing a fresh-index effect"
   (doc    "Witnesses the recursive-effect idiom folding a real accumulator across a self-recursive
            walk: `Idx` supplies a descending index (seeded 3, each `next` hands back `s` and threads
@@ -1056,6 +1131,31 @@
             (def (main)
               (handle B 0 ((bump (u) s (resume s (+ s 10)))) (handle A 3 ((tick (u) s (resume s (- s 1)))) (loop)))) (export main)))
   (output (: 30 Int64)))
+
+(case "a mutually-recursive group threads two nested handlers' states at once"
+  (doc    "The two-nested-handler state-threading of the case above, but over a MUTUALLY-RECURSIVE group
+           rather than a single self-recursive `loop` — composing merge (two effects, two handler contexts)
+           WITH mutual specialization (`ev`/`od`, each performing a DIFFERENT effect). `ev` performs `A.tick`
+           and recurses through `od`; `od` performs `B.bump` and recurses through `ev`; both handler
+           contexts must thread INDEPENDENTLY across the alternation. `A` is a countdown seeded 3 (`tick`
+           hands back `s`, threads `s - 1`), `B` an accumulator seeded 0 (`bump` hands back `s`, threads
+           `s + 10`). Along `ev(4) → od(3) → ev(2) → od(1) → ev(0)=0`, the A-ticks read 3 then 2 (in `ev`)
+           and the B-bumps read 0 then 10 (in `od`), so the strict-spine sum is `3 + 0 + 2 + 10 + 0` = 15.
+           Each specialized function (`ev#ctx`/`od#ctx`) must carry BOTH threaded states as distinct hidden
+           slots — a shared per-effect slot would clobber when the mutual recursion re-enters — pinning
+           that merge (`merged_nested_ctx`) and mutual-group specialization cooperate. Recursive-while-
+           performing across two effects, so it needs effect-context monomorphization
+           (`DESIGN-effects-rcdzc.md` §4.2, §4.3).")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)))
+            (effect B (op bump (-> Unit Int64)))
+            (def (ev (: n Int64)) (if (= n 0) 0 (+ (A.tick) (od (- n 1)))))
+            (def (od (: n Int64)) (+ (B.bump) (ev (- n 1))))
+            (def (main)
+              (handle A 3 ((tick (u) s (resume s (- s 1))))
+                (handle B 0 ((bump (u) s (resume s (+ s 10))))
+                  (ev 4)))) (export main)))
+  (output (: 15 Int64)))
 
 (case "a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold"
   (doc    "Nested handlers of DISTINCT effects where the OUTER handler's arm resumes NON-tail. The
@@ -1400,6 +1500,24 @@
             (def (main)
               (+ (Ask.ask) 1)) (export main)))
   (error  CDZ0401))
+
+(case "the same declared effect is handled in-program by one entrypoint and delegated by another"
+  (doc    "Host-binding is a ROUTING decision made at the entrypoint, not a declaration-time property
+           (capabilities-and-effects.md #Host-Binding Is A Routing Decision Made At The Entrypoint): an
+           effect declaration is a routing-agnostic contract, so ONE `(effect E …)` may be handled entirely
+           in-program by one entrypoint AND delegated to the host by another, in the SAME program. Here
+           `handled` wraps `(E.ask)` in a `(handle E …)` that resumes 42 — E is discharged in-program and
+           does NOT enter the manifest for this entrypoint; `delegated` performs `(E.ask)` under `(host (E)
+           …)` — E escapes to the boundary and IS a capability there. `handled()` = 42, deterministically,
+           with no host response needed; the routing is decided by the enclosing handler/delegation, never by
+           `E`'s declaration.")
+  (input  (do
+            (effect E (op ask (-> Unit Int64)))
+            (def (handled) (handle E 0 ((ask (u) s (resume 42 s))) (E.ask)))
+            (def (delegated) (host (E) (E.ask)))
+            (export handled) (export delegated)))
+  (call   handled)
+  (output (: 42 Int64)))
 
 (case "a program that delegates no effect is pure and never suspends"
   (doc    "Witnesses capabilities-and-effects.md #Purity Is The Empty Effect Row: a program that reaches

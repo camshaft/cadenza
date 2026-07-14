@@ -901,7 +901,7 @@ fn rustc_roundtrip_generic_recursive_tree_boxes_and_counts() {
            (export cnt))",
     );
     assert!(
-        rs.contains("enum Tree<T0>") && rs.contains("Node(Box<"),
+        rs.contains("enum Tree<T0>") && rs.contains("Node(::std::boxed::Box<"),
         "the generic recursive variant's nested-tuple field is boxed (was E0072 infinite size): {rs}"
     );
     // End-to-end through rustc: builds (was E0072) and cnt of a two-leaf node = 2, matching wasm.
@@ -1067,12 +1067,13 @@ fn a_wide_mutually_recursive_cycle_boxes_every_edge() {
         types.join(" ")
     );
     let rs = try_compile_rust(&src).expect("a wide mutually-recursive cycle emits boxed enums");
-    // Every cycle edge is boxed: `Mk{i}(Box<T{i+1}>)` for each i (each payload reaches back to its own
-    // sum through the cycle, so the finite-size Box is required on all of them).
+    // Every cycle edge is boxed: `Mk{i}(::std::boxed::Box<T{i+1}>)` for each i (each payload reaches back
+    // to its own sum through the cycle, so the finite-size Box is required on all of them). The box is
+    // fully-qualified so a user sum named `Box` cannot shadow the heap pointer.
     for i in 0..n {
         let nxt = (i + 1) % n;
         assert!(
-            rs.contains(&format!("Mk{i}(Box<T{nxt}>)")),
+            rs.contains(&format!("Mk{i}(::std::boxed::Box<T{nxt}>)")),
             "T{i}'s recursive variant must box its T{nxt} payload; got:\n{rs}"
         );
         // The nullary `End{i}` variant carries no payload (not boxed) — a spot-check that boxing is
@@ -1540,7 +1541,7 @@ fn rustc_roundtrip_async_recursive_sum_folds() {
     );
     // A recursive `async fn` sizes its future via `Box::pin`; the recursive payload sizes via `Box`.
     assert!(
-        module.contains("Cons(Box<(i64, L)>)"),
+        module.contains("Cons(::std::boxed::Box<(i64, L)>)"),
         "boxed payload:\n{module}"
     );
     assert!(
@@ -1586,8 +1587,14 @@ fn rustc_roundtrip_async_mutually_recursive_sums_fold() {
          (def (sb b) (match b ((B.BL n) n) ((B.BN a) (sa a)))) \
          (def (main) (sa (A.AN (B.BN (A.AL 9))))) (export main))",
     );
-    assert!(module.contains("AN(Box<B>)"), "boxed A payload:\n{module}");
-    assert!(module.contains("BN(Box<A>)"), "boxed B payload:\n{module}");
+    assert!(
+        module.contains("AN(::std::boxed::Box<B>)"),
+        "boxed A payload:\n{module}"
+    );
+    assert!(
+        module.contains("BN(::std::boxed::Box<A>)"),
+        "boxed B payload:\n{module}"
+    );
     let driver = r#"
 struct M;
 impl cdz_rt::CdzEnv for M { async fn consume(&mut self, _: u64) {} }

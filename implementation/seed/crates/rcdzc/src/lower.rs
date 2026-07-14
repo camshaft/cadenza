@@ -80,6 +80,12 @@ fn reduction_bound_element(db: &mut Db, elems: &[StructId]) -> Option<Reject> {
     None
 }
 
+/// Lower one node's resolved form to its core form. Records fold: a bare name is its bound value's
+/// core, a `let` is its body's core, and a member projection is the FIELD'S core read directly — so a
+/// record used only to read a field leaves no runtime trace (it folds to the projected scalar). A
+/// record used as a runtime value survives as `Core::Record` (which declines at select until the
+/// value heap exists). This is the one compile-time reduction tier acting through lowering
+/// (`reference-compiler.md` §A Construct Whose Value Is Fully Determined At Compile Time).
 pub fn core_of(db: &mut Db, id: StructId) -> Core {
     if let Slot::Filled(c) = db.core.get(id) {
         trace!(target: "rcdzc::lower", node = id.0, "memo hit");
@@ -119,12 +125,6 @@ pub fn core_of(db: &mut Db, id: StructId) -> Core {
     c
 }
 
-/// Lower one node's resolved form to its core form. Records fold: a bare name is its bound value's
-/// core, a `let` is its body's core, and a member projection is the FIELD'S core read directly — so a
-/// record used only to read a field leaves no runtime trace (it folds to the projected scalar). A
-/// record used as a runtime value survives as `Core::Record` (which declines at select until the
-/// value heap exists). This is the one compile-time reduction tier acting through lowering
-/// (`reference-compiler.md` §A Construct Whose Value Is Fully Determined At Compile Time).
 /// Whether the core form at `id` reaches a `Core::HostCall` (directly or nested) — a bounded structural
 /// walk over the core tree. Used by the `do`-sequencing lowering to decide whether a non-final statement
 /// has a host-call side effect that must be emitted (rather than dropped by the ordinary `Ref{last}` fold).
@@ -132,15 +132,29 @@ pub fn core_of(db: &mut Db, id: StructId) -> Core {
 /// on EXACTLY the pure non-final statements this lowering drops — one predicate, no drift between the DCE
 /// decision and the diagnostic that explains it.
 pub(crate) fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
-    if matches!(core_of(db, id), Core::HostCall { .. }) {
-        return true;
+    // MEMOIZED (`Db::reaches_host_call`): a pure function of the node's fixed AST/core structure. This is
+    // called from TWO hot passes over OVERLAPPING subtrees — the `do`/`let` lowering (per do-block) and
+    // `collect_discarded_value_warnings` (per non-final statement) — and each call re-walked the WHOLE
+    // subtree calling `core_of` per node. On the real corpus workload the pair was ~45% of compile time;
+    // the memo makes a node's verdict O(1) after first computation (so a statement queried by both passes,
+    // and overlapping do-statement subtrees, pay the walk once).
+    if let Some(&cached) = db.reaches_host_call.get(&id) {
+        return cached;
     }
-    match db.ast.get(id).clone() {
+    let result = match db.ast.get(id).clone() {
+        // A `Core::HostCall` only ever lowers from an APPLICATION `(head args)` — a `Struct::List` (a
+        // host-delegated effect-op perform). So only a List node need be lowered (`core_of`) to test for
+        // it; an ATOM (a name/literal) can never be a host call, so skip the (per-node, per-compile)
+        // `core_of` lowering entirely for it. This is what dominated the real corpus workload: the old code
+        // forced `core_of` on EVERY node — including every leaf atom — of every do-statement subtree.
         crate::ast::Struct::List(children) => {
-            children.iter().any(|&c| subtree_reaches_host_call(db, c))
+            matches!(core_of(db, id), Core::HostCall { .. })
+                || children.iter().any(|&c| subtree_reaches_host_call(db, c))
         }
         crate::ast::Struct::Atom(_) => false,
-    }
+    };
+    db.reaches_host_call.insert(id, result);
+    result
 }
 
 fn compute(db: &mut Db, id: StructId) -> Core {
@@ -2298,9 +2312,11 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     }
     // A LIST scrutinee is deconstructed by ELEMENT patterns (`core-semantics.md` §A List Is Deconstructed
     // By Element Patterns With An Optional Rest). This increment folds a CONSTANT list (`Core::ListNew`)
-    // against FIXED-ARITY patterns `(list a b)` / `(list)`: the known length selects the matching arm; its
-    // element binders read the constant elements via `SumPayload` `Elem` folds. A REST pattern
-    // `(list x .. rest)` or a RUNTIME list scrutinee declines (later increments).
+    // against both FIXED-ARITY patterns `(list a b)` / `(list)` AND REST patterns `(list a .. rest)`: the
+    // known length selects the matching arm (a fixed pattern of arity k matches length k, a rest pattern
+    // of lead k matches length ≥ k); leading binders read the constant elements via `SumPayload` `Elem`
+    // folds and the rest binder folds to the tail sublist. A RUNTIME list scrutinee declines (later
+    // increment), as does a NESTED leading sub-pattern (each leading position must be a bare binder / `_`).
     if matches!(crate::infer::type_of(db, scrutinee), crate::ty::Ty::List(_)) {
         return lower_match_list(db, scrutinee, arms);
     }
@@ -2510,12 +2526,24 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
 }
 
 /// Lower a `(match scrutinee (list-pattern body)…)` over a LIST scrutinee — this increment folds a
-/// COMPILE-TIME-CONSTANT scrutinee against FIXED-ARITY element patterns. Its `Core::ListNew` gives the
-/// length; select the FIRST arm whose pattern matches (a `(list p0 … pk)` of arity k matches length k; a
-/// bare binder / `_` matches any) and lower that arm's body — the body's element binders resolve to
-/// `SumPayload` `Elem(i)` reads that FOLD against the constant list (resolve Case 6l). A REST pattern
-/// `(list x .. rest)` or a RUNTIME list scrutinee declines (later increments). A well-formed match must
-/// cover every length — a bare binder / `_` catch-all — else CDZ0210.
+/// COMPILE-TIME-CONSTANT scrutinee against element patterns, both FIXED-ARITY and REST. Its `Core::ListNew`
+/// gives the length; select the FIRST arm whose pattern matches — a `(list p0 … p_{k-1})` of arity k
+/// matches length exactly k, a rest pattern `(list p0 … p_{k-1} .. rest)` matches length ≥ k, a bare
+/// binder / `_` matches any — and lower that arm's body. The body's leading-element binders resolve to
+/// `SumPayload` `Elem(i)` reads and the rest binder to the tail sublist (`RestFrom(k)`), each FOLDing
+/// against the constant list (resolve Case 6l). A RUNTIME list scrutinee declines (a later increment), as
+/// does a NESTED leading sub-pattern (a leading position must be a bare binder / `_`).
+///
+/// A list observed ONLY through its length and its elements in order — never any cell/node structure of
+/// the representation (the fold reads `vec-len`/`vec-get`/`vec-split`, representation-agnostic). A
+/// well-formed match must JOINTLY cover every length n ≥ 0 (the empty list AND every non-empty list) —
+/// a `_`/whole-list binder or a `(list .. rest)` arm covers the infinite tail — else CDZ0210.
+//= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
+//# A list MUST be matchable by an element pattern that names some number of leading elements positionally and MAY end in a rest binder for the remaining elements.
+//= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
+//# A set of list-element arms MUST be treated as exhaustive when it covers both the empty list and every non-empty list — for example an empty-list arm together with a leading-element-plus-rest arm, or an arm ending in a rest binder that names no leading elements — and a set of arms that leaves some length uncovered MUST be a compile-time error under *Matching Is Exhaustive Or Rejected* unless a later arm (a name or wildcard pattern) covers the remainder.
+//= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
+//# An element pattern MUST observe a list only through its length and its elements in order; it MUST NOT expose or depend on any internal cell or node structure of the list's representation, so that the same pattern matches a list regardless of how the list is represented.
 fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     enum Arm {
         Fixed(usize, StructId), // a fixed-arity `(list …)` of this exact arity
@@ -5231,6 +5259,14 @@ fn lower_recursive_call_or_decline(
     //# The compiler MUST monomorphize a generic definition — specialize it to each concrete set of type arguments it is used with, by compile-time reduction with those type-values bound — before the definition crosses a component boundary, consistent with the component ABI.
     //= spec/capabilities/type-system.md#a-generic-definition-is-monomorphized-before-the-component-boundary
     //# Monomorphization MUST be the same compile-time reduction by which the compiler specializes any definition applied to compile-time-known arguments, so that a generic instantiation is not a distinct lowering path from ordinary compile-time application.
+    // This is also the component-ABI obligation that generics do not cross the boundary: every emitted copy
+    // is monomorphic (concrete type arguments), so no generic definition appears in the component interface
+    // — and an undetermined boundary type (a `Ty::Var`/`Ty::Any` that never got specialized) has no
+    // `comp_valtype_of` and is rejected rather than emitted.
+    //= spec/contracts/component-abi.md#generics-do-not-cross-the-boundary
+    //# The compiler MUST monomorphize every exported and imported signature to concrete types before emitting the component interface.
+    //= spec/contracts/component-abi.md#generics-do-not-cross-the-boundary
+    //# A generic definition MUST NOT appear in a component's interface.
     if !scheme.ty_vars.is_empty() {
         return match type_specialize(db, callee, args) {
             Some(spec) => {
@@ -6768,6 +6804,13 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         //# A map's canonical form MUST present its entries as key-value pairs in the deterministic order of *Map Iteration Is Deterministic*, so that two equal maps have identical canonical forms regardless of the order their entries were added.
         //= spec/capabilities/collections-and-text.md#a-map-renders-as-its-entries-in-canonical-key-order
         //# The canonical form MUST be distinguishable from a record's, so that a map and a record are never confused by their rendered form even when they carry the same keys and values (a map's keys are values of one key type; a record's field names are fixed compile-time labels).
+        // The canonical render is the only entry-visiting the seed exposes for a map, and it sorts by
+        // `const_key_order` — a deterministic order derived from the KEYS, not insertion order — which is
+        // exactly the order the canonical byte form places them in (this render IS that byte form).
+        //= spec/capabilities/collections-and-text.md#map-iteration-is-deterministic
+        //# Iterating a map MUST visit its entries in a deterministic order derived from the keys, not from insertion order.
+        //= spec/capabilities/collections-and-text.md#map-iteration-is-deterministic
+        //# The order in which a map's entries are visited MUST agree with the order its canonical byte form places them in.
         Core::MapNew { entries, .. } => {
             let mut sorted: Vec<(StructId, StructId)> = entries.clone();
             // Sort by canonical key order. A key that is not orderable-as-a-constant declines the whole
@@ -6796,6 +6839,12 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         // canonical written form is `(Set.of (list …))`). The constant set already has each element at
         // most once (the `Set.of`/insert folds dedup by value); sort by `const_key_order` (reused — an
         // element orders exactly like a map key). A non-orderable element declines the escape.
+        // This sorted render is the only element-visiting the seed exposes for a set: a deterministic order
+        // derived from the ELEMENTS (not insertion order), agreeing with the canonical byte form it builds.
+        //= spec/capabilities/collections-and-text.md#set-iteration-is-deterministic
+        //# Iterating a set MUST visit its elements in a deterministic order derived from the elements, not from insertion order.
+        //= spec/capabilities/collections-and-text.md#set-iteration-is-deterministic
+        //# The order in which a set's elements are visited MUST agree with the order its canonical byte form places them in.
         Core::SetOf { elems, .. } => {
             let mut sorted: Vec<StructId> = elems.clone();
             let mut orderable = true;
