@@ -8048,6 +8048,13 @@ impl Machine {
             Lir::I64GeU
         }
     }
+    fn gt_u(self) -> Lir {
+        if self.slot32 {
+            Lir::I32GtU
+        } else {
+            Lir::I64GtU
+        }
+    }
     fn gt_s(self) -> Lir {
         if self.slot32 {
             Lir::I32GtS
@@ -9424,20 +9431,28 @@ fn emit_machine_overflow_guard(
                 } else {
                     (i64::MIN, i64::MAX)
                 };
-                // The interval endpoints (both trunc-toward-zero); which compare traps depends on C's sign.
-                // C>0: a > MAX/C (upper) or a < MIN/C (lower). C<0: a < MAX/C (lower) or a > MIN/C (upper).
-                let (lt_bound, gt_bound) = if c > 0 {
-                    (slot_min / c, slot_max / c) // trap if a < MIN/C  or  a > MAX/C
+                // The interval endpoints (both trunc-toward-zero); `a*C` fits iff `lo <= a <= hi`.
+                // C>0: `aC` grows with `a` → [MIN/C, MAX/C]. C<0: `aC` shrinks → [MAX/C, MIN/C].
+                let (lo, hi) = if c > 0 {
+                    (slot_min / c, slot_max / c)
                 } else {
-                    (slot_max / c, slot_min / c) // trap if a < MAX/C  or  a > MIN/C
+                    (slot_max / c, slot_min / c)
                 };
+                // SINGLE unsigned range check (the classic `lo <= a <= hi` ⟺ `(a - lo) <=ᵤ (hi - lo)`
+                // fold): shift the interval to start at 0 by subtracting `lo`, then ONE unsigned compare
+                // decides both sides — `a < lo` wraps `a - lo` around to a huge unsigned value (> hi-lo),
+                // `a > hi` overshoots `hi - lo` directly. So `trap ⟺ (a -ʷ lo) >ᵤ (hi - lo)`. This replaces
+                // the two signed compares + two trap blocks (each re-reading `a`) with one subtract, one
+                // unsigned compare, and ONE trap block. `hi - lo` fits the slot (the interval width is at
+                // most the full slot span, and `c == +2`'s full-span case is excluded as a power of two),
+                // and `a - lo` is a wrapping slot subtract (the wasm `i*.sub` is modular), so the unsigned
+                // reading is exact. Brute-verified value-equal to the two-compare guard at every boundary,
+                // both signs of C. (Reads `a` ONCE — no `local.tee`/CSE needed for the second read.)
                 a_src.push(out);
-                out.push(m.konst(gt_bound));
-                out.push(m.gt_s());
-                out.push(Lir::IfIntegerOverflowEnd);
-                a_src.push(out);
-                out.push(m.konst(lt_bound));
-                out.push(m.lt_s());
+                out.push(m.konst(lo));
+                out.push(m.sub());
+                out.push(m.konst(hi.wrapping_sub(lo)));
+                out.push(m.gt_u());
                 out.push(Lir::IfIntegerOverflowEnd);
                 return;
             }
@@ -10704,8 +10719,8 @@ mod tests {
     fn multiply_by_a_non_power_of_two_keeps_the_checked_multiply() {
         // (* n 3) — 3 is not a power of two, so the strength reduction to a shift does NOT fire: the
         // checked `i64.mul` stays. Its overflow guard, however, is the CONST-MULTIPLIER bound check
-        // (`n > MAX/3 || n < MIN/3 → trap`), NOT the general `div_s` round-trip — a constant `C > 0`
-        // multiplier lets two compile-time-constant compares replace the hardware divide.
+        // (`n` must lie in `[MIN/3, MAX/3]` for `n*3` to fit), NOT the general `div_s` round-trip — a
+        // constant multiplier lets a compile-time-constant interval test replace the hardware divide.
         let ast = crate::testkit::parse(
             "(module m (def (f (: n Int64)) (* n 3)) (def (main) 0) (export main))",
         );
@@ -10728,10 +10743,57 @@ mod tests {
             "a full-width const multiply's guard is a bound check, not div_s, got: {:?}",
             f.code
         );
+    }
+
+    #[test]
+    fn const_multiply_guard_is_a_single_unsigned_range_check() {
+        // (* n 3) — the const-multiplier overflow guard shifts the fitting interval `[MIN/3, MAX/3]` to
+        // start at 0 (`n - MIN/3`) and does ONE unsigned compare `> (MAX/3 - MIN/3)`, so BOTH out-of-
+        // interval directions are caught by a single test + a single trap block. It reads `n` ONCE and
+        // uses NO signed compares (the old two-`gt_s`/`lt_s` + two-trap-block guard is gone). Parity with
+        // the two-compare form is gate-verified at every interval boundary, both signs of C.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (* n 3)) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        // ONE unsigned compare, no signed compares in the guard.
+        assert_eq!(
+            f.code.iter().filter(|i| matches!(i, Lir::I64GtU)).count(),
+            1,
+            "the guard is a single unsigned range check, got: {:?}",
+            f.code
+        );
         assert!(
-            f.code.contains(&Lir::ConstI64(i64::MAX / 3))
-                && f.code.contains(&Lir::ConstI64(i64::MIN / 3)),
-            "the guard compares against MAX/3 and MIN/3, got: {:?}",
+            !f.code
+                .iter()
+                .any(|i| matches!(i, Lir::I64GtS | Lir::I64LtS)),
+            "the unsigned range check replaces the two signed compares, got: {:?}",
+            f.code
+        );
+        // The interval is shifted by `MIN/3` (the low endpoint) and the bound is its width `MAX/3-MIN/3`.
+        let lo = i64::MIN / 3;
+        assert!(
+            f.code.contains(&Lir::ConstI64(lo)),
+            "the guard subtracts the low endpoint MIN/3, got: {:?}",
+            f.code
+        );
+        assert!(
+            f.code
+                .contains(&Lir::ConstI64((i64::MAX / 3).wrapping_sub(lo))),
+            "the guard compares against the interval width MAX/3-MIN/3, got: {:?}",
+            f.code
+        );
+        // Exactly ONE trap block (the two-block guard collapsed to one).
+        assert_eq!(
+            f.code
+                .iter()
+                .filter(|i| matches!(i, Lir::IfIntegerOverflowEnd))
+                .count(),
+            1,
+            "the two trap blocks collapse to one, got: {:?}",
             f.code
         );
     }

@@ -3636,6 +3636,28 @@ fn a_do_sequence_selfcall_then_perform_declines_not_miscompiles() {
     );
 }
 
+/// A recursive effectful walk whose self-call is the `match` SCRUTINEE and whose perform is in an arm BODY
+/// — `(match (walk (- n 1)) (_ (Ctr.tick)))` — is the same out-state-observing shape: the scrutinee runs
+/// the recursion, then the arm-body perform reads its OUT-state. Before the `match` arm of
+/// `selfcall_precedes_perform_in_operands`, this leaked the internal `walk#eff2$s0` name in a confusing
+/// CDZ0101. It must decline CLEANLY. A PERFORMING scrutinee with no self-call (the corpus case) and a
+/// match-bound-payload-into-a-perform (also corpus) both still FOLD — the guard fires only when the
+/// SCRUTINEE contains a self-call.
+#[test]
+fn a_match_scrutinee_selfcall_then_arm_perform_declines_cleanly() {
+    use crate::testkit::parse;
+    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
+               (def (walk (: n Int64)) (if (= n 0) 0 (match (walk (- n 1)) (_ (Ctr.tick))))) \
+               (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src)))
+        .expect_err("the out-state-observing match-scrutinee post-order shape must decline");
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
 /// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
 /// compiler DECLINES asking for an annotation rather than inventing a width.
 #[test]
@@ -21676,6 +21698,70 @@ mod match_engine {
     }
 
     #[test]
+    fn a_map_value_sub_pattern_may_be_a_literal() {
+        // A map-pattern VALUE sub-pattern MAY be a refutable LITERAL — `(map ("a" 0) …)` matches only a map
+        // whose value at "a" is 0. `desugar_map_value_subpatterns` lifts it into the body as `(match __mv (0
+        // body) (_ <catch-all>))` on a fresh binder `__mv` bound at that key, so a matching value runs the
+        // body and a non-matching value falls through. (A value sub-pattern that INTRODUCES binders — a
+        // tuple/ctor — needs resolve-stage descent, a later increment, and still declines.)
+        //
+        // RUNTIME map (built by a conditional): `pick 0` → {"a":0}, so `("a" 0)` matches → 1; `pick 9` →
+        // {"a":9}, value ≠ 0 → falls through to -1.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (pick (: n Int64)) (Map.insert (Map.empty) \"a\" n)) \
+               (def (look (: m (Map String Int64))) (match m ((map (\"a\" 0) .. rest) 1) (_ -1))) \
+               (def (main (: n Int64)) (look (pick n))) (export main))",
+            vec!["0".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping map-value-literal run");
+            return;
+        };
+        assert_eq!(
+            v, "1",
+            "a value matching the literal sub-pattern selects the arm"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (pick (: n Int64)) (Map.insert (Map.empty) \"a\" n)) \
+                   (def (look (: m (Map String Int64))) (match m ((map (\"a\" 0) .. rest) 1) (_ -1))) \
+                   (def (main (: n Int64)) (look (pick n))) (export main))",
+                vec!["9".to_string()],
+            )
+            .unwrap(),
+            "-1",
+            "a value NOT matching the literal sub-pattern falls through to the catch-all"
+        );
+        // A literal value sub-pattern AT one key alongside a BARE binder at another: `(map ("a" 0) ("b" y))`
+        // fires only when "a"'s value is 0 AND "b" is present, binding `y`. {"a":0,"b":5} → 5.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (pick (: a Int64)) (Map.insert (Map.insert (Map.empty) \"a\" a) \"b\" 5)) \
+                   (def (look (: m (Map String Int64))) (match m ((map (\"a\" 0) (\"b\" y) .. rest) y) (_ -1))) \
+                   (def (main (: a Int64)) (look (pick a))) (export main))",
+                vec!["0".to_string()],
+            )
+            .unwrap(),
+            "5",
+            "a literal value at one key + a bare binder at another both match"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (pick (: a Int64)) (Map.insert (Map.insert (Map.empty) \"a\" a) \"b\" 5)) \
+                   (def (look (: m (Map String Int64))) (match m ((map (\"a\" 0) (\"b\" y) .. rest) y) (_ -1))) \
+                   (def (main (: a Int64)) (look (pick a))) (export main))",
+                vec!["1".to_string()],
+            )
+            .unwrap(),
+            "-1",
+            "a non-matching literal value at one key falls through even though the other key matches"
+        );
+    }
+
+    #[test]
     fn a_tail_recursive_sum_consumer_compiles_to_a_constant_stack_loop() {
         // A tail-recursive consumer of a SUM type — `(count n acc) = (match n ((Zero) acc) ((Succ m) (count
         // m (+ acc 1))))` over `(type Nat (Zero) (Succ Nat))` — is a self-tail-call inside a `Core::MatchSum`
@@ -30493,6 +30579,36 @@ mod stage1 {
     }
 
     #[test]
+    fn a_line_comment_wrapping_a_top_level_form_is_seen_through() {
+        // 11-modules "a line comment wrapping a top-level form does not hide it": a leading `//` on a form
+        // reifies to `(comment "<text>" <form>)` wrapping the WHOLE form (the comment companion of a leading
+        // `(doc …)`). The comment is semantically inert (self-hosting-surface.md — the compiler sees through
+        // comments as it sees through docs), so `strip_comments` peels it at load. Before, the top-level
+        // scan read `comment` as an unknown declaration head → the wrapped `def` invisible ("unbound name
+        // comment" + `f` unbound). A comment on a def → the def registers; `(f 7)` = 7.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (comment \"note\" (def (f (: x Int64)) x)) (def (main) (f 7)) (export main))",
+        )))
+        .expect("a comment-wrapped def registers");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
+        // A comment on a TYPE declaration — the wrapped `(type …)` still declares its variants.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (comment \"a tag\" (type Color (Red) (Blue))) \
+               (def (main) (match (Color.Red) ((Color.Red) 1) ((Color.Blue) 2))) (export main))",
+        )))
+        .expect("a comment-wrapped type declares");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 1);
+        // STACKED comments NEST — `(comment "a" (comment "b" (def …)))` — so the peel must follow the whole
+        // chain to the innermost form, not just one layer.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (comment \"a\" (comment \"b\" (def (f (: x Int64)) x))) \
+               (def (main) (f 7)) (export main))",
+        )))
+        .expect("stacked comments peel to the innermost form");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
+    }
+
+    #[test]
     fn a_do_local_declaration_scope_is_backward_only() {
         // Sequential scope: a form sees only the declarations BEFORE it. A FORWARD reference (`y`'s value
         // `(+ x 1)` references `x` declared AFTER it) is unbound — a declaration does not see later ones.
@@ -32569,6 +32685,45 @@ mod stage1 {
         assert!(
             lit.contains("found a non-type") && !lit.contains("is a value"),
             "a literal in type position keeps the generic message: {lit}"
+        );
+    }
+
+    #[test]
+    fn a_bare_type_constructor_in_type_position_names_the_missing_argument() {
+        // A bare type-CONSTRUCTOR name used as a type with no argument — `(: xs List)`, `(: m Map)`, `(: q
+        // Qty)` — is CDZ0203, but `List`/`Map`/`Qty` ARE types (constructors), so the generic "`List` is a
+        // value, not a type" MISLED. The message now names the missing argument + the fix, the bare-name
+        // twin of the `(List Int64 Int64)` wrong-arity message. A GENUINE value misused as a type keeps
+        // the "is a value, not a type" phrasing (it is not a constructor).
+        let msg = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0203"))
+                .unwrap_or_else(|| panic!("expected CDZ0203 for {src}"))
+                .message
+        };
+        for (name, placeholder) in [
+            ("List", "List Elem"),
+            ("Set", "Set Elem"),
+            ("Map", "Map Key Value"),
+            ("Qty", "Qty T u"),
+        ] {
+            let m = msg(&format!("(module m (def (f (: x {name})) x) (export f))"));
+            assert!(
+                m.contains(&format!("`{name}` is a type constructor"))
+                    && m.contains(&format!("`({placeholder})`")),
+                "bare `{name}` names the missing argument: {m}"
+            );
+            assert!(
+                !m.contains("is a value"),
+                "a type constructor is NOT called a value: {m}"
+            );
+        }
+        // NO REGRESSION: a genuine value misused as a type still gets "is a value, not a type".
+        let val = msg("(module m (def helper 5) (def (f (: x helper)) x) (export helper))");
+        assert!(
+            val.contains("`helper` is a value, not a type"),
+            "a value keeps its own message: {val}"
         );
     }
 

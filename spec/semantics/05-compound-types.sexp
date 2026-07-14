@@ -6516,6 +6516,23 @@
             (export main)))
   (output (: -1 Int64)))
 
+(case "a map pattern value sub-pattern may be a literal that refines the match"
+  (doc    "A map-pattern VALUE sub-pattern MAY itself be a pattern, not just a bare binder (core-semantics.md
+           §A Map Is Matched By Key-Directed Patterns: each value binder position is a *Patterns Compose*
+           position). Here it is a refutable LITERAL — `(map (\"a\" 0) …)` matches only a map whose value at
+           key \"a\" is 0. It desugars to a fresh binder `__mv` at that key plus a body destructure-match
+           `(match __mv (0 body) (_ <catch-all>))`, so a matching value runs the body and a non-matching
+           value falls through (like any refutable pattern, the arm needs the catch-all). Here the runtime
+           map `{\"a\": 0}` has value 0 at \"a\" → the arm fires → 1.")
+  (input  (do
+            (def (pick (: n Int64)) (Map.insert (Map.empty) "a" n))
+            (def (look (: m (Map String Int64)))
+              (match m
+                ((map ("a" 0) .. rest) 1)
+                (_                     -1)))
+            (def (main) (look (pick 0))) (export main)))
+  (output (: 1 Int64)))
+
 ; ── An un-projected element / un-referenced field is UNOBSERVED, so its trap is not raised ──────────
 ; core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed: a trap occurs when the
 ; computation that would raise it is observed — its value flowing to the result, a host call, or an
