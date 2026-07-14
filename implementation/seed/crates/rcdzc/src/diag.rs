@@ -82,6 +82,8 @@ pub enum Code {
     /// failure, not a structural one — DISTINCT from `MalformedDirective` (CDZ0602, wrong arity) and
     /// `UnknownDirective` (CDZ0601, an unknown key): the key and arity are right, only the numeric
     /// domain of the named type is wrong.
+    //= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-integer-literal-type
+    //# The type named by a default-integer-literal directive MUST be an integer type the numeric model admits, and a directive naming a non-integer type MUST be rejected with the machine-readable diagnostic for that unsatisfied constraint.
     NonIntegerDefault,
     /// A constant operation whose defined outcome on its (compile-time-known) operands is a trap —
     /// e.g. a provable overflow. A compile-provable trap fails the build rather than shipping a

@@ -3389,6 +3389,25 @@
             (export main)))
   (output (: 5 Int64)))
 
+(case "one type parameter used at several depths in one multi-payload variant"
+  (doc    "A single implicit parameter `a` mentioned at THREE different depths within ONE multi-payload
+           variant — `(Mk a (Tuple a a) (Option a))`, so `Mk : ∀a. a → (Tuple a a) → (Option a) → W a`. All
+           three payload positions must instantiate the SAME `a` consistently: `(W.Mk 1 (tuple 2 3) (Some
+           4))` fixes `a = Int64` across the bare payload, the tuple elements, AND the Option payload, and
+           the `(W.Mk x (tuple y z) o)` arm binds each at Int64 (`x + y + z + (unwrap o)` = 10). Pins that
+           the constructor's type-lambda threads ONE parameter through payloads of different shapes at
+           once, not just a single payload position — the multi-payload, multi-depth generalization of the
+           tuple-/record-/option-payload cases above.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (Mk a (Tuple a a) (Option a)) (E))
+            (def (f w) (match w
+                         ((W.Mk x (tuple y z) o) (+ x (+ y (+ z (match o ((Some n) n) ((None) 0))))))
+                         ((W.E) 0)))
+            (def (main) (f (W.Mk 1 (tuple 2 3) (Some 4))))
+            (export main)))
+  (output (: 10 Int64)))
+
 (case "one generic sum instantiated at two different types in one program"
   (doc    "The SAME generic sum ctor used at two DISTINCT instantiations in one program — `(type Box (Bx
            a))` applied to Int64 (`Box.Bx 10`) and to Bool (`Box.Bx true`). Each `match` binds the payload

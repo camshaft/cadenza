@@ -7152,6 +7152,15 @@ fn subsuming_comparison(
     if lop != rop {
         return None; // identical operator only (avoids `<`/`<=` bound normalization edge cases)
     }
+    // ONLY the four ORDERING operators subsume — one half-line implies another. `Eq` (and `Compare`) do
+    // NOT: `(= x 5)` and `(= x 6)` are the SAME operator but NEITHER implies the other — their `and` is a
+    // CONTRADICTION (always false), not a subsumption. Treating two `Eq`s as a subsumable pair would keep
+    // one and MISCOMPILE `(and (= x 5) (= x 6))` to `(= x 6)`. (The equality-vs-range and same-constant
+    // cases are handled elsewhere; two DIFFERENT-constant equalities under `and` are always-false, under
+    // `or` a 2-point set that stays runtime — neither is this fold.)
+    if !matches!(lop, Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge) {
+        return None;
+    }
     let as_int = |db: &mut Db, id: StructId| match core_of(db, id) {
         Core::ConstInt(v) => v.to_i64(),
         _ => None,
