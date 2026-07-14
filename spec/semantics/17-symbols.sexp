@@ -144,6 +144,54 @@
   (output (: 0 Int64)))
 
 ; ============================================================================================
+; Symbol-keyed membership — the symbol-table dispatch the form exists for
+; ============================================================================================
+; The header's motivation (a self-hosting compiler keys node-kind dispatch and scope resolution on
+; Symbols so a name test is a handle compare, not a byte scan) shows up as a MEMBERSHIP test: is this
+; runtime Symbol one of a known set of names? `Set.contains` over a set of interned constants, queried
+; with a RUNTIME Symbol operand, is exactly that dispatch. These pin it as a genuine content test on a
+; runtime operand — the realized companion of the runtime-`=` cases above, lifted to a set of names.
+; (A Symbol stored INTO the value heap — `Set.of`/`Set.len` materializing a symbol set, a Symbol map
+; key — still declines: "a … element of type Symbol needs the value heap", the not-yet-realized part
+; of the form. `Set.contains` against a constant symbol list lowers to realized Symbol `=` checks, so
+; it runs; these cases pin that realized slice, and the heap-Symbol cases will join them additively.)
+
+(case "a runtime symbol is found among a set of known symbols"
+  (doc    "`dispatch` takes a Symbol parameter and asks whether it is one of the known node-kind names
+           `{map-insert, map-lookup}` via `Set.contains`; called with `map-lookup` it returns true. This
+           is the symbol-table dispatch the form exists for — a name carried at run time tested for
+           membership in a fixed set of interned constants by content, a handle compare rather than a
+           byte scan. The membership test is over a RUNTIME Symbol operand (a parameter), not a
+           constant, the set-lifted companion of \"a runtime symbol compared to an interned constant
+           matches by content\".")
+  (input  (do
+            (def (dispatch s) (Set.contains (Set.of (list (Symbol.of "map-insert") (Symbol.of "map-lookup"))) s))
+            (def (main) (dispatch (Symbol.of "map-lookup"))) (export main)))
+  (output (: true Bool)))
+
+(case "a runtime symbol not among the known symbols is rejected"
+  (doc    "The companion with an unknown name: `dispatch` called with `other` — not one of the known
+           node-kind names — returns false. Confirms `Set.contains` on a runtime Symbol is a genuine
+           content test (true for a member, false for a non-member), not a blanket answer, so an
+           unrecognized identifier is distinguished from a known one.")
+  (input  (do
+            (def (dispatch s) (Set.contains (Set.of (list (Symbol.of "map-insert") (Symbol.of "map-lookup"))) s))
+            (def (main) (dispatch (Symbol.of "other"))) (export main)))
+  (output (: false Bool)))
+
+(case "membership of a runtime symbol is by content, not derivation"
+  (doc    "`dispatch` is queried with a Symbol interned from the COMPUTED string
+           `(String.concat \"map\" \"-insert\")`; it is found in the known set that holds
+           `(Symbol.of \"map-insert\")`, so the result is true. Pins that set membership follows the
+           content-derived identity (memory-and-resource-model.md #Sharing Is Not Observable) — the
+           membership analogue of \"a symbol's identity is its content, not how the content was
+           derived\" — so a name assembled at run time still dispatches to the same table entry.")
+  (input  (do
+            (def (dispatch s) (Set.contains (Set.of (list (Symbol.of "map-insert") (Symbol.of "map-lookup"))) s))
+            (def (main) (dispatch (Symbol.of (String.concat "map" "-insert")))) (export main)))
+  (output (: true Bool)))
+
+; ============================================================================================
 ; The nominal boundary — a Symbol is not comparable to the underlying String (CDZ0202)
 ; ============================================================================================
 ; A Symbol is a NOMINAL value over String (type-system.md #User Types Are Declarable As Nominal Or

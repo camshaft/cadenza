@@ -455,6 +455,8 @@ pass	a delegated capability is not itself an export field
 pass	a delegated effect performed inside an intra-program handler
 pass	a delegated host effect composes with the value-heap runtime
 pass	a delegation naming an effect that is never reached is rejected as latent authority
+pass	a dense zero-based jump-table match hits a covered arm
+pass	a dense zero-based jump-table match routes an out-of-range scrutinee to the default
 pass	a dependent size of zero binds an empty body and leaves the rest untouched
 pass	a dependent-size segment binds exactly the number of bytes an earlier segment named
 pass	a dependent-size segment that overruns the remaining bytes falls through
@@ -1178,6 +1180,8 @@ pass	a runtime sum whose payload comes from recursion compares equal by a heap w
 pass	a runtime sum whose payload comes from recursion compares unequal by a heap walk
 pass	a runtime sum whose payload is a runtime tuple nests across the boundary
 pass	a runtime symbol compared to an interned constant matches by content
+pass	a runtime symbol is found among a set of known symbols
+pass	a runtime symbol not among the known symbols is rejected
 pass	a runtime symbol that differs from the interned constant does not match
 pass	a runtime three-level nested tuple compares equal by a deep walk
 pass	a runtime three-variant classifier dispatches to the middle arm
@@ -1500,6 +1504,7 @@ pass	an empty quote is rejected, not a crash
 pass	an empty scrutinee matches an empty bin pattern
 pass	an empty string is unequal to a non-empty string
 pass	an empty-range slice of a non-empty string is Some of the empty string
+pass	an encode-decode round-trip preserves an ASCII string's byte length
 pass	an entrypoint delegation lets a program reach its host function
 pass	an entrypoint delegation reaches an effect performed in a recursive callee
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
@@ -1703,6 +1708,7 @@ pass	converting an out-of-range integer to a char yields None
 pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
 pass	decoding a surrogate code point encoded as UTF-8 yields none
+pass	decoding an encoded string round-trips to the same bytes (the inverse direction)
 pass	decoding an overlong UTF-8 encoding yields none
 pass	decoding bytes that are not a canonical AST yields the error case, not a trap
 pass	decoding canonical bytes followed by a trailing byte yields the error case
@@ -1871,6 +1877,7 @@ pass	member access on a string is a type error
 pass	member access on a tuple is a type error
 pass	membership of a present element is true
 pass	membership of a runtime element in a runtime-element set
+pass	membership of a runtime symbol is by content, not derivation
 pass	membership of an absent element in the empty set is false
 pass	membership of an absent element is false, not a trap
 pass	merging records that share a field name is rejected
