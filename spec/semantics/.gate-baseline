@@ -1427,7 +1427,11 @@ pass	an explicit annotation overrides the default-integer pragma
 pass	an explicit conversion makes the operation well-typed
 pass	an explicit float-width conversion makes a mixed-width operation well-typed
 pass	an export and a like-named metadata key do not collide
+pass	an export mixing a scalar and a tuple parameter returns a BigInt from both
+pass	an export mixing a scalar and a tuple parameter returns a list from both
 pass	an export whose name is not kebab-case crosses under a normalized extern name
+pass	an export with a tuple parameter before a scalar returns a list from both
+pass	an export with two tuple parameters returns a list from both
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
 pass	an expression tree built at run time is evaluated by matching its node variants

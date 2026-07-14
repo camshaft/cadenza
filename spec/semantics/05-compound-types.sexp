@@ -6409,3 +6409,34 @@
   (input  (do (def (main (: p (Record (x Int64) (y Int64)))) (tuple (. p y) (. p x))) (export main)))
   (call   main (: (record (x 3) (y 8)) (Record (x Int64) (y Int64))))
   (output (: (tuple 8 3) (Tuple Int64 Int64))))
+
+(case "an export mixing a scalar and a tuple parameter returns a list from both"
+  (doc    "`make` forwards a MIX of parameter shapes: a scalar leaf AND a fixed-shape tuple (crossing as a
+           native `tuple<…>` the ABI flattens, rebuilt in-guest) compose in one export. `main(5, (tuple 7
+           9)) = (list 5 7 9)` draws from both — the scalar directly, the tuple's fields rebuilt.")
+  (input  (do (def (main (: a Int64) (: p (Tuple Int64 Int64))) (list a (. p 0) (. p 1))) (export main)))
+  (call   main (: 5 Int64) (: (tuple 7 9) (Tuple Int64 Int64)))
+  (output (: (list 5 7 9) (List Int64))))
+
+(case "an export with a tuple parameter before a scalar returns a list from both"
+  (doc    "Parameter ORDER is preserved across the mix: a tuple param FOLLOWED by a scalar. `main((tuple
+           20 30), 40) = (list 20 30 40)` — the leaf cursor threads the tuple's flattened fields then the
+           trailing scalar.")
+  (input  (do (def (main (: p (Tuple Int64 Int64)) (: a Int64)) (list (. p 0) (. p 1) a)) (export main)))
+  (call   main (: (tuple 20 30) (Tuple Int64 Int64)) (: 40 Int64))
+  (output (: (list 20 30 40) (List Int64))))
+
+(case "an export with two tuple parameters returns a list from both"
+  (doc    "MULTIPLE compound params compose: two tuples each cross as their own native `tuple<…>` (the
+           envelope mints one type per compound), each rebuilt from its own run of flattened leaves.
+           `main((tuple 1 2), (tuple 3 4)) = (list 1 2 3 4)`.")
+  (input  (do (def (main (: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. p 1) (. q 0) (. q 1))) (export main)))
+  (call   main (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64)))
+  (output (: (list 1 2 3 4) (List Int64))))
+
+(case "an export mixing a scalar and a tuple parameter returns a BigInt from both"
+  (doc    "The mixed-param compound path composes with a BigInt result: `main(1e9, (tuple 2e9 3e9)) =
+           1e9 + 2e9 + 3e9 = 6000000000`, past Int64, from a scalar and a tuple parameter.")
+  (input  (do (def (main (: a Int64) (: p (Tuple Int64 Int64))) (+ (BigInt.of a) (+ (BigInt.of (. p 0)) (BigInt.of (. p 1))))) (export main)))
+  (call   main (: 1000000000 Int64) (: (tuple 2000000000 3000000000) (Tuple Int64 Int64)))
+  (output (: 6000000000 BigInt)))

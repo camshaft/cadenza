@@ -42562,13 +42562,7 @@ mod r2_runtime_resource {
         let dtor = dtor_module();
         let import_name = "cadenza:runtime/heap@0.0.0+deadbeef";
         let ops: Vec<&RtOp> = walker_ops().to_vec();
-        let ours = assemble_runtime_resource(
-            &core,
-            &dtor,
-            &ops,
-            import_name,
-            crate::backend::wasm::envelope::MakeParamBoundary::Scalars(&[]),
-        );
+        let ours = assemble_runtime_resource(&core, &dtor, &ops, import_name, &[]);
         let oracle = oracle_runtime_resource_component(&core, import_name);
         assert_eq!(
             ours, oracle,

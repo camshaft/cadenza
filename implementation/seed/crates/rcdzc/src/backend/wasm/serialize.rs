@@ -1009,7 +1009,7 @@ pub fn runtime_resource_core_module(
     export_abs: u32,
     template: &crate::lower::ValueFormTemplate,
     make_param_vts: &[ValType],
-    make_rebuild: Option<&TupleArgRebuild>,
+    make_core_slots: &[MakeCoreSlot],
 ) -> Result<Vec<u8>, String> {
     runtime_resource_core_module_form(
         funcs,
@@ -1017,7 +1017,7 @@ pub fn runtime_resource_core_module(
         export_abs,
         EscapeForm::Flat(template),
         make_param_vts,
-        make_rebuild,
+        make_core_slots,
     )
 }
 
@@ -1050,7 +1050,7 @@ pub fn runtime_resource_core_module_form(
     export_abs: u32,
     form: EscapeForm,
     make_param_vts: &[ValType],
-    make_rebuild: Option<&TupleArgRebuild>,
+    make_core_slots: &[MakeCoreSlot],
 ) -> Result<Vec<u8>, String> {
     runtime_resource_core_module_form_ex(
         funcs,
@@ -1059,7 +1059,7 @@ pub fn runtime_resource_core_module_form(
         form,
         &[],
         make_param_vts,
-        make_rebuild,
+        make_core_slots,
     )
 }
 
@@ -1094,7 +1094,7 @@ pub fn runtime_resource_core_module_form_ex(
     form: EscapeForm,
     methods: &[CoreMethod],
     make_param_vts: &[ValType],
-    make_rebuild: Option<&TupleArgRebuild>,
+    make_core_slots: &[MakeCoreSlot],
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -1280,26 +1280,46 @@ pub fn runtime_resource_core_module_form_ex(
     {
         let (inner, imp) = {
             let imp = |name: &str| import_index[name] as u64;
-            let mut inner = if make_rebuild.is_some() {
-                // One local group of one i32 (the rebuilt cell handle); the flattened leaf params are locals
-                // 0..L. Locals vec = <group-count=1> <count-in-group=1> <type=i32>.
-                let mut l = uleb_bytes(1); // one local group
-                uleb128(1, &mut l); // …of one local
+            // Each COMPOUND slot needs one i32 local to stash its rebuilt cell handle (for the post-build
+            // `local.tee`); scalar slots use no local. The flattened leaf params occupy locals `0..L`, so
+            // the compound-cell locals start at `L` (`make_param_vts.len()`), one per compound slot.
+            let n_cell_locals = make_core_slots
+                .iter()
+                .filter(|s| matches!(s, MakeCoreSlot::Tuple(_)))
+                .count();
+            let mut inner = if n_cell_locals == 0 {
+                uleb_bytes(0) // no locals — scalar params are forwarded directly
+            } else {
+                let mut l = uleb_bytes(1); // one local group…
+                uleb128(n_cell_locals as u64, &mut l); // …of `n_cell_locals` i32s
                 l.push(wasm_abi::CORE_I32);
                 l
-            } else {
-                uleb_bytes(0) // no locals — scalar params are forwarded directly
             };
-            if let Some(rebuild) = make_rebuild {
-                // Rebuild the cell from the flattened leaves (params 0..L), stash into the one local, then
-                // push it as the export's single argument.
-                let cell_local = make_param_vts.len() as u32;
-                emit_tuple_rebuild(rebuild, cell_local, &imp, &mut inner);
-                // `emit_tuple_rebuild` `local.tee`s the handle, leaving it on the stack — exactly the arg.
-            } else {
-                for p in 0..make_param_vts.len() {
-                    inner.push(op::LOCAL_GET);
-                    uleb128(p as u64, &mut inner);
+            // Push each parameter as the export body expects it, in param order — a SCALAR leaf directly
+            // (`local.get`), a COMPOUND rebuilt into its cell (from its run of flattened leaves) — threading
+            // a leaf cursor across the params AND a cell-local cursor across the compound slots. A mix of
+            // scalar + compound, and multiple compounds, compose: leaves run left-to-right, each compound
+            // reads its own contiguous run.
+            let mut leaf_cursor = 0u32;
+            let mut cell_local = make_param_vts.len() as u32;
+            for slot in make_core_slots {
+                match slot {
+                    MakeCoreSlot::Scalar => {
+                        inner.push(op::LOCAL_GET);
+                        uleb128(leaf_cursor as u64, &mut inner);
+                        leaf_cursor += 1;
+                    }
+                    MakeCoreSlot::Tuple(fields) => {
+                        // Rebuild this compound's cell from the leaves at `leaf_cursor..`; `emit_tuple_rebuild`
+                        // stashes into `cell_local` and leaves the handle on the stack as the arg.
+                        let rebuild = TupleArgRebuild {
+                            fields: fields.clone(),
+                            base_param: leaf_cursor,
+                        };
+                        emit_tuple_rebuild(&rebuild, cell_local, &imp, &mut inner);
+                        leaf_cursor += fields.iter().map(FieldRebuild::leaf_count).sum::<u32>();
+                        cell_local += 1;
+                    }
                 }
             }
             (inner, imp)
@@ -1457,6 +1477,20 @@ pub struct PlainExport {
 /// box, `arr-set`) — the exact `Core::Tuple` build shape (`select.rs`) — and push the resulting handle in
 /// place of the raw fields. Proven runnable by the `a_fixed_shape_tuple_closure_arg_crosses_by_native_
 /// flattening` oracle. `None` (the common case) is byte-identical to the scalar path.
+///
+/// One resource-`make` PARAMETER's core-side plan: a SCALAR leaf (forwarded to the export body directly
+/// via `local.get`) or a fixed-shape TUPLE/record (rebuilt into its value-heap cell from its contiguous
+/// run of flattened leaf params, via [`emit_cell_rebuild`]). `make` iterates these in param order,
+/// threading a leaf cursor (across all params) and a cell-local cursor (across the compound slots), so any
+/// MIX of scalar + compound params — and multiple compounds — composes.
+#[derive(Clone)]
+pub enum MakeCoreSlot {
+    /// A scalar parameter — one flattened leaf, forwarded as-is.
+    Scalar,
+    /// A fixed-shape scalar tuple/record parameter — its per-field rebuild; consumes its fields' leaves.
+    Tuple(Vec<FieldRebuild>),
+}
+
 #[derive(Clone)]
 pub struct TupleArgRebuild {
     /// The fields of this compound, in cell order. Each is either an aliased-width SCALAR leaf (consumes ONE

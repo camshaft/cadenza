@@ -1492,7 +1492,7 @@ fn resource_escape_dwarf(
             export_abs,
             serialize::EscapeForm::Sum(&tpl),
             &[],
-            None,
+            &[],
         )
         .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
@@ -1532,8 +1532,8 @@ fn resource_escape_dwarf(
                 serialize::CoreMethod::IsEmpty,
                 serialize::CoreMethod::ToBytes,
             ],
-            &[],  // nullary sidecar — `make` forwards no params
-            None, // …and no compound-param rebuild
+            &[], // nullary sidecar — `make` forwards no params
+            &[], // …and no compound-param rebuild
         )
         .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
@@ -1556,7 +1556,7 @@ fn resource_escape_dwarf(
             .abs(export_def)
             .ok_or_else(|| Reject::decline("the escaping export is not in the emission order"))?;
         let main_core =
-            serialize::runtime_resource_core_module(&funcs, &imports, export_abs, &tpl, &[], None)
+            serialize::runtime_resource_core_module(&funcs, &imports, export_abs, &tpl, &[], &[])
                 .map_err(Reject::decline)?;
         return Ok(Some(resource_dwarf_from_core(
             db, &layout, &funcs, &imports, &main_core, span_data,
@@ -1740,15 +1740,9 @@ fn emit_runtime_resource(
     // because they appear only in the synthesized encode body, not in any reachable Core.
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
     collect_module_used_ops(db, layout, &mut used)?;
-    if let Some(rebuild) = &make_params.rebuild {
-        used.insert("arr-alloc");
-        used.insert("arr-set");
-        for f in &rebuild.fields {
-            f.collect_box_ops(&mut |op| {
-                used.insert(op);
-            });
-        }
-    }
+    make_params.collect_rebuild_ops(&mut |op| {
+        used.insert(op);
+    });
     // The walker's ops: `arr-get` to descend a nested path, and per leaf its `get-*` accessor.
     if tpl.leaves.iter().any(|l| !l.path.is_empty()) {
         used.insert("arr-get");
@@ -1804,7 +1798,7 @@ fn emit_runtime_resource(
         export_abs,
         tpl,
         &make_params.leaf_vts,
-        make_params.rebuild.as_ref(),
+        &make_params.core_slots(),
     )
     .map_err(Reject::decline)?;
     // DEBUG: a compound-returning program is debuggable too. The user function bodies lead the escape
@@ -1822,7 +1816,7 @@ fn emit_runtime_resource(
         &dtor_core,
         &imports,
         &import_name,
-        make_params.boundary_bytes(),
+        &make_params.boundary_slots(),
     ))
 }
 
@@ -5864,6 +5858,11 @@ fn emit_runtime_bytes_resource(
     ];
     let (make_param_vts, make_param_bytes) =
         export_make_params(db, layout, export_def)?.scalars_only()?;
+    // Scalar-param-only shape: one `MakeCoreSlot::Scalar` per param, so `make` forwards each leaf directly.
+    let make_core_slots: Vec<serialize::MakeCoreSlot> = make_param_vts
+        .iter()
+        .map(|_| serialize::MakeCoreSlot::Scalar)
+        .collect();
     let mut main_core = serialize::runtime_resource_core_module_form_ex(
         &funcs,
         &imports,
@@ -5871,7 +5870,7 @@ fn emit_runtime_bytes_resource(
         serialize::EscapeForm::RuntimeBytes(form),
         &core_methods,
         &make_param_vts,
-        None,
+        &make_core_slots,
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat/sum resource paths — the user bodies lead the escape core's code section,
@@ -5979,6 +5978,11 @@ fn emit_runtime_sum_resource(
         .ok_or_else(|| Reject::decline("the escaping sum export is not in the emission order"))?;
     let (make_param_vts, make_param_bytes) =
         export_make_params(db, layout, export_def)?.scalars_only()?;
+    // Scalar-param-only shape: one `MakeCoreSlot::Scalar` per param, so `make` forwards each leaf directly.
+    let make_core_slots: Vec<serialize::MakeCoreSlot> = make_param_vts
+        .iter()
+        .map(|_| serialize::MakeCoreSlot::Scalar)
+        .collect();
 
     let mut main_core = serialize::runtime_resource_core_module_form(
         &funcs,
@@ -5986,7 +5990,7 @@ fn emit_runtime_sum_resource(
         export_abs,
         serialize::EscapeForm::Sum(tpl),
         &make_param_vts,
-        None,
+        &make_core_slots,
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat resource path — the user bodies lead the code section, so the D2/D3
@@ -5994,12 +5998,17 @@ fn emit_runtime_sum_resource(
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
     let dtor_core = serialize::resource_dtor_module_with_drop();
     let import_name = runtime_import_name();
+    // The sum-result escape is scalar-param-only (`scalars_only` above), so every slot is a scalar byte.
+    let make_slots: Vec<envelope::ArgSlot> = make_param_bytes
+        .iter()
+        .map(|&b| envelope::ArgSlot::Scalar(b))
+        .collect();
     Ok(envelope::assemble_runtime_resource(
         &main_core,
         &dtor_core,
         &imports,
         &import_name,
-        envelope::MakeParamBoundary::Scalars(&make_param_bytes),
+        &make_slots,
     ))
 }
 
@@ -6039,16 +6048,10 @@ fn emit_recursive_sum_resource(
     ] {
         used.insert(op);
     }
-    // A compound `make` param rebuilds its cell with `arr-alloc`/`arr-set` + a box op per scalar leaf.
-    if let Some(rebuild) = &make_params.rebuild {
-        used.insert("arr-alloc");
-        used.insert("arr-set");
-        for f in &rebuild.fields {
-            f.collect_box_ops(&mut |op| {
-                used.insert(op);
-            });
-        }
-    }
+    // A compound `make` param rebuilds each cell with `arr-alloc`/`arr-set` + a box op per scalar leaf.
+    make_params.collect_rebuild_ops(&mut |op| {
+        used.insert(op);
+    });
     let imports: Vec<&runtime_abi::RtOp> = used
         .iter()
         .map(|name| {
@@ -6082,7 +6085,7 @@ fn emit_recursive_sum_resource(
         export_abs,
         serialize::EscapeForm::RecursiveSum(descriptor),
         &make_params.leaf_vts,
-        make_params.rebuild.as_ref(),
+        &make_params.core_slots(),
     )
     .map_err(Reject::decline)?;
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
@@ -6093,7 +6096,7 @@ fn emit_recursive_sum_resource(
         &dtor_core,
         &imports,
         &import_name,
-        make_params.boundary_bytes(),
+        &make_params.boundary_slots(),
     ))
 }
 
@@ -6168,112 +6171,154 @@ fn export_make_params(
         Some(e) => e.params.clone(),
         None => crate::layout::def_params(db, export_def),
     };
-    // A SINGLE fixed-shape scalar tuple/record parameter crosses as a native component `tuple<…>` that
-    // the canonical ABI flattens into scalar core leaves; `make` rebuilds the cell in-guest from those
-    // leaves (the closure direct-call machinery, `fixed_shape_scalar_tuple_arg`). This is the ONE
-    // compound-param shape supported this increment — it delivers the compound-param heap return
-    // (`main(p: (Tuple …)) -> List/BigInt/…`). A mix of scalar + compound params, or >1 compound, is a
-    // later widening (each would mint its own tuple type + shift the base_param cursor).
-    if let [(_, t)] = &params[..]
-        && matches!(
-            t.strip_nominal(),
-            crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_)
-        )
-    {
-        if let Some((field_bytes, leaf_vts, mut rebuild)) = fixed_shape_scalar_tuple_arg(t) {
-            // `fixed_shape_scalar_tuple_arg` sets `base_param = 1` for a closure `call` (param 0 = `self`).
-            // `make` has NO `self` — the flattened tuple leaves are its params `0..L` — so the rebuild must
-            // read from param 0.
-            rebuild.base_param = 0;
-            return Ok(MakeParams {
-                leaf_vts,
-                boundary: MakeBoundary::Tuple(field_bytes),
-                rebuild: Some(rebuild),
-            });
-        }
-        return Err(Reject::decline(format!(
-            "a parameterized heap-return export's compound parameter `{}` is not a fixed-shape scalar \
-             tuple/record (a nested-compound or variable-length field parameter is not yet supported)",
-            t.render_name()
-        )));
-    }
-    // Otherwise every parameter must be a genuine scalar (Int/Bool/Float) — `make` forwards them directly.
-    let mut vts = Vec::with_capacity(params.len());
-    let mut bytes = Vec::with_capacity(params.len());
+    // Each parameter is either a genuine SCALAR (Int/Bool/Float — one flattened leaf, forwarded directly)
+    // or a fixed-shape scalar TUPLE/RECORD (crosses as a native component `tuple<…>` the canonical ABI
+    // flattens into a run of scalar leaves, which `make` rebuilds into the cell). Params compose freely:
+    // any mix of scalar + compound, any number of each. The flattened leaves run left-to-right across all
+    // params; each compound slot's rebuild reads its own run (a leaf cursor threaded across slots at emit).
+    let mut leaf_vts = Vec::new();
+    let mut slots: Vec<MakeSlot> = Vec::new();
     for (_, t) in &params {
-        match (
-            crate::backend::wasm::lir::valtype_of(t),
-            closure_boundary_byte(t),
-        ) {
-            (Some(vt), Some(byte)) => {
-                vts.push(vt);
-                bytes.push(byte);
+        match t.strip_nominal() {
+            crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) => {
+                let Some((field_bytes, field_vts, rebuild)) = fixed_shape_scalar_tuple_arg(t)
+                else {
+                    return Err(Reject::decline(format!(
+                        "a parameterized heap-return export's compound parameter `{}` is not a fixed-shape \
+                         scalar tuple/record (a nested-compound or variable-length field parameter is not \
+                         yet supported)",
+                        t.render_name()
+                    )));
+                };
+                leaf_vts.extend(field_vts);
+                slots.push(MakeSlot::Tuple {
+                    field_bytes,
+                    rebuild: rebuild.fields,
+                });
             }
-            _ => {
-                return Err(Reject::decline(format!(
-                    "a parameterized heap-return export forwards scalar params (or one fixed-shape scalar \
-                     tuple/record) only; parameter of type `{}` has no scalar boundary type",
-                    t.render_name()
-                )));
-            }
+            _ => match (
+                crate::backend::wasm::lir::valtype_of(t),
+                closure_boundary_byte(t),
+            ) {
+                (Some(vt), Some(byte)) => {
+                    leaf_vts.push(vt);
+                    slots.push(MakeSlot::Scalar(byte));
+                }
+                _ => {
+                    return Err(Reject::decline(format!(
+                        "a parameterized heap-return export forwards scalar params and fixed-shape scalar \
+                         tuple/record params only; parameter of type `{}` has no boundary representation",
+                        t.render_name()
+                    )));
+                }
+            },
         }
     }
-    Ok(MakeParams {
-        leaf_vts: vts,
-        boundary: MakeBoundary::Scalars(bytes),
-        rebuild: None,
-    })
+    Ok(MakeParams { leaf_vts, slots })
 }
 
-/// The `make`-forwarded parameter plan for a heap-returning export's resource escape: the CORE leaf
-/// valtypes `make` takes (flattened), how the COMPONENT boundary presents them (inline scalars, or a
-/// single native `tuple<…>` the ABI flattens), and an optional in-guest cell REBUILD (`Some` iff the
-/// param is a compound the leaves reassemble into). A nullary export gives empty leaves + `Scalars(&[])`.
+/// The `make`-forwarded parameter plan for a heap-returning export's resource escape: the flattened CORE
+/// leaf valtypes `make` takes (all params' leaves, left-to-right) plus a per-parameter [`MakeSlot`] (a
+/// scalar leaf, or a fixed-shape tuple/record the leaves rebuild). A nullary export gives empty vecs. Any
+/// MIX of scalar + compound params, and any number of compound params, composes — the leaf cursor threads
+/// across slots at emit; the envelope mints one `tuple<…>` type per compound slot in param order.
 struct MakeParams {
-    /// The core valtypes `make` receives (a scalar param is one; a compound param is its flattened leaves).
+    /// The flattened core valtypes `make` receives (every param's leaves, in param order).
     leaf_vts: Vec<crate::backend::wasm::lir::ValType>,
-    /// How the component-boundary `make` functype presents the params.
-    boundary: MakeBoundary,
-    /// `Some` when the (single) parameter is a compound: `make` rebuilds the cell from the leaves before
-    /// calling the export body. `None` for all-scalar params (forwarded directly).
-    rebuild: Option<crate::backend::wasm::serialize::TupleArgRebuild>,
+    /// One entry per PARAMETER, in order: a scalar leaf (forwarded) or a compound (rebuilt from its leaves).
+    slots: Vec<MakeSlot>,
 }
 
-/// How a heap-return export's `make` presents its parameters at the COMPONENT boundary.
-enum MakeBoundary {
-    /// Inline scalar boundary bytes (Int/Bool/Float), one per param — the common case.
-    Scalars(Vec<u8>),
-    /// A single native `tuple<…>` whose per-field component bytes these are; the envelope mints the
-    /// tuple defined-type and references it in the `make` functype.
-    Tuple(Vec<u8>),
+/// One `make` parameter: a scalar leaf (its component boundary byte) or a fixed-shape scalar tuple/record
+/// (its per-field component bytes for the minted `tuple<…>`, and the per-field rebuild the core cell build
+/// uses). The COUNT of flattened leaves a slot consumes is 1 for a scalar, else the rebuild's leaf count.
+enum MakeSlot {
+    Scalar(u8),
+    Tuple {
+        field_bytes: Vec<u8>,
+        rebuild: Vec<crate::backend::wasm::serialize::FieldRebuild>,
+    },
 }
 
 impl MakeParams {
-    /// The (core leaf valtypes, inline scalar boundary bytes) for a SCALAR-only param set — declines if a
+    /// Whether ANY parameter is a compound — the resource shapes that don't yet emit the per-slot rebuild
+    /// (sum/bytes) decline via [`Self::scalars_only`] when this is true.
+    fn any_compound(&self) -> bool {
+        self.slots
+            .iter()
+            .any(|s| matches!(s, MakeSlot::Tuple { .. }))
+    }
+
+    /// The (core leaf valtypes, inline scalar boundary bytes) for an ALL-SCALAR param set — declines if any
     /// parameter is a compound (the caller's emitter path doesn't yet emit the tuple-arg rebuild). Used by
-    /// the flat/sum/bytes escape emitters; the recursive-sum emitter handles the compound case directly.
+    /// the sum/bytes escape emitters; the recursive-sum + flat emitters handle compounds via the slot model.
     fn scalars_only(self) -> Result<(Vec<crate::backend::wasm::lir::ValType>, Vec<u8>), Reject> {
-        match self.boundary {
-            MakeBoundary::Scalars(bytes) => Ok((self.leaf_vts, bytes)),
-            MakeBoundary::Tuple(_) => Err(Reject::decline(
+        if self.any_compound() {
+            return Err(Reject::decline(
                 "a compound parameter on this heap-return shape is not yet emitted (only a runtime \
-                 collection / recursive-sum / BigInt / Rational result supports a compound parameter this \
-                 increment)",
-            )),
+                 collection / recursive-sum / BigInt / Rational / fixed-compound result supports a \
+                 compound parameter this increment)",
+            ));
+        }
+        let bytes = self
+            .slots
+            .iter()
+            .map(|s| match s {
+                MakeSlot::Scalar(b) => *b,
+                MakeSlot::Tuple { .. } => unreachable!("guarded by any_compound above"),
+            })
+            .collect();
+        Ok((self.leaf_vts, bytes))
+    }
+
+    /// The envelope-side per-parameter boundary slots — a scalar byte, or a `tuple<…>` shape the envelope
+    /// mints. Shared with the closure slot-model helpers (`mint_call_arg_tuple_types` /
+    /// `make_functype_slots`).
+    fn boundary_slots(&self) -> Vec<crate::backend::wasm::envelope::ArgSlot> {
+        use crate::backend::wasm::envelope::{ArgSlot, TupleFieldShape};
+        self.slots
+            .iter()
+            .map(|s| match s {
+                MakeSlot::Scalar(b) => ArgSlot::Scalar(*b),
+                MakeSlot::Tuple { field_bytes, .. } => ArgSlot::Tuple(
+                    field_bytes
+                        .iter()
+                        .map(|&b| TupleFieldShape::Scalar(b))
+                        .collect(),
+                ),
+            })
+            .collect()
+    }
+
+    /// Feed each runtime op a COMPOUND param's cell rebuild references (`arr-alloc`/`arr-set` + a box op
+    /// per scalar leaf) into `out`, so the emitter imports them. A no-op when every param is a scalar.
+    fn collect_rebuild_ops(&self, out: &mut impl FnMut(&'static str)) {
+        let mut any = false;
+        for s in &self.slots {
+            if let MakeSlot::Tuple { rebuild, .. } = s {
+                any = true;
+                for f in rebuild {
+                    f.collect_box_ops(out);
+                }
+            }
+        }
+        if any {
+            out("arr-alloc");
+            out("arr-set");
         }
     }
 
-    /// The envelope-side boundary descriptor for `make`'s params — inline scalars, or a single native
-    /// `tuple<…>` whose per-field bytes the envelope mints a defined type from.
-    fn boundary_bytes(&self) -> crate::backend::wasm::envelope::MakeParamBoundary<'_> {
-        match &self.boundary {
-            MakeBoundary::Scalars(bytes) => {
-                crate::backend::wasm::envelope::MakeParamBoundary::Scalars(bytes)
-            }
-            MakeBoundary::Tuple(fields) => {
-                crate::backend::wasm::envelope::MakeParamBoundary::Tuple(fields)
-            }
-        }
+    /// The per-parameter cell rebuilds `make`'s core body threads (one per param; a scalar contributes an
+    /// empty rebuild it forwards directly). Paired with [`Self::boundary_slots`] positionally.
+    fn core_slots(&self) -> Vec<crate::backend::wasm::serialize::MakeCoreSlot> {
+        use crate::backend::wasm::serialize::MakeCoreSlot;
+        self.slots
+            .iter()
+            .map(|s| match s {
+                MakeSlot::Scalar(_) => MakeCoreSlot::Scalar,
+                MakeSlot::Tuple { rebuild, .. } => MakeCoreSlot::Tuple(rebuild.clone()),
+            })
+            .collect()
     }
 }
 
