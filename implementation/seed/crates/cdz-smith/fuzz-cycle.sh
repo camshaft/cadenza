@@ -99,14 +99,33 @@ if [ "$ENGINE" = "libfuzzer" ]; then
   rm -rf "$CRASHES"; mkdir -p "$CRASHES"
   # `-T` bounds the campaign; `-fork=1` isolates + continues past a fault; `-timeout` catches hangs;
   # the ignore_* flags keep the campaign RUNNING past a fault (we triage the saved artifacts after).
-  # The outer `timeout` is a hard backstop (cap + 60s slack for the final merge/exit).
-  ( cd "$CRATE_DIR" && CDZ_SMITH_COMMIT="$COMMIT" timeout --signal=KILL "$(( CYCLE_CAP + 60 ))" \
+  #
+  # SPURIOUS-CRASH AVOIDANCE. Two sources of fork-mode NON-reproducing "crash" artifacts, both
+  # addressed here (diagnosed 2026-07-14 — trivial 6-byte inputs saved as `crash-`, 0/N reproduce
+  # even under the same instrumented binary, correlated with low exec/s under contention):
+  #   1. The outer hard KILL clipping libFuzzer mid-campaign kills in-flight fork children, each
+  #      recorded as a crash against its last input. Fix: `-T` already bounds the run, so libFuzzer
+  #      exits on its OWN; the outer `timeout` is a pure backstop with a WIDE margin (2×+120s) so it
+  #      effectively never fires during a healthy run. On the rare backstop trip, triage discards the
+  #      dying-child artifacts anyway (they don't reproduce).
+  #   2. AddressSanitizer (cargo-bolero's default) false-positives on the hand-managed 64 MB
+  #      guard-stack thread (`run_with_compiler_stack`). `ASAN_OPTIONS` disables the stack-use-
+  #      after-return fake-stack machinery that misfires there, and keeps ASan from aborting the
+  #      whole process on a container-RSS ceiling. rcdzc is pure safe Rust, so ASan can only produce
+  #      false positives on the compile path anyway; we keep it solely for the sancov RUNTIME that
+  #      SanitizerCoverage links against (a plain `-s NONE` build fails to link `__sancov_*`).
+  backstop=$(( CYCLE_CAP * 2 + 120 ))
+  ( cd "$CRATE_DIR" \
+      && CDZ_SMITH_COMMIT="$COMMIT" \
+         ASAN_OPTIONS="detect_stack_use_after_return=0:allocator_may_return_null=1:handle_segv=0:abort_on_error=0" \
+         timeout --signal=KILL "$backstop" \
       rustup run nightly cargo bolero test cdz_smith_never_panics \
         --engine libfuzzer -T "${CYCLE_CAP}s" --timeout "${TIMEOUT_S}s" \
         --corpus-dir "$CORPUS" --crashes-dir "$CRASHES" \
         -E-fork=1 -E-ignore_timeouts=1 -E-ignore_crashes=1 -E-ignore_ooms=1 \
       2>&1 | grep -iE "cov:|SUMMARY|artifact|ERROR|panic|NEW crash" | tail -8 )
-  # Convert artifacts → deduped findings.
+  # Convert artifacts → deduped findings. A `crash-` artifact that does NOT reproduce on replay is a
+  # fork-mode phantom (see above), silently dropped by triage — expected, not a lost finding.
   ( cd "$CRATE_DIR" && cargo build -q 2>/dev/null && \
       ./target/debug/cdz-smith triage-artifacts "$CRASHES" --findings "$FINDINGS" --commit "$COMMIT" 2>&1 | tail -3 )
   corp="$(ls "$CORPUS" 2>/dev/null | wc -l | tr -d ' ')"
