@@ -77,6 +77,10 @@ export default function Bytes() {
         <C>String.to-bytes</C> gives you exactly those encoded bytes, and their length is the byte count:
       </P>
       <Runnable source={`(Bytes.len (String.to-bytes "café"))`} />
+      <P>
+        <C>5</C>, not <C>4</C>: the <C>é</C> encodes to two bytes, so the byte length runs one past the
+        character count. (Use <C>String.scalar-len</C> if you want the <C>4</C> characters instead.)
+      </P>
 
       <Why tenet="Text and bytes are different types">
         Many languages blur strings and byte arrays into one thing, and the encoding bugs follow. Cadenza
