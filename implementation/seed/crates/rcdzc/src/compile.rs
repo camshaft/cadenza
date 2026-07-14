@@ -532,7 +532,10 @@ fn non_rational_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) ->
 /// of [`non_integer_default_fault`] — same conservatism (an unbound name surfaces its CDZ0101; a type that
 /// does not reduce to a concrete `Ty` returns `None`, no false reject), the domain predicate is
 /// `Ty::Float` (`Float32`/`Float64` — every admitted IEEE width, the ONE representation every fixed-width
-/// and deferred float shares). A non-float type-value (`Int64`, `Rational`, a record, …) is CDZ0303.
+/// and deferred float shares). A non-float type-value (`Int64`, `Rational`, a record, …) is CDZ0303 — the
+/// machine-readable diagnostic for the unsatisfied "the named type must be a floating-point type" constraint.
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-float-literal-type
+//# The type named by a default-float-literal directive MUST be a floating-point type the numeric model admits, and a directive naming a type that is not a floating-point type MUST be rejected with the machine-readable diagnostic for that unsatisfied constraint.
 fn non_float_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> Option<Reject> {
     // An UNBOUND type name is the same CDZ0101 an annotation gives — surface it (see the integer twin's
     // note for the bound-unmodeled vs unbound distinction this turns on).

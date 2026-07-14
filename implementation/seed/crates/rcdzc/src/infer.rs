@@ -1813,6 +1813,17 @@ fn module_default_fraction_ty(db: &mut Db, id: StructId) -> Option<Ty> {
 //# A module MAY declare, through a module directive (modules-and-namespaces.md §"A Module Directive Is Drawn From A Fixed Set"), the floating-point type that a decimal literal with no other constraint takes within that module.
 //= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-float-literal-type
 //# When a module declares no default float literal type, a decimal literal with no other constraint MUST take the numeric model's default floating-point type.
+// This fn is consulted ONLY for a `Resolved::Float(_)` node (a DECIMAL-written literal): a bare
+// integer-written literal takes `module_default_int_ty`, so a default-float directive governs how a
+// written fraction is represented and never silently makes an integer a float.
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-float-literal-type
+//# A declared default float literal type MUST apply only to a decimal-written literal with no other constraint, leaving an integer-written literal at its declared or model-default integer type, so that a default float width governs how a written fraction is represented without silently making an integer a float.
+// The default in force is the one the literal's OWN module declares (`collect_default_float_literals`
+// walks each pragma-module's member subtrees, keyed by the original literal node — definition-site, not
+// import-site); it fixes a TYPE not a conversion (no-silent-promotion still faults a mix); and an
+// explicit annotation WINS (the `(: <lit> T)` guard below) — the same three rules as default-integer.
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-float-literal-type
+//# The definition-site rule and the fixes-a-type-not-a-conversion rule for a default integer literal type MUST apply equally to a default float literal type: the default in force is the one declared by the module in which the literal is written, it introduces no implicit conversion between numeric types, and an explicit annotation or other constraint on the literal takes precedence.
 fn module_default_float_ty(db: &mut Db, id: StructId) -> Option<Ty> {
     // An EXPLICIT ANNOTATION WINS (numeric-model.md §"An explicit annotation … takes precedence over the
     // module's declared default"): a literal that is the expression of a `(: <lit> T)` annotation is
@@ -5422,7 +5433,11 @@ fn check_application(
             // no-promotion error CDZ0301. `agrees_with` handles the width check: two `Ty::Float`s agree
             // iff their widths agree (a deferred/var width is compatible), and a float never agrees with a
             // non-float. So the well-typed case is exactly "both floats AND they agree"; anything else is
-            // the mix.
+            // the mix. This is the compile-time rejection of a mixed floating-point/integer application
+            // (`(+ 2 2.0)`) — the operator requires both operands to be ONE numeric type, and the fault
+            // follows from the operands disagreeing (no silent promotion, no float→int coercion).
+            //= spec/capabilities/numeric-model.md#an-arithmetic-operator-requires-both-operands-to-be-one-numeric-type
+            //# An arithmetic operator MUST require both of its operands to be the same numeric type, so that an application mixing a floating-point operand with an integer operand is rejected at compile time rather than silently accepting one integer and one floating-point operand or coercing a floating-point operand to an integer.
             let both_float = matches!(a0, Ty::Float(_)) && matches!(b0, Ty::Float(_));
             let a_ok = matches!(a0, Ty::Float(_)) || matches!(a0, Ty::Any);
             let b_ok = matches!(b0, Ty::Float(_)) || matches!(b0, Ty::Any);
