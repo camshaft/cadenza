@@ -252,6 +252,8 @@ pass	a constant argument out of a narrow parameter's range is rejected, not laun
 pass	a constant integer widens to BigInt and narrows back through Int64 unchanged
 pass	a constant left shift of -1 by 63 is exactly the minimum integer
 pass	a constant left shift of 1 by 63 overflows and is rejected
+pass	a constant list update at an index that wraps below the length is also rejected
+pass	a constant list update at an out-of-bounds index is rejected at compile time
 pass	a constant multi-payload variant match binds both payloads and folds to a scalar
 pass	a constant tuple is returned as a program result
 pass	a constructor pattern in a tuple payload slot is matched in one arm
@@ -833,6 +835,7 @@ pass	a runtime modulo of the minimum integer by -1 is zero on every backend
 pass	a runtime multiplication that overflows traps
 pass	a runtime negative dividend divided by a constant power of two truncates toward zero
 pass	a runtime negative dividend mod a constant power of two takes the dividend's sign
+pass	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 pass	a runtime overflowing left shift traps
 pass	a runtime record built behind a recursive call escapes to the host
 pass	a runtime record whose field is a runtime tuple escapes to the host
@@ -1787,8 +1790,6 @@ todo	a default-integer pragma fixes a type but adds no conversion — no-promoti
 todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a factorial that overflows the integer type traps through the recursion
 todo	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
-todo	a list update at a genuinely out-of-bounds index traps (the control)
-todo	a list update at an index that wraps below the length still traps
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a nominal record compared to a plain record of the same shape is a type error
