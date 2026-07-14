@@ -1465,15 +1465,45 @@ pub fn project_meta(db: &mut Db, id: StructId, key: &str) -> Option<StructId> {
     if let crate::arena::Slot::Filled(crate::resolved::Resolved::Record { fields }) =
         db.resolved.get(rec)
     {
-        // O(log N) `BTreeMap::get` on the `(meta, key)` Symbol — NOT an O(N) `.iter().find`. A wide record
-        // (an N-op effect record, whose `(meta t)` this reads) made a per-field-scan O(N) per lookup, and
-        // a per-arm handler check calls this per arm → O(N²). Keyed lookup keeps it O(log N).
-        return fields
-            .get(&crate::resolved::Symbol {
-                namespace: Some("meta".to_string()),
-                name: key.to_string(),
-            })
-            .copied();
+        // REVERSE scan the `meta`-namespace field block by `&str` — do NOT build a `Symbol` key. A
+        // `BTreeMap::get(&Symbol{Some("meta"), key})` allocates TWO `String`s (the namespace + name) on
+        // EVERY call, and `project_meta` is on the hot per-node meta-dispatch path (`meta_apply_of`/
+        // `variant_disc_of` run for every application/pattern during `collect`/`type_errors`) — that
+        // transient key alloc/free was a top allocation source (a realistic module A/B'd ~1.13× faster with
+        // it gone; `btree::search` + `malloc`/`free` churn dropped). Field keys sort by `(namespace, name)`
+        // with `None` (a USER field) < `Some("meta")`, so the `meta` fields are a CONTIGUOUS block at the
+        // TOP of the map — a REVERSE walk reaches them in O(meta-fields), NEVER touching the O(N) user
+        // fields (unlike a forward scan, which `203f8588` rightly avoided for a wide RUNTIME record). A meta
+        // record carries only a handful of meta fields, so this is O(1)-ish AND zero-alloc. Skip any
+        // namespace ABOVE `meta` (a future namespace, sorted later), match within `meta`, and STOP the
+        // moment the walk descends below `Some("meta")` (into user/`None` or a smaller namespace) — no meta
+        // field can be below that, so we never scan the wide user block. Behaviour-identical to the built-key
+        // `get` (same field, same match), only the transient `Symbol` is gone.
+        #[cfg(test)]
+        let mut _depth: u64 = 0;
+        for (k, &v) in fields.iter().rev() {
+            #[cfg(test)]
+            {
+                _depth += 1;
+                crate::db::PROJECT_META_FIELDS_VISITED.with(|c| {
+                    if _depth > c.get() {
+                        c.set(_depth)
+                    }
+                });
+            }
+            match k.namespace.as_deref() {
+                // A matching `meta` field — done.
+                Some("meta") if k.name == key => return Some(v),
+                // A `meta` field with a different name — keep scanning the meta block.
+                Some("meta") => {}
+                // Below the `meta` block (a `None` user field or a namespace < "meta") — no meta field
+                // remains further down, so stop rather than walk the O(N) user fields.
+                ns if ns < Some("meta") => break,
+                // A namespace ABOVE "meta" (sorted after it) — not yet at the meta block, keep descending.
+                _ => {}
+            }
+        }
+        return None;
     }
     None
 }

@@ -9428,6 +9428,74 @@ mod runtime_ops {
     }
 
     #[test]
+    fn project_meta_reads_a_meta_field_without_scanning_the_wide_user_block() {
+        // REGRESSION (perf): `eval::project_meta` reads a `meta`-namespace field (`apply`/`variant`/`t`/…)
+        // off a value's record on the HOT per-node meta-dispatch path (`meta_apply_of`/`variant_disc_of`
+        // run for every application/pattern during `collect`/`type_errors`). It used a
+        // `BTreeMap::get(&Symbol{Some("meta".to_string()), key.to_string()})` — allocating TWO `String`s per
+        // call (a top allocation source; a realistic module A/B'd ~1.13× faster once removed). The
+        // alloc-free replacement must NOT reintroduce the O(N)-field forward scan `203f8588` fixed for a
+        // WIDE record. Field keys sort `(namespace, name)` with a USER field (`None`) BELOW `Some("meta")`,
+        // so the meta fields are a contiguous block at the TOP — a REVERSE scan reaches them in
+        // O(meta-fields) and BREAKS on descending below the block, never touching the O(width) user fields.
+        //
+        // The NOISE-FREE signal is `PROJECT_META_FIELDS_VISITED` — the MAX field entries a SINGLE scan
+        // touches (a running max), a pure function of the program. Reading `(meta t)` etc. off a wide record
+        // must visit O(meta-fields) = bounded PER CALL, NOT O(width). Widen the record 8× and require the
+        // MAX per-call depth stays CONSTANT (a forward/no-break scan grows ~linearly with width; the
+        // reverse-scan-with-break is flat at ~3). (A TOTAL-visits signal would conflate this with the
+        // per-node meta-dispatch CALL count, which scales with the program independently — so track the max
+        // per-call depth, which isolates the scan-length regression this fix is about.)
+        // A WIDE EFFECT builds a wide `(meta …)` interface record — width-N ops → an N-field meta record
+        // `project_meta` reads (`meta_apply_of`/`variant_disc_of` per op reference/pattern). The meta fields
+        // sort at the TOP (namespace `Some("meta")` > a `None` user field), so the reverse-scan reaches them
+        // in O(1)-ish regardless of N; a forward scan would walk all N.
+        fn wide_effect_src(n_ops: usize) -> String {
+            let ops: String = (0..n_ops)
+                .map(|i| format!("(op tick{i} (-> Unit Int64))"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let arms: String = (0..n_ops)
+                .map(|i| format!("(tick{i} (u) s (resume s (+ s {i})))"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "(do (effect E {ops}) (def (main) (handle E 0 ({arms}) (E.tick0 ()))) (export main))"
+            )
+        }
+        // A small instance compiles with no error diagnostics.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_effect_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a small effect compiles with no error diagnostics: {diags:?}"
+        );
+        fn max_depth(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::PROJECT_META_FIELDS_VISITED.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::PROJECT_META_FIELDS_VISITED.with(|c| c.get())
+            })
+        }
+        // 40 ops → 320 ops is 8×. A reverse scan that breaks below the meta block touches O(meta-fields) per
+        // call REGARDLESS of width, so the MAX per-call scan depth is CONSTANT (~3). A forward/no-break scan
+        // would walk the whole N-field meta record → the max depth would grow ~linearly with N. Require the
+        // 8×-wider effect's max depth to stay BELOW 2× the narrow one's (constant, with margin) AND small in
+        // absolute terms. `> 0` proves the reverse scan ran (a revert to the built-key `BTreeMap::get` never
+        // touches this counter → 0 → the test fails, catching the per-call-`Symbol`-alloc regression).
+        let d40 = max_depth(&wide_effect_src(40));
+        let d320 = max_depth(&wide_effect_src(320));
+        assert!(
+            d40 > 0 && d320 < d40 * 2 && d320 < 32,
+            "project_meta must read a meta field in O(meta-fields) PER CALL, not O(record-width) (the \
+             alloc-free replacement must REVERSE-scan the top meta block and BREAK, not forward-scan the \
+             wide meta record — the `203f8588` O(N²)): max per-call scan depth at 40 ops = {d40}, at 320 \
+             ops = {d320} (must stay constant/small — a width-proportional scan would grow ~8×)"
+        );
+    }
+
+    #[test]
     fn a_multi_use_binding_of_a_comparison_names_the_bool() {
         // The named value need not be an integer — a runtime comparison used twice is named too (its
         // slot is an i32). `(let ((p (< a b))) (if p (if p 1 2) 3))` — `p` used twice. a<b true → the
