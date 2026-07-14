@@ -11767,13 +11767,25 @@ mod match_engine {
         // cleanly, WITHOUT the operator's `∀a. (Int a) → …` scheme defaulting the first operand to `Int64`
         // and reporting the second as a numeric MIX (a phantom `Int64` the author never wrote). Before the
         // wiring this DECLINED honestly (`adding_two_rationals_declines_honestly_…`); now it is well-typed.
+        // (A runtime-Rational operand still DECLINES at LOWERING — the constant fold is wired, the runtime
+        // rational compound is a later slice — but the TYPE side is clean, which is what this pins.)
         assert!(
             reject_code("(module m (def (f (: r Rational) (: s Rational)) (+ r s)) (def (main) 5) (export main))")
                 .is_none(),
             "Rational + Rational type-checks (no phantom Int64 mix)"
         );
 
-        // CONTRAST — must be UNAFFECTED: equality over two Rationals COMPILES (∀a. a→a→Bool, no Int forcing).
+        // A CONSTANT Rational sum FOLDS end-to-end (the wired path): `(+ (Rational.of 1 3) (Rational.of 1
+        // 6))` = 1/2, a real value, not a decline.
+        assert!(
+            reject_code(
+                "(module m (def (main) (+ (Rational.of 1 3) (Rational.of 1 6))) (export main))"
+            )
+            .is_none(),
+            "constant Rational arithmetic folds"
+        );
+
+        // CONTRAST — equality over two Rationals COMPILES (∀a. a→a→Bool, no Int forcing).
         assert!(
             reject_code("(module m (def (f (: r Rational) (: s Rational)) (= r s)) (def (main) 5) (export main))")
                 .is_none(),

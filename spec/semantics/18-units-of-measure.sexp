@@ -444,7 +444,7 @@
            is `(Qty Rational meter)` = 127/5000 m. Pins that a within-dimension conversion is the exact
            scale the family declares.")
   (input  (Unit.in (Unit.of #"meter") (Qty.of (Rational.of 1 1) (Unit.of #"inch"))))
-  (output (: (Qty.of (Rational.of 127 5000) (Unit.of #"meter")) (Qty Rational (Unit.of #"meter")))))
+  (output (: (Qty.of 127/5000 (Unit.base #"meter")) (Qty Rational (Unit.base #"meter")))))
 
 (case "adding two units of one dimension converts to the reference unit exactly"
   (doc    "THE mixing case: `(+ (Qty 1 inch) (Qty 1 mm))` over exact rational magnitudes — both are
@@ -454,7 +454,7 @@
            deterministic function of the operand units (units-of-measure.md #Combining Units Of One
            Dimension Is Well-Formed). Exact because the magnitudes are `Rational`.")
   (input  (+ (Qty.of (Rational.of 1 1) (Unit.of #"inch")) (Qty.of (Rational.of 1 1) (Unit.of #"millimeter"))))
-  (output (: (Qty.of (Rational.of 33 1250) (Unit.of #"meter")) (Qty Rational (Unit.of #"meter")))))
+  (output (: (Qty.of 33/1250 (Unit.base #"meter")) (Qty Rational (Unit.base #"meter")))))
 
 (case "mixing units of DIFFERENT dimensions is still a compile-time error"
   (doc    "`(+ (Qty 1 inch) (Qty 1 second))` mixes `length` and `time` — DIFFERENT dimensions — so it is
@@ -487,7 +487,7 @@
            Pins that a prefixed unit is a unit of the same dimension differing by the exact prefix
            factor.")
   (input  (Unit.in (Unit.of #"meter") (Qty.of (Rational.of 3 1) (Unit.prefix kilo (Unit.of #"meter")))))
-  (output (: (Qty.of (Rational.of 3000 1) (Unit.of #"meter")) (Qty Rational (Unit.of #"meter")))))
+  (output (: (Qty.of 3000/1 (Unit.base #"meter")) (Qty Rational (Unit.base #"meter")))))
 
 (case "a negative-power SI prefix is an exact rational scale"
   (doc    "`(Unit.in (Unit.of #\"second\") (Qty.of (Rational.of 5 1) (Unit.prefix milli (Unit.of #\"second\"))))`
@@ -495,14 +495,14 @@
            negative-power prefixes are exact `Rational` scales — the second reason exact rationals are
            load-bearing for units (a milli/micro/nano factor has no exact float or integer form).")
   (input  (Unit.in (Unit.of #"second") (Qty.of (Rational.of 5 1) (Unit.prefix milli (Unit.of #"second")))))
-  (output (: (Qty.of (Rational.of 1 200) (Unit.of #"second")) (Qty Rational (Unit.of #"second")))))
+  (output (: (Qty.of 1/200 (Unit.base #"second")) (Qty Rational (Unit.base #"second")))))
 
 (case "an IEC binary prefix scales a unit by a power of two"
   (doc    "`(Unit.in (Unit.of #\"byte\") (Qty.of (Rational.of 1 1) (Unit.prefix mebi (Unit.of #\"byte\"))))`
            converts 1 MiB to bytes: `mebi` = 2²⁰ = 1048576, so 1 MiB = 1048576 byte. Pins the binary
            prefix family (kibi/mebi/gibi) alongside the decimal one — distinct scales for `information`.")
   (input  (Unit.in (Unit.of #"byte") (Qty.of (Rational.of 1 1) (Unit.prefix mebi (Unit.of #"byte")))))
-  (output (: (Qty.of (Rational.of 1048576 1) (Unit.of #"byte")) (Qty Rational (Unit.of #"byte")))))
+  (output (: (Qty.of 1048576/1 (Unit.base #"byte")) (Qty Rational (Unit.base #"byte")))))
 
 (case "a decimal kilobyte and a binary kibibyte are distinct units of one dimension"
   (doc    "`(+ (Qty 1 KiB) (Qty 1 kB))` over the `information` dimension: kibibyte = 1024 byte and
@@ -512,7 +512,7 @@
            (the classic KiB-vs-kB conflation is caught, not hidden).")
   (input  (+ (Qty.of (Rational.of 1 1) (Unit.prefix kibi (Unit.of #"byte")))
              (Qty.of (Rational.of 1 1) (Unit.prefix kilo (Unit.of #"byte")))))
-  (output (: (Qty.of (Rational.of 2024 1) (Unit.of #"byte")) (Qty Rational (Unit.of #"byte")))))
+  (output (: (Qty.of 2024/1 (Unit.base #"byte")) (Qty Rational (Unit.base #"byte")))))
 
 ; ============================================================================================
 ; Prefix conversion over CONCRETE numerics — the bignum-free realization (Float rounds, Int

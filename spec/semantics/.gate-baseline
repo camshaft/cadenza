@@ -57,6 +57,7 @@ pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
 pass	a RUNTIME payload-literal refinement dispatches through its literal test
+pass	a Rational-payload sum value escapes across the boundary in its canonical form
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
 pass	a Sign match missing two of three variants is non-exhaustive
@@ -239,6 +240,7 @@ pass	a curried function-type annotation checks its inner result type against the
 pass	a curried-syntax application of a runtime closure flattens to one full-arity indirect call
 pass	a cycle of module imports is rejected
 pass	a decimal integer literal
+pass	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 pass	a decimal kilobyte and a binary kibibyte convert distinctly over Int64
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
 pass	a declaration in a do block shadows an outer binding
@@ -274,6 +276,7 @@ pass	a do-local function declaration is recursive
 pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
 pass	a duplicate match arm is dead code but the program still runs
+pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a failing guard falls through to a later arm
 pass	a false variant guard shields its arm's trapping body
@@ -451,6 +454,7 @@ pass	a match on a runtime integer scrutinee producing a boolean
 pass	a match on a tuple-element-access scrutinee dispatches on the element value
 pass	a match on a value of one sum type rejects a pattern from a different sum type
 pass	a match on an uninhabited scrutinee is exhaustive with zero arms
+pass	a match on the result of a match threads sum values through nested control flow
 pass	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 pass	a match over multiple nullary constructors with uniform patterns
 pass	a match pattern naming a non-existent variant is a coded rejection
@@ -534,6 +538,7 @@ pass	a negative width is not honored as a narrow type
 pass	a negative zero in a record field is distinct from positive zero
 pass	a negative zero nested in a tuple is distinct from positive zero
 pass	a negative-power SI prefix converts over Float
+pass	a negative-power SI prefix is an exact rational scale
 pass	a nested Result pattern selects the inner Err arm
 pass	a nested application of a let-bound lambda resolves each argument at its call site
 pass	a nested call chain whose callee duplicates its parameter folds without exponential blowup
@@ -679,6 +684,8 @@ pass	a recursive function that installs a fresh handler on each call grows its c
 pass	a recursive function that threads a tuple accumulator returns it
 pass	a recursive function threads two nested handlers' states at once
 pass	a recursive function with an annotated parameter walks and bails through an abortive handler
+pass	a recursive generic function called at one type twice shares a single instantiation
+pass	a recursive generic function is instantiated at two different types
 pass	a recursive list accumulator grown by push and returned in the base arm stays a list
 pass	a recursive lower from a sum to Bytes assembles its output in match arms
 pass	a recursive map rebuilding a sum list infers its unannotated callback
@@ -702,6 +709,7 @@ pass	a reflected quantity type rejects a value of a different dimension
 pass	a refutable constructor pattern in a let binder is rejected
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a returned capturing closure bound with let and applied folds like the inline form
+pass	a returned lambda captures+applies a closure param bound to a TOP-LEVEL def
 pass	a returned runtime string with a multi-byte scalar renders the scalar verbatim
 pass	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
 pass	a right shift by a floating-point count does not silently promote
@@ -940,12 +948,14 @@ pass	a value-eq guard on a SUM-match arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
 pass	a variant carrying a Char payload constructs, matches, and binds it
 pass	a variant carrying a RECORD payload constructs and matches
+pass	a variant carrying a Rational payload constructs and matches
 pass	a variant carrying a Symbol payload constructs, matches, and binds it
 pass	a variant carrying a record payload escapes to the host
 pass	a variant pattern over a Bool scrutinee is a type error
 pass	a variant pattern over a scalar scrutinee is a type error
 pass	a variant with a wrong-type payload as a direct match scrutinee is a type error
 pass	a variant with an explicit EMPTY-TUPLE payload keeps its tuple form, distinct from a nullary unit
+pass	a variant-payload binder shadow is scoped to its arm, not the whole def
 pass	a variant-payload binder shadowing a param in a called def binds the payload
 pass	a well-formed annotation still checks and accepts a matching type (the control)
 pass	a whole rational carries a denominator of one
@@ -963,16 +973,19 @@ pass	adding quantities of incompatible dimension is a compile-time error
 pass	adding rational-magnitude quantities of incompatible dimension is still a compile-time error
 pass	adding two named family units of one dimension converts to the reference (Float)
 pass	adding two quantities of the same dimension keeps that dimension
+pass	adding two units of one dimension converts to the reference unit exactly
 pass	all-nullary enum equality compares discriminants
 pass	an 8-bit-integer closure crosses the host boundary
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an IEC binary prefix converts exactly over Int64
+pass	an IEC binary prefix scales a unit by a power of two
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
 pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
+pass	an SI decimal prefix scales a unit by a power of ten
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
 pass	an abortive perform in a conditional let binding abandons the computation
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation
@@ -1152,6 +1165,7 @@ pass	comparing sums with disjoint variant sets is a type error
 pass	comparing tuples of different lengths is a type error
 pass	comparing two quantities of the same dimension yields a Bool
 pass	comparing two same-shape nominal sum types is a type error, not false
+pass	comparing two units of one dimension converts before comparing
 pass	concatenating an empty byte sequence on the left is the identity
 pass	concatenating an empty byte sequence on the right is the identity
 pass	concatenating an empty string on the left is the identity
@@ -1180,6 +1194,7 @@ pass	converting a fixed-width integer to BigInt is explicit
 pass	converting a float to its own width is the identity
 pass	converting a scalar-valued integer to a char yields Some
 pass	converting a surrogate code point to a char yields None
+pass	converting a unit to another unit of the same dimension is an exact rational scale
 pass	converting an out-of-range integer to a char yields None
 pass	declaring a unit with a conversion conflicting with a built-in is an error
 pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
@@ -1682,7 +1697,6 @@ todo	a UInt32 addition that overflows the 32-bit width traps
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a compound closure ARG on the DIRECT-CALL path is declined — host would supply the compound
-todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a factorial that overflows the integer type traps through the recursion
@@ -1691,15 +1705,11 @@ todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
-todo	a negative-power SI prefix is an exact rational scale
 todo	a nested lambda capturing a closure-typed def PARAMETER is declined
 todo	a nominal record compared to a plain record of the same shape is a type error
 todo	a plain record compared to a nominal record of the same shape is a type error
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
-todo	adding two units of one dimension converts to the reference unit exactly
-todo	an IEC binary prefix scales a unit by a power of two
-todo	an SI decimal prefix scales a unit by a power of ten
 todo	an arbitrary-precision integer multiplication does not overflow
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an explicit annotation overrides the default-integer pragma
@@ -1707,10 +1717,8 @@ todo	an open sum payload that does not match its schema yields a typed failure, 
 todo	an open sum's payload decodes against a schema to a typed result
 todo	an unusual-width value that overflows its computed range traps
 todo	comparing same-shape nominal types is a type error
-todo	comparing two units of one dimension converts before comparing
 todo	constructing a runtime value that does not fit its segment traps
 todo	converting a BigInt back to a fixed width is checked and traps when out of range
-todo	converting a unit to another unit of the same dimension is an exact rational scale
 todo	eval is optional for macros and interactive use
 todo	eval on malformed AST traps
 todo	expect on an overflowing checked add traps

@@ -7304,6 +7304,44 @@ fn lower_quantity_combine(
         // RUNTIME operand(s) — synthesize the scale conversion as real float arithmetic and lower it.
         return lower_runtime_combine(db, op, lhs, (ln, ld), rhs, (rn, rd), true);
     }
+    // RATIONAL inner: convert each operand to the reference EXACTLY — `v * (num/den)` =
+    // `(vn*num)/(vd*den)`, renormalized — then combine (`+`/`-`/`*`/`/` or a comparison) exactly. This is
+    // THE mixing case done without rounding: `1 inch + 1 mm` = 127/5000 + 1/1000 = 33/1250 m, exact.
+    let inner_is_rational = matches!(
+        crate::infer::type_of(db, lhs),
+        crate::ty::Ty::Qty { inner, .. } if matches!(*inner, crate::ty::Ty::Rational)
+    );
+    if inner_is_rational {
+        if let (Core::ConstRational(lvn, lvd), Core::ConstRational(rvn, rvd)) = (&lc, &rc) {
+            let l = normalized_rational(
+                lvn.mul(&IntValue::from_i128(ln)),
+                lvd.mul(&IntValue::from_i128(ld)),
+            );
+            let r = normalized_rational(
+                rvn.mul(&IntValue::from_i128(rn)),
+                rvd.mul(&IntValue::from_i128(rd)),
+            );
+            // Fold the op over the two converted rationals directly (they are constant `ConstRational`s).
+            let (Core::ConstRational(ln2, ld2), Core::ConstRational(rn2, rd2)) = (&l, &r) else {
+                return Core::Poison(Reject::decline("mixed-unit rational conversion trapped"));
+            };
+            return match op {
+                Prim::Add => normalized_rational(ln2.mul(rd2).add(&rn2.mul(ld2)), ld2.mul(rd2)),
+                Prim::Sub => normalized_rational(ln2.mul(rd2).sub(&rn2.mul(ld2)), ld2.mul(rd2)),
+                Prim::Mul => normalized_rational(ln2.mul(rn2), ld2.mul(rd2)),
+                Prim::Div => normalized_rational(ln2.mul(rd2), ld2.mul(rn2)),
+                // A comparison of the two converted rationals: `a/b <=> c/d ⇔ a·d <=> c·b`.
+                Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge | Prim::Eq => {
+                    let ord = ln2.mul(rd2).cmp(&rn2.mul(ld2));
+                    Core::ConstBool(compare_ord(op, ord))
+                }
+                _ => Core::Poison(Reject::decline("mixed-unit rational: unsupported operator")),
+            };
+        }
+        return Core::Poison(Reject::decline(
+            "runtime mixed-unit Rational combine (not yet emitted)",
+        ));
+    }
     // INT (and other exact inner): convert each by `v * num / den` over i128 (exact; truncates on a
     // non-whole ratio, per opting into integer math).
     if let (Some(lv), Some(rv)) = (int_of_core(&lc), int_of_core(&rc)) {
@@ -7507,6 +7545,22 @@ fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
         }
     };
     let qc = core_of(db, q);
+    // A RATIONAL magnitude converts EXACTLY: `value * (num/den)` = `(vn*num)/(vd*den)`, renormalized. This
+    // is the whole point of a rational-magnitude unit (`1 inch in meter` = exactly 127/5000 m, no rounding).
+    let inner_is_rational = matches!(
+        crate::infer::type_of(db, q),
+        crate::ty::Ty::Qty { inner, .. } if matches!(*inner, crate::ty::Ty::Rational)
+    );
+    if inner_is_rational {
+        if let Core::ConstRational(vn, vd) = &qc {
+            let scaled_num = vn.mul(&IntValue::from_i128(num));
+            let scaled_den = vd.mul(&IntValue::from_i128(den));
+            return normalized_rational(scaled_num, scaled_den);
+        }
+        return Core::Poison(Reject::decline(
+            "Unit.in over a runtime Rational magnitude (not yet emitted)",
+        ));
+    }
     if inner_is_float {
         if let Some(v) = float_of_core(&qc) {
             // CONSTANT float magnitude — fold the conversion.
