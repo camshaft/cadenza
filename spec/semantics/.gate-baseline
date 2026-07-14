@@ -1861,6 +1861,7 @@ pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
 pass	the float operator rejects an integer operand and does not promote it
 pass	the guarded-let conditional takes its else-branch when the conjunction is false
+pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer
 pass	the intersection contains the elements in both sets
