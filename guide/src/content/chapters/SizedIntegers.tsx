@@ -80,17 +80,18 @@ export default function SizedIntegers() {
         id="sized-integers:1"
         prompt={
           <>
-            Signed widths hold negatives. Convert <C>-100</C> into an <C>Int8</C> (range −128–127) with the
-            checked <C>.of</C> — the result is <C>-100</C>.
+            <C>258</C> doesn't fit a byte, and you want it truncated to the low 8 bits, not a halt. Pick
+            the operation that takes the low bits — the result should be <C>2</C> (that's{" "}
+            <C>258 − 256</C>). Which of <C>of</C> / <C>wrap</C> goes in the blank?
           </>
         }
-        starter={`(Int8.of ?)`}
-        solution={`(Int8.of (- 0 100))`}
-        expected="-100"
+        starter={`(UInt8.? 258)`}
+        solution={`(UInt8.wrap 258)`}
+        expected="2"
         hint={
           <>
-            Write the value <C>-100</C> as <C>(- 0 100)</C>; it's inside <C>Int8</C>'s −128–127 range, so{" "}
-            <C>Int8.of</C> accepts it.
+            <C>wrap</C> keeps the low bits; <C>of</C> would <em>refuse</em> <C>258</C> as out of range. You
+            asked for truncation, so it's <C>wrap</C> — and <C>258</C> wraps to <C>2</C>.
           </>
         }
       />
