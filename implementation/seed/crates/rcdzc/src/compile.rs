@@ -1390,6 +1390,38 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             collect_reached_poisons(db, body, &mut faults);
         }
     }
+    // MODULE-MEMBER VALUE/NULLARY BODIES. `modules::register_fn_def` registers only a ≥1-PARAM member in
+    // `db.defs` (for recursive-call lowering), so a bare-name VALUE `(def v V)` or a NULLARY `(def (v) V)`
+    // module member is NOT in `db.defs` and its body was NOT type-checked by the loop above — an ill-typed
+    // one (`(module m (def (bad) (+ 1 2.0)))`) slipped through to a DECLINE or an INVALID COMPONENT
+    // (`type-system.md §A program that is not well-typed MUST be rejected`). Type-check each such member
+    // body here so it rejects with its code (CDZ0301/…) rather than miscompiling. A ≥1-param member's body
+    // IS in `db.defs` (already checked above), so gather it into `checked_bodies` to avoid a redundant
+    // second walk. A member reached only through its module's synthesized record still runs this check —
+    // well-formedness is unconditional over every definition (`§454`).
+    let checked_bodies: std::collections::HashSet<StructId> =
+        db.defs.iter().filter_map(|d| d.body).collect();
+    let member_value_bodies: Vec<StructId> = db
+        .modules
+        .iter()
+        .flat_map(|m| module_member_value_bodies(db, m.occ))
+        .filter(|b| !checked_bodies.contains(b))
+        .collect();
+    for body in member_value_bodies {
+        // Keep only the TYPE faults, DROPPING an `Unbound` (CDZ0101): a member body references its
+        // SIBLINGS by bare name (a sibling effect `log`, a sibling def), which resolve through the module's
+        // in-scope context — but this STANDALONE `type_errors` walk re-resolves from the body node without
+        // that context and spuriously reports the sibling `Unbound`. A GENUINELY unbound name still faults
+        // where the member is actually reached (the reached-poison walk over the export that inlines it, or
+        // the projection site), so dropping the standalone `Unbound` loses no real error while it removes
+        // the false positive. The MISCOMPILE this pass exists to catch is a TYPE fault (CDZ0301/0302/0303 —
+        // a numeric mix that would emit an invalid component), which is scope-independent and kept.
+        for fault in type_errors(db, body) {
+            if fault.code != Some(Code::Unbound) {
+                faults.push(fault);
+            }
+        }
+    }
     // ENTRYPOINT NO-HOME CHECK (CDZ0401). An effect operation reached from an ENTRYPOINT with neither an
     // enclosing handler nor a host delegation escapes ungranted — the merged "no home" check
     // (`capabilities-and-effects.md` §An Ungranted Effect Is A Compile-Time Error). This is an
@@ -1745,6 +1777,38 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // generic "no machine representation" decline — name the unknown unit (CDZ0201) with a did-you-mean.
     crate::infer::check_unknown_units(db, &mut faults);
     dedup_faults(db, faults)
+}
+
+/// The BODY occurrence of each VALUE / NULLARY `(def …)` member of the module at `mod_form` — a bare-name
+/// `(def v V)` (body `V`) or a nullary `(def (v) V)` (body `V`). A ≥1-param member is EXCLUDED (its body
+/// is registered in `db.defs` by `modules::register_fn_def` and checked with the top-level defs); this
+/// gathers only the members that registration skips, so `collect_faults` can type-check them too. Reads
+/// the raw `(module …)` form (its members are the tail after the name). Does NOT descend into a nested
+/// `(module inner …)` member — that inner module is its own `ModuleDecl` and is walked when this function
+/// is called for `inner.occ`, so each member is gathered exactly once.
+fn module_member_value_bodies(db: &Db, mod_form: StructId) -> Vec<StructId> {
+    let Some(tail) = db.ast.as_form(mod_form, "module") else {
+        return Vec::new();
+    };
+    let mut bodies = Vec::new();
+    for &member in tail.get(1..).unwrap_or(&[]) {
+        let Some(def_tail) = db.ast.as_form(member, "def") else {
+            continue;
+        };
+        let (Some(&sig), Some(&body)) = (def_tail.first(), def_tail.get(1)) else {
+            continue;
+        };
+        // A bare-name value `(def v V)` — the sig is an atom (a name). A list signature `(NAME p…)` is a
+        // function; it is a VALUE-body case (checked here) only when NULLARY (`(NAME)`, no params).
+        let is_value_or_nullary = match db.ast.get(sig) {
+            crate::ast::Struct::Atom(_) => db.ast.as_name(sig).is_some(),
+            crate::ast::Struct::List(children) => children.len() == 1, // `(NAME)` — nullary, no params
+        };
+        if is_value_or_nullary {
+            bodies.push(body);
+        }
+    }
+    bodies
 }
 
 /// Collapse duplicate faults — the SAME issue reported by more than one collection pass. A fault is

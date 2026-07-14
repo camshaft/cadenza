@@ -14310,6 +14310,46 @@ mod match_engine {
     }
 
     #[test]
+    fn a_nullary_module_member_body_is_type_checked() {
+        // `type-system.md` §A program that is not well-typed MUST be rejected. A NULLARY module member
+        // `(def (bad) …)` is NOT registered in `db.defs` (`modules::register_fn_def` registers only ≥1-param
+        // members, for recursive-call lowering), so its body was never type-checked — an ill-typed one
+        // DECLINED (a BigInt/Int64 mix) or emitted an INVALID COMPONENT (a Float/Int mix — a real
+        // miscompile). `collect_faults` now type-checks each value/nullary member body too.
+        // A numeric MIX in a nullary member is CDZ0301 (no silent promotion), not a miscompile:
+        for src in [
+            "(module top (def (main) (do (module m (def (bad) (+ 1 2.0))) ((. m bad) unit))) (export main))",
+            "(module top (def (main) (do (module m (def (bad) (+ (BigInt.of 2) ((. Int64 of) 1)))) ((. m bad) unit))) (export main))",
+        ] {
+            assert_eq!(
+                reject_code(src).as_deref(),
+                Some("CDZ0301"),
+                "a numeric mix in a nullary module member rejects CDZ0301, not a miscompile: {src}"
+            );
+        }
+        // A well-typed nullary member still compiles clean.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (def (ok) (+ 1 2))) ((. m ok) unit))) (export main))"
+            ),
+            None,
+            "a well-typed nullary member is not falsely rejected"
+        );
+        // 🔑 REGRESSION GUARD: a nullary member body that references a SIBLING (an effect `log`, a sibling
+        // def) resolves through the module's in-scope context — the standalone type-check must NOT report
+        // that sibling as `Unbound` (CDZ0101). Such a member (performing a sibling effect via `host`)
+        // compiles clean; the member-body check drops a standalone `Unbound` for exactly this reason.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (effect log (op emit (-> String Unit))) \
+                   (def (run) (host (log) ((. log emit) \"hi\")))) (= 1 1))) (export main))"
+            ),
+            None,
+            "a nullary member performing a sibling effect is not falsely CDZ0101 by the standalone check"
+        );
+    }
+
+    #[test]
     fn a_default_integer_pragma_naming_an_unbound_type_is_cdz0101() {
         // 06-numeric-model "a default-integer pragma naming an unbound type is rejected as unbound, like an
         // annotation". A meaning-changing directive naming a NONEXISTENT type must not be silently accepted
