@@ -914,7 +914,10 @@ pub fn collect_used_ops(
                 // RECLAMATION (U13): a scalar projection off an OWNED-temporary aggregate `drop`s the
                 // aggregate after the borrowing read — mirror the emit's reclaim condition so `drop` is
                 // imported. (A borrowed-operand projection reclaims nothing, matching the emit.)
-                if matches!(heap_operand_ownership(db, operand), Ok(HandleOwnership::Owned)) {
+                if matches!(
+                    heap_operand_ownership(db, operand),
+                    Ok(HandleOwnership::Owned)
+                ) {
                     out.insert(OP_DROP);
                 }
             }
@@ -5112,7 +5115,10 @@ fn emit(
             // on a proven-fresh producer), never leaks wrongly or double-frees.
             let scalar_elem = get_op(db, id)?;
             let reclaim = scalar_elem.is_some()
-                && matches!(heap_operand_ownership(db, operand), Ok(HandleOwnership::Owned));
+                && matches!(
+                    heap_operand_ownership(db, operand),
+                    Ok(HandleOwnership::Owned)
+                );
             if reclaim {
                 let agg_slot = base;
                 if agg_slot + 1 > *high {
