@@ -22,6 +22,15 @@
 // WORKAROUND (used by `src/apply-ty.cdz`): a top-level `tag` helper maps each nullary variant to a scalar,
 // so nullary comparison is `tag(x) == tag(y)` and no nested nullary match is needed.
 //
+// SHARPENED BOUND (iter 26): the trigger is SPECIFICALLY a match DIRECTLY NESTED as another match's ARM
+// BODY. All of these are CLEAN (bare dotted nullary pattern in a nested match): nested inside a `let`
+// init, inside an `if` branch, or hoisted to a SEPARATE def. Only "match whose arm body is itself a
+// match" fails — and it fails for ANY inner scrutinee (same var, a different var, annotated), in the
+// first arm or a later arm. The seed's `pattern_constraints` (lower.rs) DOES handle a `(. Sum V)` dotted
+// nullary pattern correctly (it maps the member form to the ctor disc) — so the inner arm's pattern is
+// being resolved as a `Resolved::Member` EXPRESSION before `pattern_constraints` ever sees it, i.e. the
+// inner `match` is not routed to the sum-match lowering when it sits directly in an outer arm body.
+//
 // This program should return 9 (x is TInt → inner match on x → TInt arm → 9).
 type Ty =
   | TInt
