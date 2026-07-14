@@ -5888,14 +5888,19 @@ fn champ_insert_node(
                     nh.push(h);
                 }
             }
-            let mut subs: Vec<Handle> = Vec::with_capacity(scount + 1);
-            for s in 0..scount {
+            // Splice the subnodes directly into `nh` with `sub` at `new_sidx` — no transient `subs` Vec
+            // (dup each carried subnode; `sub` is already owned from `merge_two_entries`).
+            for s in 0..new_sidx {
                 let c = n.handles[subbase + s];
                 op_dup(c);
-                subs.push(c);
+                nh.push(c);
             }
-            subs.insert(new_sidx, sub);
-            nh.extend(subs);
+            nh.push(sub);
+            for s in new_sidx..scount {
+                let c = n.handles[subbase + s];
+                op_dup(c);
+                nh.push(c);
+            }
             nh
         });
         let new = alloc_raw(
@@ -9277,8 +9282,8 @@ mod tests {
         });
         println!("ALLOC map_insert_shared_newkey x{N}: {pinsert_new}");
         assert!(
-            pinsert_new <= 6500,
-            "shared/persistent map_insert (new key) x{N} allocs {pinsert_new} exceeds ceiling 6500 (path-copy growth: borrow-and-build, no upfront clone; measured ~6418, was 7445)"
+            pinsert_new <= 6100,
+            "shared/persistent map_insert (new key) x{N} allocs {pinsert_new} exceeds ceiling 6100 (path-copy growth: borrow-and-build, no upfront clone; measured ~6016 after the SPLIT branch splices subnodes directly into `nh` — no transient `subs` Vec (was ~6418), 7445 before the no-upfront-clone. Overwrite-only shared insert (no splits) is unaffected)"
         );
         op_drop(mkeep2);
 
