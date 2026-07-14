@@ -11636,6 +11636,46 @@ mod match_engine {
     }
 
     #[test]
+    fn file_of_binary_search_maps_every_files_nodes_to_the_right_file() {
+        // REGRESSION (perf + correctness): `FileScopeTable::file_of` maps a node id to its package file,
+        // consulted on EVERY file-scoped resolution (`file_scoped_def`/`_type`/`_variant_ctor`). It was a
+        // linear `files.iter().position(|f| f.contains(id))` → O(files) per lookup → O(N²) over a package
+        // of N files. Files are appended sequentially at link (each `struct_base = structure.len()` at its
+        // turn), so the ranges are ascending + non-overlapping and `file_of` is now a BINARY SEARCH
+        // (`partition_point` on `struct_base`, then confirm `contains`). This pins the binary search returns
+        // the SAME file the linear scan did for a node in EACH file (a broken search would misattribute a
+        // node to the wrong file → cross-file privacy / resolution breaks), and correctly returns `None` for
+        // a node in no file (the link-synthesized `(do …)` root, which sits outside every file's range).
+        let n = 40;
+        let files: Vec<(String, crate::ast::Arenas)> = (0..n)
+            .map(|i| {
+                (
+                    format!("f{i}"),
+                    parse(&format!("(do (def (g{i}) {i}) (export g{i}))")),
+                )
+            })
+            .collect();
+        let linked = crate::link::link(&files, "f0").expect("package links");
+        let db = crate::db::Db::load_linked(linked.arenas.clone(), Some(linked.linkage()));
+        // Each file's FIRST and LAST node id must map back to that file's own index — a broken binary
+        // search (wrong bound / off-by-one) would misattribute a boundary node to a neighbouring file.
+        for (fi, fs) in linked.files.iter().enumerate() {
+            let base = crate::ast::StructId(fs.struct_base);
+            let last = crate::ast::StructId(fs.struct_base + fs.struct_count - 1);
+            assert_eq!(
+                db.file_of(base),
+                Some(fi),
+                "file {fi}'s base node maps to {fi}"
+            );
+            assert_eq!(
+                db.file_of(last),
+                Some(fi),
+                "file {fi}'s last node maps to {fi}"
+            );
+        }
+    }
+
+    #[test]
     fn a_same_name_newtype_over_a_record_reads_a_field() {
         // The same-name spelling composes with record payloads: `(Point (record …))` constructs by the
         // type name and `.y` reads the inner field through the erased tag.

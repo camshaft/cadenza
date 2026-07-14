@@ -133,8 +133,22 @@ pub(crate) struct FileScopeTable {
 impl FileScopeTable {
     /// The file whose demux range contains `id`, or `None` for a node in no file (synthesized /
     /// β-copied / prelude / the `(do …)` root).
+    ///
+    /// BINARY SEARCH over the file ranges, not a linear `position`: files are appended sequentially at link
+    /// (each `struct_base = structure.len()` at its turn), so `self.files` is sorted by `struct_base` with
+    /// non-overlapping contiguous `[struct_base, struct_base+struct_count)` ranges. This is called on EVERY
+    /// file-scoped resolution (`file_scoped_def`/`_type`/`_variant_ctor`), so a linear scan made a package
+    /// of N files O(files) per lookup → O(N²) over the package's resolutions (N libraries each imported +
+    /// used: `file_of` was ~27% of a 800-file compile). Find the rightmost file whose `struct_base <= id`
+    /// (the only candidate range that can contain `id`), then confirm `contains` (an `id` in a gap — the
+    /// link-synthesized `(do …)` root, which sits outside every file's range — matches no file).
     fn file_of(&self, id: StructId) -> Option<usize> {
-        self.files.iter().position(|f| f.contains(id))
+        // `partition_point` gives the count of files with `struct_base <= id.0`; the last of those is the
+        // only range that can contain `id` (ranges are ascending + non-overlapping). Subtract one for its
+        // index; 0 means `id` precedes every file's base (no file).
+        let after = self.files.partition_point(|f| f.struct_base <= id.0);
+        let idx = after.checked_sub(1)?;
+        self.files[idx].contains(id).then_some(idx)
     }
 }
 
@@ -731,6 +745,15 @@ pub struct Db {
     /// N sum types (measured: 3200 sum types ≈ 590ms, `resolve_name`+`memcmp` ~50% self). O(1) lookup;
     /// first-wins matches the old scan. A pure accelerator over `type_decls`, never a source of truth.
     type_decl_index: crate::fxhash::FxHashMap<String, StructId>,
+
+    /// SAME-NAME-NEWTYPE name → its ctor occurrence — a load-time index for [`same_name_newtype_ctor`]
+    /// (`(type UserId (UserId Int64))`: name `UserId` → its single variant's ctor). That lookup was a
+    /// linear `type_decls.iter().find(|t| t.name == name && one-variant && variant.name == name)`, and the
+    /// linked-package resolve path (`resolve_name`'s file-scoped type/ctor head-position steps) probes it
+    /// per type-name reference → O(N²) for a package with N types (measured: N libraries each imported +
+    /// used, `resolve_name`+`memcmp` ~29% self at N=1600). O(1) lookup; first-declared wins, matching the
+    /// scan's first-hit. A pure accelerator over `type_decls`.
+    same_name_newtype_ctor_index: crate::fxhash::FxHashMap<String, StructId>,
 
     /// For each sum's DECLARATION OCCURRENCE, its index in [`type_decls`] — the O(1) reverse of the nominal
     /// identity a `Ty::Sum { decl }` carries, backing [`type_decl_by_occ`]. That was a linear
@@ -1506,6 +1529,10 @@ impl Db {
         // O(1) lookup, replacing an O(types) `find` per name resolution (O(N²) for N sum types).
         let mut type_decl_index: crate::fxhash::FxHashMap<String, StructId> =
             crate::fxhash::FxHashMap::default();
+        // Index each SAME-NAME NEWTYPE's name → its ctor occurrence (see the loop body) — O(1)
+        // `same_name_newtype_ctor`, replacing an O(types) `find` per type-name resolution.
+        let mut same_name_newtype_ctor_index: crate::fxhash::FxHashMap<String, StructId> =
+            crate::fxhash::FxHashMap::default();
         for decl in &type_decls {
             for v in &decl.variants {
                 // A variant's bare name resolves BEFORE the prelude (`resolve` step 3c precedes step 4), so
@@ -1529,6 +1556,20 @@ impl Db {
             }
             if let Some(synth) = decl.synth {
                 type_decl_index.entry(decl.name.clone()).or_insert(synth);
+            }
+            // A SAME-NAME NEWTYPE — a single-variant sum whose ONE variant shares the type's name
+            // (`(type UserId (UserId Int64))`) — indexed name → its ctor occurrence, for
+            // `same_name_newtype_ctor`'s O(1) lookup. That was a linear `type_decls.iter().find(name ==
+            // && one-variant && variant.name == name)` per type-name resolution → O(N²) in a package of N
+            // types (the file-scoped resolve path probes it per type-name reference). First-declared wins,
+            // matching `find`'s first-hit.
+            if decl.variants.len() == 1
+                && decl.variants[0].name == decl.name
+                && let Some(ctor) = decl.variants[0].ctor
+            {
+                same_name_newtype_ctor_index
+                    .entry(decl.name.clone())
+                    .or_insert(ctor);
             }
         }
         // Sum DECLARATION OCCURRENCE → its index in `type_decls` — `type_decl_by_occ`'s O(1) reverse (was
@@ -1613,6 +1654,7 @@ impl Db {
             def_name_index: def_by_name,
             variant_ctor_index,
             type_decl_index,
+            same_name_newtype_ctor_index,
             type_decl_by_occ_index,
             effect_decl_index,
             scope_binders,
@@ -2498,11 +2540,9 @@ impl Db {
     /// `list`/`tuple`), never by a name special-case. Cadenza's one namespace makes the two meanings
     /// collide otherwise (the type decl shadows the bare variant, so the ctor is unreachable by name).
     pub fn same_name_newtype_ctor(&self, name: &str) -> Option<StructId> {
-        let decl = self
-            .type_decls
-            .iter()
-            .find(|t| t.name == name && t.variants.len() == 1 && t.variants[0].name == name)?;
-        decl.variants[0].ctor
+        // O(1) via the load-time index (was a linear `type_decls.iter().find` → O(N²) when the linked
+        // resolve path probes it per type-name reference in an N-type package).
+        self.same_name_newtype_ctor_index.get(name).copied()
     }
 
     /// The `(index, TypeDecl)` of the sum whose DECLARATION OCCURRENCE is `occ` — the reverse of the
