@@ -995,6 +995,44 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
         collect_param_constraints(db, body, &env, def, &mut subst, &mut fresh);
     }
 
+    // CALL-SITE SEEDING: a parameter the BODY alone cannot ground — its type is decided only by HOW a
+    // caller invokes the def (`(def (lookup xs i k) (match (List.at xs i) ((Some (tuple key val)) …)))`
+    // never pins `xs`'s element from the body; `main`'s `(lookup (list (tuple 1 100) …) 0 2)` does). For
+    // each param still an open var after the body walk, find a NON-recursive call site of this def (a
+    // caller's application whose head resolves here) and unify its k-th argument's type into the param
+    // var. This is monomorphic call-site inference — the caller supplies the concrete type the body
+    // leaves generic. Only fires for a still-open param (a body-solved param is untouched), and only a
+    // DETERMINED argument type constrains (an `Any`/var arg adds nothing), so a well-solved def is
+    // byte-identical. Skips a self/recursive call (its args reference this def's own unsolved params —
+    // no new information) and is re-entry-guarded by `solving_params`.
+    if let Some(body) = db.defs[def].body {
+        // A param is "open" if its body-solved type is `Any` OR still CONTAINS a free var — a bare
+        // unsolved param (`Var`) OR a PARTIALLY-solved compound (`(List (Tuple Int64 ?10))`, where the
+        // body pinned the first tuple field but left the second). A call site's concrete argument fills
+        // the remaining holes by unification. (`has_free_var` catches the partial-compound case a bare
+        // `Var`/`Any` match would miss — the assoc-list `xs` whose value field stays open in the body.)
+        let still_open: Vec<usize> = param_binders
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, v))| {
+                let t = subst.apply(v);
+                matches!(t, Ty::Any) || t.has_free_var()
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if !still_open.is_empty() {
+            let arg_tys = call_site_arg_types(db, def, body);
+            for i in still_open {
+                if let Some(Some(at)) = arg_tys.get(i)
+                    && !matches!(at, Ty::Any | Ty::Var(_))
+                {
+                    let (_, pvar) = &param_binders[i];
+                    let _ = crate::unify::unify(&mut subst, pvar, at);
+                }
+            }
+        }
+    }
+
     // Ground each parameter: apply the substitution, then default a still-unsolved NUMERIC variable to
     // the signed-64 integer (a bare literal's default) and leave anything else `Any` (unconstrained).
     for (binder, var) in param_binders {
@@ -1005,6 +1043,60 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
     }
 
     db.solving_params.remove(&def);
+}
+
+/// The per-position ARGUMENT TYPES a NON-RECURSIVE caller of `def` supplies, for call-site inference of a
+/// parameter the body alone leaves open. Scans every def body (except `def`'s own — a self-call's args
+/// reference the very params being solved, so it adds nothing) for an application whose head resolves to
+/// `def`, and returns the k-th argument's `type_of` at the FIRST such call site. `own_body` is `def`'s
+/// body, skipped so a self-recursive call is never mistaken for an external seed. Returns a vector indexed
+/// by parameter position; an entry is `None` when no call site determines that position. A conservative,
+/// read-only scan — it never mutates `db.param_types` and only READS argument types the caller already
+/// has (a caller's own params were solved by its own pass, or are concrete literals/constructors).
+fn call_site_arg_types(db: &mut Db, def: usize, own_body: StructId) -> Vec<Option<Ty>> {
+    // Collect candidate call sites first (immutable scan), then type their args (mutable `type_of`).
+    let mut call_args: Vec<Vec<StructId>> = Vec::new();
+    let def_count = db.defs.len();
+    for other in 0..def_count {
+        let Some(other_body) = db.defs[other].body else {
+            continue;
+        };
+        if other_body == own_body {
+            continue; // this def's own body — a self-call carries no external type information
+        }
+        collect_calls_to(db, other_body, def, &mut call_args);
+    }
+    // The widest arg list seen determines the result arity; take the first call site that fixes each
+    // position (a determined `type_of`), so multiple call sites together can seed distinct positions.
+    let arity = call_args.iter().map(Vec::len).max().unwrap_or(0);
+    let mut out: Vec<Option<Ty>> = vec![None; arity];
+    for args in &call_args {
+        for (i, &arg) in args.iter().enumerate() {
+            if out[i].is_none() {
+                let t = type_of(db, arg);
+                if !matches!(t, Ty::Any | Ty::Var(_)) {
+                    out[i] = Some(t);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Walk `node` collecting the ARGUMENT lists of every application whose head resolves to def `target`
+/// (`callee_def_index_for_infer`). Recurses through all structural children so a call nested anywhere in
+/// the body is found. Read-only over the AST (append-only into `out`).
+fn collect_calls_to(db: &mut Db, node: StructId, target: usize, out: &mut Vec<Vec<StructId>>) {
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && callee_def_index_for_infer(db, head) == Some(target)
+    {
+        out.push(args.to_vec());
+    }
+    if let crate::ast::Struct::List(children) = db.ast.get(node) {
+        for c in children.clone() {
+            collect_calls_to(db, c, target, out);
+        }
+    }
 }
 
 /// Walk the resolved body and, for every application whose HEAD is a parameter in `env` (a fn-typed

@@ -591,6 +591,7 @@ pass	a recursive function folds a linked list of runtime-determined length
 pass	a recursive function folds a runtime linked list to a scalar
 pass	a recursive function in a nested module runs through the projection chain
 pass	a recursive function sums a range it walks by performing a fresh-index effect
+pass	a recursive function that installs a fresh handler on each call grows its context without bound
 pass	a recursive function that threads a tuple accumulator returns it
 pass	a recursive function threads two nested handlers' states at once
 pass	a recursive function with an annotated parameter walks and bails through an abortive handler
@@ -893,6 +894,7 @@ pass	an annotation that contradicts the value is rejected
 pass	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
 pass	an arithmetic operator with a single operand is rejected, not a crash
+pass	an association list is searched by key with a tuple-carrying Option match
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 pass	an effect discharged by a handler does not escape to the manifest
 pass	an effect operation reached with neither a handler nor a delegation is rejected
@@ -1515,7 +1517,6 @@ todo	a rational operation does not silently promote an integer operand
 todo	a rational with numerator and denominator both negative normalizes to positive
 todo	a rational's sign is normalized onto the numerator
 todo	a rational-magnitude quantity erases to its exact rational value
-todo	a recursive function that installs a fresh handler on each call grows its context without bound
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	a runtime string is indexed by scalar and the extracted scalar is returned
 todo	a transformation over the built-in Ast composes across a function call
@@ -1529,7 +1530,6 @@ todo	an IEC binary prefix scales a unit by a power of two
 todo	an SI decimal prefix scales a unit by a power of ten
 todo	an arbitrary-precision integer multiplication does not overflow
 todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
-todo	an association list is searched by key with a tuple-carrying Option match
 todo	an explicit annotation overrides the default-integer pragma
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result

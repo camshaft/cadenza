@@ -14276,6 +14276,48 @@ mod match_engine {
     }
 
     #[test]
+    fn a_recursive_def_infers_its_params_from_a_call_site() {
+        // CALL-SITE INFERENCE: a recursive def whose parameter types the BODY alone cannot ground — they
+        // are decided only by HOW a caller invokes it — is now seeded from a NON-recursive call site.
+        // `lookup`'s `xs` is `(List (Tuple Int64 Int64))` ONLY because `main` calls it with a list of int
+        // pairs; the body's `(match (List.at xs i) ((Some (tuple key val)) …))` leaves the tuple's fields
+        // open (`key` pinned by `(= key k)`, but `val` returned so open). Before, `lookup` DECLINED "a
+        // recursive function with an unannotated parameter is not yet inferred"; now `solve_recursive_params`
+        // fills the open param (and its remaining compound holes — `has_free_var`, not just a bare var)
+        // from `main`'s argument type. An association-list search finds key 2 → value 200.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (lookup xs i k) (match ((. List at) xs i) \
+                   ((Some (tuple key val)) (if (= key k) val (lookup xs (+ i 1) k))) \
+                   ((None _) -1))) \
+               (def (main) (lookup (list (tuple 1 100) (tuple 2 200)) 0 2)) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping call-site-inference run");
+            return;
+        };
+        assert_eq!(
+            v, "200",
+            "assoc-list search by key via call-site-inferred params"
+        );
+
+        // A SCALAR-payload consumer whose element type is ALSO only knowable from the call site: `find`'s
+        // `xs`/`k` are pinned only by `main`'s `(find (list 5 6 7) 0 6)`. Returns the index of 6 → 1.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (find xs i k) (match ((. List at) xs i) \
+                       ((Some v) (if (= v k) i (find xs (+ i 1) k))) ((None _) -1))) \
+                   (def (main) (find (list 5 6 7) 0 6)) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "scalar-payload search by call-site-inferred element type"
+        );
+    }
+
+    #[test]
     fn a_runtime_built_map_and_set_escape_via_value_encode() {
         // A RUNTIME `(Map Int64 Int64)` / `(Set Int64)` (insert-built, not constant-foldable) now crosses
         // the host boundary, where before they declined "needs a value-form walker". Both escape via the
@@ -26976,20 +27018,33 @@ mod stage1 {
     }
 
     #[test]
-    fn a_branching_recursive_function_declines_and_does_not_explode() {
+    fn a_branching_recursive_function_does_not_explode_at_compile() {
         // A recursive body with TWO self-calls (the shape a CBOR tree-reader takes) would explode
-        // exponentially in appended nodes if inlined; the static check declines it up front, so this
-        // returns immediately rather than hanging. Regression for the 10-bytes.sexp gate timeout.
+        // exponentially in appended nodes IF INLINED; the static recursion check prevents inlining and
+        // emits a real recursive CALL instead, so compilation returns immediately rather than hanging.
+        // Regression for the 10-bytes.sexp gate timeout. (Since call-site inference `@<this commit>`, the
+        // unannotated param `n` is seeded to Int64 from `main`'s `(rec 3)`, so this now COMPILES to a
+        // recursive call — a divergent-but-well-typed program that stack-overflows at RUN time, NOT a
+        // compile-time decline. The invariant this guards is the ABSENCE of exponential compile blowup:
+        // the artifact is small + built fast, whichever way inference resolves the param.)
         let src = "(module m \
             (def (rec n) (+ (rec n) (rec n))) \
             (def (main) (rec 3)) (export main))";
-        let msg = compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("branching recursion must decline")
-            .message;
-        assert!(
-            msg.contains("recursive") || msg.contains("runtime"),
-            "got: {msg}"
-        );
+        let out = compile_component(&crate::codec::encode(&parse(src)));
+        match out {
+            // Emitted: a real recursive call, NOT an exponentially-inlined body — a small artifact.
+            Ok(bytes) => assert!(
+                bytes.len() < 10_000,
+                "branching recursion must not inline-explode; got {} bytes",
+                bytes.len()
+            ),
+            // A decline is equally acceptable (the point is no hang / no blowup, not a specific outcome).
+            Err(d) => assert!(
+                d.message.contains("recursive") || d.message.contains("runtime"),
+                "got: {}",
+                d.message
+            ),
+        }
     }
 
     #[test]
