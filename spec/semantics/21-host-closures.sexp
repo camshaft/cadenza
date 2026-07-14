@@ -2342,6 +2342,38 @@
   (call   mk (: 3 Int64))
   (output (: 5 Int64)))
 
+; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
+; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
+; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner
+; lambda's expected type from a FUNCTION-VALUED head (a variable of function type), not only a lambda/def
+; head. So the inner param solves to `(Tuple …)` (an i32 heap handle), matching the explicit-annotation form.
+
+(case "round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param"
+  (doc    "`mk : () -> (-> (-> (Tuple Int64 Int64) Int64) Int64)` applies its function arg to `(tuple 3 4)`;
+           `app` hands `g` a guest-built `(fn (p) (+ (+ (. p 0) (. p 1)) x))` — the inner param `p` is
+           UNANNOTATED. Its type is recovered from `g`'s declared arrow `(-> (Tuple Int64 Int64) Int64)`.
+           `app(handle, 10)` → `g((fn p -> p.0+p.1+10))` applied to `(tuple 3 4)` = 3+4+10 = 17. Without the
+           context recovery the inner param solved `Any` and declined `a closure's parameter type has no
+           machine representation`; now it matches the explicit `(: p (Tuple Int64 Int64))` form.")
+  (input  (do (def (mk) (fn ((: f (-> (Tuple Int64 Int64) Int64))) (f (tuple 3 4))))
+              (def (app (: g (-> (-> (Tuple Int64 Int64) Int64) Int64)) (: x Int64))
+                (g (fn (p) (+ (+ (. p 0) (. p 1)) x))))
+              (export mk) (export app)))
+  (call   app (: 10 Int64))
+  (output (: 17 Int64)))
+
+(case "round-trip: an UNANNOTATED inner closure with a List param via the context arrow"
+  (doc    "The same context recovery for a variable-length collection param: `mk`'s closure applies its
+           function arg to `(list 1 2 3)`; `app` hands `g` a guest-built `(fn (xs) (+ ((. List len) xs) x))`
+           whose param `xs` is UNANNOTATED, recovered as `(List Int64)` from `g`'s arrow. `app(handle, 100)` →
+           `g((fn xs -> len(xs)+100))` applied to `(list 1 2 3)` = 3 + 100 = 103.")
+  (input  (do (def (mk) (fn ((: f (-> (List Int64) Int64))) (f (list 1 2 3))))
+              (def (app (: g (-> (-> (List Int64) Int64) Int64)) (: x Int64))
+                (g (fn (xs) (+ ((. List len) xs) x))))
+              (export mk) (export app)))
+  (call   app (: 100 Int64))
+  (output (: 103 Int64)))
+
 (case "a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure"
   (doc    "A single higher-order closure export called DIRECTLY by the host: the host would have to supply the
            `(-> Int64 Int64)` function argument OVER the boundary (itself a closure resource passed INTO a
