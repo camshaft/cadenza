@@ -11239,6 +11239,59 @@ mod recursion {
             .all(|d| d.severity != crate::abi::Severity::Error),
             "a recursive function is legitimate, not a value cycle"
         );
+        // NO false positive on a def that merely REFERENCES a self-cyclic value without being IN the cycle.
+        // `(def x x)` is self-cyclic; a `(def (main) x)` naming it must NOT ALSO be reported "`main` is
+        // defined in terms of itself" — `main` is not in its own cycle, it points into `x`'s. The cycle
+        // detector keyed a `seen`-set revisit of ANY node as a cycle, mis-attributing `x`'s downstream cycle
+        // to `main`; keying the closure on the START node fixes it. Exactly ONE CDZ0201 (naming `x`), and it
+        // is `x`, never `main`.
+        let referrer = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def x x) (def (main) x) (export main))",
+            )))
+        });
+        let cycle_defs: Vec<_> = referrer
+            .iter()
+            .filter(|d| {
+                d.code.as_deref() == Some("CDZ0201")
+                    && d.message.contains("defined in terms of itself")
+            })
+            .collect();
+        assert_eq!(
+            cycle_defs.len(),
+            1,
+            "only the actually-cyclic `x` is named, not the referrer `main`: {referrer:?}"
+        );
+        assert!(
+            cycle_defs[0].message.contains("`x`") && !cycle_defs[0].message.contains("`main`"),
+            "the cycle is attributed to `x`, not the referrer `main`: {}",
+            cycle_defs[0].message
+        );
+        // A CHAIN into a cycle that does not include the head — `(def (a) b) (def (b) b)` — reports the
+        // cycle at `b` (which IS self-cyclic) and does NOT report `a` as self-referential (`a` merely
+        // points into `b`'s cycle). Exactly one "defined in terms of itself", naming `b`.
+        let chain = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (a) b) (def (b) b) (export a))",
+            )))
+        });
+        let chain_cycles: Vec<_> = chain
+            .iter()
+            .filter(|d| {
+                d.code.as_deref() == Some("CDZ0201")
+                    && d.message.contains("defined in terms of itself")
+            })
+            .collect();
+        assert_eq!(
+            chain_cycles.len(),
+            1,
+            "only the self-cyclic `b` is named, not the referrer `a`: {chain:?}"
+        );
+        assert!(
+            chain_cycles[0].message.contains("`b`"),
+            "the chain's cycle is attributed to `b`: {}",
+            chain_cycles[0].message
+        );
     }
 
     #[test]
@@ -15652,6 +15705,40 @@ mod match_engine {
     }
 
     #[test]
+    fn a_match_on_a_function_value_is_rejected_not_an_internal_closure_decline() {
+        // `(match g …)` where `g` is a function has no matchable value — a match deconstructs a DATA value
+        // by its cases, and a function has none. It used to fall through to the scalar-probe path and hit
+        // the closure-boundary DECLINE ("a closure's parameter type has no machine representation"), an
+        // uncoded, internal-sounding message about a "parameter type" the author never asked about. Now it
+        // is a clean coded CDZ0203 naming the real cause. Covers a bare def name AND a partial application
+        // (both function values).
+        for src in [
+            "(module m (def (g x) x) (def (main) (match g (_ 1))) (export main))",
+            "(module m (def (g x y) x) (def (main) (match (g 1) (_ 5))) (export main))",
+        ] {
+            let d = reject_full(src)
+                .unwrap_or_else(|| panic!("a match on a function must reject: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message.contains("function value cannot be matched"),
+                "names the real cause, not the internal closure decline: {}",
+                d.message
+            );
+            assert!(
+                !d.message.contains("machine representation"),
+                "the internal closure-boundary decline is not surfaced: {}",
+                d.message
+            );
+        }
+        // NO false positive: matching a real VALUE (a nullary def bound to a scalar) still compiles.
+        assert!(
+            reject_full("(module m (def v 5) (def (main) (match v (5 10) (_ 0))) (export main))")
+                .is_none(),
+            "a match on a genuine value is valid"
+        );
+    }
+
+    #[test]
     fn constant_map_equality_folds_order_independently() {
         // 05-compound-types §Two Maps Are Equal When They Associate The Same Keys With Equal Values — a
         // CONSTANT map equality folds structurally, order-independent + by value. `const_compound_eq` gains
@@ -16881,6 +16968,44 @@ mod match_engine {
     }
 
     #[test]
+    fn a_guarded_pattern_with_a_surplus_element_offers_a_delete_fix() {
+        // A `(guard <pattern> <cond>)` is a fixed-arity form (want 2 tail elements). A SURPLUS third element
+        // `(guard x (> x 0) extra)` now routes through the same `fixed_arity_reject` the other fixed-arity
+        // forms use — a delete-the-surplus fix, bringing the guard to fix-parity with `if`/`and`/member.
+        // TOO FEW (`(guard x)`) keeps the message with no fix (nothing to delete).
+        let many = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: n Int64)) (match n ((guard x (> x 0) extra) 1) (_ 0))) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("a guarded pattern must be"))
+        .expect("a surplus guard element reports");
+        assert_eq!(
+            many.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            many.message
+        );
+        assert_eq!(
+            many.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "a surplus guard element carries a delete fix: {:?}",
+            many.fix
+        );
+        // TOO FEW — a lone `(guard x)` — has nothing to delete, so no fix.
+        let few = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: n Int64)) (match n ((guard x) 1) (_ 0))) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("a guarded pattern must be"))
+        .expect("a lone-pattern guard reports");
+        assert!(
+            few.fix.is_none(),
+            "a too-few guard has no surplus to delete: {:?}",
+            few.fix
+        );
+    }
+
+    #[test]
     fn an_if_missing_its_else_branch_offers_to_add_one() {
         // `(if b then)` — the reflex of a language where `if` without `else` is a statement — is a
         // wrong-arity `if` in Cadenza, where `if` is an EXPRESSION (both branches must produce a value).
@@ -16927,6 +17052,61 @@ mod match_engine {
             "a lone-cond if keeps the generic arity message, no fix: {} fix={:?}",
             lone.message,
             lone.fix
+        );
+    }
+
+    #[test]
+    fn a_let_or_fn_missing_its_body_offers_to_add_one() {
+        // `(let ((x 5)))` / `(fn (x))` — the bindings/params are present but the trailing BODY is missing.
+        // The message already named the shape; now it carries the actionable repair: append an
+        // `(trap "TODO")` body. `trap : ∀a. String → a` inhabits any type, so the completed form
+        // type-checks wherever it is used — the `let`/`fn` twin of the missing-`if`-else add-fix.
+        let cases = [
+            ("(module m (def (f) (let ((x 5)))) (export f))", "let"),
+            ("(module m (def (f) ((fn (x)) 5)) (export f))", "fn"),
+        ];
+        for (src, form) in cases {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("has no body"))
+                .unwrap_or_else(|| panic!("a {form} with no body reports"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{form}: {}", d.message);
+            let fix = d
+                .fix
+                .as_ref()
+                .unwrap_or_else(|| panic!("{form} no-body carries an add-body fix: {}", d.message));
+            assert_eq!(
+                fix.kind,
+                crate::abi::FixKind::InsertInto,
+                "{form}: {:?}",
+                fix
+            );
+            assert!(
+                fix.replacement.contains("(trap \"TODO\")"),
+                "{form} appends a placeholder body: {:?}",
+                fix.replacement
+            );
+        }
+        // The completed forms compile (the placeholder inhabits the body position's type).
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (def (f) (let ((x 5)) (trap \"TODO\"))) (export f))"
+            )))
+            .is_ok(),
+            "the let with an added body compiles"
+        );
+        // NO fix for the DEGENERATE `(let)` (no bindings AND no body) — appending only a body still leaves a
+        // malformed bindings-list, so it is not a one-shot add; keeps the message, no fix.
+        let empty = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f) (let)) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("no bindings and no body"))
+        .expect("an empty let reports");
+        assert!(
+            empty.fix.is_none(),
+            "a bindings-and-body-less let has no one-shot add: {:?}",
+            empty.fix
         );
     }
 
@@ -18013,6 +18193,33 @@ mod match_engine {
                 .is_some_and(|f| f.replacement.contains("Float64.of-int")),
             "a computed int second operand wraps in Float64.of-int: {:?}",
             computed.fix
+        );
+        // SYMMETRIC coverage: an int LITERAL FIRST operand against a NON-LITERAL float second (`(+ 5 y)`,
+        // `y : Float64`). Conforming the second operand yields no one-shot (a runtime float has no int
+        // spelling), so the fix falls back to conforming the FIRST operand — retype the literal `5` →
+        // `5.0`. Without the fallback this offered NO fix while the mirror `(+ y 5)` did (an order
+        // asymmetry for the identical slip).
+        let lit_first = reject_full(
+            "(module m (def (g (: y Float64)) (+ 5 y)) (def (main) (g 1.0)) (export main))",
+        )
+        .expect("reject");
+        assert_eq!(lit_first.code.as_deref(), Some("CDZ0301"));
+        assert_eq!(
+            lit_first.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("5.0"),
+            "an int literal FIRST against a non-literal float retypes the literal up: {}",
+            lit_first.message
+        );
+        // The mirror `(+ y 5)` retypes the same literal — both orders now offer the identical repair.
+        let lit_second = reject_full(
+            "(module m (def (g (: y Float64)) (+ y 5)) (def (main) (g 1.0)) (export main))",
+        )
+        .expect("reject");
+        assert_eq!(
+            lit_second.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("5.0"),
+            "the mirror order retypes the literal too: {}",
+            lit_second.message
         );
         // `%` is integer-only (no float form) — a `(% 5.0 2.0)` falls through to the scheme, which rejects
         // a float operand; still CDZ0301, but no float-arithmetic fold.
@@ -22673,6 +22880,101 @@ mod match_engine {
             Some("CDZ0210"),
             "no empty arm → length 0 is uncovered even when the first element saturates"
         );
+    }
+
+    #[test]
+    fn a_sum_variants_list_payload_split_across_empty_and_rest_arms_is_exhaustive() {
+        // A sum variant whose LIST PAYLOAD is refined by MULTIPLE arms that jointly cover every length —
+        // `(Bx (list)) [len 0] + (Bx (list x .. r)) [len ≥ 1]` — is TOTAL for the `Bx` variant without a
+        // `_`. The decision-tree twin of Inc-23's list-of-bools saturation: a `ListLen` lit-test is
+        // normally refutable (excluded from coverage), but the else of the `== 0` test is exactly "len ≥ 1"
+        // (`refine_listlen_else_rows`), which the second arm's `≥ 1` test covers → it becomes an
+        // unconditional leaf. Before, this was a spurious CDZ0210 (a valid total match rejected).
+        assert!(
+            reject_code(
+                "(module m (type Box (Bx (List Int64))) \
+                   (def (f (: b Box)) (match b ((Bx (list)) 0) ((Bx (list x .. _r)) x))) \
+                   (def (main) (f (Bx (list 7)))) (export main))"
+            )
+            .is_none(),
+            "an empty + non-empty list-payload split covers the variant without a wildcard"
+        );
+        // Reordered (non-empty THEN empty) is equally total; a lone zero-lead rest `(Bx (list .. r))`
+        // (vacuous length test — matches every length) covers the variant on its own.
+        for src in [
+            "(module m (type Box (Bx (List Int64))) \
+               (def (f (: b Box)) (match b ((Bx (list x .. _r)) x) ((Bx (list)) 0))) \
+               (def (main) (f (Bx (list 7)))) (export main))",
+            "(module m (type Box (Bx (List Int64))) \
+               (def (f (: b Box)) (match b ((Bx (list .. _r)) 0))) \
+               (def (main) (f (Bx (list 7)))) (export main))",
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "a reordered / vacuous list-payload cover is exhaustive: {src}"
+            );
+        }
+        // MULTI-VARIANT: the same split under one variant, alongside a sibling variant, is total.
+        assert!(
+            reject_code(
+                "(module m \
+                   (def (f (: o (Option (List Int64)))) \
+                     (match o ((Some (list)) 0) ((Some (list x .. _r)) x) ((None) -1))) \
+                   (def (main) (f (Some (list 7)))) (export main))"
+            )
+            .is_none(),
+            "a per-variant list-payload split composes with sibling variants"
+        );
+        // Runtime: the guard-drop preserves first-match-wins AND the moved length dispatch. mk(0) → (Bx [])
+        // → arm 0; mk(1) → (Bx [7]) → the non-empty arm binds x=7.
+        let run = |n: &str| -> String {
+            run_heap_value(
+                "(module m (type Box (Bx (List Int64))) \
+                   (def (mk (: n Int64)) (if (< n 1) (Bx (list)) (Bx (list 7)))) \
+                   (def (f (: b Box)) (match b ((Bx (list)) 0) ((Bx (list x .. _r)) x))) \
+                   (def (main (: n Int64)) (f (mk n))) (export main))",
+                vec![n.to_string()],
+            )
+            .unwrap_or_default()
+        };
+        if run("0").is_empty() {
+            eprintln!("runtime wasm not found; skipping list-payload-split run");
+            return;
+        }
+        assert_eq!(run("0"), "0", "(Bx []) matches the empty-list arm");
+        assert_eq!(
+            run("1"),
+            "7",
+            "(Bx [7]) matches the non-empty arm, binding x=7"
+        );
+    }
+
+    #[test]
+    fn a_sum_list_payload_with_an_uncovered_length_still_rejects() {
+        // Sound: the list-payload split relaxation covers a variant ONLY when its arms jointly span every
+        // length. A lone `(list x .. r)` leaves length 0 uncovered; an `(list) + (list a b .. r)` leaves
+        // length 1 uncovered (a gap between the exact-0 and the ≥2 rest); a missing sibling variant is
+        // uncovered — all stay CDZ0210.
+        for src in [
+            // only the non-empty arm — length 0 uncovered.
+            "(module m (type Box (Bx (List Int64))) \
+               (def (f (: b Box)) (match b ((Bx (list x .. _r)) x))) \
+               (def (main) (f (Bx (list 7)))) (export main))",
+            // exact-0 + at-least-2 — length 1 is a gap.
+            "(module m (type Box (Bx (List Int64))) \
+               (def (f (: b Box)) (match b ((Bx (list)) 0) ((Bx (list a b .. _r)) a))) \
+               (def (main) (f (Bx (list 7)))) (export main))",
+            // a covered Some payload but no None arm — the sibling variant is uncovered.
+            "(module m (def (f (: o (Option (List Int64)))) \
+               (match o ((Some (list)) 0) ((Some (list x .. _r)) x))) \
+               (def (main) (f (Some (list 7)))) (export main))",
+        ] {
+            assert_eq!(
+                reject_code(src).as_deref(),
+                Some("CDZ0210"),
+                "an uncovered length / variant still rejects: {src}"
+            );
+        }
     }
 
     #[test]
@@ -35207,6 +35509,58 @@ mod stage1 {
     }
 
     #[test]
+    fn a_lowercase_name_in_a_type_position_points_at_the_unannotated_generic_route() {
+        // A bare LOWERCASE name in a type-annotation position that resolves to nothing — `(: x a)`. An ML/
+        // Haskell user reads `a` as a TYPE VARIABLE (and it IS one in a VARIANT PAYLOAD `(type Box (B a))`),
+        // but an annotation has no `∀`-binder to scope a fresh variable, so `a` is genuinely unbound. The
+        // bare "unbound name `a`" is right but unhelpful; the message now points at the real route to
+        // polymorphism — an UNANNOTATED parameter. Still CDZ0101 (unbound), across all three annotation sites.
+        let unbound_hint = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0101"))
+                .unwrap_or_else(|| panic!("expected CDZ0101 for {src}"))
+                .message
+        };
+        for src in [
+            "(module m (def (id (: x a)) x) (def (main) (id 1)) (export main))",
+            "(module m (def (main) (: 5 a)) (export main))",
+            "(module m (def (main) (let (((: y a) 5)) y)) (export main))",
+        ] {
+            let m = unbound_hint(src);
+            assert!(
+                m.contains("unbound name `a`")
+                    && m.contains("not a type variable")
+                    && m.contains("UNANNOTATED"),
+                "the lowercase-type-var hint points at the unannotated-generic route: {m}"
+            );
+        }
+        // A lowercase name in a VARIANT PAYLOAD is still a genuine type variable — NOT this fault. And an
+        // UPPERCASE unbound type name (`Widget`) is a plain missing-type, keeping the bare message (it is
+        // not a would-be type variable).
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (type Box (B a)) (def (main) 1) (export main))"
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a lowercase name in a variant payload is a type variable, not an unbound-name fault"
+        );
+        let widget = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: x Widget)) x) (def (main) (f 1)) (export main))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0101"))
+        .expect("Widget is unbound");
+        assert!(
+            widget.message.contains("unbound name `Widget`")
+                && !widget.message.contains("not a type variable"),
+            "an uppercase missing type keeps the plain unbound message: {}",
+            widget.message
+        );
+    }
+
+    #[test]
     fn a_bare_type_constructor_in_type_position_names_the_missing_argument() {
         // A bare type-CONSTRUCTOR name used as a type with no argument — `(: xs List)`, `(: m Map)`, `(: q
         // Qty)` — is CDZ0203, but `List`/`Map`/`Qty` ARE types (constructors), so the generic "`List` is a
@@ -43040,6 +43394,68 @@ mod stage1 {
         assert_eq!(
             fix.replacement, "(B (trap \"TODO: B\")) (C (trap \"TODO: C\"))",
             "both covering arms"
+        );
+    }
+
+    #[test]
+    fn a_zero_arm_match_on_an_inhabited_sum_offers_the_full_add_arms_fix() {
+        // A ZERO-arm `(match c)` on an inhabited sum is the DEGENERATE non-exhaustive case: EVERY variant is
+        // uncovered. It named the situation but carried NO fix; now it routes through the same
+        // `non_exhaustive_sum_reject` a partially-covered match uses (empty `tested` set), so it gets the
+        // FULL "add the missing arms" fix — one arm per variant — not just a dead-end message.
+        use crate::testkit::parse;
+        let err = compile_component(&crate::codec::encode(&parse(
+            "(module m (type C (A) (B)) (def (f (: c C)) (match c)) (export f))",
+        )))
+        .expect_err("a zero-arm match on an inhabited sum must reject");
+        assert_eq!(err.code.as_deref(), Some("CDZ0210"), "got: {}", err.message);
+        assert!(
+            err.message.contains("`A`")
+                && err.message.contains("`B`")
+                && err.message.contains("not covered"),
+            "names ALL uncovered variants: {}",
+            err.message
+        );
+        let fix = err
+            .fix
+            .expect("a zero-arm match carries the full add-arms fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::InsertInto);
+        assert_eq!(
+            fix.replacement, "(A (trap \"TODO: A\")) (B (trap \"TODO: B\"))",
+            "one covering arm per variant"
+        );
+        // The added arms make the match exhaustive — the CDZ0210 non-exhaustiveness is cleared (the fix
+        // resolves its OWN fault, the one-shot rule). (A full wasm lowering of an all-nullary trap-bodied
+        // match is a separate concern; here we pin that the exhaustiveness error is gone.)
+        assert!(
+            !compile_component(&crate::codec::encode(&parse(
+                "(module m (type C (A) (B)) (def (f (: c C)) (match c (A (trap \"TODO: A\")) (B (trap \"TODO: B\")))) (export f))"
+            )))
+            .is_err_and(|d| d.code.as_deref() == Some("CDZ0210")),
+            "the zero-arm match with the added arms is no longer non-exhaustive"
+        );
+        // NO false change: a zero-arm match on the EMPTY sum (uninhabited) is vacuously exhaustive — it does
+        // NOT become a CDZ0210 non-exhaustiveness error (it may decline later at the host boundary for an
+        // unrelated reason, but the match itself is exhaustive).
+        assert_ne!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (type Void) (def (f (: v Void)) (match v)) (export f))"
+            )))
+            .err()
+            .and_then(|d| d.code),
+            Some("CDZ0210".to_string()),
+            "a zero-arm match on the empty sum is not flagged non-exhaustive"
+        );
+        // A zero-arm match on a SCALAR keeps the generic message (its cover is a wildcard, not named arms).
+        let scalar = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (f (: n Int64)) (match n)) (export f))",
+        )))
+        .expect_err("a zero-arm match on a scalar rejects");
+        assert!(
+            scalar.message.contains("zero-arm match is exhaustive only") && scalar.fix.is_none(),
+            "a scalar zero-arm match keeps the generic message, no arms fix: {} fix={:?}",
+            scalar.message,
+            scalar.fix
         );
     }
 
@@ -54650,6 +55066,7 @@ mod closure_host_resource {
                 ret_template: None,
                 ret_descriptor: None,
                 tuples: vec![],
+                sums: vec![],
             },
             SigGroup {
                 makes: vec![ClosureMake {
@@ -54664,6 +55081,7 @@ mod closure_host_resource {
                 ret_template: None,
                 ret_descriptor: None,
                 tuples: vec![],
+                sums: vec![],
             },
         ];
 

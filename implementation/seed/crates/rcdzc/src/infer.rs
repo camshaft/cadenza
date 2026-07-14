@@ -1061,6 +1061,34 @@ fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out:
     if malformed_type_head {
         return;
     }
+    // A bare LOWERCASE name in a type-annotation position that resolves to NOTHING — `(: x a)`. A user
+    // coming from ML/Haskell reads `a` as a TYPE VARIABLE (and it IS one in a VARIANT PAYLOAD `(type Box (B
+    // a))` / an effect-op type, where a lowercase name is a declared type parameter). But an annotation's
+    // type position is NOT a binding site for a fresh type variable — there is no `∀a.` to scope it — so `a`
+    // there is a genuinely unbound name. The bare "unbound name `a`" is technically right but unhelpful: it
+    // does not tell the ML user how to get the polymorphism they wanted. Cadenza's generics come from an
+    // UNANNOTATED parameter (`(def (id x) x)` is already `∀a. a → a`), so name that route. Only for a bare
+    // lowercase name that (a) is not a declared type (uppercase/prelude types took the branches above), and
+    // (b) resolves to no value — an uppercase unbound name, or one that is a real value, is a different
+    // fault and keeps its own message. Gives the CDZ0101 (still an unbound name) with the actionable hint.
+    if let Some(name) = db.ast.as_name(ty_expr).map(str::to_string)
+        && name.starts_with(|c: char| c.is_ascii_lowercase())
+        && matches!(resolved_of(db, ty_expr), Resolved::Poison(_))
+    {
+        out.push(
+            Reject::coded(
+                Code::Unbound,
+                format!(
+                    "unbound name `{name}` — a lowercase name in a type position is not a type \
+                     variable here ({lead} names an existing type). Cadenza has no `∀`-binder in an \
+                     annotation; write a GENERIC parameter by leaving it UNANNOTATED — `(def (f x) …)` \
+                     is already polymorphic in `x` — or annotate a concrete type"
+                ),
+            )
+            .at(ty_expr),
+        );
+        return;
+    }
     let before = out.len();
     collect(db, ty_expr, out);
     if out.len() == before {
@@ -6383,7 +6411,18 @@ fn check_application(
                     )
                 };
                 let mut reject = Reject::coded(Code::NumericMismatch, msg).at(app);
-                if let Some(fix) = numeric_text_coercion_fix(db, &expected, actual, fix_arg) {
+                // Prefer conforming the SECOND operand to the first (the first establishes the intended
+                // type). But when that operand has no clean one-shot — a NON-LITERAL float against an int
+                // context (`(+ 5 y)`, `y : Float64`: `numeric_text_coercion_fix(Int64, Float64, y)` is
+                // `None`, since a runtime float has no int spelling) — the SYMMETRIC repair often IS
+                // available: conform the FIRST operand to the second's type (retype the LITERAL `5` → `5.0`).
+                // Without this, `(+ 5 y)` offered NO fix while `(+ y 5)` did — an order asymmetry for the
+                // identical slip. Try the second-operand coercion first, then fall back to the first, so a
+                // literal-int-on-either-side/float-param mix always gets the retype. Deterministic (second
+                // preferred, then first); a fix on neither leaves the bare CDZ0301.
+                let fix = numeric_text_coercion_fix(db, &expected, actual, fix_arg)
+                    .or_else(|| numeric_text_coercion_fix(db, &b0, &a0, args[0]));
+                if let Some(fix) = fix {
                     reject = reject.with_fix(fix);
                 }
                 out.push(reject);

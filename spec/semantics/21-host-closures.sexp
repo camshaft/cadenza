@@ -4242,6 +4242,77 @@
   (call   twice (: 21 Int64))
   (output (: 42 Int64)))
 
+; DIRECT-CALL SUM ARG × DISTINCT-SIGNATURE: the Option/Result-arg path now composes with the DISTINCT-SIG shape
+; — closures of DIFFERENT signatures crossing as G distinct resource types, each with its own per-signature
+; `call-g<n>`. A group whose closure takes an `(Option/Result scalar)` mints its OWN `option<…>`/`result<…>`
+; boundary type (via the per-group `ArgSlot`) and rebuilds the sum cell in its `call-g<n>` — INDEPENDENTLY per
+; group, so distinct groups may mix Option and Result, different payload widths, or a sum group beside a
+; tuple/scalar group. This CLOSES the sum-arg feature across ALL FOUR export shapes (single/multi/mixed/
+; distinct-sig). Scope: scalar result (a list result over a sum arg is a later widening).
+
+(case "DISTINCT-SIG: an Option-arg closure + a Result-arg closure each cross the boundary"
+  (doc    "`mk-o : (-> (Option Int64) Int64)` and `mk-r : (-> (Result Int64 Int64) Int64)` — two DIFFERENT-sig
+           sum-arg closures crossing as TWO distinct resource types with their own `call-g0`/`call-g1`. Each
+           group mints its own boundary type (`option<s64>` for g0, `result<s64,s64>` for g1). Driving `mk-o`:
+           `call-g0(handle, Some(42))` → 42.")
+  (input  (do (def (mk-o) (fn ((: o (Option Int64))) (match o ((Some x) x) (None 0))))
+              (def (mk-r) (fn ((: r (Result Int64 Int64))) (match r ((Ok x) x) ((Err e) (- 0 e)))))
+              (export mk-o) (export mk-r)))
+  (call   mk-o (: (Some 42) (Option Int64)))
+  (output (: 42 Int64)))
+
+(case "DISTINCT-SIG: driving the Result-arg group (Err)"
+  (doc    "The SAME distinct-sig component, driving `mk-r` with `Err(3)`: `call-g1(handle, Err(3))` → `(- 0 e)`
+           = -3. Confirms the second resource type's `call-g1` rebuilds its own `result<s64,s64>` arg
+           independently of group 0's `option<…>`.")
+  (input  (do (def (mk-o) (fn ((: o (Option Int64))) (match o ((Some x) x) (None 0))))
+              (def (mk-r) (fn ((: r (Result Int64 Int64))) (match r ((Ok x) x) ((Err e) (- 0 e)))))
+              (export mk-o) (export mk-r)))
+  (call   mk-r (: (Err 3) (Result Int64 Int64)))
+  (output (: -3 Int64)))
+
+(case "DISTINCT-SIG: two Option-arg closures of DIFFERENT payload widths"
+  (doc    "Distinct groups may take different-width sum payloads: `mk-a : (-> (Option Int64) Int64)` mints
+           `option<s64>`, `mk-b : (-> (Option Int32) Int32)` mints `option<s32>`. Driving `mk-b`:
+           `call-g1(handle, Some(7))` → 7. Each group's `call-g<n>` flattens + rebuilds its own width.")
+  (input  (do (def (mk-a) (fn ((: o (Option Int64))) (match o ((Some x) x) (None 0))))
+              (def (mk-b) (fn ((: o (Option Int32))) (match o ((Some x) x) (None 0))))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: (Some 7) (Option Int32)))
+  (output (: 7 Int32)))
+
+(case "DISTINCT-SIG: an Option-arg group BESIDE a Tuple-arg group"
+  (doc    "A sum-arg group coexists with a tuple-arg group in one distinct-sig component: `mk-o : (-> (Option
+           Int64) Int64)` (mints `option<s64>`) and `mk-t : (-> (Tuple Int64 Int64) Int64)` (mints
+           `tuple<s64,s64>`). Driving `mk-t`: `call-g1(handle, (3,4))` → `p.0 + p.1` = 7. The two argument-cell
+           rebuild kinds (sum vs tuple) coexist across groups.")
+  (input  (do (def (mk-o) (fn ((: o (Option Int64))) (match o ((Some x) x) (None 0))))
+              (def (mk-t) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
+              (export mk-o) (export mk-t)))
+  (call   mk-t (: (tuple 3 4) (Tuple Int64 Int64)))
+  (output (: 7 Int64)))
+
+(case "DISTINCT-SIG: two capturing sum-arg closures of different signatures"
+  (doc    "Distinct-sig sum args compose with capture: `mk-o (: k Int64)` and `mk-r (: k Int32)` each close
+           over `k` AND take a sum arg of their own shape. `make-o(100)` → a handle over k=100;
+           `call-g0(handle, Some(5))` → `(+ x k)` = 105.")
+  (input  (do (def (mk-o (: k Int64)) (fn ((: o (Option Int64))) (match o ((Some x) (+ x k)) (None k))))
+              (def (mk-r (: k Int32)) (fn ((: r (Result Int32 Int32))) (match r ((Ok x) x) ((Err e) e))))
+              (export mk-o) (export mk-r)))
+  (call   mk-o (: 100 Int64) (: (Some 5) (Option Int64)))
+  (output (: 105 Int64)))
+
+(case "DISTINCT-SIG: sum-arg closures ALONGSIDE a plain export"
+  (doc    "Distinct-sig sum groups coexist with a PLAIN (non-closure) export: an Option-arg + a Result-arg
+           closure cross as two resource types WHILE `twice` rides alongside as a top-level func. Driving the
+           plain export: `twice(21)` → 42.")
+  (input  (do (def (mk-o) (fn ((: o (Option Int64))) (match o ((Some x) x) (None 0))))
+              (def (mk-r) (fn ((: r (Result Int64 Int64))) (match r ((Ok x) x) ((Err e) (- 0 e)))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk-o) (export mk-r) (export twice)))
+  (call   twice (: 21 Int64))
+  (output (: 42 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner

@@ -2735,11 +2735,39 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         }
         return match core_of(db, scrutinee) {
             c @ (Core::Trap | Core::Poison(_)) => c,
-            _ => Core::Poison(Reject::coded(
-                Code::NonExhaustive,
-                "a zero-arm match is exhaustive only on an uninhabited (Never) scrutinee; this scrutinee has values a case must cover",
-            )),
+            // An inhabited scrutinee with NO arms is the degenerate non-exhaustive case: EVERY variant is
+            // uncovered. When the scrutinee is a SUM or a nominal (its decl carries the variant set), reuse
+            // `non_exhaustive_sum_reject` with an empty `tested` set — so a zero-arm match gets the SAME
+            // "add the missing arms" fix a partially-covered one does (the full variant set as
+            // `(V (trap "TODO: V"))` arms), not just a dead-end message. A non-sum inhabited scrutinee (a
+            // bare scalar with zero arms) keeps the generic message — its cover is a wildcard, and a bare
+            // `(match n)` is a rarer malformation.
+            _ => match &scrut_ty {
+                crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => {
+                    Core::Poison(non_exhaustive_sum_reject(db, *decl, &[], scrutinee))
+                }
+                _ => Core::Poison(Reject::coded(
+                    Code::NonExhaustive,
+                    "a zero-arm match is exhaustive only on an uninhabited (Never) scrutinee; this scrutinee has values a case must cover",
+                )),
+            },
         };
+    }
+    // A FUNCTION-VALUED scrutinee — `(match g …)` where `g` is a closure/def — is not matchable: a match
+    // deconstructs a DATA value by its cases (`core-semantics.md §Patterns Compose` — literals, tuples,
+    // constructors), and a function is not data (it has no cases, no discriminant, no machine value to
+    // probe). Without this it fell through to the scalar-probe path, which tried to lower `g` as a runtime
+    // value and hit the closure-boundary DECLINE ("a closure's parameter type has no machine
+    // representation") — an internal-sounding, uncoded message about a "parameter type" the author never
+    // asked about. Reject it up front with the real cause, coded CDZ0203 (an ill-typed match: the scrutinee
+    // is not a matchable value), so the diagnostic names what is wrong.
+    if let crate::ty::Ty::Fn(_, _) = crate::infer::type_of(db, scrutinee) {
+        return Core::Poison(Reject::coded(
+            Code::TypeMismatch,
+            "a function value cannot be matched — `match` deconstructs a data value by its cases \
+             (a literal, a tuple, or a constructor), and a function has none; call it, or match on \
+             the value it returns",
+        ));
     }
     // A COMPOUND scrutinee — a SUM, a TUPLE, or a RECORD — is matched by the DECISION TREE, not the
     // scalar-probe path. A sum dispatches on the discriminant; a tuple has no discriminant, so its match
@@ -2804,15 +2832,16 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         let (inner_pat, guard) = match db.ast.as_form(pat, "guard") {
             // `(guard <inner-pat> <cond>)` — a guarded pattern.
             Some(g) if g.len() == 2 => (g[0], Some(g[1])),
-            Some(_) => {
-                // Anchor at the offending arm PATTERN, not the enclosing match.
-                return Core::Poison(
-                    Reject::coded(
-                        Code::Malformed,
-                        "a guarded pattern must be (guard <pattern> <cond>)",
-                    )
-                    .at(pat),
-                );
+            Some(g) => {
+                // A wrong-arity `(guard …)` — anchored at the offending arm PATTERN, with a delete fix on
+                // the FIRST surplus element when there are too many (the fixed-arity family's shared
+                // surplus-delete; too few has nothing to delete → message only).
+                return Core::Poison(crate::resolve::fixed_arity_reject(
+                    pat,
+                    g,
+                    2,
+                    "a guarded pattern must be (guard <pattern> <cond>)",
+                ));
             }
             None => (pat, None),
         };
@@ -4401,15 +4430,15 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
         // `<cond>` is the guard (a boolean the pattern's binders are in scope for, resolve Case 6lg / 5g).
         let (pat, guard) = match db.ast.as_form(pat, "guard") {
             Some(g) if g.len() == 2 => (g[0], Some(g[1])),
-            Some(_) => {
-                // Anchor at the offending arm PATTERN, not the enclosing match.
-                return Core::Poison(
-                    Reject::coded(
-                        Code::Malformed,
-                        "a guarded pattern must be (guard <pattern> <cond>)",
-                    )
-                    .at(pat),
-                );
+            Some(g) => {
+                // A wrong-arity `(guard …)` — a surplus element gets the shared delete fix; too few is
+                // message-only. Anchored at the offending arm PATTERN, not the enclosing match.
+                return Core::Poison(crate::resolve::fixed_arity_reject(
+                    pat,
+                    g,
+                    2,
+                    "a guarded pattern must be (guard <pattern> <cond>)",
+                ));
             }
             None => (pat, None),
         };
@@ -6088,11 +6117,13 @@ fn pattern_constraints(
     // `(guard (Some x) …)` still constrains `[]` to the `Some` disc + binds `x` at `[Payload]`.
     if let Some(g) = db.ast.as_form(pat, "guard") {
         if g.len() != 2 {
-            return Err(Reject::coded(
-                Code::Malformed,
+            // A surplus element gets the shared delete fix; too few is message-only. Anchored at `pat`.
+            return Err(crate::resolve::fixed_arity_reject(
+                pat,
+                g,
+                2,
                 "a guarded pattern must be (guard <pattern> <cond>)",
-            )
-            .at(pat));
+            ));
         }
         return pattern_constraints(db, g[0], ty, path, lit_tests);
     }
@@ -6877,6 +6908,23 @@ fn build_tree(
         // WITHOUT emitting the body — the constant-match half of corpus "nested patterns with literals".
         Some(row) if row.constraints.is_empty() && !row.lit_tests.is_empty() => {
             let (lit_path, probe) = row.lit_tests[0].clone();
+            // A VACUOUSLY-TRUE length test — `ListLen{0, at_least}` from a zero-leading rest `(list .. r)` —
+            // matches EVERY length, so it is not refutable at all: drop it and re-consider the row (it may
+            // now be an unconditional leaf, e.g. a lone `(Bx (list .. r))` covers the `Bx` payload fully).
+            // Without this, a `{0, at_least}` test threaded a needless LitTest whose else was an empty
+            // fall-through → a spurious CDZ0210. (Only `{0, at_least}` is vacuous; `{k>0, at_least}` and any
+            // exact test are genuinely refutable.)
+            if let crate::core::Probe::ListLen {
+                len: 0,
+                at_least: true,
+            } = probe
+            {
+                let mut relaxed = row.clone();
+                relaxed.lit_tests.remove(0);
+                let mut relaxed_rows = vec![relaxed];
+                relaxed_rows.extend_from_slice(&rows[1..]);
+                return build_tree(db, scrutinee, &relaxed_rows, path_types);
+            }
             // The row with this first literal test consumed (its other tests / guard / body remain).
             let mut matched_row = row.clone();
             matched_row.lit_tests.remove(0);
@@ -7199,11 +7247,21 @@ fn build_lit_test(
     // CDZ0210 (the top-level scalar-bool matcher already treats `true`+`false` as exhaustive; this brings the
     // NESTED/decision-tree path to parity). Only Bool gets this — an Int/Str lit-test is over an infinite
     // type (its else is genuinely open, needs a `_`).
-    let els = if let crate::core::Probe::Bool(b) = probe {
-        let refined = refine_bool_else_rows(db, else_rows, &lit_path, b);
-        build_tree(db, scrutinee, &refined, path_types)?
-    } else {
-        build_tree(db, scrutinee, else_rows, path_types)?
+    let els = match probe {
+        crate::core::Probe::Bool(b) => {
+            let refined = refine_bool_else_rows(db, else_rows, &lit_path, b);
+            build_tree(db, scrutinee, &refined, path_types)?
+        }
+        // A LIST-LENGTH test's else refines the remaining rows the SAME way (`refine_listlen_else_rows`):
+        // a following row whose `ListLen` test is guaranteed by the failed test's residual becomes an
+        // unconditional leaf — so `(list) + (list x .. r)` (nested in a payload) is exhaustive without a
+        // `_`, the decision-tree twin of Inc-23's list-of-bools saturation. Int/Str tests are over an
+        // infinite unstructured domain (no such finite/interval complement) — they still need a `_`.
+        crate::core::Probe::ListLen { len, at_least } => {
+            let refined = refine_listlen_else_rows(else_rows, &lit_path, len, at_least);
+            build_tree(db, scrutinee, &refined, path_types)?
+        }
+        _ => build_tree(db, scrutinee, else_rows, path_types)?,
     };
     Ok(crate::core::SumCont::LitTest {
         // The emitted node carries a plain `Vec<PathStep>`; convert the shared lit path once here.
@@ -7239,6 +7297,77 @@ fn refine_bool_else_rows(
                     continue 'rows; // tests `Bool(tested)` at this path — impossible in the `!tested` else
                 }
                 // tests `Bool(!tested)` — satisfied in this else; drop the test.
+                continue;
+            }
+            kept.push((p.clone(), probe.clone()));
+        }
+        out.push(MatchRow {
+            constraints: row.constraints.clone(),
+            lit_tests: kept,
+            body: row.body,
+            guard: row.guard,
+        });
+    }
+    out
+}
+
+/// Refine `else_rows` for the ELSE branch of a `ListLen{tested_len, tested_at_least}` test at `lit_path`
+/// that FAILED: in that branch the list at `lit_path` is known NOT to satisfy the tested length. Unlike a
+/// bool (a single complementary value), a list length ranges over ℕ, so the failed test leaves a RESIDUAL
+/// length set. For each else row's own `ListLen` test at `lit_path`, if the residual is entirely CONTAINED
+/// in that test's matched set, the test is guaranteed to hold → drop it (the row matches this path
+/// unconditionally). This is the `ListLen` analogue of `refine_bool_else_rows` — it makes a set of same-path
+/// list-length arms that jointly PARTITION ℕ exhaustive without a `_`: e.g. `(list)` [len == 0] followed by
+/// `(list x .. r)` [len ≥ 1] — the else of the `== 0` test is "len ≥ 1", exactly the second arm's matched
+/// set, so its length test drops and it becomes an unconditional leaf (the nested-payload / decision-tree
+/// twin of Inc-23's list-of-bools saturation). SOUND: fires ONLY when the residual is provably a SUBSET of
+/// the row's matched set, so a genuinely-uncovered length still reaches the empty fall-through → CDZ0210.
+///
+/// The RESIDUAL after failing `ListLen{tlen, t_at_least}` (an exact-test failure excludes one point; a
+/// rest-test failure leaves a finite prefix):
+///
+/// - exact test `{tlen, false}` failed → residual = all lengths EXCEPT `tlen`.
+/// - rest test `{tlen, true}` failed (len ≥ tlen was false) → residual = lengths `0..tlen` (a finite set).
+///
+/// A row test `{rlen, r_at_least}` MATCHES `{ len : r_at_least ? len ≥ rlen : len == rlen }`. The residual ⊆
+/// that matched set is decidable with small interval logic (below); when the residual is the finite prefix
+/// `0..tlen`, membership is a bounded check over that prefix.
+fn refine_listlen_else_rows(
+    else_rows: &[MatchRow],
+    lit_path: &[crate::core::PathStep],
+    tested_len: usize,
+    tested_at_least: bool,
+) -> Vec<MatchRow> {
+    // Does the residual after failing the tested probe lie entirely within the row test's matched set?
+    let row_test_covers_residual = |rlen: usize, r_at_least: bool| -> bool {
+        if tested_at_least {
+            // Residual = finite prefix { 0, 1, …, tested_len-1 } (len ≥ tested_len was ruled out).
+            // Every such n must satisfy the row test. A rest test `{rlen, true}` matches n ≥ rlen; an exact
+            // test `{rlen, false}` matches only n == rlen. The prefix is covered iff EVERY n in 0..tested_len
+            // is matched — a bounded check (tested_len is a source-written arity, small).
+            (0..tested_len).all(|n| if r_at_least { n >= rlen } else { n == rlen })
+        } else {
+            // Residual = all lengths EXCEPT the single point `tested_len` (an exact test failed) = ℕ \
+            // {tested_len}. An EXACT row test `{rlen, false}` matches ONE point — it can't contain an
+            // infinite residual → never. An AT-LEAST row test `{rlen, true}` matches { n : n ≥ rlen }; the
+            // points it MISSES are `{0, …, rlen-1}`. The residual ⊆ matched iff every missed point is NOT in
+            // the residual, i.e. `{0..rlen-1} ⊆ {tested_len}` (the sole excluded residual point). That holds
+            // iff the missed prefix is EMPTY (`rlen == 0`, matches all) OR is exactly that single point
+            // (`rlen == 1` AND `tested_len == 0`) — the canonical `(list) [==0]` else covered by
+            // `(list x .. r) [≥1]`. A wider missed prefix leaves a genuinely-uncovered length → decline.
+            r_at_least && (rlen == 0 || (rlen == 1 && tested_len == 0))
+        }
+    };
+    let mut out = Vec::with_capacity(else_rows.len());
+    for row in else_rows {
+        let mut kept: Vec<(std::rc::Rc<[crate::core::PathStep]>, crate::core::Probe)> =
+            Vec::with_capacity(row.lit_tests.len());
+        for (p, probe) in &row.lit_tests {
+            if p.as_ref() == lit_path
+                && let crate::core::Probe::ListLen { len, at_least } = probe
+                && row_test_covers_residual(*len, *at_least)
+            {
+                // The residual guarantees this length test holds → drop it (row unconditional at this path).
                 continue;
             }
             kept.push((p.clone(), probe.clone()));

@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 252 tests total across 27 modules):
+top. Current `src/` modules (each with same-file `@test`s — 277 tests total across 30 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -181,6 +181,32 @@ top. Current `src/` modules (each with same-file `@test`s — 252 tests total ac
   precedence (not just parsed), it EVALUATES the result: `1+2*3 == 7` (not 9), `(1+2)*3 == 9`,
   `10-3-2 == 5` (left-assoc), plus a structural `depth` observation. 11 `@test`s. Confirmed WORKING — the
   mutual tuple-cursor threading is correct; no new bug from the parser.
+- `src/codegen.cdz` — a STACK-MACHINE BACKEND, and the port's FIRST genuinely MULTI-FILE module in the
+  running suite: it `import { Tok, Expr, parse, run } from "parse"` (cross-file), lowers a parsed `Expr`
+  to a flat postfix `List Instr`, then EXECUTES it on an integer operand stack. Its correctness contract
+  is that the stack backend AGREES with `parse`'s tree-walking `run` for every expression (`exec(compile
+  e) == run(tokens)`), verified end-to-end through lex-free token lists. 10 `@test`s. Confirmed WORKING —
+  the cross-file link (importing a sum TYPE + its constructors + functions) is correct. 🔑 UNBLOCK: the
+  "prelude-collision forces same-file" constraint only bites a type SHADOWING a prelude name (`List`/
+  `Bool`); a custom type like `Expr` crosses files fine via `export { Expr.* }` (wildcard ctors) +
+  `import { Expr } from "…"`. This retires the port's long-standing single-file limitation for
+  non-colliding types.
+- `src/peephole.cdz` — a PEEPHOLE OPTIMIZER over the `Instr` stream (imported cross-file from `codegen`,
+  a TWO-HOP chain peephole → codegen → parse). It constant-folds a `Push a, Push b, BinOp o` triple to a
+  single `Push (a op b)` and ITERATES to a fixpoint, so a fully-constant program collapses to one
+  instruction. Stresses multi-element list-window matching + a fixpoint loop; correctness is checked
+  against `codegen.exec` (`exec(optimize p) == exec(p)` — optimizing never changes the value, and a
+  constant program optimizes to exactly ONE push). 7 `@test`s. Confirmed WORKING — the transitive
+  two-hop import + fixpoint iteration are correct. (Finding G below was surfaced while probing the
+  optimizer's List ops, not by the optimizer itself.)
+- `src/label.cdz` — a NODE-NUMBERING pass driven by a `Fresh` EFFECT (gensym): assign a unique id per
+  `Expr` node (imported cross-file from `parse`) via `Fresh.next()`, a `handle Fresh(0)` supplying 0,1,2,…
+  The canonical compiler use of an effect (SSA/tyvar/label ids without a hand-threaded counter). Threads
+  the effect in the SINGLE-RECURSIVE-SPINE shape the tail-resumptive fold handles correctly — counts nodes
+  PURELY first, then draws that many ids in one linear loop (the "flatten, then gensym" structure) — since
+  a self-recursive effectful fn with TWO sibling recursive calls in a match arm MISCOMPILES (findings
+  below). Checks the drawn count == `count-nodes` and the id sum == the Gauss closed form N*(N-1)/2. 8
+  `@test`s. Confirmed WORKING (in the single-spine shape).
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -283,6 +309,48 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   a modified collection while still needing the original (a diff, "with one more binding", a before/after)
   — including `src/interp.cdz`'s withheld `interp-shadow-restores`.
 
+- **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value, iter 37): `List.concat` corrupts its still-live
+  LHS where `List.push` does NOT — a DISTINCT face of the still-live-binding family.**
+  `repros/miscompile-concat-consumes-still-live-lhs-then-element-read.sexp`.
+  `let xs = [5,7] in (List.len (List.concat xs [9])) + (e xs 0)` (where `e xs i = List.at xs i or -1`)
+  returns **3**, not 8 — after `concat` consumes `xs`, the later `List.at xs 0` reads as if `xs` is EMPTY.
+  🔑 DISCRIMINATOR: the IDENTICAL shape with `List.push` instead of `List.concat` computes CORRECTLY (8) —
+  so `push` (`vec-push`) dup-guards its still-live list operand but `concat` (`vec-concat`) does not. SHARP
+  (each necessary): the op is `List.concat`; `xs` is a still-live `let` binding (a param is safe); the
+  survivor is an ELEMENT read via `List.at` reached AFTER the concat (reading `xs`'s LENGTH after is
+  correct; reading `xs[0]` BEFORE the concat is correct — ORDER-SENSITIVE); a SECOND `concat xs …` is also
+  correct (the LHS handle is not freed — its element ARRAY reads empty), so it is an rc/dup-timing bug on
+  the element array, not a use-after-free. Root: the `Core::ListConcat` emit (backend/wasm/select.rs) omits
+  the `dup` of a `LocalRef`/`Param` LHS still read later — same missing-dup defect as the push/insert
+  length face (which `push` was patched for, `concat` not). Repro + its push-twin isolate the exact op.
+
+- **OPEN (seed `rcdzc` — EFFECT MISCOMPILE, silent wrong value, iter 38): a self-recursive effectful fn
+  with TWO sibling recursive calls in a match arm does not thread the handler state between the siblings.**
+  `repros/miscompile-effect-state-not-threaded-across-sibling-recursive-calls.cdz`. `walk (Node Leaf Leaf)`
+  under `handle Fresh(0) | next(s) => resume(s, s+1)` (arm: `let a = walk(l) in let b = walk(r) in a + b`)
+  should draw id 0 then id 1 → 1; it RETURNS **0** (both leaves draw id 0 — the second sibling call resumes
+  from the INITIAL state, not the state the first left). SHARP (each necessary): TWO sibling recursive
+  calls in one arm (a SINGLE recursive call threads correctly); a STATE-THREADING handler (a
+  constant-handback `resume(1, s)` counts the draws CORRECTLY — 2 — so the draws happen, only the state
+  threading is lost); a self-call inside a `match` arm (two calls to a SEPARATE effectful fn thread fine,
+  and a single self-recursive draw loop threads fine — `fresh.cdz`). The tell: the BARE `walk(l) + walk(r)`
+  arm DECLINES honestly ("not yet reducible by the tail-resumptive fold") but the let-sequenced form
+  MISCOMPILES — the fold accepts a shape it cannot correctly thread. Root: the tail-resumptive
+  specialization in `effects.rs` (same area as the iter-15/17 mutual-split-branch decline + `#eff3$s0`
+  mangled-name leak, but here a SELF-recursive fn, silent). WORKAROUND: keep the effect on a SINGLE
+  recursive spine ("flatten pure, then gensym") — `src/label.cdz` does this.
+
+- **OPEN (seed `rcdzc` — EFFECT DECLINE, not a miscompile, iter 38): performing an effect op directly as
+  an ELEMENT of a tuple/list/record constructor is not yet reducible by the tail-resumptive fold.**
+  `repros/decline-effect-perform-inside-a-compound-constructor.cdz`. `let p = (Fresh.next(), Fresh.next())`
+  → "this handler is not yet reducible by the tail-resumptive fold" (no recursion needed; a single perform
+  element declines too). CONTRAST — a perform WORKS in an arith operand (`Fresh.next() + Fresh.next()`), a
+  call arg (`twice(Fresh.next())`), a sum-ctor payload (`W.Mk(Fresh.next())`), and let-bound before a tail
+  self-call. WORKAROUND: prefetch each perform into a `let`, then build the tuple/list/record from the
+  bound vars (`let a = Fresh.next() in let b = Fresh.next() in (a, b)` works). Fix locus: extend the
+  reducible set in `effects.rs` to a perform in a `Tuple`/`ListNew`/`Record` element (hoist like the
+  arith/call/sum cases it already handles). Honest decline (`cdz check` clean, `cdz compile` declines).
+
 - **OPEN (seed `rcdzc` — ML SURFACE GAP, iter 34): a tuple TYPE written `(A, B)` is rejected — must be
   `Tuple(A, B)`.** `repros/reject-ml-tuple-type-paren-comma-spelling.cdz`. `def f(p: (Int64, Int64)) =
   p.0` → CDZ0203 "a parameter's annotation requires a type, but found a non-type": the ML reader lowers a
@@ -302,6 +370,17 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   newtype over `Record(…)`: `type R = R(Record(a(Int64)))`. Low-severity; parser-consistency + a confusing
   diagnostic. (Companion of the tuple-type gap above — both are paren-comma-vs-annotation surface
   mismatches in type position.)
+
+- **OPEN (seed `rcdzc` — DIAGNOSTIC QUALITY, iter 36; diagnostics-`/loop` territory): a lowercase type-var
+  annotation `def id(x: a) = x` gives a bare "unbound name `a`", identical to an unknown uppercase type
+  `Foo`.** Cadenza infers generics from UNANNOTATED params (`def id(x) = x` — HM solves the tyvar; there
+  is no surface `forall`/tyvar-binder, by design — resolve.rs "`a` is an ordinary parameter, not a
+  special type variable"). A programmer from Rust/ML/Haskell reasonably expects a lowercase `a` in a type
+  annotation to be a type variable. Ideal diagnostic: recognize a lowercase (esp. single-letter) type
+  annotation and hint "generics are inferred — drop the annotation" rather than a generic CDZ0101. Not a
+  miscompile — a message-actionability gap. (No repro: it is a message-quality issue, and the diagnostics
+  `/loop` owns this class.) 🔑 the WORKING generic spelling: omit the annotation — `def id(x) = x`,
+  `def swap(p) = (p.1, p.0)` both compile + monomorphize correctly.
 
 - **OPEN (seed `rcdzc` — RESOLVER, both surfaces; RE-DIAGNOSED iter 25): a NULLARY variant DOTTED pattern
   (`Ty.TInt`) in a NESTED match resolves as member ACCESS.**

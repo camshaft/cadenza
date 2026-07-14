@@ -9,18 +9,24 @@ pass	DISTINCT-SIG among-scalars: two scalar-then-Tuple closures of DIFFERENT sig
 pass	DISTINCT-SIG: a nested-Tuple-arg closure with a LIST result
 pass	DISTINCT-SIG: a scalar-then-NESTED-tuple closure with a LIST result
 pass	DISTINCT-SIG: a two-Tuple-arg group with a LIST result
+pass	DISTINCT-SIG: an Option-arg closure + a Result-arg closure each cross the boundary
+pass	DISTINCT-SIG: an Option-arg group BESIDE a Tuple-arg group
 pass	DISTINCT-SIG: capturing two-Tuple-arg closures of different signatures
 pass	DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair
 pass	DISTINCT-SIG: driving the Bool-returning Tuple-arg closure of the distinct-sig pair
 pass	DISTINCT-SIG: driving the Int32 two-Tuple-arg group
 pass	DISTINCT-SIG: driving the Int64/Bool-inner nested-Tuple-arg closure (Bool leaf at depth)
 pass	DISTINCT-SIG: driving the Int64/Bool-inner scalar-then-NESTED closure (Bool leaf at depth)
+pass	DISTINCT-SIG: driving the Result-arg group (Err)
 pass	DISTINCT-SIG: one group takes TWO tuples, the other ONE tuple
+pass	DISTINCT-SIG: sum-arg closures ALONGSIDE a plain export
 pass	DISTINCT-SIG: two DIFFERENT-sig scalar-then-NESTED-tuple closures — driving the Int64-inner group
 pass	DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List
 pass	DISTINCT-SIG: two DIFFERENT-signature nested-Tuple-arg closures each cross the direct-call boundary
 pass	DISTINCT-SIG: two DIFFERENT-signature two-Tuple-arg closures each cross the boundary
+pass	DISTINCT-SIG: two Option-arg closures of DIFFERENT payload widths
 pass	DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the direct-call boundary
+pass	DISTINCT-SIG: two capturing sum-arg closures of different signatures
 pass	DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a plain export
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
 pass	Int64.min crosses the parameter boundary and back unchanged
@@ -214,6 +220,7 @@ pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
 pass	a THREE-argument closure round-trips — flat arrow spelling
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
+pass	a THREE-parameter op arm binds all three parameters and the state
 pass	a TRIPLY-nested Record ARG crosses the direct-call boundary
 pass	a TUPLE-returning operation resumes a pair built from the handler state, then projected
 pass	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)
@@ -238,6 +245,7 @@ pass	a bare conditional keyword is rejected, not a crash
 pass	a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare literal exceeding the default-integer pragma's narrow type is rejected
+pass	a bare literal that overflows the annotated width does not fit it
 pass	a bare nullary constructor is the nullary sum value
 pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare user constructor is passed as a first-class function to a higher-order function
@@ -702,6 +710,8 @@ pass	a list-arm constructor element over a runtime-built list
 pass	a list-arm map element whose key is absent falls through
 pass	a list-carrying recursion whose base arm does a fallible indexed read compiles
 pass	a list-concatenating helper threads lists through a call
+pass	a list-payload split missing the empty arm is non-exhaustive
+pass	a list-payload split missing the non-empty arm is non-exhaustive
 pass	a literal in a let binder is refutable and rejected
 pass	a literal inside a NESTED constructor pattern refines the match
 pass	a literal inside a constructor pattern matches a runtime payload
@@ -756,6 +766,7 @@ pass	a map with values of two different types is a type error
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
 pass	a match arm mixes a payload LITERAL, a wildcard, and a nested-Option pattern
+pass	a match arm reading two elements of a boxed payload tuple shares the sum-payload prefix
 pass	a match arm's DESTRUCTURED payload is the argument to a perform in that arm's body
 pass	a match binder over a narrow scrutinee returns the bound value
 pass	a match not covering the scrutinee is a compile-time rejection
@@ -966,6 +977,7 @@ pass	a performed operation composes as a RECORD field value that is then project
 pass	a performed operation composes under a projection and a negation
 pass	a performed operation is the scrutinee of a match that dispatches on its result
 pass	a performed operation whose result is a sum is matched on its variant
+pass	a performed sum carrying a TUPLE payload is matched and the arm reads MULTIPLE payload elements
 pass	a performing argument to a multiply-using performing callee is not duplicated
 pass	a performing match SCRUTINEE threads its state into a performing arm body
 pass	a performing match-arm guard folds with WILDCARD patterns (no binder to let-bind)
@@ -1310,6 +1322,8 @@ pass	a string literal
 pass	a string literal is normalized to the canonical text form
 pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
+pass	a suffixed BigInt literal annotated as Int64 is a type mismatch
+pass	a suffixed Rational literal annotated as Int64 is a type mismatch
 pass	a sum TYPE and its constructors are imported by a wildcard and constructed in the entry
 pass	a sum chosen by a runtime if is matched with valid wasm
 pass	a sum declaring a variant name twice is a type error
@@ -1324,6 +1338,7 @@ pass	a sum variant carrying a Float64 payload boxes it and escapes it as a float
 pass	a sum variant carrying a Map payload is deconstructed and the map queried
 pass	a sum variant carrying a NARROW-int payload boxes and reads it at its width
 pass	a sum variant carrying a String payload matches and reads the string
+pass	a sum variant's list payload split across empty and rest arms is exhaustive and dispatches
 pass	a sum whose variants are named after target-language keywords constructs and matches
 pass	a sum with FOUR type parameters instantiates and matches each at a distinct type
 pass	a sum-match recursion that accumulates a built-in list returns a list
@@ -1560,6 +1575,7 @@ pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an erased newtype over a sum reads the inner payload, not the whole wrapper
 pass	an erased single-variant newtype wrapping a sum matches through the inner variants
+pass	an erased-newtype's list payload split across empty and rest arms dispatches with vec-get
 pass	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
 pass	an escaping closure captures two values and takes three arguments
 pass	an escaping closure whose body binds a multi-variable let
@@ -1927,6 +1943,8 @@ pass	matching a runtime Bytes.at Option binds the byte in the Some arm
 pass	matching a runtime Bytes.at Option takes the None arm past the end
 pass	matching against zero probes the normalized narrow value, not the raw wide slot
 pass	matching falls through to else when no literal matches
+pass	matching on a function value is a type error
+pass	matching on a partial application is a type error
 pass	matching on a sliced string selects the literal arm
 pass	matching on a string produced by an expression
 pass	matching on integer literals
@@ -2184,6 +2202,7 @@ pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
 pass	the difference of a set with itself is empty
 pass	the else-branch of an if threads a performed state to the continuation
+pass	the empty and None arms of a list-payload split dispatch to their own values
 pass	the empty byte sequence has length zero
 pass	the empty reader literal is the empty symbol
 pass	the empty set is equal to the empty set

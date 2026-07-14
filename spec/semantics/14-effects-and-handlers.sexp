@@ -1232,6 +1232,22 @@
                 (+ (Acc.add2 1 2) (Acc.add2 10 20)))) (export main)))
   (output (: 234 Int64)))
 
+(case "a THREE-parameter op arm binds all three parameters and the state"
+  (doc    "The arity extension of the two-parameter case: an operation with THREE scalar parameters whose
+           arm binds all three plus the state. `Acc.add3 : Int64 -> Int64 -> Int64 -> Int64`, arm `(add3 (a
+           b c) s (resume (+ (+ (+ a b) c) s) (+ s 1)))` — sums its three args plus the current state,
+           threading `s + 1`. Seeded 1000: `(Acc.add3 1 2 3)` = `1 + 2 + 3 + 1000` = 1006 (state → 1001),
+           then `(Acc.add3 10 20 30)` = `10 + 20 + 30 + 1001` = 1061 (state → 1002), so `(+ 1006 1061)` =
+           2067. Pins that arm-parameter binding scales past two — all three op parameters AND the state
+           binder resolve in the arm body, and the state still threads between successive performs on the
+           spine.")
+  (input  (do
+            (effect Acc (op add3 (-> Int64 Int64 Int64 Int64)))
+            (def (main)
+              (handle Acc 1000 ((add3 (a b c) s (resume (+ (+ (+ a b) c) s) (+ s 1))))
+                (+ (Acc.add3 1 2 3) (Acc.add3 10 20 30)))) (export main)))
+  (output (: 2067 Int64)))
+
 (case "a perform's result flowing as the ARGUMENT of an enclosing perform threads state inner-to-outer"
   (doc    "The data dependency runs THROUGH the argument position rather than through a let: the inner
            perform's result is the very argument the outer perform consumes — `(Acc.step (Acc.step 1))`.
@@ -2688,6 +2704,27 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
+
+(case "a performed sum carrying a TUPLE payload is matched and the arm reads MULTIPLE payload elements"
+  (doc    "The effect × sum-with-compound-payload intersection, and a soundness pin against the backend's
+           per-arm-body CSE (which shares the sum-payload prefix when an arm reads more than one payload
+           element). The performed op returns `(Option (Tuple Int64 Int64))`, the handler resumes a `(Some
+           (k, k+1))`, and the matching arm reads BOTH tuple elements. `Look.find : Int64 -> (Option (Tuple
+           Int64 Int64))`, arm `(find (k) s (resume (Some (tuple k (+ k 1))) s))`; `(Look.find 5)` resumes
+           `(Some (5, 6))`, so the `(Some p)` arm computes `(+ (. p 0) (. p 1))` = `5 + 6` = 11. Pins that a
+           sum carrying a TUPLE payload flows through an effect op's result and the arm's two payload
+           projections (`.0`, `.1`) — which the per-arm-body CSE folds to a shared payload load — stay sound
+           over the effect-produced value, because the fold discharges the perform to a concrete resumed
+           value before the optimizer runs. Both backends → 11. The compound-payload companion of the
+           scalar-payload sum-resume case above.")
+  (input  (do
+            (effect Look (op find (-> Int64 (Option (Tuple Int64 Int64)))))
+            (def (main)
+              (handle Look 0 ((find (k) s (resume (Some (tuple k (+ k 1))) s)))
+                (match (Look.find 5)
+                  ((Some p) (+ (. p 0) (. p 1)))
+                  (None 0)))) (export main)))
+  (output (: 11 Int64)))
 
 (case "an effect operation taking a SUM parameter matches it in the handler arm"
   (doc    "The mirror of the sum-RESULT case: `Exec.run` is typed `(-> Cmd Int64)` where `Cmd` is a user

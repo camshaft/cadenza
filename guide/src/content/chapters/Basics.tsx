@@ -18,6 +18,19 @@ export default function Basics() {
       <P>
         <C>x</C> is <C>10</C> for the body <C>(+ x 5)</C>, so this is <C>15</C>.
       </P>
+      <P>
+        Shadowing is just a second binding of the same name. The inner <C>x</C> is computed{" "}
+        <em>from</em> the outer one — the right-hand side still sees the old value — and only then takes
+        over for the rest of the body:
+      </P>
+      <Runnable source={`(let ((x 10))
+  (let ((x (* x 2)))
+    (+ x 1)))`} />
+      <P>
+        The inner binding's <C>(* x 2)</C> reads the outer <C>x = 10</C> to get <C>20</C>; the body then
+        sees that inner <C>x</C>, so <C>(+ x 1)</C> is <C>21</C>. Nothing was mutated — the outer <C>x</C>{" "}
+        is untouched, just out of view.
+      </P>
 
       <H2>Functions are values</H2>
       <P>
@@ -100,19 +113,22 @@ export default function Basics() {
         id="basics:2"
         prompt={
           <>
-            <C>apply-twice</C> runs a function on a value twice. Pass it a function that <em>doubles</em>{" "}
-            its input, applied to <C>3</C> — doubling twice gives <C>12</C>.
+            <C>make-scaler</C> returns a function that multiplies by whatever <C>factor</C> it captured.
+            Fill the hole so <C>triple</C> is a scaler that captures <C>3</C> — then <C>(triple 5)</C> is{" "}
+            <C>15</C>.
           </>
         }
-        starter={`(let ((apply-twice (fn (f v) (f (f v)))))
-  (apply-twice (fn (x) ?) 3))`}
-        solution={`(let ((apply-twice (fn (f v) (f (f v)))))
-  (apply-twice (fn (x) (* x 2)) 3))`}
-        expected="12"
+        starter={`(let ((make-scaler (fn (factor) (fn (x) (* x factor)))))
+  (let ((triple (make-scaler ?)))
+    (triple 5)))`}
+        solution={`(let ((make-scaler (fn (factor) (fn (x) (* x factor)))))
+  (let ((triple (make-scaler 3)))
+    (triple 5)))`}
+        expected="15"
         hint={
           <>
-            The hole is the body of the function you're handing in — it should double its argument:{" "}
-            <C>(* x 2)</C>. Then <C>3 → 6 → 12</C>.
+            The hole is the <C>factor</C> that <C>triple</C> should capture. You want it to triple, so
+            pass <C>3</C>; the returned function then remembers it, and <C>(triple 5)</C> is <C>5 × 3</C>.
           </>
         }
       />

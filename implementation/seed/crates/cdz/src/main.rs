@@ -1575,21 +1575,21 @@ fn run_uses(args: &UsesArgs) -> ExitCode {
 /// declines the fix rather than corrupting.
 fn apply_fix_to_source(
     source: &str,
-    arenas: &cadenza_syntax::Arenas,
+    old: &cadenza_syntax::query::Tree,
     spans: &cadenza_syntax::spans::SpanTable,
     kind: &str,
     target: cadenza_syntax::StructId,
     repl: &str,
     surface: cadenza_syntax::convert::Format,
 ) -> Option<String> {
-    let (old, new) = fix_old_new(arenas, kind, target, repl)?;
+    let new = fix_new(old, kind, target, repl)?;
     let span_of = |t: &cadenza_syntax::query::Tree| -> Option<(usize, usize)> {
         t.origin()
             .and_then(|id| spans.get(id))
             .map(|s| (s.start, s.end))
     };
     let edited =
-        cadenza_syntax::query::textedit::rewrite_preserving(source, &old, &new, &span_of, surface);
+        cadenza_syntax::query::textedit::rewrite_preserving(source, old, &new, &span_of, surface);
     Some(edited.output)
 }
 
@@ -1601,21 +1601,21 @@ fn apply_fix_to_source(
 /// the fix cannot be built (unparseable payload, node not found).
 fn fix_edits(
     source: &str,
-    arenas: &cadenza_syntax::Arenas,
+    old: &cadenza_syntax::query::Tree,
     spans: &cadenza_syntax::spans::SpanTable,
     kind: &str,
     target: cadenza_syntax::StructId,
     repl: &str,
     surface: cadenza_syntax::convert::Format,
 ) -> Option<Vec<cadenza_syntax::query::textedit::Edit>> {
-    let (old, new) = fix_old_new(arenas, kind, target, repl)?;
+    let new = fix_new(old, kind, target, repl)?;
     let span_of = |t: &cadenza_syntax::query::Tree| -> Option<(usize, usize)> {
         t.origin()
             .and_then(|id| spans.get(id))
             .map(|s| (s.start, s.end))
     };
     Some(cadenza_syntax::query::textedit::edits_preserving(
-        source, &old, &new, &span_of, surface,
+        source, old, &new, &span_of, surface,
     ))
 }
 
@@ -1623,20 +1623,19 @@ fn fix_edits(
 /// [`fix_edits`]. `old` is the parsed program; `new` is it with the target node transformed per kind (a
 /// PURE tree op — no text, no `…` sentinel, no paren-finding). `None` if the payload doesn't parse or the
 /// target isn't found.
-fn fix_old_new(
-    arenas: &cadenza_syntax::Arenas,
+fn fix_new(
+    old: &cadenza_syntax::query::Tree,
     kind: &str,
     target: cadenza_syntax::StructId,
     repl: &str,
-) -> Option<(cadenza_syntax::query::Tree, cadenza_syntax::query::Tree)> {
+) -> Option<cadenza_syntax::query::Tree> {
     use cadenza_syntax::query::Tree;
-    let old = Tree::of(arenas);
     let new = if kind == "delete" {
         // Delete removes the node from its parent's child list — a structural op the node-transform
         // closure can't express (it returns a replacement node, not "no node"), so its own builder.
-        delete_target(&old, target)?
+        delete_target(old, target)?
     } else {
-        transform_target(&old, target, &mut |node: &Tree| -> Option<Tree> {
+        transform_target(old, target, &mut |node: &Tree| -> Option<Tree> {
             match kind {
                 // Replace the node with the parsed payload subtree.
                 "replace" => parse_fragment(repl),
@@ -1661,7 +1660,7 @@ fn fix_old_new(
             }
         })?
     };
-    Some((old, new))
+    Some(new)
 }
 
 /// Parse a fix-payload s-expression fragment (`(Some …)`, `(B unit)`, `compute`) into an owned [`Tree`],
@@ -1720,6 +1719,17 @@ fn substitute_hole(
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only: total sibling `Tree` clones `transform_target` performs since the last reset. On a HIT it
+    /// clones the target's siblings (the other children of each rebuilt-spine node) ONCE; a MISS clones
+    /// NOTHING. The old code deep-cloned every child of every visited node into an `out` it then discarded
+    /// on a miss → O(subtree) wasted clones per level → O(depth²) per fix. This counter locks the clone
+    /// work to O(siblings-along-the-spine), independent of the untouched subtrees' size. See
+    /// `transform_target_does_not_clone_untouched_subtrees`.
+    pub(crate) static TRANSFORM_SIBLING_CLONES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// Rebuild `tree`, applying `f` to the node whose origin is `target` (replacing it with `f`'s result).
 /// `None` if the target is not found or `f` declines. Recurses structurally, preserving provenance on the
 /// untouched nodes so the rewriter edits only the one changed subtree.
@@ -1735,17 +1745,28 @@ fn transform_target(
     match tree {
         Tree::Atom(..) => None,
         Tree::List(items, origin) => {
-            let mut hit = false;
-            let mut out = Vec::with_capacity(items.len());
-            for child in items {
-                if !hit && let Some(new_child) = transform_target(child, target, f) {
-                    out.push(new_child);
-                    hit = true;
-                } else {
-                    out.push(child.clone());
-                }
-            }
-            hit.then_some(Tree::List(out, *origin))
+            // Find the ONE child that yields a transform, then rebuild the list with the OTHER children
+            // cloned. Critically, do NOT build the output (cloning every child) until a hit is confirmed:
+            // the old code `out.push(child.clone())`-ed every child as it went and only THEN checked `hit`,
+            // so a subtree NOT containing `target` still deep-cloned all its children into an `out` that was
+            // then discarded (returned `None`) — and the recursion did that at every level, so a fix whose
+            // target sits beside a deep sibling cloned that sibling's whole subtree per level → O(depth²)
+            // per fix, O(N·depth²)=O(N³) over N per-diagnostic fixes (a 200-deep-tuple match with 200 unused
+            // binders: 897ms; 400: 7.3s). Now a miss returns `None` with ZERO cloning, and a hit clones only
+            // the siblings ONCE.
+            let hit = items
+                .iter()
+                .enumerate()
+                .find_map(|(i, child)| transform_target(child, target, f).map(|nc| (i, nc)));
+            hit.map(|(i, new_child)| {
+                #[cfg(test)]
+                TRANSFORM_SIBLING_CLONES.with(|c| c.set(c.get() + (items.len() - 1) as u64));
+                let mut out = Vec::with_capacity(items.len());
+                out.extend(items[..i].iter().cloned());
+                out.push(new_child);
+                out.extend(items[i + 1..].iter().cloned());
+                Tree::List(out, *origin)
+            })
         }
     }
 }
@@ -2023,6 +2044,21 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             .map(|(fi, _)| is_ml_source(&files[fi].path))
             .unwrap_or(false)
     };
+    // The parsed `Tree` (`Tree::of`) of each file, built ONCE and shared across every fix that targets it.
+    // Every fix rebuilds `new = old.transform(target)` from the SAME `old` = the file's whole tree; building
+    // `old` per fix (`Tree::of` deep-copies the whole arena) made a file with N fixable diagnostics
+    // O(N × tree) = O(N²). Cache it lazily per file (`Rc`, so the borrow is cheap to hand out) — the tree
+    // materializes at most once per file regardless of how many fixes reference it.
+    let tree_cache: std::cell::RefCell<Vec<Option<std::rc::Rc<cadenza_syntax::query::Tree>>>> =
+        std::cell::RefCell::new(vec![None; files.len()]);
+    let file_tree = |fi: usize| -> std::rc::Rc<cadenza_syntax::query::Tree> {
+        if let Some(t) = &tree_cache.borrow()[fi] {
+            return t.clone();
+        }
+        let t = std::rc::Rc::new(cadenza_syntax::query::Tree::of(&files[fi].arenas));
+        tree_cache.borrow_mut()[fi] = Some(t.clone());
+        t
+    };
     let do_fix_edits = |kind: &str,
                         fix_node: &str,
                         repl: &str|
@@ -2030,7 +2066,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         let (fi, local) = file_of_node(fix_node)?;
         fix_edits(
             &files[fi].source,
-            &files[fi].arenas,
+            &file_tree(fi),
             &files[fi].spans,
             kind,
             cadenza_syntax::StructId(local),
@@ -2042,7 +2078,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         let (fi, local) = file_of_node(fix_node)?;
         apply_fix_to_source(
             &files[fi].source,
-            &files[fi].arenas,
+            &file_tree(fi),
             &files[fi].spans,
             kind,
             cadenza_syntax::StructId(local),
@@ -2307,10 +2343,12 @@ fn run_fix(args: &FixArgs) -> ExitCode {
             let Some(target) = fix_node.parse::<u32>().ok().map(cadenza_syntax::StructId) else {
                 continue;
             };
-            // Build the edited text structurally.
+            // Build the edited text structurally. This apply loop re-parses `current` each iteration (the
+            // tree CHANGES as fixes accumulate), so build its `Tree` here — no cross-fix caching applies.
+            let current_tree = cadenza_syntax::query::Tree::of(&current_arenas);
             let Some(edited) = apply_fix_to_source(
                 &current,
-                &current_arenas,
+                &current_tree,
                 &spans,
                 fix_kind,
                 target,
@@ -3528,6 +3566,73 @@ fn build_relational_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transform_target_does_not_clone_untouched_subtrees() {
+        // REGRESSION (perf): `transform_target` (used by `cdz check`/`fix` to rebuild the parsed tree with
+        // one node replaced — run PER fixable diagnostic) `out.push(child.clone())`-ed EVERY child of every
+        // visited list before checking whether that list even contained the target, discarding the `out` on
+        // a miss. So computing a fix beside a deep sibling deep-cloned that sibling's whole subtree at each
+        // level → O(depth²) per fix; a file with N fixable warnings → O(N³) (a 400-deep-tuple match with
+        // 400 unused binders: 7.3s). FIX: find the ONE hit child first (a miss clones nothing), then clone
+        // only the SIBLINGS of the hit path.
+        //
+        // Lock it in via `TRANSFORM_SIBLING_CLONES`: transforming a target that sits at the SHALLOW end of a
+        // spine, beside a DEEP untouched subtree, must clone O(spine-siblings) nodes — NOT the deep subtree.
+        // Build `(root (deep …) target)`: a deeply-nested left child + a shallow `target` sibling at the
+        // root. The transform touches `target`; the deep child is an untouched sibling cloned exactly ONCE
+        // (one node handle — a `Tree` clone is a deep copy, but we count sibling-clone OPERATIONS along the
+        // spine, which must stay constant regardless of the deep child's DEPTH).
+        use cadenza_syntax::query::Tree;
+        use cadenza_syntax::{StructId, ast::Leaf};
+        // A left child nested `depth` deep; the target is a shallow atom sibling at the root (origin 1).
+        fn deep(depth: usize, next_id: &mut u32) -> Tree {
+            let id = *next_id;
+            *next_id += 1;
+            if depth == 0 {
+                Tree::Atom(Leaf::Name("leaf".to_string()), Some(StructId(id)))
+            } else {
+                Tree::List(vec![deep(depth - 1, next_id)], Some(StructId(id)))
+            }
+        }
+        let build = |depth: usize| -> (Tree, StructId) {
+            let mut next = 100u32;
+            let child = deep(depth, &mut next);
+            let target = StructId(1);
+            let tree = Tree::List(
+                vec![
+                    child,
+                    Tree::Atom(Leaf::Name("target".to_string()), Some(target)),
+                ],
+                Some(StructId(0)),
+            );
+            (tree, target)
+        };
+        fn clones_for(tree: &Tree, target: StructId) -> u64 {
+            TRANSFORM_SIBLING_CLONES.with(|c| c.set(0));
+            let mut f = |_n: &Tree| -> Option<Tree> {
+                Some(Tree::Atom(Leaf::Name("_t".to_string()), None))
+            };
+            let out = transform_target(tree, target, &mut f);
+            assert!(out.is_some(), "the target must be found and transformed");
+            TRANSFORM_SIBLING_CLONES.with(|c| c.get())
+        }
+        // The deep sibling grows 8× (depth 50 → 400); the sibling-clone COUNT must stay CONSTANT (the root
+        // has one sibling to clone regardless of its depth). A per-level clone-all would grow ~with depth.
+        let (t50, tgt50) = build(50);
+        let (t400, tgt400) = build(400);
+        let c50 = clones_for(&t50, tgt50);
+        let c400 = clones_for(&t400, tgt400);
+        assert_eq!(
+            c50, c400,
+            "transform_target must clone only the hit path's SIBLINGS ({c50}), not the untouched deep \
+             subtree — a miss clones nothing (the O(depth²)-per-fix regression: {c400} at depth 400)"
+        );
+        assert!(
+            c400 <= 4,
+            "one shallow sibling at the root → a tiny constant clone count, got {c400}"
+        );
+    }
 
     #[test]
     fn parse_where_accepts_eq_and_neq() {

@@ -4400,6 +4400,10 @@ pub struct SigGroup {
     /// a group is the FULL flattened field valtypes of every arg. `&[]` = scalar args (byte-identical); a
     /// single rebuild reproduces the one-tuple body byte-for-byte; ≥2 is the N-compound-args case.
     pub tuples: Vec<TupleArgRebuild>,
+    /// ZERO OR MORE fixed-shape SUM args (Option/Result) this group's closure takes — the `call-<g>` rebuilds
+    /// each sum cell (branch on the flattened disc → `sum-new`) before `call_indirect`, then drops each. `&[]`
+    /// = no sum arg (byte-identical). This increment wires the SOLE-sum-arg per group.
+    pub sums: Vec<SumArgRebuild>,
 }
 
 /// The DISTINCT-SIGNATURE multi-export core module: closures of G DIFFERENT signatures cross as G resource
@@ -4978,7 +4982,8 @@ pub fn distinct_sig_resource_core_module(
             // just the closure-cell local.
             let cell_local = 1 + arity;
             let tuple_local = cell_local + 1;
-            let n_locals = 1 + gr.tuples.len() as u32; // the closure cell + one i32 per rebuilt tuple cell
+            let sum_local = tuple_local + gr.tuples.len() as u32;
+            let n_locals = 1 + gr.tuples.len() as u32 + gr.sums.len() as u32; // cell + one i32 per tuple/sum
             inner.extend_from_slice(&wasm_vec(1, &{
                 let mut gl = uleb_bytes(n_locals as u64);
                 gl.push(wasm_abi::CORE_I32);
@@ -4993,10 +4998,18 @@ pub fn distinct_sig_resource_core_module(
             }
             inner.push(op::LOCAL_SET);
             uleb128(cell_local as u64, &mut inner);
-            // push env (the cell) then the closure's args (prefix scalars, rebuilt tuples, suffix scalars).
+            // push env (the cell) then the closure's args (rebuilt tuples/sums among the scalars).
             inner.push(op::LOCAL_GET);
             uleb128(cell_local as u64, &mut inner);
-            emit_closure_call_args(&gr.tuples, tuple_local, arity, &imp, &mut inner);
+            emit_closure_call_args_with_sums(
+                &gr.tuples,
+                tuple_local,
+                &gr.sums,
+                sum_local,
+                arity,
+                &imp,
+                &mut inner,
+            );
             inner.push(op::LOCAL_GET);
             uleb128(cell_local as u64, &mut inner);
             inner.push(op::I32_CONST);
@@ -5021,11 +5034,17 @@ pub fn distinct_sig_resource_core_module(
                 inner.push(op::CALL);
                 uleb128(imp("drop"), &mut inner);
             }
-            // Each rebuilt tuple-arg cell is an owned per-call temporary — drop it UNCONDITIONALLY after
-            // dispatch (both own + borrow), balancing its `arr-alloc`.
+            // Each rebuilt tuple-arg/sum-arg cell is an owned per-call temporary — drop it UNCONDITIONALLY
+            // after dispatch (both own + borrow), balancing its `arr-alloc`/`sum-new`.
             for ti in 0..gr.tuples.len() as u32 {
                 inner.push(op::LOCAL_GET);
                 uleb128((tuple_local + ti) as u64, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner);
+            }
+            for si in 0..gr.sums.len() as u32 {
+                inner.push(op::LOCAL_GET);
+                uleb128((sum_local + si) as u64, &mut inner);
                 inner.push(op::CALL);
                 uleb128(imp("drop"), &mut inner);
             }
