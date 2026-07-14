@@ -109,7 +109,7 @@ fn cmd_triage_artifacts(args: &[String]) -> ExitCode {
     match cdz_smith::triage::triage_artifacts(&crashes_dir, &store, &commit) {
         Ok(stats) => {
             eprintln!(
-                "[cdz-smith] triaged {} artifact(s): {} new bucket(s), {} dup hit(s), {} not-reproduced → {}",
+                "[cdz-smith] triaged {} artifact(s): {} new bucket(s), {} dup hit(s), {} phantom (did not reproduce — fork-mode noise, discarded) → {}",
                 stats.artifacts_seen,
                 stats.new_buckets,
                 stats.duplicate_hits,

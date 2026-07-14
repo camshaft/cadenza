@@ -7854,6 +7854,14 @@ fn bigint_operand(db: &mut Db, args: &[StructId]) -> bool {
 /// the unbounded arithmetic runs at RUN TIME via the runtime `Big` limb library (B3a). A poison operand
 /// propagates. `div` traps on a zero divisor at run time (numeric-model — an unbounded range gives `n/0`
 /// no value); the never-trapping add/sub/mul grow the magnitude as needed.
+///
+/// `BigInt` represents every integer with no bound, so this arithmetic never overflows, and the runtime
+/// `bigint-*` limb ops grow the representation as the result requires rather than wrapping or trapping on
+/// magnitude (only `n/0` — no value — traps).
+//= spec/capabilities/numeric-model.md#an-arbitrary-precision-integer-has-unbounded-range
+//# An arbitrary-precision integer type MUST represent every integer with no maximum or minimum bound, so that an arithmetic operation on it never overflows.
+//= spec/capabilities/numeric-model.md#an-arbitrary-precision-integer-has-unbounded-range
+//# An arithmetic operation on arbitrary-precision integers MUST NOT trap for the magnitude of its result, growing its representation as the result requires rather than wrapping or trapping.
 fn lower_bigint_arith(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, lhs) {
         return Core::Poison(r);

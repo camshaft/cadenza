@@ -163,6 +163,14 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/Floats.tsx")),
   },
   {
+    slug: "rationals",
+    title: "Exact fractions",
+    blurb: "Rationals: exact ratios, always in lowest terms — where floats round, these don't.",
+    section: "Fundamentals",
+    exercises: 2,
+    Component: lazy(() => import("./chapters/Rationals.tsx")),
+  },
+  {
     slug: "effects",
     title: "Effects & handlers",
     blurb: "Perform an operation; a handler decides what it means.",

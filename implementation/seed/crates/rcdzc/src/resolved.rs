@@ -216,6 +216,12 @@ pub enum Prim {
     /// its `Core::ConstStr`. A runtime source declines until the runtime limb ops (B3). The reverse
     /// (`Int64.of`/`(UInt N).of` from a `BigInt`, checked/trapping) is the existing `CheckedOf` extended to
     /// a `BigInt` source, not a new prim.
+    ///
+    /// `BigInt` is a DISTINCT numeric type (`Ty::BigInt`): a fixed-width integer never silently becomes a
+    /// `BigInt` (nor the reverse) — the widening `BigInt.of` here and the checked narrowing `Int64.of` are
+    /// the only crossings, each written explicitly (a `BigInt`/fixed-width mix is CDZ0301, no promotion).
+    //= spec/capabilities/numeric-model.md#an-arbitrary-precision-integer-is-a-distinct-type-opted-into-explicitly
+    //# An arbitrary-precision integer MUST be a distinct numeric type, so that it does not silently convert to or from a fixed-width integer without an explicit conversion.
     BigIntOf,
     /// The ground `Rational` type-value — held in the `Rational` module record's `(meta t)`, so bare
     /// `Rational` in type position reduces to `Ty::Rational` (a NULLARY type, like `BigInt`; the

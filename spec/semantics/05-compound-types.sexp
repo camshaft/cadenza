@@ -627,6 +627,24 @@
   (call   f (: 5 Int64))
   (output (: 1 Int64)))
 
+(case "runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree"
+  (doc    "The deepest equality combination: a GENERIC + RECURSIVE sum `(type T (Leaf a) (Node (Tuple T T)))`
+           compared at `T Int64`. `mk k` builds `Node(Leaf k, Leaf 2)`; `(= (mk k) (mk 5))` compares two
+           heap trees element by element. On wasm this is a recursive value-heap equality walk; on the Rust
+           backend the enum `T<T0> { Leaf(T0), Node(Box<(T<T0>, T<T0>)>) }` derives `PartialEq, Eq` — the
+           `Box`ed recursive field is `Eq` when `T<T0>` is, and the `T0: Eq` bound is auto-added, so `=`
+           emits a native `a == b` that recurses structurally. Both backends must AGREE: `f(5)` → the trees
+           are equal → 1, `f(9)` → unequal at the `Leaf` payload → 0. Pins that structural equality composes
+           with the generic + recursive + Box + derive-bound interaction, the hardest sum-equality shape.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type T (Leaf a) (Node (Tuple T T)))
+            (def (mk (: k Int64)) (T.Node (tuple (T.Leaf k) (T.Leaf 2))))
+            (def (f (: k Int64)) (if (= (mk k) (mk 5)) 1 0))
+            (export f)))
+  (call   f (: 5 Int64))
+  (output (: 1 Int64)))
+
 ; --- Record equality is by field-name SET, so it is independent of the order fields are written ---
 ; core-semantics.md #A Record Has A Fixed Set Of Named Fields (a record's fields are a SET) together
 ; with deterministic-value-form.md #Ordering Of Aggregate Members Is Fixed ("The canonical encoding of

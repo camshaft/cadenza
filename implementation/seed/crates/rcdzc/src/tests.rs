@@ -23349,6 +23349,67 @@ mod stage1 {
     }
 
     #[test]
+    fn a_malformed_do_block_surfaces_in_the_diagnostics_query_on_any_body() {
+        // An EMPTY `(do)` (no value form) and a `do` ending in a DECLARATION (`(do (def x 5))`, valueless)
+        // are coded CDZ0201 well-formedness faults. They were reached only by the emit-path lowering walk
+        // (nullary-EXPORTED bodies alone), so a malformed `(do)` as a PARAMETERIZED (or non-exported) def
+        // body silently PASSED `cdz check` while `compile` rejected it — the `do`-form analogue of the
+        // pattern-fault/binop-arity `check`≡`compile` gaps. `collect_node`'s `do` arm now surfaces the
+        // do form's own coded poison, so the fault appears in `diagnostics()` (what `check` runs) whether
+        // the def takes parameters or not.
+        let empty_param = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (g (: n Int64)) (do)) (export g))",
+        )));
+        let e = empty_param
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0201"))
+            .expect("an empty `(do)` in a parameterized body is caught by check");
+        assert!(
+            e.message.contains("empty `do` block has no value"),
+            "names the empty-do fault: {}",
+            e.message
+        );
+
+        // A trailing declaration is caught too.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (g) (do (def x 5))) (export g))",
+            )))
+            .iter()
+            .any(|d| d
+                .message
+                .contains("must end in a value form, not a declaration")),
+            "a `do` ending in a declaration is caught"
+        );
+
+        // Reported EXACTLY ONCE when the malformed `do` is also reached via a call (no infer/emit double).
+        let called = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (mk) (do)) (def (main) (+ 1 (mk))) (export main))",
+        )));
+        assert_eq!(
+            called
+                .iter()
+                .filter(|d| d.message.contains("empty `do` block has no value"))
+                .count(),
+            1,
+            "the malformed do reports once, not a double: {called:?}"
+        );
+
+        // NO false positive: a well-formed `do` (value forms, or a def followed by a value) is clean.
+        for ok in [
+            "(module m (def (g) (do 1 2)) (export g))",
+            "(module m (def (g) (do (def x 5) x)) (export g))",
+        ] {
+            assert!(
+                crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .all(|d| !d.message.contains("`do` block")),
+                "a well-formed do produces no do-block fault: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn a_do_local_declaration_binds_the_following_forms() {
         // 02-binding-and-control §A Declaration In A Sequencing Block Is Scoped To The Forms That Follow
         // It: a `(def …)` form of a `do` binds its name for the LATER forms — a VALUE declaration
@@ -23506,6 +23567,41 @@ mod stage1 {
         )))
         .expect("a recursive generic at one type twice dedups to one instantiation");
         assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
+    }
+
+    #[test]
+    fn a_recursive_generic_threading_another_generic_is_transitively_generic() {
+        // 09-functions "a recursive generic function threading another generic is itself generic at two
+        // types": `wrap` threads its generic `y` into a SECOND generic recursive `idr`, so `wrap`'s
+        // result is `idr`'s result is `y`'s type — genericity propagates through the call graph.
+        // `call_site_distinct_arg_types` follows a Var-typed arg that is another def's param
+        // (`arg_is_other_def_param`) to inherit that param's type spread, so `idr` is detected generic
+        // despite a single call site; and `apply_scheme_to_args` seeds the instantiation counter past the
+        // arg vars (skipping the freshen) so `wrap`'s result var stays CONNECTED to its param var — a
+        // three-level chain then keeps `(-> Int64 (-> ?a ?a))` rather than decoupling to `(-> Int64 (-> ?a
+        // ?b))` ("looped function result has no machine rep"). Called at Bool then Int64 → four
+        // specializations. `(wrap 1 true)` = true → `(wrap 2 40)` = 40.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (def (idr (: n Int64) x) (if (= n 0) x (idr (- n 1) x))) \
+               (def (wrap (: m Int64) y) (if (= m 0) (idr 2 y) (wrap (- m 1) y))) \
+               (def (main) (if (wrap 1 true) (wrap 2 40) 99)) (export main))",
+        )))
+        .expect("a recursive generic threading another generic is transitively generic");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
+        // A THREE-level chain (top→mid→idr) — genericity must propagate two hops, and the param↔result
+        // connection must survive at every level. Bool then Int64. `(top 1 true)` = true → `(top 2 40)` = 40.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (def (idr (: n Int64) x) (if (= n 0) x (idr (- n 1) x))) \
+               (def (mid (: m Int64) y) (if (= m 0) (idr 1 y) (mid (- m 1) y))) \
+               (def (top (: k Int64) z) (if (= k 0) (mid 1 z) (top (- k 1) z))) \
+               (def (main) (if (top 1 true) (top 2 40) 99)) (export main))",
+        )))
+        .expect(
+            "a three-level generic chain propagates genericity and keeps param=result connected",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
     }
 
     #[test]
