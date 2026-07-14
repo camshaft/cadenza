@@ -39,3 +39,9 @@ def assert_ne(a, b, msg: String) =
 
 @test def a_failing_example() =
   assert_eq(2 + 2, 5, "expected 2 + 2 to be 5 (it is not — this test fails on purpose)")
+
+@test def negation_is_involutive(n: Int64) =
+  assert_eq(0 - (0 - n), n, "negating twice returns the original")
+
+@test def and_with_true_is_identity(b: Bool) =
+  assert(if b then (b and true) else ((b and true) == false), "b and true equals b")

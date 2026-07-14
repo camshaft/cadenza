@@ -439,7 +439,14 @@ fn run_test(args: &TestArgs) -> ExitCode {
             }
             println!("── {file} ──");
         }
-        match run_test_file(file, args.filter.as_deref(), &cdz_run, &store) {
+        match run_test_file(
+            file,
+            args.filter.as_deref(),
+            &cdz_run,
+            &store,
+            args.trials,
+            args.seed,
+        ) {
             Ok((p, f)) => {
                 total_pass += p;
                 total_fail += f;
@@ -472,6 +479,8 @@ fn run_test_file(
     filter: Option<&str>,
     cdz_run: &std::path::Path,
     store: &std::path::Path,
+    trials: u64,
+    seed: u64,
 ) -> Result<(usize, usize), ()> {
     // Parse the source once; the arenas feed BOTH the test-name enumeration (a `Db`) and the emit compile.
     let (_source, arenas) = match load_program(file) {
@@ -494,14 +503,23 @@ fn run_test_file(
         eprintln!("{PROG}: {file}: could not decode the program's AST");
         return Err(());
     };
-    let db = rcdzc::db::Db::load(rcdzc_arenas);
-    let mut tests: Vec<String> = db
-        .test_defs()
-        .into_iter()
-        .map(|i| db.defs[i].name.clone())
-        .filter(|name| filter.is_none_or(|needle| name.contains(needle)))
-        .collect();
-    tests.dedup();
+    let mut db = rcdzc::db::Db::load(rcdzc_arenas);
+    // Each test's name PLUS the generators for its parameters (empty = a plain nullary test, run once;
+    // non-empty = a PROPERTY test, run `trials` times with generated inputs). A param whose type is not a
+    // generatable scalar makes `param_generators` return `None` — reported per test, not aborting the run.
+    let mut tests: Vec<(String, Option<Vec<GenKind>>)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for i in db.test_defs() {
+        let name = db.defs[i].name.clone();
+        if filter.is_some_and(|needle| !name.contains(needle)) {
+            continue;
+        }
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let gens = param_generators(&mut db, i);
+        tests.push((name, gens));
+    }
     if tests.is_empty() {
         // No matching `@test` here. A file with no tests (e.g. a pure library module in a package dir, or
         // a `--filter` that selects nothing) is vacuously green — return (0, 0) and print nothing, so a
@@ -545,42 +563,295 @@ fn run_test_file(
         return Err(());
     }
 
-    // Run each test through `cdz-run`, in declaration order. PASS = exit 0 (the test returned); FAIL =
-    // nonzero (it trapped). A failure's message is `cdz-run`'s `host-arg\t<op>\t<message>` stderr line —
-    // the assertion text the test emitted via its report host effect just before trapping.
+    // Run each test through `cdz-run`, in declaration order. A NULLARY test runs ONCE — PASS = exit 0
+    // (returned), FAIL = nonzero (trapped). A PROPERTY test (parameters) runs `trials` times with generated
+    // inputs; it PASSES only if every trial returns, and FAILS on the first trapping trial — reported with
+    // the failing inputs (shrunk toward a minimal counterexample) + the seed to replay.
     let mut passed = 0usize;
     let mut failed = 0usize;
-    for name in &tests {
+    for (name, gens) in &tests {
         let kebab = cadenza_syntax::extern_name::kebab_extern_name(name);
-        let run = std::process::Command::new(cdz_run)
-            .arg(&tmp)
-            .arg("--call")
-            .arg(&kebab)
-            .arg("--store")
-            .arg(store)
-            .output();
-        match run {
-            Ok(o) if o.status.success() => {
-                passed += 1;
-                println!("PASS {name}");
-            }
-            Ok(o) => {
+        let run_one = |arg_vals: &[String]| -> TrialOutcome {
+            run_one_trial(cdz_run, &tmp, &kebab, store, arg_vals)
+        };
+        match gens {
+            // A parameter whose type is not a generatable scalar — cannot property-test it. Report + fail.
+            None => {
                 failed += 1;
-                match test_failure_message(&o.stderr) {
-                    Some(msg) => println!("FAIL {name}: {msg}"),
-                    None => println!("FAIL {name}"),
+                println!(
+                    "FAIL {name}: cannot generate inputs — a parameter's type is not a scalar this \
+                     runner generates (Int/Bool/Float/Char); annotate it with a scalar type"
+                );
+            }
+            // Nullary: one run, the plain unit-test path.
+            Some(gens) if gens.is_empty() => match run_one(&[]) {
+                TrialOutcome::Pass => {
+                    passed += 1;
+                    println!("PASS {name}");
                 }
-            }
-            Err(e) => {
-                failed += 1;
-                println!("FAIL {name}: could not run `cdz-run`: {e}");
-            }
+                TrialOutcome::Fail(msg) => {
+                    failed += 1;
+                    match msg {
+                        Some(m) => println!("FAIL {name}: {m}"),
+                        None => println!("FAIL {name}"),
+                    }
+                }
+            },
+            // A PROPERTY test: run `trials` trials with generated inputs.
+            Some(gens) => match run_property(gens, trials, seed, &run_one) {
+                None => {
+                    passed += 1;
+                    println!("PASS {name} ({trials} trials)");
+                }
+                Some(PropertyFailure { inputs, message }) => {
+                    failed += 1;
+                    let args_str = inputs.join(", ");
+                    let msg = message.map(|m| format!(": {m}")).unwrap_or_default();
+                    println!(
+                        "FAIL {name}{msg}\n  counterexample: {name}({args_str})  (seed {seed}; replay \
+                         with `--seed {seed}`)"
+                    );
+                }
+            },
         }
     }
     let _ = std::fs::remove_file(&tmp);
 
     println!("\n{passed} passed, {failed} failed");
     Ok((passed, failed))
+}
+
+/// The scalar KIND of a property-test parameter — what the runner generates a value of and renders to a
+/// `cdz-run --arg` string. Restricted to the scalars `cdz-run`'s `coerce_one` parses from `--arg` text:
+/// the boundary-crossable scalars this first property-testing increment supports (a compound param —
+/// tuple/sum/list — is a later increment via a guest-side `Gen` effect).
+#[derive(Clone, Copy)]
+enum GenKind {
+    /// A fixed-width integer: `(signed, width)`. Generated as a random value in the width's range.
+    Int {
+        signed: bool,
+        width: u32,
+    },
+    Bool,
+    /// A float (32 or 64). Generated as a random finite decimal — the text parses as either width, so the
+    /// width need not be tracked here (`cdz-run`'s `coerce_one` parses `f32`/`f64` from the same decimal).
+    Float,
+    Char,
+}
+
+/// The generators for definition `def`'s parameters, or `None` if ANY parameter's solved type is not a
+/// generatable scalar (so the test cannot be property-run). An EMPTY vec means a nullary def (run once).
+/// Each param's type is solved with `infer::type_of` on its binder (seeing through a `(: n T)` annotation,
+/// the shape a boundary parameter needs) — the same type `layout::export_params` crossed it as.
+fn param_generators(db: &mut rcdzc::db::Db, def: usize) -> Option<Vec<GenKind>> {
+    let params = db.defs[def].params.clone();
+    let mut kinds = Vec::with_capacity(params.len());
+    for p in params {
+        // See through a `(: name T)` binder to the name occurrence `type_of` types (bare param → itself).
+        let binder = db
+            .ast
+            .as_form(p, ":")
+            .and_then(|t| t.first().copied())
+            .unwrap_or(p);
+        let ty = rcdzc::infer::type_of(db, binder);
+        let kind = match ty {
+            rcdzc::ty::Ty::Int(it) => GenKind::Int {
+                signed: it.ground_signed(),
+                width: it.ground_width(),
+            },
+            rcdzc::ty::Ty::Bool => GenKind::Bool,
+            rcdzc::ty::Ty::Float(_) => GenKind::Float,
+            rcdzc::ty::Ty::Char => GenKind::Char,
+            _ => return None, // a non-scalar (or unresolved) param — cannot generate it here
+        };
+        kinds.push(kind);
+    }
+    Some(kinds)
+}
+
+/// The outcome of one trial: PASS (the export returned) or FAIL (it trapped) with the failure message the
+/// test reported (via its `Test`/report host effect), if any.
+enum TrialOutcome {
+    Pass,
+    Fail(Option<String>),
+}
+
+/// A property-test failure: the (rendered) inputs that reproduced it, and the reported message.
+struct PropertyFailure {
+    inputs: Vec<String>,
+    message: Option<String>,
+}
+
+/// Invoke `cdz-run` once on the test component, calling `kebab` with `arg_vals` (rendered `--arg` text).
+/// PASS = exit 0; FAIL carries `cdz-run`'s `host-arg` failure message if the test reported one.
+fn run_one_trial(
+    cdz_run: &std::path::Path,
+    component: &std::path::Path,
+    kebab: &str,
+    store: &std::path::Path,
+    arg_vals: &[String],
+) -> TrialOutcome {
+    let mut cmd = std::process::Command::new(cdz_run);
+    cmd.arg(component)
+        .arg("--call")
+        .arg(kebab)
+        .arg("--store")
+        .arg(store);
+    for v in arg_vals {
+        cmd.arg("--arg").arg(v);
+    }
+    match cmd.output() {
+        Ok(o) if o.status.success() => TrialOutcome::Pass,
+        Ok(o) => TrialOutcome::Fail(test_failure_message(&o.stderr)),
+        Err(e) => TrialOutcome::Fail(Some(format!("could not run `cdz-run`: {e}"))),
+    }
+}
+
+/// Run a PROPERTY test `trials` times with generated inputs, returning `None` if every trial passed or the
+/// first counterexample (SHRUNK toward a minimal failing input). Generation is seeded (`seed`) so a run is
+/// reproducible; each trial advances the seed deterministically (`seed + trial`), so the failing trial's
+/// inputs re-generate identically on replay. On the first failing trial, `shrink` searches for a smaller
+/// still-failing input before reporting.
+fn run_property(
+    gens: &[GenKind],
+    trials: u64,
+    seed: u64,
+    run_one: &dyn Fn(&[String]) -> TrialOutcome,
+) -> Option<PropertyFailure> {
+    for trial in 0..trials {
+        let inputs = generate_inputs(gens, seed.wrapping_add(trial));
+        if let TrialOutcome::Fail(message) = run_one(&inputs) {
+            let (inputs, message) = shrink(gens, &inputs, message, run_one);
+            return Some(PropertyFailure { inputs, message });
+        }
+    }
+    None
+}
+
+/// Generate one `--arg` string per generator, from a driver seeded at `seed` — bolero's `driver::Rng`
+/// (a seeded, reproducible driver) feeding each type's `ValueGenerator`. The rendered forms are exactly
+/// what `cdz-run`'s `coerce_one` parses (`5`, `-3`, `true`, `1.5`, a single char).
+fn generate_inputs(gens: &[GenKind], seed: u64) -> Vec<String> {
+    use bolero_generator::driver::{self, Rng};
+    use bolero_generator::{ValueGenerator, produce};
+    let rng = rand_from_seed(seed);
+    let mut d = Rng::new(rng, &driver::Options::default());
+    gens.iter()
+        .map(|g| match g {
+            GenKind::Bool => produce::<bool>()
+                .generate(&mut d)
+                .unwrap_or(false)
+                .to_string(),
+            GenKind::Char => produce::<char>()
+                .generate(&mut d)
+                .unwrap_or('a')
+                .to_string(),
+            GenKind::Float => {
+                let v = produce::<f64>().generate(&mut d).unwrap_or(0.0);
+                // Render a finite decimal `coerce_one` (`parse::<f64>`) accepts; a non-finite generated
+                // value falls back to 0 (NaN/inf have no re-parseable decimal here).
+                if v.is_finite() { v } else { 0.0 }.to_string()
+            }
+            GenKind::Int { signed, width } => {
+                let raw = produce::<i64>().generate(&mut d).unwrap_or(0);
+                render_int(raw, *signed, *width)
+            }
+        })
+        .collect()
+}
+
+/// Render a generated `i64` as the decimal text for an integer parameter of the given signedness/width,
+/// truncated into that width's range so `cdz-run`'s `parse::<iN/uN>` accepts it (a wider raw value would
+/// fail to parse as the narrower type). The `as` truncation into range keeps the full value spread.
+fn render_int(raw: i64, signed: bool, width: u32) -> String {
+    match (signed, width) {
+        (true, 8) => (raw as i8).to_string(),
+        (false, 8) => (raw as u8).to_string(),
+        (true, 16) => (raw as i16).to_string(),
+        (false, 16) => (raw as u16).to_string(),
+        (true, 32) => (raw as i32).to_string(),
+        (false, 32) => (raw as u32).to_string(),
+        (false, 64) => (raw as u64).to_string(),
+        // signed 64 (and any deferred/other width defaults to i64 at the boundary).
+        _ => raw.to_string(),
+    }
+}
+
+/// A reproducible RNG from a `u64` seed — `Xoshiro256PlusPlus` (bolero's own generator rng), whose
+/// `seed_from_u64` SplitMix64-expands the seed to the full state, so `cdz test --seed N` is deterministic
+/// without depending on OS entropy.
+fn rand_from_seed(seed: u64) -> rand_xoshiro::Xoshiro256PlusPlus {
+    use rand_core::SeedableRng;
+    use rand_xoshiro::Xoshiro256PlusPlus;
+    Xoshiro256PlusPlus::seed_from_u64(seed)
+}
+
+/// SHRINK a failing property input toward a minimal counterexample: for each argument position, try
+/// replacing it with progressively "smaller" values (an integer toward 0 by halving, a bool toward
+/// `false`, a float toward 0, a char toward `a`) and keep any replacement that STILL fails. Greedy +
+/// bounded — one left-to-right pass per position, each position bisected — so it terminates quickly and
+/// reports a smaller, more legible witness than the raw random input. Returns the shrunk inputs + the
+/// (possibly updated) failure message from the last failing run.
+fn shrink(
+    gens: &[GenKind],
+    inputs: &[String],
+    message: Option<String>,
+    run_one: &dyn Fn(&[String]) -> TrialOutcome,
+) -> (Vec<String>, Option<String>) {
+    let mut best = inputs.to_vec();
+    let mut best_msg = message;
+    for (i, g) in gens.iter().enumerate() {
+        for candidate in shrink_candidates(g, &best[i]) {
+            let mut trial = best.clone();
+            trial[i] = candidate;
+            if let TrialOutcome::Fail(m) = run_one(&trial) {
+                best = trial;
+                best_msg = m;
+            }
+        }
+    }
+    (best, best_msg)
+}
+
+/// The ordered shrink candidates for one argument (largest-reduction first), by kind: an integer halves
+/// toward 0 (then 0); a bool toward `false`; a float toward 0; a char toward `a`. Each is a value that,
+/// if it still fails, is a smaller witness than the current one.
+fn shrink_candidates(g: &GenKind, current: &str) -> Vec<String> {
+    match g {
+        GenKind::Int { .. } => {
+            let Ok(mut n) = current.parse::<i64>() else {
+                return Vec::new();
+            };
+            let mut out = Vec::new();
+            // Halve toward 0 (a geometric descent), ending at 0 — a bounded sequence.
+            while n != 0 {
+                n /= 2;
+                out.push(n.to_string());
+            }
+            out
+        }
+        GenKind::Bool => {
+            if current == "true" {
+                vec!["false".to_string()]
+            } else {
+                Vec::new()
+            }
+        }
+        GenKind::Float => {
+            if current != "0" {
+                vec!["0".to_string()]
+            } else {
+                Vec::new()
+            }
+        }
+        GenKind::Char => {
+            if current != "a" {
+                vec!["a".to_string()]
+            } else {
+                Vec::new()
+            }
+        }
+    }
 }
 
 /// Locate the sibling `cdz-run` binary — it lives beside THIS binary in `target/<profile>/` (both are
@@ -724,6 +995,14 @@ struct TestArgs {
     /// builds heap values. Defaults to `<repo>/target/cadenza-store` (built by `cargo xtask build`).
     #[arg(long)]
     store: Option<PathBuf>,
+    /// Trials per PROPERTY test — a `@test` that takes parameters is run this many times with generated
+    /// inputs (a nullary `@test` runs once regardless). Default 100.
+    #[arg(long, default_value_t = 100)]
+    trials: u64,
+    /// The random SEED for property-input generation — the run is reproducible from it (a reported
+    /// failure prints the seed to replay with `--seed`). Default 0 (deterministic run-to-run).
+    #[arg(long, default_value_t = 0)]
+    seed: u64,
 }
 
 // ── the semantic queries ─────────────────────────────────────────────────────────────────────────

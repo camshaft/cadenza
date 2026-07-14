@@ -43465,6 +43465,41 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn emit_tests_accepts_a_parameterized_property_test() {
+        // A `@test` WITH parameters is a PROPERTY test: `compute_tests` crosses its params as ordinary
+        // boundary parameters (was a hard "a test must be NULLARY" reject) so `cdz test` can invoke it with
+        // generated inputs. Here `(@ test (def (prop (: n Int64)) …))` must EMIT a test component whose
+        // export takes an Int64 param. A scalar param is boundary-representable, so the emit succeeds.
+        let src = "(do (effect Test (op fail (-> String Unit))) \
+                    (@ test (def (prop (: n Int64)) \
+                       (if (> n n) (host (Test) (do ((. Test fail) \"x\") (trap \"x\"))) unit)))) ";
+        let out = compile(&inputs(src, &[Request::EmitTests]), &[]);
+        assert!(
+            !out.has_error(),
+            "a parameterized @test must emit a test component (property test): {:?}",
+            out.diagnostics
+        );
+        assert!(
+            out.artifacts.iter().any(|a| a.kind == "component"),
+            "the test build produces a component artifact"
+        );
+    }
+
+    #[test]
+    fn emit_tests_declines_a_non_scalar_property_param() {
+        // A property-test parameter must be a boundary-representable scalar (the runner generates + passes
+        // it). A param with no such type — an unannotated one inference cannot fix to a scalar — declines
+        // with the annotate-it guidance `export_params` gives, rather than emitting an uncallable export.
+        let src = "(do (effect Test (op fail (-> String Unit))) \
+                    (@ test (def (prop x) x))) ";
+        let out = compile(&inputs(src, &[Request::EmitTests]), &[]);
+        assert!(
+            out.has_error(),
+            "a non-representable property param must decline, not emit an uncallable export"
+        );
+    }
+
+    #[test]
     fn a_uses_of_query_finds_every_reference_and_excludes_the_definition() {
         // `helper` is referenced twice (in `main` and in `other`); the query returns those occurrences
         // as node indices in ascending order, and the definition itself is not a use.
