@@ -1751,6 +1751,7 @@ todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host wo
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a factorial that overflows the integer type traps through the recursion
+todo	a fixed-shape Tuple ARG with a Tuple RESULT is declined (compound-result core lacks the rebuild)
 todo	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 todo	a list update at a genuinely out-of-bounds index traps (the control)
 todo	a list update at an index that wraps below the length still traps
