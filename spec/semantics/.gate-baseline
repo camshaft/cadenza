@@ -1327,6 +1327,7 @@ pass	a sum variant carrying a Float64 payload boxes it and escapes it as a float
 pass	a sum variant carrying a Map payload is deconstructed and the map queried
 pass	a sum variant carrying a NARROW-int payload boxes and reads it at its width
 pass	a sum variant carrying a String payload matches and reads the string
+pass	a sum variant's list payload split across empty and rest arms is exhaustive and dispatches
 pass	a sum whose variants are named after target-language keywords constructs and matches
 pass	a sum with FOUR type parameters instantiates and matches each at a distinct type
 pass	a sum-match recursion that accumulates a built-in list returns a list
@@ -1563,6 +1564,7 @@ pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an erased newtype over a sum reads the inner payload, not the whole wrapper
 pass	an erased single-variant newtype wrapping a sum matches through the inner variants
+pass	an erased-newtype's list payload split across empty and rest arms dispatches with vec-get
 pass	an escaped value with an unresolved payload type is rejected as ambiguous, not for its export shape
 pass	an escaping closure captures two values and takes three arguments
 pass	an escaping closure whose body binds a multi-variable let

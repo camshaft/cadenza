@@ -22758,6 +22758,101 @@ mod match_engine {
     }
 
     #[test]
+    fn a_sum_variants_list_payload_split_across_empty_and_rest_arms_is_exhaustive() {
+        // A sum variant whose LIST PAYLOAD is refined by MULTIPLE arms that jointly cover every length —
+        // `(Bx (list)) [len 0] + (Bx (list x .. r)) [len ≥ 1]` — is TOTAL for the `Bx` variant without a
+        // `_`. The decision-tree twin of Inc-23's list-of-bools saturation: a `ListLen` lit-test is
+        // normally refutable (excluded from coverage), but the else of the `== 0` test is exactly "len ≥ 1"
+        // (`refine_listlen_else_rows`), which the second arm's `≥ 1` test covers → it becomes an
+        // unconditional leaf. Before, this was a spurious CDZ0210 (a valid total match rejected).
+        assert!(
+            reject_code(
+                "(module m (type Box (Bx (List Int64))) \
+                   (def (f (: b Box)) (match b ((Bx (list)) 0) ((Bx (list x .. _r)) x))) \
+                   (def (main) (f (Bx (list 7)))) (export main))"
+            )
+            .is_none(),
+            "an empty + non-empty list-payload split covers the variant without a wildcard"
+        );
+        // Reordered (non-empty THEN empty) is equally total; a lone zero-lead rest `(Bx (list .. r))`
+        // (vacuous length test — matches every length) covers the variant on its own.
+        for src in [
+            "(module m (type Box (Bx (List Int64))) \
+               (def (f (: b Box)) (match b ((Bx (list x .. _r)) x) ((Bx (list)) 0))) \
+               (def (main) (f (Bx (list 7)))) (export main))",
+            "(module m (type Box (Bx (List Int64))) \
+               (def (f (: b Box)) (match b ((Bx (list .. _r)) 0))) \
+               (def (main) (f (Bx (list 7)))) (export main))",
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "a reordered / vacuous list-payload cover is exhaustive: {src}"
+            );
+        }
+        // MULTI-VARIANT: the same split under one variant, alongside a sibling variant, is total.
+        assert!(
+            reject_code(
+                "(module m \
+                   (def (f (: o (Option (List Int64)))) \
+                     (match o ((Some (list)) 0) ((Some (list x .. _r)) x) ((None) -1))) \
+                   (def (main) (f (Some (list 7)))) (export main))"
+            )
+            .is_none(),
+            "a per-variant list-payload split composes with sibling variants"
+        );
+        // Runtime: the guard-drop preserves first-match-wins AND the moved length dispatch. mk(0) → (Bx [])
+        // → arm 0; mk(1) → (Bx [7]) → the non-empty arm binds x=7.
+        let run = |n: &str| -> String {
+            run_heap_value(
+                "(module m (type Box (Bx (List Int64))) \
+                   (def (mk (: n Int64)) (if (< n 1) (Bx (list)) (Bx (list 7)))) \
+                   (def (f (: b Box)) (match b ((Bx (list)) 0) ((Bx (list x .. _r)) x))) \
+                   (def (main (: n Int64)) (f (mk n))) (export main))",
+                vec![n.to_string()],
+            )
+            .unwrap_or_default()
+        };
+        if run("0").is_empty() {
+            eprintln!("runtime wasm not found; skipping list-payload-split run");
+            return;
+        }
+        assert_eq!(run("0"), "0", "(Bx []) matches the empty-list arm");
+        assert_eq!(
+            run("1"),
+            "7",
+            "(Bx [7]) matches the non-empty arm, binding x=7"
+        );
+    }
+
+    #[test]
+    fn a_sum_list_payload_with_an_uncovered_length_still_rejects() {
+        // Sound: the list-payload split relaxation covers a variant ONLY when its arms jointly span every
+        // length. A lone `(list x .. r)` leaves length 0 uncovered; an `(list) + (list a b .. r)` leaves
+        // length 1 uncovered (a gap between the exact-0 and the ≥2 rest); a missing sibling variant is
+        // uncovered — all stay CDZ0210.
+        for src in [
+            // only the non-empty arm — length 0 uncovered.
+            "(module m (type Box (Bx (List Int64))) \
+               (def (f (: b Box)) (match b ((Bx (list x .. _r)) x))) \
+               (def (main) (f (Bx (list 7)))) (export main))",
+            // exact-0 + at-least-2 — length 1 is a gap.
+            "(module m (type Box (Bx (List Int64))) \
+               (def (f (: b Box)) (match b ((Bx (list)) 0) ((Bx (list a b .. _r)) a))) \
+               (def (main) (f (Bx (list 7)))) (export main))",
+            // a covered Some payload but no None arm — the sibling variant is uncovered.
+            "(module m (def (f (: o (Option (List Int64)))) \
+               (match o ((Some (list)) 0) ((Some (list x .. _r)) x))) \
+               (def (main) (f (Some (list 7)))) (export main))",
+        ] {
+            assert_eq!(
+                reject_code(src).as_deref(),
+                Some("CDZ0210"),
+                "an uncovered length / variant still rejects: {src}"
+            );
+        }
+    }
+
+    #[test]
     fn saturating_ctor_list_first_elements_are_exhaustive_without_a_wildcard() {
         // The CONSTRUCTOR analogue of the bool-saturation case: `(list) + (list (Some x) .. r) +
         // (list (None) .. r)` over `(List (Option Int64))` is TOTAL — the empty arm covers length 0, and the

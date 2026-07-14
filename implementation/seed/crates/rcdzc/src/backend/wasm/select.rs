@@ -5510,14 +5510,28 @@ fn emit(
                 match step {
                     crate::core::PathStep::Payload => {
                         out.push(Lir::CallImport(OP_SUM_PAYLOAD)); // → [payload-handle]
-                        cur = Ty::Any;
+                        // The payload's TYPE — a variant carrying a `List` needs a following `Elem` to read
+                        // it with `vec-get`, not `arr-get`. Resolving it (rather than dropping to `Any`) is
+                        // what makes a nested list-in-payload element binder `(Some (list x .. r)) → x`
+                        // read the right accessor; a plain `[Payload]` binder ignores `cur`, so a
+                        // non-resolvable payload safely stays `Any` (a bare-binder read, no `Elem` follows).
+                        cur = match cur.strip_nominal() {
+                            Ty::Sum { .. } => sum_single_payload_ty(db, &cur).unwrap_or(Ty::Any),
+                            // A nominal newtype's `Payload` step is a static unwrap to its inner type.
+                            inner => inner.clone(),
+                        };
                     }
                     crate::core::PathStep::Elem(i) => {
-                        if matches!(cur, Ty::List(_)) {
+                        // STRIP nominal before the List check: for an ERASED newtype whose `Payload` step is
+                        // elided at resolve time (the path is `[Elem(0)]`, no leading `Payload`), `cur` is
+                        // the raw `Ty::Nominal` wrapping the list — an unstripped `matches!(cur, List)` missed
+                        // it and mis-emitted `arr-get` on a vec handle (reads garbage/0). `(type Box (Bx
+                        // (List Int64)))` matched `(Bx (list x .. r)) → x` is exactly this shape.
+                        if matches!(cur.strip_nominal(), Ty::List(_)) {
                             out.push(Lir::ConstI32(*i as i32));
                             out.push(Lir::CallImport(OP_VEC_GET)); // list element → vec-get
-                            cur = match cur {
-                                Ty::List(e) => *e,
+                            cur = match cur.strip_nominal() {
+                                Ty::List(e) => (**e).clone(),
                                 _ => Ty::Any,
                             };
                         } else {
@@ -8315,14 +8329,40 @@ fn emit_sum_cont(
             then_,
             els,
         } => {
-            // Push the scrutinee handle and walk to the leaf's boxed handle.
+            // Push the scrutinee handle and walk to the leaf's boxed handle — tracking the sub-value TYPE as
+            // the walk descends (mirrors `Core::SumPayload`), so an ERASED newtype `Payload` is a no-op (the
+            // box is elided) and a `List` sub-value's `Elem` reads with `vec-get`, not `arr-get`. Without
+            // this, a `(Bx (list …))` newtype's `ListLen` test called `sum-payload` on the raw list (garbage
+            // length), and a boxed-list `Elem` used `arr-get` on a vec handle (garbage element).
             emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle]
+            let mut cur = type_of(db, scrutinee);
             for step in path {
                 match step {
-                    crate::core::PathStep::Payload => out.push(Lir::CallImport(OP_SUM_PAYLOAD)),
+                    crate::core::PathStep::Payload => {
+                        match cur.strip_nominal() {
+                            // A boxed sum's payload is unwrapped with `sum-payload`; its type is the
+                            // variant-0 payload shape (a following `Elem` needs it to pick vec-get vs arr-get).
+                            Ty::Sum { .. } => {
+                                out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+                                cur = sum_single_payload_ty(db, &cur).unwrap_or(Ty::Any);
+                            }
+                            // An ERASED nominal newtype: the box is gone, so the `Payload` step is a static
+                            // unwrap — NO `sum-payload` op, `cur` becomes the inner type.
+                            inner => cur = inner.clone(),
+                        }
+                    }
                     crate::core::PathStep::Elem(i) => {
                         out.push(Lir::ConstI32(*i as i32));
-                        out.push(Lir::CallImport(OP_ARR_GET));
+                        if matches!(cur.strip_nominal(), Ty::List(_)) {
+                            out.push(Lir::CallImport(OP_VEC_GET));
+                            cur = match cur.strip_nominal() {
+                                Ty::List(e) => (**e).clone(),
+                                _ => Ty::Any,
+                            };
+                        } else {
+                            out.push(Lir::CallImport(OP_ARR_GET));
+                            cur = Ty::Any;
+                        }
                     }
                     crate::core::PathStep::RestFrom(_) => {} // never on a sum-lit-test path
                 }

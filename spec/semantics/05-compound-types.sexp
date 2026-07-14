@@ -3367,6 +3367,47 @@
             (def (main) (f (mk 2))) (export main)))
   (output (: 99 Int64)))
 
+(case "a sum variant's list payload split across empty and rest arms is exhaustive and dispatches"
+  (doc    "A sum variant whose LIST PAYLOAD is refined by MULTIPLE arms that jointly cover every length —
+           `((Some (list)) …) [len 0] + ((Some (list x .. r)) …) [len ≥ 1] + ((None) …)` — is exhaustive
+           WITHOUT a `_` (core-semantics.md §A List Is Deconstructed…: a list-arm set covering the empty and
+           every non-empty list is total). The decision-tree twin of the list-of-bools case: a nested
+           `ListLen` test is normally refutable, but the else of the `== 0` test is exactly `len ≥ 1`, which
+           the second arm covers → it becomes an unconditional leaf. Also pins the RUNTIME dispatch of a
+           list-in-payload element read: reading `x` at `[Payload, Elem(0)]` uses `vec-get` (a list is an RRB
+           vector), not `arr-get` — `mk 1` builds `(Some (list 7))`, whose non-empty arm binds `x = 7`.")
+  (input  (do
+            (def (mk (: n Int64))
+              (if (< n 1) (Some (list))
+                (if (< n 2) (Some (list 7)) (None))))
+            (def (f (: o (Option (List Int64))))
+              (match o
+                ((Some (list)) 100)
+                ((Some (list x .. r)) x)
+                ((None) -1)))
+            (def (main (: n Int64)) (f (mk n))) (export main)))
+  (call   main (: 1 Int64))
+  (output (: 7 Int64)))
+
+(case "an erased-newtype's list payload split across empty and rest arms dispatches with vec-get"
+  (doc    "The ERASED-NEWTYPE twin: `(type Box (Bx (List Int64)))` (a single-variant sum, its box erased)
+           matched `((Bx (list)) …) + ((Bx (list x .. r)) …)` is total, and the element read must go through
+           `vec-get` even though the newtype's `Payload` step is elided (the path is `[Elem(0)]`, no leading
+           `Payload`) — stripping the nominal wrapper to see the `List` is what picks `vec-get` over
+           `arr-get`. `mk 2` builds `(Bx (list 8 9))`, whose non-empty arm binds `x = 8` (element 0).")
+  (input  (do
+            (type Box (Bx (List Int64)))
+            (def (mk (: n Int64))
+              (if (< n 1) (Bx (list))
+                (if (< n 2) (Bx (list 7)) (Bx (list 8 9)))))
+            (def (f (: b Box))
+              (match b
+                ((Bx (list)) 100)
+                ((Bx (list x .. r)) x)))
+            (def (main (: n Int64)) (f (mk n))) (export main)))
+  (call   main (: 2 Int64))
+  (output (: 8 Int64)))
+
 (case "a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching"
   (doc    "The route around the not-yet-lowered ctor-in-tuple-slot binder: bind the tuple element to a
            NAME in the outer arm, then re-match it in a nested `match`. `(Outer.Wrap (tuple i k))` binds
