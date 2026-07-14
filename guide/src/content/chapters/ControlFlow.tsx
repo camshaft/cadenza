@@ -43,6 +43,11 @@ export default function ControlFlow() {
       <Runnable source={`(let ((n 0))
   (if (< n 0) -1
       (if (= n 0) 0 1)))`} />
+      <P>
+        This is the sign of <C>n</C>: <C>-1</C> if negative, <C>0</C> if zero, <C>1</C> if positive. With{" "}
+        <C>n = 0</C> the first test fails and the inner <C>(= n 0)</C> fires, so the answer is <C>0</C> —
+        change <C>n</C> to <C>-4</C> or <C>7</C> and Run to take a different branch.
+      </P>
 
       <H2>Booleans compose — and short-circuit</H2>
       <P>
@@ -71,6 +76,10 @@ export default function ControlFlow() {
   (if (= n 0) 0 (+ n (sm (- n 1)))))
 (def (main) (sm 5))`}
       />
+      <P>
+        <C>(sm 5)</C> adds <C>5 + 4 + 3 + 2 + 1</C> down to the base case, giving <C>15</C>. Each call peels
+        off <C>n</C> and recurses on <C>n - 1</C> until it reaches <C>0</C>.
+      </P>
 
       <H2>Your turn</H2>
       <Exercise
