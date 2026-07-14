@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 297 tests total across 32 modules):
+top. Current `src/` modules (each with same-file `@test`s — 307 tests total across 33 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -223,6 +223,14 @@ top. Current `src/` modules (each with same-file `@test`s — 297 tests total ac
   building; the round-trip through `parse` is checked (`parse "(1+2)*3"` → tree → `unparse` → `"(1+2)*3"`).
   10 `@test`s. Confirmed WORKING. (⚠ hit the `bin`-is-reserved papercut below: a `Bin`-node builder named
   `bin` couldn't be called — renamed to `mkb`.)
+- `src/cfold.cdz` — a SOURCE-LEVEL CONSTANT-FOLDING pass over a small `Num`/`Add`/`Mul` language: rewrite
+  bottom-up, collapsing constant subtrees (`1 + 2*3` → `7`) and applying algebraic identities (`e+0`→`e`,
+  `e*1`→`e`, `e*0`→`0`) via smart constructors. The classic pre-codegen shrink — a PURE tree-to-tree
+  rewrite (no env, no mutation), the shape the seed folds cleanly. Contract: `eval(fold e) == eval(e)`
+  (meaning-preserving) AND `size(fold e) <= size(e)` (never grows) AND idempotent. 10 `@test`s. Confirmed
+  WORKING. (A `Map`-env interpreter with SHADOWING is the UNSAFE cousin — it trips the still-live-binding
+  miscompile; see `repros/miscompile-env-interpreter-shadow-corrupts-outer-binding.cdz`, so this optimizer
+  stays a pure rewrite.)
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -324,6 +332,16 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   over-dup leaks — so a seed-agent job; the repro carries the exact missing dup). Blocks ANY pass building
   a modified collection while still needing the original (a diff, "with one more binding", a before/after)
   — including `src/interp.cdz`'s withheld `interp-shadow-restores`.
+  🔬 RECONCILED (iter 41) — a PARAMETER is safe EXCEPT with a sibling SELF-RECURSIVE call: `(def go(xs,n)
+  = if n==0 then len(xs) else len(push(xs,9)) + go(xs, n-1))` → 6 not 5 (the sibling `go(xs,…)` self-call
+  reads `xs` AFTER the sibling operand's `push` consumed it). Threading the consume INTO the recursion
+  (`len(xs) + go(push(xs,9),…)`) is correct; a NON-recursive helper is correct; only a sibling self-call
+  reading a just-consumed param is wrong. So iter-34's "params always safe" holds only WITHOUT a sibling
+  self-call — the self-call arg path omits the caller-side dup an ordinary `Core::Call` gets (the iter-29
+  diagnosis). USER-FACING FACE: a tree-walking env interpreter computes a SHADOWING `let` wrong —
+  `let x=1 in (let x=10 in x) + x` → 20 not 11 (the inner `Map.insert(env,"x",10)` corrupts the env the
+  sibling `Var x` reads); `repros/miscompile-env-interpreter-shadow-corrupts-outer-binding.cdz`. Inserting
+  a DIFFERENT key is correct — only same-key SHADOW + sibling self-call corrupts.
 
 - **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value, iter 37): `List.concat` corrupts its still-live
   LHS where `List.push` does NOT — a DISTINCT face of the still-live-binding family.**
