@@ -16078,8 +16078,7 @@ mod match_engine {
             0,
             "empty and → false"
         );
-        // NON-fold: non-empty ∩ (`< 10` / `> 5`) and gapped ∪ (`< 3` / `> 10`) keep both compares; a
-        // singleton ∩ (`<= 6` / `>= 6`, non-empty at 6) is kept.
+        // NON-fold: non-empty ∩ (`< 10` / `> 5`) and gapped ∪ (`< 3` / `> 10`) keep both compares.
         assert_eq!(
             cmps(&lir("(: x Int64)", "(: (and (< x 10) (> x 5)) Bool)")),
             2,
@@ -16090,10 +16089,13 @@ mod match_engine {
             2,
             "gapped or kept"
         );
+        // The singleton ∩ (`<= 6` / `>= 6`, non-empty only at 6) is NOT a disjoint/covering verdict but the
+        // COINCIDENT POINT — the sibling `coincident_point_eq` fold collapses it to `(= x 6)` (0 ordering
+        // compares, one `i64.eq`). See `two_inclusive_bounds_at_the_same_point_collapse_to_equality`.
         assert_eq!(
             cmps(&lir("(: x Int64)", "(: (and (<= x 6) (>= x 6)) Bool)")),
-            2,
-            "singleton and kept"
+            0,
+            "singleton and collapses to equality"
         );
 
         // VALUE PARITY across the boundary.
@@ -16140,6 +16142,98 @@ mod match_engine {
             call_traps(&tb, "f", &[Val::S64(0)]),
             "a trapping operand keeps its trap"
         );
+    }
+
+    #[test]
+    fn two_inclusive_bounds_at_the_same_point_collapse_to_equality() {
+        // COINCIDENT-POINT COLLAPSE: `(and (>= v c) (<= v c))` pins `v` to the single point `c` — that IS
+        // `(= v c)`. Three ops (`ge` + `le` + `and`) collapse to one `eq`. Sound for signed AND unsigned
+        // (a pure total-order fact). Reuses the existing (in-type) constant node, so no synthesis / range
+        // guard. NOT the exclusive width-2 `(and (> v (c-1)) (< v (c+1)))` (left un-folded, conservative).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let counts = |c: &[Lir]| -> (usize, usize) {
+            let eqs = c.iter().filter(|i| matches!(i, Lir::I64Eq)).count();
+            let ords = c
+                .iter()
+                .filter(|i| matches!(i, Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS))
+                .count();
+            (eqs, ords)
+        };
+        // Collapses: exactly one `i64.eq`, zero ordering compares — in all operand orders + the mirrored
+        // (constant-on-the-left) form.
+        for body in [
+            "(: (and (>= x 5) (<= x 5)) Bool)",
+            "(: (and (<= x 5) (>= x 5)) Bool)",
+            "(: (and (>= 5 x) (<= 5 x)) Bool)",
+        ] {
+            assert_eq!(counts(&lir("(: x Int64)", body)), (1, 0), "collapse: {body}");
+        }
+        // NON-collapse (kept as 2 ordering compares, 0 eq): different constants (a real range), and the
+        // exclusive width-2 point (deliberately conservative — needs a synthesized `c` + range guard).
+        assert_eq!(
+            counts(&lir("(: x Int64)", "(: (and (>= x 5) (<= x 6)) Bool)")),
+            (0, 2),
+            "different constants stay a range"
+        );
+        assert_eq!(
+            counts(&lir("(: x Int64)", "(: (and (> x 4) (< x 6)) Bool)")),
+            (0, 2),
+            "exclusive width-2 left un-folded"
+        );
+
+        // VALUE PARITY: the collapsed form equals `(= v c)` at, below, and above the point — signed AND
+        // unsigned, and at a negative constant.
+        use wasmtime::component::Val;
+        let f = |ty: &str, body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: x {ty})) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
+        let sgn = f("Int64", "(if (and (>= x 5) (<= x 5)) 1 0)");
+        for (x, want) in [(4, 0), (5, 1), (6, 0)] {
+            assert_eq!(run_returns_with::<i64>(&sgn, "f", &[Val::S64(x)]), want, "signed @{x}");
+        }
+        let uns = f("UInt64", "(if (and (>= x 5) (<= x 5)) 1 0)");
+        for (x, want) in [(4u64, 0), (5, 1), (6, 0)] {
+            assert_eq!(run_returns_with::<i64>(&uns, "f", &[Val::U64(x)]), want, "unsigned @{x}");
+        }
+        let neg = f("Int64", "(if (and (>= x -3) (<= x -3)) 1 0)");
+        for (x, want) in [(-2, 0), (-3, 1), (-4, 0)] {
+            assert_eq!(run_returns_with::<i64>(&neg, "f", &[Val::S64(x)]), want, "negative @{x}");
+        }
+        // TRAP SAFETY: a trapping operand in the collapsed pair still traps (the DISCARDED second bound's
+        // trap is preserved by the `is_trap_free` gate — here both bounds share the trapping `/`).
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: z Int64)) (if (and (>= (/ 100 z) 5) (<= (/ 100 z) 5)) 1 0)) (export f))"
+        ))).expect("compile");
+        assert!(call_traps(&tb, "f", &[Val::S64(0)]), "trapping operand keeps its trap");
     }
 
     #[test]

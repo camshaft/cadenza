@@ -641,6 +641,24 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 _ if let Some(keep) = subsuming_comparison(db, lhs, rhs, is_and) => {
                     core_of(db, keep)
                 }
+                // COINCIDENT-POINT COLLAPSE: `(and (>= v c) (<= v c))` → `(= v c)` — two INCLUSIVE
+                // opposite bounds pinning `v` to a single point ARE equality (`v>=c && v<=c ⟺ v==c`), so
+                // three ops (`ge`+`le`+`and`) become one `eq`. Only under `and`; reuses the existing (proven
+                // in-type) constant node, so no synthesis / no range guard. DISCARDS the second comparison,
+                // so gated on `is_trap_free` for both (like the sibling disjoint/covering fold); the kept
+                // `(= v c)` still evaluates `v`. Distinct from disjoint/covering (which folds `L>U` empty /
+                // `L<=U+1` covering — the coincident `L==U` point is exactly what THIS fold handles).
+                _ if is_and
+                    && let Some((v, c)) = coincident_point_eq(db, lhs, rhs)
+                    && is_trap_free(db, lhs)
+                    && is_trap_free(db, rhs) =>
+                {
+                    Core::Compare {
+                        op: Prim::Eq,
+                        lhs: v,
+                        rhs: c,
+                    }
+                }
                 // DISJOINT/COVERING INTERVAL: two comparisons on the SAME operand `v` vs constants forming
                 // OPPOSITE-direction half-lines (one an upper bound `v ≤ U`, the other a lower bound `v ≥
                 // L`). `and` (intersection `L ≤ v ≤ U`) is EMPTY iff `L > U` → `false`; `or` (union) COVERS
@@ -7258,6 +7276,63 @@ fn disjoint_or_covering(db: &mut Db, lhs: StructId, rhs: StructId, is_and: bool)
         // Union `v <= upper || v >= lower` covers all iff the pieces touch/overlap: `lower <= upper + 1`.
         (lower <= upper + 1).then_some(true)
     }
+}
+
+/// COINCIDENT-POINT COLLAPSE for `and`: `(and (>= v c) (<= v c))` (either operand order, `v` on either
+/// side of each comparison) → `(= v c)`. Two INCLUSIVE opposite-direction bounds pinning `v` to a single
+/// point ARE equality — `v >= c && v <= c ⟺ v == c` in any total order (sound for signed AND unsigned
+/// integers alike; it is a pure order-theoretic fact, no sign assumption). Returns `(v, c_node)` to build
+/// `Core::Compare { op: Eq, lhs: v, rhs: c_node }` — three ops (`ge` + `le` + `and`) collapse to one `eq`.
+/// Restricted to the two INCLUSIVE ops (`>=`/`<=`) against the SAME i64 constant VALUE on both sides, and
+/// REUSES an existing constant node (proven representable in `v`'s type — it typechecked against `v`), so
+/// no constant is synthesized and no type-range guard is needed. The strictly-inclusive requirement also
+/// keeps this distinct from the exclusive width-2 point `(and (> v (c-1)) (< v (c+1)))`, which would need a
+/// synthesized `c` + a representability guard — deliberately left un-folded (conservative, no regression).
+/// `None` unless the shape matches. DISCARDS the second comparison, so the caller gates on `is_trap_free`
+/// for both operands (matches the sibling disjoint/covering fold); the kept `(= v c)` evaluates `v` once.
+fn coincident_point_eq(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<(StructId, StructId)> {
+    // From a `Core::Compare` on a runtime `v` against an i64 constant, return `(v, c_node, c_value, eff)`
+    // where `eff` is the operator NORMALIZED to `v` on the left (`(op c v)` mirrors `<`↔`>`, `<=`↔`>=`).
+    let bound_of = |db: &mut Db, id: StructId| -> Option<(StructId, StructId, i64, Prim)> {
+        let Core::Compare { op, lhs: a, rhs: b } = core_of(db, id) else {
+            return None;
+        };
+        let as_int = |db: &mut Db, id: StructId| match core_of(db, id) {
+            Core::ConstInt(v) => v.to_i64(),
+            _ => None,
+        };
+        // `(op v c)` (v on the left) or `(op c v)` (v on the right, which mirrors the operator).
+        match (as_int(db, b), as_int(db, a)) {
+            (Some(c), _) => Some((a, b, c, op)),
+            (_, Some(c)) => Some((
+                b,
+                a,
+                c,
+                match op {
+                    Prim::Lt => Prim::Gt,
+                    Prim::Gt => Prim::Lt,
+                    Prim::Le => Prim::Ge,
+                    Prim::Ge => Prim::Le,
+                    other => other,
+                },
+            )),
+            _ => None,
+        }
+    };
+    let (lv, lc_node, lc, leff) = bound_of(db, lhs)?;
+    let (rv, _rc_node, rc, reff) = bound_of(db, rhs)?;
+    // Same runtime operand, same constant VALUE, and the two effective ops are exactly `>=` and `<=`
+    // (opposite INCLUSIVE bounds). Either assignment (`>= , <=` or `<= , >=`).
+    if lc != rc || !core_equiv(db, lv, rv) {
+        return None;
+    }
+    let inclusive_opposite = matches!((leff, reff), (Prim::Ge, Prim::Le) | (Prim::Le, Prim::Ge));
+    if !inclusive_opposite {
+        return None;
+    }
+    trace!(target: "rcdzc::fold", "coincident-point collapse (and (>= v c) (<= v c)) → (= v c)");
+    // Reuse `lv` as the operand and lhs's constant node as `c` — both proven trap-free by the caller's gate.
+    Some((lv, lc_node))
 }
 
 /// For two comparisons where one is an EQUALITY `(= x c)` and the other an ORDERING comparison `(cmp x k)`
