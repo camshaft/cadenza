@@ -16443,6 +16443,25 @@ mod match_engine {
             "names the bit total + the padding to the next byte: {}",
             d.message
         );
+        // A NON-NATURAL bit-field width (`(bits v -1)`, `(bits v abc)`) makes the whole `(bin …)` resolve
+        // to a coded Poison, not a `Bin { segs }`. `cdz check` (the Diagnostics query) used to MISS it in
+        // a parameterized/non-exported body — the poison arm surfaced only `Unbound`, not `IllFormedBinary`
+        // — while `compile` rejected it. Now it surfaces in EVERY body.
+        for src in [
+            "(module m (def (g (: v Int64)) (bin (bits v -1))) (export g))",
+            "(module m (def (g (: v Int64)) (bin (bits v abc))) (export g))",
+        ] {
+            let dq = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0220"))
+                .unwrap_or_else(|| panic!("check misses the non-natural bits width for {src}"));
+            assert!(
+                dq.message
+                    .contains("bit-field width must be a compile-time constant natural"),
+                "names the bad width: {}",
+                dq.message
+            );
+        }
     }
 
     #[test]
