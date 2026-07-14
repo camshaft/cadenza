@@ -138,6 +138,7 @@ pass	a MULTI-shot arm folds a perform in a let-bound lambda applied in the body
 pass	a MULTI-shot arm folds a perform under a CURRIED lambda applied to pure arguments
 pass	a MULTI-shot arm folds a perform wrapped in an inline lambda application
 pass	a MULTI-shot arm keeps a pure applied lambda in its duplicated continuation
+pass	a MULTI-shot arm whose FIRST resume value is chosen by an if on the state
 pass	a MULTI-shot handler arm folds a two-hole body by re-reducing per resume
 pass	a MUTUALLY-recursive effectful group is specialized under a state handler
 pass	a Map-returning closure alongside a parameterized plain export — the closure

@@ -611,6 +611,22 @@
               (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Amb.flip) (Amb.flip)))) (export main)))
   (output (: 12 Int64)))
 
+(case "a MULTI-shot arm whose FIRST resume value is chosen by an if on the state"
+  (doc    "Composes multi-shot resumption with a conditional-resume value: the arm resumes TWICE, and the
+           FIRST resume's value is chosen by an `if` on the handler state. `(flip (u) s (+ (resume (if (> s
+           2) 10 20) s) (resume 1 s)))` over the body `(+ 100 (Amb.flip))` — the pure one-hole continuation
+           `C = (+ 100 [])` is spliced per resume: seeded 3, `(> 3 2)` holds so the first resume value is 10
+           → `C[10]` = 110, and the second is 1 → `C[1]` = 101, so the arm yields `(+ 110 101)` = 211. Pins
+           that a multi-shot arm's per-resume continuation splice composes with a resume value COMPUTED by a
+           branch on the state — each resumption independently folds `C` at its own (state-derived) value.
+           Both backends agree.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 3 ((flip (u) s (+ (resume (if (> s 2) 10 20) s) (resume 1 s))))
+                (+ 100 (Amb.flip)))) (export main)))
+  (output (: 211 Int64)))
+
 (case "a MULTI-shot arm folds a perform wrapped in an inline lambda application"
   (doc    "A perform WRAPPED IN A LAMBDA APPLICATION folds under a multi-shot arm. `((fn (x) (+ x (Amb.flip)))
            100)` is a β-redex: applying the lambda substitutes `x := 100`, giving `(+ 100 (Amb.flip))` — a
