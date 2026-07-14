@@ -1084,6 +1084,34 @@ fn check_no_home_walk(
                     .at(e));
                 }
             }
+            // A DUPLICATE DELEGATED EFFECT. `(host (A A) …)` names the same effect twice — a delegation's
+            // effect list is a SET (the manifest is the union of escaping effects), so naming one twice is
+            // the same fixed-set-no-duplicates ill-formedness a duplicate effect operation and a duplicate
+            // handler arm are rejected for (CDZ0201). Left unchecked it double-imports at the boundary and
+            // traps at run time. Report each occurrence after the first (by name, anchored at the redundant
+            // occurrence), with a delete fix.
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for &e in effects.iter() {
+                let Some(name) = db.ast.as_name(e).map(str::to_string) else {
+                    continue;
+                };
+                if !seen.insert(name.clone()) {
+                    out.push(
+                        crate::diag::Reject::coded(
+                            crate::diag::Code::Malformed,
+                            format!(
+                                "effect `{name}` is delegated more than once in this host — a host's \
+                                 effect list is a set (the manifest is the union of escaping effects)"
+                            ),
+                        )
+                        .at(e)
+                        .with_fix(crate::diag::Fix::delete_heuristic(
+                            e,
+                            format!("remove the duplicate `{name}` delegation"),
+                        )),
+                    );
+                }
+            }
             // LATENT AUTHORITY (CDZ0404). A delegation must grant EXACTLY the effects that escape — an
             // effect the body never reaches is a granted-but-unexercised capability, rejected
             // (`capabilities-and-effects.md` §Host Delegation Is An Entrypoint's Prerogative). Check each

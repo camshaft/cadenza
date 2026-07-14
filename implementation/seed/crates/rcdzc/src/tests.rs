@@ -28784,6 +28784,33 @@ mod stage1 {
     }
 
     #[test]
+    fn a_host_delegating_the_same_effect_twice_is_rejected() {
+        // A `host`'s effect list is a SET — the manifest is the union of escaping effects — so `(host (A A)
+        // …)` names the same effect twice, the same fixed-set-no-duplicates ill-formedness a duplicate effect
+        // operation and a duplicate handler arm are rejected for (CDZ0201). Left unchecked it double-imports
+        // at the boundary and TRAPS at run time; `check_no_home` now rejects the second occurrence.
+        let d = compile_component(&crate::codec::encode(&parse(
+            "(module m (effect A (op a (-> Unit Int64))) (def (main) (host (A A) (A.a))) (export main))",
+        )))
+        .expect_err("delegating the same effect twice must be rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("more than once") || d.message.contains("delegated"),
+            "the message explains the duplicate delegation: {}",
+            d.message
+        );
+        // A single delegation of a declared effect still compiles (regression).
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (effect ask (op ask (-> Unit Int64))) \
+                 (def (main) (host (ask) (ask.ask))) (export main))",
+            )))
+            .is_ok(),
+            "a single valid host delegation must compile"
+        );
+    }
+
+    #[test]
     fn an_abortive_perform_in_a_tail_if_branch_under_a_let_folds_per_branch() {
         // E4 branch-tail fold, the `let`-body case: a `let`'s VALUE is its BODY's value, so a `let` body is
         // in the same tail position as the `let`. An abortive perform in the tail of an `if` branch inside a

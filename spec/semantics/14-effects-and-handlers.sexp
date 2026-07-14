@@ -1287,6 +1287,18 @@
             (def (main) (host (foo) 5)) (export main)))
   (error  CDZ0201))
 
+(case "a host delegating the same effect twice is rejected"
+  (doc    "A `host`'s effect list is a SET — the manifest is the union of the effects that escape to the
+           boundary (capabilities-and-effects.md #Host Delegation Is An Entrypoint's Prerogative). `(host (A
+           A) …)` names the effect `A` twice: the same fixed-set-no-duplicates ill-formedness a duplicate
+           operation in an effect declaration and a duplicate arm in a handler are rejected for (CDZ0201) —
+           a closed set cannot name the same member twice. Rejected at compile time rather than
+           double-imported at the boundary (which traps at run time).")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (def (main) (host (A A) (A.a))) (export main)))
+  (error  CDZ0201))
+
 (case "an effect operation declared with no name is rejected"
   (doc    "An operation clause is `(op <name> <type>)` — the name is a bare identifier, the type its arrow.
            `(op (-> Unit Int64))` puts the TYPE where the name belongs, declaring a NAMELESS operation:
