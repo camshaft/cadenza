@@ -3616,6 +3616,29 @@ fn definite_non_sum_scalar(ty: &Ty) -> bool {
     )
 }
 
+/// Whether `ty` is DEFINITELY not a record — a record row operation (`Record.project`/`without`/`merge`/
+/// `extend`/`with`) over it is a kind error, the same way member access on a non-record is. A NOMINAL
+/// newtype over a record erases to that record, so strip the tag first (a member access sees through it).
+/// An unconstrained `Any`/`Var` (a bare, not-yet-inlined parameter) is NOT definite — its real type flows
+/// in at the call site — so it is not flagged here (mirrors the member-access `Ty::Any => {}` arm).
+fn definite_non_record(ty: &Ty) -> bool {
+    !matches!(ty.strip_nominal(), Ty::Record(_) | Ty::Any | Ty::Var(_))
+}
+
+/// The surface NAME of a RECORD row-operation prim (`project`/`without`/`merge`/`extend`/`with`), used to
+/// render the "`Record.<op>` requires a record" message; `None` for any other prim. The set of record
+/// row ops whose record operand must be a `Ty::Record`.
+fn record_row_op_name(prim: Option<crate::resolved::Prim>) -> Option<&'static str> {
+    match prim {
+        Some(crate::resolved::Prim::RecordProject) => Some("project"),
+        Some(crate::resolved::Prim::RecordWithout) => Some("without"),
+        Some(crate::resolved::Prim::RecordMerge) => Some("merge"),
+        Some(crate::resolved::Prim::RecordExtend) => Some("extend"),
+        Some(crate::resolved::Prim::RecordWith) => Some("with"),
+        _ => None,
+    }
+}
+
 /// Whether the match PATTERN at `pat` is headed by a VARIANT CONSTRUCTOR — `(C.Red)`, `(Some x)`, a bare
 /// nullary variant name `None`, or such a pattern under a `(guard <pat> <cond>)` wrapper. Peels the guard,
 /// then reads the pattern's constructor head the way the binding-pattern classifier does (a bare atom /
@@ -6268,6 +6291,41 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             "a map entry is a (key value) pair",
                         ));
                     }
+                }
+            } else if let Some(rec_op) = record_row_op_name(crate::eval::meta_apply_of(db, head))
+                && !args.is_empty()
+                && {
+                    // A record row op over a DEFINITE NON-RECORD operand — `(Record.project n (x))` for
+                    // `n : Int64` — is a kind error, exactly like member access on a non-record. It was
+                    // check-INVISIBLE (the per-op field checks below only fire for a `Ty::Record` operand,
+                    // silently skipping a non-record) and on compile gave a MISLEADING "a record row
+                    // operation over a runtime record is not yet built" (the operand is not a record at
+                    // all). `merge` checks BOTH operands; the rest check `args[0]`. Report "requires a
+                    // record, found <T>" — the row-op twin of the member-access message — and skip the
+                    // field checks (a non-record has no fields to check). `Any`/`Var` (an unconstrained
+                    // param) is NOT definite, so it is not flagged (its real type flows in at the call site).
+                    let operands: &[StructId] = if rec_op == "merge" { &args } else { &args[..1] };
+                    operands
+                        .iter()
+                        .any(|&o| definite_non_record(&type_of(db, o)))
+                }
+            {
+                let operands: &[StructId] = if rec_op == "merge" { &args } else { &args[..1] };
+                for &o in operands {
+                    let ot = type_of(db, o);
+                    if definite_non_record(&ot) {
+                        out.push(
+                            Reject::coded(
+                                Code::Malformed,
+                                format!(
+                                    "`Record.{rec_op}` requires a record, found {}",
+                                    ot.render_name()
+                                ),
+                            )
+                            .at(o),
+                        );
+                    }
+                    collect(db, o, out);
                 }
             } else if matches!(
                 crate::eval::meta_apply_of(db, head),

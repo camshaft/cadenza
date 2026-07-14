@@ -13879,6 +13879,48 @@ mod match_engine {
     }
 
     #[test]
+    fn a_record_row_op_over_a_non_record_names_the_kind() {
+        // A `Record.project`/`without`/`merge`/`extend`/`with` over a DEFINITE non-record operand
+        // (`(Record.project n (x))` for `n : Int64`) is a kind error, like member access on a non-record.
+        // It was check-INVISIBLE (the field checks only fire for a `Ty::Record` operand) and compiled to a
+        // MISLEADING "record row operation over a runtime record is not yet built". Now CDZ0201 names the
+        // op + the non-record type: "`Record.project` requires a record, found Int64".
+        let msg = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("requires a record"))
+                .unwrap_or_else(|| panic!("no non-record-operand fault for {src}"))
+                .message
+        };
+        for (op, arg2) in [
+            ("project", "(x)"),
+            ("without", "(x)"),
+            ("merge", "(record (y 1))"),
+            ("extend", "(x 5)"),
+            ("with", "(x 5)"),
+        ] {
+            let src = format!("(module m (def (g (: n Int64)) (Record.{op} n {arg2})) (export g))");
+            let m = msg(&src);
+            assert!(
+                m.contains(&format!("`Record.{op}` requires a record")) && m.contains("Int64"),
+                "{op}: {m}"
+            );
+        }
+        // NO false positive: a real record operand, and a bare (unconstrained `Any`) parameter, are clean.
+        for ok in [
+            "(module m (def (g (: r (Record (x Int64)))) (Record.project r (x))) (export g))",
+            "(module m (def (get-x r) (Record.project r (x))) (def (main) 1) (export main))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("requires a record")),
+                "a record / unconstrained operand is not flagged: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn record_project_with_a_duplicate_label_is_cdz0201() {
         // 15-rows "projecting a record with a duplicate label is rejected": a projection label list that
         // names a field TWICE `(a a)` is the same malformedness a record LITERAL with a duplicate field
