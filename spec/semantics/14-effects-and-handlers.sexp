@@ -1985,6 +1985,27 @@
               (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main)))
   (output (: 43 Int64)))
 
+(case "a mutually-recursive fresh-id walk assigns a fresh id at each node and sums them"
+  (doc    "The essential compiler-PASS idiom the mutual-effect fixes unblock: a `Fresh` gensym threaded
+           through a MUTUALLY-recursive walk over a tree — `node` visits a node (assigns it `(Fresh.next)`)
+           and recurses into its `children`, which recurse back into `node`. This is exactly the shape an
+           AST-relabelling pass takes (`relabel(node)` ↔ `relabel-list(children)`), with the fresh-id counter
+           threaded by the handler rather than passed as an explicit parameter. `Fresh` seeded 0, arm `(next
+           () s (resume s (+ s 1)))` hands back `s` and threads `s + 1`. `(node 5)` visits the node chain
+           `node 5 -> children 4 -> node 3 -> children 2 -> node 1 -> children 0`, firing `Fresh.next` at
+           each `node` step (n = 5, 3, 1) — reading 0, 1, 2 — and summing them along the way: `node 1` =
+           `2 + 0` = 2, `node 3` = `1 + 2` = 3, `node 5` = `0 + 3` = 3. Pins that effect-context
+           specialization threads a fresh-name generator through a mutual tree walk end to end — the pass a
+           self-hosting compiler runs over its own AST (each perform reads the PRE-recursion state, the
+           sound pre-order shape). Both backends agree.")
+  (input  (do
+            (effect Fresh (op next (-> Int64)))
+            (def (node (: n Int64)) (if (= n 0) (Fresh.next) (+ (Fresh.next) (children (- n 1)))))
+            (def (children (: n Int64)) (if (= n 0) 0 (node (- n 1))))
+            (def (main)
+              (handle Fresh 0 ((next () s (resume s (+ s 1)))) (node 5))) (export main)))
+  (output (: 3 Int64)))
+
 (case "a recursive function sums a range it walks by performing a fresh-index effect"
   (doc    "Witnesses the recursive-effect idiom folding a real accumulator across a self-recursive
            walk: `Idx` supplies a descending index (seeded 3, each `next` hands back `s` and threads
