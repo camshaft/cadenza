@@ -353,6 +353,24 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ (Amb.flip) (Amb.flip)))) (export main)))
   (output (: 22 Int64)))
 
+(case "a MULTI-shot handler arm folds a two-hole body by re-reducing per resume"
+  (doc    "The re-reducing fold extends to a MULTI-shot arm — one that resumes more than once — when the
+           body's performs are all discharged BY THIS handler (no effect escapes to be re-issued). The fold
+           rewrites EACH `resume` occurrence to its own re-reduction of the continuation, which is exactly the
+           deep-handler multi-shot semantics: every resumption independently continues, re-handling the
+           discharged effect in the continuation. Here the arm `(+ (resume 1 s) (resume 2 s))` resumes twice
+           and the body `(+ (Amb.flip) (Amb.flip))` performs twice: the leading flip's continuation `C = (+
+           [] (Amb.flip))` is re-reduced at 1 and at 2 — `C[1]` folds the second flip to `(+ (+ 1 1) (+ 1 2))`
+           = 5, `C[2]` to `(+ (+ 2 1) (+ 2 2))` = 7 — so the arm yields `(+ 5 7)` = 12. Re-running a
+           DISCHARGED in-program effect per resumption is sound (it is folded away, leaving pure code); a
+           continuation that reached a HOST-delegated or outer-handler effect would violate the
+           host-composition invariant and stays a clean decline.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Amb.flip) (Amb.flip)))) (export main)))
+  (output (: 12 Int64)))
+
 (case "a one-shot two-hole body folds across a let binding"
   (doc    "The one-shot re-reducing fold descends the STRICT spine of a `let` (its inits then its body, run
            unconditionally in sequence), so a body with a perform in the let INIT and another in the let

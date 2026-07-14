@@ -1442,8 +1442,13 @@ pub fn reduce_handle(
         // A tail-resumptive arm (bare OR do-wrapped interpose/forward) is served by the `thread` path — do
         // NOT steal it here (it would decline a forwarding arm whose resume value is a foreign perform).
         && !is_tail_resumptive_arm(db, arm.body)
-        // ONE-SHOT only: the continuation `C` (which itself performs) is spliced exactly once.
-        && count_resumes(db, arm.body) == 1
+        // MULTI-SHOT is sound only when the continuation `C` (re-reduced per resume) reaches NO FOREIGN
+        // perform — i.e. only THIS handler's discharged ops, which the refold folds away into pure code.
+        // A ONE-SHOT arm splices `C` once, so any foreign perform in it runs once (sound). But a MULTI-shot
+        // arm would re-run a foreign/HOST perform in `C` once per resume — the host-composition invariant
+        // (DESIGN §4.4: a reified continuation must not span a host call) forbids that, so require the body
+        // to be free of any undischarged (foreign/host) perform when the arm resumes more than once.
+        && (count_resumes(db, arm.body) == 1 || !body_reaches_foreign_perform(db, body, &ctx))
     {
         let mut subst: HashMap<StructId, StructId> = HashMap::default();
         if arm.params.len() == args.len() {
@@ -3665,6 +3670,47 @@ fn count_resumes(db: &mut Db, node: StructId) -> u32 {
         Struct::Atom(_) => 0,
     };
     here + below
+}
+
+/// Whether the subtree at `node` transitively reaches a FOREIGN perform — an effect operation NOT
+/// discharged by THIS handler `ctx` (an outer handler's effect, or a host-delegated op), following
+/// NON-RECURSIVE calls into their bodies (bounded depth). CONSERVATIVE (over-reports, never under-reports):
+/// a recursive/unresolvable call, or a chain deeper than the bound, reports `true`. Used to gate the
+/// MULTI-shot two-hole refold: re-running the continuation per resume must not re-issue a foreign/HOST
+/// effect (the host-composition invariant), so a body reaching a foreign perform stays one-shot-only.
+fn body_reaches_foreign_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    fn walk(db: &mut Db, node: StructId, ctx: &HandlerCtx, depth: u32) -> bool {
+        if depth > 16 {
+            return true; // too deep — assume it may reach a foreign perform (safe over-report)
+        }
+        if let Resolved::Apply { head, args } = resolved_of(db, node) {
+            // An effect op NOT in this handler's arms is FOREIGN (a perform of it re-issues outside).
+            if let Some((decl, idx)) = crate::eval::effect_op_of(db, head)
+                && !ctx.arms.contains_key(&(decl.0, idx))
+            {
+                return true;
+            }
+            // A user call: follow a non-recursive callee; a recursive/unresolvable head over-reports.
+            if crate::eval::effect_op_of(db, head).is_none() && !is_pure_operator_head(db, head) {
+                match crate::eval::lambda_body(db, head)
+                    .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+                {
+                    Some(callee) if !crate::eval::is_recursive(db, callee) => {
+                        if walk(db, callee, ctx, depth + 1) {
+                            return true;
+                        }
+                    }
+                    _ => return true, // recursive / unresolvable — over-report
+                }
+            }
+            return args.iter().any(|&a| walk(db, a, ctx, depth + 1));
+        }
+        match db.ast.get(node).clone() {
+            Struct::List(children) => children.iter().any(|&c| walk(db, c, ctx, depth + 1)),
+            Struct::Atom(_) => false,
+        }
+    }
+    walk(db, node, ctx, 0)
 }
 
 /// Whether `param` is the unit placeholder `()` (a nullary operation's single "parameter", which binds

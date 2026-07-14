@@ -28593,13 +28593,24 @@ mod stage1 {
             ),
             33
         );
-        // MULTI-shot two-hole STILL DECLINES: splicing a continuation that itself performs, more than once,
-        // duplicates the inner effect — the frame vertical's job, not the frame-free refold.
+        // MULTI-shot two-hole now FOLDS too: the refold rewrites EACH `resume` node to its own
+        // `reduce_handle(s', arms, C[v])`, so a multi-shot arm re-reduces its continuation once per resume —
+        // which IS the correct deep-handler multi-shot semantics (each resumption independently continues,
+        // re-handling the discharged effect in `C`). `(+ (resume 1 s) (resume 2 s))` over `(+ (Amb.flip)
+        // (Amb.flip))`: the leading flip's arm is `(+ k(1) k(2))` where k(v) re-reduces `(+ v (Amb.flip))`;
+        // k(1) → `(+ (+ 1 1) (+ 1 2))` = 5, k(2) → `(+ (+ 2 1) (+ 2 2))` = 7, so `(+ 5 7)` = 12. (Was a
+        // decline — the one-shot gate was overly conservative; re-handling a DISCHARGED in-program effect per
+        // resumption is sound, not effect duplication. A multi-shot HOST effect would still be caught by the
+        // host-composition invariant elsewhere.)
         let multi = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Amb.flip) (Amb.flip)))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(multi))).is_err(),
-            "a MULTI-shot two-hole body must decline (a performing continuation spliced twice)"
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(multi)))
+                    .expect("a multi-shot two-hole body folds via the per-resume refold"),
+                "main"
+            ),
+            12
         );
     }
 
