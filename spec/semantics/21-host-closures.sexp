@@ -1787,3 +1787,55 @@
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: false Bool))
   (output (8)))
+
+; A VARIABLE-LENGTH collection (List/Map/Set) closure RESULT — the closure's `call` returns the canonical
+; value form as `list<u8>`, rendered at RUN TIME by the runtime `value-encode(rep, desc)` op (the recursive-
+; sum escape's "approach C") walking the returned collection handle against a compiler-baked shape
+; DESCRIPTOR. Unlike a fixed-shape tuple/record (a static template), a collection is variable-length, so the
+; runtime assembles the document; `lower::sum_shape_descriptor`'s List/Map/Set arm builds a parametric
+; `Framed` descriptor so the element/key/value types are observable. The host decodes to `(: (list …) (List
+; <e>))` / `(: (map (k v) …) (Map <k> <v>))` / `(: ((. Set of) (list …)) (Set <e>))`.
+
+(case "a closure returning a List crosses as the value form"
+  (doc    "`mk : () -> (-> Int64 (List Int64))` returns `(list n n+1 n+2)`. `call(handle, 10)` dispatches the
+           closure → the list handle, then `value-encode` renders `(: (list 10 11 12) (List Int64))`. Pins a
+           VARIABLE-LENGTH collection result (no static template — the runtime walks the handle).")
+  (input  (do (def (mk) (fn ((: n Int64)) (list n (+ n 1) (+ n 2)))) (export mk)))
+  (call   mk (: 10 Int64))
+  (output (: (list 10 11 12) (List Int64))))
+
+(case "a closure returning a Set — canonical member order"
+  (doc    "`(Set.of (list n n+1 n))` dedups to `{n, n+1}`; `call(handle, 5)` → `(: ((. Set of) (list 5 6))
+           (Set Int64))`, members in canonical order (the runtime CHAMP set encode sorts).")
+  (input  (do (def (mk) (fn ((: n Int64)) (Set.of (list n (+ n 1) n)))) (export mk)))
+  (call   mk (: 5 Int64))
+  (output (: ((. Set of) (list 5 6)) (Set Int64))))
+
+(case "a closure returning a Map — canonical key order"
+  (doc    "`(map (1 n) (2 n+1))` → `call(handle, 100)` → `(: (map (1 100) (2 101)) (Map Int64 Int64))`,
+           entries in canonical key order.")
+  (input  (do (def (mk) (fn ((: n Int64)) (map (1 n) (2 (+ n 1))))) (export mk)))
+  (call   mk (: 100 Int64))
+  (output (: (map (1 100) (2 101)) (Map Int64 Int64))))
+
+(case "a closure returning a NESTED List"
+  (doc    "`(list (list n) (list n+1 n+2))` → `(: (list (list 7) (list 8 9)) (List (List Int64)))`. The shape
+           descriptor's type node is recursive, so a nested collection element crosses; `value-encode`
+           recurses over the inner lists.")
+  (input  (do (def (mk) (fn ((: n Int64)) (list (list n) (list (+ n 1) (+ n 2))))) (export mk)))
+  (call   mk (: 7 Int64))
+  (output (: (list (list 7) (list 8 9)) (List (List Int64)))))
+
+(case "a CAPTURING closure returning a List"
+  (doc    "`mk : (Int64) -> (-> Int64 (List Int64))` — `make(100)` captures `k=100`, then `call(handle, 5)` →
+           `(: (list 100 5 105) (List Int64))`. Confirms a captured value flows into the collection result.")
+  (input  (do (def (mk (: k Int64)) (fn ((: n Int64)) (list k n (+ k n)))) (export mk)))
+  (call   mk (: 100 Int64) (: 5 Int64))
+  (output (: (list 100 5 105) (List Int64))))
+
+(case "a closure returning an EMPTY List"
+  (doc    "`(: (list) (List Int64))` → `call(handle, 0)` → `(: (list) (List Int64))` — the value-encode
+           walker handles a zero-length collection (the empty document).")
+  (input  (do (def (mk) (fn ((: n Int64)) (: (list) (List Int64)))) (export mk)))
+  (call   mk (: 0 Int64))
+  (output (: (list) (List Int64))))

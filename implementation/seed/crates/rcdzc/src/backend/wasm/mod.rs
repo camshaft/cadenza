@@ -1401,7 +1401,23 @@ fn emit_closure_resource(
         crate::lower::runtime_value_form_template(ret_ty.strip_nominal())
     };
     let ret_is_compound = ret_template.is_some();
-    let result_byte = if ret_is_bytes || ret_is_compound {
+    // A VARIABLE-LENGTH collection result (`List`/`Map`/`Set`) has no static template — it crosses as
+    // `list<u8>` too, but the value form is rendered at run time by the runtime `value-encode(rep, desc)` op
+    // walking the returned handle against a compiler-baked shape DESCRIPTOR (the recursive-sum escape's
+    // approach C). `sum_shape_descriptor`'s List/Map/Set arm builds a parametric `Framed` descriptor.
+    let ret_descriptor =
+        if ret_is_bytes || ret_is_compound || closure_boundary_byte(&ret_ty).is_some() {
+            None
+        } else if matches!(
+            ret_ty.strip_nominal(),
+            crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
+        ) {
+            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
+        } else {
+            None
+        };
+    let ret_is_collection = ret_descriptor.is_some();
+    let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
         0 // unused by the list-returning paths; `call` returns list<u8>, not a scalar byte
     } else {
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
@@ -1469,6 +1485,20 @@ fn emit_closure_resource(
         if ret_is_compound {
             used.insert("get-bool");
         }
+        // A VARIABLE-LENGTH collection result `call` renders the value form via `value-encode(rep, desc)`:
+        // build the descriptor Bytes (`bytes-alloc`/`bytes-set`), encode, copy the doc out (`bytes-len`/
+        // `bytes-get`). Same op set as the recursive-sum escape walker.
+        if ret_is_collection {
+            for op in [
+                "value-encode",
+                "bytes-alloc",
+                "bytes-set",
+                "bytes-len",
+                "bytes-get",
+            ] {
+                used.insert(op);
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     let export_abs = layout
@@ -1531,6 +1561,30 @@ fn emit_closure_resource(
             &make_param_vts,
             lifted_type_idx,
             template,
+            &layout,
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_closure_bytes_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &make_param_bytes,
+            &arg_bytes,
+        ));
+    }
+    // A VARIABLE-LENGTH collection result → the value-encode core (dispatch → the collection handle, build
+    // the descriptor Bytes, `value-encode(rep, desc)` → the value-form document, copy out). Same `list<u8>`
+    // envelope as the bytes/compound paths; cdz-run try-decodes to `(: (list …) (List <e>))` etc.
+    if let Some(descriptor) = &ret_descriptor {
+        let main_core = serialize::closure_value_encode_resource_core_module(
+            &funcs,
+            &imports,
+            export_abs,
+            &arg_vts,
+            &make_param_vts,
+            lifted_type_idx,
+            descriptor,
             &layout,
         )
         .map_err(Reject::decline)?;
