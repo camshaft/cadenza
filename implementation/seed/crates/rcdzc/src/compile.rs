@@ -403,6 +403,11 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
     if matches!(ty, crate::ty::Ty::Int(_) | crate::ty::Ty::BigInt) {
         return None;
     }
+    // No mechanical fix is offered here even though the domain error is clear: the `default-integer`
+    // pragma's EFFECT is not yet modeled, so EVERY `(pragma default-integer <T>)` — even a well-formed
+    // `Int64` one — declines downstream as an unmodeled top-level form. Suggesting `Int64` would merely
+    // trade CDZ0303 for that decline (a cascade), which `--verify-fixes` rightly refuses. Honest-no-fix:
+    // the prose already says "must name an integer type"; a fix waits until the pragma actually compiles.
     Some(
         Reject::coded(
             Code::NonIntegerDefault,

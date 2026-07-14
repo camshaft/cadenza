@@ -2489,6 +2489,34 @@ fn integer_text_of_float_literal(
     Some(if negative { format!("-{s}") } else { s })
 }
 
+/// A homogeneity mismatch between an INTEGER LITERAL element and a FLOAT type has the SAME one-shot
+/// repair the annotation site's `(: 3 Float64)` does: rewrite the integer literal `n` as a FLOAT
+/// literal `n.0`, so a `(list 1 2.0)` / `(list 1.0 2)` unifies at the float type rather than staying a
+/// no-silent-promotion reject. `elem`'s type is `elem_ty`; `other_ty` is the type it clashed with. The
+/// fix applies exactly when the clashing pair is {integer literal, float}: `elem` is a bare integer
+/// LITERAL (an atom Int leaf — a computed integer expression cannot be retyped in one edit) whose type
+/// is `Ty::Int`, and `other_ty` is `Ty::Float`. Returns a `ReplaceNode` fix editing the literal token
+/// (`1` → `1.0`), or `None` when the pair is not this shape. Mirrors the annotation-site literal-retype
+/// (`Some((format!("{n}.0"), …))`) so the two sites suggest the identical rewrite.
+fn float_literal_retype_fix(
+    db: &mut Db,
+    elem: StructId,
+    elem_ty: &Ty,
+    other_ty: &Ty,
+) -> Option<crate::diag::Fix> {
+    if !(matches!(elem_ty, Ty::Int(_)) && matches!(other_ty, Ty::Float(_))) {
+        return None;
+    }
+    let crate::ast::Struct::Atom(lid) = db.ast.get(elem) else {
+        return None;
+    };
+    let crate::ast::Leaf::Int { value, .. } = db.ast.leaf(*lid).clone() else {
+        return None;
+    };
+    let n = value.to_i128()?;
+    Some(crate::diag::Fix::replace_heuristic(elem, format!("{n}.0")))
+}
+
 /// If `expected` is a SUM type with a SINGLE-payload variant whose payload type (at `expected`'s
 /// instantiation) agrees with `actual`, the variant's constructor NAME — the "try wrapping the
 /// expression in `Some`" suggestion (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
@@ -3495,14 +3523,25 @@ fn check_application(
                     // every other element disagreement keeps the unify's CDZ0203.
                     let code = list_homogeneity_code(&first_ty, &et);
                     trace!(target: "rcdzc::infer", head = head.0, ?code, "fault: list elements differ in type");
-                    out.push(Reject::coded(
+                    // An INT-LITERAL-vs-FLOAT clash has the same one-shot repair the annotation site gives
+                    // (`(: 3 Float64)` → `3.0`): rewrite the integer literal as a float literal so the list
+                    // unifies at the float type. The literal may be on EITHER side — the FIRST element
+                    // (`(list 1 2.0)`, fix `first`) or THIS one (`(list 1.0 2)`, fix `e`); offer the fix on
+                    // whichever side is the int literal (a computed integer expression yields no fix).
+                    let mut reject = Reject::coded(
                         code,
                         format!(
                             "list elements must share one type: {} and {}",
                             first_ty.render_name(),
                             et.render_name()
                         ),
-                    ));
+                    );
+                    if let Some(fix) = float_literal_retype_fix(db, first, &first_ty, &et)
+                        .or_else(|| float_literal_retype_fix(db, e, &et, &first_ty))
+                    {
+                        reject = reject.with_fix(fix);
+                    }
+                    out.push(reject);
                 }
             }
         }
