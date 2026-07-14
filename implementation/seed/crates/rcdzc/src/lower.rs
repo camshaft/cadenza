@@ -247,7 +247,18 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             path,
             key,
             named,
-        } => lower_map_field(db, id, scrutinee, &path, key, &named),
+            value_steps,
+            value_heads,
+        } => lower_map_field(
+            db,
+            id,
+            scrutinee,
+            &path,
+            key,
+            &named,
+            &value_steps,
+            &value_heads,
+        ),
         // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
         // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where
@@ -4043,6 +4054,26 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
 /// dispatches only on length), so map that CDZ0210 to a DECLINE (a later increment refines on element
 /// values). A SHAPE error (CDZ0201 — e.g. a tuple pattern against a scalar element) and a NON-LINEAR binder
 /// (CDZ0102) stay HARD rejects (the whole-arm linearity check in `lower_match_list` also covers CDZ0102).
+/// Accept a map-pattern VALUE sub-pattern `v` iff it is IRREFUTABLE — a bare binder / `_`, or an
+/// irrefutable nested pattern (a `(tuple …)` of irrefutable elements, a single-variant `(Mk n)`), composed
+/// to any depth. Its binders read via `MapField` `value_steps` (resolve descends them). A REFUTABLE value
+/// sub-pattern DECLINES: a LITERAL is lifted by `desugar_map_value_subpatterns` (runs first, so a bare
+/// literal never reaches here — but a literal nested in a tuple would); a MULTI-VARIANT ctor `(Some n)`
+/// needs value-DISCRIMINANT dispatch (a later increment). Reuses `check_binding_pattern` (a binding
+/// position IS "must be irrefutable") against `Any` — refutability is a property of the pattern SHAPE, not
+/// the value type — mapping its CDZ0210 (refutable) to a codeless DECLINE, exactly as
+/// `list_element_irrefutable_or_decline` does for a list element.
+fn map_value_irrefutable_or_decline(db: &mut Db, v: StructId) -> Result<(), Reject> {
+    match check_binding_pattern(db, v, &crate::ty::Ty::Any) {
+        Ok(()) => Ok(()),
+        Err(r) if r.code == Some(Code::NonExhaustive) => Err(Reject::decline(
+            "a refutable map value sub-pattern (a literal or multi-variant constructor) needs \
+             value-discriminant refinement, which the key-directed map matcher does not yet support",
+        )),
+        Err(r) => Err(r),
+    }
+}
+
 fn list_element_irrefutable_or_decline(
     db: &mut Db,
     elem_pat: StructId,
@@ -4315,10 +4346,14 @@ fn desugar_runtime_map_match(
                 "a map match arm that is not a `(map …)` pattern or a binder is not yet supported",
             )));
         };
-        if !entries.iter().all(|&(_, v)| db.ast.as_name(v).is_some()) {
-            return Some(Core::Poison(Reject::decline(
-                "a map pattern value sub-pattern that is not a binder is not yet supported",
-            )));
+        // A value sub-pattern must be a bare binder or an IRREFUTABLE nested pattern (its binders read via
+        // `MapField`). Over a RUNTIME map the value READ of a nested binder isn't wired yet
+        // (`lower_map_field_runtime` declines `value_steps`), so this dispatch pass accepts the SHAPE here
+        // and the read declines at `lower_map_field` — honest, no miscompile. A refutable value declines.
+        for &(_, v) in &entries {
+            if let Err(r) = map_value_irrefutable_or_decline(db, v) {
+                return Some(Core::Poison(r));
+            }
         }
     }
     // The innermost `<else>` = the catch-all arm's body (reused in place; a binder catch-all reads the whole
@@ -4473,15 +4508,15 @@ fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                 "a map match arm that is not a `(map …)` pattern or a binder is not yet supported",
             ));
         };
-        // Each key sub-pattern must be a bare-binder value (`p`) — a nested value pattern is a later
-        // increment. The KEY itself is a value expression (a literal/scoped name), evaluated for presence.
-        if !pat_entries
-            .iter()
-            .all(|&(_, v)| db.ast.as_name(v).is_some())
-        {
-            return Core::Poison(Reject::decline(
-                "a map pattern value sub-pattern that is not a binder is not yet supported",
-            ));
+        // A value sub-pattern MAY be a bare binder OR an IRREFUTABLE nested pattern (`(tuple x y)`, a
+        // single-variant `(Mk n)`) whose binders read via `MapField` `value_steps` (resolve descends them).
+        // A REFUTABLE value sub-pattern (a literal, a multi-variant ctor) needs value-DISPATCH: a literal is
+        // lifted by `desugar_map_value_subpatterns` (runs before this) so it never reaches here; a
+        // multi-variant ctor declines (value-discriminant dispatch is a later increment).
+        for &(_, v) in &pat_entries {
+            if let Err(r) = map_value_irrefutable_or_decline(db, v) {
+                return Core::Poison(r);
+            }
         }
         let all_present = pat_entries
             .iter()
@@ -14600,6 +14635,7 @@ fn lower_map_insert(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
 /// `Map.lookup`, a rest binder a `Map.remove` chain). The arm was already SELECTED by `lower_match_map`
 /// (which ran the same key-presence probe), so a value binder's key IS present here; a defensive miss
 /// declines rather than miscompiling.
+#[allow(clippy::too_many_arguments)]
 fn lower_map_field(
     db: &mut Db,
     id: StructId,
@@ -14607,6 +14643,8 @@ fn lower_map_field(
     path: &[crate::core::PathStep],
     key: Option<StructId>,
     named: &[StructId],
+    value_steps: &[crate::core::PathStep],
+    value_heads: &[StructId],
 ) -> Core {
     // Reach the matched MAP core: the scrutinee DIRECTLY (empty path — a direct map match), or a NESTED map
     // at `path` inside a constant tuple/list scrutinee (`fold_sum_path` folds the `Elem` steps to the
@@ -14633,18 +14671,38 @@ fn lower_map_field(
         // REST binder reads the map minus the named keys (a `Map.remove` chain), both synthesized as SOURCE
         // forms + re-lowered via `core_of`. A NESTED runtime map (non-empty path) is a further increment.
         if path.is_empty() {
-            return lower_map_field_runtime(db, id, scrutinee, key, named);
+            return lower_map_field_runtime(
+                db,
+                id,
+                scrutinee,
+                key,
+                named,
+                value_steps,
+                value_heads,
+            );
         }
         return Core::Poison(Reject::decline(
             "a nested map pattern over a runtime map scrutinee is not yet matched (constant map only)",
         ));
     };
     match key {
-        // A VALUE binder — the value at key `k` (keys compared by value, `const_compound_eq`).
+        // A VALUE binder — the value at key `k` (keys compared by value, `const_compound_eq`). When the
+        // value binder is NESTED inside a value sub-pattern (`(map ("a" (tuple x y)))`), `value_steps` walks
+        // INTO that value to the binder — folded over the constant value via `fold_sum_path` (`(tuple 3 4)`
+        // at `Elem(0)` folds to `3`), exactly as a nested tuple/payload binder folds over its scrutinee.
         Some(k) => {
             for (ek, ev) in entries.iter() {
                 if const_compound_eq(db, *ek, k) == Some(true) {
-                    return core_of(db, *ev);
+                    if value_steps.is_empty() {
+                        return core_of(db, *ev);
+                    }
+                    let ev = *ev;
+                    return match fold_sum_path(db, ev, value_steps) {
+                        Some(c) => c,
+                        None => Core::Poison(Reject::decline(
+                            "a nested value sub-pattern over a runtime value in a constant map is not yet matched",
+                        )),
+                    };
                 }
             }
             Core::Poison(Reject::decline(
@@ -14685,13 +14743,17 @@ fn lower_map_field(
 /// `resolve_subtree` — a source-written `Map.lookup`/`Map.remove` over a runtime map already compiles, and
 /// re-lowering grounds the synthesized nodes' types (the Inc-11/12/14 discipline that unblocked Inc-9's
 /// "synthesized generic app not grounded at emit").
+#[allow(clippy::too_many_arguments)]
 fn lower_map_field_runtime(
     db: &mut Db,
     id: StructId,
     scrutinee: StructId,
     key: Option<StructId>,
     named: &[StructId],
+    value_steps: &[crate::core::PathStep],
+    value_heads: &[StructId],
 ) -> Core {
+    let _ = value_heads;
     // Helper: `((. Map <op>) args…)`.
     fn map_op(db: &mut Db, op: &str, args: &[StructId]) -> StructId {
         let dot = db.push_name(".");
@@ -14703,8 +14765,12 @@ fn lower_map_field_runtime(
         db.push_list(call)
     }
     match key {
-        // VALUE binder at key `k`: `(match (Map.lookup scrutinee k) ((Some x) x) ((None) (trap …)))`.
-        Some(k) => {
+        // VALUE binder at key `k`: `(match (Map.lookup scrutinee k) ((Some x) x) ((None) (trap …)))`. When
+        // the binder is NESTED in a value sub-pattern (`value_steps` non-empty), the Some-arm reads the
+        // sub-path INTO the bound value via source projections/payload-reads — but that runtime read is a
+        // later increment; for now a NESTED value binder over a RUNTIME map declines (the CONSTANT-map fold
+        // handles it via `fold_sum_path`). A bare value binder (empty `value_steps`) reads directly.
+        Some(k) if value_steps.is_empty() => {
             let k_copy = clone_key_expr(db, k);
             let lookup = map_op(db, "lookup", &[scrutinee, k_copy]);
             // `((Some x) x)` — the payload binder `x` and the body ref are two occurrences of one fresh name.
@@ -14732,6 +14798,11 @@ fn lower_map_field_runtime(
             }
             core_of(db, rewritten)
         }
+        // A NESTED value binder over a RUNTIME map — the runtime sub-path read is a later increment (the
+        // CONSTANT-map fold handles it). Decline honestly.
+        Some(_) => Core::Poison(Reject::decline(
+            "a nested value sub-pattern binder over a runtime map is not yet matched (constant map only)",
+        )),
         // REST binder: `(Map.remove (Map.remove scrutinee k1) k2 …)` — the map minus every named key.
         None => {
             let mut acc = scrutinee;

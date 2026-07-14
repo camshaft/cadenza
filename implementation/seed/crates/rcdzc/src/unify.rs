@@ -130,7 +130,7 @@ impl Subst {
                 decl: *decl,
                 name: name.clone(),
                 args: args.iter().map(|t| self.apply(t)).collect(),
-                inner: Box::new(self.apply(inner)),
+                inner: std::rc::Rc::new(self.apply(inner)),
             },
             Ty::Bool
             | Ty::Unit
@@ -733,7 +733,7 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
             decl: *decl,
             name: name.clone(),
             args: args.iter().map(|t| rename(t, m)).collect(),
-            inner: Box::new(rename(inner, m)),
+            inner: std::rc::Rc::new(rename(inner, m)),
         },
         Ty::Bool
         | Ty::Unit
@@ -860,7 +860,7 @@ fn freshen_free_go(
                 .iter()
                 .map(|t| freshen_free_go(t, fresh, map, wmap, smap))
                 .collect(),
-            inner: Box::new(freshen_free_go(inner, fresh, map, wmap, smap)),
+            inner: std::rc::Rc::new(freshen_free_go(inner, fresh, map, wmap, smap)),
         },
         Ty::Bool
         | Ty::Unit

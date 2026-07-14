@@ -14497,6 +14497,16 @@ mod match_engine {
             "wraps the char in its scalar-value conversion: {}",
             ch.message
         );
+        // The LEAD reads as an argument-type mismatch, NOT the raw internal-clash unify wording
+        // ("type mismatch: Int64 and Char must be the same type here, but differ") — the Char case is
+        // deliberately routed to the coercion path, and that path now REWORDS the lead too.
+        assert!(
+            ch.message
+                .contains("this argument is a Char, but a value of type Int64 is expected here")
+                && !ch.message.contains("must be the same type here"),
+            "the Char-arg lead is polished, not the raw unify clash: {}",
+            ch.message
+        );
         let sym = reject_full(
             "(module m (def (f (: s String)) s) (def (g (: sym Symbol)) (f sym)) (export g))",
         )
@@ -21834,6 +21844,75 @@ mod match_engine {
             .unwrap(),
             "-1",
             "a non-matching literal value at one key falls through even though the other key matches"
+        );
+    }
+
+    #[test]
+    fn a_map_value_sub_pattern_may_be_an_irrefutable_compound_with_binders() {
+        // A map-pattern VALUE sub-pattern may be an IRREFUTABLE compound that INTRODUCES BINDERS — a
+        // `(tuple x y)` / a single-variant `(Mk n)` — not just a bare binder or a literal. The nested
+        // binders resolve via a RESOLVE-STAGE descent (`match_arm_map_binds` → `value_subpattern_binds`
+        // gives `MapField` a `value_steps` sub-path), and `lower_map_field` folds the value down that
+        // sub-path. This is the map analogue of Inc-1's list-element compose. A REFUTABLE value (a
+        // multi-variant ctor) still declines (value-discriminant dispatch is a later increment).
+        //
+        // A TUPLE value `(map ("a" (tuple x y)))` binds both elements: `{"a": (3,4)}` → x=3,y=4 → 7.
+        let Some(v) = run_heap_value(
+            "(module m (def (main) \
+               (match (Map.insert (Map.empty) \"a\" (tuple 3 4)) \
+                 ((map (\"a\" (tuple x y)) .. rest) (+ x y)) \
+                 (_ -1))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping map-value-tuple run");
+            return;
+        };
+        assert_eq!(
+            v, "7",
+            "a tuple value sub-pattern binds both elements (3+4)"
+        );
+        // A single-variant CTOR value `(map ("a" (Box.Mk n)))` binds the payload: `{"a": Mk 5}` → 5.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Box (Mk Int64)) (def (main) \
+                   (match (Map.insert (Map.empty) \"a\" (Box.Mk 5)) \
+                     ((map (\"a\" (Box.Mk n)) .. rest) n) \
+                     (_ -1))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "5",
+            "a single-variant ctor value sub-pattern binds its payload"
+        );
+        // A nested-DEEP value `(map ("a" (tuple (tuple x y) z)))` binds through two tuple levels:
+        // `{"a": ((1,2),3)}` → x=1 → returned.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (main) \
+                   (match (Map.insert (Map.empty) \"a\" (tuple (tuple 1 2) 3)) \
+                     ((map (\"a\" (tuple (tuple x y) z)) .. rest) x) \
+                     (_ -1))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "a deeply-nested tuple value sub-pattern binds the inner element"
+        );
+        // A REFUTABLE value (a multi-variant ctor) declines — value-discriminant dispatch is unbuilt.
+        let decline = reject_full(
+            "(module m (def (f (: m (Map String (Option Int64)))) \
+               (match m ((map (\"a\" (Some n)) .. rest) n) (_ -1))) \
+             (def (main) (f (Map.insert (Map.empty) \"a\" (Some 5)))) (export main))",
+        )
+        .expect("a multi-variant-ctor map value declines");
+        assert_eq!(
+            decline.code, None,
+            "a refutable map value declines (no code)"
+        );
+        assert!(
+            decline.message.contains("refutable map value sub-pattern"),
+            "the decline names the refutable value limit: {}",
+            decline.message
         );
     }
 
@@ -38952,6 +39031,58 @@ mod stage1 {
              `reduce_ctor`→`encode_typeval` round-trip per nesting level; the direct `Ty` build in \
              `typeval_of` fixes it): depth 200→400 grew the node count {ratio:.1}× (n200={n200}, \
              n400={n400}); linear is ~2×, the O(depth²) blowup was ~4×"
+        );
+    }
+
+    #[test]
+    fn a_deeply_nested_generic_nominal_annotation_reduces_to_a_linear_size_type() {
+        // REGRESSION (perf): `Db::normalize_sum` reduces a generic NOMINAL (erasable newtype, `(type Box
+        // (Mk a))`) at an instantiation to `Ty::Nominal { args, inner }`, where `inner` is the template with
+        // `args` substituted. `inner` was a `Box<Ty>`, so for a NESTED `(Box (Box … Int64))` the child
+        // nominal was stored in BOTH `args` and (DEEP-CLONED into) `inner` at every level → the materialized
+        // `Ty` DOUBLED per nesting level = O(2^depth) (depth 20 built a ~2M-node `Ty`; the compiler hung —
+        // depth 24 took ~6s, depth 30+ timed out). FIX: `Nominal.inner: Rc<Ty>` — the child's allocation is
+        // SHARED across `args`/`inner` and across levels, so a depth-D nesting is O(D) nodes, not O(2^D).
+        //
+        // The NOISE-FREE signal is the `subst_template_vars` VISIT COUNT (the template-substitution work
+        // that builds each `Nominal.inner`): O(depth) after the fix, O(2^depth) before — a pure function of
+        // the program, deterministic, no timing. (A `Ty`-node COUNT is the WRONG measure here: with the
+        // `Rc` sharing the built type is O(depth) in MEMORY but a naive tree-walk that doesn't dedup shared
+        // `Rc`s would itself re-expand to O(2^depth) — so the fix is in the WORK, counted directly.)
+        use crate::db::Db;
+        use crate::testkit::parse;
+        fn subst_visits_for_nested_box(depth: usize) -> u64 {
+            crate::host::run_with_compiler_stack(move || {
+                let mut ty = String::from("Int64");
+                for _ in 0..depth {
+                    ty = format!("(Box {ty})");
+                }
+                let src = format!(
+                    "(module m (type Box (Mk a)) (def (g (: x {ty})) x) (def (main) 0) (export main))"
+                );
+                crate::db::SUBST_TEMPLATE_VARS_VISITS.with(|c| c.set(0));
+                // Loading + a full `diagnostics` run reduces the annotation (`typeval_of`→`normalize_sum`→
+                // `subst_template_vars`) — forcing exactly the work whose count we measure.
+                let mut db = Db::load(parse(&src));
+                let _ = crate::diagnostics(&mut db);
+                crate::db::SUBST_TEMPLATE_VARS_VISITS.with(|c| c.get())
+            })
+        }
+        // Sanity: the substitution actually runs for a nested nominal.
+        assert!(subst_visits_for_nested_box(4) > 0);
+        // Linear ⇒ the work for 2× depth is ~2×; the O(2^depth) blowup was ~1000×+ (and would hang at these
+        // depths — depth 20 alone drove ~2^20 substitutions before the fix). Measure depth 20 vs 40 and
+        // require sub-quadratic growth: linear (~2×) clears < 4× easily, and any exponential regression
+        // fails catastrophically (it would not even complete). Deterministic; no min-of-runs.
+        let v20 = subst_visits_for_nested_box(20);
+        let v40 = subst_visits_for_nested_box(40);
+        let ratio = v40 as f64 / (v20.max(1)) as f64;
+        assert!(
+            ratio < 4.0,
+            "a deeply-nested generic-nominal annotation must reduce with O(depth) template-substitution \
+             work, not O(2^depth) (was `Nominal.inner: Box<Ty>` deep-cloning the child into both `args` and \
+             `inner` per level; `inner: Rc<Ty>` shares it): depth 20→40 grew `subst_template_vars` visits \
+             {ratio:.1}× (v20={v20}, v40={v40}); linear is ~2×, the exponential doubled PER LEVEL"
         );
     }
 

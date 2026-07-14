@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 83 tests total across 10 modules):
+top. Current `src/` modules (each with same-file `@test`s — 92 tests total across 11 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -92,6 +92,11 @@ top. Current `src/` modules (each with same-file `@test`s — 83 tests total acr
   the shape that still miscompiles to a wrong value). Reconstructs the full tree STRUCTURE + every
   Int/Bool leaf value EXACTLY (verified: nested lists, deep nesting, Int-value round-trip); Name/Str
   leaf CONTENT is still a placeholder `""` (runtime `String.from-bytes` decline). 10 `@test`s.
+- `src/traverse.cdz` — higher-order combinators the prelude lacks: `map-list`/`filter-list`/`fold-list`
+  over `Int64` lists, plus Ast traversals `count-where` (count nodes matching a predicate) and
+  `int-total` (fold every Int leaf). Exercises closures passed to self-recursive HOFs (each fn param
+  arrow-annotated to sidestep the inference gap above). 9 `@test`s (map/filter/fold, a pipeline,
+  predicate counts, nested Int total).
 
 The `infer` pass (HM inference over an expression language, composing `unify`) is written and `cdz
 check`s clean but currently lives in `repros/blocked-infer-cross-file-hm-borrow.cdz` — its `@test`s
@@ -154,6 +159,21 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   constantly (transform every AST child, every arg); the workaround is a hand-written recursive map
   (`(match xs ((list) (list)) ((list h .. t) (List.concat (list (f h)) (rec t))))`), which works but is
   O(n²) via `concat`. `List.map`/`List.filter`/`List.fold` are the obvious missing higher-order list ops.
+  `src/traverse.cdz` now provides these hand-rolled (map/filter/fold + Ast predicate-count/fold).
+
+- **OPEN (seed `rcdzc` — HM inference GAP): an unannotated closure passed to a SELF-RECURSIVE HOF fails
+  to infer the closure's parameter types.** `repros/reject-inferred-closure-param-through-recursive-hof.
+  sexp`. The classic `foldl` written idiomatically — `(def (fold-list f acc xs) … (fold-list f (f h acc)
+  t))` with `(fn (x a) (+ a x))` — fails `cdz check`: "a closure's parameter type has no machine
+  representation" + CDZ0203 showing the closure typed `(-> Unit (-> Unit Int64))` (the `Unit`/`_` is the
+  tell — the param tyvars were never solved). NO sum type needed; a bare `List Int64` reproduces. ROOT:
+  at the recursive call `f` is re-passed to a `fold-list` whose own `f` param is not yet solved, so the
+  constraint from the closure's USE (`f h acc`) never flows back to the closure; a NON-recursive HOF
+  solves it from its single application (works). TWO WORKAROUNDS (each compiles + runs): annotate the
+  closure's params, OR annotate the HOF's `f` parameter with the arrow type (`f: Int64 -> Int64 ->
+  Int64`). `src/traverse.cdz` uses the arrow-annotation workaround throughout. Impact: `fold`/`map`/
+  `filter` over inferred closures — the compiler's bread and butter — need an arrow annotation on the fn
+  parameter; the fully-inferred spelling should work.
 
 - **OPEN (seed `rcdzc` — MISCOMPILE, silent trap): a PARAMETERIZED compound-returning export traps.**
   An export that takes a parameter AND returns a compound (tuple / record / sum) compiles clean (`cdz

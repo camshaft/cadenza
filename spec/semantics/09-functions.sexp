@@ -2653,6 +2653,36 @@
   (call   main (: -3 Int64))
   (output (: 0 Int64)))
 
+(case "an if over two trap-free bitwise arms selects branchlessly — then arm"
+  (doc    "`(def (main (: x Int64)) (if (< x 0) (& x 7) (| x 8)))` called with -3. Both arms are small
+           TRAP-FREE bitwise ops, so the compiler emits a BRANCHLESS `select` (evaluate both arms, pick by
+           the condition) instead of a structured `if`/`else` — sound because a bitwise op can neither trap
+           nor allocate on the untaken path. x = -3 is < 0 so the then arm is taken: -3 & 7 = 5. Pins the
+           widened if-conversion (a select arm need not be a bare leaf, just a small trap-free scalar).")
+  (input  (do (def (main (: x Int64)) (if (< x 0) (& x 7) (| x 8))) (export main)))
+  (call   main (: -3 Int64))
+  (output (: 5 Int64)))
+
+(case "an if over two trap-free bitwise arms selects branchlessly — else arm"
+  (doc    "The companion selecting the OTHER arm of `(if (< x 0) (& x 7) (| x 8))`: called with 4 (not
+           < 0), so the else arm is taken: 4 | 8 = 12. Together with the then-arm case this pins that the
+           branchless select computes BOTH bitwise arms and returns the one the runtime condition picks —
+           value parity with the structured `if` it replaces, on both condition polarities.")
+  (input  (do (def (main (: x Int64)) (if (< x 0) (& x 7) (| x 8))) (export main)))
+  (call   main (: 4 Int64))
+  (output (: 12 Int64)))
+
+(case "an if whose untaken arm would trap keeps the branch (no select of checked arith)"
+  (doc    "`(def (main (: x Int64)) (if (< x 0) x (* x 1000000000000)))` called with -5. The else arm is a
+           CHECKED multiply that overflows for a large x — NOT trap-free — so the compiler must keep the
+           structured `if` and NOT convert to a branchless `select` (which would evaluate the else arm even
+           when the then arm is taken). x = -5 is < 0 → the then arm `x` is returned = -5, and the
+           would-overflow else arm is never evaluated (no trap). Pins the trap-freedom guard on the
+           if-conversion: only an arm that cannot trap on the untaken path may become a select operand.")
+  (input  (do (def (main (: x Int64)) (if (< x 0) x (* x 1000000000000))) (export main)))
+  (call   main (: -5 Int64))
+  (output (: -5 Int64)))
+
 ; --- Narrow-width runtime arguments cross as their FAITHFUL component primitive -------------------
 ; The eight aliased widths (Int8/16/32, UInt8/16/32/64 and their `(Int N)` expansions) each have a
 ; component boundary representation: they cross as `s8`/`u8`/`s16`/`u16`/`s32`/`u32`/`s64`/`u64`, NOT as
