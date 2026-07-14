@@ -3408,6 +3408,47 @@
   (call   main (: 2 Int64))
   (output (: 8 Int64)))
 
+(case "the empty and None arms of a list-payload split dispatch to their own values"
+  (doc    "The two cases above call the non-empty arm (`mk 1`/`mk 2`); this exercises the OTHER arms of the
+           same split. `mk 0` builds `(Some (list))` → the `(Some (list))` arm fires, returning 100; `mk 5`
+           builds `(None)` → the `(None)` arm returns -1. Pins that the empty-list arm and the None arm each
+           dispatch to their own value (not falling through to the rest arm), completing the arm coverage of
+           the empty+rest+None split whose non-empty arm the exhaustiveness case pins.")
+  (input  (do
+            (def (mk (: n Int64))
+              (if (< n 1) (Some (list))
+                (if (< n 2) (Some (list 7)) (None))))
+            (def (f (: o (Option (List Int64))))
+              (match o
+                ((Some (list)) 100)
+                ((Some (list x .. r)) x)
+                ((None) -1)))
+            (def (main (: n Int64)) (f (mk n))) (export main)))
+  (call   main (: 0 Int64)) (output (: 100 Int64))
+  (call   main (: 5 Int64)) (output (: -1 Int64)))
+
+(case "a list-payload split missing the non-empty arm is non-exhaustive"
+  (doc    "The soundness counterpart of the exhaustive-split cases: the empty+rest split is total only
+           because the two list arms JOINTLY cover every length. Drop the rest arm — `(match o ((Some
+           (list)) …) ((None) …))` covers `Some` ONLY for the empty list, leaving every non-empty
+           `Some (list …)` uncovered — and the match is non-exhaustive, rejected CDZ0210. Pins that the
+           `ListLen`-refinement precision that makes empty+rest total does NOT over-accept: a genuine
+           missing length still rejects.")
+  (input  (do
+            (def (f (: o (Option (List Int64)))) (match o ((Some (list)) 0) ((None) -1)))
+            (def (main) (f (None))) (export main)))
+  (error  CDZ0210))
+
+(case "a list-payload split missing the empty arm is non-exhaustive"
+  (doc    "The mirror gap: `(match o ((Some (list x .. r)) …) ((None) …))` covers `Some` only for a
+           non-empty list (`len ≥ 1`), leaving the empty list `(Some (list))` uncovered — non-exhaustive,
+           CDZ0210. With the missing-rest case above, pins that BOTH halves of the empty+rest split are
+           required for totality: neither the empty arm nor the rest arm alone covers `Some`.")
+  (input  (do
+            (def (f (: o (Option (List Int64)))) (match o ((Some (list x .. r)) x) ((None) -1)))
+            (def (main) (f (None))) (export main)))
+  (error  CDZ0210))
+
 (case "a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching"
   (doc    "The route around the not-yet-lowered ctor-in-tuple-slot binder: bind the tuple element to a
            NAME in the outer arm, then re-match it in a nested `match`. `(Outer.Wrap (tuple i k))` binds
