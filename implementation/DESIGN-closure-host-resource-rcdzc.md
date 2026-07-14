@@ -956,15 +956,23 @@ the component type. The new work:
   list<u8> tuple envelope. 🪤 the i64 `scratch` local sits AFTER all i32 locals → its index = `cell + n_i32`
   (a tuple arg adds a 3rd i32, shifting scratch by 1); getting it wrong gave a wasmparser "expected i64, found
   i32". Corpus: tuple-arg → `(tuple 13 7)`, record-arg → `(record (diff 7) (sum 13))`; a tuple-arg + List
-  result decline anchor. Still to do: value-encode (collection) result core; multi/mixed/distinct-sig byte-rope
-  + fixed-compound + tuple arg (their multi list-result cores/envelopes also need the thread).
+  result decline anchor.
+- **✅✅ TUPLE ARG + COLLECTION RESULT (single-export) — the single-export tuple-arg result matrix is CLOSED**
+  (`@8a1a539b`, baseline `@3fca5268`). The final single-export widening: a closure taking a fixed-shape scalar
+  tuple/record arg AND returning a variable-length collection (List/Map/Set) now compiles + runs. Threaded
+  `tuple_arg` into `closure_value_encode_resource_core_module_borrow` (reusing `emit_tuple_rebuild`/`_drop`; a
+  7th i32 local for the rebuilt arg cell) + routed the value-encode branch to the shared list<u8> tuple
+  envelope. The `emit_closure_resource` result-shape decline guard is GONE — a single-export tuple arg composes
+  with EVERY result shape (scalar / byte-rope / fixed-compound / collection). Corpus: tuple-arg → `(list 10 3)`,
+  Map → `(map (1 100) (2 200))`. 🎯 SINGLE-EXPORT: a fixed-shape scalar compound arg × every result shape DONE.
 - **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path — FIXED-SHAPE
-  SCALAR tuple/record is DONE for single-export, multi-export, mixed, AND distinct-sig (scalar result), plus
-  single-export BYTE-ROPE result (above); still to widen: a compound arg ALONGSIDE other args (the
-  `TupleArgRebuild` currently assumes the tuple is the SOLE arg — needs interleaving flattened-tuple fields
-  with pass-through scalars), a VARIABLE-LENGTH collection arg
-  (needs a `value-decode` runtime op that does not exist), a tuple arg on a compound/collection-
-  RESULT group. (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
+  SCALAR tuple/record is DONE for single-export across EVERY result shape (scalar/byte-rope/fixed-compound/
+  collection), and for multi-export/mixed/distinct-sig at SCALAR result; still to widen: multi/mixed/
+  distinct-sig with a LIST-result (byte-rope/compound/collection) + tuple arg (their multi list-result
+  cores/envelopes need the same thread — the shared helpers make it mechanical); a compound arg ALONGSIDE
+  other args (the `TupleArgRebuild` currently assumes the tuple is the SOLE arg — needs interleaving
+  flattened-tuple fields with pass-through scalars); a VARIABLE-LENGTH collection arg
+  (needs a `value-decode` runtime op that does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
   direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-resource passed
   INTO a call); a closure TRANSFORMER (`own<t>` both directions — cleanly declined). **The entire byte-rope
   (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND
