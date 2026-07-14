@@ -5784,6 +5784,22 @@ fn emit(
         Core::HostCall {
             effect, op, args, ..
         } => {
+            // EFFECTS-UNIFICATION (U2): an escaping effect BOUND to a peer contract
+            // (`db.effect_bindings`) is a PEER call — resolve it against the extern-import set and emit a
+            // `CallExternImport`, exactly as a `Core::ExternCall` did. An unbound effect stays a host call.
+            if let Some(iface) = db.effect_bindings.get(&effect).cloned() {
+                let index = layout.extern_index(&iface, &op).ok_or_else(|| {
+                    Reject::decline("a peer-bound effect op is not in the extern-import set")
+                })?;
+                for &arg in &args {
+                    if matches!(crate::infer::type_of(db, arg), Ty::Unit) {
+                        continue;
+                    }
+                    emit(db, arg, slots, base, high, scratch_ty, layout, out)?;
+                }
+                out.push(Lir::CallExternImport(index));
+                return Ok(());
+            }
             let index = layout.host_index(&effect, &op).ok_or_else(|| {
                 Reject::decline("a host call's operation is not in the host-import set")
             })?;

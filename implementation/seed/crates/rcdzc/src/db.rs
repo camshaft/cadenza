@@ -565,6 +565,15 @@ pub struct Db {
     /// common case) → exports cross as top-level component funcs (byte-identical to before). Set AFTER
     /// `Db::load`/`load_linked` by the caller (`compile`), which reads the request artifact.
     pub component_name: Option<String>,
+    /// EFFECT → PEER-CONTRACT bindings (U2, the effects-unification of cross-component interop): a
+    /// top-level `(bind Math "cadenza:math/api")` DEFAULTS the whole component scope to route the escaping
+    /// effect `Math` to the peer interface `cadenza:math/api` (rather than the generic host). An escaping
+    /// perform of a bound effect's op emits through the PEER envelope (`assemble_extern`) with this
+    /// interface, exactly as an `(extern …)` op did. An in-program `(handle Math …)` discharges the effect
+    /// BEFORE it escapes (so it overrides the binding — a test mock), and a compile-request `--bind`
+    /// override (U3) is merged in AFTER load (so it wins over the source default). Empty for a program
+    /// that binds no effect to a peer (the common case — an effect escapes to the host, byte-neutral).
+    pub effect_bindings: std::collections::BTreeMap<String, String>,
     /// The nested `(module NAME …)` declarations reachable in a `do`-block, from the scan. Each is
     /// synthesized (`crate::modules`) to a record whose fields are its exported defs, so `NAME` resolves
     /// to that record (a `Ref` to it) and `(. NAME field)` is ordinary member access — the module analogue
@@ -1555,6 +1564,8 @@ impl Db {
         // Scan the program's `(Unit.define …)` forms BEFORE `ast` moves into the db (a raw-occurrence
         // store the units layer reduces on demand).
         let unit_defines = scan_unit_defines(&ast);
+        // Scan `(bind Effect "iface")` top-level directives → the effect→peer-contract default map (U2).
+        let effect_bindings = scan_effect_bindings(&ast);
         // Map each bare integer LITERAL written inside a `(pragma default-integer <T>)` module to its
         // default type-expr — an ARENA walk of each pragma-module's member subtrees (before `ast` moves,
         // before any β-copy), so a literal's default survives inlining that reparents it (the parent-walk
@@ -1586,6 +1597,7 @@ impl Db {
             effect_decls,
             extern_decls,
             component_name: None,
+            effect_bindings,
             modules,
             newtype_inner: crate::fxhash::FxHashMap::default(),
             default_int_literals,
@@ -3772,6 +3784,26 @@ fn scan_unit_defines(ast: &Arenas) -> Vec<(String, StructId, i128, i128)> {
     out
 }
 
+/// Scan the program's `(bind Effect "cadenza:pkg/iface")` top-level directives into the effect→peer-
+/// contract default map (U2, the effects-unification of cross-component interop). Each binds an escaping
+/// effect NAME to a peer interface STRING — the component-scope default route for that effect. A malformed
+/// `(bind …)` (wrong arity, non-name effect, non-string interface) is skipped (a diagnostic elsewhere);
+/// first-wins on a duplicate effect name. Empty for a program with no `(bind …)`.
+fn scan_effect_bindings(ast: &Arenas) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for item in top_items(ast) {
+        if let Some(tail) = ast.as_form(item, "bind")
+            && tail.len() == 2
+            && let Some(effect) = ast.as_name(tail[0])
+            && let Some(iface) = ast.as_str(tail[1])
+        {
+            out.entry(effect.to_string())
+                .or_insert_with(|| iface.to_string());
+        }
+    }
+    out
+}
+
 /// The argument list of a `((. Unit KEY) arg…)` member-access call at `item`, or `None` if `item` is not
 /// that shape. Recognizes the reader's desugaring of `(Unit.KEY arg…)` — the head is a `(. Unit KEY)`
 /// list. Used to scan `Unit.define` top-level forms (and to recognize them as modeled forms so they
@@ -3806,7 +3838,7 @@ fn top_items(ast: &Arenas) -> Vec<StructId> {
 /// `(pragma …)`), and the whole program DECLINES rather than silently ignoring it and compiling the rest
 /// (decline-don't-miscompile — a program with an unmodeled declaration is out of scope, not partially
 /// meaningful). Kept in sync with `scan_top_level`'s branches.
-const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "extern"];
+const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "extern", "bind"];
 
 /// The declaration/directive keywords a top-level `(head …)` form may legitimately lead with — the
 /// closed candidate pool for a "did you mean?" when an unknown top-level head is a plausible TYPO of one
@@ -3815,7 +3847,7 @@ const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "extern"];
 /// mistyping any of these writes a top-level form, and pointing at the intended keyword is the fix. Kept
 /// in one place so the suggestion pool cannot drift into naming a keyword the grammar would then reject.
 pub const TOP_LEVEL_KEYWORDS: &[&str] = &[
-    "def", "export", "type", "effect", "extern", "module", "pragma",
+    "def", "export", "type", "effect", "extern", "bind", "module", "pragma",
 ];
 
 /// Substitute a generic newtype's TEMPLATE `Ty` at a concrete instantiation: replace each `Ty::Var(i)`
