@@ -4319,6 +4319,24 @@
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
+(case "a user sum NAMED after a prelude sum shadows it without a duplicate definition"
+  (doc    "A user declares `(type Sign (X Int64) (Y))` — reusing the NAME of the prelude sum `Sign`
+           (Neg/Zero/Pos), which some backends emit UNCONDITIONALLY (the Rust backend always emits `enum
+           Sign` / `enum Ordering` for the three-way `compare` result). A backend that emitted BOTH the
+           prelude `Sign` and the user `Sign` would define `enum Sign` twice (Rust E0428). The user
+           declaration shadows the prelude in Cadenza (a source `Sign` resolves to the user's), so the
+           prelude enum is unreferenceable and must be suppressed — one `enum Sign`, the user's.
+           `(f (X 5))` = 5. Pins that a user sum may reuse a prelude sum's name (the AST-shape a self-hosted
+           compiler needs — its own `Sign`/`Ordering`/`Expr` nodes) without a duplicate-type miscompile.")
+  (input  (do
+            (type Sign (X Int64) (Y))
+            (def (f (: s Sign)) (match s ((Sign.X n) n) ((Sign.Y) -1)))
+            (def (main (: k Int64)) (f (Sign.X k)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
 (case "a unary constructor is a single-arity function"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (1st sentence): Some is a single-arity constructor. Applied to an

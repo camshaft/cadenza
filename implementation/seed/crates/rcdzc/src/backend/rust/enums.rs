@@ -186,6 +186,14 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
     if is_builtin_std_sum(db, &decl) {
         return Err(Reject::decline("built-in Option/Result maps to Rust's own"));
     }
+    // A PRELUDE sum (`Sign`, `Ordering` — non-user nodes) whose emitted enum name is SHADOWED by a USER
+    // declaration of the same sanitized name is SKIPPED: the user `(type Sign …)` shadows the prelude in
+    // Cadenza (a source `Sign` resolves to the user's), so the prelude enum is unreferenceable — emitting
+    // both would be a duplicate `enum Sign` (rustc E0428). The user decl emits the one `enum Sign`. (The
+    // prelude sums are emitted unconditionally otherwise; only a same-name user decl suppresses one.)
+    if !db.is_user_node(decl.occ) && user_decl_shadows_name(db, &decl) {
+        return Err(Reject::decline("a user declaration shadows this prelude sum's name"));
+    }
     // An erasable NEWTYPE emits NO enum — its runtime value IS the underlying payload (the tag adds
     // nothing), so `types::rust_type` maps a `Ty::Nominal` THROUGH to its `inner` Rust type and no boxed
     // enum is needed. (Both monomorphic and generic newtypes: a use `(: b UserId)` → the inner type
@@ -276,6 +284,22 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
         "#[derive({derives})]\n#[allow(dead_code)]\npub enum {name}{generics} {{ {} }}\n",
         variants.join(", ")
     ))
+}
+
+/// Whether some USER (source-node) declaration emits the SAME Rust enum ident as `decl` — i.e. a user
+/// `(type Sign …)` shadows the prelude `Sign`, or (more generally) two declarations whose names sanitize to
+/// the same ident collide. Used to suppress a PRELUDE sum whose name a user re-declared, so only one
+/// `enum <ident>` is emitted (rustc rejects a duplicate, E0428). Compares the emitted `sum_ident`, so a
+/// `-`/`_` sanitization collision (`foo-bar` vs `foo_bar`) is caught too — though for two USER decls that
+/// is a genuine ambiguity the front-end should reject; here we only use it to let a user decl win over a
+/// prelude one.
+fn user_decl_shadows_name(db: &Db, decl: &crate::db::TypeDecl) -> bool {
+    let ident = types::sum_ident(&decl.name);
+    db.type_decls.iter().any(|other| {
+        other.occ != decl.occ
+            && db.is_user_node(other.occ)
+            && types::sum_ident(&other.name) == ident
+    })
 }
 
 /// Whether `decl` is the BUILT-IN `Option`/`Result` that maps to Rust's own `Option`/`Result` — a
