@@ -1675,7 +1675,9 @@ pub fn select_function_of(
     // `which` slot is claimed above `base`, so scratch for the bodies starts one higher.
     let mutual = loop_members.len() > 1;
     let which_slot = base;
-    let body_base = if mutual { base + 1 } else { base };
+    // The body's scratch floor. It rises past the `which` state slot (mutual) and past any LICM-hoisted
+    // invariant slots (assigned below) — all of which live ACROSS the loop, so the body must not reuse them.
+    let mut body_base = if mutual { base + 1 } else { base };
     if mutual {
         scratch_ty.insert(which_slot, ValType::I32);
         high = high.max(body_base);
@@ -1714,6 +1716,47 @@ pub fn select_function_of(
             .expect("self is a member of its own loop group") as i32;
         code.push(Lir::ConstI32(self_which));
         code.push(Lir::LocalSet(which_slot));
+    }
+    // LOOP-INVARIANT CODE MOTION: for a PLAIN self-loop (a single member), hoist trap-free, loop-invariant,
+    // non-trivial subexpressions of the body — computed ONCE here (before the loop opens) into a fresh slot
+    // and read back inside the body via `emit`'s node-keyed `slots.get(&id)` fast path. The classic win is
+    // `(List.len xs)` in an index loop `(if (< i (List.len xs)) …)`: a `vec-len` import CALL, invariant
+    // because `xs` is threaded unchanged, now runs once instead of per iteration. A mutual group is skipped
+    // (its members share slots, so back-edge invariance is per-peer — deferred). Runs only when looping.
+    if loops && !mutual {
+        let self_d = self_def.expect("a loop has a self_def");
+        let inv_params = invariant_param_binders(db, body, params, &slot_of, &loop_members, self_d);
+        let mut hoist: Vec<StructId> = Vec::new();
+        collect_hoistable(db, body, &inv_params, &mut hoist);
+        for node in hoist {
+            // The hoisted value's machine slot. Skip anything without a machine rep (a heap-handle
+            // invariant is fine — it is an i32 handle — but a rep-less type cannot be stashed).
+            let Some(vt) = valtype_of(&type_of(db, node)) else {
+                continue;
+            };
+            // Claim a PERSISTENT slot for the hoisted value at the body-scratch floor, and raise the floor
+            // past it so the loop body's transient scratch never reuses it (the value must survive every
+            // iteration). This mirrors how `which` reserves `base` for a mutual group.
+            let slot = body_base;
+            body_base += 1;
+            high = high.max(body_base);
+            scratch_ty.insert(slot, vt);
+            // Emit the invariant computation ONCE (its own transient scratch floats above the reserved
+            // slots, from `body_base`), store it, and register `(node → slot)` so every occurrence inside
+            // the loop body reads the slot instead of recomputing.
+            emit(
+                db,
+                node,
+                &slot_of,
+                body_base,
+                &mut high,
+                &mut scratch_ty,
+                layout,
+                &mut code,
+            )?;
+            code.push(Lir::LocalSet(slot));
+            slot_of.insert(node, slot);
+        }
     }
     if loops {
         let block_ty = match &ret {
@@ -1860,6 +1903,375 @@ fn peephole_emit(emit: &mut Emit) {
         sc.end_ix = remap_ix(sc.end_ix);
     }
     emit.code = out;
+}
+
+// ── LOOP-INVARIANT CODE MOTION (LICM) ────────────────────────────────────────────────────────────
+//
+// Once the loop transform has turned a tail-recursive function into a `loop`, a subexpression of the
+// body that depends ONLY on loop-INVARIANT parameters (and constants) recomputes the SAME value every
+// iteration — a waste, especially when it is a runtime CALL like `(List.len xs)` (a `vec-len` import) in
+// the classic index loop `(if (< i (List.len xs)) …)`. LICM computes such a subexpression ONCE before
+// the loop into a slot and reads the slot inside the body (via `emit`'s `slots.get(&id)` fast path).
+//
+// A parameter is loop-INVARIANT iff EVERY self-recursive back-edge (a member tail call) passes it back
+// UNCHANGED — the exact `is_identity` test `emit_loop_iteration` already applies per arg. A subexpression
+// is HOISTABLE iff it is (a) TRAP-FREE (`is_trap_free` — hoisting a trapping op ahead of a possibly-zero-
+// iteration loop would introduce a trap the body ran conditionally/never), (b) INVARIANT (built only from
+// invariant params + constants through pure operators — no call/effect/control-flow, no varying param or
+// let-local), and (c) WORTH IT (a non-trivial computation, not a bare param/const, which are already free
+// `local.get`/immediate). Only self-loops (a single member) are handled here — a mutual group shares
+// slots across peers, so per-member invariance would need per-peer back-edge analysis (deferred).
+
+/// The set of loop-invariant PARAMETER BINDERS of a self-loop: those a member tail call NEVER reassigns
+/// (every self-call passes the parameter back to its own slot — the `is_identity` shape). Starts with ALL
+/// params invariant and REMOVES any that some back-edge changes; a param not threaded identically on even
+/// one edge is variant. `slots` maps each param binder to its slot; `param_slots[i]` is param `i`'s slot.
+fn invariant_param_binders(
+    db: &mut Db,
+    body: StructId,
+    params: &[(StructId, Ty)],
+    slots: &HashMap<StructId, u32>,
+    members: &[usize],
+    self_def: usize,
+) -> std::collections::HashSet<StructId> {
+    // Begin optimistic: every parameter binder is invariant.
+    let mut invariant: std::collections::HashSet<StructId> =
+        params.iter().map(|(b, _)| *b).collect();
+    let param_slots: Vec<u32> = params
+        .iter()
+        .map(|(b, _)| *slots.get(b).expect("param binder has a slot"))
+        .collect();
+    // Walk every SELF tail call (a back-edge) and demote any param its arg does not pass through unchanged.
+    invalidate_varying_params(
+        db,
+        body,
+        &param_slots,
+        slots,
+        members,
+        self_def,
+        &mut invariant,
+        params,
+    );
+    invariant
+}
+
+/// Descend the TAIL positions (the same ones `emit_tail`/`tail_callees` thread) and, at each SELF tail
+/// call, drop from `invariant` any parameter whose argument is not exactly its own identity pass-through
+/// (`Core::Param{binder}` bound to the same slot). A non-self tail call (`return_call` to a peer/other
+/// def) is NOT a back-edge of THIS loop for a single-member group, so it is not walked for invalidation —
+/// but a single-member self-loop only has self back-edges anyway (`members == [self_def]`).
+#[allow(clippy::too_many_arguments)]
+fn invalidate_varying_params(
+    db: &mut Db,
+    id: StructId,
+    param_slots: &[u32],
+    slots: &HashMap<StructId, u32>,
+    members: &[usize],
+    self_def: usize,
+    invariant: &mut std::collections::HashSet<StructId>,
+    params: &[(StructId, Ty)],
+) {
+    match core_of(db, id) {
+        Core::Call { callee, args } if members.contains(&callee) => {
+            // A back-edge: param `i` stays invariant only if arg `i` is its own identity pass-through.
+            for (i, &arg) in args.iter().enumerate() {
+                if i >= param_slots.len() {
+                    continue;
+                }
+                let is_identity = matches!(core_of(db, arg), Core::Param { binder }
+                    if slots.get(&binder) == Some(&param_slots[i]));
+                if !is_identity {
+                    invariant.remove(&params[i].0);
+                }
+            }
+        }
+        Core::Call { .. } => {}
+        Core::If { then_, else_, .. } => {
+            invalidate_varying_params(
+                db,
+                then_,
+                param_slots,
+                slots,
+                members,
+                self_def,
+                invariant,
+                params,
+            );
+            invalidate_varying_params(
+                db,
+                else_,
+                param_slots,
+                slots,
+                members,
+                self_def,
+                invariant,
+                params,
+            );
+        }
+        Core::Let { body, .. } => invalidate_varying_params(
+            db,
+            body,
+            param_slots,
+            slots,
+            members,
+            self_def,
+            invariant,
+            params,
+        ),
+        Core::Match { arms, .. } => {
+            for arm in arms {
+                invalidate_varying_params(
+                    db,
+                    arm.body,
+                    param_slots,
+                    slots,
+                    members,
+                    self_def,
+                    invariant,
+                    params,
+                );
+            }
+        }
+        Core::MatchList { arms, .. } => {
+            for arm in arms {
+                invalidate_varying_params(
+                    db,
+                    arm.body,
+                    param_slots,
+                    slots,
+                    members,
+                    self_def,
+                    invariant,
+                    params,
+                );
+            }
+        }
+        Core::MatchSum { root, .. } => invalidate_varying_params_sum(
+            db,
+            &root,
+            param_slots,
+            slots,
+            members,
+            self_def,
+            invariant,
+            params,
+        ),
+        _ => {}
+    }
+}
+
+/// `invalidate_varying_params` over a sum decision tree — the `SumCont` analogue, descending the same
+/// `Leaf`/`Guarded`/`LitTest`/`Switch` tail continuations `sum_cont_tail_callees` does.
+#[allow(clippy::too_many_arguments)]
+fn invalidate_varying_params_sum(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    param_slots: &[u32],
+    slots: &HashMap<StructId, u32>,
+    members: &[usize],
+    self_def: usize,
+    invariant: &mut std::collections::HashSet<StructId>,
+    params: &[(StructId, Ty)],
+) {
+    match cont {
+        crate::core::SumCont::Leaf(body) => invalidate_varying_params(
+            db,
+            *body,
+            param_slots,
+            slots,
+            members,
+            self_def,
+            invariant,
+            params,
+        ),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            invalidate_varying_params(
+                db,
+                *body,
+                param_slots,
+                slots,
+                members,
+                self_def,
+                invariant,
+                params,
+            );
+            invalidate_varying_params_sum(
+                db,
+                els,
+                param_slots,
+                slots,
+                members,
+                self_def,
+                invariant,
+                params,
+            );
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            invalidate_varying_params_sum(
+                db,
+                then_,
+                param_slots,
+                slots,
+                members,
+                self_def,
+                invariant,
+                params,
+            );
+            invalidate_varying_params_sum(
+                db,
+                els,
+                param_slots,
+                slots,
+                members,
+                self_def,
+                invariant,
+                params,
+            );
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            for arm in arms {
+                invalidate_varying_params_sum(
+                    db,
+                    &arm.cont,
+                    param_slots,
+                    slots,
+                    members,
+                    self_def,
+                    invariant,
+                    params,
+                );
+            }
+        }
+    }
+}
+
+/// Whether the node at `id` is LOOP-INVARIANT given the set of invariant param binders — it is built
+/// ONLY from invariant params and constants through PURE, side-effect-free operators. CONSERVATIVE: only
+/// the enumerated pure scalar/collection-read variants qualify (arithmetic, comparison, conversion,
+/// negation, a collection COUNT, a projection / sum-payload read); every other kind — a call, control
+/// flow, a heap CONSTRUCTION, a `let`/`LocalRef` (a loop-varying local), a `Captured`/closure — is
+/// treated as variant (returns false), so LICM never hoists something it cannot prove invariant. A bare
+/// `Param` is invariant iff in the set; a `ConstInt`/`ConstBool`/`Unit` is always invariant.
+fn licm_invariant(
+    db: &mut Db,
+    id: StructId,
+    inv_params: &std::collections::HashSet<StructId>,
+) -> bool {
+    match core_of(db, id) {
+        Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit => true,
+        Core::Param { binder } => inv_params.contains(&binder),
+        // Pure scalar operators — invariant iff every operand is.
+        Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {
+            licm_invariant(db, lhs, inv_params) && licm_invariant(db, rhs, inv_params)
+        }
+        Core::Convert { operand, .. } | Core::Not { operand } => {
+            licm_invariant(db, operand, inv_params)
+        }
+        // A collection COUNT / a projection / a sum-payload read is a pure borrowing read — invariant iff
+        // the container is. (Its trap-freedom is decided separately by `is_trap_free`.)
+        Core::ListLen { operand } | Core::BytesLen { operand } => {
+            licm_invariant(db, operand, inv_params)
+        }
+        Core::MapSize { map } => licm_invariant(db, map, inv_params),
+        Core::SetLen { set } => licm_invariant(db, set, inv_params),
+        Core::Proj { operand, .. } => licm_invariant(db, operand, inv_params),
+        Core::SumPayload { scrutinee, .. } => licm_invariant(db, scrutinee, inv_params),
+        // Everything else — calls, control flow, heap builds, LocalRef (a loop-varying let), closures,
+        // effects — is conservatively variant. LICM does not hoist it.
+        _ => false,
+    }
+}
+
+/// Whether a node is TRIVIAL to (re)materialize — a bare parameter or a constant. Such a node is already
+/// a single `local.get` / immediate at each use, so hoisting it into a slot would only ADD a redundant
+/// slot + move; LICM skips it and hoists only NON-trivial invariant computations.
+fn licm_trivial(db: &mut Db, id: StructId) -> bool {
+    matches!(
+        core_of(db, id),
+        Core::Param { .. } | Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit
+    )
+}
+
+/// Collect the MAXIMAL hoistable subexpressions of a loop body: trap-free, loop-invariant, non-trivial
+/// nodes, taking the OUTERMOST such node on each path (a maximal invariant subtree is hoisted as ONE
+/// slot; its invariant sub-parts ride along inside it, needing no separate slot). Descends the body; at a
+/// node that is hoistable it records the node and does NOT descend (maximal); otherwise it recurses into
+/// the child positions that can CONTAIN a hoistable operand. Returns the node ids in DISCOVERY order
+/// (deduplicated), so each is emitted once before the loop. Only pure/analyzable parents are descended —
+/// which is sufficient because a hoistable node under an unanalyzed parent is still found when the walk
+/// reaches it through the parent's enumerated child positions.
+fn collect_hoistable(
+    db: &mut Db,
+    id: StructId,
+    inv_params: &std::collections::HashSet<StructId>,
+    out: &mut Vec<StructId>,
+) {
+    // A trap-free, invariant, non-trivial node is a maximal hoist root — record it, don't descend.
+    if !licm_trivial(db, id)
+        && crate::lower::is_trap_free(db, id)
+        && licm_invariant(db, id, inv_params)
+    {
+        if !out.contains(&id) {
+            out.push(id);
+        }
+        return;
+    }
+    // Otherwise descend the child positions that can hold a hoistable operand. Enumerated conservatively:
+    // exactly the pure operator operands + the control-flow / match sub-positions + call args + the common
+    // heap-op operands. An unlisted variant simply is not descended (a missed hoist, never a wrong one).
+    for child in licm_children(db, id) {
+        collect_hoistable(db, child, inv_params, out);
+    }
+}
+
+/// The child occurrences of `id` LICM descends looking for hoistable operands — the operand positions of
+/// the pure operators, the branches/arms of control flow, and the operands of calls/heap ops. Kept
+/// deliberately broad on the READ side (finding a hoist under any parent is sound), but it never returns a
+/// binder/pattern occurrence (only value positions). A variant not listed yields no children (its
+/// subexpressions are simply not searched — a missed opportunity, never an unsound hoist).
+fn licm_children(db: &mut Db, id: StructId) -> Vec<StructId> {
+    match core_of(db, id) {
+        Core::Arith { lhs, rhs, .. }
+        | Core::Compare { lhs, rhs, .. }
+        | Core::ValueEq { lhs, rhs }
+        | Core::And { lhs, rhs, .. }
+        | Core::ListConcat { lhs, rhs }
+        | Core::BytesConcat { lhs, rhs } => vec![lhs, rhs],
+        Core::Convert { operand, .. }
+        | Core::Not { operand }
+        | Core::Proj { operand, .. }
+        | Core::ListLen { operand }
+        | Core::BytesLen { operand }
+        | Core::BytesCompact { operand } => vec![operand],
+        Core::MapSize { map } => vec![map],
+        Core::SetLen { set } => vec![set],
+        Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => vec![scrutinee],
+        Core::If {
+            cond, then_, else_, ..
+        } => vec![cond, then_, else_],
+        Core::Let { body, bindings } => {
+            // The bindings' INIT expressions are value positions (their binders are not); the body too.
+            let mut v: Vec<StructId> = bindings.iter().map(|(_, init)| *init).collect();
+            v.push(body);
+            v
+        }
+        Core::Match { scrutinee, arms } => {
+            let mut v = vec![scrutinee];
+            v.extend(arms.iter().map(|a| a.body));
+            v
+        }
+        Core::MatchList { scrutinee, arms } => {
+            let mut v = vec![scrutinee];
+            v.extend(arms.iter().map(|a| a.body));
+            v
+        }
+        Core::Call { args, .. } => args,
+        Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => elems,
+        Core::ListPush { list, elem } => vec![list, elem],
+        Core::ListAt { list, index, .. } => vec![list, index],
+        // A variant with binders/patterns or an unanalyzed shape yields no searchable children.
+        _ => vec![],
+    }
 }
 
 /// Whether the body at `id` makes a tail call to any def in `members` through the tail positions the

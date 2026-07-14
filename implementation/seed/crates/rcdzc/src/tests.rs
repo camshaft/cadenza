@@ -10966,6 +10966,148 @@ mod recursion {
             cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
         }
     }
+
+    #[test]
+    fn a_loop_invariant_length_is_hoisted_out_of_the_loop() {
+        // LOOP-INVARIANT CODE MOTION: the classic index loop `(if (< i (List.len xs)) …)` recomputed
+        // `(List.len xs)` — a `vec-len` runtime import CALL — every iteration, though `xs` is a
+        // pass-through param (threaded unchanged on every back-edge). LICM now computes it ONCE before the
+        // loop into a slot and reads the slot inside. Pins the `vec-len` (`Lir::CallImport(OP_VEC_LEN)`)
+        // OUT of the loop at the Lir level (exactly one such call, and it PRECEDES the `Lir::Loop`) + value
+        // parity. NOTE the inner `(List.at xs i)` has its OWN internal bounds `vec-len` (a different node,
+        // over the varying `i`), so total `vec-len` count is 2 — but the LOOP-GUARD one is hoisted.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function_of;
+        let src = "(module m \
+                     (def (sumidx (: xs (List Int64)) (: i Int64) (: acc Int64)) \
+                       (if (< i ((. List len) xs)) \
+                           (sumidx xs (+ i 1) (+ acc (match ((. List at) xs i) ((Some x) x) ((None _) 0)))) \
+                           acc)) \
+                     (def (f (: xs (List Int64))) (sumidx xs 0 0)) (export f))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("sumidx").expect("sumidx");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = select_function_of(&mut db, body, &ps, &layout, Some(d))
+            .expect("select")
+            .code;
+        // Find the loop; the loop-guard `vec-len` must be emitted BEFORE it (hoisted), not only inside.
+        let loop_ix = code
+            .iter()
+            .position(|i| matches!(i, Lir::Loop(_)))
+            .expect("sumidx compiles to a loop");
+        let vec_len_before = code[..loop_ix]
+            .iter()
+            .filter(|i| matches!(i, Lir::CallImport("vec-len")))
+            .count();
+        assert_eq!(
+            vec_len_before, 1,
+            "the loop-invariant `(List.len xs)` is hoisted to a single `vec-len` BEFORE the loop, got \
+             {vec_len_before}: {code:?}"
+        );
+
+        // VALUE PARITY: sum [0,1000) via the index loop still computes correctly with the hoisted length.
+        // Build the list inside a nullary `main` and run through the value-heap runtime (as the sibling
+        // heap tests do — `run_heap_value` lives in another mod, so use the `cdz_run` path directly).
+        let prog = "(module m \
+                   (def (build (: i Int64) (: n Int64) (: out (List Int64))) \
+                     (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                   (def (sumidx (: xs (List Int64)) (: i Int64) (: acc Int64)) \
+                     (if (< i ((. List len) xs)) \
+                         (sumidx xs (+ i 1) \
+                            (+ acc (match ((. List at) xs i) ((Some x) x) ((None _) 0)))) \
+                         acc)) \
+                   (def (main) (let ((xs (build 0 1000 (list)))) (sumidx xs 0 0))) (export main))";
+        let bytes = component(prog);
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping hoisted-length index-loop run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "499500",
+                    "index loop with a hoisted length sums [0,1000)"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_loop_invariant_bitwise_op_is_hoisted() {
+        // A trap-free, loop-invariant SCALAR op — `(& k 255)` over the pass-through param `k` — is hoisted
+        // out of the loop (computed once) instead of recomputed each iteration. Pins the `i64.and` count
+        // BEFORE the loop and value parity. (The in-loop `i64.and` of the `(+ acc …)` overflow guard is a
+        // DIFFERENT computation, so it stays; we assert the invariant `& 255` moved out.)
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function_of;
+        let src = "(module m \
+                     (def (go (: n Int64) (: k Int64) (: acc Int64)) \
+                       (if (= n 0) acc (go (- n 1) k (+ acc (& k 255))))) \
+                     (def (f (: k Int64)) (go 10 k 0)) (export f))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("go").expect("go");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = select_function_of(&mut db, body, &ps, &layout, Some(d))
+            .expect("select")
+            .code;
+        let loop_ix = code
+            .iter()
+            .position(|i| matches!(i, Lir::Loop(_)))
+            .expect("go compiles to a loop");
+        let and_before = code[..loop_ix]
+            .iter()
+            .filter(|i| matches!(i, Lir::I64And))
+            .count();
+        assert_eq!(
+            and_before, 1,
+            "the invariant `(& k 255)` is hoisted to a single `i64.and` before the loop: {code:?}"
+        );
+
+        // VALUE PARITY: go(1000000, 999, 0) = 1000000 * (999 & 255 = 231) = 231000000.
+        use wasmtime::component::Val;
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::S64(999)]),
+            10 * 231,
+            "go(10, 999, 0) = 10 * (999 & 255)"
+        );
+    }
 }
 
 // ── the match engine: scalar scrutinee, literal + wildcard arms (step 3a) ─────────────────────────
