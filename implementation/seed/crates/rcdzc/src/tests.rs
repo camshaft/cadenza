@@ -46304,11 +46304,7 @@ mod cross_component_oracle {
 
     /// Emit the import section (module `"heap"`) declaring the five ops, and the type section they use.
     /// Returns the count of imported funcs (= 5) so the caller knows where its own funcs start.
-    fn heap_import_prologue(
-        m: &mut Module,
-        types: &mut TypeSection,
-        imports: &mut ImportSection,
-    ) -> u32 {
+    fn heap_import_prologue(types: &mut TypeSection, imports: &mut ImportSection) -> u32 {
         for (i, op) in heap_ops().iter().enumerate() {
             let (p, r) = op_core_functype(op);
             types.ty().function(p, r);
@@ -46329,7 +46325,7 @@ mod cross_component_oracle {
         let mut m = Module::new();
         let mut types = TypeSection::new();
         let mut imports = ImportSection::new();
-        let base = heap_import_prologue(&mut m, &mut types, &mut imports);
+        let base = heap_import_prologue(&mut types, &mut imports);
         // build : () -> i32   (new functype after the 5 op types)
         let build_ty = base; // type index for () -> i32
         types.ty().function(vec![], vec![ValType::I32]);
@@ -46369,7 +46365,7 @@ mod cross_component_oracle {
         let mut m = Module::new();
         let mut types = TypeSection::new();
         let mut imports = ImportSection::new();
-        let base = heap_import_prologue(&mut m, &mut types, &mut imports);
+        let base = heap_import_prologue(&mut types, &mut imports);
         // build : () -> i32  imported from "peer" (type index `base`, import func index `base`)
         types.ty().function(vec![], vec![ValType::I32]);
         imports.import("peer", "build", EntityType::Function(base));
@@ -46574,6 +46570,138 @@ mod cross_component_oracle {
                 assert_eq!(s, "99", "B reads A's handle over the shared heap")
             }
             cdz_run::Outcome::Trap(t) => panic!("shared-heap cross-component run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // X3 — the PRODUCTION peer-interface import ENVELOPE (`envelope::assemble_extern`). The X1 consumer
+    // was hand-built with ComponentBuilder; here the consumer envelope is emitted by the compiler's own
+    // `assemble_extern` around a bare consumer core, then composed with the X1 provider and RUN. This is
+    // the byte-emitted envelope X4's front-end will target.
+    // ------------------------------------------------------------------------------------------------
+
+    /// The consumer inner component B, built by the PRODUCTION `envelope::assemble_extern`: import the
+    /// peer interface `cadenza:peer/api` (op `f : func(s32) -> s32`), bind it into `consumer_core_b`
+    /// under `"peer"`, export `main : func(s32) -> s32`. `assemble_extern` returns raw component bytes;
+    /// wrap them as an inner component via `component_raw`.
+    fn consumer_component_b_via_envelope() -> Vec<u8> {
+        use crate::backend::wasm::envelope::{
+            BoundaryExport, BoundaryResult, HostFn, assemble_extern,
+        };
+        use crate::backend::wasm::wasm_abi::{COMP_FUNCTYPE_FORM, COMP_S32};
+        // The peer op `f`'s component functype item: `[FORM] <1 param: p0:s32> <result: s32>`.
+        let comp_functype = {
+            let mut item = vec![COMP_FUNCTYPE_FORM];
+            let mut params = Vec::new();
+            params.extend_from_slice(&2u8.to_le_bytes()); // "p0".len()
+            params.extend_from_slice(b"p0");
+            params.push(COMP_S32);
+            item.extend_from_slice(&crate::backend::wasm::encode::wasm_vec(1, &params));
+            item.extend_from_slice(&[0x00, COMP_S32]); // result: s32
+            item
+        };
+        let extern_fns = [HostFn {
+            op: "f".to_string(),
+            comp_functype,
+            core_functype: Vec::new(),
+        }];
+        let exports = [BoundaryExport {
+            name: "main".to_string(),
+            params: vec![COMP_S32],
+            result: BoundaryResult::Primitive(COMP_S32),
+        }];
+        assemble_extern(
+            &consumer_core_b(),
+            &exports,
+            "cadenza:peer/api",
+            &extern_fns,
+        )
+    }
+
+    /// A provider that exports its `f` as the INTERFACE INSTANCE `cadenza:peer/api` (member `f`), the
+    /// shape `assemble_extern` imports. Built by instantiating the top-level-`f` provider inner component
+    /// and exporting the resulting INSTANCE under the interface name — so the instance's member `f` is
+    /// what the consumer aliases out of its `cadenza:peer/api` import.
+    fn provider_interface_component() -> ComponentBuilder {
+        let mut c = ComponentBuilder::default();
+        let inner = c.component(provider_component_a_named_p0());
+        let no_args: [(&str, ComponentExportKind, u32); 0] = [];
+        let inst = c.instantiate(inner, no_args);
+        c.export(
+            "cadenza:peer/api",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c
+    }
+
+    /// Provider inner component whose `f` is lifted with param name `p0` — matching the parameter name
+    /// `assemble_extern` declares in its peer instance-type (`host_op_comp_functype`'s `p{i}` convention).
+    /// A component-model interface import checks param NAMES structurally, so the provider's lift and the
+    /// consumer's import declaration must agree on `p0` (X1a's top-level-func path used `x`; the interface
+    /// path needs `p0`).
+    fn provider_component_a_named_p0() -> ComponentBuilder {
+        let mut c = ComponentBuilder::default();
+        let core_idx = c.core_module_raw(&provider_core_a());
+        let no_args: [(&str, ModuleArg); 0] = [];
+        let inst = c.core_instantiate(core_idx, no_args);
+        let f_core = c.core_alias_export(inst, "f", ExportKind::Func);
+        let (f_ty, mut ft) = c.type_function();
+        ft.params([("p0", ComponentValType::Primitive(PrimitiveValType::S32))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S32)));
+        let f_comp = c.lift_func(f_core, f_ty, []);
+        c.export(
+            "f",
+            ComponentExportKind::Func,
+            f_comp,
+            Some(ComponentTypeRef::Func(f_ty)),
+        );
+        c
+    }
+
+    /// The OUTER composition using the PRODUCTION consumer envelope: instantiate the interface provider,
+    /// bind its `cadenza:peer/api` export to the `assemble_extern`-built consumer's like-named import,
+    /// re-export the consumer's `main`.
+    fn composed_via_extern_envelope() -> Vec<u8> {
+        let mut c = ComponentBuilder::default();
+        let a_idx = c.component(provider_interface_component());
+        let no_args: [(&str, ComponentExportKind, u32); 0] = [];
+        let a_inst = c.instantiate(a_idx, no_args);
+        let a_iface = c.alias_export(a_inst, "cadenza:peer/api", ComponentExportKind::Instance);
+        let b_idx = c.component_raw(&consumer_component_b_via_envelope());
+        let b_inst = c.instantiate(
+            b_idx,
+            [("cadenza:peer/api", ComponentExportKind::Instance, a_iface)],
+        );
+        let main = c.alias_export(b_inst, "main", ComponentExportKind::Func);
+        c.export("main", ComponentExportKind::Func, main, None);
+        c.finish()
+    }
+
+    #[test]
+    fn x3_the_production_extern_envelope_binds_a_peer_and_runs() {
+        // The consumer envelope is emitted by `assemble_extern` (not hand-built), composed with the
+        // provider, and run: main(5) = f(5)*10 = (5+1)*10 = 60. Proves the fourth import-envelope shape
+        // (peer-interface import) is structurally valid AND executes when composed with a provider.
+        let comp = composed_via_extern_envelope();
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("assemble_extern-composed component validates");
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: None,
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&comp, &opts).expect("run assemble_extern-composed") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "60", "(5+1)*10 through the production extern envelope")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("extern-envelope run trapped: {t}"),
         }
     }
 }

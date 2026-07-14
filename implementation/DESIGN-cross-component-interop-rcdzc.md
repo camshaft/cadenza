@@ -203,13 +203,22 @@ rejection reusing `find_import_cycle` — moves to **X4** alongside the runner (
 and the composition land together and are testable end-to-end). ⚠ This is exactly the external-symbol notion
 `DESIGN-package-linking.md §0` deliberately avoided.
 
-**X3 — the IMPORT envelope shape (scalar first).** The **fourth** envelope shape: emit a component that
-IMPORTS a peer Cadenza interface (A's monomorphized exports) as a component-model instance import, aliased
-+ lowered into B's core, alongside the shared runtime import — fork `assemble_host_runtime`
-(`envelope.rs:625`), which already composes an interface import + the runtime. `select` emits an
-`ExternCall` as `call <imported-op-index>`. Scalar args/results only (like `C-HOST-1`). Boundary names
-kebab-normalized (`kebab_extern_name`, the recurring gotcha — `rcdzc-kebab-extern-name-gotcha.md`).
-Oracle-first: hand-build the envelope, diff bytes against X1's builder reference.
+**X3 — the peer-interface IMPORT envelope. ✅ DONE (`spec`).** The **fourth** envelope shape,
+`envelope::assemble_extern(core, exports, peer_iface, extern_fns)` — a fork of `assemble_host`
+(structurally identical: import an instance-type declaring each peer op, alias + lower each to a core
+func, bind them into the program core, export the consumer's own boundary), differing only in binding the
+core under module `"peer"` (new `PEER_MODULE` const, matching what a consumer core imports its peer ops
+from) and importing a peer Cadenza interface rather than a host effect. Index spaces documented in the
+fn. Boundary + op names kebab-normalized (`kebab_extern_name`). Peer ops carry monomorphic signatures.
+Proven by the X3 oracle: the consumer envelope is emitted by `assemble_extern` (not hand-built), composed
+with an interface-exporting provider, and RUN under wasmtime — `main(5) = f(5)*10 = 60`. Scalar
+args/result (a `value`-handle op is X5); no runtime fused yet (the `assemble_host_runtime` analogue is a
+later increment). 🔑 FINDING: a component-model interface import checks parameter NAMES structurally, so
+the peer's exported signature and the consumer's import declaration must AGREE on param names — X4's
+front-end must emit both sides with a consistent convention (`assemble_extern` uses `p0`, `p1`, … from
+`host_op_comp_functype`; the X3 provider lifts `f` with `p0` to match). Byte-neutral (new pub fn unused by
+production — gate 1881 pass / 0 fail / 0 regressions). `select`-emits-`ExternCall`-as-`call` is wired in
+X4 (it needs the front-end trigger + the layout's extern-import order, which land together).
 
 **X4 — cdz-run multi-component composition + first e2e.** `cdz-run` composes A + B + ONE runtime instance:
 instantiate the runtime once, bind B's import of A's export, bind both program cores' heap import to the
