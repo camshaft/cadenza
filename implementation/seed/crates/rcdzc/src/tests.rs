@@ -49632,4 +49632,62 @@ mod cross_component_oracle {
             cdz_run::Outcome::Trap(t) => panic!("compound cross-component run trapped: {t}"),
         }
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // X5c — BOTH sides from source: a source PROVIDER returns a runtime compound (crosses as its `u32`
+    // handle through the provider interface), a source CONSUMER receives + reads it. The full compound
+    // interop story from two Cadenza sources.
+    // ------------------------------------------------------------------------------------------------
+
+    #[test]
+    fn x5c_a_source_provider_returns_a_compound_read_by_a_source_consumer() {
+        use crate::testkit::parse;
+        // PROVIDER (from SOURCE): `pair(x) = (tuple x x)` — a RUNTIME tuple, published under
+        // cadenza:pairs/api. Its result crosses as a u32 handle (X5c provider path). Imports the runtime.
+        let provider = compile_provider(
+            "(do (def (pair (: x Int64)) (tuple x x)) (export pair))",
+            "cadenza:pairs/api",
+        );
+        // CONSUMER (from SOURCE): binds `pair`, calls it, projects element 0. main(9) = 9.
+        let consumer_src = "(do \
+            (extern \"cadenza:pairs/api\" (pair (-> Int64 (Tuple Int64 Int64)))) \
+            (def (main (: x Int64)) (. (pair x) 0)) \
+            (export main))";
+        let consumer =
+            crate::compile::compile_component(&crate::codec::encode(&parse(consumer_src)))
+                .expect("consumer compiles");
+        for (b, who) in [(&provider, "provider"), (&consumer, "consumer")] {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(b)
+                .unwrap_or_else(|e| panic!("{who} validates: {e}"));
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[X5c] runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:pairs/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["9".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("two source components exchange a compound value")
+        {
+            // The provider built (9,9) on the shared heap and returned the handle; the consumer projected
+            // element 0 → 9. A runtime COMPOUND crossed between two SOURCE Cadenza components.
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "9",
+                    "source provider's compound crosses to a source consumer"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("two-source compound run trapped: {t}"),
+        }
+    }
 }

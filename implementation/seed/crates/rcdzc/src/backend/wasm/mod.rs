@@ -215,7 +215,12 @@ pub fn emit(
     // single nullary-export case takes the resource shape; any other (multi-export, parameterized) falls
     // through and declines below with the arity/parameter diagnosis (`crosses_as_resource_escape` there too,
     // so the message names the real constraint, not the type).
-    if let [e] = &layout.exports[..]
+    // A PROVIDER (X5c, `db.component_name` set) publishes its exports to a PEER over the shared runtime,
+    // so a compound result crosses as its `u32` handle through the provider interface — NOT as the HOST
+    // resource-escape (which serializes to `list<u8>` and declines a parameterized heap return). Skip the
+    // escape for a provider; a compound export takes the provider path below.
+    if db.component_name.is_none()
+        && let [e] = &layout.exports[..]
         && crosses_as_resource_escape(&e.result)
     {
         let body = def_body(db, e.def)?;
@@ -608,8 +613,34 @@ pub fn emit(
     // Build the component-boundary export list (each export's parameter + result valtypes) and
     // assemble the envelope. Export `k` in the layout lifts core func `k` (exports first, in order).
     let multi_export = layout.exports.len() > 1;
+    let is_provider = db.component_name.is_some();
     let mut boundary: Vec<BoundaryExport> = Vec::new();
     for e in &layout.exports {
+        // A PROVIDER export whose result is a runtime-owned COMPOUND crosses to a PEER as its opaque `u32`
+        // HANDLE over the shared runtime (X5c) — NOT the host resource-escape (skipped above for a
+        // provider) and NOT a decline. Its parameters likewise: a scalar by its scalar rep, a compound by
+        // its handle. `extern_abi_val_type` unifies the two; `Unit` params are elided.
+        if is_provider && let Some(v) = host::extern_abi_val_type(&e.result) {
+            let mut params = Vec::new();
+            for (_, ty) in &e.params {
+                if matches!(ty, crate::ty::Ty::Unit) {
+                    continue;
+                }
+                let av = host::extern_abi_val_type(ty).ok_or_else(|| {
+                    Reject::decline(format!(
+                        "a provider parameter `{}` has no cross-component boundary representation",
+                        ty.render_name()
+                    ))
+                })?;
+                params.push(av.comp_byte());
+            }
+            boundary.push(BoundaryExport {
+                name: e.name.clone(),
+                params,
+                result: crate::backend::wasm::envelope::BoundaryResult::Primitive(v.comp_byte()),
+            });
+            continue;
+        }
         // The export's RESULT crosses as a `BoundaryResult`: unit → None, a scalar → its primitive
         // byte. A HEAP value (a compound OR a String/list/bytes/map/set/symbol/quantity/newtype — every
         // `crosses_as_resource_escape` type) does not cross on THIS multi-export path — the single nullary
@@ -818,18 +849,28 @@ pub fn emit(
         ));
     }
 
-    // A PROVIDER (X4b) publishes its scalar boundary exports as a named INTERFACE INSTANCE (the name the
-    // `component-name` request supplied, stored on the Db) so a peer's `(extern "iface" …)` binds to it.
-    // Only the bare scalar case this increment: no runtime import, and every export scalar/unit (a
-    // compound export as an interface member is a later increment). Otherwise fall through to the ordinary
-    // top-level-export envelope.
+    // A PROVIDER (X4b/X5c) publishes its boundary exports as a named INTERFACE INSTANCE (the name the
+    // `component-name` request supplied, stored on the Db) so a peer's `(extern "iface" …)` binds to it. A
+    // scalar export crosses by value; a runtime COMPOUND export crosses as its `u32` handle (the boundary
+    // loop above already set that). A provider whose exports build runtime values imports the runtime, so
+    // it takes the provider+runtime envelope; a bare (no-runtime) provider the plain provider envelope.
+    // (A `list<u8>`/Bytes result is the host resource-escape shape, never a peer handle — excluded.)
     if let Some(iface) = db.component_name.clone()
-        && imports.is_empty()
         && boundary
             .iter()
             .all(|e| e.result != envelope::BoundaryResult::Bytes)
     {
-        return Ok(envelope::assemble_provider(&core, &boundary, &iface));
+        if imports.is_empty() {
+            return Ok(envelope::assemble_provider(&core, &boundary, &iface));
+        }
+        let import_name = runtime_import_name();
+        return Ok(envelope::assemble_provider_runtime(
+            &core,
+            &boundary,
+            &imports,
+            &import_name,
+            &iface,
+        ));
     }
 
     // The versioned runtime import name (`cadenza:runtime/heap@0.0.0+<hash>`) — the name the runtime

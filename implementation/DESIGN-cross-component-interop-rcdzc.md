@@ -321,10 +321,20 @@ composition; no wasmparser in the compile path, no external interface artifact n
   compound crosses as the u32 handle; widening the value matrix + the PROVIDER-side compound export from
   SOURCE (currently the source provider hits the parameterized-heap-return limit; a hand-built peer proved
   the consumer side) are follow-ups (X5c).
-- **X5c — provider-side compound export from source; value-matrix widening (follow-up).** The source
-  PROVIDER path (`assemble_provider`) declines a compound-returning export (the parameterized-heap-return
-  limit); route it to a compound-aware provider envelope (the export result crosses as its `u32` handle,
-  like the extern side). Then widen coverage across the value matrix + own/borrow reclamation.
+- **X5c — provider-side compound export from source. ✅ DONE (`spec`).** A source PROVIDER returning a
+  runtime compound now publishes it as a `u32` handle through its interface. Pieces: (1) the host
+  resource-escape is SKIPPED for a provider (`db.component_name.is_none()` guard) — a compound crosses to a
+  peer as a handle, not the host `list<u8>` escape; (2) the boundary-export loop, for a provider, maps a
+  compound result/param to its `u32` handle (`host::extern_abi_val_type`); (3) `envelope::assemble_provider_runtime`
+  — a provider whose exports BUILD runtime values (imports the runtime) bundles the lifted funcs into the
+  interface instance (the `assemble_with_imports` + `assemble_provider` fusion); `emit` routes a provider to
+  it when `imports` non-empty, else the bare `assemble_provider`. **Proven e2e (`x5c_*`): BOTH sides from
+  source — a provider `(def (pair (: x Int64)) (tuple x x)) (export pair)` (component-name cadenza:pairs/api)
+  + a consumer `(extern "cadenza:pairs/api" (pair (-> Int64 (Tuple Int64 Int64)))) … (. (pair x) 0)` →
+  main(9) = 9.** 🪤 byte bug fixed by `wasm-tools print`: the bundled instance is component-instance 1 (the
+  imported runtime instance is 0), so export index 1, not 0. Byte-neutral (provider paths fire only when
+  `component_name` set — gate 1953/0/0). REMAINING (follow-up): widen the value matrix
+  (String/Bytes/Map/Set/Sum/BigInt/Rational/nested) + own/borrow reclamation across the boundary.
 
 **X6+ — widenings (optional, non-blocking):** own-vs-borrow policy corners; N-component graphs (a diamond
 import); a value's lifetime across a multi-hop call chain (A→B→C sharing one heap); the outermost
