@@ -1136,6 +1136,32 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // unreachable (its value, and any trap it would raise, dropped). Reject the SECOND+ occurrence of a
     // name (CDZ0102, the non-linear-binder code the spec assigns), anchored at the repeated binder. Per
     // def (a name may of course repeat ACROSS defs); the binder NAME sees through a `(: name T)` binder.
+    // MALFORMED PARAMETER POSITION. A parameter is a binder: a bare NAME (`x`), a wildcard `_`, an
+    // annotated `(: name T)`, or a destructuring PATTERN (a compound list — tuple/record/ctor, validated
+    // by the binding-pattern path). A bare LITERAL (`(def (f 5) …)`, `(def (f true) …)`) is NONE of these
+    // — it binds nothing, so the parameter is dead and any argument passed to it is silently ignored. It
+    // was accepted with no diagnostic (the scan reads `children[1..]` without validating each is a binder,
+    // and `param_name_occ` just returns the literal node). Reject a bare-atom parameter that is not a name
+    // (CDZ0201): a parameter must name something. A COMPOUND (list) parameter is a destructuring pattern —
+    // left to the binding-pattern path, which rejects a refutable/ill-formed one with its own coded fault.
+    let malformed_params: Vec<StructId> = db
+        .defs
+        .iter()
+        .flat_map(|d| d.params.clone())
+        .filter(|&p| {
+            matches!(db.ast.get(p), crate::ast::Struct::Atom(_)) && db.ast.as_name(p).is_none()
+        })
+        .collect();
+    for p in malformed_params {
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                "a parameter must be a name, a `(: name Type)` binder, or a destructuring pattern — a \
+                 literal binds nothing",
+            )
+            .at(p),
+        );
+    }
     let param_lists: Vec<Vec<StructId>> = db.defs.iter().map(|d| d.params.clone()).collect();
     for params in &param_lists {
         // All param names of this list — the set the rename fix must avoid so a fresh name collides with

@@ -26814,6 +26814,52 @@ mod stage1 {
     }
 
     #[test]
+    fn a_literal_parameter_position_is_rejected() {
+        // A parameter is a BINDER: a bare name, a wildcard `_`, an annotated `(: name T)`, or a
+        // destructuring pattern. A bare LITERAL — `(def (f 5) …)`, `(def (f true) …)` — is NONE of these:
+        // it binds nothing, so the parameter is dead and any argument passed to it is silently ignored. It
+        // used to be accepted with NO diagnostic (the scan reads `children[1..]` without validating each is
+        // a binder). Now it rejects CDZ0201, anchored at the literal. A COMPOUND list parameter is a
+        // destructuring pattern — left to the binding-pattern path — so this fires ONLY on a bare literal.
+        let d = |src: &str| -> crate::abi::Diagnostic {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("a parameter must be a name"))
+                .unwrap_or_else(|| panic!("no malformed-parameter reject for {src}"))
+        };
+        for src in [
+            "(module m (def (f 5) 1) (export f))",
+            "(module m (def (f true) 1) (export f))",
+            "(module m (def (f \"x\") 1) (export f))",
+            // A literal amid valid params is still caught (anchored at the literal, not the whole list).
+            "(module m (def (f x 5 y) 1) (export f))",
+        ] {
+            assert_eq!(
+                d(src).code.as_deref(),
+                Some("CDZ0201"),
+                "{src}: {}",
+                d(src).message
+            );
+        }
+        // NO false positive: a name, a wildcard `_`, an annotated binder, a destructuring pattern, and a
+        // nullary def all stay clear of THIS fault (a `_`/name may still get the separate ambiguous-boundary
+        // fault when exported, which is unrelated).
+        for ok in [
+            "(module m (def (f (: x Int64)) (+ x 1)) (export f))",
+            "(module m (def (g _) 1) (def (main) (g 5)) (export main))",
+            "(module m (def (f (: (tuple a b) (Tuple Int64 Int64))) (+ a b)) (export f))",
+            "(module m (def (main) 1) (export main))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("a parameter must be a name")),
+                "a valid parameter is not flagged: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn a_duplicate_export_is_rejected_not_miscompiled() {
         // A module's exports are a record whose fields are the exported names — exporting `a` twice is
         // the same CDZ0201 duplicate-field ill-formedness as a duplicate definition. It MUST reject
