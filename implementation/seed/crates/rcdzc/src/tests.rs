@@ -3658,6 +3658,28 @@ fn a_match_scrutinee_selfcall_then_arm_perform_declines_cleanly() {
     );
 }
 
+/// A recursive effectful walk whose self-call is in the `if` CONDITION and whose perform is in a BRANCH —
+/// `(if (< (walk (- n 1)) 100) (Ctr.tick) 99)` — is the same out-state-observing shape: the condition runs
+/// the recursion, then a branch perform reads its OUT-state. Before the `if`-cond arm of
+/// `selfcall_precedes_perform_in_operands`, this leaked the internal `walk#eff2$s0` name. It must decline
+/// CLEANLY. The OPPOSITE order — a perform in the COND and a self-call in a BRANCH (countdown
+/// `(if (= (tick) 0) 0 (+ 1 (loop)))`) — still folds: the guard fires only when the CONDITION contains a
+/// self-call.
+#[test]
+fn an_if_condition_selfcall_then_branch_perform_declines_cleanly() {
+    use crate::testkit::parse;
+    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
+               (def (walk (: n Int64)) (if (= n 0) 0 (if (< (walk (- n 1)) 100) (Ctr.tick) 99))) \
+               (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src)))
+        .expect_err("the out-state-observing if-condition post-order shape must decline");
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
 /// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
 /// compiler DECLINES asking for an annotation rather than inventing a width.
 #[test]
