@@ -145,6 +145,11 @@ pub struct Export {
     pub def: Option<usize>,
     /// The `(export NAME)` clause occurrence, for a diagnostic to anchor to (e.g. a duplicate export).
     pub occ: StructId,
+    /// The specific NAME atom this export came from within the clause — `(export a b)` yields two exports
+    /// sharing one `occ` (the clause) but each carrying its own `name_occ` (the `a` / `b` atom). A
+    /// diagnostic that points at (or edits) a single exported name uses THIS, not `occ`'s first element,
+    /// so a fault on the 2nd+ name of a multi-name clause anchors correctly.
+    pub name_occ: StructId,
 }
 
 /// One variant of a sum declaration — a `(name payload-type…)` list or a bare nullary name. Its
@@ -2419,14 +2424,24 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
                 body,
                 internal: false,
             });
-        } else if let Some(tail) = ast.as_form(item, "export")
-            && let Some(name) = tail.first().and_then(|&s| ast.as_name(s))
-        {
-            exports.push(Export {
-                name: name.to_string(),
-                def: None,
-                occ: item,
-            });
+        } else if let Some(tail) = ast.as_form(item, "export") {
+            // An `(export a b …)` clause exports EVERY name in its tail — the multi-name surface the ML
+            // reader writes `export { a, b, … }` and the printer round-trips (per `is_export_shape`). One
+            // `Export` per name, each sharing the clause `occ` but carrying its OWN `name_occ`. A non-name
+            // element (a malformed `(export a 5)`) is caught by the well-formedness pass; skip it here so
+            // the well-formed names still register (matching how `scan_type_decl`/`scan_effect_decl` scan
+            // per element). Reading only `tail.first()` — the prior behavior — SILENTLY dropped every name
+            // past the first, so a valid `(export main helper)` published only `main`.
+            for &s in tail.iter() {
+                if let Some(name) = ast.as_name(s) {
+                    exports.push(Export {
+                        name: name.to_string(),
+                        def: None,
+                        occ: item,
+                        name_occ: s,
+                    });
+                }
+            }
         } else if ast.as_form(item, "type").is_some()
             && let Some(decl) = scan_type_decl(ast, item)
         {

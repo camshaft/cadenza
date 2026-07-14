@@ -806,21 +806,23 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         .exports
         .iter()
         .filter(|e| !seen_exports.insert(e.name.as_str()))
-        .map(|e| (e.name.clone(), e.occ))
+        .map(|e| (e.name.clone(), e.name_occ))
         .collect();
-    for (name, occ) in dup_exports {
-        // `occ` is a REDUNDANT `(export NAME)` clause (a later one — the first occurrence is not in
-        // `dup_exports`). Exporting a name is idempotent in intent: the earlier clause already makes it
-        // public, so the direct repair is to DELETE this duplicate clause. Verified-clean by `--verify-fixes`
-        // (removing a duplicate export cannot change the public surface — the name stays exported once).
+    for (name, name_occ) in dup_exports {
+        // `name_occ` is a REDUNDANT exported NAME (a later occurrence — the first is not in `dup_exports`).
+        // Exporting a name is idempotent in intent: the earlier occurrence already makes it public, so the
+        // direct repair is to DELETE this duplicate NAME. Anchoring + editing the name atom (not the whole
+        // `(export …)` clause) is correct for a multi-name `(export a b a)`: only the redundant `a` is
+        // removed, `b` and the first `a` stay. Verified-clean by `--verify-fixes` (removing a duplicate
+        // export cannot change the public surface — the name stays exported once).
         faults.push(
             Reject::coded(
                 Code::Malformed,
                 format!("`{name}` is exported more than once (a module has a fixed set of names)"),
             )
-            .at(occ)
+            .at(name_occ)
             .with_fix(crate::diag::Fix::delete_heuristic(
-                occ,
+                name_occ,
                 format!("remove the duplicate export of `{name}`"),
             )),
         );
@@ -1256,13 +1258,9 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         .exports
         .iter()
         .filter(|e| e.def.is_none())
-        .map(|e| {
-            let name_occ = db
-                .ast
-                .as_form(e.occ, "export")
-                .and_then(|tail| tail.first().copied());
-            (e.name.clone(), e.occ, name_occ)
-        })
+        // `name_occ` is the specific exported-name atom — correct even for the 2nd+ name of a multi-name
+        // `(export a b)` clause, where reading the clause's `tail.first()` would mis-anchor to `a`.
+        .map(|e| (e.name.clone(), e.occ, Some(e.name_occ)))
         .collect();
     for (name, occ, name_occ) in missing_exports {
         match crate::diag::suggest::nearest(&name, &defined_names) {

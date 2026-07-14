@@ -21529,6 +21529,62 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_multi_name_export_clause_exports_every_name() {
+        // `(export a b)` — the multi-name surface the ML reader writes `export { a, b }` and the printer
+        // round-trips — exports EVERY name. The scanner used to read only `tail.first()`, SILENTLY dropping
+        // every name past the first, so `(export main helper)` published only `main` (a correctness bug: a
+        // valid public name vanished from the component). Now both defs are exported and reachable.
+        let clean = crate::diagnostics(&mut Db::load(parse(
+            "(module m (def (main) 1) (def (helper) 2) (export main helper))",
+        )));
+        assert!(
+            clean
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a valid multi-name export compiles: {:?}",
+            clean.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // Both names resolve to a def (neither is silently dropped) — `helper` is no longer reported as an
+        // unused definition either, because the export references it.
+        assert!(
+            !clean.iter().any(|d| d.message.contains("`helper`")),
+            "the second export name `helper` is not dropped/unused: {:?}",
+            clean.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+
+        // A DIAGNOSTIC on the 2nd+ name anchors to THAT name, not the clause's first. An undefined 2nd
+        // name gets its own coded "names no definition" + did-you-mean over the defined names (the `check`
+        // path — the fast path an agent runs, which carries the suggestion + fix).
+        let d = crate::diagnostics(&mut Db::load(parse(
+            "(module m (def (main) 1) (def (helper) 2) (export main helpr))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0101"))
+        .expect("the undefined 2nd export name is a CDZ0101");
+        assert!(
+            d.message.contains("`helpr`") && d.message.contains("did you mean `helper`?"),
+            "the 2nd export name's typo is caught with a suggestion: {}",
+            d.message
+        );
+
+        // A duplicate WITHIN a multi-name clause `(export main main)` reports once, anchored+deleting the
+        // redundant name (not the whole clause — the first `main` must survive).
+        let dup = crate::diagnostics(&mut Db::load(parse(
+            "(module m (def (main) 1) (export main main))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("exported more than once"))
+        .expect("a duplicate name in one clause is caught");
+        assert_eq!(dup.code.as_deref(), Some("CDZ0201"), "got: {}", dup.message);
+        assert_eq!(
+            dup.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "the duplicate name carries a delete fix: {:?}",
+            dup.fix
+        );
+    }
+
+    #[test]
     fn a_duplicate_sum_variant_op_and_map_key_each_carry_a_delete_fix() {
         // The remaining duplicate-name family members (siblings of dup-field/dup-export D32) now carry a
         // DELETE fix removing the redundant clause: a repeated sum VARIANT (payload form), a repeated
