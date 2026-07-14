@@ -937,9 +937,12 @@ fn op_bigint_of_i64(v: i64) -> Handle {
     box_bigint(&bigint::Big::from_i64(v))
 }
 /// `bigint-to-i64-checked` — the CHECKED narrowing back to `i64`: the value if it fits, else TRAP
-/// (`options/numeric-model/explicit-checked.md` — `Int64.of` of an out-of-range BigInt traps).
+/// (`options/numeric-model/explicit-checked.md` — `Int64.of` of an out-of-range BigInt traps). Reads the
+/// leaf's sign-magnitude `raw` slice DIRECTLY (`Big::i64_checked_from_sign_magnitude_bytes`) — a narrowing
+/// is READ-ONLY, so it needs NO `Big` (no limb `Vec`): allocation-free. A null node reads as zero.
 fn op_bigint_to_i64_checked(h: Handle) -> i64 {
-    match unbox_bigint(h).to_i64_checked() {
+    let raw = unsafe { h.0.as_ref() }.map_or(&[][..], |n| n.raw.as_slice());
+    match bigint::Big::i64_checked_from_sign_magnitude_bytes(raw) {
         Some(v) => v,
         None => trap_bigint_narrow(),
     }
@@ -8748,6 +8751,22 @@ mod tests {
         assert_eq!(
             bigcmp, 0,
             "bigint_cmp x{N} allocs {bigcmp} — a comparison reads the raw slices directly, allocating NOTHING (a regression to unbox-both would be ~2/op)"
+        );
+
+        // (K4c) `bigint-to-i64-checked` — the READ-ONLY checked narrowing (`Int64.of` on a runtime BigInt).
+        // It reads the leaf's `raw` sign-magnitude slice DIRECTLY (`Big::i64_checked_from_sign_magnitude_
+        // bytes`) with NO `Big` decode → ZERO allocations (was 1/op, the unbox limb Vec).
+        let bt = op_bigint_of_i64(9999);
+        let bigto = measure(&mut || {
+            for _ in 0..N {
+                core::hint::black_box(op_bigint_to_i64_checked(bt));
+            }
+        });
+        op_drop(bt);
+        println!("ALLOC bigint_to_i64 x{N}: {bigto}");
+        assert_eq!(
+            bigto, 0,
+            "bigint_to_i64 x{N} allocs {bigto} — the narrowing reads the raw slice directly, allocating NOTHING (a regression to unbox would be ~1/op)"
         );
 
         // (K2) `vec-of-arr` — the bulk list-literal constructor. EVERY `(list e0…e{n-1})` literal lowers to
