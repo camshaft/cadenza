@@ -9393,7 +9393,7 @@ fn type_node_of(ty: &crate::ty::Ty) -> Option<TypeNode> {
                 leaf(name.clone())
             } else {
                 let mut children = Vec::with_capacity(args.len());
-                for a in args {
+                for a in args.iter() {
                     children.push(type_node_of(a)?);
                 }
                 TypeNode {
@@ -10452,7 +10452,7 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
             } else {
                 let head = b.name(name.clone());
                 let mut children = vec![head];
-                for a in args {
+                for a in args.iter() {
                     children.push(type_ast(b, a)?);
                 }
                 Some(b.list(children))

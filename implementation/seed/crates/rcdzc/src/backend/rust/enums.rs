@@ -135,7 +135,7 @@ fn rewrite_sentinel_vars(ty: &crate::ty::Ty, decl: &crate::db::TypeDecl) -> crat
         Ty::Var(n) if *n >= PARAM_SENTINEL_BASE => Ty::Sum {
             decl: decl.occ,
             name: format!("T{}", n - PARAM_SENTINEL_BASE),
-            args: Vec::new(),
+            args: std::rc::Rc::from([]),
         },
         Ty::List(e) => Ty::List(Box::new(rewrite_sentinel_vars(e, decl))),
         Ty::Set(e) => Ty::Set(Box::new(rewrite_sentinel_vars(e, decl))),

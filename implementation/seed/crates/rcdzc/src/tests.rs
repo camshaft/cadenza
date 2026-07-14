@@ -12036,6 +12036,73 @@ mod match_engine {
     }
 
     #[test]
+    fn a_generic_sum_types_args_are_rc_shared_so_a_clone_is_a_refcount_bump() {
+        // REGRESSION (perf): `Ty::Sum { args }` (and `Ty::Nominal { args }`) held their type-ARGUMENTS in a
+        // `Vec<Ty>`, so cloning the type deep-copied every arg. A GENERIC sum NESTED in another —
+        // `(Option (Option … Int64))`, whose inner `Option` sits in the outer's `args` — thus deep-copied
+        // the WHOLE nesting on each `Ty::clone`, and `payload_ty_at_instantiation`/`ty_at_path` clone once
+        // PER match level → an O(depth) copy done O(depth) times = O(depth³) (a deep-Option-match param:
+        // depth 800 was 610ms, ~3.9×/dbl; now 77ms, 8× faster). FIX: `args` is an `Rc<[Ty]>` (the sibling
+        // of `Ty::Tuple`/`Ty::Record`/`Ty::Nominal::inner`), so a clone shares the slice — a refcount bump,
+        // not a deep copy.
+        //
+        // Lock the REPRESENTATION directly: a clone of a `Ty::Sum` shares the SAME `args` allocation as the
+        // original (`Rc::ptr_eq`). A revert to `Vec<Ty>` makes the clone a fresh allocation — `ptr_eq`
+        // false — so this test fails. Deterministic, noise-free (no timing).
+        use crate::ty::Ty;
+        let inner = Ty::Sum {
+            decl: crate::ast::StructId(7),
+            name: "Option".to_string(),
+            args: std::rc::Rc::from([Ty::int64()]),
+        };
+        let outer = Ty::Sum {
+            decl: crate::ast::StructId(7),
+            name: "Option".to_string(),
+            args: std::rc::Rc::from([inner]),
+        };
+        let cloned = outer.clone();
+        let (Ty::Sum { args: a0, .. }, Ty::Sum { args: a1, .. }) = (&outer, &cloned) else {
+            panic!("both are Ty::Sum");
+        };
+        assert!(
+            std::rc::Rc::ptr_eq(a0, a1),
+            "cloning a Ty::Sum must SHARE its `args` Rc (a refcount bump), not deep-copy the Vec — the \
+             `Rc<[Ty]>` representation that makes a nested-generic-sum clone O(1) instead of O(depth)"
+        );
+
+        // And end-to-end: a deeply-nested generic-Option PARAM match (the path through
+        // `payload_ty_at_instantiation` → `unify` → `subst.apply`, which drove the O(depth³) deep-clone)
+        // compiles cleanly and quickly. Depth 200 was well into the super-cubic regime before the fix.
+        let depth = 200usize;
+        let ty = {
+            let mut t = String::from("Int64");
+            for _ in 0..depth {
+                t = format!("(Option {t})");
+            }
+            t
+        };
+        let pat = {
+            let mut p = String::from("n");
+            for _ in 0..depth {
+                p = format!("(Some {p})");
+            }
+            p
+        };
+        let src = format!(
+            "(module m (def (f (: o {ty})) (match o ({pat} n) (_ 0))) (def (main) 0) (export main))"
+        );
+        let diags = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+        });
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a deeply-nested generic-Option param match compiles with no error diagnostics: {diags:?}"
+        );
+    }
+
+    #[test]
     fn a_deeply_nested_match_lowers_without_a_cubic_constraint_reclone() {
         // REGRESSION (perf): even after the `PathTypes` `Rc<Ty>` fix (see
         // `a_deeply_nested_option_pattern_lowers_in_bounded_time`), `lower::build_tree` stayed O(depth³) on
@@ -18163,6 +18230,42 @@ mod match_engine {
                 d.message
             );
         }
+        // A USER SUM / NOMINAL held against a SCALAR or TEXT is the same cross-kind clash — `(+ Color 1)`,
+        // `(= Color "x")`, `(+ UserId 1)` — no shared arithmetic/order across the boundary. It named the
+        // phantom "type mismatch: Int64 and Color"; now it names the kind boundary (CDZ0201), no phantom.
+        for (src, what) in [
+            (
+                "(module m (type Color (Red)) (def (g (: c Color)) (+ c 1)) (export g))",
+                "sum + int",
+            ),
+            (
+                "(module m (type Color (Red)) (def (g (: c Color) (: s String)) (= c s)) (export g))",
+                "sum = string",
+            ),
+            (
+                "(module m (type UserId (Mk Int64)) (def (g (: u UserId)) (+ u 1)) (export g))",
+                "nominal + int",
+            ),
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| panic!("{what} must reject"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{what}: {}", d.message);
+            assert!(
+                d.message.contains("kind boundary") && !d.message.contains("Int64 and Color"),
+                "{what} names the kind boundary, no phantom Int64: {}",
+                d.message
+            );
+        }
+        // A sum vs a RECORD (different compound kinds) → kind boundary too.
+        let sum_rec = reject_full(
+            "(module m (type Color (Red)) (def (g (: c Color) (: r (Record (x Int64)))) (= c r)) (export g))",
+        )
+        .expect("sum vs record rejects");
+        assert!(
+            sum_rec.message.contains("kind boundary"),
+            "a sum vs a record names the kind boundary: {}",
+            sum_rec.message
+        );
+
         // NO false positive: a valid SAME-KIND comparison (record = record, tuple = tuple) still compiles;
         // a compound-vs-DIFFERENT-compound keeps the generic structural mismatch (its own delta hints fire).
         assert!(
@@ -18177,6 +18280,24 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0203"),
             "two different record shapes keep the generic structural mismatch"
+        );
+        // NO false positive: two DIFFERENT user sums compared (`Color` vs `Shape`) share the sum "kind" tag,
+        // so `different_compound_kinds` does NOT fire — they keep the generic same-kind mismatch, and a
+        // same-sum comparison stays valid.
+        assert_eq!(
+            reject_code(
+                "(module m (type Color (Red)) (type Shape (Sq)) (def (g (: c Color) (: s Shape)) (= c s)) (export g))"
+            )
+            .as_deref(),
+            Some("CDZ0203"),
+            "two different user sums keep the generic mismatch, not the kind boundary"
+        );
+        assert!(
+            reject_code(
+                "(module m (type Color (Red) (Blue)) (def (g (: a Color) (: b Color)) (= a b)) (export g))"
+            )
+            .is_none(),
+            "a same-sum comparison stays valid"
         );
     }
 
@@ -28428,6 +28549,37 @@ mod match_engine {
                 "a valid parametric/recursive/known variant payload must compile: {ok}"
             );
         }
+    }
+
+    #[test]
+    fn shadowing_a_prelude_payload_type_name_is_a_plain_rebind_not_a_phantom_variant_fault() {
+        // Defining a value named after a prelude type — `(def (Int64) 1)` — must be a plain rebind, not a
+        // fault. The variant-payload validation walked ALL type declarations (INCLUDING the prelude's), so
+        // a prelude sum whose payload is typed `Int64`/`String` re-validated against the user's now-shadowed
+        // namespace, found the name bound to a nullary FUNCTION (not a type), and reported "a variant
+        // payload requires a type" — at the PRELUDE payload node, which has no source span, so the fault
+        // printed with NO `line:col` and named a "variant payload" the user never wrote. Gating the walk on
+        // `is_user_node` fixes it: a prelude decl's payloads are not re-checked against the user namespace.
+        for name in ["Int64", "String"] {
+            let src = format!("(module m (def ({name}) 1) (def (main) ({name})) (export main))");
+            assert!(
+                compile_component(&crate::codec::encode(&parse(&src))).is_ok(),
+                "shadowing prelude type `{name}` with a nullary def must compile cleanly"
+            );
+        }
+        // The check is NOT weakened: a USER variant that itself names a shadowed prelude type as a payload
+        // DOES still fault — `Int64` is genuinely bound to a value there, so `(A Int64)` is a non-type
+        // payload — and the fault lands at the USER's payload node (a real span), not the prelude's.
+        let shadow_and_use = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (Int64) 1) (type C (A Int64)) (def (main) 0) (export main))",
+        )))
+        .expect_err("using a value-shadowed `Int64` as a payload is a non-type payload");
+        assert_eq!(
+            shadow_and_use.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            shadow_and_use.message
+        );
     }
 
     /// A `(Record (field Type)…)` PARAMETER ANNOTATION whose field TYPE is unknown — `(: r (Record (x
@@ -41650,12 +41802,12 @@ mod stage1 {
         let opt_int = Ty::Sum {
             decl: decl.occ,
             name: "Option".to_string(),
-            args: vec![Ty::int64()],
+            args: std::rc::Rc::from([Ty::int64()]),
         };
         let opt_bool = Ty::Sum {
             decl: decl.occ,
             name: "Option".to_string(),
-            args: vec![Ty::Bool],
+            args: std::rc::Rc::from([Ty::Bool]),
         };
         assert!(
             !opt_int.agrees_with(&opt_bool),

@@ -844,6 +844,7 @@ pass	a nearer handler on the call chain shadows an outer one
 pass	a negative constant BigInt crosses the boundary with its sign
 pass	a negative constant argument to an unsigned parameter is rejected, not laundered
 pass	a negative decimal literal annotated Rational normalizes its sign onto the numerator
+pass	a negative exponent scales the mantissa down
 pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
 pass	a negative integer width is rejected
@@ -1247,6 +1248,7 @@ pass	a scalar element is projected DIRECTLY from a named function's runtime tupl
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a scalar element is projected from a let-bound runtime tuple
 pass	a scalar-payload sum looked up from a map, returned via a ctor, is matched in the caller
+pass	a scientific-notation float literal denotes the scaled value
 pass	a scientific-notation literal annotated Rational scales the numerator
 pass	a second same-signature closure export shares the one call method
 pass	a self-applying term is declined at the reduction budget, not hung on
@@ -2188,6 +2190,7 @@ pass	the entrypoint multiplies its runtime argument
 pass	the entrypoint returns its runtime argument unchanged
 pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
+pass	the exponent marker is case-insensitive
 pass	the guarded-let conditional takes its else-branch when the conjunction is false
 pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
 pass	the identity function applied to a boolean returns the boolean
