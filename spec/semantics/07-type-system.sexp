@@ -334,6 +334,45 @@
   (input  (+ 1 "two"))
   (error  CDZ0201))
 
+; --- Equality type-checks its operands: no cross-type comparison ---------------------------
+; `=` offers structural equality over ONE type's values (type-system.md #Structural Values Are
+; Comparable Only When Their Shapes Match), so comparing two DIFFERENT types is a type error — the
+; same operand-typing rule the ordering operators and arithmetic obey. Two different NUMERIC types
+; (Int64 vs Float64) is the silent-promotion the numeric model forbids (numeric-model.md #Numeric
+; Types Do Not Silently Promote), rejected CDZ0301 exactly as `(+ 5 2.0)` and `(< 5 2.0)` are; Int64
+; vs Bool is a number-vs-boolean error (CDZ0203); Int64 vs String (either order) is a general cross-
+; kind error (CDZ0201). These pin the equality companions the ordering-operator section below cites
+; by name — `=` is the operator those cases are measured against, so it must itself be pinned.
+
+(case "equality of an integer and a float is rejected, not silently promoted"
+  (doc    "`(= 5 2.0)` compares an Int64 and a Float64 — the numeric no-promotion rule (numeric-model.md
+           #Numeric Types Do Not Silently Promote) applies to `=` as to `+` and `<`, so the compiler
+           rejects it (CDZ0301) rather than promoting 5 to 5.0 and answering. The companion the ordering
+           cases below cite as `(= 5 2.0)` → CDZ0301.")
+  (input  (= 5 2.0))
+  (error  CDZ0301))
+
+(case "equality of an integer and a boolean is a type error"
+  (doc    "`(= 1 true)` compares an Int64 with a Bool — a number and a boolean, unrelated kinds with no
+           shared value space, rejected (CDZ0203). The equality companion of `(< 1 true)` → CDZ0203; `=`
+           is not a coercion to a common type.")
+  (input  (= 1 true))
+  (error  CDZ0203))
+
+(case "equality of an integer and a string is a type error"
+  (doc    "`(= 1 \"x\")` compares an Int64 with a String — two different types across a kind boundary,
+           rejected (CDZ0201). The equality companion of `(< 1 \"x\")` → CDZ0201; `=` never silently
+           compares representations across types.")
+  (input  (= 1 "x"))
+  (error  CDZ0201))
+
+(case "equality across types is rejected regardless of operand order"
+  (doc    "The order-flipped companion: `(= \"x\" 1)` is the same cross-type comparison (String vs Int64)
+           and rejected (CDZ0201), mirroring the flipped ordering case `(> \"x\" 1)`. Pins that the
+           operand-type check does not depend on which side carries which type.")
+  (input  (= "x" 1))
+  (error  CDZ0201))
+
 ; --- The comparison operators type-check their operands exactly as = and + do -------------
 ; An ordering comparison (`<` `>` `<=` `>=`) offers a total order over ONE type's values
 ; (core-semantics.md #Ordering Where Offered Is Total; type-system.md #Structural Values Are
@@ -341,8 +380,9 @@
 ; silent-promotion the arithmetic operators forbid (numeric-model.md #Numeric Types Do Not
 ; Silently Promote), so `(< 5 2.0)` is rejected (CDZ0301) exactly as `(+ 5 2.0)` and `(= 5 2.0)`
 ; are — an ordering is not a licence to promote Int64 to Float64 where + may not. Comparing two
-; UNRELATED kinds (Int64 vs Bool, Int64 vs String) has no shared order at all, a general type
-; error (CDZ0201), exactly as `(= 1 true)` is. These pin that the ordering operators are held to
+; UNRELATED kinds has no shared order at all: Int64 vs Bool is a number-vs-boolean error (CDZ0203,
+; exactly as `(= 1 true)` is), Int64 vs String is a general cross-kind error (CDZ0201, as `(= 1 "x")`
+; is). These pin that the ordering operators are held to
 ; the SAME operand-typing rule as equality and arithmetic — a comparison must not be the one
 ; arithmetic-shaped operator that silently accepts a cross-type pair (the compiler either rejects
 ; with the code below or, for a rule it does not yet cover, declines rather than comparing across

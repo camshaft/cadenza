@@ -416,6 +416,17 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // printed twice. (A NESTED `(. (. r k) k)` still yields two, correctly: two DISTINCT member
             // nodes, each its own field read.)
             crate::eval::Member::NoField => {
+                // The operand reduced to a CONCRETE record lacking `key`, but its declared TYPE (annotation-
+                // wins, see `infer`'s `Resolved::Ref`) DOES carry `key`: an annotated let-binder whose
+                // initializer contradicts its annotation, already reported once at the binder (CDZ0203). Emit
+                // the runtime field read at the DECLARED slot rather than a second poison — mirrors the infer
+                // check's cascade suppression, so the two emit paths stay symmetric and no duplicate CDZ0201
+                // surfaces. (The program is already hard-rejected at the binder; this only avoids a
+                // contradictory downstream diagnostic.)
+                if let Some(index) = crate::eval::runtime_member_index(db, operand, &key) {
+                    trace!(target: "rcdzc::lower", node = id.0, operand = operand.0, key = %key.name, index, "member access folds to the DECLARED slot (annotated-binder mismatch already reported)");
+                    return Core::Proj { operand, index };
+                }
                 // Match `infer::no_field_reject`'s category-aware subject/word (effect/module/type/record)
                 // so the two copies share the `has no <word> \`key\`` dedup core and `dedup_faults`
                 // collapses them (keeping the infer copy's did-you-mean fix).
@@ -3213,6 +3224,13 @@ fn desugar_refutable_literal_list_elements(
     let mut items = vec![match_head, scrutinee];
     items.extend(new_arms);
     let rewritten = db.push_list(items);
+    // The synth arms hold a `(guard (list …) (and (and (= __le0 …) …) …))` whose guard COND is an O(N)-
+    // DEEP left-nested `and`-chain (`and` is strictly binary). Those synth nodes are past-load, so without
+    // scope-skip coverage each `__leK` guard reference (and each prelude `=`/`and`) walks O(depth) `and`
+    // forms to reach the enclosing `(guard …)` → O(N²). Cover the subtree with the CANDIDATE-AWARE
+    // extension (the `and`-spine is non-binding, the one `(guard …)` node is a candidate its children skip
+    // TO) so every inner reference hops O(1). See `Db::extend_scope_skip_into_subtree`.
+    db.extend_scope_skip_into_subtree(rewritten);
     crate::resolve::resolve_subtree(db, rewritten);
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with refutable literal elements → fresh-binder + value-test guards");
     Some(core_of(db, rewritten))

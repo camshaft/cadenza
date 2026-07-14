@@ -914,6 +914,14 @@ pub struct Db {
     /// per-scope binder index). A node with no recorded entry falls back to the plain parent walk.
     scope_skip: Vec<Option<(StructId, StructId)>>,
 
+    /// The set of nested-module SYNTHESIZED RECORD ids — each is a binding scope (its members are mutually
+    /// visible), so [`is_binding_candidate`] treats it as a candidate. Retained from load so the
+    /// CANDIDATE-AWARE scope-skip extension (`extend_scope_skip_into_subtree`) can re-run
+    /// `is_binding_candidate` on a synthesized subtree's nodes (a desugar that builds a DEEP chain
+    /// CONTAINING a binding form — a `(guard …)` — must land inner references on that form, not hop past
+    /// it). An O(1) membership probe.
+    module_records: crate::fxhash::FxHashSet<StructId>,
+
     /// The prelude — the one map of built-in bindings, installed ONCE at load as ordinary AST nodes
     /// (a built-in module is just a record; see `crate::prelude`). Maps a built-in name to the arena
     /// occurrence it binds to. `resolve` consults it after the lexical scope, so a program binding
@@ -1836,6 +1844,7 @@ impl Db {
             parent,
             child_ix,
             scope_skip,
+            module_records,
             def_by_body,
             doc_by_sig,
             def_by_sig: None,
@@ -2099,6 +2108,63 @@ impl Db {
                     // keeps its own final skip — do not overwrite it).
                     if ci >= covered_boundary && ci < self.scope_skip.len() {
                         self.scope_skip[ci] = node_skip;
+                        stack.push(c);
+                    }
+                }
+            }
+        }
+    }
+
+    /// CANDIDATE-AWARE scope-skip extension for a synthesized subtree — the generalization of
+    /// [`extend_scope_skip_pass_through`] for a chain that CONTAINS a binding form. Where the pass-through
+    /// version assumes EVERY node is non-binding (so every child inherits its parent's skip), this applies
+    /// [`build_scope_skip`]'s exact per-node rule: a child of a BINDING-CANDIDATE parent skips TO that
+    /// parent (`(parent, child)` — so a reference inside it lands on the binder), otherwise it inherits the
+    /// parent's skip (path-compression over the non-binding spine). The refutable-literal-element desugar
+    /// (`lower::desugar_refutable_literal_list_elements`) builds a `(guard (list …) (and (and (= __le0 …)
+    /// …) …))` arm whose guard COND is an O(N)-DEEP left-nested `and`-chain; without coverage each `__leK`
+    /// guard reference (and each prelude `=`/`and`) walks O(depth) `and` forms to the enclosing `(guard …)`
+    /// → O(N²). This lands every inner reference on the nearest real candidate (the `guard`, which binds the
+    /// element binders via `binder_in`'s Case 6lg) in O(1). Idempotent + bounded to `root`'s subtree.
+    ///
+    /// SOUND for BOTH the map-match chain (all non-binding → identical to the pass-through version) and a
+    /// guard chain (the one `guard` node becomes a candidate its children skip TO). The pass-through version
+    /// is retained for its caller; a future consolidation could route both here.
+    pub fn extend_scope_skip_into_subtree(&mut self, root: StructId) {
+        let covered_boundary = self.scope_skip.len();
+        let len = self.ast.structure.len();
+        if self.scope_skip.len() < len {
+            self.scope_skip.resize(len, None);
+        }
+        if (root.0 as usize) < covered_boundary || (root.0 as usize) >= self.scope_skip.len() {
+            return;
+        }
+        // The root's own skip: whatever its parent sees (usually `None` — a freshly-pushed root is
+        // parentless), so a name unbound within the subtree falls through to the root's lexical context.
+        let root_skip = match self.parent_of(root) {
+            Some(p) if (p.0 as usize) < self.scope_skip.len() => self.scope_skip[p.0 as usize],
+            _ => None,
+        };
+        self.scope_skip[root.0 as usize] = root_skip;
+        // Descend top-down: for each fresh child, its skip = `(node, child)` if `node` is a binding
+        // candidate (land inner references on `node`), else `node`'s own skip (hop over the non-binding
+        // spine). This is `build_scope_skip`'s unwind rule, applied to the synth subtree.
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            let node_skip = self.scope_skip[node.0 as usize];
+            let node_is_candidate =
+                is_binding_candidate(&self.ast, &self.parent, &self.module_records, node);
+            if let Struct::List(children) = self.ast.get(node) {
+                for &c in children.clone().iter() {
+                    let ci = c.0 as usize;
+                    // Only fill fresh synth children (a reused load-time / already-covered child keeps its
+                    // own final skip — never overwrite it).
+                    if ci >= covered_boundary && ci < self.scope_skip.len() {
+                        self.scope_skip[ci] = if node_is_candidate {
+                            Some((node, c))
+                        } else {
+                            node_skip
+                        };
                         stack.push(c);
                     }
                 }
