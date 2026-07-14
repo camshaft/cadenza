@@ -255,6 +255,31 @@ impl Big {
 
     // ─── conversions ──────────────────────────────────────────────────────────────────────────
 
+    /// The DECIMAL string of this value (leading `-` if negative), size-independent — extracts digits by
+    /// repeated division by 10 over the magnitude. `0` → `"0"`. Used by the Rational value-encode walker to
+    /// render `num/den` (the codec renders an `Int` leaf's decimal on the HOST, but a rational's `num/den`
+    /// is a single NAME leaf built in the runtime, so the runtime must format the components itself).
+    pub fn to_decimal_string(&self) -> alloc::string::String {
+        use alloc::string::String;
+        if self.is_zero() {
+            return String::from("0");
+        }
+        let ten = Big::from_i64(10);
+        let mut cur = Big { neg: false, mag: self.mag.clone() }; // work over the magnitude
+        let mut digits: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        while !cur.is_zero() {
+            let (q, r) = cur.divmod(&ten).expect("divisor 10 is nonzero");
+            let d = r.mag.first().copied().unwrap_or(0) as u8; // 0..=9 fits one limb
+            digits.push(b'0' + d);
+            cur = q;
+        }
+        if self.neg {
+            digits.push(b'-');
+        }
+        digits.reverse();
+        String::from_utf8(digits).expect("ascii digits")
+    }
+
     /// Box a signed 64-bit int as a `Big`.
     pub fn from_i64(v: i64) -> Big {
         if v == 0 {

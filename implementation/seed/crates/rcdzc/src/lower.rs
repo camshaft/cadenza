@@ -5975,6 +5975,7 @@ fn type_node_of(ty: &crate::ty::Ty) -> Option<TypeNode> {
         | Ty::Char
         | Ty::Symbol
         | Ty::BigInt
+        | Ty::Rational
         | Ty::Float(_)
         | Ty::Bytes => leaf(ty.render_name()),
         Ty::List(e) => TypeNode {
@@ -6042,6 +6043,11 @@ enum ShapeNode {
     /// `unbox_bigint` and renders the SAME `KIND_INT` leaf as `Int` — the codec leaf is already
     /// arbitrary-width (sign + big-endian magnitude), so no new wire KIND is needed, only the shape tag.
     BigInt,
+    /// A runtime `Rational` — a normalized 2-BigInt-handle node. The runtime (descriptor tag 18) reads both
+    /// components via `unbox_rational` and renders the `num/den` NAME leaf (each component formatted decimal
+    /// in the runtime — the codec's Int leaf renders decimal on the HOST, but a rational is ONE name leaf,
+    /// so the runtime formats it), matching the constant-Rational value form (`(: 1/2 Rational)`).
+    Rational,
     Bool,
     Float,
     Float32,
@@ -6101,6 +6107,9 @@ impl ShapeTableBuilder {
             // A runtime BigInt (arbitrary precision) escapes as `ShapeNode::BigInt` — the runtime reads it
             // via `unbox_bigint` and renders the same arbitrary-width `KIND_INT` leaf as a fixed-width int.
             Ty::BigInt => self.push(ShapeNode::BigInt),
+            // A runtime Rational escapes as `ShapeNode::Rational` — the runtime reads its two BigInt
+            // children and renders the `num/den` name leaf (R3c).
+            Ty::Rational => self.push(ShapeNode::Rational),
             Ty::Bool => self.push(ShapeNode::Bool),
             // A FLOAT payload is renderable at BOTH widths: `box_op_ty`/`get_op_ty` box it via its width's
             // leaf (`box-float`/`box-float32`), and the runtime `value-encode` renders a KIND_FLOAT decimal
@@ -6246,6 +6255,7 @@ impl ShapeTableBuilder {
             match node {
                 ShapeNode::Int => d.push(0),
                 ShapeNode::BigInt => d.push(17), // matches the runtime `decode_shape` tag 17 = BigInt
+                ShapeNode::Rational => d.push(18), // matches the runtime `decode_shape` tag 18 = Rational
                 ShapeNode::Bool => d.push(1),
                 ShapeNode::Float => d.push(2), // matches the runtime `decode_shape` tag 2 = Float
                 ShapeNode::Float32 => d.push(14), // matches the runtime `decode_shape` tag 14 = Float32
