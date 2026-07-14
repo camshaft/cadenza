@@ -2581,6 +2581,63 @@ fn a_runtime_string_rope_map_key_is_found_and_adds_no_leak() {
     );
 }
 
+/// A HEAP-HANDLE element inserted into an EMPTY set (`(Set.of (list))`) compiles + runs — the empty
+/// collection's element type is an unresolved `Var`, and the backend must box the element by its OWN
+/// concrete type, not default the var to `box-int`. `Set.insert (Set.of (list)) <String>` (a flat string
+/// OR a `String.concat` rope) emitted an INVALID module (`box-int` on the i32 String handle → `expected
+/// i64, found i32`) until `box_op_for` deferred to the element node's type when the set's declared type is
+/// unresolved. The rope additionally compacts (champ contract), so both must net to a 1-element set with
+/// NO extra leak vs an int baseline. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_heap_element_inserted_into_an_empty_set_runs_and_leaves_no_extra_leak() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[set-insert] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // A runtime String ROPE element into an empty set → a 1-element set (len 1). Was invalid wasm.
+    let rope_src = "(module m \
+                 (def (rep (: s String) (: n Int64)) \
+                    (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+                 (def (main) (Set.len (Set.insert (Set.of (list)) (rep \"hi\" 3)))) (export main))";
+    let rope =
+        compile_component(&crate::codec::encode(&parse(rope_src))).expect("rope set compiles");
+    let mut rt = ComposedRuntime::new(&rope, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(1),
+        "a rope String inserted into an empty set is a 1-element set (was invalid wasm: box-int on the \
+         i32 String handle, because the empty set's element type was an unresolved var)"
+    );
+    let rope_live = rt.live_objects();
+    // A FLAT String element — the same empty-set-var path (also invalid wasm before the fix), and the
+    // byte-identical baseline for the leak check: a flat String and a rope String each build one set
+    // holding one String leaf, so they must leave the SAME live-object count. A rope leaving MORE is a
+    // compact leak (the compacted flat leaf not reclaimed); comparing to a flat String — not an int, which
+    // boxes inline and is one fewer object — isolates exactly the rope/compact overhead.
+    let flat_src = "(module m \
+                 (def (main) (Set.len (Set.insert (Set.of (list)) \"hi\"))) (export main))";
+    let flat =
+        compile_component(&crate::codec::encode(&parse(flat_src))).expect("flat set compiles");
+    let mut rt_flat = ComposedRuntime::new(&flat, &runtime_bytes);
+    assert_eq!(
+        rt_flat.call("main", &[]),
+        Val::S64(1),
+        "a flat String inserted into an empty set is a 1-element set (same empty-set-var box bug)"
+    );
+    assert_eq!(
+        rope_live,
+        rt_flat.live_objects(),
+        "rope-set-element leak: the rope program leaves {rope_live} live cells vs the flat-String \
+         baseline's {} — the element compaction must be leak-NEUTRAL (an owned rope in, an owned flat leaf \
+         out, consumed by set-insert)",
+        rt_flat.live_objects()
+    );
+}
+
 /// RUNTIME BIGINT ARITHMETIC leaves no live objects — the refcount discipline for the borrowing BigInt
 /// ops. The runtime `bigint-add`/…/`to-i64-checked` BORROW their operands (`unbox_bigint` reads without
 /// consuming) and return a FRESH box (or a scalar), the `value-eq` shape — NOT the consuming

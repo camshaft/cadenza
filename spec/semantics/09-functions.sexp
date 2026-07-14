@@ -1923,6 +1923,40 @@
   (call   main)
   (output (: 15 Int64)))
 
+; The same i32/i64 scratch-slot-aliasing family at a HIGHER local count, in a decode-loop shape the
+; self-hosted compiler's reader is written in: a self-tail loop whose position advance projects BOTH
+; fields of a tuple returned by a recursive helper, accumulating compound-payload sum nodes into a list.
+; Over enough locals the loop function reused one slot for an i64 arithmetic temp AND an i32 heap handle
+; (an invalid module, `expected i32 found i64`). Root-caused to the same slot-reservation weakness as the
+; let-bound if-compound miscompile (a persistent slot must be reserved BEFORE the sub-expressions that
+; float their scratch off the high-water) — the fix there cleared this too. A now-passing regression guard.
+
+(case "a self-tail loop advancing by a tuple projection while accumulating compound-sum nodes compiles"
+  (doc    "A decode loop `read-leaves` advances its position via `leaf-end`, which projects BOTH fields of
+           the tuple returned by the recursive `read-varu` (`(+ (. v 1) (. v 0))`), and pushes `Ast` sum
+           nodes (a type with a `(List Ast)` variant — a compound payload) into a `(List Ast)` accumulator.
+           Over `b\"\\x00\\x01\\x05\"` it reads ONE leaf, an `(Ast.Int …)`, and `nc` of an `Ast.Int` is 1.
+           This emitted INVALID WASM (`expected i32, found i64`) — a threshold-dependent slot-aliasing bug
+           in the loop transform (one local held both an i64 arithmetic temp and the i32 handle from
+           `read-varu`), the same scratch-slot family as the let-bound if-compound miscompile; the
+           slot-reservation fix cleared both. Expected: 1.")
+  (input  (do
+            (type Ast (Int Int64) (List (List Ast)))
+            (def (read-varu (: b Bytes) (: p Int64) (: a Int64) (: s Int64))
+              (let ((byte (Option.expect (Bytes.at b p) "v")))
+                (let ((a2 (+ a (<< (& byte 127) s))))
+                  (if (= (& byte 128) 0) (tuple a2 (+ p 1)) (read-varu b (+ p 1) a2 (+ s 7))))))
+            (def (read-mag (: b Bytes) (: p Int64) (: len Int64) (: acc Int64))
+              (if (= len 0) acc (read-mag b (+ p 1) (- len 1) (+ (* acc 256) (Option.expect (Bytes.at b p) "m")))))
+            (def (read-leaf (: b Bytes) (: pos Int64)) ((. Ast Int) (read-mag b (+ pos 1) (. (read-varu b (+ pos 1) 0 0) 0) 0)))
+            (def (leaf-end (: b Bytes) (: pos Int64)) (let ((v (read-varu b (+ pos 1) 0 0))) (+ (. v 1) (. v 0))))
+            (def (read-leaves (: b Bytes) (: pos Int64) (: count Int64) (: acc (List Ast)))
+              (if (= count 0) acc (read-leaves b (leaf-end b pos) (- count 1) (List.push acc (read-leaf b pos)))))
+            (def (nc (: n Ast)) (match n (((. Ast Int) _) 1) (((. Ast List) _) 9)))
+            (def (main) (nc (Option.expect (List.at (read-leaves b"\x00\x01\x05" 0 1 (list)) 0) "at")))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "functions are single-arity and curried"
   (doc    "Witnesses core-semantics.md §Functions Are Single-Arity: a function takes exactly one
            argument. Multi-parameter syntax (fn (x y) body) desugars to (fn x (fn y body)). Partial

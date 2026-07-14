@@ -84,6 +84,36 @@
             (export main)))
   (output (: 42 Int64)))
 
+(case "a runtime string rope inserted into a set is a member"
+  (doc    "The SET element-insert companion of the map-key cases: inserting a runtime String ROPE
+           `(rep \"hi\" 3)`=\"hixxx\" into an empty set yields a 1-element set (`Set.len` = 1). Two
+           earlier faults: the empty set `(Set.of (list))` leaves its element type an unresolved VAR
+           (no construction pins it), so the backend defaulted the element box to `box-int` — which
+           mis-boxed the i32 String HANDLE as an integer, emitting an INVALID component; and the rope
+           element was not compacted before champ_insert. The fix boxes the element by its OWN concrete
+           type when the set's declared type is unresolved, and compacts a rope element. A flat string /
+           an Int element already inserted (box-int is correct for an Int); only a heap-handle element
+           into an empty set hit the box bug. Expected: len 1.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (Set.len (Set.insert (Set.of (list)) (rep "hi" 3))))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a runtime string rope set element is found by its flat twin"
+  (doc    "The membership companion: after inserting the runtime ROPE `(rep \"hi\" 3)`=\"hixxx\" into a
+           set, `Set.contains` with the flat literal \"hixxx\" is TRUE (→ 1). The element-insert now
+           compacts the rope to its canonical flat leaf before champ_insert (mirroring the Map key and
+           the Set QUERY key), so the flat query's champ_hash lands in the same slot. Pins that the Set
+           ELEMENT-insert path canonicalizes a rope element, not only the query key.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (if (Set.contains (Set.insert (Set.of (list)) (rep "hi" 3)) "hixxx") 1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "string length"
   (input  (String.scalar-len "hello"))
   (output (: 5 Int64)))

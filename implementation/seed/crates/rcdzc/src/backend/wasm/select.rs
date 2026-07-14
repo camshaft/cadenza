@@ -596,6 +596,25 @@ fn box_op(db: &mut Db, id: StructId) -> Result<Option<&'static str>, Reject> {
     box_op_ty(db, &ty)
 }
 
+/// The box op for a collection ELEMENT/KEY/VALUE node, given the collection's DECLARED slot type. Prefers
+/// the collection's declared type (which grounds a bare-literal element to the collection's width), but
+/// FALLS BACK to the element NODE's own concrete type when the declared type is an unresolved `Var`/`Any`.
+/// A collection built EMPTY — `(Set.of (list))`, `(Map.empty)` — leaves its element/key type an
+/// unconstrained var: inference never unifies a later `Set.insert`/`Map.insert`'s element type back onto
+/// the empty collection's element var, so the declared type stays `Var`. `box_op_ty` defaults a `Var` to
+/// `box-int` (the uniform heap cell — correct for a genuinely-dead phantom position), which WRONGLY boxes
+/// a live HEAP-HANDLE element (a String, a nested compound) as an integer → an invalid module. The
+/// inserted element is a live value with a SOLVED type, so box it by that — exactly as `Core::Tuple` boxes
+/// each element by its own node type via `box_op`. (A resolved declared type is authoritative and used
+/// as-is; only an unresolved declared type defers to the element node.)
+fn box_op_for(db: &mut Db, node: StructId, declared: &Ty) -> Result<Option<&'static str>, Reject> {
+    if matches!(declared, Ty::Var(_) | Ty::Any) {
+        box_op(db, node)
+    } else {
+        box_op_ty(db, declared)
+    }
+}
+
 /// The box op for a solved TYPE directly (not a node) — used where a map's key/value type is known but
 /// no representative node is at hand (a `Map.lookup` value unbox reads `val_ty`). Mirrors [`box_op`].
 fn box_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
@@ -4375,7 +4394,7 @@ fn emit(
             out.push(Lir::CallImport(OP_MAP_EMPTY)); // → [map]
             for &(k, v) in &entries {
                 emit(db, k, slots, base, high, scratch_ty, layout, out)?; // [map, key]
-                if let Some(op) = box_op_ty(db, &key_ty)? {
+                if let Some(op) = box_op_for(db, k, &key_ty)? {
                     emit_box_i32_to_i64_extend(db, k, out);
                     out.push(Lir::CallImport(op)); // [map, key-handle]
                 }
@@ -4383,7 +4402,7 @@ fn emit(
                     out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
                 }
                 emit(db, v, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
-                if let Some(op) = box_op_ty(db, &val_ty)? {
+                if let Some(op) = box_op_for(db, v, &val_ty)? {
                     emit_box_i32_to_i64_extend(db, v, out);
                     out.push(Lir::CallImport(op)); // [map, key, val-handle]
                 }
@@ -4403,7 +4422,7 @@ fn emit(
         } => {
             emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
-            if let Some(op) = box_op_ty(db, &key_ty)? {
+            if let Some(op) = box_op_for(db, key, &key_ty)? {
                 emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
@@ -4411,7 +4430,7 @@ fn emit(
                 out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf (champ contract)
             }
             emit(db, val, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
-            if let Some(op) = box_op_ty(db, &val_ty)? {
+            if let Some(op) = box_op_for(db, val, &val_ty)? {
                 emit_box_i32_to_i64_extend(db, val, out);
                 out.push(Lir::CallImport(op)); // [map, key, val-handle]
             }
@@ -4424,7 +4443,7 @@ fn emit(
         Core::MapRemove { map, key, key_ty } => {
             emit(db, map, slots, base, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base, high, scratch_ty, layout, out)?; // [map, key]
-            if let Some(op) = box_op_ty(db, &key_ty)? {
+            if let Some(op) = box_op_for(db, key, &key_ty)? {
                 emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
@@ -4450,7 +4469,7 @@ fn emit(
             out.push(Lir::CallImport(OP_SET_EMPTY)); // → [set]
             for &e in &elems {
                 emit(db, e, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
-                if let Some(op) = box_op_ty(db, &elem_ty)? {
+                if let Some(op) = box_op_for(db, e, &elem_ty)? {
                     emit_box_i32_to_i64_extend(db, e, out);
                     out.push(Lir::CallImport(op)); // [set, elem-handle]
                 }
@@ -4466,7 +4485,7 @@ fn emit(
         Core::SetInsert { set, elem, elem_ty } => {
             emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
-            if let Some(op) = box_op_ty(db, &elem_ty)? {
+            if let Some(op) = box_op_for(db, elem, &elem_ty)? {
                 emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
             }
@@ -4482,7 +4501,7 @@ fn emit(
         Core::SetRemove { set, elem, elem_ty } => {
             emit(db, set, slots, base, high, scratch_ty, layout, out)?; // [set]
             emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [set, elem]
-            if let Some(op) = box_op_ty(db, &elem_ty)? {
+            if let Some(op) = box_op_for(db, elem, &elem_ty)? {
                 emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
             }
@@ -4511,7 +4530,7 @@ fn emit(
             scratch_ty.insert(elem_slot, ValType::I32);
             emit(db, set, slots, base + 1, high, scratch_ty, layout, out)?; // [set]
             emit(db, elem, slots, base + 1, high, scratch_ty, layout, out)?; // [set, elem]
-            if let Some(op) = box_op_ty(db, &elem_ty)? {
+            if let Some(op) = box_op_for(db, elem, &elem_ty)? {
                 emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
             }
@@ -4561,7 +4580,7 @@ fn emit(
             scratch_ty.insert(val_slot, ValType::I32);
             emit(db, map, slots, base + 2, high, scratch_ty, layout, out)?; // [map]
             emit(db, key, slots, base + 2, high, scratch_ty, layout, out)?; // [map, key]
-            if let Some(op) = box_op_ty(db, &key_ty)? {
+            if let Some(op) = box_op_for(db, key, &key_ty)? {
                 emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
