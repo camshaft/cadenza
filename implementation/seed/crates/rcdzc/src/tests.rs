@@ -12787,6 +12787,35 @@ mod match_engine {
                 .as_deref(),
             Some("CDZ0201")
         );
+        // The non-exhaustive list match now carries an ADD-ARM fix, like the scalar/sum case. FIXED-only
+        // (no catch-all) → append a wildcard `(_ (trap "TODO"))` covering every remaining length.
+        let find = |body: &str| {
+            let src = format!("(module m (def (f (: xs (List Int64))) {body}) (export f))");
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0210"))
+                .unwrap_or_else(|| panic!("expected CDZ0210 for {body}"))
+        };
+        let no_catchall = find("(match xs ((list) 0) ((list a) a))");
+        assert_eq!(
+            no_catchall.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("(_ (trap \"TODO\"))"),
+            "fixed-only list match adds a wildcard arm: {}",
+            no_catchall.message
+        );
+        assert_eq!(
+            no_catchall.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::InsertInto)
+        );
+        // A REST pattern that leaves the EMPTY list uncovered (`(list a .. r)` covers length ≥ 1) →
+        // append the specific missing arm `((list) (trap "TODO"))`.
+        let missing_empty = find("(match xs ((list a .. r) a))");
+        assert_eq!(
+            missing_empty.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("((list) (trap \"TODO\"))"),
+            "a rest pattern missing the empty case adds `((list) …)`: {}",
+            missing_empty.message
+        );
     }
 
     #[test]

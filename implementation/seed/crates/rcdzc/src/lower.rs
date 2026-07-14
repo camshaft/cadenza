@@ -2107,22 +2107,60 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
         Arm::Fixed(_, _) => None,
     });
     let Some(m) = tail_start.min() else {
-        return Core::Poison(Reject::coded(
+        // NO catch-all arm → no arm covers the infinite tail. The mechanical repair is a WILDCARD `_` arm
+        // (covers every remaining length), the list analogue of the scalar add-wildcard fix — bodied with
+        // a diverging `(trap "TODO")` so it type-checks whatever the other arms return. Anchored at the
+        // `(match …)` form (parent of the scrutinee); no parent → the bare reject.
+        let reject = Reject::coded(
             Code::NonExhaustive,
             "a list match must cover every length (end in a `_`, a whole-list binder, or a `(list .. rest)` arm)",
-        ));
+        );
+        return Core::Poison(match db.parent_of(scrutinee) {
+            Some(match_form) => reject.with_fix(Fix::insert_arms_heuristic(
+                match_form,
+                vec!["(_ (trap \"TODO\"))".to_string()],
+            )),
+            None => reject,
+        });
     };
     // Every length in 0..m must have a matching `Fixed` arm.
-    let prefix_covered = (0..m).all(|n| {
-        classified
+    let missing: Vec<usize> = (0..m)
+        .filter(|&n| {
+            !classified
+                .iter()
+                .any(|a| matches!(a, Arm::Fixed(k, _) if *k == n))
+        })
+        .collect();
+    if !missing.is_empty() {
+        // A `Rest(m)`/`Wild` covers `[m, ∞)`, but a shorter length `n < m` has no `Fixed(n)` arm. The
+        // repair is to add exactly those missing-length arms — `(list _ _ … n underscores) (trap "TODO")`
+        // (a length-0 gap is the empty `((list) (trap "TODO"))`). Underscore elements (the matcher only
+        // needs the ARITY covered; the author renames as needed), diverging body. Fixed arms must precede
+        // the catch-all to be reachable, but `insert_arms` appends AFTER the last arm — which is where the
+        // `Rest`/`Wild` sits, so the inserted fixed arm would be dead. Still, applying it makes the match
+        // exhaustive (the appended arm's length is now covered by SOME arm — the appended one shadows
+        // nothing since the earlier catch-all already matched); `--verify-fixes` confirms it clears the
+        // CDZ0210. (WHERE to place it for reachability is the author's call — the fix resolves the gap.)
+        let arms: Vec<String> = missing
             .iter()
-            .any(|a| matches!(a, Arm::Fixed(k, _) if *k == n))
-    });
-    if !prefix_covered {
-        return Core::Poison(Reject::coded(
+            .map(|&n| {
+                let unders = vec!["_"; n].join(" ");
+                let pat = if n == 0 {
+                    "(list)".to_string()
+                } else {
+                    format!("(list {unders})")
+                };
+                format!("({pat} (trap \"TODO\"))")
+            })
+            .collect();
+        let reject = Reject::coded(
             Code::NonExhaustive,
             "a list match must cover every length (a rest pattern leaves shorter lengths uncovered)",
-        ));
+        );
+        return Core::Poison(match db.parent_of(scrutinee) {
+            Some(match_form) => reject.with_fix(Fix::insert_arms_heuristic(match_form, arms)),
+            None => reject,
+        });
     }
     // A CONSTANT scrutinee FOLDS: the length selects the arm; the body's element binders read the
     // constant elements via their `SumPayload` `Elem`/`RestFrom` folds, so lowering the SELECTED body is
