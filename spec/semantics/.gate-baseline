@@ -414,6 +414,7 @@ pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean
 pass	a match on a tuple-element-access scrutinee dispatches on the element value
 pass	a match on a value of one sum type rejects a pattern from a different sum type
+pass	a match on an uninhabited scrutinee is exhaustive with zero arms
 pass	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 pass	a match over multiple nullary constructors with uniform patterns
 pass	a match pattern naming a non-existent variant is a coded rejection
@@ -1528,7 +1529,6 @@ todo	a list update at an index that wraps below the length still traps
 todo	a literal subterm in a quote pattern matches by equality
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
-todo	a match on an uninhabited scrutinee is exhaustive with zero arms
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested unquote pattern matches a sub-AST by shape

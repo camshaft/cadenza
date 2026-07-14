@@ -546,6 +546,36 @@ pub fn emit(
         // is a `crosses_as_resource_escape` type but ERASES to a scalar boundary valtype, so it crosses
         // fine on this multi-export path — `export_result_valtype` returns `Ok(Some)` for it, and it must
         // NOT be diagnosed as an arity decline. Only a type with NO scalar valtype reaches the arity case.)
+        // A DIVERGING export — its body provably traps (`Core::Trap`: a bare `(trap …)`, a zero-arm match
+        // on a `Never` scrutinee, or a call to such a function) — has a `Never` result type (a fresh var /
+        // `Any`) with no boundary representation, but NO value ever crosses: the guest traps. Cross it as a
+        // UNIT (no-result) export — the core function is already emitted 0-result (`select_function` maps a
+        // diverging `ret` to `Ty::Unit`), and the host observes the trap. Checked BEFORE the escape/valtype
+        // declines so a diverging `Any`/`Var` result is not misdiagnosed as an undetermined-type fault.
+        if serialize::export_result_valtype(&e.result).is_err()
+            && matches!(crate::lower::core_of(db, e.body), crate::core::Core::Trap)
+        {
+            boundary.push(BoundaryExport {
+                name: e.name.clone(),
+                params: {
+                    let mut params = Vec::new();
+                    for (_, ty) in &e.params {
+                        let vt = serialize::export_result_valtype(ty)
+                            .map_err(Reject::decline)?
+                            .ok_or_else(|| {
+                                Reject::decline(format!(
+                                    "a diverging export's parameter `{}` has no boundary representation",
+                                    ty.render_name()
+                                ))
+                            })?;
+                        params.push(vt);
+                    }
+                    params
+                },
+                result: crate::backend::wasm::envelope::BoundaryResult::None,
+            });
+            continue;
+        }
         if crosses_as_resource_escape(&e.result)
             && serialize::export_result_valtype(&e.result).is_err()
         {

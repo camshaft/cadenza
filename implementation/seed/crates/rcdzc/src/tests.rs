@@ -14656,6 +14656,39 @@ mod match_engine {
     }
 
     #[test]
+    fn a_diverging_export_emits_a_trapping_function_not_a_decline() {
+        // An export whose body PROVABLY DIVERGES has a `Never` result type (a fresh var / `Any`) with no
+        // machine/boundary representation — but NO value ever crosses: the guest traps. Before, such an
+        // export DECLINED "function return type has no machine representation"; now it emits a UNIT
+        // (0-result) function ending in `unreachable` (`select_function` maps a diverging `ret` to
+        // `Ty::Unit`; the boundary export crosses as `BoundaryResult::None`). The host observes the trap.
+        // THREE diverging shapes all compile + trap: a ZERO-ARM match on a `Never` scrutinee, a bare
+        // `(trap …)`, and a call to a diverging callee.
+        for (label, src) in [
+            (
+                "zero-arm-match",
+                "(module m (def (never-returns) (trap \"unreachable\")) \
+                   (def (main) (match (never-returns))) (export main))",
+            ),
+            (
+                "bare-trap",
+                "(module m (def (main) (trap \"unreachable\")) (export main))",
+            ),
+            (
+                "diverging-callee",
+                "(module m (def (never-returns) (trap \"unreachable\")) \
+                   (def (main) (never-returns)) (export main))",
+            ),
+        ] {
+            let bytes = component(src);
+            assert!(
+                call_traps(&bytes, "main", &[]),
+                "{label}: a diverging export must emit a function that TRAPS"
+            );
+        }
+    }
+
+    #[test]
     fn a_runtime_built_map_and_set_escape_via_value_encode() {
         // A RUNTIME `(Map Int64 Int64)` / `(Set Int64)` (insert-built, not constant-foldable) now crosses
         // the host boundary, where before they declined "needs a value-form walker". Both escape via the
