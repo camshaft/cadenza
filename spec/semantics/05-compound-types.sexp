@@ -4639,6 +4639,26 @@
             ((Sign.Pos _)  2)))
   (output (: 1 Int64)))
 
+(case "a named catch-all binder captures the whole sum and re-matches it"
+  (doc    "A match arm may be a bare BINDER (not `_`) that captures the WHOLE scrutinee value — `(match t
+           ((T.A n) n) (other …))` binds `other` to the un-matched sum value, which the arm then RE-MATCHES
+           on the remaining variants. The catch-all binder makes the first match total (covers `B`/`C` via
+           `other`), and re-matching `other` dispatches them. `(f (T.C))` falls to `other`, whose inner
+           match yields 30. Pins that a catch-all binder over a user-sum scrutinee binds the sum value (not
+           just a scalar) and that the bound value is a first-class sum re-matchable on its variants — the
+           user-sum companion of the BigInt single-binder-match case.")
+  (input  (do
+            (type T (A Int64) (B) (C))
+            (def (f (: t T))
+              (match t
+                ((T.A n) n)
+                (other  (match other ((T.B) 20) ((T.C) 30) ((T.A m) m)))))
+            (def (main (: k Int64)) (f (T.C)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 0 Int64))
+  (output (: 30 Int64)))
+
 (case "constructor pattern binders capture the payload uniformly"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant: the pattern `(Some x)` binds `x` to the payload (42); the pattern
