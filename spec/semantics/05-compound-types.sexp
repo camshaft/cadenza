@@ -5193,7 +5193,7 @@
            resolves against T's variant set FIRST — reaching T's `Int` variant, not the prelude `Int` —
            exactly as a non-colliding name (`Foo`) and the qualified form (`T.Int`) already do. Without
            this, the bare pattern head resolved (scope→def→prelude) to the prelude `Int` and the ctor
-           check rejected CDZ0203 'this constructor pattern is not the constructor of the matched type T',
+           check rejected CDZ0203 'this variant pattern is not a variant of the matched type T',
            breaking bare pattern-matching on an AST sum whose variants (`Int`/`Name`/`List`) collide with
            prelude names. `f (T.Int 42)` matches the `Int` arm → 42. (The construct position still writes
            the qualified `T.Int`: a bare `(Int 42)` in value position has no scrutinee to disambiguate it

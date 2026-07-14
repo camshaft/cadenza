@@ -5990,11 +5990,14 @@ fn enrich_pattern_head_suggestion(
     ty: &crate::ty::Ty,
     reject: Reject,
 ) -> Reject {
-    // The scrutinee sum's declaration occurrence — the key of its (memoized) variant candidate set.
-    let crate::ty::Ty::Sum { decl, .. } = ty else {
-        return reject;
+    // The scrutinee's declaration occurrence — the key of its (memoized) variant candidate set. A boxed
+    // multi-variant `Ty::Sum` AND a single-variant `Ty::Nominal` newtype (a `(type T (Mk …))` erases to a
+    // nominal, whose sole variant is still named) both carry a `decl` whose variants are the candidate set,
+    // so a wrong-ctor pattern over EITHER gets the same "did you mean?" / closest-variants enrichment.
+    let decl = match ty {
+        crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => *decl,
+        _ => return reject,
     };
-    let decl = *decl;
     // The mistyped key + the occurrence a replace fix rewrites. Two head shapes reach here:
     //  - a QUALIFIED `(. Sum Q)` head — the key is its second child (`((C.Alph) …)`, a CDZ0201 "record
     //    has no field" poison from the member fold); rewrite the key child.
@@ -6405,14 +6408,23 @@ fn pattern_constraints(
     } = ty
     {
         if crate::eval::variant_owner_decl(db, head) != Some(*scrut_decl) {
-            return Err(Reject::coded(
-                Code::TypeMismatch,
-                format!(
-                    "this constructor pattern is not the constructor of the matched type {}",
-                    ty.render_name()
-                ),
-            )
-            .at(pat));
+            // The pattern names a variant of a DIFFERENT type than the newtype scrutinee. Enrich with the
+            // same "did you mean?" / closest-variants suggestion the boxed-sum path gets (the scrutinee's
+            // own — single — variant is the candidate the author likely reached for), carrying a replace
+            // fix on the pattern head. The newtype twin of the `Ty::Sum` wrong-ctor enrichment below.
+            return Err(enrich_pattern_head_suggestion(
+                db,
+                head,
+                ty,
+                Reject::coded(
+                    Code::TypeMismatch,
+                    format!(
+                        "this variant pattern is not a variant of the matched type {}",
+                        ty.render_name()
+                    ),
+                )
+                .at(pat),
+            ));
         }
         let inner = (**inner).clone();
         return match args.len() {

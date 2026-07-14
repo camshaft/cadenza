@@ -30275,6 +30275,58 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_wrong_ctor_over_a_single_variant_newtype_scrutinee_is_enriched_too() {
+        // A single-variant `(type T (Mk …))` erases to a `Ty::Nominal` newtype, whose wrong-ctor pattern
+        // took a SEPARATE reject path from the boxed `Ty::Sum` — it named "not the constructor of the
+        // matched type T" with NO suggestion and NO fix, while the multi-variant path already carried the
+        // "did you mean?" / closest-variants enrichment. Both now share `enrich_pattern_head_suggestion`
+        // (which reads the `decl`'s variants for either kind), so a newtype scrutinee gets the same route.
+
+        // NEAR miss → a confident "did you mean" + a replace fix to the newtype's sole variant.
+        let near = first_error(
+            "(module m (type A (Xyz)) (type B (Xyw)) (def (f (: a A)) (match a ((Xyw) 1))) (export f))",
+        );
+        assert_eq!(
+            near.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            near.message
+        );
+        assert!(
+            near.message.contains("not a variant of the matched type A"),
+            "the newtype wrong-ctor uses the variant wording: {}",
+            near.message
+        );
+        assert!(
+            near.message.contains("did you mean `Xyz`?")
+                && near
+                    .fix
+                    .as_ref()
+                    .is_some_and(|f| f.replacement.contains("Xyz")),
+            "a near-miss ctor over a newtype suggests + fixes to its sole variant: {} fix={:?}",
+            near.message,
+            near.fix
+        );
+        // FAR miss → lists the newtype's variant (no baseless fix), the same two-tier the sum path gives.
+        let far = first_error(
+            "(module m (type A (Xyz)) (type B (Y)) (def (f (: a A)) (match a ((Y) 1))) (export f))",
+        );
+        assert!(
+            far.message.contains("closest matches:") && far.message.contains("`Xyz`"),
+            "a far-miss ctor over a newtype lists its variant: {}",
+            far.message
+        );
+        // NO false reject: the newtype's REAL ctor still matches and binds.
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (type UserId (Mk Int64)) (def (f (: u UserId)) (match u ((Mk n) n))) (export f))"
+            )))
+            .is_ok(),
+            "the newtype's own ctor pattern still matches"
+        );
+    }
+
+    #[test]
     fn many_match_patterns_typoing_one_variant_suggest_the_memoized_winner() {
         // The nearest-variant suggestion for a mistyped match-pattern head is MEMOIZED per (sum-decl,
         // mistyped-key), so a WIDE sum matched with a stale variant name from N sites (a renamed variant
