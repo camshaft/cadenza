@@ -1100,7 +1100,7 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
         // tuple; a nested compound field would recurse, a later widening).
         Type::Tuple(tt) => {
             let elem_types: Vec<Type> = tt.types().collect();
-            let fields = parse_tuple_fields(s).ok_or_else(|| {
+            let mut fields = parse_tuple_fields(s).ok_or_else(|| {
                 anyhow!("argument `{s}`: expected a tuple literal like `(tuple 3 4)` or `(3 4)`")
             })?;
             if fields.len() != elem_types.len() {
@@ -1110,10 +1110,18 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
                     elem_types.len()
                 ));
             }
+            // A RECORD closure argument erases to a `tuple<…>` whose fields are laid in canonical SORTED-name
+            // order (`tuple_field_abi` / `Core::Record`: a `BTreeMap` over field names). The corpus writes the
+            // record value `(record (z 100) (a 3))` in SOURCE order, so when EVERY field is a `(name value)`
+            // group, sort the fields by name to match the boundary tuple's positions before coercing. A plain
+            // positional tuple (bare scalar fields) is left untouched.
+            if fields.iter().all(|f| named_field(f).is_some()) {
+                fields.sort_by(|a, b| named_field(a).unwrap().0.cmp(&named_field(b).unwrap().0));
+            }
             let vals: Result<Vec<Val>> = fields
                 .iter()
                 .zip(&elem_types)
-                .map(|(f, ft)| coerce_one(f, ft))
+                .map(|(f, ft)| coerce_one(&unwrap_named_field(f), ft))
                 .collect();
             Val::Tuple(vals?)
         }
@@ -1123,6 +1131,37 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
             ));
         }
     })
+}
+
+/// If `field` is a RECORD-field group `(name value)` — a 2-element paren group whose first element is a bare
+/// field NAME (an identifier, not a number/bool) — return `(name, value)`. A record closure argument erases to
+/// a component `tuple<…>` at the boundary, so the corpus's record VALUE `(record (x 10) (y 3))` presents each
+/// field this way; the driver reorders + unwraps them. Returns `None` for a plain scalar or a positional
+/// tuple field (so those stay untouched).
+fn named_field(field: &str) -> Option<(String, String)> {
+    let parts = parse_tuple_fields(field)?;
+    if parts.len() == 2
+        && !parts[0].is_empty()
+        && parts[0]
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        && parts[0].parse::<i128>().is_err()
+        && parts[0].parse::<f64>().is_err()
+        && parts[0] != "true"
+        && parts[0] != "false"
+    {
+        Some((parts[0].clone(), parts[1].clone()))
+    } else {
+        None
+    }
+}
+
+/// Unwrap a record-field group `(name value)` to its VALUE (`(x 10)` → `10`); leave a plain scalar or a
+/// positional/nested-compound field unchanged so nested tuples still coerce recursively.
+fn unwrap_named_field(field: &str) -> String {
+    named_field(field)
+        .map(|(_, v)| v)
+        .unwrap_or_else(|| field.to_string())
 }
 
 /// Parse a corpus tuple argument literal into its field texts. Accepts `(tuple f0 f1 …)` (the canonical
@@ -1207,5 +1246,36 @@ mod tests {
         // The host-import binder skips the value-heap runtime instance (bound elsewhere).
         assert!(is_runtime_import_name("cadenza:runtime/heap@0.0.0+abc"));
         assert!(!is_runtime_import_name("ask"));
+    }
+
+    #[test]
+    fn tuple_fields_split_at_top_level() {
+        // Bare and `tuple`-headed spellings both split into their scalar fields; a nested group stays whole.
+        assert_eq!(parse_tuple_fields("(10 3)").unwrap(), vec!["10", "3"]);
+        assert_eq!(parse_tuple_fields("(tuple 10 3)").unwrap(), vec!["10", "3"]);
+        assert_eq!(
+            parse_tuple_fields("(record (x 10) (y 3))").unwrap(),
+            vec!["(x 10)", "(y 3)"]
+        );
+        assert!(parse_tuple_fields("10").is_none()); // not a paren group
+    }
+
+    #[test]
+    fn named_record_field_detected_and_unwrapped() {
+        // A `(name value)` group is recognized as a record field and unwraps to its value.
+        assert_eq!(
+            named_field("(x 10)"),
+            Some(("x".to_string(), "10".to_string()))
+        );
+        // A named field with a Bool value (the name is a real identifier).
+        assert_eq!(
+            named_field("(flag true)"),
+            Some(("flag".to_string(), "true".to_string()))
+        );
+        assert_eq!(named_field("(10 3)"), None); // numeric head → a positional tuple, not a record field
+        assert_eq!(named_field("(true false)"), None); // a positional Bool tuple, not a named field
+        assert_eq!(named_field("10"), None); // a bare scalar
+        assert_eq!(unwrap_named_field("(x 10)"), "10");
+        assert_eq!(unwrap_named_field("10"), "10");
     }
 }

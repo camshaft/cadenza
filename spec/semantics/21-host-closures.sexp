@@ -3030,6 +3030,87 @@
   (call   mk (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
   (output (: (list 10 3 100) (List Int64))))
 
+; A RECORD closure argument crosses the direct-call boundary just like a tuple: it erases to a component
+; `tuple<…>` whose fields are laid in canonical SORTED-NAME order (`tuple_field_abi` / `Core::Record` use a
+; `BTreeMap`), which the canonical ABI flattens into scalar core params the `call` rebuilds. The host supplies
+; it as `(record (name value)…)`; cdz-run sorts the named fields to match the boundary tuple's positions.
+
+(case "a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)"
+  (doc    "`mk : (-> Int64 (Record (x Int64) (y Int64)) Int64)` — a scalar `n` then a RECORD `r`. The record
+           erases to a `tuple<s64,s64>` (fields sorted: x, y), flattened into core params the `call` rebuilds
+           into the cell. `call(handle, 100, (record (x 10) (y 3)))` → `n + r.x + r.y` = 113.")
+  (input  (do (def (mk) (fn ((: n Int64) (: r (Record (x Int64) (y Int64)))) (+ n (+ (. r x) (. r y)))))
+              (export mk)))
+  (call   mk (: 100 Int64) (: (record (x 10) (y 3)) (Record (x Int64) (y Int64))))
+  (output (: 113 Int64)))
+
+(case "a SOLE RECORD closure ARG crosses the direct-call boundary"
+  (doc    "`mk : (-> (Record (a Int64) (b Int64)) Int64)` — the record is the SOLE arg (base_param=1). Erases
+           to `tuple<s64,s64>`, rebuilt in the `call`. `call(handle, (record (a 10) (b 3)))` → `r.a + r.b` = 13.")
+  (input  (do (def (mk) (fn ((: r (Record (a Int64) (b Int64)))) (+ (. r a) (. r b))))
+              (export mk)))
+  (call   mk (: (record (a 10) (b 3)) (Record (a Int64) (b Int64))))
+  (output (: 13 Int64)))
+
+(case "a RECORD closure ARG whose fields are NOT in sorted source order"
+  (doc    "`mk : (-> (Record (z Int64) (a Int64)) Int64)` — fields declared `z` THEN `a`, but the boundary
+           tuple sorts them to `(a, z)`. The guest reads `. r z`/`. r a` by name (correct regardless of layout);
+           cdz-run sorts the corpus's `(z 100)(a 3)` fields to match. `call(handle, (record (z 100) (a 3)))` →
+           `r.z - r.a` = 97 (proving the sorted-field round-trip is sound, not a coincidental positional match).")
+  (input  (do (def (mk) (fn ((: r (Record (z Int64) (a Int64)))) (- (. r z) (. r a))))
+              (export mk)))
+  (call   mk (: (record (z 100) (a 3)) (Record (z Int64) (a Int64))))
+  (output (: 97 Int64)))
+
+(case "a RECORD closure ARG with a narrow Bool field, among scalars"
+  (doc    "`mk : (-> Int64 (Record (v Int64) (flag Bool)) Int64)` — the record has a NARROW Bool field (sorted
+           BEFORE `v`: flag, v). The rebuild boxes the Bool via `box-bool`. `call(handle, 100, (record (v 10)
+           (flag true)))` → `if r.flag then n + r.v else n` = 110.")
+  (input  (do (def (mk) (fn ((: n Int64) (: r (Record (v Int64) (flag Bool)))) (if (. r flag) (+ n (. r v)) n)))
+              (export mk)))
+  (call   mk (: 100 Int64) (: (record (v 10) (flag true)) (Record (v Int64) (flag Bool))))
+  (output (: 110 Int64)))
+
+(case "a RECORD closure ARG with a LIST result"
+  (doc    "`mk : (-> Int64 (Record (x Int64) (y Int64)) (List Int64))` — a record arg composes with a
+           collection result: the list-`call` rebuilds the record cell, dispatches, value-encodes the List.
+           `call(handle, 100, (record (x 10) (y 3)))` → `(list 100 10 3)`.")
+  (input  (do (def (mk) (fn ((: n Int64) (: r (Record (x Int64) (y Int64)))) (list n (. r x) (. r y))))
+              (export mk)))
+  (call   mk (: 100 Int64) (: (record (x 10) (y 3)) (Record (x Int64) (y Int64))))
+  (output (: (list 100 10 3) (List Int64))))
+
+(case "a RECORD closure ARG on the MULTI-EXPORT path"
+  (doc    "Two same-sig record-arg closures `(-> (Record (x Int64) (y Int64)) Int64)` share ONE `call` that
+           rebuilds the record cell. Driving `mk-b` (subtract): `call(handle, (record (x 10) (y 3)))` → 7.")
+  (input  (do (def (mk-a) (fn ((: r (Record (x Int64) (y Int64)))) (+ (. r x) (. r y))))
+              (def (mk-b) (fn ((: r (Record (x Int64) (y Int64)))) (- (. r x) (. r y))))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: (record (x 10) (y 3)) (Record (x Int64) (y Int64))))
+  (output (: 7 Int64)))
+
+; A WIDER fixed-shape tuple (3+ fields) and DEEPER scalar interleaving (2 prefix + 1 suffix) also cross — the
+; flatten/rebuild + interleave machinery is field-count- and position-agnostic.
+
+(case "a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary"
+  (doc    "`mk : (-> Int64 (Tuple Int64 Int64 Int64) Int64)` — a scalar then a 3-field tuple (flattened to 3
+           core params). `call(handle, 100, (10, 3, 1))` → `n + p.0 + p.1 + p.2` = 114.")
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64 Int64)))
+                         (+ n (+ (. p 0) (+ (. p 1) (. p 2))))))
+              (export mk)))
+  (call   mk (: 100 Int64) (: (tuple 10 3 1) (Tuple Int64 Int64 Int64)))
+  (output (: 114 Int64)))
+
+(case "TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary"
+  (doc    "`mk : (-> Int64 Int64 (Tuple Int64 Int64) Int64 Int64)` — TWO prefix scalars `a`,`b`, the tuple `p`
+           (base_param=3), and a SUFFIX scalar `c`. The `call` pushes `a`,`b`, rebuilds `p`, pushes `c`.
+           `call(handle, 1, 2, (10, 3), 100)` → `a + b + p.0 + p.1 + c` = 116.")
+  (input  (do (def (mk) (fn ((: a Int64) (: b Int64) (: p (Tuple Int64 Int64)) (: c Int64))
+                         (+ (+ a b) (+ (+ (. p 0) (. p 1)) c))))
+              (export mk)))
+  (call   mk (: 1 Int64) (: 2 Int64) (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
+  (output (: 116 Int64)))
+
 ; The tuple-among-scalars arg shape extends to the MULTI-EXPORT path — for EVERY result shape: N same-sig
 ; closures share one `call` that interleaves the prefix scalar with the rebuilt tuple, then produces a scalar,
 ; a byte-rope, a fixed-shape compound value-form, or a collection value-encode result. (The among-scalars tuple
