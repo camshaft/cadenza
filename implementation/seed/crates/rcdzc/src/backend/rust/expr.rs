@@ -67,12 +67,15 @@ pub struct Ctx<'a> {
 
 /// A payload bound by a sum-match arm's Rust pattern: the scrutinee occurrence + access path the
 /// `Core::SumPayload` reads, and the Rust identifier the pattern bound it to. A `SumPayload` matching
-/// `(scrutinee, path)` renders as this `name`.
+/// `(scrutinee, path)` renders as this `name`. `boxed` when the bound payload field is a `Box<…>` (a
+/// RECURSIVE variant's field) — a read of it derefs (`*name` for the whole payload, `(*name).i` for a
+/// tuple element), the deref twin of the construct site's `Box::new`.
 #[derive(Clone)]
 pub struct SumBind {
     pub scrutinee: StructId,
     pub path: Vec<crate::core::PathStep>,
     pub name: String,
+    pub boxed: bool,
 }
 
 /// Describes a tail-recursion group compiled as a shared `loop`. A group of ONE member is plain self-
@@ -732,14 +735,27 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             for &p in &payloads {
                 args.push(emit(db, p, env, ctx)?);
             }
+            // A RECURSIVE variant's payload field is a `Box<…>` (the enum boxes it to stay finite), so its
+            // payload value is wrapped `Box::new(…)` — the deref twin at the match site reads `*__pay`.
+            // A non-recursive variant's field is unboxed. `wrap` applies the box exactly when the enum decl
+            // did (`variant_is_recursive` is the shared predicate).
+            let ty = type_of(db, id);
+            let boxed = super::enums::variant_is_recursive(db, &ty, disc);
+            let wrap = |payload: String| {
+                if boxed {
+                    format!("Box::new({payload})")
+                } else {
+                    payload
+                }
+            };
             match args.len() {
                 // A nullary variant is the bare path (`None`, `Shape::Circle` with no payload).
                 0 => Ok(path),
-                // A one-payload variant carries its payload directly (`Some(x)`).
-                1 => Ok(format!("{path}({})", args[0])),
+                // A one-payload variant carries its payload directly (`Some(x)`), boxed if recursive.
+                1 => Ok(format!("{path}({})", wrap(args[0].clone()))),
                 // A MULTI-payload variant carries ONE TUPLE (matching the enum decl's `V((T0, T1))` and the
                 // core's single-`Ty::Tuple` payload model, which the match side reads as one indexed value).
-                _ => Ok(format!("{path}(({}))", args.join(", "))),
+                _ => Ok(format!("{path}({})", wrap(format!("({})", args.join(", "))))),
             }
         }
         // A poison reaching selection is a fault the collector surfaces before emission; reaching here
@@ -1339,11 +1355,16 @@ fn emit_sum_switch(
                     let name = format!("__pay_{}_{i}", sw_path.len());
                     let mut payload_path = sw_path.to_vec();
                     payload_path.push(crate::core::PathStep::Payload);
+                    // A RECURSIVE variant's field is a `Box<…>` (the enum boxes it), so the bind is boxed —
+                    // a read derefs. The switched variant's type is the sub-value at `sw_path`.
+                    let sub_ty = ty_at_sum_path(db, scrutinee, sw_path);
+                    let boxed = super::enums::variant_is_recursive(db, &sub_ty, disc);
                     let mut c = ctx.clone();
                     c.sum_binds.push(SumBind {
                         scrutinee,
                         path: payload_path,
                         name: name.clone(),
+                        boxed,
                     });
                     (format!("({name})"), c)
                 };
@@ -1574,7 +1595,16 @@ fn emit_sum_payload(
     for b in ctx.sum_binds.iter().rev() {
         if b.scrutinee == scrutinee && path.starts_with(&b.path) {
             let rest = &path[b.path.len()..];
-            let mut expr = b.name.clone();
+            // A BOXED bind (a recursive variant's `Box<…>` field) is DEREFERENCED to reach the payload —
+            // `(*name)` — the twin of the construct site's `Box::new`. An `Elem(i)` then indexes the
+            // deref'd tuple (`(*name).i`); the whole payload is `(*name)`. A non-boxed bind reads `name`
+            // directly (Rust auto-derefs a `Box` for a field access, but the explicit `*` is uniform and
+            // correct whether the following step is a field index or the value itself).
+            let mut expr = if b.boxed {
+                format!("(*{})", b.name)
+            } else {
+                b.name.clone()
+            };
             for step in rest {
                 match step {
                     crate::core::PathStep::Elem(i) => expr = format!("({expr}).{i}"),

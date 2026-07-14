@@ -128,24 +128,38 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
     for variant in &decl.variants {
         let vname = types::sum_ident(&variant.name);
         // Each payload type-expression → its Rust type, with a type-PARAMETER payload rendered as its
-        // `T{k}`. A payload with no native mapping declines the whole enum. A recursive payload (one
-        // mentioning THIS sum) also declines for now (needs `Box`).
+        // `T{k}`. A payload with no native mapping declines the whole enum.
         let mut payloads = Vec::with_capacity(variant.payloads.len());
         for &pty_occ in &variant.payloads {
             payloads.push(payload_rust_type(db, pty_occ, &decl)?);
         }
+        // A RECURSIVE variant — one whose payload mentions THIS sum (`(Cons Int64 L)`, `(Node L L)`) —
+        // BOXES its whole payload field: a Rust enum containing itself by value is infinitely sized, so
+        // the recursion goes behind one `Box<…>` indirection at the variant field. The box wraps the WHOLE
+        // payload (`Cons(Box<(i64, L)>)`, `Node(Box<(L, L)>)`), a uniform ONE-box-per-recursive-variant
+        // scheme the construct (`Box::new(payload)`) and match (`*__pay`) sites agree on — simpler than
+        // boxing each recursive sub-position (which would need the box/deref threaded through every tuple
+        // element). A non-recursive variant is unboxed as before.
+        let recursive = variant_payloads_mention(db, variant, decl.occ);
+        let field = |ty: String| {
+            if recursive {
+                format!("Box<{ty}>")
+            } else {
+                ty
+            }
+        };
         match payloads.len() {
             // A nullary variant is a unit variant (`None`).
             0 => variants.push(vname),
-            // A one-payload variant carries its payload directly (`Some(T)`).
-            1 => variants.push(format!("{vname}({})", payloads[0])),
+            // A one-payload variant carries its payload directly (`Some(T)`), boxed if recursive.
+            1 => variants.push(format!("{vname}({})", field(payloads[0].clone()))),
             // A MULTI-payload variant's payload is ONE TUPLE, not several positional fields — the core
             // models a multi-payload variant's payload as a single `Ty::Tuple` (`core.rs` SumNew: "a tuple
             // handle built from the payloads"; the front-end types it `Ty::Tuple`), and the match side reads
             // it as one bound value indexed `.0`/`.1`. So the enum field is that tuple: `Cons((T0, T1))` —
             // the SAME shape construction (`SumNew`) and matching (`SumPayload`) agree on. (A native
             // `Cons(T0, T1)` would disagree with the single-tuple payload the match binds → non-compiling.)
-            _ => variants.push(format!("{vname}(({}))", payloads.join(", "))),
+            _ => variants.push(format!("{vname}({})", field(format!("({})", payloads.join(", "))))),
         }
     }
 
@@ -211,20 +225,59 @@ fn payload_rust_type(
         return Ok(format!("T{k}"));
     }
     // Otherwise resolve the payload type-expression to a solved `Ty` and map it. A payload that mentions
-    // THIS sum (a recursive sum) declines — a Rust enum cannot contain itself by value.
+    // THIS sum (a recursive sum) is rendered NORMALLY here — the self-reference maps to the enum name, made
+    // finite by the `Box<…>` the caller (`emit_one_enum`) wraps the recursive variant's field in. For a
+    // GENERIC sum the self-reference must carry the decl's OWN type parameters (`Tree<T0>`, not a bare
+    // `Tree` — a bare mention is E0107 "missing generics"), so `render_payload_ty` renders a self-`Ty::Sum`
+    // at the decl's params; a `(Tuple Tree Tree)` payload → `(Tree<T0>, Tree<T0>)`, boxed by the caller.
     let ty = crate::eval::typeval_of(db, pty_occ)
         .ok_or_else(|| Reject::decline("a variant payload type does not resolve"))?;
-    if mentions_decl(&ty, decl.occ) {
-        return Err(Reject::decline(
-            "a recursive sum needs Box indirection (not yet emitted)",
-        ));
-    }
-    types::rust_type(&ty).ok_or_else(|| {
+    render_payload_ty(&ty, decl).ok_or_else(|| {
         Reject::decline(format!(
             "a variant payload type {} has no native Rust representation",
             ty.render_name()
         ))
     })
+}
+
+/// Render a payload type to its Rust form WITHIN declaration `decl` — like [`types::rust_type`], but a
+/// SELF-REFERENCE to `decl` (a `Ty::Sum`/`Ty::Nominal` of the same `occ`) is rendered with the decl's OWN
+/// type parameters (`Tree<T0, T1>` for a generic decl, bare `Tree` for a monomorphic one) rather than
+/// whatever args the bare self-mention carries (none). This is what makes a generic recursive sum's
+/// self-referential payload name the enum correctly (E0107 otherwise). Non-self sums/compounds delegate to
+/// `types::rust_type` (their args are concrete). `None` for a type with no native Rust form.
+fn render_payload_ty(ty: &crate::ty::Ty, decl: &crate::db::TypeDecl) -> Option<String> {
+    use crate::ty::Ty;
+    // A self-reference — the recursive mention of THIS declaration. Render the enum name + the decl's own
+    // params (the recursion is closed by the enclosing `Box`).
+    let is_self = match ty {
+        Ty::Sum { decl: d, .. } | Ty::Nominal { decl: d, .. } => *d == decl.occ,
+        _ => false,
+    };
+    if is_self {
+        let name = types::sum_ident(&decl.name);
+        if decl.params.is_empty() {
+            return Some(name);
+        }
+        let ps: Vec<String> = (0..decl.params.len()).map(|k| format!("T{k}")).collect();
+        return Some(format!("{name}<{}>", ps.join(", ")));
+    }
+    // A compound that may CONTAIN a self-reference — recurse so a nested `(Tuple Tree Tree)` /
+    // `(List Tree)` renders the inner self-refs with the decl's params. Non-self leaves + concrete sums
+    // delegate to `types::rust_type`.
+    match ty {
+        Ty::Tuple(elems) => {
+            let parts: Option<Vec<String>> =
+                elems.iter().map(|e| render_payload_ty(e, decl)).collect();
+            let parts = parts?;
+            match parts.len() {
+                0 => Some("()".to_string()),
+                1 => Some(format!("({},)", parts[0])),
+                _ => Some(format!("({})", parts.join(", "))),
+            }
+        }
+        _ => types::rust_type(ty),
+    }
 }
 
 /// Whether the type `ty` is REPRESENTABLE by this backend — every sum it mentions has an emittable Rust
@@ -266,6 +319,41 @@ fn decl_emits(db: &mut Db, decl: &crate::db::TypeDecl) -> bool {
             .iter()
             .all(|&pty| payload_rust_type(db, pty, decl).is_ok())
     })
+}
+
+/// Whether any of `variant`'s payload type-expressions mentions the sum declaration `decl_occ` — a
+/// RECURSIVE variant, whose payload field the enum boxes (`Box<…>`) to stay finite-sized. Resolves each
+/// payload occurrence to its solved type and walks it with `mentions_decl`. Used by `emit_one_enum` to
+/// decide whether to box a variant's field, and by the construct/match sites (via `variant_is_recursive`)
+/// to agree on the box/deref.
+fn variant_payloads_mention(
+    db: &mut Db,
+    variant: &crate::db::Variant,
+    decl_occ: crate::ast::StructId,
+) -> bool {
+    let occs = variant.payloads.clone();
+    occs.iter().any(|&pty| {
+        crate::eval::typeval_of(db, pty).is_some_and(|ty| mentions_decl(&ty, decl_occ))
+    })
+}
+
+/// Whether the `disc`-th variant of the sum TYPE `ty` is RECURSIVE (its payload mentions the sum's own
+/// declaration) — the construct/match sites' shared predicate for whether to `Box::new`/deref the
+/// payload, mirroring `emit_one_enum`'s per-variant box decision. `false` for a non-sum / out-of-range
+/// disc / unresolvable declaration (no boxing).
+pub(super) fn variant_is_recursive(db: &mut Db, ty: &crate::ty::Ty, disc: u32) -> bool {
+    let decl_occ = match ty.strip_nominal() {
+        crate::ty::Ty::Sum { decl, .. } => *decl,
+        _ => return false,
+    };
+    let variant = match db.type_decl_by_occ(decl_occ) {
+        Some(d) => match d.variants.get(disc as usize) {
+            Some(v) => v.clone(),
+            None => return false,
+        },
+        None => return false,
+    };
+    variant_payloads_mention(db, &variant, decl_occ)
 }
 
 /// Whether the solved type `ty` mentions the sum declaration `decl` anywhere (directly or nested) — a
