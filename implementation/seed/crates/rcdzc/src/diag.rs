@@ -888,9 +888,11 @@ pub mod suggest {
     /// Pick the closest of `candidates` to `name` under a length-relative edit-distance cutoff, or
     /// `None` if none is close enough. The cutoff (`max(1, len/3)`, rustc's `find_best_match_for_name`
     /// heuristic) keeps a suggestion only when the candidate is a plausible typo: a 3-char name tolerates
-    /// 1 edit, a 9-char name up to 3. Ties break on the smaller distance, then the
-    /// lexicographically-smaller name, so the result is a DETERMINISTIC function of the candidate SET —
-    /// independent of the order they are supplied in (a hash-map iteration order never leaks through).
+    /// 1 edit, a 9-char name up to 3. Ties break on the smaller distance, then a SHARED FIRST CHARACTER
+    /// with the query (a typo rarely changes the leading letter, so `Lst` → `List`, not the equidistant
+    /// `Ast`), then the lexicographically-smaller name, so the result is a DETERMINISTIC function of the
+    /// candidate SET — independent of the order they are supplied in (a hash-map iteration order never
+    /// leaks through).
     /// The candidate set is itself a function of the source (the names in scope), so the whole
     /// suggestion — and the fix built from it, with its fixed verified/heuristic status — is a
     /// deterministic function of the source:
@@ -913,7 +915,14 @@ pub mod suggest {
             return None;
         }
         let max_dist = (name_len / 3).max(1);
-        let mut best: Option<(usize, String)> = None;
+        let name_first = name.chars().next();
+        // The tie-break KEY for a candidate at edit distance `d`: prefer the smaller distance, then a
+        // candidate SHARING the query's first character (a typo rarely changes the leading letter — `Lst`
+        // means `List`, not the equidistant `Ast`), then the lexicographically-smaller name. `false` sorts
+        // before `true`, so `!first_char_match` puts a first-char match first. A pure function of (query,
+        // candidate) → the whole selection stays a deterministic function of the candidate set.
+        let key = |d: usize, cand: &str| (d, cand.chars().next() != name_first, cand.to_string());
+        let mut best: Option<((usize, bool, String), String)> = None;
         for cand in candidates {
             let cand = cand.as_ref();
             // Never suggest the name itself (a shadowed / out-of-scope exact match is not a typo), the
@@ -937,12 +946,13 @@ pub mod suggest {
             if d > max_dist {
                 continue;
             }
+            let k = key(d, cand);
             let better = match &best {
                 None => true,
-                Some((bd, bn)) => d < *bd || (d == *bd && cand < bn.as_str()),
+                Some((bk, _)) => k < *bk,
             };
             if better {
-                best = Some((d, cand.to_string()));
+                best = Some((k, cand.to_string()));
             }
         }
         best.map(|(_, n)| n)
@@ -1047,6 +1057,18 @@ pub mod suggest {
         use super::nearest;
 
         #[test]
+        fn tie_break_prefers_a_shared_first_character() {
+            // On an edit-distance tie, a candidate sharing the query's first character wins — a typo
+            // rarely changes the leading letter. `Lst` is 1 edit from both `List` (insert `i`) and `Ast`
+            // (substitute `L`→`A`); `List` shares the `L`, so it is the intended suggestion (was `Ast`
+            // under the old lexicographic-only tie-break).
+            assert_eq!(nearest("Lst", ["Ast", "List", "Set"]), Some("List".into()));
+            assert_eq!(nearest("Lst", ["List", "Ast"]), Some("List".into())); // order-independent
+            // No first-char match among the tied → fall back to lexicographic (still deterministic).
+            assert_eq!(nearest("xy", ["az", "ay"]), Some("ay".into())); // both dist 1, neither shares `x`
+        }
+
+        #[test]
         fn nearest_keeps_real_near_matches_across_length_deltas() {
             // The length-difference PREFILTER (skip a candidate whose char-length differs from the query
             // by more than `max_dist` before running the O(len²) Levenshtein) must NOT drop a genuine
@@ -1084,7 +1106,8 @@ pub mod suggest {
                     None
                 } else {
                     let max_dist = (name_len / 3).max(1);
-                    let mut best: Option<(usize, &str)> = None;
+                    let q_first = q.chars().next();
+                    let mut best: Option<((usize, bool, &str), &str)> = None;
                     for c in cands {
                         if c == q || c == "_" || c.is_empty() {
                             continue;
@@ -1093,8 +1116,9 @@ pub mod suggest {
                         if d > max_dist {
                             continue;
                         }
-                        if best.is_none_or(|(bd, bn)| d < bd || (d == bd && c < bn)) {
-                            best = Some((d, c));
+                        let k = (d, c.chars().next() != q_first, c);
+                        if best.is_none_or(|(bk, _)| k < bk) {
+                            best = Some((k, c));
                         }
                     }
                     best.map(|(_, n)| n.to_string())
