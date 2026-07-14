@@ -3414,25 +3414,48 @@ fn enrich_pattern_head_suggestion(
     // The nearest variant of `decl` to `key`, MEMOIZED per (decl, key): the variant-name clone + edit-
     // distance scan is O(variants), and a WIDE sum matched with a stale variant from N sites re-ran it each
     // → O(N²). Keyed by (decl, key), it is computed once per distinct query.
+    // The scrutinee sum's variant names — the closed candidate set. Read once here (this is a REJECT-only
+    // path — a valid match never calls this — so the read is not the hot case the winner memo guards).
+    let names: Vec<String> = match db.type_decl_by_occ(decl) {
+        Some(t) => t.variants.iter().map(|v| v.name.clone()).collect(),
+        None => return reject,
+    };
+    // The confident single (memoized per (decl, key) — a wide sum matched with the SAME stale variant from
+    // N sites would otherwise re-run the O(variants) scan each → O(N²)). Drives the REPLACE fix.
     let candidate = if let Some(hit) = db.variant_suggest_winner.get(&(decl, key.clone())) {
         hit.clone()
     } else {
-        let names: Vec<String> = match db.type_decl_by_occ(decl) {
-            Some(t) => t.variants.iter().map(|v| v.name.clone()).collect(),
-            None => return reject,
-        };
         let winner = crate::diag::suggest::nearest(&key, &names);
         db.variant_suggest_winner
             .insert((decl, key.clone()), winner.clone());
         winner
     };
-    let Some(candidate) = candidate else {
-        return reject; // no near variant — keep the bare "record has no field" message
-    };
-    // Append the suggestion to the bare message and carry a replace fix on the key occurrence — mirroring
-    // `infer::no_field_reject`'s value-position enrichment.
-    let message = format!("{} — did you mean `{candidate}`?", reject.message);
-    Reject { message, ..reject }.with_fix(Fix::replace_heuristic(key_occ, candidate))
+    match candidate {
+        // TIER 1 — a confident typo: name the variant + carry the replace fix on the key occurrence
+        // (mirroring `infer::no_field_reject`'s value-position enrichment).
+        Some(candidate) => {
+            let message = format!("{} — did you mean `{candidate}`?", reject.message);
+            Reject { message, ..reject }.with_fix(Fix::replace_heuristic(key_occ, candidate))
+        }
+        // TIER 2 — no confident typo: LIST the closest variants (`— closest matches: `A`, `B``) so a far
+        // pattern-head typo tells the author what variants the sum actually has, instead of the dead-end
+        // "record has no field". A sum is a CLOSED variant set, so listing is signal (the pattern-position
+        // twin of the member-access two-tier). No fix (a list of options is not one mechanical edit).
+        None => {
+            let close =
+                crate::diag::suggest::closest_matches(&key, names.iter().map(String::as_str), 3);
+            if close.is_empty() {
+                return reject; // an empty sum — nothing to list, keep the bare message
+            }
+            let quoted: Vec<String> = close.iter().map(|n| format!("`{n}`")).collect();
+            let message = format!(
+                "{} — closest matches: {}",
+                reject.message,
+                quoted.join(", ")
+            );
+            Reject { message, ..reject }
+        }
+    }
 }
 
 fn pattern_constraints(
