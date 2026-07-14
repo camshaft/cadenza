@@ -1030,12 +1030,20 @@ the component type. The new work:
   `assemble_mixed_closure_resource_borrow_tuple` (already threads them). NO serializer/envelope change. Corpus:
   scalar-then-tuple closure beside a plain export × scalar/List/compound, e2e. ⚠ a semantic rebase conflict: a
   sibling's `emit_mixed_closure_resource` edit left a 3-tuple `if let Some((_,_,rebuild))` at the used-ops
-  scan — git didn't flag it textually; caught by the build. Only the distinct-sig list-result among-scalars
-  gap remains.
-- **REMAINING (all optional, none blocking):** on the DIRECT-CALL path — an among-scalars tuple with a
-  list<u8>-crossing result on the distinct-sig path (the single-export/multi interleaving applied to those
-  per-group `call-g` cores' arg-push + per-group functypes — mechanical, the shared helper + interleaved
-  functype exist; distinct-sig SCALAR-result among-scalars already works); a VARIABLE-LENGTH collection arg
+  scan — git didn't flag it textually; caught by the build.
+- **✅ tuple-among-scalars composes with EVERY result shape on the DISTINCT-SIG path — the LAST direct-call
+  arg-position gap CLOSED** (landed after the mixed path). `emit_distinct_sig_resource` detects each group's
+  arg via `single_compound_among_scalars`; `GroupInfo.tuple_arg` carries prefix/suffix; `arg_vts` = the full
+  flattened core params; `match_vts` maps each arg to its lambda-param valtype (a tuple → one i32 cell, a
+  scalar → itself). The last inline sole-tuple push (the distinct-sig SCALAR-result `call-g` body) now uses the
+  shared `emit_closure_call_args`, so ALL per-group `call-g` bodies interleave. `SigGroupAbi` gained
+  `tuple_prefix_bytes`/`tuple_suffix_bytes`; the 4 per-group functype sites use the interleaved forms; the
+  now-unused non-interleaved wrappers were removed. 🪤 the shared-helper edit dropped the env `local.get` before
+  the args — caught by wasm-tools validate (`func 17 failed`), re-added. Corpus: two DISTINCT-sig scalar-then-
+  tuple closures (Int64-pair + Int64/Bool) × scalar/List results, e2e. **A fixed-shape scalar tuple ARG among
+  scalar args is now supported on ALL FOUR export shapes (single/multi/mixed/distinct-sig) for EVERY result
+  shape (scalar/byte-rope/fixed-compound/collection) — the direct-call tuple-among-scalars surface is CLOSED.**
+- **REMAINING (all optional, none blocking):** on the DIRECT-CALL path — a VARIABLE-LENGTH collection arg
   (needs a `value-decode` runtime op that does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
   direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-resource passed
   INTO a call); a closure TRANSFORMER (`own<t>` both directions — cleanly declined). **The entire byte-rope
