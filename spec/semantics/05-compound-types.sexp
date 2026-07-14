@@ -355,6 +355,49 @@
             (def (main) (f 0)) (export main)))
   (output (: 1 Int64)))
 
+; --- A LET-BOUND if-produced compound, projected at ≥2 positions (the if-value-join scratch-floor bug) -
+; The cases above project an if-chosen tuple/record at ONE position with the compound INLINE (not let-
+; bound). Binding it and reading it at TWO positions is a distinct shape: the `let` gives the handle a
+; PERSISTENT slot, and its `if` initializer is emitted at `binding_slot + 1` — but the compound-build
+; sites float their element scratch off the running high-water, which LAGGED the binding slot, so the
+; first tuple element's i64 temp was teed into the binding's OWN (i32-handle) slot → invalid wasm
+; (`expected i32, found i64`). Reading a SINGLE element hid it (the mis-typed slot was overwritten before
+; a second read forced the conflict); the `match`-producer form worked (its join pre-reserves the slot).
+; The fix reserves the `let` binding slot before the initializer emits, so every inner scratch stays
+; above it. These pin the double-projection of a let-bound if-produced tuple AND record.
+
+(case "a let-bound tuple produced by an if, projected at two indices, compiles and runs"
+  (doc    "A `let`-bound tuple whose producer is an `if` (a runtime-selected tuple), projected at BOTH
+           indices, MUST compile and run: `(let ((r (if (= p 0) (tuple (+ p 5) (+ p 2)) (tuple 99 (+ p 2)))))
+           (+ (. r 0) (. r 1)))` with p=0 is `(tuple 5 2)` → 7. It emitted an INVALID component
+           (`expected i32, found i64`) — the `if`-tuple initializer's first element `(+ p 5)` (an i64
+           temp) was teed into the binding's own i32-handle slot, because the compound-build scratch floor
+           lagged the reserved binding slot. Reading a single element compiled; the second read exposed it.
+           The `match`-producer form compiled (its arm join pre-reserves its slot). Fixed by reserving the
+           `let` binding slot before its initializer emits.")
+  (input  (do
+            (def (main (: p Int64))
+              (let ((r (if (= p 0) (tuple (+ p 5) (+ p 2)) (tuple 99 (+ p 2)))))
+                (+ (. r 0) (. r 1))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: 102 Int64)))
+
+(case "a let-bound record produced by an if, two fields read, compiles and runs"
+  (doc    "The record sibling — the fault was not tuple-specific. A `let`-bound RECORD whose producer is an
+           `if` with a runtime-computed field, read at TWO fields, MUST compile and run: `(let ((r (if (= p
+           0) (record (x (+ p 5)) (y (+ p 2))) (record (x 99) (y (+ p 2)))))) (+ (. r x) (. r y)))` with
+           p=0 is `(record (x 5) (y 2))` → 7. It emitted the SAME invalid component as the tuple case — the
+           mis-typed if-value-join binding slot applies to any heap-handle compound. Same fix (reserve the
+           binding slot). p=1 → else branch `(record (x 99) (y 3))` → 99+3 = 102.")
+  (input  (do
+            (def (main (: p Int64))
+              (let ((r (if (= p 0) (record (x (+ p 5)) (y (+ p 2))) (record (x 99) (y (+ p 2))))))
+                (+ (. r x) (. r y))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: 102 Int64)))
+
 ; --- Field access on a RUNTIME record (returned from a call / selected by a conditional) -----------
 ; The record analogue of the runtime-tuple projection cases: `(. rec field)` where the record operand
 ; does NOT reduce to a compile-time-visible record — it is RETURNED FROM A CALL, or SELECTED BY AN

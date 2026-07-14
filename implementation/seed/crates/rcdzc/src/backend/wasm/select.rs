@@ -3005,6 +3005,14 @@ fn emit_tail(
                 let vt = valtype_of(&ty).ok_or_else(|| {
                     Reject::decline("a let binding's type has no machine representation")
                 })?;
+                // RESERVE the binding slot BEFORE the initializer emits — see the non-tail `Core::Let` arm:
+                // the initializer emits at `slot + 1`, and its inner scratch floats off `*high`, so `*high`
+                // must already cover the binding slot or a compound/`if` initializer reuses the binding's
+                // own slot at the wrong width (the let-bound-if-tuple invalid-wasm miscompile).
+                scratch_ty.insert(slot, vt);
+                if slot + 1 > *high {
+                    *high = slot + 1;
+                }
                 emit(
                     db,
                     *value,
@@ -3016,10 +3024,6 @@ fn emit_tail(
                     out,
                 )?;
                 out.push(Lir::LocalSet(slot));
-                scratch_ty.insert(slot, vt);
-                if slot + 1 > *high {
-                    *high = slot + 1;
-                }
                 // DEBUG (D3 locals): a SCALAR binding with a source name lives in this slot for its whole
                 // scope — record it so a `DW_TAG_variable` DIE lets a debugger `print` the local. The
                 // binder key is the initializer occurrence, so recover the name from its `(name init)`
@@ -5500,6 +5504,21 @@ fn emit(
                 let vt = valtype_of(&ty).ok_or_else(|| {
                     Reject::decline("a let binding's type has no machine representation")
                 })?;
+                // RESERVE the binding slot BEFORE emitting the initializer: record its type and lift `*high`
+                // past it now. The initializer emits at `slot + 1`, but many emit sites float their own
+                // scratch off `*high` (a tuple/record element `elem_base = *high`, an `if`-branch base, a
+                // call arg) — those all ASSUME `*high >= base`. Without pre-reserving, `*high` still LAGS at
+                // the pre-let value (< `slot + 1`), so an initializer whose value is an `if`/compound would
+                // hand its inner scratch the binding's OWN slot: `(let ((r (if … (tuple (+ p 5) …) …)))
+                // (+ (. r 0) (. r 1)))` teed the i64 `(+ p 5)` into slot `r` (declared i32, the tuple
+                // handle) → invalid wasm (`expected i32, found i64`). Reserving keeps every inner scratch
+                // strictly above the binding slot. (`scratch_ty` for `slot` is set here; the `LocalSet`
+                // below stores into it. A `match`-producer initializer already worked because `MatchSum`
+                // pre-advances `*high` for its own handle slot — this brings the general `let` in line.)
+                scratch_ty.insert(slot, vt);
+                if slot + 1 > *high {
+                    *high = slot + 1;
+                }
                 // Emit the value into scratch ABOVE this persistent slot (its own scratch floats), then
                 // store it once. The value sees the earlier bindings via `extended`.
                 emit(
@@ -5513,10 +5532,6 @@ fn emit(
                     out,
                 )?;
                 out.push(Lir::LocalSet(slot));
-                scratch_ty.insert(slot, vt);
-                if slot + 1 > *high {
-                    *high = slot + 1;
-                }
                 if is_heap_type(&ty) {
                     heap_bindings.push((*binder, slot));
                 }
