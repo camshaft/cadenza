@@ -1895,11 +1895,11 @@ fn fixed_shape_option_scalar_arg(
     ty: &crate::ty::Ty,
 ) -> Option<(
     crate::backend::wasm::envelope::ArgSlot,
-    crate::backend::wasm::lir::ValType,
+    Vec<crate::backend::wasm::lir::ValType>,
     crate::backend::wasm::serialize::SumArgRebuild,
 )> {
     use crate::backend::wasm::envelope::ArgSlot;
-    use crate::backend::wasm::serialize::{SumArgArm, SumArgRebuild};
+    use crate::backend::wasm::serialize::{SumArgArm, SumArgRebuild, SumArmPayload};
     use crate::ty::Ty;
     let Ty::Sum { decl, args, .. } = ty.strip_nominal() else {
         return None;
@@ -1920,18 +1920,24 @@ fn fixed_shape_option_scalar_arg(
                 .collect(),
         )
     };
-    // The instantiated scalar-field-rebuild for a variant's ONE generic payload (a param `a` → `args[pi]`).
-    // Returns `(payload_ty, box_op, extend)`; `None` if the variant is not exactly one aliased-width scalar.
-    let resolve_scalar_payload = |db: &mut Db,
-                                  occ: crate::ast::StructId|
-     -> Option<(crate::ty::Ty, &'static str, Option<bool>)> {
+    // The instantiated TYPE of a variant's ONE generic payload (a param `a` → `args[pi]`). `None` if the
+    // payload occurrence is not a bare generic parameter (Option/Result payloads are generic; a concrete-payload
+    // user sum is the named-`variant<…>` widening, out of scope here).
+    let resolve_payload_ty = |db: &mut Db, occ: crate::ast::StructId| -> Option<crate::ty::Ty> {
         let pname = db
             .ast
             .head_name(occ)
             .or_else(|| db.ast.as_name(occ))?
             .to_string();
         let pi = params.iter().position(|p| *p == pname)?;
-        let pty = args.get(pi)?.clone();
+        args.get(pi).cloned()
+    };
+    // The instantiated scalar-field-rebuild for a variant's ONE generic SCALAR payload.
+    // Returns `(payload_ty, box_op, extend)`; `None` if the variant is not exactly one aliased-width scalar.
+    let resolve_scalar_payload = |db: &mut Db,
+                                  occ: crate::ast::StructId|
+     -> Option<(crate::ty::Ty, &'static str, Option<bool>)> {
+        let pty = resolve_payload_ty(db, occ)?;
         let crate::backend::wasm::serialize::FieldRebuild::Scalar { box_op, extend } =
             scalar_field_rebuild(&pty)?
         else {
@@ -1942,36 +1948,69 @@ fn fixed_shape_option_scalar_arg(
     // Two nullary → a bare enum (not option/result); handle by payload counts.
     let counts: Vec<usize> = variant_payloads.iter().map(|p| p.len()).collect();
     match counts.as_slice() {
-        // OPTION shape: exactly one nullary + one single-scalar-payload variant. Crosses as `option<payload>`
-        // (Some=boundary disc 1). arm order: which decl index is the payload variant.
+        // OPTION shape: exactly one nullary + one single-payload variant. Crosses as `option<payload>`
+        // (Some=boundary disc 1). arm order: which decl index is the payload variant. The payload is either an
+        // aliased-width SCALAR (crosses as `option<scalar>`, one flattened leaf) or a fixed-shape COMPOUND
+        // tuple/record (crosses as `option<tuple<…>>` — both formers anonymous-allowed, so no `variant` wall;
+        // its leaves flatten depth-first after the disc, and the Some arm rebuilds the payload cell).
         [0, 1] | [1, 0] => {
             let (payload_i, nullary_i) = if counts[0] == 1 {
                 (0u32, 1u32)
             } else {
                 (1u32, 0u32)
             };
-            let (payload_ty, box_op, extend) =
-                resolve_scalar_payload(db, variant_payloads[payload_i as usize][0])?;
-            let payload_byte = closure_boundary_byte(&payload_ty)?;
-            let payload_vt = crate::backend::wasm::lir::valtype_of(&payload_ty)?;
-            Some((
-                ArgSlot::OptionScalar(payload_byte),
-                payload_vt,
-                SumArgRebuild {
-                    base_param: 1,
-                    boundary_true_disc: 1, // component `option<T>` sends Some=1
-                    arm_true: SumArgArm {
-                        decl_disc: payload_i,
-                        payload_box: Some((box_op, extend)),
-                        wrap_join: false, // option has a single payload — no wider join to recover
+            let payload_occ = variant_payloads[payload_i as usize][0];
+            let payload_ty = resolve_payload_ty(db, payload_occ)?;
+            if let Some((box_op, extend)) = match scalar_field_rebuild(&payload_ty) {
+                Some(crate::backend::wasm::serialize::FieldRebuild::Scalar { box_op, extend }) => {
+                    Some((box_op, extend))
+                }
+                _ => None,
+            } {
+                // SCALAR payload → `option<scalar>`.
+                let payload_byte = closure_boundary_byte(&payload_ty)?;
+                let payload_vt = crate::backend::wasm::lir::valtype_of(&payload_ty)?;
+                Some((
+                    ArgSlot::OptionScalar(payload_byte),
+                    vec![payload_vt],
+                    SumArgRebuild {
+                        base_param: 1,
+                        boundary_true_disc: 1, // component `option<T>` sends Some=1
+                        arm_true: SumArgArm {
+                            decl_disc: payload_i,
+                            payload: SumArmPayload::Scalar {
+                                box_op,
+                                extend,
+                                wrap_join: false, // option has a single payload — no wider join to recover
+                            },
+                        },
+                        arm_false: SumArgArm {
+                            decl_disc: nullary_i,
+                            payload: SumArmPayload::Nullary,
+                        },
                     },
-                    arm_false: SumArgArm {
-                        decl_disc: nullary_i,
-                        payload_box: None,
-                        wrap_join: false,
+                ))
+            } else {
+                // COMPOUND payload → `option<tuple<…>>`: the payload's leaves flatten depth-first after the disc.
+                let (_leaf_bytes, leaf_vts, rebuild_fields, shape_fields) =
+                    nested_fixed_shape_tuple_arg(&payload_ty)?;
+                Some((
+                    ArgSlot::OptionCompound(shape_fields),
+                    leaf_vts,
+                    SumArgRebuild {
+                        base_param: 1,
+                        boundary_true_disc: 1, // component `option<T>` sends Some=1
+                        arm_true: SumArgArm {
+                            decl_disc: payload_i,
+                            payload: SumArmPayload::Compound(rebuild_fields),
+                        },
+                        arm_false: SumArgArm {
+                            decl_disc: nullary_i,
+                            payload: SumArmPayload::Nullary,
+                        },
                     },
-                },
-            ))
+                ))
+            }
         }
         // RESULT shape: two single-scalar-payload variants (Ok a, Err b). Crosses as `result<ok,err>` — the
         // FIRST-declared variant is `ok` (boundary disc 0), the second `err` (disc 1). `resolve_scalar_payload`
@@ -2001,19 +2040,25 @@ fn fixed_shape_option_scalar_arg(
             let err_wrap = err_vt != join_vt;
             Some((
                 ArgSlot::Result(ok_byte, err_byte),
-                join_vt,
+                vec![join_vt],
                 SumArgRebuild {
                     base_param: 1,
                     boundary_true_disc: 0, // component `result<ok,err>` sends Ok=0
                     arm_true: SumArgArm {
                         decl_disc: 0, // Ok = the first-declared variant
-                        payload_box: Some((ok_box, ok_ext)),
-                        wrap_join: ok_wrap,
+                        payload: SumArmPayload::Scalar {
+                            box_op: ok_box,
+                            extend: ok_ext,
+                            wrap_join: ok_wrap,
+                        },
                     },
                     arm_false: SumArgArm {
                         decl_disc: 1, // Err = the second
-                        payload_box: Some((err_box, err_ext)),
-                        wrap_join: err_wrap,
+                        payload: SumArmPayload::Scalar {
+                            box_op: err_box,
+                            extend: err_ext,
+                            wrap_join: err_wrap,
+                        },
                     },
                 },
             ))
@@ -2549,7 +2594,7 @@ fn emit_closure_resource(
     // build-time host effect (each a clean later widening).
     let sum_arg: Option<(
         crate::backend::wasm::envelope::ArgSlot,
-        crate::backend::wasm::lir::ValType,
+        Vec<crate::backend::wasm::lir::ValType>,
         crate::backend::wasm::serialize::SumArgRebuild,
     )> = if host_imports.is_empty()
         && tuple_arg.is_none()
@@ -2674,9 +2719,12 @@ fn emit_closure_resource(
         leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
     } else if let Some((_, all_vts, _)) = &multi_args {
         all_vts.clone() // the flattened leaves of EVERY tuple/scalar arg, in order (N-compound-args)
-    } else if let Some((_, payload_vt, _)) = &sum_arg {
-        // A sum arg flattens to `(disc: i32, payload)` core params — the shared `call` signature.
-        vec![crate::backend::wasm::lir::ValType::I32, *payload_vt]
+    } else if let Some((_, payload_vts, _)) = &sum_arg {
+        // A sum arg flattens to `(disc: i32, <payload leaves…>)` core params — a scalar payload is ONE leaf, a
+        // compound (Option-of-tuple) payload its recursively-flattened leaves. The shared `call` signature.
+        let mut vts = vec![crate::backend::wasm::lir::ValType::I32];
+        vts.extend(payload_vts.iter().copied());
+        vts
     } else {
         arg_tys
             .iter()
@@ -2802,9 +2850,9 @@ fn emit_closure_resource(
         if let Some((_, _, rebuild)) = &sum_arg {
             used.insert("sum-new");
             for arm in [&rebuild.arm_true, &rebuild.arm_false] {
-                if let Some((box_op, _)) = arm.payload_box {
-                    used.insert(box_op);
-                }
+                arm.collect_ops(&mut |op| {
+                    used.insert(op);
+                });
             }
         }
         used.extend(lifted_ops.iter().copied());
@@ -3431,7 +3479,7 @@ fn emit_multi_closure_resource(
     // `SumArgRebuild`, the envelope mints the boundary type via the returned `ArgSlot`. Scoped: SCALAR result.
     let sum_arg: Option<(
         crate::backend::wasm::envelope::ArgSlot,
-        crate::backend::wasm::lir::ValType,
+        Vec<crate::backend::wasm::lir::ValType>,
         crate::backend::wasm::serialize::SumArgRebuild,
     )> = if tuple_arg.is_none()
         && nested_tuple.is_none()
@@ -3505,8 +3553,11 @@ fn emit_multi_closure_resource(
         leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
     } else if let Some((_, all_vts, _)) = &multi_args {
         all_vts.clone() // the flattened leaves of EVERY tuple/scalar arg, in order (N-compound-args)
-    } else if let Some((_, payload_vt, _)) = &sum_arg {
-        vec![crate::backend::wasm::lir::ValType::I32, *payload_vt] // sum flattens to (disc, payload)
+    } else if let Some((_, payload_vts, _)) = &sum_arg {
+        // sum flattens to (disc: i32, <payload leaves…>) — scalar payload = 1 leaf, compound = its leaves.
+        let mut vts = vec![crate::backend::wasm::lir::ValType::I32];
+        vts.extend(payload_vts.iter().copied());
+        vts
     } else {
         arg_tys
             .iter()
@@ -3634,9 +3685,9 @@ fn emit_multi_closure_resource(
         if let Some((_, _, rebuild)) = &sum_arg {
             used.insert("sum-new");
             for arm in [&rebuild.arm_true, &rebuild.arm_false] {
-                if let Some((box_op, _)) = arm.payload_box {
-                    used.insert(box_op);
-                }
+                arm.collect_ops(&mut |op| {
+                    used.insert(op);
+                });
             }
         }
         used.extend(lifted_ops.iter().copied());
@@ -4121,7 +4172,7 @@ fn emit_mixed_closure_resource(
     // SCALAR shared-`call` result.
     let sum_arg: Option<(
         crate::backend::wasm::envelope::ArgSlot,
-        crate::backend::wasm::lir::ValType,
+        Vec<crate::backend::wasm::lir::ValType>,
         crate::backend::wasm::serialize::SumArgRebuild,
     )> = if tuple_arg.is_none()
         && nested_tuple.is_none()
@@ -4195,8 +4246,11 @@ fn emit_mixed_closure_resource(
         leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
     } else if let Some((_, all_vts, _)) = &multi_args {
         all_vts.clone() // the flattened leaves of EVERY tuple/scalar arg, in order (N-compound-args)
-    } else if let Some((_, payload_vt, _)) = &sum_arg {
-        vec![crate::backend::wasm::lir::ValType::I32, *payload_vt] // sum flattens to (disc, payload)
+    } else if let Some((_, payload_vts, _)) = &sum_arg {
+        // sum flattens to (disc: i32, <payload leaves…>) — scalar payload = 1 leaf, compound = its leaves.
+        let mut vts = vec![crate::backend::wasm::lir::ValType::I32];
+        vts.extend(payload_vts.iter().copied());
+        vts
     } else {
         arg_tys
             .iter()
@@ -4356,9 +4410,9 @@ fn emit_mixed_closure_resource(
         if let Some((_, _, rebuild)) = &sum_arg {
             used.insert("sum-new");
             for arm in [&rebuild.arm_true, &rebuild.arm_false] {
-                if let Some((box_op, _)) = arm.payload_box {
-                    used.insert(box_op);
-                }
+                arm.collect_ops(&mut |op| {
+                    used.insert(op);
+                });
             }
         }
         used.extend(lifted_ops.iter().copied());
@@ -4930,7 +4984,7 @@ fn emit_distinct_sig_resource(
         // thread tuples, not sums). Classified only when no tuple classifier fired + the result is scalar.
         let group_sum_arg: Option<(
             crate::backend::wasm::envelope::ArgSlot,
-            crate::backend::wasm::lir::ValType,
+            Vec<crate::backend::wasm::lir::ValType>,
             crate::backend::wasm::serialize::SumArgRebuild,
         )> = if group_tuple_arg.is_none()
             && group_nested.is_none()
@@ -4950,8 +5004,11 @@ fn emit_distinct_sig_resource(
             all_vts.clone() // prefix scalars, then the nested tuple's depth-first leaves, then suffix scalars
         } else if let Some((_, all_vts, _)) = &group_multi_args {
             all_vts.clone() // the flattened leaves of EVERY tuple/scalar arg, in order (N-compound-args)
-        } else if let Some((_, payload_vt, _)) = &group_sum_arg {
-            vec![ValType::I32, *payload_vt] // a sum flattens to (disc, payload)
+        } else if let Some((_, payload_vts, _)) = &group_sum_arg {
+            // a sum flattens to (disc: i32, <payload leaves…>) — scalar = 1 leaf, compound = its leaves.
+            let mut vts = vec![ValType::I32];
+            vts.extend(payload_vts.iter().copied());
+            vts
         } else {
             arg_tys
                 .iter()
@@ -5165,9 +5222,9 @@ fn emit_distinct_sig_resource(
         for gi in &ginfos {
             if let Some((_, rb)) = gi.sum_arg.as_ref() {
                 for arm in [&rb.arm_true, &rb.arm_false] {
-                    if let Some((box_op, _)) = arm.payload_box {
-                        ops.insert(box_op);
-                    }
+                    arm.collect_ops(&mut |op| {
+                        ops.insert(op);
+                    });
                 }
             }
         }
