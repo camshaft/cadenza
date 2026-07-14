@@ -3594,10 +3594,15 @@ fn vec_alloc_header(count: u32, shift: u32, root: Handle) -> Handle {
     let mut raw = [0u8; INLINE_RAW_CAP];
     raw[0..4].copy_from_slice(&count.to_le_bytes());
     raw[4..8].copy_from_slice(&shift.to_le_bytes());
+    // A header holds its single root handle (or none, for the empty vector) — always ≤ 1 child, and it
+    // NEVER grows past one (a root swap replaces slot 0 via `vec_set_child_inplace`; a level-grow builds a
+    // fresh 2-child root, not a 2nd header handle). So carry the handle INLINE (`inline_from`) rather than
+    // `vec![root]` — a header on EVERY vector construction otherwise pays a heap `Vec` alloc for one handle,
+    // where the inline arm (cap 2) holds it in the `Node` itself. Reads/mutations are storage-transparent.
     let handles = if root == Handle::NULL {
-        Vec::new()
+        Handles::new()
     } else {
-        vec![root]
+        Handles::inline_from(&[root])
     };
     alloc_raw(handles, Raw::Inline { len: 8, buf: raw })
 }
@@ -9203,8 +9208,8 @@ mod tests {
             });
             println!("ALLOC vec_drop_fold x{N}: {fold}");
             assert!(
-                fold <= 9000,
-                "vec_drop_fold x{N} allocs {fold} exceeds ceiling 9000 (~7/elem: the kept-tail spine only; was 13925 via split+drop-left building the discarded prefix. A regression to the split path would ~2x; a vec-iter cursor would cut to ~O(1)/elem)"
+                fold <= 6200,
+                "vec_drop_fold x{N} allocs {fold} exceeds ceiling 6200 (~6/elem: the kept-tail spine only, ONE header per step; was 6994 before the vector header carried its root handle INLINE (no per-header Vec), 13925 before that via split+drop-left building the discarded prefix. A regression to the split path would ~2x; re-adding the header Vec adds ~1/elem; a vec-iter cursor would cut to ~O(1)/elem)"
             );
             op_drop(fv);
         }
@@ -9259,8 +9264,8 @@ mod tests {
         });
         println!("ALLOC vec_update_shared x{N}: {vupd_shared}");
         assert!(
-            vupd_shared <= 7100,
-            "shared/persistent vec_update x{N} allocs {vupd_shared} exceeds ceiling 8200 (RRB path-copy floor: borrow-and-build, ~2 allocs per copied spine node + header)"
+            vupd_shared <= 6100,
+            "shared/persistent vec_update x{N} allocs {vupd_shared} exceeds ceiling 6100 (RRB path-copy floor: borrow-and-build, ~2 allocs per copied spine node + ONE inline-handle header; was 6968 before the header carried its root inline — re-adding the header Vec would climb back ~1000)"
         );
         // (D2) PERSISTENT vec_push on a SHARED vec — keep the base (rc>1) so each push path-copies the
         // rightmost spine via `vec_push_into`/`vec_node_append` instead of FBIP in place. Same borrow-and-
@@ -9274,8 +9279,8 @@ mod tests {
         });
         println!("ALLOC vec_push_shared x{N}: {vpush_shared}");
         assert!(
-            vpush_shared <= 7200,
-            "shared/persistent vec_push x{N} allocs {vpush_shared} exceeds ceiling 8300 (RRB path-copy floor: borrow-and-build rightmost spine + header)"
+            vpush_shared <= 6100,
+            "shared/persistent vec_push x{N} allocs {vpush_shared} exceeds ceiling 6100 (RRB path-copy floor: borrow-and-build rightmost spine + ONE inline-handle header; was 7000 before the header carried its root inline — re-adding the header Vec would climb back ~1000)"
         );
         op_drop(v);
 
@@ -9302,8 +9307,8 @@ mod tests {
         });
         println!("ALLOC vec_concat x100: {concat_allocs}");
         assert!(
-            concat_allocs <= 2000,
-            "vec_concat x100 allocs {concat_allocs} exceeds ceiling 2000 (O(log N) rebalance: ≤a few nodes/op, N-independent — a regression to element-copy would scale with N)"
+            concat_allocs <= 1300,
+            "vec_concat x100 allocs {concat_allocs} exceeds ceiling 1300 (O(log N) rebalance: ≤a few nodes/op + ONE inline-handle result header, N-independent; was 1200 before the header carried its root inline — a regression to element-copy would scale with N)"
         );
         let split_allocs = measure(&mut || {
             for _ in 0..100 {
@@ -9315,8 +9320,8 @@ mod tests {
         });
         println!("ALLOC vec_split x100: {split_allocs}");
         assert!(
-            split_allocs <= 3000,
-            "vec_split x100 allocs {split_allocs} exceeds ceiling 3000 (O(log N) boundary-spine rebuild, N-independent)"
+            split_allocs <= 1400,
+            "vec_split x100 allocs {split_allocs} exceeds ceiling 1400 (O(log N) boundary-spine rebuild + TWO inline-handle output headers, N-independent; was 1500 before the header carried its root inline — the two headers each save one Vec, so ~-2/op, and re-adding them would climb back to 1500)"
         );
         op_drop(ca);
         op_drop(cbv);
@@ -9816,13 +9821,14 @@ mod tests {
             }
         });
         println!("ALLOC vec_of_arr_small x{N}: {voa_small}");
-        // MEASURED ~4/list: the arr (node Box + its 8-element heap handles Vec = 2) is the CALLER's cost (the
-        // 8 elements are immediate ints → no boxes); `vec-of-arr` adds the vec-header node + the header's raw
-        // (2) since the ≤32 arr is MOVED in as the leaf root — no per-element copy. A `vec-push`-chain
-        // regression would add ~8 trie-churn allocs/list (push down to N=8000+ here).
+        // MEASURED ~3/list: the arr (node Box + its 8-element heap handles Vec = 2) is the CALLER's cost (the
+        // 8 elements are immediate ints → no boxes); `vec-of-arr` adds ONLY the vec-header node (1) — its raw
+        // is INLINE and its single root handle is now carried INLINE too (no per-header Vec) — since the ≤32
+        // arr is MOVED in as the leaf root (no per-element copy). Was ~4/list when the header allocated a Vec
+        // for its one handle. A `vec-push`-chain regression would add ~8 trie-churn allocs/list.
         assert!(
-            voa_small <= 5000,
-            "vec_of_arr_small x{N} allocs {voa_small} exceeds ceiling 5000 (~4/list: caller's arr node+handles + vec-of-arr's zero-copy leaf move + header; a vec-push-chain regression would be ~8/list)"
+            voa_small <= 3500,
+            "vec_of_arr_small x{N} allocs {voa_small} exceeds ceiling 3500 (~3/list: caller's arr node+handles (2) + vec-of-arr's zero-copy leaf move + ONE inline-handle header (1); was ~4/list before the header carried its root inline — a vec-push-chain regression would be ~8/list, re-adding the header Vec ~1/list)"
         );
         const VOA_BIG: i64 = 100; // >32 → the bottom-up strict-trie repack path
         let voa_big = measure(&mut || {

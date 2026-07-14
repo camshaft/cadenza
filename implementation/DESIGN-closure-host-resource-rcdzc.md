@@ -1111,15 +1111,35 @@ the component type. The new work:
   Tuple-arg × nested-tuple result, a tuple-with-a-List (compound-with-collection), a nested-arg × nested-result,
   a Sum-of-tuple, and a List-of-tuples all cross + decode on the direct-call path (all ALREADY worked; corpus
   lagged). The direct-call RESULT surface is as deep as the arg surface.
+- **✅✅ N COMPOUND ARGS (≥2 fixed-shape tuple/record args) on the SINGLE-EXPORT path × EVERY RESULT SHAPE —
+  COMPLETE, end-to-end.** VERTICAL landed over bricks: brick 1 (`d4099fad`, oracle proved two `tuple<s64,s64>`
+  args flatten INDEPENDENTLY to 4 core params); brick 2 (`b636c0e2`, `emit_closure_call_args` takes
+  `&[TupleArgRebuild]`); brick 3 (`fb57c2ea`, `multi_closure_resource_core_module_with_host_borrow` takes
+  `&[TupleArgRebuild]` — ZERO OR MORE tuple args, one rebuilt cell local per tuple, `&[]` byte-identical to the
+  scalar path); brick 4 (`9688fd2e`) — the **`ArgSlot` model**: an ordered `call`-arg list
+  (`Scalar(byte)` | `Tuple(shape)`) drives type minting (`mint_call_arg_tuple_types` — one `tuple<…>` group per
+  tuple slot, in arg order) + the `call` functype (`closure_call_functype_slots`), threaded as
+  `call_arg_slots: Option<&[ArgSlot]>` into `assemble_closure_resource_borrow_tuple` +
+  `resource_inner_component_closure_borrow_tuple` (both sides' index math re-expressed in `tuple_types_minted`;
+  `None` reproduces the single-tuple/scalar paths BYTE-FOR-BYTE — a byte-identity oracle
+  `arg_slots_reproduce_the_single_tuple_interleave_and_extend_to_n_tuples` pins it). The `multi_compound_args`
+  classifier fires only at ≥2 tuple args (the two single-tuple classifiers stay byte-identical at exactly one).
+  brick 5 (THIS increment) — **N compound args × the three LIST-result cores.** Generalized the three
+  list-returning cores (`closure_bytes_resource_core_module_borrow`, `closure_value_resource_core_module_borrow`,
+  `closure_value_encode_resource_core_module_borrow`) from `Option<&TupleArgRebuild>` to `&[TupleArgRebuild]`
+  (byte-neutral, one rebuilt cell local per tuple), added a `list<u8>`-result slot functype
+  `closure_call_list_functype_slots`, and threaded `call_arg_slots` through
+  `assemble_closure_bytes_resource_borrow_tuple` + `resource_inner_component_closure_bytes_borrow_tuple` (the
+  shared `call_type_block` closure gained a slot arm). mod.rs now builds a unified `list_rebuilds:
+  Vec<TupleArgRebuild>` (single-tuple/nested/multi_args) + `list_slots` (`Some` only for ≥2 tuples), and the
+  N-compound emit block scalar-guards so a list result falls through to the shared list routings. Corpus (all
+  e2e): 2 tuples→scalar 15, scalar-between→35, 3 tuples→105, nested-alongside-flat→47, capturing→115, 2
+  records→15, PLUS 2 tuples→List `(list 5 10)`, 2 tuples→Tuple `(tuple 5 10)`, 2 tuples→Bytes `(5 10)`, 3
+  tuples→List `(list 1 4 100)`, scalar-between→List `(list 5 10 20)`, capturing→List `(list 5 10 100)`.
+  **REMAINING within this feature:** the MULTI/MIXED/DISTINCT-SIG export shapes with ≥2 compound args (each emit
+  fn detects one compound today — the shared `call_type_block`/multi cores would take the same slot generalization).
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
-  are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (1) **N
-  compound args** (two tuple args) — 🏗️ VERTICAL STARTED: brick 1 (`d4099fad`, oracle
-  `two_fixed_shape_tuple_closure_args_cross_by_independent_flattening`) PROVES two `tuple<s64,s64>` args flatten
-  INDEPENDENTLY to 4 core params (no `value-decode` — an impl gap, not an ABI wall). Remaining bricks:
-  generalize the classifier + boundary types from ONE tuple to a `Vec<TupleArgRebuild>` (one per tuple at its
-  own `base_param`), generalize `emit_closure_call_args` to push N rebuilds interleaved with scalars, + mint N
-  `tuple<…>` types in the envelope (like the nested `mint_tuple_type_nested` running-counter approach). A large
-  multi-tick vertical (~16 functype sites), decompose like nested-compound. (2) a **SUM
+  are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (2) a **SUM
   (Option) direct-call arg** (needs host→guest decode of
   the discriminant+payload). (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
   does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works for all of

@@ -681,6 +681,41 @@ fn collection_or_text_module(ty: &Ty) -> Option<&'static str> {
     }
 }
 
+/// A `(match <value> …)` TEMPLATE for a SUM value member-accessed by name — `(. o foo)` on an `(Option
+/// …)`, `(. p x)` on a user sum. A sum's payload is not a field: it is reached by MATCHING each variant.
+/// Spells one arm per variant with a `…` body, so the reader sees the shape to write — `(match <value>
+/// ((Some x) …) ((None) …))`. Each arm binds a fresh `x0`/`x1`/… per payload slot (the arity from the
+/// variant's payload count) so a payload-carrying variant shows its binders. `None` for a sum whose decl
+/// is unknown (no variant set to spell) or a sum with no variants. Reads the variant set off the type's
+/// declaration (`ty::Sum { decl }`), so it names THIS sum's real variants.
+fn sum_match_hint(db: &mut Db, ty: &Ty) -> Option<String> {
+    let Ty::Sum { decl, .. } = ty else {
+        return None;
+    };
+    let decl = *decl;
+    let variants: Vec<(String, usize)> = db
+        .type_decl_by_occ(decl)?
+        .variants
+        .iter()
+        .map(|v| (v.name.clone(), v.payloads.len()))
+        .collect();
+    if variants.is_empty() {
+        return None;
+    }
+    let arms: Vec<String> = variants
+        .iter()
+        .map(|(name, arity)| {
+            if *arity == 0 {
+                format!("(({name}) …)")
+            } else {
+                let binders: Vec<String> = (0..*arity).map(|i| format!("x{i}")).collect();
+                format!("(({name} {}) …)", binders.join(" "))
+            }
+        })
+        .collect();
+    Some(format!("(match <value> {})", arms.join(" ")))
+}
+
 fn additive_op_gerund(prim: Option<crate::resolved::Prim>) -> &'static str {
     use crate::resolved::Prim;
     match prim {
@@ -811,24 +846,48 @@ fn type_ctor_arity_message(db: &mut Db, ty_expr: StructId) -> Option<String> {
     };
     let head = children[0];
     let supplied = children.len() - 1;
-    let (name, expected) = match crate::eval::meta_apply_of(db, head)? {
-        crate::resolved::Prim::ListCtor => ("List", 1),
-        crate::resolved::Prim::SetCtor => ("Set", 1),
-        crate::resolved::Prim::MapCtor => ("Map", 2),
+    // A PRELUDE collection type constructor — its arity is fixed by the prim, and its argument placeholder
+    // names read naturally (`List Elem`, `Map Key Value`).
+    if let Some((name, expected, placeholder)) = match crate::eval::meta_apply_of(db, head) {
+        Some(crate::resolved::Prim::ListCtor) => Some(("List".to_string(), 1usize, "Elem")),
+        Some(crate::resolved::Prim::SetCtor) => Some(("Set".to_string(), 1, "Elem")),
+        Some(crate::resolved::Prim::MapCtor) => Some(("Map".to_string(), 2, "Key Value")),
+        _ => None,
+    } {
+        if supplied == expected {
+            return None;
+        }
+        let plural = if expected == 1 { "" } else { "s" };
+        return Some(format!(
+            "`{name}` takes {expected} type argument{plural}, but {supplied} {} supplied — write \
+             `({name} {placeholder})`",
+            if supplied == 1 { "was" } else { "were" },
+        ));
+    }
+    // A USER GENERIC SUM constructor — `(Box Int64 Bool)` where `(type Box (W a) …)` declares ONE type
+    // parameter. Its declared parameter count is the expected arity (read off the sum's decl). Unlike a
+    // prelude ctor whose wrong arity fails to reduce (→ the "not a type" path), a generic sum reduces to a
+    // `Ty::Sum` with WHATEVER args were given (the extra silently ignored / a missing one left a var), so
+    // this check must run even when `typeval_of` SUCCEEDS. Placeholder args echo the sum's own parameter
+    // names (`(type Pair (P a b))` → `(Pair a b)`). Fires only when the count DIFFERS and the sum is
+    // generic (a monomorphic sum applied to args is the M108 "takes no type parameters" message instead).
+    let head_typeval = crate::eval::typeval_of(db, head)?;
+    let decl = match &head_typeval {
+        Ty::Sum { decl, .. } | Ty::Nominal { decl, .. } => *decl,
         _ => return None,
     };
-    if supplied == expected {
-        return None; // correct arity — a different fault (a non-type argument) surfaces elsewhere
+    let td = db.type_decl_by_occ(decl)?;
+    let (name, params) = (td.name.clone(), td.params.clone());
+    let expected = params.len();
+    if expected == 0 || supplied == expected {
+        return None; // monomorphic (M108's message) or a correct arity
     }
-    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let plural = if expected == 1 { "" } else { "s" };
     Some(format!(
-        "`{name}` takes {expected} type argument{}, but {supplied} {} supplied — write `({name} {})`",
-        plural(expected),
+        "`{name}` takes {expected} type argument{plural}, but {supplied} {} supplied — write `({name} \
+         {})`",
         if supplied == 1 { "was" } else { "were" },
-        match name {
-            "Map" => "Key Value",
-            _ => "Elem",
-        },
+        params.join(" "),
     ))
 }
 
@@ -928,6 +987,16 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
         );
         return;
     }
+    // A TYPE CONSTRUCTOR applied to the WRONG number of arguments — a prelude `(List Int64 Int64)` (fails
+    // to reduce → the "not a type" path below) OR a user generic sum `(Box Int64 Bool)` (which REDUCES to
+    // a `Ty::Sum`, silently ignoring the extra arg, so `typeval_of` succeeds and the "not a type" branch
+    // never fires). Check arity FIRST, independent of whether the operand reduces, so a wrong-arity generic
+    // sum is caught. `type_ctor_arity_message` returns `None` for a correct arity / a non-ctor.
+    if let Some(msg) = type_ctor_arity_message(db, ty_expr) {
+        trace!(target: "rcdzc::infer", param = param.0, "fault: type constructor applied at the wrong arity (CDZ0203)");
+        out.push(Reject::coded(Code::TypeMismatch, msg).at(ty_expr));
+        return;
+    }
     // The operand denotes a type → fine. Otherwise reject, exactly as the value-annotation form does:
     // collect the operand's OWN faults (an unbound name → CDZ0101), and if none surfaced (a well-formed
     // non-type: a literal, a compound, `(Int64 Int64)`), add an "expected a type" TypeMismatch (CDZ0203).
@@ -936,12 +1005,13 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
         collect(db, ty_expr, out);
         if out.len() == before {
             trace!(target: "rcdzc::infer", param = param.0, "fault: parameter annotation type is not a type (CDZ0203)");
-            // A misapplied prelude type CONSTRUCTOR (`(List Int64 Int64)`) names its arity; any other
-            // non-type keeps the generic "requires a type" message.
-            let message = type_ctor_arity_message(db, ty_expr).unwrap_or_else(|| {
-                non_type_annotation_message(db, ty_expr, "a parameter's annotation")
-            });
-            out.push(Reject::coded(Code::TypeMismatch, message).at(ty_expr));
+            out.push(
+                Reject::coded(
+                    Code::TypeMismatch,
+                    non_type_annotation_message(db, ty_expr, "a parameter's annotation"),
+                )
+                .at(ty_expr),
+            );
         }
     }
 }
@@ -1518,6 +1588,19 @@ fn ensure_call_site_index(db: &mut Db) {
         collect_calls_into_index(db, body, body, &mut index);
     }
     db.call_sites_by_callee = Some(index);
+}
+
+/// The number of call sites whose head resolves to `callee`, across the whole program (the call-site
+/// index, built once + cached). The inline COST HEURISTIC (`lower::should_emit_once_by_cost`) uses this to
+/// require ≥ N callers before it prefers emit-once — a def called once gains nothing from a shared
+/// function. Counts every application occurrence (including a self-call, which the index records); the
+/// heuristic only consults this for a NON-recursive callee, so self-calls do not distort the decision.
+pub(crate) fn callee_call_site_count(db: &mut Db, callee: usize) -> usize {
+    ensure_call_site_index(db);
+    db.call_sites_by_callee
+        .as_ref()
+        .and_then(|idx| idx.get(&callee))
+        .map_or(0, |sites| sites.len())
 }
 
 /// Walk `node` (within caller body `caller_body`), recording into `index` every application whose head
@@ -6925,36 +7008,48 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         // the type"). Only for a value with such a module; other non-records keep the plain
                         // message.
                         other => {
-                            // A COLLECTION or TEXT value accessed by NAME — `(. xs foo)` on a `(List …)`,
-                            // `(Map …)`, `(Set …)`, `String`, `Bytes` — is not a field read (these are not
-                            // records). Its operations live on the type MODULE and take the value as the
-                            // FIRST argument, so name the module + the `((. Module op) value …)` form
-                            // instead of the dead-end "requires a record". Any other non-record (a scalar, a
-                            // sum) has no operation module → keep the plain message.
-                            let reject = match collection_or_text_module(other) {
-                                Some(module) => {
-                                    trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: named member access on a collection/text value (CDZ0201)");
-                                    Reject::coded(
-                                        Code::Malformed,
-                                        format!(
-                                            "a {} value has no field `{}` — its operations live on the \
-                                             `{module}` module and take the value as the first argument, \
-                                             e.g. `((. {module} <op>) <value> …)`",
-                                            other.render_name(),
-                                            key.name,
-                                        ),
-                                    )
-                                }
-                                None => {
-                                    trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: member access on a non-record (CDZ0201)");
-                                    Reject::coded(
-                                        Code::Malformed,
-                                        format!(
-                                            "member access requires a record, found {}",
-                                            other.render_name()
-                                        ),
-                                    )
-                                }
+                            // Redirect a NAMED member access on a non-record to the way its kind IS used,
+                            // instead of the dead-end "requires a record":
+                            //  • COLLECTION/TEXT (`(List …)`/`(Map …)`/`(Set …)`/`String`/`Bytes`) — not a
+                            //    field read; its operations live on the type MODULE, value-first (`(. List
+                            //    at) xs …`).
+                            //  • SUM (`(Option …)`, a user sum) — its payload is reached by MATCHING each
+                            //    variant, not by field access; spell a `(match <value> …)` template.
+                            //  • any other non-record (a scalar) has no such route → the plain message.
+                            let module = collection_or_text_module(other);
+                            let match_tmpl = if module.is_none() {
+                                sum_match_hint(db, other)
+                            } else {
+                                None
+                            };
+                            let ty_name = other.render_name();
+                            let reject = if let Some(module) = module {
+                                trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: named member access on a collection/text value (CDZ0201)");
+                                Reject::coded(
+                                    Code::Malformed,
+                                    format!(
+                                        "a {ty_name} value has no field `{}` — its operations live on the \
+                                         `{module}` module and take the value as the first argument, e.g. \
+                                         `((. {module} <op>) <value> …)`",
+                                        key.name,
+                                    ),
+                                )
+                            } else if let Some(tmpl) = match_tmpl {
+                                trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: named member access on a sum value (CDZ0201)");
+                                Reject::coded(
+                                    Code::Malformed,
+                                    format!(
+                                        "a {ty_name} value has no field `{}` — a sum's payload is reached \
+                                         by matching its variants, not by field access, e.g. `{tmpl}`",
+                                        key.name,
+                                    ),
+                                )
+                            } else {
+                                trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: member access on a non-record (CDZ0201)");
+                                Reject::coded(
+                                    Code::Malformed,
+                                    format!("member access requires a record, found {ty_name}"),
+                                )
                             };
                             out.push(reject)
                         }
@@ -7917,6 +8012,19 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     "an integer width must be a compile-time natural, not runtime data",
                 ));
             }
+            // A TYPE CONSTRUCTOR applied at the WRONG arity in the annotation position — a prelude `(: 5
+            // (List Int64 Int64))` or a user generic sum `(: b (Box Int64 Bool))`. Checked FIRST, before
+            // the type is used below, because a generic sum REDUCES to a `Ty::Sum` (silently dropping the
+            // extra arg) so `typeval_of` succeeds and the "not a type" branch never fires — the arity fault
+            // would be lost. `type_ctor_arity_message` returns `None` for a correct arity / a non-ctor.
+            if !runtime_width
+                && let Some(msg) = type_ctor_arity_message(db, ty_expr)
+            {
+                trace!(target: "rcdzc::infer", node = id.0, "fault: type constructor applied at the wrong arity (CDZ0203)");
+                out.push(Reject::coded(Code::TypeMismatch, msg));
+                collect(db, expr, out);
+                return;
+            }
             if let Some(annot_ty) = crate::eval::typeval_of(db, ty_expr) {
                 // A FLOAT type annotating with a NON-ADMITTED width reduces (via the `Float` constructor)
                 // to the sentinel `Ty::Float(Fixed(0))` — a `(: 1.5 (Float 16))` / `(: 1.5 (Float 48))`.
@@ -8293,16 +8401,12 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect(db, ty_expr, out);
                 if out.len() == before {
                     trace!(target: "rcdzc::infer", node = id.0, "fault: annotation type position is not a type (CDZ0203)");
-                    // A misapplied prelude type CONSTRUCTOR (`(: 5 (List Int64 Int64))`) names its arity;
-                    // any other non-type keeps the generic "requires a type" message.
-                    let message = type_ctor_arity_message(db, ty_expr).unwrap_or_else(|| {
-                        non_type_annotation_message(
-                            db,
-                            ty_expr,
-                            "the type position of an annotation",
-                        )
-                    });
-                    out.push(Reject::coded(Code::TypeMismatch, message));
+                    // A wrong-arity type constructor was already caught above (before the `typeval_of`
+                    // use), so here it is a genuine non-type — the generic "requires a type" message.
+                    out.push(Reject::coded(
+                        Code::TypeMismatch,
+                        non_type_annotation_message(db, ty_expr, "the type position of an annotation"),
+                    ));
                 }
             }
             // A FLOAT LITERAL annotated `Float32` that OVERFLOWS the Float32 range — `(: 1.0e300 Float32)`

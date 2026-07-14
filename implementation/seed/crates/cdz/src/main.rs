@@ -1660,14 +1660,15 @@ fn run_exports(args: &ExportsArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `cdz instantiations NAME FILE` — every concrete monomorphization of the generic / ad-hoc-polymorphic
-/// definition NAME. Drives `Query::Instantiations`, which forces monomorphization over the whole program
-/// then reads the instantiation record, and prints one line per instance:
-/// `file:line:col: NAME[args…] → spec-name`. The location is the SOURCE definition's name occurrence (so
-/// it points at the generic being instantiated); the args are the concrete per-parameter instantiation
-/// (a runtime param `name: TYPE`, an erased compile-time param `const name = VALUE` — e.g. the concrete
-/// dictionary an ad-hoc-polymorphic call baked in). A NON-generic (never-specialized) definition — or an
-/// unknown name — instantiates nothing and reports so.
+/// `cdz instantiations NAME FILE` — the DISPOSITION of definition NAME plus, if it is specialized, every
+/// concrete monomorphization. Drives `Query::Instantiations`, which forces monomorphization over the whole
+/// program then reads the disposition + instantiation records. Prints a disposition line
+/// `file:line:col: NAME — DISPOSITION (gloss)` where DISPOSITION is `specialized` / `inlined` / `emitted`
+/// / `unreferenced` (a `+`-joined set when more than one applies), then — for a specialized def — one
+/// indented line per instance `file:line:col:   NAME[args…] → spec-name`. The location is the SOURCE
+/// definition's name occurrence; an instance's args are its concrete per-parameter instantiation (a
+/// runtime param `name: TYPE`, an erased compile-time param `const name = VALUE` — e.g. the concrete
+/// dictionary an ad-hoc-polymorphic call baked in). An unknown name reports "no such definition".
 fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
     let (source, arenas, spans) = match load_program_spanned(&args.file) {
         Ok(v) => v,
@@ -1688,40 +1689,69 @@ fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
     };
     let text = String::from_utf8_lossy(bytes);
     if text.trim().is_empty() {
+        // Empty ONLY for an UNKNOWN name — a known def always emits a `disp` line. (A near-typo gets no
+        // suggestion here; `cdz type NAME` is the name-oriented query that offers "did you mean?".)
         eprintln!(
-            "{PROG}: `{}` has no concrete instantiations in {} \
-             (not a generic / ad-hoc-polymorphic definition, or never instantiated)",
+            "{PROG}: no such definition `{}` in {}",
             args.name, args.file
         );
         return ExitCode::SUCCESS;
     }
-    // Each line is `spec-name<TAB>def-name-node-id<TAB>arg;arg;…`. Map the def-name node to a location so
-    // the report points at the generic definition; the args render as `NAME[arg, arg, …]`.
+    // Two line kinds, each TAB-tagged:
+    //   `disp<TAB>node<TAB>disposition`               — the def's fate (specialized/inlined/emitted/…)
+    //   `inst<TAB>spec<TAB>node<TAB>arg;arg;…`         — one per specialization (only when specialized)
+    // Map the def's name node to a location; render each instance's `;`-joined args as `NAME[a, b, …]`.
     let index = cadenza_syntax::query::driver::LineIndex::new(&source);
+    let loc_of = |node: &str| match node
+        .parse::<u32>()
+        .ok()
+        .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
+    {
+        Some(span) => {
+            let (l, c) = index.line_col(&source, span.start);
+            format!("{}:{l}:{c}", args.file)
+        }
+        None => args.file.clone(),
+    };
     for line in text.lines() {
-        let mut cols = line.splitn(3, '\t');
-        let (spec, node, arglist) = match (cols.next(), cols.next(), cols.next()) {
-            (Some(s), Some(n), Some(a)) => (s, n, a),
-            _ => continue,
-        };
-        let loc = match node
-            .parse::<u32>()
-            .ok()
-            .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
-        {
-            Some(span) => {
-                let (l, c) = index.line_col(&source, span.start);
-                format!("{}:{l}:{c}", args.file)
+        let mut cols = line.split('\t');
+        match cols.next() {
+            Some("disp") => {
+                let (node, disp) = match (cols.next(), cols.next()) {
+                    (Some(n), Some(d)) => (n, d),
+                    _ => continue,
+                };
+                // Present the disposition set readably, and gloss what it MEANS (why there is / isn't a
+                // function to point at) so the status is self-explanatory. A `transformed→copy` tag or a
+                // `+`-joined combination carries its own words, so those get no extra gloss.
+                let gloss = match disp {
+                    "inlined" => " (β-reduced into each call site; no standalone function emitted)",
+                    "specialized" => {
+                        " (monomorphized — one function per instantiation, listed below)"
+                    }
+                    "emitted" => " (emitted as a standalone function and called)",
+                    "unreferenced" => " (never called, inlined, specialized, or exported)",
+                    d if d.starts_with("transformed→") => {
+                        " (its recursion was rewritten into the named accumulator loop)"
+                    }
+                    _ => "", // a `+`-joined combination — the words already say it
+                };
+                println!("{}: {} — {disp}{gloss}", loc_of(node), args.name);
             }
-            None => args.file.clone(),
-        };
-        // `;`-joined arg descriptions → a readable `[a, b, c]`; an empty arglist (a nullary generic) → `[]`.
-        let pretty = arglist
-            .split(';')
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(", ");
-        println!("{loc}: {}[{pretty}] → {spec}", args.name);
+            Some("inst") => {
+                let (spec, node, arglist) = match (cols.next(), cols.next(), cols.next()) {
+                    (Some(s), Some(n), Some(a)) => (s, n, a),
+                    _ => continue,
+                };
+                let pretty = arglist
+                    .split(';')
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!("{}:   {}[{pretty}] → {spec}", loc_of(node), args.name);
+            }
+            _ => continue,
+        }
     }
     ExitCode::SUCCESS
 }

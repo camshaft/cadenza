@@ -272,6 +272,7 @@ pass	a narrow-width parameter compared to a bare literal computes at the paramet
 pass	a narrow-width parameter plus a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes inside a helper function
 pass	a narrow-width two-parameter recursion compiles to valid wasm and computes
+pass	a narrow-width wrapping-mul constant folds by wrapping, not by rejecting
 pass	a nearer handler on the call chain shadows an outer one
 pass	a negative hexadecimal literal negates its value
 pass	a negative integer literal pattern matches a runtime scrutinee
@@ -428,6 +429,7 @@ pass	a signed narrow if-branch opposite a bare literal computes at the narrow wi
 pass	a signed narrow match binder returns the bound value
 pass	a signed narrow tuple element round-trips through the heap with its sign
 pass	a signed narrow-width parameter plus a bare literal computes at the parameter width
+pass	a signed narrow-width wrapping-add constant folds by wrapping to the negative outcome
 pass	a signed pattern segment reads a two's-complement integer as negative
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block

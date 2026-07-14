@@ -1786,19 +1786,29 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 // declared); name the real reason instead, so the author knows the export is not a typo but
                 // a category error (there is no mechanical fix — removing the export or defining a value of
                 // that name is the author's choice).
-                let kind = if db.type_decl_by_name(&name).is_some() {
-                    Some("a type")
+                // A declared TYPE named bare in `(export T)` is the OPAQUE-TYPES handle export — a valid
+                // form whose consumer is an IMPORTING peer (`(import "lib" (T …))`), which exists only in a
+                // linked PACKAGE. In a single-module compile there is no importer, so the handle export has
+                // no effect here; but it is NOT the "only definitions are exported" category error the old
+                // message claimed (opaque types made a type handle first-class exportable). Say THAT — the
+                // export is meaningful only across a package boundary — so an author writing an abstract
+                // type is not misled into thinking a type can never be exported. An EFFECT is still a true
+                // category error (an effect is not an exportable entity), and an unknown name stays "names
+                // no definition".
+                let message = if db.type_decl_by_name(&name).is_some() {
+                    format!(
+                        "export `{name}` names a TYPE — a bare type export is the abstract-type HANDLE \
+                         export (opaque types), meaningful only when a peer module imports it; in a \
+                         single module it has no importer, so it exports nothing here. Export a value \
+                         `(def …)`, or `(export (. {name} *))` to publish its constructors too."
+                    )
                 } else if db.effect_decl_by_name(&name).is_some() {
-                    Some("an effect")
+                    format!(
+                        "export `{name}` names an effect, not a value definition — only definitions are \
+                         exported (a module's exports are the values its definitions bind)"
+                    )
                 } else {
-                    None
-                };
-                let message = match kind {
-                    Some(k) => format!(
-                        "export `{name}` names {k}, not a value definition — only definitions are exported \
-                         (a module's exports are the values its definitions bind)"
-                    ),
-                    None => format!("export `{name}` names no definition"),
+                    format!("export `{name}` names no definition")
                 };
                 faults.push(Reject::coded(Code::Unbound, message).at(occ));
             }
@@ -1845,6 +1855,75 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             reject = reject.with_fix(crate::diag::Fix::replace_heuristic(arg, head.to_string()));
         }
         faults.push(reject);
+    }
+    // SEMANTIC validation of a CONSTRUCTOR-EXPORT `(export (. T A))` / `(export (. T *))` — the opaque-types
+    // surface. `malformed_exports` (above) accepts its SHAPE, and the linker's `as_ctor_export` records the
+    // (type, ctor) names WITHOUT checking they exist — so `(export (. T Nonesuch))` (a ctor `T` lacks),
+    // `(export (. foo A))` (`foo` is a value/effect, not a sum), and `(export (. Undeclared A))` were all
+    // SILENTLY ACCEPTED. Reject each here: the head must name a declared SUM TYPE, and (unless the `*`
+    // wildcard) the ctor must be one of its variants — with a did-you-mean over the type's variant names.
+    let ctor_exports = db.ctor_export_elements();
+    for (elem_occ, ty_occ, ctor_occ) in ctor_exports {
+        let ty_name = db.ast.as_name(ty_occ).map(str::to_string);
+        let ctor_name = db.ast.as_name(ctor_occ).map(str::to_string);
+        let (Some(ty_name), Some(ctor_name)) = (ty_name, ctor_name) else {
+            continue; // shape guaranteed by `is_ctor_export_shape`, but stay total
+        };
+        // The head must name a declared SUM TYPE. A value def / effect / undeclared name is not one — a
+        // ctor-export of a non-type has no constructors to publish. `type_decl_by_name` returns the sum's
+        // SYNTHESIZED RECORD occurrence; `type_decl_by_synth` recovers the `TypeDecl` (with its variants).
+        let Some(decl) = db
+            .type_decl_by_name(&ty_name)
+            .and_then(|synth| db.type_decl_by_synth(synth))
+        else {
+            let category = if db.def_by_name(&ty_name).is_some() {
+                "a value definition"
+            } else if db.effect_decl_by_name(&ty_name).is_some() {
+                "an effect"
+            } else {
+                "not a declared type"
+            };
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "a constructor-export `(export (. {ty_name} …))` needs `{ty_name}` to be a sum \
+                         type, but it is {category} — only a sum type has constructors to export"
+                    ),
+                )
+                .at(elem_occ),
+            );
+            continue;
+        };
+        // The wildcard `(. T *)` publishes every ctor — no per-ctor check. A NAMED ctor `(. T A)` must be
+        // an actual variant of `T`; name a near-miss over the type's variant names (a closed set).
+        if ctor_name == "*" {
+            continue;
+        }
+        let variant_names: Vec<String> = decl.variants.iter().map(|v| v.name.clone()).collect();
+        if !variant_names.contains(&ctor_name) {
+            let hint = match crate::diag::suggest::nearest(
+                &ctor_name,
+                variant_names.iter().map(String::as_str),
+            ) {
+                Some(near) => format!(" — did you mean `{near}`?"),
+                None => String::new(),
+            };
+            let mut reject = Reject::coded(
+                Code::Malformed,
+                format!(
+                    "`{ctor_name}` is not a constructor of the sum type `{ty_name}` — a \
+                     constructor-export names one of its variants (or `*` for all){hint}"
+                ),
+            )
+            .at(ctor_occ);
+            if let Some(near) =
+                crate::diag::suggest::nearest(&ctor_name, variant_names.iter().map(String::as_str))
+            {
+                reject = reject.with_fix(crate::diag::Fix::replace_heuristic(ctor_occ, near));
+            }
+            faults.push(reject);
+        }
     }
     // A MALFORMED `(extern …)` cross-component declaration — one whose first element (the peer INTERFACE)
     // is missing or not a STRING literal. `scan_extern_decl` returns `None` for such a form (the interface
@@ -1920,6 +1999,43 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                     .at(anchor),
                 );
             }
+        }
+    }
+    // A MALFORMED `(bind …)` peer-binding directive. `scan_effect_bindings` SILENTLY DROPS a `(bind …)`
+    // that is not `(bind <name> <string>)` (wrong arity, or a non-string interface) — so a typo'd binding
+    // does nothing, with no diagnostic, and the effect quietly escapes to the host (or is unrouted). And a
+    // `(bind foo …)` naming a VALUE definition rather than an effect binds nothing. Reject both here (the
+    // `bind` analogue of the malformed-extern scan-and-drop check + the host-delegates-a-value reject): a
+    // shape that is not `(bind Effect "iface")` is CDZ0201, and a `bind` whose name is an unambiguous VALUE
+    // DEF (not an effect) is flagged. (A name that is neither a top-level effect nor a value def — a
+    // module-scoped effect, or a genuinely unbound name — is NOT flagged here: a module effect is legitimate
+    // and an unbound name surfaces its own CDZ0101 at the reference; only an unambiguous non-effect def is a
+    // certain mis-bind. Uses `def_by_name` — a top-level value def — exactly as the host-delegates-a-value
+    // check does, since `effect_decl_by_name` is a top-level-only registry.)
+    for form in (0..db.ast.structure.len() as u32).map(StructId) {
+        let Some(btail) = db.ast.as_form(form, "bind").map(<[_]>::to_vec) else {
+            continue;
+        };
+        // Shape: exactly `(bind <name> <string>)`.
+        let well_shaped = btail.len() == 2
+            && btail.first().is_some_and(|&n| db.ast.as_name(n).is_some())
+            && btail.get(1).is_some_and(|&i| db.ast.as_str(i).is_some());
+        if !well_shaped {
+            let anchor = btail.first().copied().unwrap_or(form);
+            faults.push(
+                Reject::coded(Code::Malformed, crate::diag::MALFORMED_BIND_MESSAGE).at(anchor),
+            );
+            continue;
+        }
+        // Well-shaped: the bound name must be an effect, not a value. Flag only an UNAMBIGUOUS value def
+        // (a name that is neither a top-level effect nor a module effect but IS a top-level def).
+        let name_occ = btail[0];
+        let name = db.ast.as_name(name_occ).unwrap().to_string();
+        if db.effect_decl_by_name(&name).is_none() && db.def_by_name(&name).is_some() {
+            faults.push(
+                Reject::coded(Code::Malformed, crate::diag::BIND_NOT_AN_EFFECT_MESSAGE)
+                    .at(name_occ),
+            );
         }
     }
     // AN EXPORT WHOSE RESULT IS A NON-REPRESENTABLE CLOSURE — e.g. an entrypoint returning a PARTIAL

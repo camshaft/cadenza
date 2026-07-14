@@ -8967,6 +8967,58 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_multi_use_call_binding_calls_once_not_per_use() {
+        // A `let`-bound value whose initializer is a residual `Core::Call` (a RECURSIVE def that could not
+        // inline to a value) is a genuine runtime computation — so a call binding used MORE THAN ONCE must
+        // be NAMED (called once, its result read by each use), not copy-propagated into every use site.
+        // Before, `Core::Call` was absent from `is_runtime_computation`, so `(let ((xs (build …))) …)` with
+        // `xs` used twice RECOMPUTED the whole `build` call (rebuilding the list + its allocations) at each
+        // use. Pin exactly ONE call to `build` in the emitted body, and value parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        use crate::db::Db;
+        use crate::infer::type_of;
+        use crate::testkit::parse;
+        let ast = parse(
+            "(module m \
+               (def (build (: i Int64) (: n Int64) (: out (List Int64))) \
+                 (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (f (: n Int64)) \
+                 (let ((xs (build 0 n (list)))) (+ ((. List len) xs) ((. List len) xs)))) \
+               (export f))",
+        );
+        let mut db = Db::load(ast);
+        let d = db.def_by_name("f").expect("def f");
+        let body = db.defs[d].body.expect("body");
+        let sig_params = db.defs[d].params.clone();
+        let mut params = Vec::new();
+        for p in sig_params {
+            let binder = match db.ast.as_form(p, ":").and_then(|t| t.first().copied()) {
+                Some(name_occ) => name_occ,
+                None => p,
+            };
+            let ty = type_of(&mut db, binder);
+            params.push((binder, ty));
+        }
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let code = select_function(&mut db, body, &params, &layout)
+            .expect("select")
+            .code;
+        // The `build` recursion is a real `Core::Call` → a `Lir::Call`/`ReturnCall`. With `xs` NAMED it is
+        // called EXACTLY ONCE; if `xs` were copy-propagated it would appear twice (once per `List.len xs`).
+        let calls = code
+            .iter()
+            .filter(|i| matches!(i, Lir::Call(_) | Lir::ReturnCall(_)))
+            .count();
+        assert_eq!(
+            calls, 1,
+            "a multi-use call binding is called ONCE, not per use, got {calls}: {code:?}"
+        );
+        // (End-to-end value parity for shared runtime call-bindings is covered by the corpus gate + the
+        // `len`-twice / `concat xs xs` runtime probes; here the Lir call-count is the precise witness.)
+    }
+
+    #[test]
     fn a_single_use_runtime_binding_is_inlined_not_named() {
         // A binding used ONCE is copy-propagated (no `Core::Let`), so it emits identically to writing
         // the value inline — byte-for-byte. `(let ((s (+ a b))) (* s 2))` and `(* (+ a b) 2)` are the
@@ -12288,19 +12340,24 @@ mod match_engine {
     #[test]
     fn exporting_a_type_or_effect_names_the_category_not_names_no_definition() {
         // `(export Color)` where `Color` is a declared TYPE (or an EFFECT) is not a typo — the name IS
-        // declared, just not a value. The old "export `Color` names no definition" misled (it reads as
-        // "unknown name"); it now names the CATEGORY — a type / an effect is not a value definition, and
-        // only definitions are exported (core-semantics.md §a module's exports are its definitions' values).
+        // declared. The old "export `Color` names no definition" misled (reads as "unknown name"); it now
+        // names the real situation. For a TYPE, a bare export is the opaque-types abstract-HANDLE export —
+        // valid, but meaningful only when a peer imports it; in a single module it has no importer. The
+        // message says THAT (and points at the value / `(. T *)` alternatives), NOT the stale "only
+        // definitions are exported" (opaque types made a type handle first-class exportable). An EFFECT is
+        // still a true category error; an unknown name stays "names no definition".
         let ty = crate::diagnostics(&mut crate::db::Db::load(parse(
             "(module m (type Color R G B) (export Color))",
         )))
         .into_iter()
         .find(|d| d.message.contains("export `Color`"))
-        .expect("exporting a type is rejected");
+        .expect("exporting a bare type handle in a single module is reported");
         assert_eq!(ty.code.as_deref(), Some("CDZ0101"), "got: {}", ty.message);
         assert!(
-            ty.message.contains("names a type, not a value definition"),
-            "names the category (a type), not the misleading 'no definition': {}",
+            ty.message.contains("names a TYPE")
+                && ty.message.contains("HANDLE export")
+                && ty.message.contains("(. Color *)"),
+            "names the opaque-type handle export + the fix, not the stale 'only definitions': {}",
             ty.message
         );
         let eff = crate::diagnostics(&mut crate::db::Db::load(parse(
@@ -12409,6 +12466,78 @@ mod match_engine {
                 d.fix.is_none(),
                 "a malformed ctor-export offers no bogus `.` fix: {:?}",
                 d.fix
+            );
+        }
+    }
+
+    /// A SHAPE-valid constructor-export `(export (. T A))` / `(export (. T *))` must ALSO be SEMANTICALLY
+    /// valid: `T` a declared sum, `A` one of its variants. The linker's `as_ctor_export` recorded the
+    /// (type, ctor) names WITHOUT checking they exist, so `(export (. T Nonesuch))` (a ctor `T` lacks),
+    /// `(export (. foo A))` (`foo` a value def), and `(export (. Undeclared A))` were SILENTLY ACCEPTED.
+    /// `collect_faults` now validates each: an unknown ctor of a real sum names it + a did-you-mean over
+    /// the variants (with a replace fix); a non-sum head names its category; the wildcard `*` skips the
+    /// per-ctor check.
+    #[test]
+    fn a_constructor_export_is_semantically_validated() {
+        use crate::testkit::parse;
+        // (a) an unknown ctor of a real sum → names the ctor + type; a near-miss carries a replace fix.
+        let near = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (type T (Alpha) (Beta)) (export (. T Alph)) (def (main) 1) (export main))",
+        )))
+        .into_iter()
+        .find(|d| {
+            d.message
+                .contains("is not a constructor of the sum type `T`")
+        })
+        .expect("a bad ctor-export ctor is rejected");
+        assert_eq!(
+            near.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            near.message
+        );
+        assert!(
+            near.message.contains("did you mean `Alpha`?"),
+            "names the near ctor: {}",
+            near.message
+        );
+        assert_eq!(
+            near.fix.as_ref().map(|f| (f.kind, f.replacement.as_str())),
+            Some((crate::abi::FixKind::Replace, "Alpha")),
+            "carries a replace-with-the-variant fix: {:?}",
+            near.fix
+        );
+        // (b) a non-sum head (a value def) → names the category.
+        let val = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def foo 5) (export (. foo A)) (def (main) 1) (export main))",
+        )));
+        assert!(
+            val.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("`foo` to be a sum type")
+                && d.message.contains("a value definition")),
+            "a ctor-export of a value def names the category: {:?}",
+            val.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // (c) an undeclared type head → "not a declared type".
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (export (. Undeclared A)) (def (main) 1) (export main))"
+            )))
+            .iter()
+            .any(|d| d.message.contains("not a declared type")),
+            "a ctor-export of an undeclared type is rejected"
+        );
+        // NO FALSE POSITIVE: a real ctor and the wildcard are clean.
+        for ok in [
+            "(module m (type T (Alpha) (Beta)) (export (. T Alpha)) (def (main) 1) (export main))",
+            "(module m (type T (Alpha) (Beta)) (export (. T *)) (def (main) 1) (export main))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("is not a constructor")
+                        || d.message.contains("to be a sum type")),
+                "a valid ctor-export is not flagged: {ok}"
             );
         }
     }
@@ -16715,6 +16844,46 @@ mod match_engine {
     }
 
     #[test]
+    fn two_rest_markers_in_one_arm_are_linear() {
+        // REGRESSION: the `..` rest MARKER is a syntactic token, NOT a binder (the rest binder is the name
+        // AFTER `..`). `collect_pattern_binders` walked `..` as a bare-name atom and inserted it into the
+        // seen-set, so a WELL-FORMED arm with two rest patterns — a tuple of two rest-lists
+        // `(tuple (list a .. r1) (list b .. r2))`, or a ctor-wrapped rest-list inside an outer rest-list
+        // `(list (Mk (list a .. r1)) .. r2)` — falsely faulted CDZ0102 "binds `..` more than once" and even
+        // proposed a `..2` rename. Both `_` and `..` are non-binding tokens the linearity walker must skip.
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: p (Tuple (List Int64) (List Int64)))) \
+                   (match p ((tuple (list a .. r1) (list b .. r2)) (+ a b)) (_ 0))) \
+                 (def (main) (f (tuple (list 1 2) (list 3 4)))) (export main))"
+            ),
+            None,
+            "two rest markers across sibling sub-patterns are linear (no CDZ0102)"
+        );
+        // And the value is correct — the leading binders `a`,`b` read element 0 of each rest-list. 1+3=4.
+        if let Some(v) = run_heap_value(
+            "(module m (def (f (: p (Tuple (List Int64) (List Int64)))) \
+               (match p ((tuple (list a .. r1) (list b .. r2)) (+ a b)) (_ 0))) \
+             (def (main) (f (tuple (list 1 2) (list 3 4)))) (export main))",
+            vec![],
+        ) {
+            assert_eq!(v, "4", "two-rest-list tuple binds each leading head");
+        }
+        // The linearity check still fires for a GENUINE repeat that spans a nested rest sub-pattern (the
+        // rest BINDER `r` is reused, not the `..` marker): `(tuple (list a .. r) (list b .. r))` → CDZ0102.
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: p (Tuple (List Int64) (List Int64)))) \
+                   (match p ((tuple (list a .. r) (list b .. r)) a) (_ 0))) \
+                 (def (main) (f (tuple (list 1) (list 2)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0102"),
+            "a reused rest BINDER across sibling rest-lists is still non-linear"
+        );
+    }
+
+    #[test]
     fn a_rest_list_pattern_matches_by_minimum_length_and_binds_leading_elements() {
         // 05-compound-types "an element pattern matches a list by its length and elements": a REST pattern
         // `(list p0 … p_{k-1} .. rest)` matches any list of length ≥ k, binding each LEADING position to
@@ -17161,6 +17330,56 @@ mod match_engine {
             lit.message.contains("requires a type") && !lit.message.contains("takes"),
             "a genuine non-type keeps the generic message: {}",
             lit.message
+        );
+    }
+
+    #[test]
+    fn a_user_generic_sum_with_the_wrong_type_arg_count_names_its_expected_arity() {
+        // A USER generic sum applied to the wrong number of type args — `(Box Int64 Bool)` where `(type Box
+        // (W a) …)` declares ONE type parameter — REDUCES to a `Ty::Sum` (silently dropping the extra arg),
+        // so `typeval_of` succeeds and the "not a type" path never fires; it compiled clean. The arity is
+        // now checked independently (off the sum's declared param count) and names the fix, echoing the
+        // sum's own parameter names — the user-sum twin of M110's prelude-ctor arity check.
+        for (src, expect) in [
+            (
+                "(module m (type Box (W a) (E)) (def (g (: b (Box Int64 Bool))) b) (def (main) 0) (export main))",
+                "`Box` takes 1 type argument, but 2 were supplied — write `(Box a)`",
+            ),
+            (
+                "(module m (type Pair (P a b)) (def (g (: p (Pair Int64))) p) (def (main) 0) (export main))",
+                "`Pair` takes 2 type arguments, but 1 was supplied — write `(Pair a b)`",
+            ),
+            // The value-annotation site routes through the same check.
+            (
+                "(module m (type Box (W a) (E)) (def (g) (: 5 (Box Int64 Bool))) (export g))",
+                "`Box` takes 1 type argument, but 2 were supplied — write `(Box a)`",
+            ),
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| panic!("{src} rejects"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message.contains(expect),
+                "names the generic-sum arity + fix:\n  expected: {expect}\n  got: {}",
+                d.message
+            );
+        }
+        // The CORRECT arity is clean, and a MONOMORPHIC sum applied to args keeps M108's "takes no type
+        // parameters" message (not this arity one — a 0-param sum is a different fault).
+        assert!(
+            reject_full(
+                "(module m (type Box (W a) (E)) (def (g (: b (Box Int64))) (match b ((W n) n) ((E) 0))) (def (main) 0) (export main))"
+            )
+            .is_none_or(|d| !d.message.contains("takes 1 type argument")),
+            "the correct arity `(Box Int64)` raises no arity fault"
+        );
+        let mono = reject_full(
+            "(module m (type Color R G) (def (g (: t (Color Int64))) t) (def (main) 0) (export main))",
+        )
+        .expect("a monomorphic sum applied to args rejects");
+        assert!(
+            mono.message.contains("takes no type parameters"),
+            "a monomorphic sum keeps the M108 message, not the arity one: {}",
+            mono.message
         );
     }
 
@@ -21188,6 +21407,68 @@ mod match_engine {
             run_returns::<i64>(&component(src), "main"),
             min,
             "runtime wrapping-add wraps at run time"
+        );
+    }
+
+    #[test]
+    fn a_narrow_width_wrapping_arith_const_fold_masks_to_the_width_not_rejects() {
+        // A NARROW-width wrapping op's constant fold must MASK the result to the type width (mod 2^w,
+        // sign-extended for a signed narrow type) — a wrapping op has a defined modular outcome, so a
+        // narrow overflow WRAPS, it does NOT fit-reject CDZ0302 the way the checked `+`/`*` and a genuine
+        // over-range LITERAL do (numeric-model.md §A Wrapping Operation Has A Defined Modular Outcome). This
+        // guards the const-fold ↔ runtime AGREEMENT: the same expression must not reject as a constant yet
+        // run as runtime data. Regression: `(UInt8.wrapping-mul 20 20)` rejected CDZ0302 before the fold-
+        // site width mask (it produced an unmasked ConstInt(400) that hit select's literal-width gate).
+        // UInt8 wrapping-mul: 20·20 = 400 ≡ 144 (mod 256); 16·16 = 256 ≡ 0; 15·17 = 255 fits exactly.
+        for (prog, want) in [
+            ("((. UInt8 wrapping-mul) 20 20)", 144u8),
+            ("((. UInt8 wrapping-mul) 16 16)", 0),
+            ("((. UInt8 wrapping-mul) 15 17)", 255),
+            ("((. UInt8 wrapping-mul) 3 4)", 12),
+            ("((. UInt8 wrapping-add) 200 100)", 44), // 300 ≡ 44 (mod 256)
+            ("((. UInt8 wrapping-add) 100 100)", 200), // fits
+        ] {
+            let src = format!("(module m (def (main) {prog}) (export main))");
+            assert_eq!(
+                run_returns::<u8>(&component(&src), "main"),
+                want,
+                "narrow unsigned wrapping const-fold: {prog}"
+            );
+        }
+        // SIGNED narrow wrap: Int8 100+100 = 200, low 8 bits with the sign bit set → -56.
+        assert_eq!(
+            run_returns::<i8>(
+                &component("(module m (def (main) ((. Int8 wrapping-add) 100 100)) (export main))"),
+                "main"
+            ),
+            -56,
+            "signed narrow wrapping const-fold sign-extends the masked low bits"
+        );
+        // UInt16 wrapping-mul: 300·300 = 90000 ≡ 24464 (mod 2^16) — a wider narrow width still masks.
+        assert_eq!(
+            run_returns::<u16>(
+                &component(
+                    "(module m (def (main) ((. UInt16 wrapping-mul) 300 300)) (export main))"
+                ),
+                "main"
+            ),
+            24464,
+            "UInt16 wrapping const-fold masks to 16 bits"
+        );
+        // GUARD (the mask must NOT leak to literals): a genuine over-range LITERAL still rejects CDZ0302 —
+        // only the wrapping OP masks; `(: 400 UInt8)` is an ill-formed literal, not a modular outcome.
+        assert_eq!(
+            reject_code("(module m (def (main) (: 400 UInt8)) (export main))").as_deref(),
+            Some("CDZ0302"),
+            "an over-range literal still rejects — the wrapping mask does not leak to literals"
+        );
+        // GUARD (the CHECKED op still traps): `(+ (: 200 UInt8) (: 100 UInt8))` overflows UInt8 → CDZ0304,
+        // proving the fold-site mask is scoped to the WRAPPING prim, not the checked add.
+        assert_eq!(
+            reject_code("(module m (def (main) (+ (: 200 UInt8) (: 100 UInt8))) (export main))")
+                .as_deref(),
+            Some("CDZ0304"),
+            "a checked narrow add overflow still traps — the mask is wrapping-only"
         );
     }
 
@@ -29007,6 +29288,44 @@ mod stage1 {
     }
 
     #[test]
+    fn named_member_access_on_a_sum_points_at_matching_its_variants() {
+        // A SUM value accessed by NAME — `(. o foo)` on an `(Option …)`, `(. p x)` on a user sum — is not a
+        // field read: a sum's payload is reached by MATCHING its variants. It now spells a `(match <value>
+        // …)` template (one arm per variant, payload binders shown) instead of the dead-end "requires a
+        // record" — the sum twin of the tuple-index (M124) / collection-module (M125) redirect.
+        // A prelude `Option` names both variants (`Some` carries one payload, `None` none).
+        let opt = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (g (: o (Option Int64))) (. o foo)) (export g))",
+        )))
+        .expect_err("named access on an Option must reject");
+        assert_eq!(opt.code.as_deref(), Some("CDZ0201"), "got: {}", opt.message);
+        assert!(
+            opt.message
+                .contains("a sum's payload is reached by matching its variants")
+                && opt
+                    .message
+                    .contains("(match <value> ((Some x0) …) ((None) …))"),
+            "spells the Option match template: {}",
+            opt.message
+        );
+        // A USER sum spells its own variants + payload arities (`Mk` one payload, `Z` none).
+        let user = compile_component(&crate::codec::encode(&parse(
+            "(module m (type P (Mk Int64) (Z)) (def (g (: p P)) (. p x)) (export g))",
+        )))
+        .expect_err("named access on a user sum must reject");
+        assert!(
+            user.message.contains("(match <value> ((Mk x0) …) ((Z) …))"),
+            "spells the user sum's match template with payload binders: {}",
+            user.message
+        );
+        // No mechanical fix (the intended arm bodies are the author's).
+        assert!(
+            opt.fix.is_none() && user.fix.is_none(),
+            "no mechanical fix for a match redirect"
+        );
+    }
+
+    #[test]
     fn member_access_of_a_missing_field_is_a_type_error() {
         // (. (record (x 1)) y) — the user record is CLOSED; a missing field rejects (CDZ0201).
         assert!(expect_decline("(. (record (x 1)) y)").contains("no field"));
@@ -35711,6 +36030,64 @@ mod stage1 {
             d.message.contains("recursive") && d.message.contains("inline-always"),
             "the message names the conflict: {}",
             d.message
+        );
+    }
+
+    #[test]
+    fn the_cost_heuristic_emits_a_big_multiply_called_helper_once() {
+        // Addendum 4 cost heuristic. `big` is LARGE (well past INLINE_COST_THRESHOLD nodes — 8 products
+        // summed) and called at TWO sites, each with a RUNTIME argument (`main`'s params `a`/`b`, so the
+        // soundness gate fires: the result can't be compile-time-demanded). The UNANNOTATED default would
+        // inline it at both sites; the heuristic instead emits it ONCE and calls it. Measured by call
+        // count: emit-once ⇒ ≥2 `Call`s to a separate `big` function; inlined ⇒ 0 internal calls. The
+        // value is unchanged either way (the gate corpus covers the value; here we assert the STRATEGY).
+        let src = "(module m \
+             (def (big (: x Int64)) \
+               (+ (* x 2) (+ (* x 3) (+ (* x 5) (+ (* x 7) \
+                 (+ (* x 11) (+ (* x 13) (+ (* x 17) (* x 19))))))))) \
+             (def (main (: a Int64) (: b Int64)) (+ (big a) (big b))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let calls = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::Call { .. }));
+        assert!(
+            calls >= 2,
+            "a big helper called twice with runtime args must be emitted once + called (≥2 calls), got {calls}"
+        );
+    }
+
+    #[test]
+    fn the_cost_heuristic_leaves_a_small_helper_inlined() {
+        // The heuristic is CONSERVATIVE: a SMALL body (below INLINE_COST_THRESHOLD) stays inlined even when
+        // called multiply with runtime args — the always-inline default is unchanged for ordinary helpers.
+        // `sm` is 2 products; inlined ⇒ 0 internal calls (no separate function).
+        let src = "(module m \
+             (def (sm (: x Int64)) (+ (* x 2) (* x 3))) \
+             (def (main (: a Int64) (: b Int64)) (+ (sm a) (sm b))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let calls = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::Call { .. }));
+        assert_eq!(
+            calls, 0,
+            "a small helper must stay inlined (0 internal calls), got {calls}"
+        );
+    }
+
+    #[test]
+    fn the_cost_heuristic_still_folds_a_const_argument_call() {
+        // SOUNDNESS: the heuristic must NOT emit-once a call whose result is compile-time-demanded — it
+        // fires only when an argument captures a RUNTIME binding. A big helper called with CONSTANT args
+        // (no runtime capture) must still fold at compile time (β-reduce), so the whole thing constant-folds
+        // to a literal — no runtime call to `big`. `big(2) + big(3)` with `big(x) = x*(2+3+5+7+11+13+17+19)`
+        // = 2*77 + 3*77 = 385. Assert it runs to 385 AND emits no internal call (fully folded).
+        let src = "(module m \
+             (def (big (: x Int64)) \
+               (+ (* x 2) (+ (* x 3) (+ (* x 5) (+ (* x 7) \
+                 (+ (* x 11) (+ (* x 13) (+ (* x 17) (* x 19))))))))) \
+             (def (main) (+ (big 2) (big 3))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 385);
+        let calls = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::Call { .. }));
+        assert_eq!(
+            calls, 0,
+            "a const-arg call must fold at compile time (no runtime call), got {calls}"
         );
     }
 
@@ -42624,8 +43001,8 @@ mod sidecar_driven {
         );
     }
 
-    /// The lines of an `Instantiations` query for `name` over `src` — the sorted concrete instances.
-    fn instantiations_of(src: &str, name: &str) -> Vec<String> {
+    /// The raw `Instantiations` query text for `name` over `src` (all lines — `disp` + `inst`).
+    fn instantiations_text_of(src: &str, name: &str) -> String {
         let out = compile(
             &inputs(
                 src,
@@ -42638,18 +43015,35 @@ mod sidecar_driven {
             "an instantiations query does not fail: {:?}",
             out.diagnostics
         );
-        let text = artifact_text(&out, KIND_INSTANTIATIONS).unwrap_or_default();
-        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-        lines.sort();
-        lines
+        artifact_text(&out, KIND_INSTANTIATIONS).unwrap_or_default()
     }
 
-    /// The `arg;arg;…` field (the concrete per-argument instantiation) of each instance line, sorted —
-    /// dropping the synthesized spec name (`#mono<N>` embeds `db.defs.len()`, unstable) and the node id.
+    /// The DISPOSITION of `name` — the `disp` line's third column (e.g. `specialized` / `inlined` /
+    /// `emitted` / `unreferenced` / `transformed→f$acc`). Empty string if there is no `disp` line (an
+    /// unknown name). The `transformed→` copy suffix embeds a `$acc` name (stable across runs).
+    fn disposition_of(src: &str, name: &str) -> String {
+        instantiations_text_of(src, name)
+            .lines()
+            .find_map(|l| {
+                let mut c = l.split('\t');
+                (c.next() == Some("disp")).then(|| c.nth(1).unwrap_or("").to_string())
+            })
+            .unwrap_or_default()
+    }
+
+    /// The `arg;arg;…` field (the concrete per-argument instantiation) of each `inst` line, sorted —
+    /// dropping the tag, the synthesized spec name (`#mono<N>` embeds `db.defs.len()`, unstable) and the
+    /// node id. Empty when the def is not specialized.
     fn instantiation_args(src: &str, name: &str) -> Vec<String> {
-        let mut args: Vec<String> = instantiations_of(src, name)
-            .iter()
-            .filter_map(|l| l.splitn(3, '\t').nth(2).map(str::to_string))
+        let text = instantiations_text_of(src, name);
+        let mut args: Vec<String> = text
+            .lines()
+            .filter_map(|l| {
+                let cols: Vec<&str> = l.split('\t').collect();
+                // `inst<TAB>spec<TAB>node<TAB>args` — the args are the 4th column.
+                (cols.first() == Some(&"inst"))
+                    .then(|| cols.get(3).copied().unwrap_or("").to_string())
+            })
             .collect();
         args.sort();
         args
@@ -42672,21 +43066,61 @@ mod sidecar_driven {
 
     #[test]
     fn a_non_generic_definition_has_no_instantiations() {
-        // A monomorphic def is never specialized — it emits one function, so it has no instantiations. Total.
+        // A monomorphic def is never specialized — it emits no instantiation records (no `inst` line).
         let src = "(module m (def (f (: x Int64)) x) (def (main) (f 1)) (export main))";
-        assert!(instantiations_of(src, "f").is_empty());
+        assert!(instantiation_args(src, "f").is_empty());
         // A non-recursive generic is INLINED (β-reduced) at each call site, emitting no shared function —
         // so it, too, reports no instantiation (a documented boundary of the query).
         let inl = "(module m (def (ident v) v) \
                    (def (main (: x Int64)) (+ (ident x) (ident 1))) (export main))";
-        assert!(instantiations_of(inl, "ident").is_empty());
+        assert!(instantiation_args(inl, "ident").is_empty());
     }
 
     #[test]
     fn an_instantiations_query_for_an_unknown_name_is_total() {
-        // A name that names no definition yields the empty result, never an error — the oracle contract.
+        // A name that names no definition yields the EMPTY result (no `disp` line at all), never an error.
         let src = "(module m (def (main) 42) (export main))";
-        assert!(instantiations_of(src, "ghost").is_empty());
+        assert!(instantiations_text_of(src, "ghost").is_empty());
+        assert!(disposition_of(src, "ghost").is_empty());
+    }
+
+    #[test]
+    fn disposition_reports_how_each_definition_was_compiled() {
+        // The query reports a def's DISPOSITION — what the compiler DID with it — for every kind:
+        //   - a NON-RECURSIVE function is INLINED (β-reduced away, no standalone function);
+        //   - a TREE recursion (not accumulable, runtime arg) is EMITTED as one standalone function + called;
+        //   - a RECURSIVE GENERIC is SPECIALIZED (monomorphized per type);
+        //   - a LINEAR recursion is TRANSFORMED into an accumulator loop (`f$acc`);
+        //   - an EXPORT is EMITTED (a boundary function);
+        //   - a def nothing references is UNREFERENCED.
+        let inl = "(module m (def (ident v) v) \
+                   (def (main (: x Int64)) (+ (ident x) (ident 1))) (export main))";
+        assert_eq!(disposition_of(inl, "ident"), "inlined");
+        assert_eq!(disposition_of(inl, "main"), "emitted");
+
+        // A TREE recursion with a runtime argument cannot fold or accumulate → a standalone emitted function.
+        let tree = "(module m \
+                    (def (fib (: n Int64)) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) \
+                    (def (main (: k Int64)) (fib k)) (export main))";
+        assert_eq!(disposition_of(tree, "fib"), "emitted");
+
+        // A RECURSIVE GENERIC is specialized (its instances are also listed).
+        let generic = "(module m \
+                   (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
+                   (def (main (: a Int64)) (+ (loopn 3 a) (String.scalar-len (loopn 2 \"hi\")))) \
+                   (export main))";
+        assert_eq!(disposition_of(generic, "loopn"), "specialized");
+
+        // A LINEAR non-tail recursion is rewritten into an accumulator loop — reported `transformed→NAME`
+        // (the source's own body folds to a seed of the copy). The copy is named `<orig>$acc`.
+        let acc = "(module m \
+                   (def (sm (: n Int64)) (if (= n 0) 0 (+ n (sm (- n 1))))) \
+                   (def (main (: k Int64)) (sm k)) (export main))";
+        assert_eq!(disposition_of(acc, "sm"), "transformed→sm$acc");
+
+        // A def nothing references at all is unreferenced.
+        let dead = "(module m (def (dead (: x Int64)) (+ x 1)) (def (main) 0) (export main))";
+        assert_eq!(disposition_of(dead, "dead"), "unreferenced");
     }
 
     #[test]
@@ -50016,6 +50450,42 @@ mod cross_component_oracle {
     /// form (`as_str(*tail.first()?)?`), so it registered no `ExternDecl` and any op it would bind went
     /// unbound, surfacing a misleading "unbound name `neg` — did you mean `Neg`?" (an unrelated prelude
     /// type). Now the extern form is rejected naming the real fix (the interface is a string), and the
+    #[test]
+    fn a_malformed_or_non_effect_bind_directive_is_cdz0201_not_a_silent_drop() {
+        use crate::testkit::parse;
+        // (a) a MALFORMED `(bind …)` — missing the interface string — is CDZ0201, not silently dropped.
+        let malformed =
+            "(do (effect E (op e (-> Int64 Int64))) (bind E) (def (main) 0) (export main))";
+        let d1 = crate::diagnostics(&mut crate::db::Db::load(parse(malformed)));
+        assert!(
+            d1.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message
+                    .contains("binds an EFFECT to a peer interface string")),
+            "a malformed (bind …) is CDZ0201: {:?}",
+            d1.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // (b) a `(bind …)` naming a VALUE DEFINITION (not an effect) is CDZ0201 — binding a non-effect to a
+        // peer routes nothing.
+        let non_effect =
+            "(do (def (foo) 1) (bind foo \"cadenza:x/y\") (def (main) 0) (export main))";
+        let d2 = crate::diagnostics(&mut crate::db::Db::load(parse(non_effect)));
+        assert!(
+            d2.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("names a declared EFFECT")),
+            "a (bind …) of a non-effect is CDZ0201: {:?}",
+            d2.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // (c) NO REGRESSION: a well-formed `(bind Effect \"iface\")` of a declared effect is CLEAN.
+        let ok = "(do (effect Math (op add (-> Int64 Int64 Int64))) (bind Math \"cadenza:math/api\") \
+                  (def (main) (handle Math 0 ((add (a b) s (resume (+ a b) s))) (Math.add 2 3))) (export main))";
+        let d3 = crate::diagnostics(&mut crate::db::Db::load(parse(ok)));
+        assert!(
+            !d3.iter().any(|d| d.message.contains("(bind")),
+            "a well-formed (bind …) must not be flagged: {:?}",
+            d3.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
     /// consequent unbound-name faults for the extern's own op names are DEDUPED — one primary "no".
     #[test]
     fn a_malformed_extern_interface_is_cdz0201_not_a_silent_drop() {

@@ -52,6 +52,14 @@ pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
+pass	THREE Tuple args cross the direct-call boundary
+pass	THREE Tuple args with a LIST result
+pass	TWO Record args cross the direct-call boundary
+pass	TWO Tuple args cross the direct-call boundary
+pass	TWO Tuple args with a BYTE-ROPE result
+pass	TWO Tuple args with a LIST result cross the direct-call boundary
+pass	TWO Tuple args with a fixed-shape COMPOUND result
+pass	TWO Tuple args with a scalar BETWEEN them (tuple, scalar, tuple)
 pass	TWO performs in an if condition both fold on the strict-first spine
 pass	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
 pass	Type.eq compares a reflected type against a written type
@@ -83,6 +91,8 @@ pass	a Bytes-returning closure on a different argument
 pass	a CAPTURING closure carried in a sum payload keeps its capture through the match binder
 pass	a CAPTURING closure returning a List
 pass	a CAPTURING closure returning a tuple
+pass	a CAPTURING closure taking TWO Tuple args
+pass	a CAPTURING closure taking TWO Tuple args with a LIST result
 pass	a CAPTURING closure taking a Tuple ARG crosses the DIRECT-CALL boundary
 pass	a CBOR atom decodes each scalar major type to its value
 pass	a CBOR head decodes its major type and big-endian argument from the input bytes
@@ -124,6 +134,7 @@ pass	a NESTED Tuple ARG with a BYTE-ROPE result crosses the direct-call boundary
 pass	a NESTED Tuple ARG with a LIST result crosses the direct-call boundary
 pass	a NESTED Tuple ARG with a fixed-shape COMPOUND result crosses the direct-call boundary
 pass	a NESTED Tuple ARG with a narrow Bool leaf crosses the direct-call boundary
+pass	a NESTED Tuple arg ALONGSIDE a flat Tuple arg
 pass	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
 pass	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
@@ -195,6 +206,7 @@ pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
 pass	a binary literal with digit separators
 pass	a binary-radix literal carries the N suffix and an underscore group
+pass	a bind directive naming a value definition rather than an effect is rejected
 pass	a binding form with bindings but no body is rejected, not a crash
 pass	a bit-field value that needs more bits than its width does not fit its segment
 pass	a bit-field wider than a byte packs across the byte boundary big-endian
@@ -263,6 +275,7 @@ pass	a closure captures a sum value and matches it inside its lifted body throug
 pass	a closure captures a tuple and projects it inside its lifted body through a recursive HOF
 pass	a closure captures another closure and applies it
 pass	a closure captures another closure and applies it at RUNTIME
+pass	a closure captures its environment by value at creation, unaffected by a later same-named binding
 pass	a closure captures the binding in scope where it was created
 pass	a closure captures the result of a build-time host op called with an argument
 pass	a closure capturing THREE scalars is made and called
@@ -582,6 +595,7 @@ pass	a list element position composes with a nested tuple pattern
 pass	a list match arm may carry a guard on its element binders
 pass	a list mixing integer and boolean elements is a type error
 pass	a list mixing integer and float elements is a type error
+pass	a list of closures each keeps its own capture, selected by a runtime index
 pass	a list of maps with different keys is homogeneous, not a type error
 pass	a list of maps: a runtime index then looks a runtime key up in the found map
 pass	a list of records with different field sets is a type error
@@ -712,6 +726,7 @@ pass	a narrow-width parameter compared to a bare literal computes at the paramet
 pass	a narrow-width parameter plus a bare literal computes at the parameter width
 pass	a narrow-width parameter plus a bare literal computes inside a helper function
 pass	a narrow-width two-parameter recursion compiles to valid wasm and computes
+pass	a narrow-width wrapping-mul constant folds by wrapping, not by rejecting
 pass	a nearer handler on the call chain shadows an outer one
 pass	a negative constant BigInt crosses the boundary with its sign
 pass	a negative constant argument to an unsigned parameter is rejected, not laundered
@@ -1064,6 +1079,7 @@ pass	a runtime-selected closure survives as a value threaded through a recursive
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 pass	a runtime-selected function chosen directly at the application head is applied
 pass	a same-type sum match is accepted and binds the payload (the control)
+pass	a scalar BETWEEN two Tuple args with a LIST result
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a scalar element is projected from a let-bound runtime tuple
@@ -1090,6 +1106,7 @@ pass	a signed narrow if-branch opposite a bare literal computes at the narrow wi
 pass	a signed narrow match binder returns the bound value
 pass	a signed narrow tuple element round-trips through the heap with its sign
 pass	a signed narrow-width parameter plus a bare literal computes at the parameter width
+pass	a signed narrow-width wrapping-add constant folds by wrapping to the negative outcome
 pass	a signed pattern segment reads a two's-complement integer as negative
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block
@@ -1346,6 +1363,7 @@ pass	an if-wrapped self-application is rejected in bounded time, not an inferenc
 pass	an imported helper reaches its own file's private definition when inlined
 pass	an imported name resolves to a sibling file's exported definition
 pass	an in-bounds slice yields Some of the bytes at that range
+pass	an in-program handler OVERRIDES an effect's peer binding (the test-mock, no peer call)
 pass	an in-range constant argument to a narrow parameter computes at the parameter width
 pass	an inline-never definition is emitted once and called
 pass	an inline-never definition with a const dictionary still monomorphizes the dictionary
@@ -1978,6 +1996,7 @@ pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity
 pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two adjacent modules declared inside a function body compose
+pass	two closures from one factory capture distinct values
 pass	two constant records with the same fields in different written order are equal
 pass	two constant sums with the same payload but different variants are not equal
 pass	two definitions imported under the same name are rejected

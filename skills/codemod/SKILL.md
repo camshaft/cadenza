@@ -13,9 +13,10 @@ description: >-
   name (`cdz uses`, a span-mapped go-to-references), every well-formedness fault (`cdz check`,
   "diagnostics as you type"), a name's definition (`cdz def`, go-to-definition), the bindings
   visible at a point (`cdz scope`, variable scope tracking), a module's exported interface
-  (`cdz exports`), a definition's/built-in's documentation (`cdz doc` / `cdz doc-at`), or every concrete
-  monomorphization / instantiation of a generic or ad-hoc-polymorphic definition (`cdz instantiations` —
-  which concrete types / dictionaries a generic was specialized at). Covers the
+  (`cdz exports`), a definition's/built-in's documentation (`cdz doc` / `cdz doc-at`), or a definition's
+  compilation DISPOSITION and concrete monomorphizations (`cdz instantiations` — whether a def was
+  inlined, specialized, emitted as a standalone function, or transformed into an accumulator loop, and
+  at which concrete types / dictionaries a generic was specialized). Covers the
   `,x`/`,@xs` pattern language,
   structural guards (`is-literal`/`head-is`/`matches`/`not`), relational context (`inside`/`has`),
   multi-rule sets + traversal strategy, multi-file/`--write`/`--diff`/`--json`, the `diff`
@@ -269,16 +270,24 @@ no documentation for `ghost`
 $ cdz doc-at prog.cdz 49
 increments its argument
 
-# cdz instantiations NAME FILE — every concrete monomorphization a generic / ad-hoc-polymorphic
-# definition becomes (generics don't cross the component boundary, so each is monomorphized). One line
-# per DISTINCT instance: file:line:col of the generic, its concrete per-arg instantiation, → the spec.
-$ cdz instantiations loopn prog.cdz     # a recursive generic called at Int64 AND String
-prog.cdz:1:7: loopn[n: Int64, x: Int64] → loopn#mono2
-prog.cdz:1:7: loopn[n: Int64, x: String] → loopn#mono3
+# cdz instantiations NAME FILE — a def's DISPOSITION (what the compiler did with it) plus, if it is
+# specialized, every concrete monomorphization. One source def may become 0/1/many emitted functions
+# (generics don't cross the component boundary; the default is always-inline), so this reports which:
+# specialized / inlined / emitted / transformed→copy / unreferenced.
+$ cdz instantiations loopn prog.cdz     # a recursive generic → specialized, its instances listed
+prog.cdz:1:7: loopn — specialized (monomorphized — one function per instantiation, listed below)
+prog.cdz:1:7:   loopn[n: Int64, x: Int64] → loopn#mono2
+prog.cdz:1:7:   loopn[n: Int64, x: String] → loopn#mono3
 $ cdz instantiations fold-n dict.cdz    # ad-hoc poly: a `const` dictionary inlined + erased per call
-dict.cdz:1:7: fold-n[const d = (record (op (fn (x) (+ x 10)))), n: Int64, acc: Int64] → fold-n#mono2
-dict.cdz:1:7: fold-n[const d = (record (op (fn (x) (* x 2)))), n: Int64, acc: Int64] → fold-n#mono3
-$ cdz instantiations main prog.cdz      # total: a non-generic (never-specialized) def reports nothing
+dict.cdz:1:7: fold-n — specialized (…)
+dict.cdz:1:7:   fold-n[const d = (record (op (fn (x) (+ x 10)))), n: Int64, acc: Int64] → fold-n#mono2
+dict.cdz:1:7:   fold-n[const d = (record (op (fn (x) (* x 2)))), n: Int64, acc: Int64] → fold-n#mono3
+$ cdz instantiations ident prog.cdz     # a non-recursive fn → β-reduced away, no function emitted
+prog.cdz:1:7: ident — inlined (β-reduced into each call site; no standalone function emitted)
+$ cdz instantiations sum prog.cdz       # a linear recursion → rewritten into an accumulator loop
+prog.cdz:1:7: sum — transformed→sum$acc (its recursion was rewritten into the named accumulator loop)
+$ cdz instantiations main prog.cdz      # an export / called recursive fn → a standalone function
+prog.cdz:1:7: main — emitted (emitted as a standalone function and called)
 ```
 
 > **Hover reads as a presentation, not a raw type** (`type-at`): a grammar keyword shows `keyword def`
@@ -323,20 +332,24 @@ $ cdz instantiations main prog.cdz      # total: a non-generic (never-specialize
   no-keys-outside-the-prelude), and a **grammar keyword** (`if`/`let`/`match`/…), not a binding, gets
   its help from a small keyword table (the doc analogue of the hardcoded grammar set). Total: a name
   that documents nothing is a defined "no documentation" line.
-- **`instantiations`** drives `Query::Instantiations` — every concrete MONOMORPHIZATION a generic /
-  ad-hoc-polymorphic definition becomes. Because generics do not cross the component boundary, the
-  compiler emits ONE specialized function per distinct concrete instantiation
-  (`DESIGN-recursive-generic-monomorphization-rcdzc.md`); this query is the reverse index — given a
-  source def NAME, list its instances. It covers all three specialization flavors: a **recursive
-  generic** at each concrete type (`loopn` at Int64 + String), a **type-valued-parameter** def at each
-  type (`(: t Type)`, the erased type shown `const t = T`), and the **ad-hoc-polymorphism** case — a
-  `const` dictionary parameter inlined + erased at each call, rendered as the concrete dictionary source
-  so you see WHICH instance each call baked in. It reads the record `lower::type_specialize` keeps
-  (`db.instantiations`) after FORCING monomorphization over the whole program, so the set is complete
-  regardless of exports. Each line `file:line:col` (the generic's name occurrence) `NAME[args…]` `→
-  spec-name`. Totals: a **non-recursive** generic is inlined (β-reduced) at each call, emitting no shared
-  function, so it — like a monomorphic def or an unknown name — reports nothing. Two calls at the SAME
-  instantiation dedup to one instance (the memoized specialization).
+- **`instantiations`** drives `Query::Instantiations` — a definition's DISPOSITION (what the compiler DID
+  with it) plus, if specialized, every concrete monomorphization. One source def may become 0/1/many
+  emitted functions (generics don't cross the component boundary; the default is always-inline), so this
+  is the reverse index of "one source def, one function". The `disp` line reports one of:
+  **`specialized`** (monomorphized into per-instantiation copies — the instances follow as `inst` lines),
+  **`inlined`** (β-reduced into each call site, no function emitted — a non-recursive def/generic),
+  **`emitted`** (one standalone function under its own name, called or exported — a recursive def with a
+  runtime arg, an `inline-never` def, a boundary entry), **`transformed→copy`** (a linear recursion the
+  accumulator pass rewrote into a tail-recursive loop `f$acc`), or **`unreferenced`** (dead / never
+  instantiated); a `+`-joined set when more than one applies. The specialized case covers all three
+  monomorphization flavors: a **recursive generic** at each type (`loopn`), a **type-valued-parameter**
+  def (`(: t Type)`, the erased type shown `const t = T`), and the **ad-hoc-polymorphism** case — a
+  `const` dictionary inlined + erased at each call, rendered as the concrete dictionary source so you see
+  WHICH instance each call baked in. It reads `db.instantiations` (specializations), `db.inlined`
+  (β-reduce sites), `db.called`/`db.exports` (emitted), and `db.transformed` (accumulator rewrites),
+  after FORCING monomorphization over the whole program (`layout::force_monomorphize`) so the disposition
+  is complete regardless of exports. Two calls at the SAME instantiation dedup to one instance (the
+  memoized specialization). Total: an unknown name reports "no such definition".
 - **Format** is inferred from the file extension (`.cdz`/`.ml`→ml, `.sexp`/`.sexpr`→sexpr), like the
   codemod subcommands.
 
