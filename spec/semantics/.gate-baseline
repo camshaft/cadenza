@@ -639,6 +639,8 @@ pass	a let-bound variable is in scope inside a boolean connective operand
 pass	a let-bound variable passed as a function-call argument resolves at the call site
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
 pass	a line comment wrapping a top-level form does not hide it
+pass	a line comment wrapping a type declaration is seen through
+pass	a line comment wrapping the entry point is seen through
 pass	a linear non-tail recursion over a non-associative operator preserves its exact result
 pass	a list annotated with the wrong element type is rejected
 pass	a list arm with one constructor element binds its payload and its bare siblings
@@ -1083,6 +1085,8 @@ pass	a runtime concat places the second operand's elements after the first's
 pass	a runtime condition selects an abortive branch reading an enclosing parameter
 pass	a runtime conditional selects its then-branch when the runtime condition holds
 pass	a runtime conjunction still shields a comparison right operand whose subexpression traps
+pass	a runtime const-multiply at its exact fitting boundary does not trap
+pass	a runtime const-multiply one past its fitting boundary traps
 pass	a runtime division by zero traps
 pass	a runtime division of the minimum integer by -1 overflows and traps
 pass	a runtime division truncates toward zero
@@ -1109,6 +1113,7 @@ pass	a runtime modulo of the minimum integer by -1 is zero on every backend
 pass	a runtime multiplication that overflows traps
 pass	a runtime negative dividend divided by a constant power of two truncates toward zero
 pass	a runtime negative dividend mod a constant power of two takes the dividend's sign
+pass	a runtime negative-const-multiply one past its lower fitting boundary traps
 pass	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 pass	a runtime overflowing left shift traps
 pass	a runtime product's derived dimension cancels correctly through a divide
