@@ -3304,6 +3304,38 @@
             (export main)))
   (error  CDZ0210))
 
+(case "a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive"
+  (doc    "The user-sum, disc-≥1 companion of the nested-exhaustiveness case: `(type W (A Int64) (V (Option
+           Int64)))` — the nested-sum-carrying variant `V` is at discriminant 1. The match arms `(W.A n)`
+           and `(W.V (Option.Some n))` but leaves `(W.V (Option.None))` uncovered, so it is non-exhaustive
+           and rejects CDZ0210. Pins that the exhaustiveness check descends into a nested pattern under a
+           variant PAST THE FIRST — the outer `V` is covered, but its payload's `Some | None` variant set is
+           not — the disc-≥1 companion of the `Option (Option …)` nested case (which nests at disc 0). A
+           compiler that checked nested exhaustiveness only at variant 0 would accept this ill-typed match.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (A Int64) (V (Option Int64)))
+            (def (f (: w W)) (match w ((W.A n) n) ((W.V (Option.Some n)) n)))
+            (def (main) (f (W.A 1)))
+            (export main)))
+  (error  CDZ0210))
+
+(case "a literal-refined variant arm does not satisfy exhaustiveness"
+  (doc    "A payload-LITERAL refinement `((W.V 0) …)` covers only the `V` payload EQUAL TO 0 — it does not
+           cover the `V` variant (a `V` carrying any other value is unmatched), so a match with only
+           `((W.V 0) 100)` and `((W.Z) 0)` is non-exhaustive and rejects CDZ0210: the `V` variant needs a
+           BINDING (or wildcard) arm to be covered. Pins that a literal test on a payload is a REFINEMENT,
+           not a variant cover (core-semantics.md #Matching Is Exhaustive Or Rejected — a literal arm may
+           fail its test, so it covers no variant), the sum-variant companion of the int-literal-arms
+           non-exhaustiveness rule.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (V Int64) (Z))
+            (def (f (: w W)) (match w ((W.V 0) 100) ((W.Z) 0)))
+            (def (main) (f (W.Z)))
+            (export main)))
+  (error  CDZ0210))
+
 (case "a non-exhaustive guarded match is rejected even when a constant scrutinee folds its guard true"
   (doc    "Witnesses core-semantics.md #Matching Is Exhaustive Or Rejected together with the guarded-arm
            rule (a guarded arm covers no variant unconditionally, since its guard may be false). The only
