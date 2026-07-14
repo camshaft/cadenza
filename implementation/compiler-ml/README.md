@@ -254,14 +254,15 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   `filter` over inferred closures — the compiler's bread and butter — need an arrow annotation on the fn
   parameter; the fully-inferred spelling should work.
 
-- **OPEN (seed `rcdzc` — MISCOMPILE, silent trap): a PARAMETERIZED compound-returning export traps.**
-  An export that takes a parameter AND returns a compound (tuple / record / sum) compiles clean (`cdz
-  check` passes; the component WIT even shows `make: func(p0: s64) -> t`) but TRAPS at run time —
-  `cdz-run … --arg 5` → "trap: expected 1 argument(s), got 0" (wasmtime's arity check). The export's
-  argument is not delivered to the resource-escape `make`. A NULLARY compound-return export works
-  perfectly. Repro `repros/miscompile-parameterized-compound-export-traps.sexp`. ⚠ the seed test
-  `a_parameterized_compound_return_export_compiles_via_the_resource_escape` only asserts it COMPILES —
-  it never RUNS the component with an arg, so this runtime gap is untested (a false-confidence test).
+- **✅ FIXED (seed, by 2026-07-14 — landed by a sibling): a PARAMETERIZED compound-returning export.**
+  Was: an export taking a parameter AND returning a compound compiled clean but TRAPPED at run time
+  ("expected 1 argument(s), got 0") — the resource-escape `make` didn't forward the export's argument.
+  Now `cdz-run … --arg 5` correctly returns the compound (`(: (tuple 5 6) …)`); verified across tuple/
+  record/List/BigInt/Result, and run-gated by corpus cases ("a parameterized export returns a runtime
+  BigInt/Rational/list computed from its argument"). Witness `repros/fixed-parameterized-compound-
+  export.sexp`. ⚠ **PROCESS LESSON:** this loop reported it OPEN for ~14 iterations because the
+  per-iteration finding-check rebuilt `cdz` but NOT `cdz-run` — a stale runner kept reproducing the old
+  trap. Finding-checks that RUN a component now rebuild `cdz-run` too.
 
 - **OPEN (seed `rcdzc` — runtime `String.from-bytes` declines):** `String.from-bytes` (and the
   `Ast.decode` self-decode) only compute on a *compile-time-constant* `Bytes`; a runtime byte slice
