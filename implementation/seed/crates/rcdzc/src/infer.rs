@@ -7943,10 +7943,28 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 let bare = context.is_none();
                 let fits_u64 = bare && v.fits_width(false, 64);
                 let past_fixed = bare && !fits_u64; // no fixed width holds it — BigInt does
+                // A literal that is the ARGUMENT of `BigInt.of` — `(BigInt.of 999…)`. `BigInt.of` widens a
+                // FIXED integer (`∀a. (Int a) → BigInt`), so a literal too big for every fixed width can
+                // NEVER be its argument — and the annotate-`(: … BigInt)` wrap would cascade (it produces
+                // `(BigInt.of (: … BigInt))`, a BigInt where a fixed int is wanted). The real repair is to
+                // DROP the redundant `BigInt.of` and write the value as a `BigInt`-annotated literal
+                // directly. We cannot cheaply spell that replacement here (the arbitrary-precision literal's
+                // decimal text is not reconstructable from the magnitude at this layer), so — honest-no-fix
+                // — we name the repair in the MESSAGE and offer NO cascading wrap fix.
+                let in_bigint_of = past_fixed
+                    && db.parent_of(id).is_some_and(|p| {
+                        matches!(resolved_of(db, p), Resolved::Apply { head, .. }
+                            if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::BigIntOf))
+                    });
                 let msg = match int_width_range(signed, width) {
                     Some(range) if fits_u64 => format!(
                         "integer literal is out of range for {ty_name} (the valid range is {range}) — \
                          it fits `UInt64`; annotate it `(: … UInt64)`"
+                    ),
+                    Some(range) if in_bigint_of => format!(
+                        "integer literal is out of range for {ty_name} (the valid range is {range}) — \
+                         `BigInt.of` widens a fixed-size integer, so it cannot hold this value; write the \
+                         literal directly as a `BigInt` with `(: … BigInt)` instead of `(BigInt.of …)`"
                     ),
                     Some(range) if past_fixed => format!(
                         "integer literal is out of range for {ty_name} (the valid range is {range}; no \
@@ -7965,9 +7983,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         " UInt64)",
                         "annotate the literal `UInt64` (its range holds this value)",
                     ));
-                } else if past_fixed {
+                } else if past_fixed && !in_bigint_of {
                     // `BigInt` holds an integer literal of any magnitude — the total repair for a value no
                     // fixed width can represent. The annotation grounds the literal to the big-integer type.
+                    // NOT offered inside `(BigInt.of …)`: there the wrap cascades (see `in_bigint_of`), so
+                    // that case carries the drop-the-wrapper message with no fix.
                     reject = reject.with_fix(Fix::wrap_heuristic(
                         id,
                         "(: ",

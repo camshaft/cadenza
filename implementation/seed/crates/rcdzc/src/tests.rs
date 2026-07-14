@@ -24693,6 +24693,26 @@ mod diagnostics {
             "annotates the past-fixed literal BigInt: {}",
             past.message
         );
+        // But INSIDE `(BigInt.of …)` the annotate-BigInt wrap would CASCADE — `BigInt.of` widens a FIXED
+        // integer, so `(BigInt.of (: … BigInt))` is a BigInt where a fixed int is wanted. So a too-big
+        // literal as `BigInt.of`'s argument carries NO wrap fix (honest — it would not clear the fault) and
+        // the message names the real repair: drop the redundant `BigInt.of`, write `(: … BigInt)` directly.
+        let in_of = first_error(
+            "(module m (def (g) ((. BigInt of) 999999999999999999999999999999)) (export g))",
+        );
+        assert!(
+            in_of.message.contains("BigInt.of")
+                && in_of
+                    .message
+                    .contains("write the literal directly as a `BigInt`"),
+            "names the drop-the-wrapper repair inside BigInt.of: {}",
+            in_of.message
+        );
+        assert!(
+            in_of.fix.is_none(),
+            "no cascading annotate-BigInt wrap inside BigInt.of: {:?}",
+            in_of.fix
+        );
     }
 
     #[test]
