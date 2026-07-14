@@ -4890,7 +4890,7 @@ fn check_application(
                     // dimensions). CDZ0501.
                     _ => {
                         trace!(target: "rcdzc::infer", head = head.0, "fault: combining a quantity with a non-quantity (CDZ0501)");
-                        out.push(Reject::coded(
+                        let mut reject = Reject::coded(
                             Code::DimensionMismatch,
                             format!(
                                 "{} a quantity and a plain number: {} and {} — a quantity has a \
@@ -4900,7 +4900,33 @@ fn check_application(
                                 a.render_name(),
                                 b.render_name(),
                             ),
-                        ));
+                        );
+                        // The mechanical repair: give the BARE number the SAME unit as the quantity operand,
+                        // `(Qty.of <n> <unit>)` — then both sides are quantities of one dimension and the
+                        // add is well-formed. The unit is recoverable from the quantity operand's type
+                        // (`Unit::render` is the re-parseable `(Unit.base #"…")` surface), and `Qty.of`
+                        // grounds the bare number to it. HEURISTIC — the author may instead have meant the
+                        // quantity's magnitude (`Qty.value`), but giving the bare number the sibling's unit
+                        // is the direct resolution of "these are not the same dimension". Fire only when
+                        // EXACTLY one operand is the quantity (the other the bare number this wraps).
+                        let bare_and_unit = match (&a, &b) {
+                            (Ty::Qty { unit, .. }, _) if !matches!(b, Ty::Qty { .. }) => {
+                                args.get(1).map(|&n| (n, unit.render()))
+                            }
+                            (_, Ty::Qty { unit, .. }) if !matches!(a, Ty::Qty { .. }) => {
+                                args.first().map(|&n| (n, unit.render()))
+                            }
+                            _ => None,
+                        };
+                        if let Some((bare, unit_src)) = bare_and_unit {
+                            reject = reject.with_fix(Fix::wrap_heuristic(
+                                bare,
+                                "(Qty.of ",
+                                format!(" {unit_src})"),
+                                format!("give the number the same unit: `(Qty.of … {unit_src})`"),
+                            ));
+                        }
+                        out.push(reject);
                         for &arg in args {
                             collect(db, arg, out);
                         }
