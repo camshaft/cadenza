@@ -2635,15 +2635,11 @@ fn emit_mixed_closure_resource(
             crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         };
     let ret_is_collection = ret_descriptor.is_some();
-    // A fixed-shape compound ARG is supported only with a SCALAR result (the list-result mixed cores don't
-    // thread the `TupleArgRebuild`, so combining would emit a scalar-arg envelope over a flattened-field core
-    // — an INVALID component). Decline cleanly (mirrors the single-export + distinct-sig guards).
-    if tuple_arg.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
-        return Err(Reject::decline(
-            "a mixed closure with BOTH a fixed-shape compound ARGUMENT and a byte-rope/compound/collection \
-             RESULT is not yet emitted (a later widening; a scalar-result compound arg works)",
-        ));
-    }
+    // A fixed-shape compound ARG now composes with EVERY mixed result shape too — scalar, byte-rope,
+    // fixed-compound (value-form), collection (value-encode): the shared multi list-result cores + the shared
+    // multi list<u8> tuple envelope thread the `TupleArgRebuild`, and the plain (non-closure) exports ride
+    // alongside unaffected. No result-shape decline remains for a mixed tuple arg. (A compound-arg-alongside-
+    // others / variable-length-field compound arg still declines at detection.)
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
         0 // unused by the list-returning paths; `call` returns list<u8>
     } else {
@@ -2838,6 +2834,11 @@ fn emit_mixed_closure_resource(
             result_byte: p.result_byte,
         })
         .collect();
+    // A fixed-shape tuple ARG (shared by all closure makes): the shared list-`call` cores rebuild the arg cell
+    // from the flattened fields, the shared list<u8> tuple envelope emits the `tuple<…>` type; plain exports
+    // ride alongside. `None` on the scalar-arg path.
+    let rebuild = tuple_arg.as_ref().map(|(_, _, rb)| rb);
+    let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _)| fb.as_slice());
     // A COMPOUND shared closure result → the VALUE-FORM mixed core (N makes + shared list-`call` walking each
     // closure's returned handle into the value-form template + the plain exports as top-level funcs), same
     // `list<u8>` envelope as the bytes path. cdz-run try-decodes the result to the typed `(: value T)` form.
@@ -2853,19 +2854,22 @@ fn emit_mixed_closure_resource(
             template,
             &layout,
             true,
-            None,
+            rebuild,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_multi_closure_bytes_resource_borrow(
-            &main_core,
-            &dtor_core,
-            &imports,
-            &import_name,
-            &abi_makes,
-            &arg_bytes,
-            &abi_plain,
-            true,
-        ));
+        return Ok(
+            envelope::assemble_multi_closure_bytes_resource_borrow_tuple(
+                &main_core,
+                &dtor_core,
+                &imports,
+                &import_name,
+                &abi_makes,
+                &arg_bytes,
+                &abi_plain,
+                true,
+                tuple_bytes,
+            ),
+        );
     }
     // A VARIABLE-LENGTH collection shared closure result → the mixed VALUE-ENCODE core (N makes + shared
     // value-encode `call` + the plain exports as top-level funcs), same `list<u8>` envelope.
@@ -2881,19 +2885,22 @@ fn emit_mixed_closure_resource(
             descriptor,
             &layout,
             true,
-            None,
+            rebuild,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_multi_closure_bytes_resource_borrow(
-            &main_core,
-            &dtor_core,
-            &imports,
-            &import_name,
-            &abi_makes,
-            &arg_bytes,
-            &abi_plain,
-            true,
-        ));
+        return Ok(
+            envelope::assemble_multi_closure_bytes_resource_borrow_tuple(
+                &main_core,
+                &dtor_core,
+                &imports,
+                &import_name,
+                &abi_makes,
+                &arg_bytes,
+                &abi_plain,
+                true,
+                tuple_bytes,
+            ),
+        );
     }
     // A byte-rope shared closure result → the mixed BYTES envelope (N makes + shared list-`call` + the plain
     // exports as top-level funcs). A scalar result takes the by-value mixed envelope.
@@ -2908,19 +2915,22 @@ fn emit_mixed_closure_resource(
             lifted_type_idx,
             &layout,
             true,
-            None,
+            rebuild,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_multi_closure_bytes_resource_borrow(
-            &main_core,
-            &dtor_core,
-            &imports,
-            &import_name,
-            &abi_makes,
-            &arg_bytes,
-            &abi_plain,
-            true,
-        ));
+        return Ok(
+            envelope::assemble_multi_closure_bytes_resource_borrow_tuple(
+                &main_core,
+                &dtor_core,
+                &imports,
+                &import_name,
+                &abi_makes,
+                &arg_bytes,
+                &abi_plain,
+                true,
+                tuple_bytes,
+            ),
+        );
     }
     // DIRECT-CALL COMPOUND ARG (mixed): the shared `call`'s single arg is a fixed-shape scalar tuple/record.
     // The shared `call` receives the FLATTENED fields (`arg_vts`) + rebuilds the cell (`TupleArgRebuild`); the

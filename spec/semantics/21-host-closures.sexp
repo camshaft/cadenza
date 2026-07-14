@@ -2762,6 +2762,30 @@
   (call   mk-sum (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: (tuple 13 7) (Tuple Int64 Int64))))
 
+; The tuple-arg × list-result composition extends to the MIXED shape: a List-returning tuple-arg closure
+; ALONGSIDE a plain (non-closure) export. The shared multi list-result core + the shared multi list<u8> tuple
+; envelope thread the `TupleArgRebuild`; the plain export rides alongside as an ordinary top-level func.
+
+(case "MIXED: a List-returning Tuple-arg closure ALONGSIDE a plain export — driving the closure"
+  (doc    "`mk : (-> (Tuple Int64 Int64) (List Int64))` (a tuple-arg closure returning a collection) crosses
+           via make + shared value-encode `call` that rebuilds the flattened tuple arg, WHILE a plain `twice`
+           rides alongside as a top-level func. Driving the closure: `make()` → handle, `call(handle, (10, 3))`
+           → `(list 10 3)`.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk) (export twice)))
+  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (list 10 3) (List Int64))))
+
+(case "MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure"
+  (doc    "The SAME mixed component, driving the plain `twice` — proving it coexists with the tuple-arg
+           list-returning closure interface. `twice(21)` → 42.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk) (export twice)))
+  (call   twice (: 21 Int64))
+  (output (: 42 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner
