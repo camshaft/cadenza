@@ -1140,6 +1140,24 @@
                 (Acc.step (Acc.step 1)))) (export main)))
   (output (: 202 Int64)))
 
+(case "two performs as the two ARGUMENTS of a pure USER function thread the state left-to-right"
+  (doc    "The performs sit in the argument list of a non-primitive, effect-free USER function, whose call
+           evaluates its arguments left-to-right before applying — so the two reads are sequenced by the
+           call's own argument evaluation, not by an operator or a let. `sub a b = a - b`, `Acc.get : Unit
+           -> Int64`, arm `(get (u) s (resume s (+ s 5)))`, seeded 10: `(sub (Acc.get) (Acc.get))` reads the
+           first arg as 10 (state → 15) and the second as 15 (state → 20), so `(sub 10 15)` = -5. Pins that
+           the fold sequences performs across a user call's ARGUMENT list identically to operator operands
+           (had the args not threaded, both would read 10 → 0) — the user-call companion of the operator-
+           operand and nested-perform cases, and distinct from the arms that call an effect-free helper on a
+           resume RESULT (the performs here are the call's inputs, sequenced at the call site).")
+  (input  (do
+            (effect Acc (op get (-> Unit Int64)))
+            (def (sub a b) (- a b))
+            (def (main)
+              (handle Acc 10 ((get (u) s (resume s (+ s 5))))
+                (sub (Acc.get) (Acc.get)))) (export main)))
+  (output (: -5 Int64)))
+
 (case "a do-sequence of unit-returning performs runs each for effect, then yields the tail value"
   (input  (do
             (effect Log (op w (-> Int64 Unit)))

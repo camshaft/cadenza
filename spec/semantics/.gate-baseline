@@ -2114,6 +2114,7 @@ pass	two module functions are mutually recursive
 pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
+pass	two performs as the two ARGUMENTS of a pure USER function thread the state left-to-right
 pass	two performs bound by nested lets thread the handler state in order
 pass	two performs of a MULTI-parameter op each combine both args with the state advancing between them
 pass	two rationals denoting the same number are equal regardless of how they were written
