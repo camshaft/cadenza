@@ -3084,6 +3084,135 @@ fn clone_literal_atom(db: &mut Db, e: StructId) -> StructId {
     }
 }
 
+/// PRE-PASS for `lower_match_list` (the LIST analogue of Inc-20's tuple-of-bools exhaustiveness): a set of
+/// `(list <bool-lit> .. rest)` arms whose position-0 bool literals SATURATE the element type ({true, false}
+/// both present) JOINTLY covers every NON-EMPTY list — the first element is `true` or `false`, nothing else —
+/// so together with a `(list)` arm the match is total WITHOUT a `_`.
+//= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
+//# A set of list-element arms MUST be treated as exhaustive when it covers both the empty list and every non-empty list.
+///
+/// The length-dispatch matcher cannot see this on its own: each bool-lead arm desugars (via the literal
+/// pass) to a GUARDED rest arm, and a guarded arm is excluded from length-coverage → a spurious CDZ0210.
+/// The fix mirrors Inc-20's scalar `bool_exhaustive`: the LAST saturating arm's position-0 test is
+/// REDUNDANT — reaching it (first-match-wins) means every earlier bool-lead arm failed, so the first element
+/// is not their value, hence (Bool being two-valued) it IS this arm's value. Rewrite that arm's bool literal
+/// to a wildcard `_`, turning it into an unconditional `(list _ .. rest)` cover — which the length matcher
+/// DOES count (an unguarded lead-1 rest closes the non-empty tail). The other saturating arm keeps its
+/// literal (→ a guard via the literal pass on the recursion, correct: its value is genuinely tested). This
+/// fixes BOTH the exhaustiveness check and the runtime fall-through in one move, reusing every existing pass.
+///
+/// Fires ONLY when (a) the element type agrees with Bool, (b) both bool values appear at position 0 among
+/// BARE (unguarded) `(list <bool-lit> .. rest)` arms — exactly one leading element followed by a rest binder,
+/// and (c) there is NO existing unguarded whole-tail cover (a bare `_`/name arm or a lead-0 `(list .. rest)`),
+/// else the match is already total and the rewrite would only introduce a redundant arm (CDZ0213). Returns
+/// `Some(Core)` iff it fired (rebuilds the match, re-resolves the new subtree, and recurses through `core_of`).
+fn desugar_saturating_bool_list_elements(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    // The element type — bail unless it agrees with Bool (a bool literal at an element position of a
+    // non-Bool list is a type error caught elsewhere; requiring Bool keeps this narrowly the documented
+    // saturation case, and matches the permissive `Any` treatment a binding position gets).
+    let elem_ty = match crate::infer::type_of(db, scrutinee) {
+        crate::ty::Ty::List(e) => (*e).clone(),
+        _ => crate::ty::Ty::Any,
+    };
+    if !elem_ty.agrees_with(&crate::ty::Ty::Bool) {
+        return None;
+    }
+    // Classify each SOURCE arm. `bool_lead[i]` = Some(b) iff arm i is a BARE (unguarded)
+    // `(list <bool-lit=b> .. <name>)` — exactly one leading element (a bool literal) followed by a rest
+    // binder. `has_tail_cover` = some UNGUARDED arm already covers the whole (or the entire non-empty) tail,
+    // so the match is already total and this rewrite would only add a redundant arm.
+    let mut bool_lead: Vec<Option<bool>> = Vec::with_capacity(arms.len());
+    let mut has_tail_cover = false;
+    for &(pat, _) in arms {
+        // A `(guard …)`-wrapped arm is explicitly conditional — never a saturating candidate, and it does
+        // not count as a tail cover either (its guard may fail).
+        if db.ast.as_form(pat, "guard").is_some() {
+            bool_lead.push(None);
+            continue;
+        }
+        // A bare name / `_` is an unguarded whole-tail cover.
+        if db.ast.as_name(pat).is_some() {
+            has_tail_cover = true;
+            bool_lead.push(None);
+            continue;
+        }
+        let Some(es) = db
+            .ast
+            .as_ctor_form(pat, "list")
+            .or_else(|| db.ast.as_form(pat, "list"))
+            .map(<[_]>::to_vec)
+        else {
+            bool_lead.push(None);
+            continue;
+        };
+        match es.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
+            // A lead-0 rest `(list .. rest)` covers every length → an unguarded whole-tail cover.
+            Some(0) => {
+                has_tail_cover = true;
+                bool_lead.push(None);
+            }
+            // A single leading element + rest, that element a bool literal → a saturating candidate.
+            Some(i) if i == 1 && i + 2 == es.len() => {
+                match crate::resolve::resolved_of(db, es[0]) {
+                    crate::resolved::Resolved::Bool(b) => bool_lead.push(Some(b)),
+                    _ => bool_lead.push(None),
+                }
+            }
+            // Any other rest arity, or a fixed-arity arm (covers only its own length) — not relevant.
+            _ => bool_lead.push(None),
+        }
+    }
+    // Already total via an existing tail cover → don't fire.
+    if has_tail_cover {
+        return None;
+    }
+    // Saturation: both bool values present at position 0 among the candidate arms.
+    let has_true = bool_lead.contains(&Some(true));
+    let has_false = bool_lead.contains(&Some(false));
+    if !(has_true && has_false) {
+        return None;
+    }
+    // The LAST saturating candidate (source order) — its position-0 test is redundant once reached.
+    let last = bool_lead.iter().rposition(Option::is_some)?;
+    // Rewrite: replace that arm's leading bool literal with a wildcard `_`, turning it into an unconditional
+    // `(list _ .. rest)` cover. Rebuild the whole match, re-resolve the synthesized subtree (the reused
+    // arms keep their memoized resolution; the new `_` element + list node resolve fresh), and recurse.
+    let mut new_arms: Vec<StructId> = Vec::with_capacity(arms.len());
+    for (ai, &(pat, body)) in arms.iter().enumerate() {
+        if ai != last {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        }
+        let es = db
+            .ast
+            .as_ctor_form(pat, "list")
+            .or_else(|| db.ast.as_form(pat, "list"))
+            .map(<[_]>::to_vec)
+            .expect("the saturating arm is a bare list pattern");
+        let list_head = match db.ast.get(pat) {
+            crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+            _ => db.push_name("list"),
+        };
+        // es = [<bool-lit>, "..", rest] — replace element 0 (the bool literal) with `_`, keep `.. rest`.
+        let wild = db.push_name("_");
+        let mut list_children = vec![list_head, wild];
+        list_children.extend(es[1..].iter().copied());
+        let new_list = db.push_list(list_children);
+        new_arms.push(db.push_list(vec![new_list, body]));
+    }
+    let match_head = db.push_name("match");
+    let mut items = vec![match_head, scrutinee];
+    items.extend(new_arms);
+    let rewritten = db.push_list(items);
+    crate::resolve::resolve_subtree(db, rewritten);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with saturating bool first-elements → drop the last arm's redundant position-0 test");
+    Some(core_of(db, rewritten))
+}
+
 /// PRE-PASS for `lower_match_list`: rewrite every arm whose list pattern has a refutable SCALAR/STRING
 /// LITERAL leading element into an equivalent guarded arm the length-dispatch matcher already handles.
 ///
@@ -3912,6 +4041,13 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
     // re-match binding the payload. Run BEFORE the literal pass: it rebuilds the match and recurses through
     // `core_of` → `lower_match_list`, where the literal pass then handles any remaining literal elements.
     if let Some(core) = desugar_refutable_ctor_list_elements(db, scrutinee, arms) {
+        return core;
+    }
+    // PRE-PASS (bool saturation): `(list) + (list true .. r) + (list false .. r)` covers every length — the
+    // two bool-lead arms saturate the first element, so the match is total without a `_`. Run BEFORE the
+    // literal pass so the LAST saturating arm becomes an unconditional `(list _ .. r)` cover (an unguarded
+    // tail the length matcher counts) while the earlier bool arm still desugars to its value-test guard.
+    if let Some(core) = desugar_saturating_bool_list_elements(db, scrutinee, arms) {
         return core;
     }
     // PRE-PASS: a refutable SCALAR/STRING LITERAL leading element (`(list 0 a .. r)`, `(list "add" x)`) is

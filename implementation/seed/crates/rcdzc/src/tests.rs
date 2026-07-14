@@ -22016,6 +22016,77 @@ mod match_engine {
     }
 
     #[test]
+    fn saturating_bool_list_first_elements_are_exhaustive_without_a_wildcard() {
+        // `(list) + (list true .. r) + (list false .. r)` covers every length: the empty arm covers length
+        // 0, and the two bool-lead arms saturate the first element of any non-empty list (`true` or `false`,
+        // nothing else) — so the match is TOTAL without a `_` (`core-semantics.md`: a set of list arms is
+        // exhaustive when it covers the empty list AND every non-empty list). The list analogue of Inc-20's
+        // tuple-of-bools. `desugar_saturating_bool_list_elements` drops the LAST bool arm's redundant
+        // position-0 test (→ `(list _ .. r)`, an unguarded tail cover the length matcher counts), so the
+        // check passes AND the runtime routes correctly by first-match-wins.
+        assert!(
+            reject_code(
+                "(module m \
+                   (def (f (: xs (List Bool))) \
+                     (match xs ((list) 0) ((list true .. r) 1) ((list false .. r) 2))) \
+                   (def (main) (f (list true))) (export main))"
+            )
+            .is_none(),
+            "a bool-saturating list match is exhaustive without a wildcard"
+        );
+        // Runtime: build a list internally and dispatch. mk(0) → [] → arm 0; mk(1) → [true, false] → the
+        // true-lead arm (1); mk(2) → [false, true] → the false-lead arm (2). Confirms the guard-drop rewrite
+        // preserves first-match-wins — the true-lead arm still gates on `true`, only the (now trailing)
+        // false-lead arm is unconditional.
+        let run = |n: &str| -> String {
+            run_heap_value(
+                "(module m \
+                   (def (mk (: n Int64)) \
+                     (if (< n 1) (list) (if (< n 2) (list true false) (list false true)))) \
+                   (def (f (: xs (List Bool))) \
+                     (match xs ((list) 0) ((list true .. r) 1) ((list false .. r) 2))) \
+                   (def (main (: n Int64)) (f (mk n))) (export main))",
+                vec![n.to_string()],
+            )
+            .unwrap_or_default()
+        };
+        if run("0").is_empty() {
+            eprintln!("runtime wasm not found; skipping bool-saturation-list run");
+            return;
+        }
+        assert_eq!(run("0"), "0", "[] matches the empty arm");
+        assert_eq!(run("1"), "1", "[true, …] matches the true-lead arm");
+        assert_eq!(run("2"), "2", "[false, …] matches the false-lead arm");
+    }
+
+    #[test]
+    fn a_bool_list_match_missing_a_lead_value_or_the_empty_arm_still_rejects() {
+        // The saturation relaxation is SOUND — it fires ONLY when both bool values AND the empty list are
+        // covered. A single bool-lead arm does not saturate the first element (the other value is
+        // uncovered), and dropping the empty arm leaves length 0 uncovered — both stay CDZ0210.
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: xs (List Bool))) \
+                   (match xs ((list) 0) ((list true .. r) 1))) \
+                 (def (main) (f (list true))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210"),
+            "only one bool-lead value → the other first-element value is uncovered"
+        );
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: xs (List Bool))) \
+                   (match xs ((list true .. r) 1) ((list false .. r) 2))) \
+                 (def (main) (f (list true))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210"),
+            "no empty arm → length 0 is uncovered even when the first element saturates"
+        );
+    }
+
+    #[test]
     fn a_refutable_ctor_list_element_still_requires_a_catch_all() {
         // A discriminant test may fail, so — like a literal element or any guarded arm — a ctor-element arm
         // does NOT count toward length-coverage exhaustiveness. Two ctor arms covering every discriminant
