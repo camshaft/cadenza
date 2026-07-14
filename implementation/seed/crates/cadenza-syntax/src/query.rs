@@ -2472,7 +2472,7 @@ pub mod textedit {
                 }
                 super::treediff::Align::Del(i) => {
                     if let Some((s, e)) = span_of(&a[i]) {
-                        let (ws, we) = widen_deletion(src, s, e);
+                        let (ws, we) = widen_deletion(src, s, e, surface);
                         out.push(Edit {
                             start: ws,
                             end: we,
@@ -2501,8 +2501,42 @@ pub mod textedit {
     /// dangling indent. If other non-space text shares the line before `s`, only trailing spaces up
     /// to `s` are kept (we don't eat a preceding token). If text follows on the same line after `e`,
     /// we don't eat the newline (so we don't join two lines).
-    fn widen_deletion(src: &str, s: usize, e: usize) -> (usize, usize) {
+    ///
+    /// On the ML surface a sequencing block's non-final elements are joined by `;` (`a; b; c`), and a
+    /// deleted element's span covers only the element — NOT the `;` that follows it. Leaving the `;`
+    /// orphans the separator (`a; b; c` deleting `b` → `a; ; c`, a parse error). A `;` in ML is ONLY the
+    /// sequence operator (never part of a token), so before the whitespace pass we extend the range over
+    /// an adjacent separator: the `;` FOLLOWING the element (a non-final element, `b` in `a; b; c`), or —
+    /// when none follows — the `;` PRECEDING it (the final element, `c`). Absorbing exactly one `;` keeps
+    /// the surviving elements correctly separated. s-expr has no `;` separator (space-delimited), so this
+    /// is ML-only; the whitespace/line widening below then tidies the rest.
+    fn widen_deletion(src: &str, s: usize, e: usize, surface: Format) -> (usize, usize) {
         let bytes = src.as_bytes();
+        // ML `;` sequencing separator: absorb the one adjacent to the deleted element so the surviving
+        // elements stay separated (never orphaning a `;`). Prefer the FOLLOWING `;` (non-final element);
+        // fall back to the PRECEDING one (final element). Only a run of spaces/tabs may sit between the
+        // element and its `;` (a newline before a leading `;` would belong to the previous line — but ML
+        // prints `expr;⏎ next`, so the `;` immediately follows the element, before any newline).
+        let (mut s, mut e) = (s, e);
+        if surface == Format::Ml {
+            // Following `;` — scan past inline whitespace after the element.
+            let mut f = e;
+            while f < bytes.len() && matches!(bytes[f], b' ' | b'\t') {
+                f += 1;
+            }
+            if f < bytes.len() && bytes[f] == b';' {
+                e = f + 1;
+            } else {
+                // No following `;` (final element) — scan back past inline whitespace to a preceding `;`.
+                let mut p = s;
+                while p > 0 && matches!(bytes[p - 1], b' ' | b'\t' | b'\n' | b'\r') {
+                    p -= 1;
+                }
+                if p > 0 && bytes[p - 1] == b';' {
+                    s = p - 1;
+                }
+            }
+        }
         // Extend start left over spaces/tabs.
         let mut ws = s;
         while ws > 0 && matches!(bytes[ws - 1], b' ' | b'\t') {

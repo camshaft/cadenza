@@ -1006,9 +1006,20 @@ the component type. The new work:
   `resource_inner_component_multi_closure_borrow_tuple` thread `tuple_prefix_bytes`/`tuple_suffix_bytes` into
   the shared `call` functype (via `closure_call_tuple_arg_functype_interleaved`). Corpus: mk-a → 113, mk-b →
   87. Mixed keeps sole-tuple only; among-scalars + list result still declines.
-- **REMAINING (all optional, none blocking):** on the DIRECT-CALL path — an among-scalars tuple on the
-  MIXED/distinct-sig paths OR with a list<u8>-crossing result (the interleaving generalization applied to
-  those cores' arg-push + functypes — mechanical, the helpers exist); a
+- **✅ tuple-among-scalars composes with EVERY result shape on the SINGLE-export path** (`@d2c1737f`, baseline
+  `@aa899608`). Removed the single-export among-scalars + list-result decline: a tuple among scalars now works
+  with a byte-rope, a fixed-shape compound value-form, and a collection value-encode result. New shared
+  `serialize::emit_closure_call_args(tuple_arg, tuple_local, arity, imp)` pushes prefix scalars → rebuilt tuple
+  → suffix scalars (or the raw scalars when None) — replacing the 6 sole-tuple `if let…else` blocks in the
+  three list-result cores + the scalar multi core + the 3 distinct-sig cores with ONE call (byte-identical for
+  a sole tuple / None). `assemble_closure_bytes_resource_borrow_tuple` +
+  `resource_inner_component_closure_bytes_borrow_tuple` thread prefix/suffix into the list<u8> `call` functype
+  via `closure_call_list_tuple_arg_functype_interleaved`. Corpus: among-scalars × List/Bytes/compound results
+  + tuple-before-scalar × List, all e2e. Still declines: among-scalars + list result on the MULTI/MIXED/
+  DISTINCT-SIG paths (their emit fns don't yet interleave — the helpers now exist, a mechanical follow-on).
+- **REMAINING (all optional, none blocking):** on the DIRECT-CALL path — an among-scalars tuple with a
+  list<u8>-crossing result on the MULTI/MIXED/distinct-sig paths (the single-export interleaving applied to
+  those cores' arg-push + per-group functypes — mechanical, the shared helper + interleaved functype exist); a
   VARIABLE-LENGTH collection arg
   (needs a `value-decode` runtime op that does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
   direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-resource passed

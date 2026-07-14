@@ -297,3 +297,72 @@ specialization, since each already registers internal defs.
    conflicts with the param's solved type during the A2 connected solve) and terminates — it never enters
    the specialization loop, so no explicit `RecursionBound` guard is needed. Verified: both a value-
    returning and a discarded-result growing-type recursion reject cleanly (exit 0, no hang).
+
+---
+
+# ADDENDUM: type-valued parameters — a generic def takes the TYPE as a regular argument
+
+Status: DESIGN — direction chosen by the operator (2026-07-14): "use types as values and pass the type
+as a regular argument." This is the spec's OWN model (`type-system.md §Generics Are Type-Valued
+Parameters`), NOT implicit ML-style type variables. Scope assessment below — this is a MULTI-INCREMENT
+vertical, not a single step; the seams are mapped so it can proceed increment by increment.
+
+## The chosen surface
+A generic def takes a TYPE-VALUED PARAMETER — an ordinary parameter whose VALUE is a type — and uses it as
+a type-constructor argument in its own annotations; the caller passes the concrete type as a normal
+argument:
+```
+(def (unbox (: t Type) (: b (Box t))) (match b ((Box.Mk v) v)))
+(unbox Int64  (Box.Mk 40))          ; t = the type-value Int64
+(unbox String (Box.Mk "hi"))        ; t = the type-value String
+```
+`t` resolves by ORDINARY LEXICAL SCOPE (it is just a parameter — no name key, fully honoring
+no-keys-outside-the-prelude). This matches the spec verbatim: `type-system.md:224` "a generic definition
+MUST be expressed as an ordinary definition that takes type-valued parameters"; `:228` "a generic type
+constructor … applied by ordinary application"; `:250` monomorphized before the boundary.
+
+## Spec grounding + the design stance it REVISES
+- Type-values are ALREADY first-class in the compiler: `Prim::TypeOf`/`TypeEq` (reflection), a
+  `Resolved::TypeVal(t)` value types as `Ty::Type` (`infer.rs:411`), and `(: x (Type.of y))` already
+  reuses a reflected type-value in a type position (`prelude.rs:1343`).
+- ⚠ The CURRENT deliberate stance (`prelude.rs:1348`): "`Type` in a bare type position is NOT a type (a
+  value's type-of is `Ty::Type`, spelled only by reflection)." This feature REVISES that: `Type` must
+  become spellable as a PARAMETER annotation so `(: t Type)` declares a type-valued parameter. (An
+  operator-blessed change — the spec's type-valued-parameter model requires a way to annotate one.)
+
+## The seams (mapped; each an increment)
+1. **`(: t Type)` — accept `Type` as a parameter annotation → the param types `Ty::Type`.**
+   `param_annot_ty`→`typeval_of(Type-module)` currently returns `None` (the `Type` prelude record has
+   `of`/`eq` fields, no `(meta t)`). Make `typeval_of` map the type-reflection module to `Ty::Type` (the
+   kind-of-types), so `(: t Type)` types `t` as `Ty::Type`. (Recognize the module STRUCTURALLY — its
+   fields reduce to `Prim::TypeOf`/`TypeEq` — not by the name "Type", to keep it key-free.)
+2. **`(Box t)` — a value-param `t : Type` usable as a type-constructor ARGUMENT.** In `reduce_sum_ctor`
+   (and the general type-application path), an arg that is a `Resolved::Param` bound to a type-value must
+   contribute its type-value. Since `t`'s VALUE is only known at the CALL site, the def's annotation
+   `(Box t)` is generic — `(Box ?t)` — until monomorphization substitutes the passed type-value.
+3. **Call-site: pass a concrete type as an argument.** `(unbox Int64 …)` — the head `Int64` is a
+   type-value argument. `type_specialize` keys on the concrete arg TYPES; here one arg IS a type-value, so
+   the specialization is keyed by the passed type-value and the copy substitutes `t := Int64` throughout
+   the body (the `(Box t)` annotation, the match). This reuses the existing copy+memo engine; the new
+   part is threading a type-VALUE argument (not just a runtime value) into the substitution.
+4. **A type-value argument is COMPILE-TIME-ONLY (`type-system.md:226`) — it carries NO runtime slot** and
+   must be ERASED from the emitted function's parameters (like a `Ty::Type`/`Unit` param today,
+   `lir.rs valtype_of(Ty::Type)=None`). So `unbox`'s emitted arity is 1 (the `Box`), not 2 — the type
+   arg is consumed at monomorphization, never passed at run time.
+
+## Increment plan (each gated + landed separately)
+- **T1** — `typeval_of` maps the type-reflection module → `Ty::Type`; `(: t Type)` accepted; a param typed
+  `Type` is compile-time-only (no valtype, erased). Gate: `(: t Type)` parses+types; a runtime use of a
+  `Type` param still rejects (CDZ0302, no machine rep).
+- **T2** — a `t : Type` param usable as a type-constructor arg `(Box t)` / `(Lst t)`: the annotation is
+  generic in `t` until the call site binds it.
+- **T3** — call-site type-value argument + monomorphization keyed on it (extend `type_specialize`), with
+  the type-arg erased from the emitted signature. Gate: `unbox` at Int64+String → 42; `len` over `Lst
+  Int64`+`Lst String` with an explicit `(: t Type)` → 5.
+- **T4** — a type-value arg that is NOT compile-time-resolvable (flows from runtime data) → CDZ0302
+  (`:226` "a type-value never flows from runtime data into a position that determines a type").
+
+## Not doing (out of scope, distinct features)
+Implicit ML-style quantification `(: l (Lst a))` with a bare `a` (the operator chose type-valued params
+INSTEAD); trait/constraint predicates (`:232`); dictionary-passing (`:240`). The UNANNOTATED polymorphic
+form already works via inference + monomorphization and is unaffected.

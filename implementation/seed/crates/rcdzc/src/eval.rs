@@ -2210,6 +2210,22 @@ pub fn reduce_sum_ctor(db: &mut Db, head: StructId, args: &[StructId]) -> Option
 /// The type-VALUE the node at `id` reduces to, if any — a ground type (`Bool`/`Unit` via `(meta t)`),
 /// a `(typeval …)` built node, or a type-constructor application reduced. This is how a type
 /// expression yields a `Ty`. Returns `None` if the node is not a type.
+/// Whether `id` reduces to the TYPE-REFLECTION MODULE (`Type`) — the prelude record whose `of`/`eq`
+/// fields are the `type-of`/`type-eq` operations. Recognized STRUCTURALLY (its `of` field's `(meta
+/// apply)` is `Prim::TypeOf`), NOT by the name "Type", so `Type` is privileged by nothing
+/// (`prelude-and-resolution.md §Nothing Is Privileged By Name`). Used by `typeval_of` to let `Type`
+/// denote the kind-of-types (`Ty::Type`) in a parameter annotation — a type-valued parameter.
+fn is_type_reflection_module(db: &mut Db, id: StructId) -> bool {
+    let of = Symbol {
+        name: "of".to_string(),
+        namespace: None,
+    };
+    match member_value(db, id, &of) {
+        Member::Field(v) => meta_apply_of(db, v) == Some(Prim::TypeOf),
+        _ => false,
+    }
+}
+
 pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
     match resolved_of(db, id) {
         // A ground-type record: read its `(meta t)`, which holds the type-value.
@@ -2227,6 +2243,15 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
             // Either a `(meta t)` ground-type record, OR an already-built `(typeval …)` record.
             if let Some(t_field) = project_meta(db, id, "t") {
                 return typeval_of(db, t_field);
+            }
+            // The TYPE-REFLECTION MODULE (`Type`) in a type position denotes the KIND OF TYPES,
+            // `Ty::Type` — so `(: t Type)` declares a TYPE-VALUED PARAMETER (`type-system.md §Generics Are
+            // Type-Valued Parameters`; the type-valued-parameter vertical). Recognized STRUCTURALLY — its
+            // `of` field reduces to `Prim::TypeOf` — never by the name "Type" (no key outside the prelude).
+            // This revises the prior "`Type` in a bare type position is not a type" stance to give the
+            // type-valued-parameter model a spellable annotation.
+            if is_type_reflection_module(db, id) {
+                return Some(crate::ty::Ty::Type);
             }
             None
         }

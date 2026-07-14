@@ -4394,6 +4394,43 @@
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
+(case "a recursive sum built then folded by a NESTED recursive call composes on every backend"
+  (doc    "A recursive `Nat` is BUILT by one recursion (`mk : Int → Nat`) and FOLDED by another (`cnt :
+           Nat → Int`), composed so the build is an ARGUMENT to the fold: `(cnt (mk k))`. On the
+           gas-metered async backend each recursive call threads a shared `env` cell, and a call NESTED as
+           another call's argument (`cnt(env, mk(env, k).await)`) would borrow `env` mutably twice at once
+           (Rust E0499) unless the inner call is hoisted to a preceding statement — a genuine async-lowering
+           hazard this pins. Built 500 deep (also exercises fold depth): `(cnt (mk 500))` = 500. Pins that a
+           build-then-fold over a recursive sum, with one recursion nested in the other's arguments,
+           compiles and runs on the wasm, Rust, and gas-metered async backends alike.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk  (: n Int64)) (if (> n 0) (Nat.S (mk (- n 1))) (Nat.Z)))
+            (def (cnt (: x Nat))   (match x ((Nat.Z) 0) ((Nat.S p) (+ 1 (cnt p)))))
+            (def (main (: k Int64)) (cnt (mk k)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 500 Int64))
+  (output (: 500 Int64)))
+
+(case "two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity"
+  (doc    "`evn` and `od` are mutually recursive over a recursive `Nat`: each MATCHES the sum and, on the
+           `S p` variant, calls the OTHER on the unwrapped payload `p` — the sum-dispatch companion of the
+           integer `even`/`odd` pair. The scrutinee is itself a recursive build `(mk k)`. `(evn (mk 4))`
+           alternates evn→od→…→`Z`→1 (4 is even). Pins that a mutually-recursive function GROUP dispatching
+           on a recursive sum's variants (each recursing to its partner on the payload) resolves, folds, and
+           — on the gas backend — threads `env` across the mutual chain, on every backend.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk  (: n Int64)) (if (> n 0) (Nat.S (mk (- n 1))) (Nat.Z)))
+            (def (evn (: x Nat))   (match x ((Nat.Z) 1) ((Nat.S p) (od  p))))
+            (def (od  (: x Nat))   (match x ((Nat.Z) 0) ((Nat.S p) (evn p))))
+            (def (main (: k Int64)) (evn (mk k)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 4 Int64))
+  (output (: 1 Int64)))
+
 (case "a unary constructor is a single-arity function"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (1st sentence): Some is a single-arity constructor. Applied to an
@@ -4854,33 +4891,48 @@
             (def (main)  (put 99)) (export main)))
   (output (: (list 99 2) (List Int64))))
 
-; `List.update`'s index is an Int64 wrapped to the runtime's u32 index parameter. The bounds check must
-; see the FULL index, not the truncated low 32 bits — else a huge index `>= 2^32` that wraps below the
-; length would silently update the WRONG element instead of trapping (an out-of-bounds write aliasing a
-; valid slot — a safety hole). The compiler guards the i64 index against fitting u32 BEFORE the wrap
-; (trap if `(index as u64) >= 2^32`), so a genuinely out-of-bounds index traps regardless of how its low
-; bits wrap — the i64→i32 high-bits guard the br_table dispatch already applies to an i64 scrutinee.
+; The replace-at-index operation is DEFINED ONLY for an in-bounds index (collections-and-text.md #A List
+; Is Grown By Functional Construction, 2nd sentence: "The replace-at-index operation MUST be defined only
+; for an index that is in bounds"). An out-of-bounds update therefore has NO value. When the list AND the
+; index are compile-time constants, the compiler PROVES the out-of-bounds and REJECTS the build (CDZ0304),
+; exactly as it rejects a provable constant overflow (`(* Int64.max 2)`) — reject-don't-miscompile, never
+; ship a component that traps on a statically-known-absent value. This is the const half; the genuinely-
+; RUNTIME index (the parameter case below) is where the runtime bounds behavior is observed.
 
-(case "a list update at an index that wraps below the length still traps"
-  (doc    "`(List.update (list 1 2 3) 4294967296 99)` — index 2^32, far out of bounds for a length-3
-           list. The index is wrapped i64→i32 for the runtime, and 2^32 truncates to 0, so without a
-           high-bits guard the update would SILENTLY succeed at element 0 (the program returning the len
-           3). A genuinely out-of-bounds update must TRAP, not alias into a valid slot via the wrap — the
-           guard traps when the i64 index does not fit u32. Contrast the in-bounds and real-OOB cases
-           around it: only an index in [2^32, 2^32+length) hit this gap. Expected: a trap.")
-  (input  (do (def (main) (List.len (List.update (list 1 2 3) 4294967296 99))) (export main)))
-  (call   main)
-  (trap   "index out of bounds"))
-
-(case "a list update at a genuinely out-of-bounds index traps (the control)"
-  (doc    "The control pinning the wrap hazard above: a real out-of-bounds index (5, no wrap) on a
-           length-3 list traps as the runtime's contract requires — this already worked, since the wrap
-           does not alias 5 below the length. Triangulates that the bug was specifically the i64→i32
-           index truncation discarding the high bits before the bounds check, not OOB detection in
-           general. Expected: a trap.")
+(case "a constant list update at an out-of-bounds index is rejected at compile time"
+  (doc    "`(List.update (list 1 2 3) 5 99)` — a real out-of-bounds index (5) on a length-3 constant list.
+           The replace-at-index is defined only in bounds (collections-and-text.md #A List Is Grown By
+           Functional Construction), so an out-of-bounds update has no value; with both the list and the
+           index constant the compiler PROVES it and rejects the build (CDZ0304, numeric-model.md #Overflow
+           Is Defined's reject-don't-miscompile discipline applied to a constant no-value operation — the
+           same code a provable constant overflow gets), rather than emitting a component that traps at
+           run time. The runtime bounds behavior is pinned by the parameter case below.")
   (input  (do (def (main) (List.len (List.update (list 1 2 3) 5 99))) (export main)))
-  (call   main)
-  (trap   "index out of bounds"))
+  (error  CDZ0304))
+
+(case "a constant list update at an index that wraps below the length is also rejected"
+  (doc    "`(List.update (list 1 2 3) 4294967296 99)` — index 2^32, far out of bounds for a length-3 list.
+           Its low 32 bits are 0, so a naive i64→i32 wrap for the runtime index parameter would alias
+           element 0 — a silent out-of-bounds write. The compiler never reaches that: with a constant list
+           and a constant index it evaluates the update at compile time, sees `2^32 >= 3`, and rejects the
+           build (CDZ0304) on the FULL index, so the wrap hazard cannot arise on the constant path at all.
+           The companion of the real-OOB constant case above; the runtime wrap-guard is exercised by the
+           parameter case below, where the index is not a constant.")
+  (input  (do (def (main) (List.len (List.update (list 1 2 3) 4294967296 99))) (export main)))
+  (error  CDZ0304))
+
+(case "a runtime out-of-bounds list update traps rather than aliasing a valid slot"
+  (doc    "The RUNTIME companion: the index arrives as a parameter, so it is not a constant the compiler can
+           reject up front — the update runs on the value heap and the runtime bounds check governs. Called
+           with 2^32 (whose low 32 bits are 0, the wrap hazard) the update MUST trap, not silently alias
+           element 0 and return the length 3: the compiler guards the i64 index against fitting u32 BEFORE
+           the i32 wrap (trap if `(index as u64) >= 2^32`), so a genuinely out-of-bounds index traps
+           regardless of how its low bits wrap. The trap surfaces as the runtime's `unreachable` (the
+           runtime is `panic = abort`, so a runtime-originated trap carries no spec reason string), which
+           this grades as the terminal condition — the point is that it TRAPS rather than returning 3.")
+  (input  (do (def (main (: i Int64)) (List.len (List.update (list 1 2 3) i 99))) (export main)))
+  (call   main 4294967296)
+  (trap   "unreachable"))
 
 (case "a list built by a runtime-length loop has that many elements"
   (doc    "The genuine self-hosting idiom: a list whose LENGTH is decided at run time, built by a
