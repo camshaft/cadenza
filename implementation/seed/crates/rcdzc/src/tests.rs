@@ -35941,6 +35941,64 @@ mod stage1 {
     }
 
     #[test]
+    fn the_cost_heuristic_emits_a_big_multiply_called_helper_once() {
+        // Addendum 4 cost heuristic. `big` is LARGE (well past INLINE_COST_THRESHOLD nodes — 8 products
+        // summed) and called at TWO sites, each with a RUNTIME argument (`main`'s params `a`/`b`, so the
+        // soundness gate fires: the result can't be compile-time-demanded). The UNANNOTATED default would
+        // inline it at both sites; the heuristic instead emits it ONCE and calls it. Measured by call
+        // count: emit-once ⇒ ≥2 `Call`s to a separate `big` function; inlined ⇒ 0 internal calls. The
+        // value is unchanged either way (the gate corpus covers the value; here we assert the STRATEGY).
+        let src = "(module m \
+             (def (big (: x Int64)) \
+               (+ (* x 2) (+ (* x 3) (+ (* x 5) (+ (* x 7) \
+                 (+ (* x 11) (+ (* x 13) (+ (* x 17) (* x 19))))))))) \
+             (def (main (: a Int64) (: b Int64)) (+ (big a) (big b))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let calls = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::Call { .. }));
+        assert!(
+            calls >= 2,
+            "a big helper called twice with runtime args must be emitted once + called (≥2 calls), got {calls}"
+        );
+    }
+
+    #[test]
+    fn the_cost_heuristic_leaves_a_small_helper_inlined() {
+        // The heuristic is CONSERVATIVE: a SMALL body (below INLINE_COST_THRESHOLD) stays inlined even when
+        // called multiply with runtime args — the always-inline default is unchanged for ordinary helpers.
+        // `sm` is 2 products; inlined ⇒ 0 internal calls (no separate function).
+        let src = "(module m \
+             (def (sm (: x Int64)) (+ (* x 2) (* x 3))) \
+             (def (main (: a Int64) (: b Int64)) (+ (sm a) (sm b))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let calls = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::Call { .. }));
+        assert_eq!(
+            calls, 0,
+            "a small helper must stay inlined (0 internal calls), got {calls}"
+        );
+    }
+
+    #[test]
+    fn the_cost_heuristic_still_folds_a_const_argument_call() {
+        // SOUNDNESS: the heuristic must NOT emit-once a call whose result is compile-time-demanded — it
+        // fires only when an argument captures a RUNTIME binding. A big helper called with CONSTANT args
+        // (no runtime capture) must still fold at compile time (β-reduce), so the whole thing constant-folds
+        // to a literal — no runtime call to `big`. `big(2) + big(3)` with `big(x) = x*(2+3+5+7+11+13+17+19)`
+        // = 2*77 + 3*77 = 385. Assert it runs to 385 AND emits no internal call (fully folded).
+        let src = "(module m \
+             (def (big (: x Int64)) \
+               (+ (* x 2) (+ (* x 3) (+ (* x 5) (+ (* x 7) \
+                 (+ (* x 11) (+ (* x 13) (+ (* x 17) (* x 19))))))))) \
+             (def (main) (+ (big 2) (big 3))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 385);
+        let calls = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::Call { .. }));
+        assert_eq!(
+            calls, 0,
+            "a const-arg call must fold at compile time (no runtime call), got {calls}"
+        );
+    }
+
+    #[test]
     fn a_deeply_nested_inlined_projection_chain_registers_callables_linearly() {
         // REGRESSION (perf): `Db::register_reduced_callables` runs after EVERY `apply_lambda` β-reduction to
         // discover do-local recursive defs in the reduced term, and its `collect_reduced_callables` helper

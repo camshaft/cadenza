@@ -1003,6 +1003,24 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 trace!(target: "rcdzc::lower", node = id.0, head = head.0, callee, "apply: inline-never def → emit_call_or_specialize (no inline)");
                 return emit_call_or_specialize(db, head, callee, &args);
             }
+            // COST HEURISTIC (Addendum 4): the UNANNOTATED default is always-inline, but a LARGE
+            // (≥ INLINE_COST_THRESHOLD nodes), MULTIPLY-CALLED (≥ INLINE_MIN_CALLERS) def whose call has a
+            // RUNTIME-CAPTURING argument is emitted ONCE and called instead — duplicating a big body at
+            // every site is the clear waste. `should_emit_once_by_cost` proves the emit is SOUND (the
+            // runtime-capturing arg means the result can never be compile-time-demanded, so the
+            // mandatory-inline invariant is untouched) and excludes generic/`const` callees (those are
+            // specializations the shared path owns). `@inline-never`/`@inline-always` were handled above, so
+            // this governs only the default. Routes through the SAME `emit_call_or_specialize` — so a def
+            // the heuristic emits-once is byte-identical to one an author marked `@inline-never`.
+            if let Some(callee) = callee_def_index(db, head)
+                && !db.defs[callee]
+                    .body
+                    .is_some_and(|b| db.inline_always.contains(&b))
+                && should_emit_once_by_cost(db, callee, &args)
+            {
+                trace!(target: "rcdzc::lower", node = id.0, head = head.0, callee, "apply: cost heuristic → emit_call_or_specialize (emit once)");
+                return emit_call_or_specialize(db, head, callee, &args);
+            }
             // A LAMBDA head β-reduces (substitute args for params) and the reduced body lowers — this
             // is how a user function call folds/monomorphizes: `((fn (x) (+ x 1)) 5)` reduces to
             // `(+ 5 1)` → `6`, with no function value emitted. The reduction runs UNDER a guard keyed
@@ -5709,6 +5727,77 @@ fn lower_recursive_call_or_decline(
     emit_call_or_specialize(db, head, callee, args)
 }
 
+/// The body-size floor (in bounded AST nodes) at/above which the cost heuristic PREFERS emitting a def
+/// once and calling it over inlining it at every site. Below it a def is small enough that inlining is
+/// never a net loss (the call frame would cost as much as the body). DELIBERATELY CONSERVATIVE: the
+/// operator kept always-inline as the observable default during the compiler-port, so the heuristic only
+/// changes codegen for genuinely LARGE, multiply-called, all-runtime-arg helpers — the case where
+/// duplication is unambiguously wasteful. The precise value awaits real code-size data from the
+/// self-hosted compiler (Addendum 4: "tune it THEN"); this floor is high enough that it is inert on
+/// ordinary small helpers and only trips on the clear wins.
+const INLINE_COST_THRESHOLD: u32 = 40;
+
+/// The minimum number of call sites at/above which the cost heuristic prefers emit-once. A def called
+/// ONCE gains nothing from a shared function (one inline = one copy either way, and inlining folds
+/// better), so the heuristic only fires at ≥2 sites where the duplication it avoids is real.
+const INLINE_MIN_CALLERS: usize = 2;
+
+/// The COST-HEURISTIC decision (Addendum 4): should this non-recursive call to named top-level def
+/// `callee` be EMITTED ONCE and called, rather than β-reduced (inlined) at this site? The unannotated
+/// default is otherwise always-inline; this returns `true` only for the clear duplication win AND only
+/// when emit-once is provably SOUND — never overriding the mandatory-inline invariant.
+///
+/// SOUNDNESS (the mandatory-inline invariant, Addendum 4): inlining is REQUIRED whenever a call's result
+/// is demanded at COMPILE TIME (a `const` arg, a type-valued position, a generic instantiation, or a
+/// constant fold). This gate never touches those cases:
+/// - a GENERIC callee (`scheme.ty_vars` non-empty) or one with a `const` PARAM is excluded — those are
+///   specializations `emit_call_or_specialize` already owns, not ordinary runtime calls;
+/// - and it fires only when SOME argument CAPTURES A RUNTIME BINDING (`arg_captures_runtime_binding`).
+///   That single condition is the proof: a call with a runtime-dependent argument can NOT be reduced to a
+///   compile-time value (the same reason `type_specialize` rejects such an arg for a `const` param), so no
+///   `const`/type/generic/fold position could ever demand this call's result — emitting it as a runtime
+///   `Core::Call` strands nothing. (A fully-closed call, by contrast, MIGHT be const-demanded, so it is
+///   left to inline/fold.)
+///
+/// COST (the actual tradeoff): the callee body is at/above `INLINE_COST_THRESHOLD` nodes AND it is called
+/// at ≥ `INLINE_MIN_CALLERS` sites — large and duplicated. `@inline-never`/`@inline-always` are handled by
+/// the caller BEFORE this (they are explicit overrides), so this only governs the UNANNOTATED default.
+fn should_emit_once_by_cost(db: &mut Db, callee: usize, args: &[StructId]) -> bool {
+    // CHEAPEST GATE FIRST (this runs on the hot lower path for every unmarked call): a SMALL body is the
+    // common case and always inlines — bail before any resolve/scheme work. `bounded_node_count` saturates
+    // at the threshold, so this is O(threshold), not O(body).
+    let Some(body) = db.defs[callee].body else {
+        return false;
+    };
+    if bounded_node_count(db, body, INLINE_COST_THRESHOLD) < INLINE_COST_THRESHOLD {
+        return false;
+    }
+    // A monomorphic, non-`const` scheme only — a generic / `const`-param callee is a specialization the
+    // shared path already handles (and MUST inline/specialize, not be diverted by cost).
+    let Some(scheme) = crate::infer::def_scheme(db, callee) else {
+        return false; // undetermined signature — cannot emit a standalone function anyway
+    };
+    if !scheme.ty_vars.is_empty() {
+        return false;
+    }
+    let callee_params = db.defs[callee].params.clone();
+    let has_const_param = callee_params.iter().any(|&p| {
+        db.const_params
+            .contains(&crate::eval::param_name_occ(db, p))
+    });
+    if has_const_param {
+        return false;
+    }
+    // SOUNDNESS GATE: at least one argument must capture a runtime binding, so the result can never be
+    // compile-time-demanded (see the doc-comment invariant). A fully-closed call is left to inline/fold.
+    if !args.iter().any(|&a| arg_captures_runtime_binding(db, a)) {
+        return false;
+    }
+    // COST GATE: called at ≥ INLINE_MIN_CALLERS sites (the whole-program call-site index, built once +
+    // cached) — the duplication emit-once avoids is only real at ≥2 sites.
+    crate::infer::callee_call_site_count(db, callee) >= INLINE_MIN_CALLERS
+}
+
 /// Emit a call to a NAMED top-level def `callee` as a `Core::Call` — SPECIALIZING it (monomorphizing a
 /// generic scheme / erasing a `const` param) when needed. This is the SHARED emit-once-and-call path used
 /// by BOTH (a) a recursive call (`lower_recursive_call_or_decline`, which can't inline) and (b) an
@@ -5882,6 +5971,32 @@ fn subtree_fingerprint(db: &Db, id: StructId, out: &mut String) {
             out.push(')');
         }
     }
+}
+
+/// A BOUNDED structural node count of the arena subtree at `id`, saturating at `cap` — the crude
+/// body-SIZE proxy the inline COST HEURISTIC (Addendum 4) compares against `INLINE_COST_THRESHOLD`. It
+/// counts raw AST nodes (atoms + lists), NOT lowered Core ops, because the decision happens on the hot
+/// lower path BEFORE `core_of` runs on the body; a raw-node count is a stable, cheap over-approximation
+/// (a body that is large in nodes is large in emitted code). Saturating keeps a pathologically large body
+/// O(cap), not O(body). This is a HEURISTIC input, so precision past the threshold is irrelevant.
+fn bounded_node_count(db: &Db, id: StructId, cap: u32) -> u32 {
+    fn go(db: &Db, id: StructId, cap: u32, acc: &mut u32) {
+        if *acc >= cap {
+            return;
+        }
+        *acc += 1;
+        if let crate::ast::Struct::List(kids) = db.ast.get(id) {
+            for &k in kids {
+                if *acc >= cap {
+                    return;
+                }
+                go(db, k, cap, acc);
+            }
+        }
+    }
+    let mut acc = 0;
+    go(db, id, cap, &mut acc);
+    acc
 }
 
 /// Whether the argument subtree at `arg` CAPTURES A RUNTIME BINDING — a name resolving to a `Param`

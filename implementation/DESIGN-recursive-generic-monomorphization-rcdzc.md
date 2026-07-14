@@ -513,18 +513,21 @@ the callee's own), closing the caller-capture gap the `own`-only check missed.
 
 ---
 
-# ADDENDUM 4: INLINE POLICY — `@inline-never` / `@inline-always`, default always-inline, heuristic deferred
+# ADDENDUM 4: INLINE POLICY — `@inline-never` / `@inline-always`, default always-inline + a cost heuristic
 
-Status: LANDED (`inline-never` fully; `inline-always` recorded + conflict-rejected, inert until the
-heuristic; cost heuristic still deferred). Operator's concern (2026-07-14): the compiler inlines EVERY
-non-recursive call unconditionally, so a helper called N times emits its body N times (verified: a 5-mul
-helper called 3× → 15 muls). Wanted: author control over inlining, in the Rust
-`inline`/`inline(never)`/`inline(always)` spirit. AS BUILT: `strip_inline_policy` load pass →
-`db.inline_never`/`db.inline_always`; `lower.rs` routes an `inline_never` call to the shared
-`emit_call_or_specialize` (factored out of `lower_recursive_call_or_decline`) so it emits-once-and-calls
-AND still specializes a generic/`const` callee; `compile.rs` rejects `inline-always` on a recursive def
-(CDZ0201). Verified: `inline-never big` ×2 → 3 muls not 6; `inline-never`+`const` dict → 0 `call_indirect`,
-one fn per distinct dict; `inline-always` on recursion → CDZ0201.
+Status: FULLY LANDED. `inline-never` (emit-once + call, specializing); `inline-always` (recorded +
+conflict-rejected, the forward-compat "ignore the cost model, always inline" override); AND the COST
+HEURISTIC (a large, multiply-called, runtime-arg call emits-once by default). Operator's concern
+(2026-07-14): the compiler inlines EVERY non-recursive call unconditionally, so a helper called N times
+emits its body N times (verified: a 5-mul helper called 3× → 15 muls). Wanted: author control over
+inlining, in the Rust `inline`/`inline(never)`/`inline(always)` spirit. AS BUILT: `strip_inline_policy`
+load pass → `db.inline_never`/`db.inline_always`; `lower.rs` routes an `inline_never` call (and now a
+cost-heuristic emit-once call) to the shared `emit_call_or_specialize` (factored out of
+`lower_recursive_call_or_decline`) so it emits-once-and-calls AND still specializes a generic/`const`
+callee; `compile.rs` rejects `inline-always` on a recursive def (CDZ0201). Verified: `inline-never big` ×2
+→ 3 muls not 6; `inline-never`+`const` dict → 0 `call_indirect`, one fn per distinct dict; `inline-always`
+on recursion → CDZ0201; the cost heuristic emits a 40+-node ×2-called runtime-arg helper once (≥2 `Call`s)
+while a small helper stays inlined and a const-arg call still folds.
 
 ## SURFACE (operator, 2026-07-14): a GENERAL-PURPOSE `@annotation`, not a bespoke keyword prefix
 The inline policy is expressed as an ANNOTATION: `@inline-never def …` / `@inline-always def …`. `@name
@@ -557,21 +560,33 @@ three Rust knobs:
   real lever (the former `opaque`). Always correct.
 - **`inline-always`** — explicit "always fold me." A NO-OP vs. the default TODAY, but forward-compatible:
   the day the heuristic lands it becomes the override meaning "ignore the cost model, always inline."
-- **COST HEURISTIC — DEFERRED.** A cost-based default (inline small/few-use, emit-call for big/many-use)
-  is appealing for code size but (a) flips the default codegen strategy, (b) makes emitted bytes depend on
-  threshold constants, and (c) needs the MANDATORY-INLINE invariant below. Right thresholds come from real
-  code-size data the self-hosted compiler will produce — tune it THEN, as a separate measured change. When
-  it lands, the unannotated default becomes "heuristic", and `inline-always`/`inline-never` are its overrides.
+- **COST HEURISTIC — LANDED** (operator, 2026-07-14: "Build the cost heuristic now"). A cost-based default:
+  a call to a NON-recursive named def is emitted-once-and-called (instead of inlined) when the def BODY is
+  large (≥ `INLINE_COST_THRESHOLD` = 40 bounded AST nodes) AND it is called at ≥ `INLINE_MIN_CALLERS` = 2
+  sites AND — the soundness gate — SOME argument captures a runtime binding. `lower::should_emit_once_by_cost`
+  makes the call, routing through the SAME `emit_call_or_specialize` an `@inline-never` def uses (so a
+  heuristic emit-once is byte-identical to a marked one). `@inline-always` OVERRIDES it (force inline);
+  `@inline-never` overrides the other way (force emit). It (a) flips the default codegen strategy only for
+  the clear duplication win, (b) makes those bytes depend on the threshold constants — kept DELIBERATELY
+  CONSERVATIVE so it is inert on ordinary small helpers, precise tuning still awaits real code-size data
+  from the self-hosted compiler, and (c) respects the MANDATORY-INLINE invariant below by construction (see
+  the soundness gate).
 
-## 🚧 The invariant a future heuristic MUST respect: inlining is MANDATORY when the result is demanded
+## ✅ The invariant the heuristic RESPECTS: inlining is MANDATORY when the result is demanded
 A cost heuristic can NOT be "cost over everything." Inlining is REQUIRED, not optional, whenever a call's
 result is needed at COMPILE TIME: a `const` argument, a type-valued position, a generic instantiation, or
 ordinary constant folding (`(+ (double 3) 1)` → `7` only because `double` inlines). If the heuristic emitted
 such a call as a runtime `Core::Call`, the "must be compile-time-known" contract (Addendum 3) breaks. So
 the rule is: **inline when the result is compile-time-DEMANDED (mandatory); otherwise a cost heuristic
-picks inline-vs-emit for an ORDINARY runtime call.** `inline-never` on a compile-time-demanded call is
-therefore itself a conflict → a coded reject ("this call's result is needed at compile time; it cannot be
-`inline-never`"), NOT a silent miscompile.
+picks inline-vs-emit for an ORDINARY runtime call.** HOW THE HEURISTIC GUARANTEES THIS without a top-down
+demand analysis: it fires ONLY when some argument CAPTURES A RUNTIME BINDING (`arg_captures_runtime_binding`,
+the same closedness test `type_specialize` uses to reject a runtime arg to a `const` param). A call with a
+runtime-dependent argument CANNOT reduce to a compile-time value, so no `const`/type/generic/fold position
+could ever demand its result — emitting it as a runtime call strands nothing. A fully-closed call (which
+MIGHT be demanded) is left to inline/fold. It also excludes generic (`ty_vars` non-empty) and `const`-param
+callees outright — those are specializations `emit_call_or_specialize` owns, never diverted by cost.
+`inline-never` on a compile-time-demanded call is therefore itself a conflict → a coded reject ("this call's
+result is needed at compile time; it cannot be `inline-never`"), NOT a silent miscompile.
 
 ## THE KEY INTENT (operator, 2026-07-14): `inline-never` COMPOSES WITH `const`/generics
 `inline-never` must be "avoid the inline but STILL get polymorphism." It is orthogonal to `const`/generic

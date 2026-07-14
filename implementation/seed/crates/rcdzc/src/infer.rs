@@ -1555,6 +1555,19 @@ fn ensure_call_site_index(db: &mut Db) {
     db.call_sites_by_callee = Some(index);
 }
 
+/// The number of call sites whose head resolves to `callee`, across the whole program (the call-site
+/// index, built once + cached). The inline COST HEURISTIC (`lower::should_emit_once_by_cost`) uses this to
+/// require ≥ N callers before it prefers emit-once — a def called once gains nothing from a shared
+/// function. Counts every application occurrence (including a self-call, which the index records); the
+/// heuristic only consults this for a NON-recursive callee, so self-calls do not distort the decision.
+pub(crate) fn callee_call_site_count(db: &mut Db, callee: usize) -> usize {
+    ensure_call_site_index(db);
+    db.call_sites_by_callee
+        .as_ref()
+        .and_then(|idx| idx.get(&callee))
+        .map_or(0, |sites| sites.len())
+}
+
 /// Walk `node` (within caller body `caller_body`), recording into `index` every application whose head
 /// resolves to a user def — keyed by that callee's index, valued by `(caller_body, argument-occurrences)`.
 /// Recurses through all structural children so a call nested anywhere is found.

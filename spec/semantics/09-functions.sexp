@@ -3134,3 +3134,22 @@
             (def (main) (loop-n 5))
             (export main)))
   (error  CDZ0201))
+
+; COST HEURISTIC (Addendum 4). The UNANNOTATED default is always-inline, but a LARGE, MULTIPLY-CALLED def
+; whose call has a runtime-dependent argument is emitted ONCE and called instead of duplicated at each site.
+; This is an EMISSION-STRATEGY choice — it does NOT change semantics — so it is observable only via the
+; VALUE being unchanged: `big(x) = x*7 + x*11 + x*13 + x*17` = 48x. `main a b = big(a) + big(b)`; the export
+; is called with runtime args by the harness. The heuristic emits `big` once and calls it twice; the
+; `@inline-never` case above forces the same emission, and both agree on the value. `big(2)+big(3)` = 96 +
+; 144 = 240. (The floor is deliberately conservative; small helpers stay inlined.)
+(case "a large multiply-called definition is emitted once by the cost heuristic"
+  (doc    "A def large enough (past the inline-cost floor) and called at multiple sites with a runtime
+           argument is emitted as ONE function and called, not inlined per site — the cost heuristic's
+           duplication win. Semantics are unchanged (emission strategy only): with runtime args a=2, b=3,
+           `big(x)=48x`, so `big(2)+big(3)` = 96 + 144 = 240.")
+  (input  (do
+            (def (big (: x Int64)) (+ (* x 7) (+ (* x 11) (+ (* x 13) (* x 17)))))
+            (def (main (: a Int64) (: b Int64)) (+ (big a) (big b)))
+            (export main)))
+  (call   main (: 2 Int64) (: 3 Int64))
+  (output (: 240 Int64)))
