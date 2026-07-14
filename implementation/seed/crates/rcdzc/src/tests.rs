@@ -19464,6 +19464,41 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_non_literal_integer_annotated_a_float_offers_an_of_int_wrap() {
+        // A NON-literal integer EXPRESSION annotated a float — `(: n Float64)` with `n : Int64` — has no
+        // float literal spelling (the retype above is literal-only), so it converts with `(<Float>.of-int
+        // …)`, the annotation-position twin of the argument-site `of-int` coercion. Before this the
+        // annotation site offered NO int→float wrap for a non-literal (only the literal retype), while the
+        // ARGUMENT site did — so `(: n Float64)` declined a fix `(g n)` to a `Float64` param gave.
+        fn fix_of(src: &str) -> Option<String> {
+            first_error(src).fix.map(|f| f.replacement)
+        }
+        // Int64 source → a bare `of-int`.
+        assert_eq!(
+            fix_of("(module m (def (f (: n Int64)) (: n Float64)) (export f))"),
+            Some(format!("(Float64.of-int {})", crate::abi::WRAP_HOLE)),
+            "non-literal Int64→Float64 wraps in of-int"
+        );
+        // NARROWER int source → widen to Int64 first (`of-int : Int64 → Float`).
+        assert_eq!(
+            fix_of("(module m (def (f (: n Int32)) (: n Float64)) (export f))"),
+            Some(format!(
+                "(Float64.of-int (Int64.of {}))",
+                crate::abi::WRAP_HOLE
+            )),
+            "non-literal Int32→Float64 nests the Int64 widening"
+        );
+        // A LITERAL still takes the cleaner retype (`3` → `3.0`), NOT the wrap.
+        assert_eq!(
+            first_error("(module m (def (f) (: 3 Float64)) (export f))")
+                .fix
+                .map(|f| f.replacement),
+            Some("3.0".to_string()),
+            "an int literal still retypes to a float literal, not an of-int wrap"
+        );
+    }
+
+    #[test]
     fn an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix() {
         // The THIRD site of the same int coercion (arg + value-annotation + here): an annotated let-binder
         // whose annotation is a different int width than its INIT — `(let (((: x Int64) n)) …)` with

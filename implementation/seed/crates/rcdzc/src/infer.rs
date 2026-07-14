@@ -5672,38 +5672,65 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             );
                         } else {
                             // Compute the wrap `(prefix, suffix, verb, msg_tail)` from whichever applies.
-                            let wrap: Option<(String, String, String, String)> =
-                                if let Some(ctor) = wrap_variant_for(db, &annot_ty, &expr_ty) {
+                            let wrap: Option<(String, String, String, String)> = if let Some(ctor) =
+                                wrap_variant_for(db, &annot_ty, &expr_ty)
+                            {
+                                Some((
+                                    format!("({ctor} "),
+                                    ")".to_string(),
+                                    format!("wrap in `({ctor} …)`"),
+                                    format!(" — wrap the value in `{ctor}`"),
+                                ))
+                            } else if let (Ty::Float(_), Ty::Int(actual_int)) =
+                                (&annot_ty, &expr_ty)
+                            {
+                                // A NON-literal integer expression annotated a float — `(: n Float64)`
+                                // with `n : Int64` — cannot become a float LITERAL (handled above for a
+                                // literal), so convert it with `(<Float>.of-int …)`, widening a narrower
+                                // int to Int64 first (`of-int : Int64 → Float`). Mirrors
+                                // `numeric_text_coercion_fix`'s int→float branch, which the ARGUMENT site
+                                // already offered — the annotation site had NO int→float wrap for a
+                                // non-literal, so `(: n Float64)` declined a fix the arg site gave.
+                                let f = annot_ty.render_name();
+                                if actual_int.ground_width() == 64 && actual_int.ground_signed() {
                                     Some((
-                                        format!("({ctor} "),
+                                        format!("({f}.of-int "),
                                         ")".to_string(),
-                                        format!("wrap in `({ctor} …)`"),
-                                        format!(" — wrap the value in `{ctor}`"),
+                                        format!("convert the integer to {f} with `{f}.of-int`"),
+                                        format!(" — convert with `({f}.of-int …)`"),
                                     ))
-                                } else if let Some((prefix, suffix, verb)) =
-                                    int_coercion_wrap(&annot_ty, &expr_ty)
-                                {
-                                    let n = annot_ty.render_name();
-                                    Some((
-                                        prefix,
-                                        suffix,
-                                        verb,
-                                        format!(" — convert with `({n}.of …)`"),
-                                    ))
-                                } else if let Some((prefix, suffix, verb)) =
-                                    total_conversion_wrap(&annot_ty, &expr_ty)
-                                {
-                                    // A total prelude conversion bridges the mismatch — `String` where
-                                    // `Bytes` is annotated → `(String.to-bytes …)`. The heuristic wrap fix
-                                    // applies it; the message tail names the verb inline. (This is the
-                                    // annotation-context twin of the CALL-SITE arg check's total-conversion
-                                    // wrap — a `(g s)` to a `Bytes` param now reports the SAME CDZ0203 with
-                                    // this fix, since the arg check defers a REFERENCED param to this arm.)
-                                    let tail = format!(" — {verb}");
-                                    Some((prefix, suffix, verb, tail))
                                 } else {
-                                    None
-                                };
+                                    Some((
+                                        format!("({f}.of-int (Int64.of "),
+                                        "))".to_string(),
+                                        format!("convert to {f} with `{f}.of-int (Int64.of …)`"),
+                                        format!(" — convert with `({f}.of-int (Int64.of …))`"),
+                                    ))
+                                }
+                            } else if let Some((prefix, suffix, verb)) =
+                                int_coercion_wrap(&annot_ty, &expr_ty)
+                            {
+                                let n = annot_ty.render_name();
+                                Some((
+                                    prefix,
+                                    suffix,
+                                    verb,
+                                    format!(" — convert with `({n}.of …)`"),
+                                ))
+                            } else if let Some((prefix, suffix, verb)) =
+                                total_conversion_wrap(&annot_ty, &expr_ty)
+                            {
+                                // A total prelude conversion bridges the mismatch — `String` where
+                                // `Bytes` is annotated → `(String.to-bytes …)`. The heuristic wrap fix
+                                // applies it; the message tail names the verb inline. (This is the
+                                // annotation-context twin of the CALL-SITE arg check's total-conversion
+                                // wrap — a `(g s)` to a `Bytes` param now reports the SAME CDZ0203 with
+                                // this fix, since the arg check defers a REFERENCED param to this arm.)
+                                let tail = format!(" — {verb}");
+                                Some((prefix, suffix, verb, tail))
+                            } else {
+                                None
+                            };
                             let mut reject = Reject::coded(
                                 Code::TypeMismatch,
                                 format!(
