@@ -13,7 +13,9 @@ description: >-
   name (`cdz uses`, a span-mapped go-to-references), every well-formedness fault (`cdz check`,
   "diagnostics as you type"), a name's definition (`cdz def`, go-to-definition), the bindings
   visible at a point (`cdz scope`, variable scope tracking), a module's exported interface
-  (`cdz exports`), or a definition's/built-in's documentation (`cdz doc` / `cdz doc-at`). Covers the
+  (`cdz exports`), a definition's/built-in's documentation (`cdz doc` / `cdz doc-at`), or every concrete
+  monomorphization / instantiation of a generic or ad-hoc-polymorphic definition (`cdz instantiations` —
+  which concrete types / dictionaries a generic was specialized at). Covers the
   `,x`/`,@xs` pattern language,
   structural guards (`is-literal`/`head-is`/`matches`/`not`), relational context (`inside`/`has`),
   multi-rule sets + traversal strategy, multi-file/`--write`/`--diff`/`--json`, the `diff`
@@ -209,7 +211,7 @@ near-clone: 3 occurrences, 1 hole(s): (scale x ,m0)
 - Because the parser recovers from errors, `query` works over **broken input** too: it warns on stderr
   and still runs the query over the recovered tree.
 
-## Semantic queries (`cdz type` / `cdz uses` / `cdz check` / `cdz def` / `cdz scope` / `cdz exports` / `cdz doc`) — the compiler as oracle
+## Semantic queries (`cdz type` / `cdz uses` / `cdz check` / `cdz def` / `cdz scope` / `cdz exports` / `cdz doc` / `cdz instantiations`) — the compiler as oracle
 
 The codemod above is a **shape** layer: it never resolves a name or infers a type (that would
 duplicate the compiler's resolver). When you need a fact only the compiler knows, `cdz` — because it
@@ -266,6 +268,17 @@ no documentation for `ghost`
 # cdz doc-at FILE OFFSET — documentation at cursor: the doc of the definition the node is/references.
 $ cdz doc-at prog.cdz 49
 increments its argument
+
+# cdz instantiations NAME FILE — every concrete monomorphization a generic / ad-hoc-polymorphic
+# definition becomes (generics don't cross the component boundary, so each is monomorphized). One line
+# per DISTINCT instance: file:line:col of the generic, its concrete per-arg instantiation, → the spec.
+$ cdz instantiations loopn prog.cdz     # a recursive generic called at Int64 AND String
+prog.cdz:1:7: loopn[n: Int64, x: Int64] → loopn#mono2
+prog.cdz:1:7: loopn[n: Int64, x: String] → loopn#mono3
+$ cdz instantiations fold-n dict.cdz    # ad-hoc poly: a `const` dictionary inlined + erased per call
+dict.cdz:1:7: fold-n[const d = (record (op (fn (x) (+ x 10)))), n: Int64, acc: Int64] → fold-n#mono2
+dict.cdz:1:7: fold-n[const d = (record (op (fn (x) (* x 2)))), n: Int64, acc: Int64] → fold-n#mono3
+$ cdz instantiations main prog.cdz      # total: a non-generic (never-specialized) def reports nothing
 ```
 
 > **Hover reads as a presentation, not a raw type** (`type-at`): a grammar keyword shows `keyword def`
@@ -310,6 +323,20 @@ increments its argument
   no-keys-outside-the-prelude), and a **grammar keyword** (`if`/`let`/`match`/…), not a binding, gets
   its help from a small keyword table (the doc analogue of the hardcoded grammar set). Total: a name
   that documents nothing is a defined "no documentation" line.
+- **`instantiations`** drives `Query::Instantiations` — every concrete MONOMORPHIZATION a generic /
+  ad-hoc-polymorphic definition becomes. Because generics do not cross the component boundary, the
+  compiler emits ONE specialized function per distinct concrete instantiation
+  (`DESIGN-recursive-generic-monomorphization-rcdzc.md`); this query is the reverse index — given a
+  source def NAME, list its instances. It covers all three specialization flavors: a **recursive
+  generic** at each concrete type (`loopn` at Int64 + String), a **type-valued-parameter** def at each
+  type (`(: t Type)`, the erased type shown `const t = T`), and the **ad-hoc-polymorphism** case — a
+  `const` dictionary parameter inlined + erased at each call, rendered as the concrete dictionary source
+  so you see WHICH instance each call baked in. It reads the record `lower::type_specialize` keeps
+  (`db.instantiations`) after FORCING monomorphization over the whole program, so the set is complete
+  regardless of exports. Each line `file:line:col` (the generic's name occurrence) `NAME[args…]` `→
+  spec-name`. Totals: a **non-recursive** generic is inlined (β-reduced) at each call, emitting no shared
+  function, so it — like a monomorphic def or an unknown name — reports nothing. Two calls at the SAME
+  instantiation dedup to one instance (the memoized specialization).
 - **Format** is inferred from the file extension (`.cdz`/`.ml`→ml, `.sexp`/`.sexpr`→sexpr), like the
   codemod subcommands.
 

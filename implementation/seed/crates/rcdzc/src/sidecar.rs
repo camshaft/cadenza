@@ -88,6 +88,11 @@ pub const KIND_HIGHLIGHT: &str = "highlight";
 /// documentation text, the "hover documentation" companion of `KIND_TYPE_AT`.
 pub const KIND_DOC: &str = "doc";
 
+/// The output artifact kind for an `Instantiations` query result — every concrete monomorphization of a
+/// generic / ad-hoc-polymorphic definition (recursive-generic, type-valued-param, and `const`-dictionary
+/// specializations), one per line.
+pub const KIND_INSTANTIATIONS: &str = "instantiations";
+
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
 /// (`Query`). `Rewrite` (the validated-transaction arm of `DESIGN-sidecar-api.md`) is a later rung and
 /// not modeled here yet.
@@ -196,6 +201,24 @@ pub enum Query {
     /// span-free like `TypeAt`: the consumer resolves a cursor OFFSET to the node and asks this. TOTAL: a
     /// node that is not (and does not reference) a documented definition yields the empty result.
     DocAt { node: u32 },
+    /// Every CONCRETE INSTANTIATION of a generic / ad-hoc-polymorphic definition BY NAME — the reverse of
+    /// "one source def emits one function". Because generics do not cross the component boundary
+    /// (`component-abi.md` §Generics Do Not Cross The Boundary), the compiler MONOMORPHIZES a generic
+    /// definition into one specialized function per distinct concrete instantiation
+    /// (`DESIGN-recursive-generic-monomorphization-rcdzc.md`): a recursive generic called at two element
+    /// types, a type-valued-parameter def applied to two types, and — the ad-hoc-polymorphism case — a
+    /// `const` dictionary parameter inlined at two concrete dictionaries. This query reads the record
+    /// monomorphization keeps (`db.instantiations`, filled by `lower::type_specialize`), reporting each
+    /// instance's specialized-def name and its concrete per-argument instantiation. It first FORCES
+    /// monomorphization over the whole program (`layout::force_monomorphize`) so the set is complete
+    /// regardless of what the query-only run would otherwise lower. Answered as one instance per line,
+    /// TAB-separated: `spec-name<TAB>def-name-node-id<TAB>arg;arg;…` — `spec-name` the synthesized
+    /// monomorphic function, `def-name-node-id` the SOURCE definition's name occurrence (so a consumer maps
+    /// it to a location), and the `;`-joined argument descriptions (a kept runtime param `name: TYPE`, an
+    /// erased compile-time param `const name = VALUE`). Total: a NON-generic definition (never specialized)
+    /// — or a name that names nothing — yields the empty result. A generic definition that is never
+    /// instantiated (unreferenced) also yields nothing, since no instance exists.
+    Instantiations { name: String },
 }
 
 /// The one-byte request tags. Stable across versions (additive — a new request is a new tag).
@@ -229,6 +252,7 @@ mod tag {
     pub const QUERY_HIGHLIGHT: u8 = 0x17;
     pub const QUERY_DOC_OF: u8 = 0x18;
     pub const QUERY_DOC_AT: u8 = 0x19;
+    pub const QUERY_INSTANTIATIONS: u8 = 0x1a;
 }
 
 /// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
@@ -279,6 +303,9 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         })),
         tag::QUERY_DOC_AT => Some(Request::Query(Query::DocAt {
             node: u32::try_from(r.read_varu64()?).ok()?,
+        })),
+        tag::QUERY_INSTANTIATIONS => Some(Request::Query(Query::Instantiations {
+            name: read_string(r)?,
         })),
         _ => None,
     }
@@ -332,6 +359,10 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
         Request::Query(Query::DocAt { node }) => {
             out.push(tag::QUERY_DOC_AT);
             leb128::write_u64(out, *node as u64);
+        }
+        Request::Query(Query::Instantiations { name }) => {
+            out.push(tag::QUERY_INSTANTIATIONS);
+            write_string(out, name);
         }
     }
 }
@@ -614,7 +645,66 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                 bytes: text.into_bytes(),
             }
         }
+        Query::Instantiations { name } => {
+            // Every concrete monomorphization of the named generic / ad-hoc-polymorphic definition. Force
+            // monomorphization over the whole program first (`force_monomorphize` lowers every def body,
+            // firing `type_specialize` at each recursive-generic / type-valued / `const` call) so
+            // `db.instantiations` is complete — a query is TOTAL and must not depend on what a query-only
+            // run would otherwise lower. Then filter the record to the instances whose SOURCE definition is
+            // the named one (mapping each record's `orig_body` back to its def via `def_index_by_body`).
+            crate::layout::force_monomorphize(db);
+            let text = instantiations_text(db, name);
+            QueryResult {
+                kind: KIND_INSTANTIATIONS,
+                name: name.clone(),
+                bytes: text.into_bytes(),
+            }
+        }
     }
+}
+
+/// The `Instantiations` read: every concrete instantiation of the definition named `name`, one per line
+/// as `spec-name<TAB>def-name-node-id<TAB>arg;arg;…`. Reads `db.instantiations` (filled by
+/// `lower::type_specialize`, forced complete by the caller), keeping the records whose `orig_body` maps
+/// back to a def named `name`. Deterministic: the records are in synthesis order, which is a function of
+/// the source (definition index order, then a source-structure lowering walk). Total: a non-generic or
+/// unknown name has no records → the empty string.
+fn instantiations_text(db: &mut Db, name: &str) -> String {
+    // The records are `(orig_body, spec_index, args)`; map each `orig_body` to its source def and keep
+    // those whose def name matches. Snapshot first (an immutable borrow of `db.instantiations` cannot
+    // coexist with the `def_index_by_body` reads below), then resolve the name-node per surviving record.
+    let records: Vec<(StructId, usize, Vec<String>)> = db
+        .instantiations
+        .iter()
+        .map(|inst| (inst.orig_body, inst.spec_index, inst.args.clone()))
+        .collect();
+    let mut text = String::new();
+    for (orig_body, spec_index, args) in records {
+        let Some(def_idx) = db.def_index_by_body(orig_body) else {
+            continue;
+        };
+        if db.defs[def_idx].name != name {
+            continue;
+        }
+        // The source def's NAME occurrence (its signature's first child), so a consumer can jump to the
+        // generic definition; `-` if the signature is malformed. Same name-occurrence convention as the
+        // `Exports`/`ResolveOf` queries.
+        let sig = db.defs[def_idx].sig_occ;
+        let name_node = match db.ast.get(sig) {
+            Struct::List(kids) => kids
+                .first()
+                .map_or_else(|| "-".to_string(), |n| n.0.to_string()),
+            _ => "-".to_string(),
+        };
+        let spec_name = db.defs[spec_index].name.clone();
+        text.push_str(&spec_name);
+        text.push('\t');
+        text.push_str(&name_node);
+        text.push('\t');
+        text.push_str(&args.join(";"));
+        text.push('\n');
+    }
+    text
 }
 
 /// The documentation of a NAME — the `DocOf` read, an ordered fallback returning the FIRST source that
@@ -1472,6 +1562,9 @@ mod tests {
                 name: "helper".into(),
             }),
             Request::Query(Query::DocAt { node: 11 }),
+            Request::Query(Query::Instantiations {
+                name: "fold-n".into(),
+            }),
         ];
         assert_eq!(decode(&encode(&requests)), Some(requests));
     }

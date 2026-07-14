@@ -76,6 +76,29 @@ pub struct Def {
     pub internal: bool,
 }
 
+/// One CONCRETE INSTANTIATION of a generic / ad-hoc-polymorphic definition — a record monomorphization
+/// appends every time it synthesizes a specialized copy (`crate::lower::type_specialize`), so the
+/// compiler can ENUMERATE the concrete instances of a source definition after a lower pass (the
+/// `Instantiations` sidecar query, `cdz instantiations`). The `type_specializations` memo already keys a
+/// specialization by `(orig-body, instantiation-key)`, but that key renders a `const`-dictionary
+/// argument as an opaque fingerprint; this record instead carries a HUMAN-READABLE per-argument
+/// description, so a report can SHOW which concrete dictionary an ad-hoc-polymorphic call baked in — the
+/// distinguishing data of an instantiation. One record per DISTINCT specialization (appended at the memo
+/// MISS, alongside the memo insert), so it never double-counts a call site that reuses an instance.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Instantiation {
+    /// The GENERIC definition's body occurrence — the identity `type_specialize` keyed the copy on, which
+    /// `def_index_by_body` maps back to the source definition (so a query by NAME finds its instances).
+    pub orig_body: StructId,
+    /// The synthesized specialization's `db.defs` index (its emitted monomorphic function).
+    pub spec_index: usize,
+    /// The concrete instantiation, one entry per parameter in signature order: a kept RUNTIME parameter
+    /// as `name: TYPE`, an ERASED compile-time parameter (a type-valued or `const` argument) as
+    /// `const name = VALUE` — the type-value for a type argument, the inlined SOURCE text for a `const`
+    /// dictionary/constant.
+    pub args: Vec<String>,
+}
+
 /// The file-scoped name-resolution table for a multi-file PACKAGE (`DESIGN-package-linking.md` §4),
 /// derived once at load from the [`crate::link::Linkage`]. It answers the two file-scoped questions
 /// `resolve_name` asks when a package is linked:
@@ -1091,6 +1114,16 @@ pub struct Db {
     /// with no recursive-generic call — byte-identical to before.
     pub(crate) type_specializations: crate::fxhash::FxHashMap<(StructId, String), usize>,
 
+    /// A HUMAN-READABLE record of each concrete instantiation `type_specialize` synthesized, in
+    /// synthesis order — one [`Instantiation`] per DISTINCT specialization (appended at the memo miss,
+    /// beside the `type_specializations` insert). The memo answers "have I already built this instance?";
+    /// this list answers "what are ALL the instances of definition X, and at what concrete arguments?" —
+    /// the data the `Instantiations` query reports. Its per-argument descriptions render a `const`
+    /// dictionary argument as readable source (not the memo's opaque fingerprint), so a report can show
+    /// which concrete dictionary an ad-hoc-polymorphic call baked in. Empty for a program with no
+    /// recursive-generic / type-valued / `const` instantiation — no cost to a monomorphic program.
+    pub(crate) instantiations: Vec<Instantiation>,
+
     /// The NAME OCCURRENCES of parameters declared `const` — an EXPLICIT compile-time parameter (`(def (f
     /// (const (: d T)) …) …)`, `DESIGN-…-monomorphization-rcdzc.md` Addendum 3). A `const` param MUST be
     /// compile-time-known at each call: it is folded + inlined into a specialized copy and ERASED from the
@@ -1458,6 +1491,7 @@ impl Db {
             subtree_performs_cache: crate::fxhash::FxHashMap::default(),
             reduced_callable_walked: crate::fxhash::FxHashSet::default(),
             type_specializations: crate::fxhash::FxHashMap::default(),
+            instantiations: Vec::new(),
             const_params,
             range_refinements: Vec::new(),
         };

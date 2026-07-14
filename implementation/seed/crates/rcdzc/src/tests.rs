@@ -40908,8 +40908,8 @@ mod sidecar_driven {
     use crate::backend::Target;
     use crate::compile::compile;
     use crate::sidecar::{
-        self, KIND_DIAGNOSTICS, KIND_DOC, KIND_EXPORTS, KIND_HIGHLIGHT, KIND_RESOLVE, KIND_SCOPE,
-        KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request,
+        self, KIND_DIAGNOSTICS, KIND_DOC, KIND_EXPORTS, KIND_HIGHLIGHT, KIND_INSTANTIATIONS,
+        KIND_RESOLVE, KIND_SCOPE, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request,
     };
     use crate::testkit::parse;
 
@@ -41910,6 +41910,128 @@ mod sidecar_driven {
         assert!(
             !kinds.is_empty() && kinds.iter().all(|k| k == "label"),
             "record field / member key are labels: {kinds:?}"
+        );
+    }
+
+    /// The lines of an `Instantiations` query for `name` over `src` — the sorted concrete instances.
+    fn instantiations_of(src: &str, name: &str) -> Vec<String> {
+        let out = compile(
+            &inputs(
+                src,
+                &[Request::Query(Query::Instantiations { name: name.into() })],
+            ),
+            &[],
+        );
+        assert!(
+            !out.has_error(),
+            "an instantiations query does not fail: {:?}",
+            out.diagnostics
+        );
+        let text = artifact_text(&out, KIND_INSTANTIATIONS).unwrap_or_default();
+        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+        lines.sort();
+        lines
+    }
+
+    /// The `arg;arg;…` field (the concrete per-argument instantiation) of each instance line, sorted —
+    /// dropping the synthesized spec name (`#mono<N>` embeds `db.defs.len()`, unstable) and the node id.
+    fn instantiation_args(src: &str, name: &str) -> Vec<String> {
+        let mut args: Vec<String> = instantiations_of(src, name)
+            .iter()
+            .filter_map(|l| l.splitn(3, '\t').nth(2).map(str::to_string))
+            .collect();
+        args.sort();
+        args
+    }
+
+    #[test]
+    fn a_recursive_generic_reports_one_instantiation_per_concrete_type() {
+        // `loopn` threads a generic `x`; called at Int64 AND String it monomorphizes into two functions
+        // (the rep-sensitive case from the recursive-generic design). The query enumerates BOTH, each with
+        // its concrete per-parameter types — the reverse of "one source def, one function".
+        let src = "(module m \
+                   (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
+                   (def (main (: a Int64)) (+ (loopn 3 a) (String.scalar-len (loopn 2 \"hi\")))) \
+                   (export main))";
+        assert_eq!(
+            instantiation_args(src, "loopn"),
+            vec!["n: Int64;x: Int64", "n: Int64;x: String"],
+        );
+    }
+
+    #[test]
+    fn a_non_generic_definition_has_no_instantiations() {
+        // A monomorphic def is never specialized — it emits one function, so it has no instantiations. Total.
+        let src = "(module m (def (f (: x Int64)) x) (def (main) (f 1)) (export main))";
+        assert!(instantiations_of(src, "f").is_empty());
+        // A non-recursive generic is INLINED (β-reduced) at each call site, emitting no shared function —
+        // so it, too, reports no instantiation (a documented boundary of the query).
+        let inl = "(module m (def (ident v) v) \
+                   (def (main (: x Int64)) (+ (ident x) (ident 1))) (export main))";
+        assert!(instantiations_of(inl, "ident").is_empty());
+    }
+
+    #[test]
+    fn an_instantiations_query_for_an_unknown_name_is_total() {
+        // A name that names no definition yields the empty result, never an error — the oracle contract.
+        let src = "(module m (def (main) 42) (export main))";
+        assert!(instantiations_of(src, "ghost").is_empty());
+    }
+
+    #[test]
+    fn a_type_valued_parameter_reports_the_erased_type_argument() {
+        // A recursive generic with a `(: t Type)` type-valued parameter monomorphizes per passed type; the
+        // type arg is compile-time-only (ERASED from the runtime signature), so the query renders it as an
+        // erased `const t = TYPE` and keeps the list parameter as `l: (Lst TYPE)`.
+        let src = "(module m (type Lst Nil (Cons a (Lst a))) \
+                   (def (len (: t Type) (: l (Lst t))) \
+                     (match l ((Lst.Nil) 0) ((Lst.Cons h tl) (+ 1 (len t tl))))) \
+                   (def (main) (+ (len Int64 (Lst.Cons 1 (Lst.Cons 2 Lst.Nil))) \
+                                  (len String (Lst.Cons \"a\" Lst.Nil)))) \
+                   (export main))";
+        assert_eq!(
+            instantiation_args(src, "len"),
+            vec![
+                "const t = Int64;l: (Lst Int64)",
+                "const t = String;l: (Lst String)",
+            ],
+        );
+    }
+
+    #[test]
+    fn ad_hoc_polymorphism_reports_the_inlined_dictionary_per_instance() {
+        // The ad-hoc-polymorphism case: a `const` dictionary parameter is inlined + erased at each call, so
+        // `fold-n` monomorphizes once per DISTINCT dictionary. The query shows WHICH concrete dictionary
+        // each instance baked in (the distinguishing data), rendered as the inlined source — not an opaque
+        // fingerprint — while `n`/`acc` stay ordinary runtime parameters.
+        let src = "(module m \
+                   (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
+                     (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
+                   (def (main) (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0) \
+                                  (fold-n (record (op (fn (x) (* x 2)))) 3 1))) \
+                   (export main))";
+        assert_eq!(
+            instantiation_args(src, "fold-n"),
+            vec![
+                "const d = (record (op (fn (x) (* x 2))));n: Int64;acc: Int64",
+                "const d = (record (op (fn (x) (+ x 10))));n: Int64;acc: Int64",
+            ],
+        );
+    }
+
+    #[test]
+    fn two_calls_at_the_same_instantiation_dedup_to_one() {
+        // The specialization is memoized on the concrete instantiation, so two calls with the SAME
+        // dictionary share ONE function — the query reports a single instance (no double-count).
+        let src = "(module m \
+                   (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
+                     (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
+                   (def (main) (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0) \
+                                  (fold-n (record (op (fn (x) (+ x 10)))) 2 5))) \
+                   (export main))";
+        assert_eq!(
+            instantiation_args(src, "fold-n"),
+            vec!["const d = (record (op (fn (x) (+ x 10))));n: Int64;acc: Int64"],
         );
     }
 }

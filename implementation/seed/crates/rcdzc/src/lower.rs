@@ -5871,6 +5871,60 @@ fn arg_captures_runtime_binding(db: &mut Db, arg: StructId) -> bool {
     go(db, arg, arg)
 }
 
+/// A COMPACT source-like rendering of an arena subtree, for the `Instantiations` query's description of
+/// a `const`-inlined argument (a dictionary / constant) — so a report shows the concrete value an
+/// ad-hoc-polymorphic call baked in, not an opaque fingerprint. A best-effort human view, NOT a
+/// round-trippable printer: an atom renders its leaf text; a list renders `(head child…)`. A deep or
+/// wide subtree is ELIDED to `…` past a small bound (a dictionary is small; a large inlined value would
+/// bloat one line and is not the distinguishing data). Never enters `db` mutation — a pure read.
+fn render_arg_node(db: &Db, id: crate::ast::StructId) -> String {
+    fn go(db: &Db, id: crate::ast::StructId, depth: usize, out: &mut String) {
+        match db.ast.get(id) {
+            crate::ast::Struct::Atom(_) => {
+                if let Some(n) = db.ast.as_name(id) {
+                    out.push_str(n);
+                } else if let Some(s) = db.ast.as_str(id) {
+                    out.push('"');
+                    out.push_str(s);
+                    out.push('"');
+                } else if let Some(i) = db.ast.as_int(id) {
+                    out.push_str(&i.to_decimal_string());
+                } else if let Some(sym) = db.ast.as_sym(id) {
+                    out.push_str("#\"");
+                    out.push_str(sym);
+                    out.push('"');
+                } else {
+                    // A float / char / bytes / bool / marker leaf — a rare const value; render a
+                    // placeholder rather than reach for each leaf's spelling (this is a description, not
+                    // the canonical printer, which lives in `cadenza-syntax`).
+                    out.push('_');
+                }
+            }
+            crate::ast::Struct::List(items) => {
+                if depth >= 4 {
+                    out.push('…');
+                    return;
+                }
+                out.push('(');
+                for (i, &c) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(' ');
+                    }
+                    if i >= 6 {
+                        out.push('…');
+                        break;
+                    }
+                    go(db, c, depth + 1, out);
+                }
+                out.push(')');
+            }
+        }
+    }
+    let mut out = String::new();
+    go(db, id, 0, &mut out);
+    out
+}
+
 /// Monomorphize a RECURSIVE GENERIC def `callee` for a call whose arguments have the concrete types at
 /// this site: synthesize (once, memoized) a COPY of the def whose parameters are re-annotated with those
 /// concrete types, and return the copy's `db.defs` index. The copy is an ordinary MONOMORPHIC def — its
@@ -6066,6 +6120,29 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
         internal: false,
     });
     db.type_specializations.insert(memo_key, spec_index);
+
+    // Record this DISTINCT instantiation for the `Instantiations` query — one human-readable entry per
+    // parameter, in signature order (a kept runtime param as `name: TYPE`, an erased compile-time param
+    // as `const name = VALUE`). Appended HERE, at the memo MISS, so the list holds one record per
+    // synthesized specialization and never double-counts a call site that reuses an instance. The
+    // const-argument description renders the inlined SOURCE (`render_arg_node`), not the memo's opaque
+    // fingerprint — so a report can show which concrete dictionary an ad-hoc-polymorphic call baked in.
+    let inst_args: Vec<String> = param_names
+        .iter()
+        .zip(kinds.iter())
+        .map(|(name, kind)| match kind {
+            ArgKind::Value(ty) => format!("{name}: {}", ty.render_name()),
+            ArgKind::TypeArg(tv) => format!("const {name} = {}", tv.render_name()),
+            ArgKind::ConstArg(arg_node, _) => {
+                format!("const {name} = {}", render_arg_node(db, *arg_node))
+            }
+        })
+        .collect();
+    db.instantiations.push(crate::db::Instantiation {
+        orig_body,
+        spec_index,
+        args: inst_args,
+    });
 
     // Copy the body structurally (fresh occurrences that re-resolve against the new def's scope): a body
     // reference to a VALUE param re-resolves by name to the new annotated binder; a TYPE-VALUED param's
