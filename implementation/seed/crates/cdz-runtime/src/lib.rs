@@ -16344,6 +16344,75 @@ mod tests {
         assert_eq!(live_nodes(), before);
     }
 
+    /// `map_iter_order_is_deterministic` (above) proves insert-order-independent cursor iteration for INT
+    /// keys (immediate). STRING keys take a DIFFERENT champ path — an arity-0 heap-byte leaf whose slot is
+    /// chosen by `champ_hash`'s raw-byte FNV, not an int's little-endian bytes — so their CHAMP placement,
+    /// and thus the cursor's descent order, is a distinct code path. The self-hosting compiler's
+    /// symbol-table maps are STRING-keyed and it will iterate them (e.g. to emit definitions in a stable
+    /// order once `Map.fold`/`keys` are exposed — the runtime cursor is already shipped), so a string-key
+    /// cursor-order bug would make a compiler built on top produce non-deterministic output. Pin that a
+    /// string-keyed map iterates in the SAME order regardless of insert order (the order is CHAMP hash
+    /// order — NOT lexicographic; value-encode separately re-sorts to canonical render order).
+    #[test]
+    fn map_iter_order_is_deterministic_for_string_keys() {
+        reset();
+        let before = live_nodes();
+        // Varied lengths + a shared "key"/"keyword" prefix (distinct hashes, adjacent-ish slots) + the
+        // empty string, to spread keys across the trie rather than one bucket.
+        let names = [
+            "key",
+            "keyword",
+            "a",
+            "",
+            "bb",
+            "ccc",
+            "z",
+            "a-longer-identifier",
+        ];
+        let build = |order: &dyn Fn(usize) -> usize| -> Handle {
+            let mut m = op_map_empty();
+            for i in 0..names.len() {
+                let j = order(i);
+                m = op_map_insert(m, op_str_new(names[j].to_string()), op_box_int(j as i64));
+            }
+            m
+        };
+        let m1 = build(&|i| i); // forward insert order
+        let m2 = build(&|i| names.len() - 1 - i); // reverse insert order
+        let collect = |m: Handle| -> Vec<String> {
+            let mut out = Vec::new();
+            let mut cur = op_map_iter(m);
+            loop {
+                let k = op_map_iter_key(cur);
+                if k == Handle::NULL {
+                    break;
+                }
+                out.push(op_str_get(k));
+                cur = op_map_iter_next(cur);
+            }
+            op_drop(cur);
+            out
+        };
+        let order1 = collect(m1);
+        let order2 = collect(m2);
+        assert_eq!(
+            order1.len(),
+            names.len(),
+            "the cursor visits every distinct string key exactly once"
+        );
+        assert_eq!(
+            order1, order2,
+            "a string-keyed map iterates in the SAME (CHAMP hash) order regardless of insert order"
+        );
+        op_drop(m1);
+        op_drop(m2);
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak across the string-key iteration"
+        );
+    }
+
     #[test]
     fn map_iter_fork_independence() {
         reset();
