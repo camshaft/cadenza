@@ -157,6 +157,15 @@ boundary envelope) → **U3** (compile-request override) → **U4** (remove `ext
   `cadenza:mid/api` → `main(9)=10`, a value flowing A→B→C. Byte-neutral (`publish_iface=None` is the old
   shape); gate 2141/0/0. 14 cross-component tests + 8 cdz-run tests.
 
+- **U12 — a DIAMOND graph: one shared provider feeds two middles. ✅ DONE (`spec`, test-only).** Composes
+  the multi-interface consumer (U9) with the fused consumer+provider chain (U11) over a SHARED base: a
+  provider A (`base x = x*2`, `cadenza:base/api`) is consumed by TWO middle components B (`bee x = base(x)+1`,
+  `cadenza:b/api`) AND C (`cee x = base(x)+10`, `cadenza:c/api`), and a top component D binds BOTH B and C
+  (`main x = bee(x)+cee(x)`). No compiler change — the U11 runner (each EARLIER peer's interface bound into
+  later peers' linkers, dependency order) already forwards A into BOTH B's and C's linkers and both middles
+  into D. Test `u12_*`: `main(5) = (10+1)+(10+10) = 31`. Confirms the peer-forwarding composes for a
+  non-linear graph. 15 cross-component tests.
+
 🎉 **THE UNIFICATION IS COMPLETE.** Cross-component interop IS the effect system: a contract is an
 `(effect …)`, a peer dependency is that effect `(bind …)`-ed to a peer interface, a test overrides with a
 `(handle …)` or a compile-request `--bind`. ONE concept — an escaping effect the manifest records — for
