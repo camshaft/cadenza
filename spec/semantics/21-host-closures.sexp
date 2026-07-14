@@ -2829,6 +2829,51 @@
   (call   twice (: 21 Int64))
   (output (: 42 Int64)))
 
+; The tuple-AMONG-scalars arg shape now works on the MIXED path too, for EVERY result shape: a closure taking a
+; tuple among scalar args, exported ALONGSIDE a plain non-closure export. `emit_mixed_closure_resource` uses
+; `single_compound_among_scalars` (like multi-export), threading prefix/suffix scalar bytes into the shared
+; scalar/list `call` functype; the plain export rides alongside as a top-level func.
+
+(case "MIXED among-scalars: a scalar-then-Tuple closure ALONGSIDE a plain export — driving the closure"
+  (doc    "`mk : (-> Int64 (Tuple Int64 Int64) Int64)` — a scalar `n` then a tuple `p`, exported beside a plain
+           `two`. The shared `call` interleaves `n` around the rebuilt tuple. `make()` → handle, `call(handle,
+           100, (10, 3))` → `n + p.0 + p.1` = 113.")
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: 113 Int64)))
+
+(case "MIXED among-scalars: driving the PLAIN export alongside a scalar-then-Tuple closure"
+  (doc    "The SAME mixed component, driving the plain `two` — it coexists with the among-scalars tuple-arg
+           closure interface. `two()` → 2.")
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (+ n (+ (. p 0) (. p 1)))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   two)
+  (output (: 2 Int64)))
+
+(case "MIXED among-scalars: a scalar-then-Tuple closure with a LIST result ALONGSIDE a plain export"
+  (doc    "`mk : (-> Int64 (Tuple Int64 Int64) (List Int64))` — a scalar then a tuple, returning a List, beside
+           a plain `two`. The shared value-encode `call` interleaves `n` around the rebuilt tuple, value-encodes
+           the returned List. `call(handle, 100, (10, 3))` → `(list 100 10 3)`.")
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list n (. p 0) (. p 1))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (list 100 10 3) (List Int64))))
+
+(case "MIXED among-scalars: a scalar-then-Tuple closure with a COMPOUND result ALONGSIDE a plain export"
+  (doc    "`mk : (-> Int64 (Tuple Int64 Int64) (Tuple Int64 Int64 Int64))` — a scalar then a tuple, returning a
+           fixed-shape tuple, beside a plain `two`. The shared value-form `call` interleaves `n` around the
+           rebuilt arg tuple, walks the returned handle into the template. `call(handle, 100, (10, 3))` →
+           `(tuple 100 10 3)`.")
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (tuple n (. p 0) (. p 1))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   mk (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64))))
+
 ; The tuple-arg × list-result composition extends to the DISTINCT-SIGNATURE shape — the LAST list-result gap:
 ; closures of DIFFERENT signatures each taking a fixed-shape scalar tuple arg AND returning a list<u8>-crossing
 ; result (byte-rope / fixed-compound / collection) cross as G resource types, each per-group `call-g<n>`
