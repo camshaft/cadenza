@@ -220,13 +220,32 @@ front-end must emit both sides with a consistent convention (`assemble_extern` u
 production — gate 1881 pass / 0 fail / 0 regressions). `select`-emits-`ExternCall`-as-`call` is wired in
 X4 (it needs the front-end trigger + the layout's extern-import order, which land together).
 
-**X4 — cdz-run multi-component composition + first e2e.** `cdz-run` composes A + B + ONE runtime instance:
-instantiate the runtime once, bind B's import of A's export, bind both program cores' heap import to the
-one runtime instance. Run end-to-end. First case: B calls A's `(-> Int64 Int64)`, a scalar crosses. This
-needs the runner to move from "one program + fresh runtime" (`lib.rs:202,391`) to "a program graph + one
-shared runtime instance" — the shared-instance plumbing X1 proved. A gate/corpus shape for multi-component
-cases (the corpus is single-`(input)` today — `DESIGN-package-linking.md §8.1` names the same corpus-format
-gap; may need a Rust integration test first, like package-linking's 12 tests).
+**X4a — the cdz-run multi-component composition primitive. ✅ DONE (`spec`).** `cdz_run::run_with_peers(
+consumer, peers, opts)` + a `cdz_run::Peer { bytes, interface }` descriptor: instantiate each peer
+component, forward its exported interface's funcs (discovered off the peer instance type, never hard-coded
+— the `compose_runtime` discipline) into the consumer's like-named import, all in ONE shared `wasmtime`
+store; compose the consumer's runtime if it imports one. `bind_host_imports` gained a `skip: &[String]` so
+a peer interface bound as a peer is not ALSO bound as a host effect (a double-bind is a linker error — the
+bug this surfaced + fixed). Proven by the X4a test: the X3 provider and `assemble_extern` consumer, built
+as SEPARATE valid components, composed by `run_with_peers` → `main(5) = f(5)*10 = 60`. This is the shape
+the front-end (X4b) produces (each `.cdz` → its own component). Byte-neutral (new fn + a skip param passed
+`&[]` on the existing path; gate 1888 pass / 0 fail / 0 regressions). ⚠ the earlier "version header out of
+order" was a reused-`wasmparser::Validator` (one validator can't validate two components) — a fresh
+validator per component; `wasm-tools validate` confirmed both standalone. ⚠ stale-runtime false alarm on a
+fresh worktree — `cargo xtask build` before gating (515 false regressions → 0). SCOPE: scalar peer ops, a
+runtime-free peer; sharing ONE runtime instance across consumer + peers is X5.
+
+**X4b — the front-end trigger (source → `Core::ExternCall` → `assemble_extern` → run e2e).** NEXT. The
+resolver classifies a cross-component `(import "comp" (f))` (a peer, not a sibling `ast` file) → a
+`Resolved::Extern`/external `link::Import`; an applied extern lowers to `Core::ExternCall`; `select` emits
+it as `call <extern-import-index>` (a new `Lir` + a `layout.extern_order` analogous to `host_order`);
+`emit` collects the extern-import set, records the order, and wraps the core with `assemble_extern` (X3);
+`cdz-run`/CLI delivers the peer set (a `Peer` per imported component) to `run_with_peers` (X4a). Then a
+source program calling a peer runs end-to-end. Needs a multi-component gate/corpus shape (the corpus is
+single-`(input)` — `DESIGN-package-linking.md §8.1` names the same gap; a Rust integration test first, like
+package-linking's 12 tests). Absorbs the resolver half deferred from X2. ⚠ interface param NAMES must match
+across the boundary (the X3 finding) — the front-end emits both the peer's export sig and the consumer's
+import decl with the `p0,p1,…` convention.
 
 **X5 — COMPOUND values cross as shared `value` handles (the payoff).** Extend X3/X4: a compound arg crosses
 as `borrow<value>`, a compound result as `own<value>`. B builds a `List` on the shared heap, hands the

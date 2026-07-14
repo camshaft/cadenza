@@ -46856,4 +46856,54 @@ mod cross_component_oracle {
             cdz_run::Outcome::Trap(t) => panic!("extern-envelope run trapped: {t}"),
         }
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // X4a — the cdz-run MULTI-COMPONENT composition primitive (`cdz_run::run_with_peers`). Unlike X1/X3
+    // (which NEST the peer + consumer in one outer ComponentBuilder), here the provider and consumer are
+    // SEPARATE component artifacts, composed by the runner at instantiate time — the shape the
+    // front-end (X4b) will produce (each `.cdz` → its own component) and the deployment story needs.
+    // ------------------------------------------------------------------------------------------------
+
+    #[test]
+    fn x4a_the_runner_composes_a_consumer_with_a_separate_peer_component() {
+        // Provider and consumer are DISTINCT finished components; `run_with_peers` instantiates the peer
+        // and forwards its `cadenza:peer/api` interface into the consumer's like-named import. Both share
+        // one store. main(5) = f(5)*10 = 60 — the same result as the nested X3 composition, now with the
+        // peer as a genuinely separate artifact the runner links.
+        let peer_bytes = provider_interface_component().finish();
+        let consumer_bytes = consumer_component_b_via_envelope();
+        // Each is a valid standalone component: the peer EXPORTS the interface, the consumer IMPORTS it.
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&peer_bytes)
+                .expect("peer component validates");
+        }
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer_bytes)
+                .expect("consumer component validates");
+        }
+        let peers = vec![cdz_run::Peer {
+            bytes: peer_bytes,
+            interface: "cadenza:peer/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: None,
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer_bytes, &peers, &opts)
+            .expect("run_with_peers composes the consumer + separate peer")
+        {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "60",
+                    "(5+1)*10 across separate peer + consumer components"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("run_with_peers trapped: {t}"),
+        }
+    }
 }

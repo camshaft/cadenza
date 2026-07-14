@@ -221,11 +221,118 @@ pub fn run_capturing(component_bytes: &[u8], opts: &RunOpts) -> Result<(Outcome,
     // dotted `E.op` to `observed`, so the caller can compare the observed sequence against the case's
     // recorded `(host-calls …)`. Inert for a program with no host import (the common case).
     let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    bind_host_imports(&engine, &component, &mut linker, opts, &observed)?;
+    bind_host_imports(&engine, &component, &mut linker, opts, &observed, &[])?;
 
     let outcome = run_export(&engine, &component, &mut store, &linker, opts)?;
     let calls = observed.lock().expect("observed calls mutex").clone();
     Ok((outcome, calls))
+}
+
+/// One PEER component a consumer binds across the component boundary (X4,
+/// `DESIGN-cross-component-interop-rcdzc.md`): its finished bytes and the INTERFACE it exports that the
+/// consumer imports under the same name (`cadenza:<pkg>/<iface>`). The peer is a SEPARATELY-compiled
+/// artifact — not merged into the consumer — so `run_with_peers` instantiates it and forwards its
+/// exported interface funcs into the consumer's like-named import (component-abi.md §Cross-Component
+/// Value Exchange; cross-component-interop.md).
+#[derive(Debug, Clone)]
+pub struct Peer {
+    /// The peer component's bytes.
+    pub bytes: Vec<u8>,
+    /// The interface the peer EXPORTS and the consumer IMPORTS under this exact name.
+    pub interface: String,
+}
+
+/// Run a CONSUMER component composed with a set of PEER components across the live component boundary.
+/// All components share ONE `wasmtime` store (so a value one produces is meaningful to another — the
+/// prerequisite for the shared-runtime handle transport X5 adds), and — when the consumer imports the
+/// value-heap runtime — ONE runtime instance (component-abi.md §A Cross-Component Handle Is Meaningful
+/// Only In The Shared Runtime Instance).
+///
+/// Each peer is instantiated first; the consumer's import of `peer.interface` is then bound by
+/// forwarding every function the peer's exported interface offers (discovered off the peer instance's
+/// type, never a hard-coded list — the same discipline `compose_runtime` uses for the runtime). SCOPE
+/// (X4a): scalar peer ops, a runtime-free peer (a peer that itself imports the runtime, and sharing ONE
+/// runtime instance across consumer + peers, is X5). A peer op returning/taking a `value` handle is X5.
+pub fn run_with_peers(consumer_bytes: &[u8], peers: &[Peer], opts: &RunOpts) -> Result<Outcome> {
+    use std::sync::{Arc, Mutex};
+    let engine = engine();
+    let consumer = Component::new(&engine, consumer_bytes)
+        .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
+    let mut store = Store::new(&engine, ());
+    let mut linker: Linker<()> = Linker::new(&engine);
+
+    // Compose the value-heap runtime into the CONSUMER if it imports one (X4a: the consumer's own runtime;
+    // sharing one instance with the peers is X5).
+    if let Some(req) = find_runtime_req(&engine, &consumer) {
+        compose_runtime(&engine, &mut store, &mut linker, &req, opts)?;
+    }
+
+    // Instantiate each peer and forward its exported interface funcs into the consumer's like-named
+    // import. A peer is instantiated with a FRESH linker (X4a peers are self-contained/runtime-free);
+    // its funcs live in the SHARED store, so they can be forwarded into the consumer's import.
+    for peer in peers {
+        let peer_component = Component::new(&engine, &peer.bytes)
+            .map_err(|e| anyhow!("invalid peer component `{}`: {e}", peer.interface))?;
+        let peer_linker: Linker<()> = Linker::new(&engine);
+        let peer_instance = peer_linker
+            .instantiate(&mut store, &peer_component)
+            .map_err(|e| anyhow!("instantiate peer `{}`: {e}", peer.interface))?;
+        let iface_idx = peer_instance
+            .get_export_index(&mut store, None, &peer.interface)
+            .ok_or_else(|| anyhow!("peer does not export the interface `{}`", peer.interface))?;
+        // The interface's function names, read off the peer instance's exported interface type.
+        let func_names: Vec<String> = peer_component
+            .component_type()
+            .exports(&engine)
+            .find(|(n, _)| *n == peer.interface)
+            .and_then(|(_, item)| match item {
+                ComponentItem::ComponentInstance(inst) => Some(
+                    inst.exports(&engine)
+                        .filter_map(|(fname, i)| {
+                            matches!(i, ComponentItem::ComponentFunc(_)).then(|| fname.to_string())
+                        })
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                anyhow!(
+                    "peer export `{}` is not an interface instance",
+                    peer.interface
+                )
+            })?;
+        let mut iface = linker
+            .instance(&peer.interface)
+            .map_err(|e| anyhow!("linker instance {}: {e}", peer.interface))?;
+        for fname in &func_names {
+            let fidx = peer_instance
+                .get_export_index(&mut store, Some(&iface_idx), fname)
+                .ok_or_else(|| anyhow!("peer `{}` missing `{fname}`", peer.interface))?;
+            let f = peer_instance
+                .get_func(&mut store, fidx)
+                .ok_or_else(|| anyhow!("peer export `{fname}` is not a func"))?;
+            iface.func_new(fname, move |mut ctx, params, results| {
+                f.call(&mut ctx, params, results)?;
+                f.post_return(&mut ctx)?;
+                Ok(())
+            })?;
+        }
+    }
+
+    // Bind the consumer's HOST-effect imports (if any), skipping the peer interfaces already bound above
+    // so a peer interface is never double-bound as a host effect.
+    let peer_names: Vec<String> = peers.iter().map(|p| p.interface.clone()).collect();
+    let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    bind_host_imports(
+        &engine,
+        &consumer,
+        &mut linker,
+        opts,
+        &observed,
+        &peer_names,
+    )?;
+
+    run_export(&engine, &consumer, &mut store, &linker, opts)
 }
 
 /// Instantiate the linked component and invoke its chosen export (or the resource-escape path), returning
@@ -450,6 +557,9 @@ fn bind_host_imports(
     linker: &mut Linker<()>,
     opts: &RunOpts,
     observed: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    // Interface names ALREADY bound (as cross-component PEERS, X4) — skip them here so a peer interface
+    // is not also bound as a host effect (a double-bind is a linker error). Empty for a plain run.
+    skip: &[String],
 ) -> Result<()> {
     use std::sync::{Arc, Mutex};
     // The shared response cursor — every bound host func pops the next response in order. `Arc<Mutex>`
@@ -467,7 +577,7 @@ fn bind_host_imports(
         .component_type()
         .imports(engine)
         .filter_map(|(name, item)| {
-            if is_runtime_import_name(name) {
+            if is_runtime_import_name(name) || skip.iter().any(|s| s == name) {
                 return None;
             }
             if let ComponentItem::ComponentInstance(inst) = item {
