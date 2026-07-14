@@ -537,6 +537,7 @@ pass	a negative integer width is rejected
 pass	a negative power is the reciprocal, deriving an inverse unit
 pass	a negative power over an integer magnitude truncates the reciprocal
 pass	a negative right-shift count traps rather than masking
+pass	a negative runtime BigInt result crosses the host boundary with its sign
 pass	a negative shift count traps rather than masking
 pass	a negative string index yields None rather than wrapping to a large offset
 pass	a negative unsigned integer width is rejected
@@ -738,6 +739,7 @@ pass	a round-trip consumer takes the non-applying match arm
 pass	a round-trip consumer that does NOT apply the closure on the taken branch
 pass	a run's result is a deterministic function of a host call's recorded response
 pass	a runtime BigInt comparison sees an intermediate that overflows Int64
+pass	a runtime BigInt divide crosses the host boundary as its truncated quotient
 pass	a runtime BigInt intermediate that overflows Int64 does not trap
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value

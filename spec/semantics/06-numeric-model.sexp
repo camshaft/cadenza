@@ -227,6 +227,22 @@
   (input  (+ (BigInt.of 40) (BigInt.of 2)))
   (output (: 42 BigInt)))
 
+(case "a negative runtime BigInt result crosses the host boundary with its sign"
+  (doc    "`(- (BigInt.of 42) (BigInt.of 100))` = -58 : BigInt — a runtime BigInt SUBTRACT whose result is
+           NEGATIVE crosses to the host via the `value-encode` walker with its sign intact (the walker's
+           `bigint_leaf` emits the sign-magnitude `KIND_INT` leaf, neg kind for a non-zero negative). Pins
+           the sign path of the runtime-BigInt escape, distinct from the positive `(+ 40 2)` companion.")
+  (input  (- (BigInt.of 42) (BigInt.of 100)))
+  (output (: -58 BigInt)))
+
+(case "a runtime BigInt divide crosses the host boundary as its truncated quotient"
+  (doc    "`(/ (BigInt.of 100) (BigInt.of 7))` = 14 : BigInt — a runtime BigInt DIVIDE (truncating toward
+           zero, the same semantics as fixed-width `/`) computes on the runtime limb library and crosses
+           as its exact quotient. Pins that `/` — not just `+`/`-`/`*` — routes through the runtime op and
+           the escape walker (100/7 = 14 remainder 2, truncated to 14).")
+  (input  (/ (BigInt.of 100) (BigInt.of 7)))
+  (output (: 14 BigInt)))
+
 (case "an arbitrary-precision literal beyond 64 bits is an exact BigInt"
   (doc    "`(: 100000000000000000000 BigInt)` annotates a literal larger than Int64.max as a BigInt — an
            exact value with no width worry. Pins that BigInt carries a magnitude the fixed-width family
