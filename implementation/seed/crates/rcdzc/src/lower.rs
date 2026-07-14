@@ -4165,11 +4165,21 @@ fn pattern_constraints(
     } = ty
         && crate::eval::variant_owner_decl(db, head) != Some(*scrut_decl)
     {
-        return Err(Reject::coded(
-            Code::TypeMismatch,
-            format!(
-                "this variant pattern is not a variant of the matched type {}",
-                ty.render_name()
+        // The ctor is a VALID variant, but of a DIFFERENT sum (`Nn` from `B` matched against `A`). Enrich
+        // with the same "did you mean?" over the SCRUTINEE sum's variants the typo path gets — the author
+        // reached for one of the MATCHED type's variants — and carry a replace fix on the pattern head.
+        // A far miss lists the matched type's variants (a CLOSED set — listing is signal), so the reader
+        // learns what `A` actually offers instead of only that this ctor is not one of them.
+        return Err(enrich_pattern_head_suggestion(
+            db,
+            head,
+            ty,
+            Reject::coded(
+                Code::TypeMismatch,
+                format!(
+                    "this variant pattern is not a variant of the matched type {}",
+                    ty.render_name()
+                ),
             ),
         ));
     }

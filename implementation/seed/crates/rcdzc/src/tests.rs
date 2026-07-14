@@ -25947,6 +25947,42 @@ mod diagnostics {
             "no spurious suggestion for a far bare typo: {}",
             bare_far.message
         );
+        // A ctor that IS a valid variant, but of a DIFFERENT sum (`D.Gamma` matched against a `C`
+        // scrutinee) — the wrong-sum case (CDZ0203, "not a variant of the matched type C"). It now ALSO
+        // lists C's variants (a far miss) / suggests the nearest (a near miss), the wrong-sum twin of the
+        // typo enrichment — the author reached for one of the MATCHED type's variants.
+        let wrong_sum = first_error(
+            "(module m (type C (Alpha) (Beta)) (type D (Gamma)) \
+               (def (main) (match (C.Alpha) ((D.Gamma) 1) (_ 2))) (export main))",
+        );
+        assert_eq!(
+            wrong_sum.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            wrong_sum.message
+        );
+        assert!(
+            wrong_sum
+                .message
+                .contains("not a variant of the matched type C")
+                && wrong_sum.message.contains("closest matches:")
+                && wrong_sum.message.contains("`Alpha`")
+                && wrong_sum.message.contains("`Beta`"),
+            "the wrong-sum ctor lists the matched type's variants: {}",
+            wrong_sum.message
+        );
+        // A wrong-sum ctor that is a NEAR miss of a real variant of the matched sum (`D.Alph` vs C's
+        // `Alpha`) → a confident "did you mean" + replace fix.
+        let wrong_near = first_error(
+            "(module m (type C (Alpha) (Beta)) (type D (Alph Int64)) \
+               (def (main) (match (C.Alpha) ((D.Alph x) x) (_ 2))) (export main))",
+        );
+        assert_eq!(
+            wrong_near.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Alpha"),
+            "a near-miss wrong-sum ctor suggests + fixes to the matched sum's variant: {}",
+            wrong_near.message
+        );
     }
 
     #[test]
