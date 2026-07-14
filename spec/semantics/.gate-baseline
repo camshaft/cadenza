@@ -1094,6 +1094,7 @@ pass	a recursive predicate with the self-call in the then branch is a Bool condi
 pass	a recursive reader decodes a CBOR application tree and evaluates it by head index
 pass	a recursive resolver transforms one runtime sum tree into another, then consumes it
 pass	a recursive resolver whose dead arm builds a trapping compound compiles
+pass	a recursive scan counts a runtime string's matching characters
 pass	a recursive sum built then folded by a NESTED recursive call composes on every backend
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
 pass	a recursive sum recurses THROUGH a record-typed payload
@@ -1133,6 +1134,7 @@ pass	a round-trip consumer binds the applied closure through a let
 pass	a round-trip consumer takes the non-applying match arm
 pass	a round-trip consumer that does NOT apply the closure on the taken branch
 pass	a run's result is a deterministic function of a host call's recorded response
+pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
 pass	a runtime BigInt accumulator threaded through recursion grows past Int64
 pass	a runtime BigInt comparison sees an intermediate that overflows Int64
