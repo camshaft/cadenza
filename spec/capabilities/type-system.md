@@ -175,6 +175,12 @@ A program MUST be able to strip a nominal type's name tag to obtain the underlyi
 
 The stripped structural value MUST be the same value the nominal value already is at runtime, so that removing the tag is a compile-time reinterpretation and not a copy or conversion of the value.
 
+### An Abstract Type's Representation Is Not Observable Across Its Boundary
+
+A built-in structural comparison whose operand is a value of an abstract type — a type whose handle a module made visible without making its constructors visible ([modules-and-namespaces.md](modules-and-namespaces.md) §A Type's Handle And Its Constructors Are Independently Visible) — MUST be rejected outside the declaring module, so that the abstract type's representation is not observed through equality and a module that wants its abstract type compared publishes a comparison operation rather than exposing its structure.
+
+Stripping an abstract type's name tag to its underlying structural value MUST be rejected outside the declaring module, so that the escape hatch to a nominal type's structure is available only where that type's constructors are, and a handle-only export does not leak the representation it withheld.
+
 ### Structural Values Are Comparable Only When Their Shapes Match
 
 Two records MUST be comparable only when their sets of field names are identical, two tuples only when their lengths are identical, and two sums only when their variant sets are identical, because values of different shapes have no meaningful equality.

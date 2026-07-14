@@ -4896,6 +4896,40 @@ fn check_application(
             ));
             return;
         }
+        // A built-in `=`/`compare` on a value of an ABSTRACT type — one imported handle-only, its
+        // constructors withheld — is rejected here (CDZ0202, the nominal-boundary code): built-in
+        // structural comparison observes the equality of the module's PRIVATE representation, which the
+        // handle-only export withheld. A module that wants its abstract type comparable exports a
+        // comparison FUNCTION (`(def (eq (: x T) (: y T)) …)`), the ML discipline — the representation
+        // stays hidden and only the operations the module publishes are available. Fires on either
+        // operand (a value of the abstract type on one side is enough); within the declaring module (or
+        // a concrete importer) the type is not abstract, so ordinary comparison is unaffected.
+        //= spec/capabilities/type-system.md#an-abstract-types-representation-is-not-observable-across-its-boundary
+        //# A built-in structural comparison whose operand is a value of an abstract type — a type whose handle a module made visible without making its constructors visible — MUST be rejected outside the declaring module, so that the abstract type's representation is not observed through equality and a module that wants its abstract type compared publishes a comparison operation rather than exposing its structure.
+        let abstract_operand = |ty: &Ty, node: StructId| {
+            nominal_or_sum_decl(ty).is_some_and(|decl| db.is_abstract_type_at(node, decl))
+        };
+        if abstract_operand(&a, args[0]) || abstract_operand(&b, args[1]) {
+            let ty = if abstract_operand(&a, args[0]) {
+                &a
+            } else {
+                &b
+            };
+            trace!(target: "rcdzc::infer", head = head.0, "fault: built-in comparison on an abstract type value (CDZ0202)");
+            out.push(
+                Reject::coded(
+                    Code::NominalMismatch,
+                    format!(
+                        "`{}` is an abstract type here (its constructors are not exported to this \
+                         file), so its representation cannot be observed through a built-in comparison \
+                         — compare it through a function the module that declares it exports",
+                        ty.render_name()
+                    ),
+                )
+                .at(head),
+            );
+            return;
+        }
         // Comparing a SYMBOL to the plain STRING it wraps is a comparison ACROSS THE NOMINAL BOUNDARY —
         // CDZ0202 (17-symbols "a string compared to a symbol is a type error"). A Symbol is a nominal over
         // String; a nominal value never silently compares equal to the untagged shape it was declared

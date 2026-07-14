@@ -1150,6 +1150,40 @@ mod tests {
         assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
     }
 
+    /// A built-in `=` on a value of an ABSTRACT type (imported handle-only) observes the module's
+    /// private representation → CDZ0202 (nominal boundary). The module exports a comparison FUNCTION if
+    /// it wants its abstract type compared; the built-in structural `=` is not published by the handle.
+    #[test]
+    fn a_builtin_comparison_on_an_abstract_type_is_rejected() {
+        let out = compile_package(
+            "(do (type Color (Red) (Green) (Blue)) (def (mk) Color.Green) (export Color mk))",
+            "(do (import \"lib\" (Color mk)) (def (main) (= (mk) (mk))) (export main))",
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0202")),
+            "a built-in comparison on an abstract type's value should be CDZ0202; got {:?}",
+            out.diagnostics
+        );
+    }
+
+    /// The concrete companion: with the type exported `Color.*`, its representation is public in the
+    /// importing file, so a built-in `=` on its values is allowed (compiles clean).
+    #[test]
+    fn a_builtin_comparison_on_a_concrete_imported_type_is_allowed() {
+        let out = compile_package(
+            "(do (type Color (Red) (Green) (Blue)) (def (mk) Color.Green) (export (. Color *) mk))",
+            "(do (import \"lib\" (Color mk)) (def (main) (= (mk) (mk))) (export main))",
+        );
+        assert!(
+            !out.has_error(),
+            "a built-in comparison on a concretely-imported type should be allowed; got {:?}",
+            out.diagnostics
+        );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
     /// Compile an N-file package: `files` is `(name, source)` pairs, `entry` names the entry file.
     fn compile_files(files: &[(&str, &str)], entry: &str) -> crate::abi::CompileOutput {
         let mut inputs: Vec<Artifact> = files

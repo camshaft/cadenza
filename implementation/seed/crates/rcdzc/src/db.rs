@@ -2201,6 +2201,37 @@ impl Db {
         Some(fs.visible_ctors[file].get(name).copied().ok_or(()))
     }
 
+    /// Whether the sum type whose DECLARATION OCCURRENCE is `decl` is ABSTRACT in the file containing
+    /// node `at` — its handle is visible there but NONE of its constructors are (imported handle-only).
+    /// A value of such a type may be named and held but not constructed, matched, stripped, or compared
+    /// with a built-in `=`/`compare` in this file (the representation is the declaring module's private
+    /// business). `false` for a concretely- or partially-imported type (≥1 ctor visible), a file's own
+    /// type, a single-file program, or a node with no file (β-copied / prelude / synthesized).
+    pub(crate) fn is_abstract_type_at(&self, at: StructId, decl: StructId) -> bool {
+        let Some(fs) = self.file_scope.as_ref() else {
+            return false;
+        };
+        let Some(file) = fs.file_of(at) else {
+            return false;
+        };
+        let Some(td) = self.type_decl_by_occ(decl) else {
+            return false;
+        };
+        // The handle must be visible in this file (otherwise it is simply not this type here — a value
+        // of it could not have been produced), and NO constructor of it visible (else it is concrete /
+        // partial here, and comparison of the visible-ctor value is the module's own business).
+        let handle_visible = fs.visible_types[file]
+            .values()
+            .any(|&synth| td.synth == Some(synth));
+        if !handle_visible {
+            return false;
+        }
+        !td.variants.iter().any(|v| {
+            v.ctor
+                .is_some_and(|c| fs.visible_ctors[file].values().any(|&vc| vc == c))
+        })
+    }
+
     /// Whether a package is linked (multi-file). When false, resolution is the flat single-file path.
     pub(crate) fn is_linked_package(&self) -> bool {
         self.file_scope.is_some()
