@@ -3361,6 +3361,14 @@ pub struct ClosureConsume {
     /// consumer functype's result stays `i32`; only the BODY differs. When any consumer is byte-rope the
     /// module gains a shared memory + `cabi_realloc`.
     pub ret_is_bytes: bool,
+    /// `Some(template)` when the consumer's result is a fixed-shape COMPOUND (tuple/record/sum) — the wrapper
+    /// walks the body's returned handle into this consumer's value-form template region + returns its
+    /// `(ptr,len)` retarea (the canonical value form as `list<u8>`). Mutually exclusive with `ret_is_bytes`
+    /// (both cross as `list<u8>`; a compound writes the value form, a byte-rope the raw payload). Each
+    /// compound consumer's template gets its own data-section region; byte-rope consumers write dynamically
+    /// PAST all compound data. When any consumer crosses as `list<u8>` the module gains a memory +
+    /// `cabi_realloc`.
+    pub ret_template: Option<crate::lower::ValueFormTemplate>,
 }
 
 /// The ROUND-TRIP closure-resource core module (C-HOST-4): N producer `make-<name>` functions (as in
@@ -3386,10 +3394,34 @@ pub fn roundtrip_resource_core_module(
     let n = funcs.len();
     let nmk = makes.len();
     let ncons = consumers.len();
-    // A byte-rope consumer result crosses as `list<u8>` → the module needs a shared memory + `cabi_realloc`
-    // (the consumer wrapper writes its `list<u8>` payload + `(ptr,len)` return area into linear memory, then
-    // the envelope lifts that consumer with the Memory/Realloc canon options).
-    let any_bytes = consumers.iter().any(|c| c.ret_is_bytes);
+    // A consumer whose result crosses as `list<u8>` — a byte-rope (`ret_is_bytes`, raw payload) OR a
+    // fixed-shape COMPOUND (`ret_template`, value form). Either makes the module need a shared memory +
+    // `cabi_realloc`; the envelope lifts each such consumer with the Memory/Realloc canon options. A
+    // compound consumer writes the VALUE FORM from its own data-section region; a byte-rope consumer writes a
+    // runtime-length payload PAST all compound data so the two never collide.
+    let consumer_is_list = |c: &ClosureConsume| c.ret_is_bytes || c.ret_template.is_some();
+    let any_list = consumers.iter().any(consumer_is_list);
+    // Per COMPOUND consumer: place its template + `(ptr,len)` retarea in the data section (4-aligned),
+    // record `(byte_off, ret_off)`. `bytes_ret_off`/`bytes_out_off` are past all compound data — where the
+    // byte-rope consumers put their dynamic retarea + payload (only one consumer runs per host invocation).
+    let mut data_bytes: Vec<u8> = Vec::new();
+    let mut consumer_place: Vec<Option<(usize, usize)>> = Vec::with_capacity(ncons);
+    for c in consumers {
+        if let Some(t) = &c.ret_template {
+            let byte_off = (data_bytes.len() + 3) & !3;
+            data_bytes.resize(byte_off, 0);
+            data_bytes.extend_from_slice(&t.bytes);
+            let ret_off = (data_bytes.len() + 3) & !3;
+            data_bytes.resize(ret_off, 0);
+            data_bytes.extend_from_slice(&(byte_off as u32).to_le_bytes());
+            data_bytes.extend_from_slice(&(t.bytes.len() as u32).to_le_bytes());
+            consumer_place.push(Some((byte_off, ret_off)));
+        } else {
+            consumer_place.push(None);
+        }
+    }
+    let bytes_ret_off = (data_bytes.len() + 3) & !3;
+    let bytes_out_off = bytes_ret_off + 8;
     let vt_byte = |v: ValType| match v {
         ValType::I32 => wasm_abi::CORE_I32,
         ValType::I64 => wasm_abi::CORE_I64,
@@ -3443,13 +3475,13 @@ pub fn roundtrip_resource_core_module(
     }
     // If any consumer is byte-rope, one shared `cabi_realloc` functype `(i32×4)->i32` after the consumers.
     let realloc_type_idx = (defined_type_base + n + nmk + ncons) as u32;
-    if any_bytes {
+    if any_list {
         let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
         t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         type_items.extend_from_slice(&t);
     }
-    let total_types = defined_type_base + n + nmk + ncons + usize::from(any_bytes);
+    let total_types = defined_type_base + n + nmk + ncons + usize::from(any_list);
     let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
 
     // ── Import section ── k ops + resource-new + resource-rep.
@@ -3476,16 +3508,16 @@ pub fn roundtrip_resource_core_module(
     for i in 0..ncons {
         uleb128((consume_type_base + i) as u64, &mut func_items);
     }
-    if any_bytes {
+    if any_list {
         uleb128(realloc_type_idx as u64, &mut func_items);
     }
     let func_sec = section(
         wasm_abi::CORE_SEC_FUNCTION,
-        &wasm_vec(n + nmk + ncons + usize::from(any_bytes), &func_items),
+        &wasm_vec(n + nmk + ncons + usize::from(any_list), &func_items),
     );
     let make_abs_base = (defined_type_base + n) as u32;
     let consume_abs_base = make_abs_base + nmk as u32;
-    let realloc_abs = consume_abs_base + ncons as u32; // valid only when any_bytes
+    let realloc_abs = consume_abs_base + ncons as u32; // valid only when any_list
 
     // ── Table + Element ── the funcref table from `layout.lifted` (a consumer's call_indirect dispatches
     // over it; the closure the host handed back was lifted in this module).
@@ -3512,7 +3544,7 @@ pub fn roundtrip_resource_core_module(
     };
 
     // ── Memory ── only when a byte-rope consumer must write its `list<u8>` payload.
-    let mem_sec = if any_bytes {
+    let mem_sec = if any_list {
         section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]))
     } else {
         Vec::new()
@@ -3552,7 +3584,7 @@ pub fn roundtrip_resource_core_module(
                 p.body_abs,
             ));
         }
-        if any_bytes {
+        if any_list {
             items.extend_from_slice(&export("memory", wasm_abi::EXPORT_KIND_MEMORY, 0));
             items.extend_from_slice(&export(
                 "cabi_realloc",
@@ -3563,7 +3595,7 @@ pub fn roundtrip_resource_core_module(
         section(
             wasm_abi::CORE_SEC_EXPORT,
             &wasm_vec(
-                nmk + ncons + plain.len() + if any_bytes { 2 } else { 0 },
+                nmk + ncons + plain.len() + if any_list { 2 } else { 0 },
                 &items,
             ),
         )
@@ -3605,18 +3637,34 @@ pub fn roundtrip_resource_core_module(
             .iter()
             .filter(|p| matches!(p, ConsumeParam::Closure))
             .count();
-        let n_scratch = n_closures + if c.ret_is_bytes { 3 } else { 0 };
+        // Extra i32 scratch beyond the closure cells: a byte-rope consumer needs 3 (the returned handle, its
+        // length, the copy index); a COMPOUND consumer needs 1 (the returned handle) + a SEPARATE i64 group
+        // (the walk scratch) added after the i32 group.
+        let extra_i32 = if c.ret_is_bytes {
+            3
+        } else if c.ret_template.is_some() {
+            1
+        } else {
+            0
+        };
+        let n_i32_scratch = n_closures + extra_i32;
+        let want_i64 = c.ret_template.is_some();
         let mut inner = Vec::new();
-        inner.extend_from_slice(&wasm_vec(
-            if n_scratch == 0 { 0 } else { 1 },
-            &if n_scratch == 0 {
-                Vec::new()
-            } else {
-                let mut g = uleb_bytes(n_scratch as u64);
+        {
+            let n_groups = usize::from(n_i32_scratch > 0) + usize::from(want_i64);
+            let mut decls = Vec::new();
+            if n_i32_scratch > 0 {
+                let mut g = uleb_bytes(n_i32_scratch as u64);
                 g.push(wasm_abi::CORE_I32);
-                g
-            },
-        ));
+                decls.extend_from_slice(&g);
+            }
+            if want_i64 {
+                let mut g = uleb_bytes(1);
+                g.push(wasm_abi::CORE_I64);
+                decls.extend_from_slice(&g);
+            }
+            inner.extend_from_slice(&wasm_vec(n_groups, &decls));
+        }
         // resource.rep each closure param into its scratch cell.
         let mut cell_slot = nparams;
         let mut cell_of: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
@@ -3642,11 +3690,44 @@ pub fn roundtrip_resource_core_module(
         }
         inner.push(op::CALL);
         uleb128(c.consume_abs as u64, &mut inner);
-        if c.ret_is_bytes {
+        if let Some(template) = &c.ret_template {
+            // The body returned a COMPOUND HANDLE (on the stack). Save it in `rep`, drop the closure cells,
+            // walk the handle into this consumer's value-form template region, drop the handle, return the
+            // template's retarea pointer. `rep` is the i32 slot past the closure cells; `scratch` (i64) is
+            // the last local (past all i32 scratch).
+            let (byte_off, ret_off) =
+                consumer_place[/* index */ consumers.iter().position(|x| std::ptr::eq(x, c)).unwrap()]
+                    .expect("a compound consumer has a data placement");
+            let rep = cell_slot;
+            let scratch = nparams + n_i32_scratch as u32; // the i64 local (its own group, after all i32)
+            let get = |l: u32, out: &mut Vec<u8>| {
+                out.push(op::LOCAL_GET);
+                uleb128(l as u64, out);
+            };
+            let set = |l: u32, out: &mut Vec<u8>| {
+                out.push(op::LOCAL_SET);
+                uleb128(l as u64, out);
+            };
+            set(rep, &mut inner);
+            for cell in cell_of.values() {
+                get(*cell, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner);
+            }
+            for hole in &template.leaves {
+                emit_hole_fill(hole, byte_off, rep, scratch, &import_index, &mut inner);
+            }
+            get(rep, &mut inner);
+            inner.push(op::CALL);
+            uleb128(imp("drop"), &mut inner);
+            inner.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(ret_off as i64, &mut inner);
+        } else if c.ret_is_bytes {
             // The body returned a Bytes/String HANDLE (on the stack). Save it, drop the closure cells
             // (own<t> release), then copy the byte-rope out as a `list<u8>` `(ptr,len)` return area — the
-            // same copy loop the byte-rope `call` uses. `cell_slot` is past the params + closure cells.
-            const OUT: i64 = 8;
+            // same copy loop the byte-rope `call` uses. `cell_slot` is past the params + closure cells; the
+            // retarea/payload go PAST any compound consumers' template data (`bytes_ret_off`/`bytes_out_off`).
+            let out_off = bytes_out_off as i64;
             let bh = cell_slot;
             let nlen = cell_slot + 1;
             let iv = cell_slot + 2;
@@ -3684,7 +3765,7 @@ pub fn roundtrip_resource_core_module(
             inner.push(op::I32_GE_U);
             inner.push(op::BR_IF);
             uleb128(1, &mut inner);
-            ci32(OUT, &mut inner);
+            ci32(out_off, &mut inner);
             get(iv, &mut inner);
             inner.push(op::I32_ADD);
             get(bh, &mut inner);
@@ -3702,12 +3783,12 @@ pub fn roundtrip_resource_core_module(
             uleb128(0, &mut inner);
             inner.push(op::END);
             inner.push(op::END);
-            ci32(0, &mut inner);
-            ci32(OUT, &mut inner);
+            ci32(bytes_ret_off as i64, &mut inner);
+            ci32(out_off, &mut inner);
             inner.push(op::I32_STORE);
             inner.push(0x02);
             inner.push(0x00);
-            ci32(4, &mut inner);
+            ci32(bytes_ret_off as i64 + 4, &mut inner);
             get(nlen, &mut inner);
             inner.push(op::I32_STORE);
             inner.push(0x02);
@@ -3715,7 +3796,7 @@ pub fn roundtrip_resource_core_module(
             get(bh, &mut inner);
             inner.push(op::CALL);
             uleb128(imp("drop"), &mut inner);
-            ci32(0, &mut inner);
+            ci32(bytes_ret_off as i64, &mut inner);
         } else {
             // C-HOST-5: each closure param crossed as `own<t>` (ownership transferred INTO the consumer), so
             // the wrapper owns each handed-back cell's last reference — RELEASE each now (`heap.drop(rep)`),
@@ -3735,7 +3816,7 @@ pub fn roundtrip_resource_core_module(
         code_items.extend_from_slice(&e);
     }
     // cabi_realloc stub (only when a byte-rope consumer needs it).
-    if any_bytes {
+    if any_list {
         let mut inner = uleb_bytes(0);
         inner.push(op::I32_CONST);
         crate::backend::wasm::encode::sleb128(0, &mut inner);
@@ -3746,8 +3827,22 @@ pub fn roundtrip_resource_core_module(
     }
     let code_sec = section(
         wasm_abi::CORE_SEC_CODE,
-        &wasm_vec(n + nmk + ncons + usize::from(any_bytes), &code_items),
+        &wasm_vec(n + nmk + ncons + usize::from(any_list), &code_items),
     );
+
+    // ── Data section ── the compound consumers' value-form templates + retareas (byte-rope consumers write
+    // PAST them at run time). Only present when a compound consumer laid template bytes.
+    let data_sec = if data_bytes.is_empty() {
+        Vec::new()
+    } else {
+        let mut item = vec![0x00];
+        item.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(0, &mut item);
+        item.push(op::END);
+        item.extend_from_slice(&uleb_bytes(data_bytes.len() as u64));
+        item.extend_from_slice(&data_bytes);
+        section(wasm_abi::CORE_SEC_DATA, &wasm_vec(1, &item))
+    };
 
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);
@@ -3759,6 +3854,7 @@ pub fn roundtrip_resource_core_module(
     core.extend_from_slice(&export_sec);
     core.extend_from_slice(&elem_sec);
     core.extend_from_slice(&code_sec);
+    core.extend_from_slice(&data_sec);
     let _ = lifted_type_idx; // reserved: a consumer's call_indirect type resolves in its selected body
     Ok(core)
 }

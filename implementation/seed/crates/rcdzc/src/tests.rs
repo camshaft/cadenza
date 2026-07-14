@@ -34361,6 +34361,7 @@ mod closure_host_resource {
             params: vec![ConsumeParam::Closure, ConsumeParam::Scalar(ValType::I64)],
             ret_vt: ValType::I64,
             ret_is_bytes: false,
+            ret_template: None,
         }];
 
         let core = crate::backend::wasm::serialize::roundtrip_resource_core_module(
@@ -34672,6 +34673,7 @@ mod closure_host_resource {
                     params: vec![ConsumeParam::Closure, ConsumeParam::Scalar(ValType::I64)],
                     ret_vt: ValType::I64,
                     ret_is_bytes: false,
+                    ret_template: None,
                 }],
             },
             RtSigGroup {
@@ -34686,6 +34688,7 @@ mod closure_host_resource {
                     params: vec![ConsumeParam::Closure, ConsumeParam::Scalar(ValType::I64)],
                     ret_vt: ValType::I32,
                     ret_is_bytes: false,
+                    ret_template: None,
                 }],
             },
         ];

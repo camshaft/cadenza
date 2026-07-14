@@ -2911,9 +2911,11 @@ pub struct ClosureConsumeAbi {
     pub name: String,
     pub params: Vec<ConsumeParamAbi>,
     pub result_byte: u8,
-    /// True when the consumer's result is a byte-rope (`Bytes`/`String`) — it crosses as `list<u8>` (via the
-    /// shared memory + `cabi_realloc`, lifted with Memory/Realloc) rather than the inline scalar
-    /// `result_byte`. The round-trip inner re-export component types such a consumer as `(…) -> list<u8>`.
+    /// True when the consumer's result crosses as `list<u8>` rather than the inline scalar `result_byte` —
+    /// i.e. a byte-rope (`Bytes`/`String`, raw payload) OR a fixed-shape COMPOUND (tuple/record/sum, the
+    /// canonical value form). The envelope treats both identically (a `list<u8>` result via the shared
+    /// memory + `cabi_realloc`, lifted with Memory/Realloc; the inner re-export component types the consumer
+    /// as `(…) -> list<u8>`); the core serializer decides what bytes fill it.
     pub ret_is_bytes: bool,
 }
 
