@@ -1,0 +1,137 @@
+/// codegen.cdz — a STACK-MACHINE BACKEND: lower a parsed `Expr` (from `parse.cdz`, imported cross-file)
+/// to a flat postfix `List Instr`, then EXECUTE that program on an integer operand stack. This is the
+/// port's first genuinely MULTI-FILE stage in the running suite — it imports the `Expr` sum and `run`
+/// from `parse` (`export { Expr.* }` + `import { Expr, run } from "parse"`), stressing the LINKER and the
+/// cross-file constructor-visibility rule (CDZ0214: a type must be `export`ed with `.*` for an importer
+/// to build/match its variants — the mechanism the port had avoided by keeping every module same-file).
+///
+/// The lowering is the textbook Expr → postfix: `compile` walks the tree left-child, right-child, op —
+/// so a `Bin` emits its operands' code then a binary `Instr`, and evaluating the flat list on a stack
+/// reproduces the tree's value. Two independent observers agree the lowering is correct: `exec` (run the
+/// compiled program on a stack) must equal `run` (the tree-walking evaluator in `parse`), for every
+/// expression. That EQUALITY is the backend's correctness contract — a real compiler's "the lowered form
+/// computes what the source means".
+
+import { Tok, Expr, parse, run } from "parse"
+
+/// A stack-machine instruction: push a literal, or apply a binary op (by its ASCII code, as in `parse`).
+type Instr =
+  | Push(Int64)
+  | BinOp(Int64)
+
+/// Lower an `Expr` to postfix instructions, appending onto `acc` (left, right, then the op — so the
+/// operands are on the stack when the `BinOp` runs). A single-use accumulator threaded through the
+/// recursion (NOT read again after each push, so it does not trip the still-live-binding consuming bug).
+def compile-into(e: Expr, acc: List(Instr)) = match e with
+  | Expr.Lit(v) => List.push(acc, Instr.Push(v))
+  | Expr.Bin(op, l, r) =>
+    let after-l = compile-into(l, acc) in
+    let after-r = compile-into(r, after-l) in
+    List.push(after-r, Instr.BinOp(op))
+
+/// Compile a whole `Expr` to a flat instruction list.
+def compile(e: Expr) = compile-into(e, [])
+
+/// Apply a binary op code to the top two stack values (a is deeper, b is on top: `a op b`).
+def apply-op(op: Int64, a: Int64, b: Int64) =
+  if op == 43 then a + b else (if op == 45 then a - b else (if op == 42 then a * b else a / b))
+
+/// Execute the instruction at `i` against a stack (a `List Int64` used LIFO via push / len / at).
+/// A `Push` grows the stack; a `BinOp` pops two, pushes the result. Returns the final stack.
+def step(prog: List(Instr), i: Int64, stack: List(Int64)) =
+  if i == List.len(prog) then
+    stack
+  else
+    (match List.at(prog, i) with
+      | Option.Some(ins) => step(prog, i + 1, apply-instr(ins, stack))
+      | Option.None(_) => stack)
+
+/// Apply one instruction to the stack, returning the new stack.
+def apply-instr(ins: Instr, stack: List(Int64)) = match ins with
+  | Instr.Push(v) => List.push(stack, v)
+  | Instr.BinOp(op) =>
+    let n = List.len(stack) in
+    let b = stack-at(stack, n - 1) in
+    let a = stack-at(stack, n - 2) in
+    // pop the two operands (rebuild the stack without its top two), push the result
+    List.push(pop2(stack, n - 2, []), apply-op(op, a, b))
+
+/// The value at `i`, or 0 if out of range (a defensive total read — a well-formed program never misses).
+def stack-at(stack: List(Int64), i: Int64) = match List.at(stack, i) with
+  | Option.Some(v) => v
+  | Option.None(_) => 0
+
+/// Copy the first `keep` elements of `stack` into `dst` (drops the top-of-stack elements past `keep`).
+def pop2(stack: List(Int64), keep: Int64, dst: List(Int64)) =
+  if List.len(dst) == keep then
+    dst
+  else
+    (match List.at(stack, List.len(dst)) with
+      | Option.Some(v) => pop2(stack, keep, List.push(dst, v))
+      | Option.None(_) => dst)
+
+/// Execute a compiled program from an empty stack and return the single result (top of the final stack).
+def exec(prog: List(Instr)) =
+  let final = step(prog, 0, []) in
+  stack-at(final, List.len(final) - 1)
+
+/// The backend end-to-end: compile an `Expr` then execute it.
+def compile-and-run(e: Expr) = exec(compile(e))
+
+/// How many instructions an `Expr` compiles to (a Lit → 1, a Bin → its children + 1).
+def code-size(e: Expr) = List.len(compile(e))
+
+/// A small `Expr` builder for tests: `1 + 2 * 3` as a tree (mul binds tighter, so it is `1 + (2*3)`).
+def one-plus-two-times-three() = Expr.Bin(43, Expr.Lit(1), Expr.Bin(42, Expr.Lit(2), Expr.Lit(3)))
+
+@test
+def cg-literal() = if compile-and-run(Expr.Lit(42)) == 42 then unit else trap("42")
+
+@test
+def cg-add() =
+  if compile-and-run(Expr.Bin(43, Expr.Lit(1), Expr.Lit(2))) == 3 then unit else trap("1+2=3")
+
+@test
+def cg-sub-order() =
+  // 10 - 3 = 7 — operand order matters (a deeper, b on top)
+  if compile-and-run(Expr.Bin(45, Expr.Lit(10), Expr.Lit(3))) == 7 then unit else trap("10-3=7")
+
+@test
+def cg-precedence-tree() =
+  // 1 + (2*3) = 7 — a nested Bin as the right child
+  if compile-and-run(one-plus-two-times-three()) == 7 then unit else trap("1+2*3=7")
+
+@test
+def cg-nested-both-sides() =
+  // (10-3) * (2+2) = 28
+  let e = Expr.Bin(42, Expr.Bin(45, Expr.Lit(10), Expr.Lit(3)), Expr.Bin(43, Expr.Lit(2), Expr.Lit(2))) in
+  if compile-and-run(e) == 28 then unit else trap("(10-3)*(2+2)=28")
+
+@test
+def cg-code-size-literal() = if code-size(Expr.Lit(9)) == 1 then unit else trap("a literal is 1 instruction")
+
+@test
+def cg-code-size-nested() =
+  // 1 + (2*3): Push1, Push2, Push3, Mul, Add = 5 instructions
+  if code-size(one-plus-two-times-three()) == 5 then unit else trap("1+2*3 is 5 instructions")
+
+@test
+def cg-agrees-with-evaluator-simple() =
+  // the backend's contract: exec(compile(e)) == run-through-the-parser. Parse "2*3+1" then check both.
+  let ts = [Tok.TNum(2), Tok.TOp(42), Tok.TNum(3), Tok.TOp(43), Tok.TNum(1)] in
+  let e = parse(ts) in
+  if compile-and-run(e) == run(ts) then unit else trap("stack backend agrees with tree-walker")
+
+@test
+def cg-agrees-with-evaluator-parens() =
+  // (1+2)*3 = 9 through parse → compile → exec, equals the tree-walker
+  let ts = [Tok.TLP, Tok.TNum(1), Tok.TOp(43), Tok.TNum(2), Tok.TRP, Tok.TOp(42), Tok.TNum(3)] in
+  if compile-and-run(parse(ts)) == run(ts) then unit else trap("(1+2)*3 backend == evaluator")
+
+@test
+def cg-deep-left-assoc() =
+  // 100/5/2 = 10 through the full pipeline (left-assoc division)
+  let ts = [Tok.TNum(100), Tok.TOp(47), Tok.TNum(5), Tok.TOp(47), Tok.TNum(2)] in
+  if compile-and-run(parse(ts)) == 10 then unit else trap("100/5/2=10 end-to-end")
+
+export { Instr.*, compile, exec, compile-and-run, code-size }

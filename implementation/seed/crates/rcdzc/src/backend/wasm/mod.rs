@@ -4804,6 +4804,13 @@ fn emit_distinct_sig_resource(
             Vec<crate::backend::wasm::envelope::ArgSlot>,
             Vec<crate::backend::wasm::serialize::TupleArgRebuild>,
         )>,
+        /// A SOLE `(Option/Result scalar)` arg for this group: `Some((slot, rebuild))` drives the per-group
+        /// `call-<g>` mint (`option<…>`/`result<…>` via the `ArgSlot`) + the guest sum-cell rebuild. `None`
+        /// unless the sole arg is such a sum. Scalar-result groups only (a list result over a sum declines).
+        sum_arg: Option<(
+            crate::backend::wasm::envelope::ArgSlot,
+            crate::backend::wasm::serialize::SumArgRebuild,
+        )>,
     }
     let mut ginfos: Vec<GroupInfo> = Vec::new();
     for sig in &sigs {
@@ -4848,18 +4855,29 @@ fn emit_distinct_sig_resource(
         } else {
             None
         };
-        let arg_bytes: Vec<u8> =
-            if group_tuple_arg.is_some() || group_nested.is_some() || group_multi_args.is_some() {
-                Vec::new() // the flattened fields are carried by tuple_arg/nested_shape/multi_args
-            } else {
-                arg_tys
-                    .iter()
-                    .map(|t| {
-                        closure_boundary_byte(t)
-                            .ok_or_else(|| closure_boundary_reject("argument", t))
-                    })
-                    .collect::<Result<_, _>>()?
-            };
+        // `arg_bytes` is empty for a compound/sum arg (its boundary is the minted tuple/option/result type via
+        // the slot list). A sum arg is classified AFTER the result shape (below), but it is detected the same
+        // way: a single-arg group whose sole arg is neither a scalar nor a tuple. So compute it lazily below,
+        // after `group_sum_arg` — here just handle the tuple cases + the plain-scalar fallback.
+        let arg_is_sum = group_tuple_arg.is_none()
+            && group_nested.is_none()
+            && group_multi_args.is_none()
+            && arg_tys.len() == 1
+            && fixed_shape_option_scalar_arg(db, &arg_tys[0]).is_some();
+        let arg_bytes: Vec<u8> = if group_tuple_arg.is_some()
+            || group_nested.is_some()
+            || group_multi_args.is_some()
+            || arg_is_sum
+        {
+            Vec::new() // the flattened fields are carried by tuple_arg/nested_shape/multi_args/sum_arg
+        } else {
+            arg_tys
+                .iter()
+                .map(|t| {
+                    closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t))
+                })
+                .collect::<Result<_, _>>()?
+        };
         // A byte-rope (`Bytes`/`String`) result crosses `call-<g>` as `list<u8>` (not an inline scalar), so
         // it skips the scalar-boundary-byte check; `result_byte` is a placeholder (unused for byte-rope).
         let ret_is_bytes = matches!(
@@ -4884,20 +4902,39 @@ fn emit_distinct_sig_resource(
                 // scalar or unrenderable shape. (A fixed-shape compound took the static `ret_template` path.)
                 crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
             };
-        let result_byte = if ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some() {
+        let ret_is_list = ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some();
+        let result_byte = if ret_is_list {
             0
         } else {
             closure_boundary_byte(&ret_ty)
                 .ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
         };
+        // A SOLE `(Option/Result scalar)` arg for this group (SCALAR result only — the per-group list cores
+        // thread tuples, not sums). Classified only when no tuple classifier fired + the result is scalar.
+        let group_sum_arg: Option<(
+            crate::backend::wasm::envelope::ArgSlot,
+            crate::backend::wasm::lir::ValType,
+            crate::backend::wasm::serialize::SumArgRebuild,
+        )> = if group_tuple_arg.is_none()
+            && group_nested.is_none()
+            && group_multi_args.is_none()
+            && !ret_is_list
+            && arg_tys.len() == 1
+        {
+            fixed_shape_option_scalar_arg(db, &arg_tys[0])
+        } else {
+            None
+        };
         // Core call-arg valtypes: the FULL flattened core param list when a tuple arg (prefix scalars, tuple
-        // fields, suffix scalars), else each arg's own valtype.
+        // fields, suffix scalars), a sum arg's `(disc, payload)`, else each arg's own valtype.
         let arg_vts: Vec<ValType> = if let Some((_, all_vts, _, _, _)) = &group_tuple_arg {
             all_vts.clone()
         } else if let Some((_, all_vts, _, _, _, _)) = &group_nested {
             all_vts.clone() // prefix scalars, then the nested tuple's depth-first leaves, then suffix scalars
         } else if let Some((_, all_vts, _)) = &group_multi_args {
             all_vts.clone() // the flattened leaves of EVERY tuple/scalar arg, in order (N-compound-args)
+        } else if let Some((_, payload_vt, _)) = &group_sum_arg {
+            vec![ValType::I32, *payload_vt] // a sum flattens to (disc, payload)
         } else {
             arg_tys
                 .iter()
@@ -4915,25 +4952,27 @@ fn emit_distinct_sig_resource(
         // The lifted lambda's own param shape: it takes each ARG's OWN valtype — a tuple arg is ONE i32
         // tuple-cell handle (the `call-<g>` wrapper rebuilds it from the flattened fields), scalars are
         // themselves. So `match_vts` is per-arg (NOT the flattened boundary fields in `arg_vts`).
-        let match_vts: Vec<ValType> =
-            if group_tuple_arg.is_some() || group_nested.is_some() || group_multi_args.is_some() {
-                // Each ARG's OWN lambda-param valtype: a fixed-shape tuple/record (flat OR nested) is ONE i32 cell
-                // handle the `call-<g>` wrapper rebuilds; a scalar is its own valtype.
-                arg_tys
-                    .iter()
-                    .map(|t| {
-                        if tuple_field_abi(t).is_some() || nested_fixed_shape_tuple_arg(t).is_some()
-                        {
-                            Some(ValType::I32)
-                        } else {
-                            valtype_of(t)
-                        }
-                        .ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
-                    })
-                    .collect::<Result<_, _>>()?
-            } else {
-                arg_vts.clone()
-            };
+        let match_vts: Vec<ValType> = if group_sum_arg.is_some() {
+            // A sum arg is ONE i32 sum-cell handle the `call-<g>` wrapper rebuilds; the lifted lambda takes it.
+            vec![ValType::I32]
+        } else if group_tuple_arg.is_some() || group_nested.is_some() || group_multi_args.is_some()
+        {
+            // Each ARG's OWN lambda-param valtype: a fixed-shape tuple/record (flat OR nested) is ONE i32 cell
+            // handle the `call-<g>` wrapper rebuilds; a scalar is its own valtype.
+            arg_tys
+                .iter()
+                .map(|t| {
+                    if tuple_field_abi(t).is_some() || nested_fixed_shape_tuple_arg(t).is_some() {
+                        Some(ValType::I32)
+                    } else {
+                        valtype_of(t)
+                    }
+                    .ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
+                })
+                .collect::<Result<_, _>>()?
+        } else {
+            arg_vts.clone()
+        };
         // A nested group carries its recursive rebuild + prefix/suffix in `tuple_arg` (field_bytes unused) + its
         // shape in `nested_shape`; a flat group carries the field bytes + rebuild in `tuple_arg`, `nested_shape`
         // None.
@@ -4945,6 +4984,8 @@ fn emit_distinct_sig_resource(
             .or_else(|| group_nested.map(|(_, _, rb, _, pre, suf)| (Vec::new(), pre, suf, rb)));
         // ≥2 tuple args: carry the slot list (for the per-group envelope mint) + the rebuilds (for the core).
         let multi_args = group_multi_args.map(|(slots, _, rebuilds)| (slots, rebuilds));
+        // A sum arg: carry the slot (for the per-group envelope mint) + the rebuild (for the core).
+        let sum_arg = group_sum_arg.map(|(slot, _, rebuild)| (slot, rebuild));
         ginfos.push(GroupInfo {
             arg_vts,
             ret_vt,
@@ -4957,6 +4998,7 @@ fn emit_distinct_sig_resource(
             nested_shape,
             match_vts,
             multi_args,
+            sum_arg,
         });
     }
     // Effect-escape fence: no lifted body may perform a host effect.
@@ -5098,6 +5140,22 @@ fn emit_distinct_sig_resource(
     let any_tuple_arg = ginfos
         .iter()
         .any(|gi| gi.tuple_arg.is_some() || gi.multi_args.is_some());
+    // A sum-arg group's `call-<g>` rebuilds the sum cell via `sum-new`, boxing each arm's payload. Collect
+    // those box ops (a Bool/Float payload) so they are imported.
+    let any_sum_arg = ginfos.iter().any(|gi| gi.sum_arg.is_some());
+    let sum_box_ops: std::collections::BTreeSet<&'static str> = {
+        let mut ops = std::collections::BTreeSet::new();
+        for gi in &ginfos {
+            if let Some((_, rb)) = gi.sum_arg.as_ref() {
+                for arm in [&rb.arm_true, &rb.arm_false] {
+                    if let Some((box_op, _)) = arm.payload_box {
+                        ops.insert(box_op);
+                    }
+                }
+            }
+        }
+        ops
+    };
     let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
         used.insert("arr-get");
         used.insert("get-int");
@@ -5131,6 +5189,13 @@ fn emit_distinct_sig_resource(
             used.insert("arr-alloc");
             used.insert("arr-set");
             for op in &tuple_box_ops {
+                used.insert(op);
+            }
+        }
+        if any_sum_arg {
+            // A sum-arg group's `call-<g>` rebuilds the sum cell via `sum-new`, boxing each arm's payload.
+            used.insert("sum-new");
+            for op in &sum_box_ops {
                 used.insert(op);
             }
         }
@@ -5197,6 +5262,12 @@ fn emit_distinct_sig_resource(
             } else {
                 Vec::new()
             };
+        // A sum-arg group carries one `SumArgRebuild`; others none.
+        let group_sums: Vec<serialize::SumArgRebuild> = ginfos[gi]
+            .sum_arg
+            .as_ref()
+            .map(|(_, rb)| vec![rb.clone()])
+            .unwrap_or_default();
         ser_groups.push(serialize::SigGroup {
             makes: ser_makes,
             arg_vts: ginfos[gi].arg_vts.clone(),
@@ -5206,6 +5277,7 @@ fn emit_distinct_sig_resource(
             ret_template: ginfos[gi].ret_template.clone(),
             ret_descriptor: ginfos[gi].ret_descriptor.clone(),
             tuples: group_tuples,
+            sums: group_sums,
         });
         abi_groups.push(envelope::SigGroupAbi {
             makes: abi_makes,
@@ -5231,11 +5303,18 @@ fn emit_distinct_sig_resource(
                 .map(|(_, _, suf, _)| suf.clone())
                 .unwrap_or_default(),
             tuple_shape: ginfos[gi].nested_shape.clone(),
-            // ≥2 tuple args → the slot list drives the per-group `call-<g>` mint; ≤1-tuple groups leave it None.
+            // ≥2 tuple args OR a sum arg → the slot list drives the per-group `call-<g>` mint (an `option<…>`/
+            // `result<…>`/N-tuple type); ≤1-tuple groups leave it None (they use `tuple_arg_bytes`/`tuple_shape`).
             call_arg_slots: ginfos[gi]
                 .multi_args
                 .as_ref()
-                .map(|(slots, _)| slots.clone()),
+                .map(|(slots, _)| slots.clone())
+                .or_else(|| {
+                    ginfos[gi]
+                        .sum_arg
+                        .as_ref()
+                        .map(|(slot, _)| vec![slot.clone()])
+                }),
         });
     }
 

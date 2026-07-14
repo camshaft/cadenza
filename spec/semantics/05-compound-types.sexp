@@ -2025,6 +2025,27 @@
             (def (main) (sm (count 5))) (export main)))
   (output (: 15 Int64)))
 
+(case "a match arm reading two elements of a boxed payload tuple shares the sum-payload prefix"
+  (doc    "A binary-tree fold — the canonical AST-walker shape. `sum-tree` matches `(Tree.Node (tuple l
+           r))` and reads BOTH the left and right subtrees off the SAME boxed payload tuple, then recurses
+           on each. Both element reads share one `sum-payload(t)` walk (the compiler computes the payload
+           tuple handle once and reads element 0 and 1 off it, rather than re-walking the sum payload per
+           element). Built from a runtime argument so the tree is consumed at run time (not folded):
+           `build(5)` = Node(Node(Leaf 5, Leaf 10), Leaf 100), summing to 5+10+100 = 115. Pins that
+           sharing the payload prefix across two element binders preserves the value.")
+  (input  (do
+            (type Tree (Leaf Int64) (Node (Tuple Tree Tree)))
+            (def (sum-tree (: t Tree))
+              (match t
+                ((Tree.Leaf v) v)
+                ((Tree.Node (tuple l r)) (+ (sum-tree l) (sum-tree r)))))
+            (def (build (: n Int64))
+              (Tree.Node (tuple (Tree.Node (tuple (Tree.Leaf n) (Tree.Leaf 10))) (Tree.Leaf 100))))
+            (def (main (: x Int64)) (sum-tree (build x)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 115 Int64)))
+
 (case "a lowercase-named type is referenceable in a field (types are values, not gated by case)"
   (doc    "A type is a VALUE, referenceable by name regardless of case — so a lowercase-named sum
            `(type mylist (Nil) (Cons Int64 mylist))` may SELF-REFERENCE `mylist` in its `Cons` field, and
@@ -3345,6 +3366,88 @@
                 ((list (None) .. r) 99)))
             (def (main) (f (mk 2))) (export main)))
   (output (: 99 Int64)))
+
+(case "a sum variant's list payload split across empty and rest arms is exhaustive and dispatches"
+  (doc    "A sum variant whose LIST PAYLOAD is refined by MULTIPLE arms that jointly cover every length —
+           `((Some (list)) …) [len 0] + ((Some (list x .. r)) …) [len ≥ 1] + ((None) …)` — is exhaustive
+           WITHOUT a `_` (core-semantics.md §A List Is Deconstructed…: a list-arm set covering the empty and
+           every non-empty list is total). The decision-tree twin of the list-of-bools case: a nested
+           `ListLen` test is normally refutable, but the else of the `== 0` test is exactly `len ≥ 1`, which
+           the second arm covers → it becomes an unconditional leaf. Also pins the RUNTIME dispatch of a
+           list-in-payload element read: reading `x` at `[Payload, Elem(0)]` uses `vec-get` (a list is an RRB
+           vector), not `arr-get` — `mk 1` builds `(Some (list 7))`, whose non-empty arm binds `x = 7`.")
+  (input  (do
+            (def (mk (: n Int64))
+              (if (< n 1) (Some (list))
+                (if (< n 2) (Some (list 7)) (None))))
+            (def (f (: o (Option (List Int64))))
+              (match o
+                ((Some (list)) 100)
+                ((Some (list x .. r)) x)
+                ((None) -1)))
+            (def (main (: n Int64)) (f (mk n))) (export main)))
+  (call   main (: 1 Int64))
+  (output (: 7 Int64)))
+
+(case "an erased-newtype's list payload split across empty and rest arms dispatches with vec-get"
+  (doc    "The ERASED-NEWTYPE twin: `(type Box (Bx (List Int64)))` (a single-variant sum, its box erased)
+           matched `((Bx (list)) …) + ((Bx (list x .. r)) …)` is total, and the element read must go through
+           `vec-get` even though the newtype's `Payload` step is elided (the path is `[Elem(0)]`, no leading
+           `Payload`) — stripping the nominal wrapper to see the `List` is what picks `vec-get` over
+           `arr-get`. `mk 2` builds `(Bx (list 8 9))`, whose non-empty arm binds `x = 8` (element 0).")
+  (input  (do
+            (type Box (Bx (List Int64)))
+            (def (mk (: n Int64))
+              (if (< n 1) (Bx (list))
+                (if (< n 2) (Bx (list 7)) (Bx (list 8 9)))))
+            (def (f (: b Box))
+              (match b
+                ((Bx (list)) 100)
+                ((Bx (list x .. r)) x)))
+            (def (main (: n Int64)) (f (mk n))) (export main)))
+  (call   main (: 2 Int64))
+  (output (: 8 Int64)))
+
+(case "the empty and None arms of a list-payload split dispatch to their own values"
+  (doc    "The two cases above call the non-empty arm (`mk 1`/`mk 2`); this exercises the OTHER arms of the
+           same split. `mk 0` builds `(Some (list))` → the `(Some (list))` arm fires, returning 100; `mk 5`
+           builds `(None)` → the `(None)` arm returns -1. Pins that the empty-list arm and the None arm each
+           dispatch to their own value (not falling through to the rest arm), completing the arm coverage of
+           the empty+rest+None split whose non-empty arm the exhaustiveness case pins.")
+  (input  (do
+            (def (mk (: n Int64))
+              (if (< n 1) (Some (list))
+                (if (< n 2) (Some (list 7)) (None))))
+            (def (f (: o (Option (List Int64))))
+              (match o
+                ((Some (list)) 100)
+                ((Some (list x .. r)) x)
+                ((None) -1)))
+            (def (main (: n Int64)) (f (mk n))) (export main)))
+  (call   main (: 0 Int64)) (output (: 100 Int64))
+  (call   main (: 5 Int64)) (output (: -1 Int64)))
+
+(case "a list-payload split missing the non-empty arm is non-exhaustive"
+  (doc    "The soundness counterpart of the exhaustive-split cases: the empty+rest split is total only
+           because the two list arms JOINTLY cover every length. Drop the rest arm — `(match o ((Some
+           (list)) …) ((None) …))` covers `Some` ONLY for the empty list, leaving every non-empty
+           `Some (list …)` uncovered — and the match is non-exhaustive, rejected CDZ0210. Pins that the
+           `ListLen`-refinement precision that makes empty+rest total does NOT over-accept: a genuine
+           missing length still rejects.")
+  (input  (do
+            (def (f (: o (Option (List Int64)))) (match o ((Some (list)) 0) ((None) -1)))
+            (def (main) (f (None))) (export main)))
+  (error  CDZ0210))
+
+(case "a list-payload split missing the empty arm is non-exhaustive"
+  (doc    "The mirror gap: `(match o ((Some (list x .. r)) …) ((None) …))` covers `Some` only for a
+           non-empty list (`len ≥ 1`), leaving the empty list `(Some (list))` uncovered — non-exhaustive,
+           CDZ0210. With the missing-rest case above, pins that BOTH halves of the empty+rest split are
+           required for totality: neither the empty arm nor the rest arm alone covers `Some`.")
+  (input  (do
+            (def (f (: o (Option (List Int64)))) (match o ((Some (list x .. r)) x) ((None) -1)))
+            (def (main) (f (None))) (export main)))
+  (error  CDZ0210))
 
 (case "a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching"
   (doc    "The route around the not-yet-lowered ctor-in-tuple-slot binder: bind the tuple element to a

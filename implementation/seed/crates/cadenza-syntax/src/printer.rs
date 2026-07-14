@@ -635,6 +635,20 @@ impl<'a> Printer<'a> {
     /// (`a + b - c`) is FLATTENED into one box so, if it overflows, the operators break at ONE
     /// consistent indent rather than compounding a level per nesting. The break sits BEFORE each
     /// operator (R10) so a wrapped operand lands with its operator leading the line.
+    /// Whether `id` is a type-suffix desugar `(: <Suffixed> …)` — the node the resugar at `expr` collapses
+    /// to the bare `100N`/`0.5R` literal. Mirrors that resugar's guard so the infix left-spine flatten
+    /// leaves it whole (see the call site).
+    fn is_suffix_desugar(&self, id: StructId) -> bool {
+        if let Some(t) = self.a.as_form(id, ":")
+            && t.len() == 2
+            && let Struct::Atom(l) = self.a.get(t[0])
+        {
+            matches!(self.a.leaf(*l), Leaf::Suffixed { .. })
+        } else {
+            false
+        }
+    }
+
     fn infix(&mut self, op: &str, prec: u8, l: StructId, r: StructId, parent_prec: u8) {
         let paren = prec < parent_prec;
         // Collect the flat chain: descend the left spine while the operator has the SAME precedence.
@@ -643,6 +657,14 @@ impl<'a> Printer<'a> {
         let mut ops = vec![op.to_string()];
         let mut left = l;
         loop {
+            // A type-suffix desugar `(: <Suffixed> BigInt|Rational)` is NOT an annotation to flatten — it
+            // resugars to the bare literal (`100N`). If the left spine is this node (e.g. the inner form of
+            // `(: 100N Int64)`, which the reader nests as `(: (: 100N BigInt) Int64)`), keep it WHOLE so
+            // `expr` reaches the suffix resugar; flattening it would spuriously expose the internal
+            // `: BigInt` (`100N : BigInt : Int64`).
+            if self.is_suffix_desugar(left) {
+                break;
+            }
             match self.a.get(left) {
                 Struct::List(items) if items.len() == 3 => {
                     if let Some(h) = self.head_name(items[0])

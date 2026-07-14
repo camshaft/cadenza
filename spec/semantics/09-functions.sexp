@@ -1420,6 +1420,36 @@
   (input  (Some))
   (error  CDZ0201))
 
+; --- A function value is not matchable -----------------------------------------------------
+; A `match` deconstructs a DATA value by its cases (core-semantics.md §Patterns Compose — a literal, a
+; tuple, or a constructor). A FUNCTION value has no cases to deconstruct, so `(match g …)` where `g` is a
+; function/closure is a type error (CDZ0203), not a runtime match — the compiler names the real cause and
+; points at the fix (call it, or match on the value it RETURNS). This is the match-position companion of
+; the apply-a-non-function errors above: there a non-function was applied, here a function is matched.
+; The reject is up-front on a `Ty::Fn` scrutinee, so it is a coded diagnostic, not an internal-sounding
+; closure-boundary decline about a machine representation the author never asked about.
+
+(case "matching on a function value is a type error"
+  (doc    "`(match g (v v))` where `g` is a function (a def) — a match deconstructs a data value by its
+           cases (a literal, tuple, or constructor), and a function has none, so it is rejected (CDZ0203).
+           The author who meant to match the function's RESULT must call it first `(match (g x) …)`. Pins
+           that a `Ty::Fn` scrutinee is a coded type error, not an internal decline about a closure's
+           parameter representation.")
+  (input  (do
+            (def (g (: x Int64)) (+ x 1))
+            (def (main) (match g (v v))) (export main)))
+  (error  CDZ0203))
+
+(case "matching on a partial application is a type error"
+  (doc    "`(match (add 1) (v 0))` where `add` is binary — `(add 1)` is a PARTIAL application, still a
+           function value (awaiting its second argument), so it is not matchable either (CDZ0203). Pins
+           that the not-matchable check covers a partial application, not only a bare def name — any
+           `Ty::Fn` scrutinee, however produced, is rejected.")
+  (input  (do
+            (def (add (: a Int64) (: b Int64)) (+ a b))
+            (def (main) (match (add 1) (v 0))) (export main)))
+  (error  CDZ0203))
+
 (case "a recursive def computes over its argument"
   (doc    "Witnesses core-semantics.md §Applying A Function Binds Its Parameters To Its Arguments:
            sum-to counts down to 0 through direct self-recursion. sum-to(3) = 3 + 2 + 1 + 0 = 6.")
