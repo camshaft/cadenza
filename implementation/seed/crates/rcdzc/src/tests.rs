@@ -11694,6 +11694,24 @@ mod match_engine {
             "the absent-field message must suggest the near field; got {}",
             d.message
         );
+        // The near-miss also carries an APPLICABLE replace fix on the label occurrence (`alpa` → `alpha`)
+        // — the same fix a member-access `(. r k)` near-miss gets, not just the message hint.
+        assert_eq!(
+            d.fix.as_ref().map(|f| (f.kind, f.replacement.as_str())),
+            Some((crate::abi::FixKind::Replace, "alpha")),
+            "the absent-field near-miss carries a replace fix: {:?}",
+            d.fix
+        );
+        // NO OVERREACH: an absent field with no near candidate carries the message but NO fix.
+        let far = reject_full(
+            "(module m (def (main) (Record.without (record (alpha 1)) (zzzzzz))) (export main))",
+        )
+        .expect("an absent-field CDZ0212");
+        assert!(
+            far.fix.is_none(),
+            "no fix without a plausible near field: {:?}",
+            far.fix
+        );
         // `Record` is STILL the record-TYPE constructor in type position — the module dual-shape did not
         // break `(: r (Record (a Int64)))`. A one-field record annotated with its own type compiles.
         assert_eq!(

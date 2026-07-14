@@ -5186,22 +5186,38 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         // The record's own field NAMES — the closed set a dropped/projected label must
                         // name, so a near-miss is a "did you mean?" (the same closed-set suggestion a
                         // member access `(. r k)` gets — a mistyped `Record.without r (alfa)` for a field
-                        // `alpha` should point at it, not just say "no field `alfa`").
+                        // `alpha` should point at it, not just say "no field `alfa`"). The label LIST's
+                        // child nodes align positionally with `labels` (both read from `args[1]`), so a
+                        // near-miss carries a REPLACE fix on the SPECIFIC label occurrence — the same
+                        // fix `no_field_reject` attaches for a member access, not just the message hint.
                         let field_names: Vec<&str> =
                             fields.keys().map(|k| k.name.as_str()).collect();
-                        for label in &labels {
+                        let label_nodes: Vec<StructId> = match db.ast.get(args[1]) {
+                            crate::ast::Struct::List(items) => items.clone(),
+                            _ => Vec::new(),
+                        };
+                        for (i, label) in labels.iter().enumerate() {
                             if !fields.contains_key(label) {
-                                let msg = match crate::diag::suggest::nearest(
+                                let near = crate::diag::suggest::nearest(
                                     &label.name,
                                     field_names.iter().copied(),
-                                ) {
+                                );
+                                let msg = match &near {
                                     Some(near) => format!(
                                         "record has no field `{}` — did you mean `{near}`?",
                                         label.name
                                     ),
                                     None => format!("record has no field `{}`", label.name),
                                 };
-                                out.push(Reject::coded(Code::AbsentField, msg).at(args[1]));
+                                let mut reject = Reject::coded(Code::AbsentField, msg).at(args[1]);
+                                // Attach the replace fix on THIS label's occurrence when a near field
+                                // exists AND its node is known — `label_nodes[i]` is the i-th label of
+                                // `args[1]` (positionally aligned with `labels`).
+                                if let (Some(near), Some(&node)) = (near, label_nodes.get(i)) {
+                                    reject = reject
+                                        .with_fix(crate::diag::Fix::replace_heuristic(node, near));
+                                }
+                                out.push(reject);
                             }
                         }
                     }
