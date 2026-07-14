@@ -34433,6 +34433,67 @@ mod stage1 {
     }
 
     #[test]
+    fn a_const_collection_recursively_folded_rejects_rather_than_hanging() {
+        // 🔴 MISCOMPILE GUARD: a `const` COLLECTION param consumed by a SELF-RECURSIVE fold used to compile
+        // to an INFINITE LOOP — the const erasure and the tail-loop transform composed to emit a
+        // `loop { … br 0 }` with no exit test (the `(list)`-nil / length check was const-folded away). A
+        // valid program HUNG. `type_specialize` now DECLINES the composition (decline-don't-miscompile),
+        // so it rejects (coded CDZ0201) rather than hanging.
+        let reject_code = |src: &str| {
+            crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+                .err()
+                .and_then(|e| e.code)
+        };
+        assert_eq!(
+            reject_code(
+                "(module m \
+                   (def (s (const (: xs (List Int64))) (: acc Int64)) \
+                     (match xs ((list) acc) ((list h .. t) (s t (+ acc h))))) \
+                   (def (main) (s (list 1 2 3) 0)) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201"),
+            "a const list consumed by a tail fold must be rejected, not compiled to an infinite loop"
+        );
+        // The RUNTIME-list version (no `const`) compiles cleanly — the list is an ordinary runtime value the
+        // tail-loop iterates with its real `br_if` length/nil exit. So the reject is specific to the
+        // const-erasure × tail-loop composition, NOT to tail-folding a list.
+        assert_eq!(
+            reject_code(
+                "(module m \
+                   (def (s (: xs (List Int64)) (: acc Int64)) \
+                     (match xs ((list) acc) ((list h .. t) (s t (+ acc h))))) \
+                   (def (main) (s (list 1 2 3) 0)) (export main))"
+            ),
+            None,
+            "the runtime-list tail fold (no const) compiles — only the const-collection composition rejects"
+        );
+        // NO REGRESSION: a `const` DICTIONARY consumer that recurses driven by a RUNTIME counter (the dict
+        // passed UNCHANGED) still compiles — the const value is not a collection folded down a spine, so
+        // the guard does not fire. (The `is_collection_ty` predicate distinguishes them.)
+        assert_eq!(
+            reject_code(
+                "(module m \
+                   (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
+                     (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
+                   (def (main) (fold-n (record (op (fn (x) (+ x 10)))) 3 0)) (export main))"
+            ),
+            None,
+            "a const-dictionary recursive consumer (runtime-counter-driven) still compiles"
+        );
+        // NO REGRESSION: a const SCALAR recursion compiles (a scalar is not a collection).
+        assert_eq!(
+            reject_code(
+                "(module m \
+                   (def (cd (const (: n Int64)) (: acc Int64)) (if (= n 0) acc (cd (- n 1) (+ acc 1)))) \
+                   (def (main) (cd 5 0)) (export main))"
+            ),
+            None,
+            "a const-scalar recursion compiles (only a const collection folded recursively rejects)"
+        );
+    }
+
+    #[test]
     fn a_deeply_nested_inlined_projection_chain_registers_callables_linearly() {
         // REGRESSION (perf): `Db::register_reduced_callables` runs after EVERY `apply_lambda` β-reduction to
         // discover do-local recursive defs in the reduced term, and its `collect_reduced_callables` helper
