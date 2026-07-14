@@ -300,6 +300,26 @@ impl Pattern {
     fn matches(&self, subject: &Tree, binds: &mut Bindings) -> bool {
         match_pat(&self.pat, subject, binds)
     }
+
+    /// The metavariable names this pattern BINDS on a match (single `,x` + splice `,@xs`), excluding the
+    /// anonymous wildcard `_` (which binds nothing). The set a template's metavars must draw from — a
+    /// template `,z` that is not among these can never be filled, so a rewrite using it is dead.
+    fn bound_metavars(&self) -> std::collections::BTreeSet<String> {
+        fn walk(p: &Pat, out: &mut std::collections::BTreeSet<String>) {
+            match p {
+                Pat::Meta { name, .. } | Pat::Splice { name } => {
+                    if !is_wildcard(name) {
+                        out.insert(name.clone());
+                    }
+                }
+                Pat::List(items) => items.iter().for_each(|c| walk(c, out)),
+                Pat::Lit(_) => {}
+            }
+        }
+        let mut out = std::collections::BTreeSet::new();
+        walk(&self.pat, &mut out);
+        out
+    }
 }
 
 impl Template {
@@ -310,6 +330,25 @@ impl Template {
         Ok(Template {
             tree: Tree::of(&arena),
         })
+    }
+
+    /// Every metavariable name this template REFERENCES — a single `,x` or a splice `,@xs`. Each must be
+    /// BOUND by the paired pattern, or the template can never be instantiated. The wildcard `,_` IS
+    /// included: a pattern never binds `_`, so a template `,_` is likewise unfillable (it would silently
+    /// rewrite 0 sites), not a meaningful hole — so it is reported too.
+    fn referenced_metavars(&self) -> std::collections::BTreeSet<String> {
+        fn walk(t: &Tree, out: &mut std::collections::BTreeSet<String>) {
+            if let Some(name) = template_metavar(t).or_else(|| as_splice(t)) {
+                out.insert(name.to_string());
+                return; // the metavar payload is a name, not a sub-template to descend
+            }
+            if let Tree::List(items, _) = t {
+                items.iter().for_each(|c| walk(c, out));
+            }
+        }
+        let mut out = std::collections::BTreeSet::new();
+        walk(&self.tree, &mut out);
+        out
     }
 }
 
@@ -792,6 +831,20 @@ pub struct Rule {
 impl Rule {
     pub fn new(pattern: Pattern, template: Template) -> Rule {
         Rule { pattern, template }
+    }
+
+    /// The template metavariables this rule references that its PATTERN does not bind, in sorted order.
+    /// Such a metavar can never be filled, so every site "fails to instantiate" (0 rewrites) with no
+    /// hint — a static mistake (a typo'd or stray template metavar) the caller should surface up front
+    /// rather than leaving the author to wonder why nothing rewrote. Empty when the template is
+    /// well-formed against its pattern.
+    pub fn unbound_template_metavars(&self) -> Vec<String> {
+        let bound = self.pattern.bound_metavars();
+        self.template
+            .referenced_metavars()
+            .into_iter()
+            .filter(|m| !bound.contains(m))
+            .collect()
     }
 
     /// Compile a rule from a `(rule PATTERN TEMPLATE)` s-expression form.
@@ -3727,6 +3780,47 @@ mod tests {
         let r = rewrite(&pat("(+ ,x 0)"), &tmpl(",y"), &s);
         assert_eq!(r.count, 0);
         assert_eq!(r.tree.to_sexpr(), "(+ a 0)");
+    }
+
+    #[test]
+    fn a_rule_reports_the_template_metavars_its_pattern_never_binds() {
+        // `Rule::unbound_template_metavars` is the STATIC check the `cdz rewrite` CLI runs up front: a
+        // template metavar (single, splice, or the wildcard `,_` — which a pattern never binds) not bound
+        // by the pattern can never be filled, so every site silently rewrites to nothing. Reporting it
+        // turns a mystifying "rewrote 0 site(s)" into a named, actionable error.
+        let rule = |p: &str, t: &str| Rule::new(pat(p), tmpl(t));
+        assert_eq!(
+            rule("(+ ,a ,b)", "(- ,a ,c)").unbound_template_metavars(),
+            vec!["c".to_string()],
+            "a stray single metavar is reported"
+        );
+        assert_eq!(
+            rule("(+ ,@xs)", "(- ,@zs)").unbound_template_metavars(),
+            vec!["zs".to_string()],
+            "a stray splice metavar is reported"
+        );
+        assert_eq!(
+            rule("(+ ,a ,b)", "(f ,a ,_)").unbound_template_metavars(),
+            vec!["_".to_string()],
+            "a template wildcard `,_` is unfillable (a pattern never binds `_`)"
+        );
+        // A well-formed rule (template metavars ⊆ pattern's) reports nothing — including a template that
+        // uses only a SUBSET of the bound metavars.
+        assert!(
+            rule("(+ ,a ,b)", "(- ,a ,b)")
+                .unbound_template_metavars()
+                .is_empty()
+        );
+        assert!(
+            rule("(+ ,a ,b)", "(id ,a)")
+                .unbound_template_metavars()
+                .is_empty()
+        );
+        assert!(
+            rule("(+ ,@xs)", "(- ,@xs)")
+                .unbound_template_metavars()
+                .is_empty()
+        );
     }
 
     #[test]
