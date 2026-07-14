@@ -274,7 +274,7 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // reads a monomorphic scheme, not a bare type-value. `(meta apply)` = the `print`/`read` intrinsic
     // (`Prim::Print`/`Prim::Read`), folded on a compile-time-visible operand in `lower`. Reading the text a
     // printer produced round-trips: `read(print(v)) == v` (the invariant the corpus witnesses).
-    //= spec/capabilities/self-hosting-surface.md#reading-the-text-a-printer-produced-round-trips-to-an-equal-value
+    //= spec/capabilities/self-hosting-surface.md#a-printer-renders-the-canonical-representation-as-re-readable-text
     //# Reading the text a printer produced for a value MUST yield a value equal to the original under structural equality, so that the reader and printer round-trip.
     {
         let print_lambda = mono_op_type_lambda(ast, "Ast", "String");
