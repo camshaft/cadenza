@@ -2562,3 +2562,76 @@
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: (tuple (list 5 6) 5) (Tuple (List Int64) Int64))))
+
+; COMPOSED round-trip shapes — the argument surface (every machine type, incl. higher-order) and the result
+; surface (every value-encodable type: scalar, byte-rope, fixed compound, collection, sum, and
+; compound-containing-collection) COMPOSE freely, across single-sig and distinct-sig grouping. These lock in
+; the full round-trip closure surface end-to-end.
+
+(case "round-trip: a consumer returns a Map whose VALUE is a list"
+  (doc    "A `Map Int64 (List Int64)` consumer result — the map's VALUE shape is itself variable-length, so
+           the value-encode descriptor recurses through the map value into the nested list. `app` returns
+           `(map (0 (list x (g x))) (1 (list x)))`. `app(handle, 5)` → `(: (map (0 (list 5 6)) (1 (list 5)))
+           (Map Int64 (List Int64)))` in canonical key order.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (map (0 (list x (g x))) (1 (list x))))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (map (0 (list 5 6)) (1 (list 5))) (Map Int64 (List Int64)))))
+
+(case "round-trip: a consumer returns an Option of a tuple"
+  (doc    "A SUM whose payload is a fixed-shape COMPOUND: `app` returns `(Some (tuple x (g x)))`.
+           `app(handle, 5)` → `(: (Some (tuple 5 6)) (Option (Tuple Int64 Int64)))`. The value-encode walker
+           switches on the disc, then renders the tuple payload.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (Some (tuple x (g x))))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (Some (tuple 5 6)) (Option (Tuple Int64 Int64)))))
+
+(case "round-trip: a consumer returns a list of tuples from repeated closure application"
+  (doc    "A `List (Tuple Int64 Int64)` result — a collection whose ELEMENT is a compound. `app` applies `g`
+           to two inputs and pairs each. `mk` doubles; `app(handle, 3)` → `(list (tuple 3 6) (tuple 4 8))`, so
+           `(: (list (tuple 3 6) (tuple 4 8)) (List (Tuple Int64 Int64)))`.")
+  (input  (do (def (mk) (fn ((: n Int64)) (* n 2)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64))
+                (list (tuple x (g x)) (tuple (+ x 1) (g (+ x 1)))))
+              (export mk) (export app)))
+  (call   app (: 3 Int64))
+  (output (: (list (tuple 3 6) (tuple 4 8)) (List (Tuple Int64 Int64)))))
+
+(case "round-trip: a HIGHER-ORDER closure arg composed with a SUM result"
+  (doc    "The argument and result widenings compose: `app : (own<t>, Int64) -> (Option Int64)` applies a
+           closure-typed arg (a guest-built inner closure) and wraps the result in `Some`. `mk`'s closure
+           applies its function arg to 10; `app(handle, 5)` → `g((fn y -> y+5))` = 15, so `(: (Some 15)
+           (Option Int64))`.")
+  (input  (do (def (mk) (fn ((: f (-> Int64 Int64))) (f 10)))
+              (def (app (: g (-> (-> Int64 Int64) Int64)) (: x Int64)) (Some (g (fn (y) (+ y x)))))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (Some 15) (Option Int64))))
+
+(case "distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the sum one"
+  (doc    "Two distinct signatures, two result MODES: `appa : (own<t0>, Int64) -> (Option Int64)` returns
+           `(Some (g x))`; `appb : (own<t1>, Bool) -> (List Int64)` returns `(list (h y) (h y))`.
+           `appa(handle, 5)` → `(: (Some 6) (Option Int64))`. A sum result and a collection result of DISTINCT
+           signatures coexist, each value-encoded against its own descriptor.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 1 0) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (Some (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (list (h y) (h y)))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 5 Int64))
+  (output (: (Some 6) (Option Int64))))
+
+(case "distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the collection one"
+  (doc    "The SAME two-resource-type program, driving the OTHER (collection-result) consumer of the other
+           signature: `appb(handle, true)` → `h(true)` = 1 twice, so `(: (list 1 1) (List Int64))`. Confirms a
+           sum-result group and a collection-result group render independently.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 1 0) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (Some (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (list (h y) (h y)))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appb (: true Bool))
+  (output (: (list 1 1) (List Int64))))
