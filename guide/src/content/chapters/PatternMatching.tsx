@@ -130,6 +130,29 @@ export default function PatternMatching() {
         or misspelled case is caught. Reach for a sum when the set of cases is fixed and worth enforcing.
       </Note>
 
+      <H2>Matching a map by key</H2>
+      <P>
+        A <C>match</C> can also look <em>inside a collection</em>. A map pattern —{" "}
+        <C>(map (key binder) .. rest)</C> — fires when the map contains that key, binding the associated
+        value to <C>binder</C> (and the leftover entries to <C>rest</C>). It's the pattern-matching
+        counterpart to a <C>Map.lookup</C>: here <C>setting</C> reads the <C>"width"</C> from a config map,
+        falling back to <C>-1</C> when it's absent:
+      </P>
+      <Runnable
+        source={`(def (setting m)
+  (match m
+    ((map ("width" v) .. rest) v)
+    (_ (- 0 1))))
+(def (main)
+  (setting (Map.insert (Map.insert (Map.empty) "width" 80) "height" 50)))`}
+      />
+      <P>
+        The map has a <C>"width"</C>, so the arm fires and binds <C>v</C> to <C>80</C>. Drop that key from
+        the map and the pattern no longer matches — it falls through to the wildcard, <C>-1</C>. Toggle to
+        the conventional surface and the pattern reads as <C>{`#{ "width" = v, .. rest }`}</C>, the same
+        map-literal shape from <strong>Maps &amp; sets</strong>, now on the left of a match arm.
+      </P>
+
       <H2>Your turn</H2>
       <Exercise
         id="pattern-matching:1"

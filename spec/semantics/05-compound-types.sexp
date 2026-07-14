@@ -1232,6 +1232,50 @@
             (export main)))
   (output (: 0 Int64)))
 
+; The map-sum-value case above consumes the lookup result INLINE, in the same expression. The environment-
+; lookup idiom a type-inference / evaluation pass takes is different: look a binding up in the map, WRAP it
+; in a result constructor, RETURN it from the lookup function, then MATCH it in the CALLER. These pin that
+; a sum VALUE with SCALAR payloads round-trips through that return boundary — looked up, ctor-wrapped,
+; returned, and deconstructed one call up — and the wildcard-consume companion where the caller never
+; inspects the payload. (A returned looked-up value whose payload is itself a HEAP value — a String, a
+; nested sum — is a separate backend borrow-analysis limit tracked outside the corpus; a scalar payload is
+; realized, which is what these pin.)
+
+(case "a scalar-payload sum looked up from a map, returned via a ctor, is matched in the caller"
+  (doc    "The environment-lookup shape: `get` looks a key up in a `(Map Int64 Ty)`, wraps the found `Ty`
+           (a sum with SCALAR payloads) in `Out.Ok`, and RETURNS it; the caller `tag` matches the returned
+           `Out`, then the `Ty` inside it. k=1 → `(Ty.Var 7)` → 7; k=2 → `(Ty.Lvl 3)` → 3+100 = 103; k=9 →
+           absent → `Out.Err` → -1. Pins that a scalar-payload sum value survives being looked up,
+           ctor-wrapped, returned across a function boundary, and deconstructed in the caller — the lookup-
+           return-inspect idiom of an inference/eval pass, distinct from the inline consume above.")
+  (input  (do
+            (type Ty (Var Int64) (Lvl Int64))
+            (type Out (Ok Ty) (Err Int64))
+            (def (get (: env (Map Int64 Ty)) (: k Int64))
+              (match (Map.lookup env k) ((Some t) (Out.Ok t)) (None (Out.Err k))))
+            (def (tag (: o Out)) (match o ((Out.Ok t) (match t ((Ty.Var n) n) ((Ty.Lvl n) (+ n 100)))) ((Out.Err _) -1)))
+            (def (main (: k Int64)) (tag (get (Map.insert (Map.insert Map.empty 1 (Ty.Var 7)) 2 (Ty.Lvl 3)) k)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 7 Int64))
+  (call   main (: 2 Int64)) (output (: 103 Int64))
+  (call   main (: 9 Int64)) (output (: -1 Int64)))
+
+(case "a returned lookup result consumed with a wildcard never inspects the payload"
+  (doc    "The wildcard-consume companion: the caller matches the returned `Out` but binds the payload with
+           a wildcard `(Out.Ok _)` — it observes only present-vs-absent, never the looked-up value itself.
+           `present` yields 1 for a hit, 0 for a miss. Pins that a returned lookup result is consumable
+           without inspecting its payload (the shape a `contains`-style query takes), a String value here
+           being fine because it is never read out.")
+  (input  (do
+            (type Ty (Var Int64) (Con String))
+            (type Out (Ok Ty) (Err String))
+            (def (get (: env (Map String Ty)) (: k String))
+              (match (Map.lookup env k) ((Some t) (Out.Ok t)) (None (Out.Err k))))
+            (def (present (: o Out)) (match o ((Out.Ok _) 1) ((Out.Err _) 0)))
+            (def (main) (present (get (Map.insert (map) "x" (Ty.Con "Int")) "x")))
+            (export main)))
+  (output (: 1 Int64)))
+
 ; A STRING used as a Map VALUE — the symbol-table idiom (a name maps to a canonical name / type string /
 ; opcode mnemonic), the string companion of the sum-/list-/set-valued map cases. The looked-up String is
 ; consumed WITHIN the lookup's match arm: compared by `=` to a literal, or measured. (Returning the

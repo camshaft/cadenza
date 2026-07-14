@@ -1793,14 +1793,7 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             && db.is_user_node(id)
             && crate::resolve::is_stray_resume(db, id)
         {
-            faults.push(
-                Reject::coded(
-                    Code::Malformed,
-                    "a `resume` is only meaningful inside a handler arm's body — this one has no \
-                     enclosing handler arm to resume into",
-                )
-                .at(id),
-            );
+            faults.push(Reject::coded(Code::Malformed, crate::diag::STRAY_RESUME_MESSAGE).at(id));
         }
     }
     // EXPORTED-CLOSURE BODY TYPE-CHECK. An export whose body is a bare `(fn …)` crosses the host boundary
@@ -2428,6 +2421,20 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
     let has_malformed_host_reject = faults.iter().any(|r| {
         r.code == Some(Code::Malformed) && r.message.starts_with(crate::diag::MALFORMED_HOST_PREFIX)
     });
+    // Likewise: a STRAY `resume` (outside any handler arm) that is ALSO malformed (`(resume 5)` — missing
+    // next-state, or `(resume v s extra)` — too many) reports TWO CDZ0201s at the SAME resume node: the
+    // resolve-path ARITY poison AND the stray-PLACEMENT reject. The placement is the ROOT defect — the
+    // resume does not belong here at all — whereas the arity message ("has no next-state") misleads (it
+    // reads as if adding an argument would fix it). The same-node dedup keeps only whichever anchored fault
+    // comes first (the arity poison, produced earlier), so collect the nodes carrying a stray-placement
+    // reject and DROP the arity poison at those nodes below — the misplaced resume then reports its
+    // fundamental cause. (A WELL-PLACED but malformed resume inside an arm has no stray reject at its node,
+    // so its arity poison is kept — the only report of its real defect.)
+    let stray_resume_nodes: std::collections::HashSet<u32> = faults
+        .iter()
+        .filter(|r| r.message == crate::diag::STRAY_RESUME_MESSAGE)
+        .filter_map(|r| r.at.map(|s| s.0))
+        .collect();
     // Likewise: a COMPARISON whose operands are a genuine TYPE MISMATCH (`(< 1 "x")`) is rejected by
     // `infer` as a coded "… are different types …" (CDZ0201/CDZ0203 naming the kind boundary). Because one
     // operand is a compound/text the emit path cannot fold to a scalar, `lower` ALSO returns the uncoded
@@ -2587,6 +2594,16 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             // Drop the "nests too deeply (resource limit)" decline that a value cycle's reduction spins
             // into — the clear CDZ0201 cycle reject names the same fault correctly.
             if has_value_cycle_reject && r.is_decline() && r.message.contains("nests too deeply") {
+                return false;
+            }
+            // Drop a stray resume's ARITY poison ("this resume has no next-state" / "… has no value …" /
+            // "… has too many operands") at a node that ALSO carries the stray-PLACEMENT reject — the
+            // placement is the root defect (a resume outside a handler arm does not belong here at all),
+            // so it is the ONE primary error, not the misleading arity complaint. (`STRAY_RESUME_MESSAGE`
+            // itself never starts with "this resume", so it is never dropped here.)
+            if r.message.starts_with("this resume has")
+                && r.at.is_some_and(|s| stray_resume_nodes.contains(&s.0))
+            {
                 return false;
             }
             if has_not_a_function_reject

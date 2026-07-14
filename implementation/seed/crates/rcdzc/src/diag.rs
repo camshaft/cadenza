@@ -760,6 +760,18 @@ pub const MISSING_OP_TYPE_PREFIX: &str = "this operation has no type";
 /// error — the `host` analogue of the noncanonical-handle CDZ0401 suppression.
 pub const MALFORMED_HOST_PREFIX: &str = "this host";
 
+/// The message for a STRAY `resume` — one outside any handler arm's body (a top-level def body, a plain
+/// expression). A resume is meaningful only inside a handler arm, so its PLACEMENT is the root defect
+/// regardless of its ARITY: a stray `(resume 5)` is BOTH malformed (missing next-state) AND misplaced,
+/// and the resolve-path arity poison + this placement reject BOTH anchor the same `resume` node. The
+/// same-node fault dedup keeps only ONE anchored fault per (code, node), so `dedup_faults` DROPS the
+/// arity poison whenever this placement reject is present at that node — a misplaced resume then reports
+/// the fundamental "not in a handler" cause, not the misleading "missing next-state" (which reads as if
+/// adding an argument would fix it, when the resume simply does not belong here). Shared as a const so
+/// the stray-loop producer and the dedup suppressor cannot drift.
+pub const STRAY_RESUME_MESSAGE: &str = "a `resume` is only meaningful inside a handler arm's body — this one has no \
+     enclosing handler arm to resume into";
+
 /// The UNCODED decline the emit path (`lower`) returns for a `<`/`=`/… comparison whose operand is a
 /// COMPOUND value it cannot fold to a scalar and cannot heap-walk yet. When the two operands are a
 /// genuine TYPE MISMATCH (`(< 1 "x")` — Int64 vs String, one side a compound/text), `infer` already

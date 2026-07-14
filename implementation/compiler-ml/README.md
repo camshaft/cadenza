@@ -48,9 +48,15 @@ cdz test --filter head     # only tests whose name contains "head"
 `tests`/`modules` glob expands against the manifest dir (path-sorted, deduped, `Project.cdz` never
 matched); a matched file that also matches an `exclude` pattern is dropped. `cdz test <dir>` with no
 manifest walks every source file under the dir. A `@test` never burdens a normal `cdz compile` (the
-test defs are unexported → dead → dropped). Tests live SAME-FILE with the code they test (a cross-file
-test cannot yet construct a type whose variant shadows a prelude name — see
-`repros/import-prelude-collision`), so each module tests itself.
+test defs are unexported → dead → dropped).
+
+**`cdz test` FOLLOWS the import closure** (mirrors `cdz check`): a module whose `@test` imports a
+sibling type/function links against it and runs — so a test can reuse another module's `Ty` etc. A
+directory run runs each file's OWN tests (the entry-file filter keeps a shared imported library's tests
+to that library's own run, never double-counted through an importer). Tests still live SAME-FILE with
+the code they test (a cross-file test cannot yet construct a type whose variant shadows a *prelude* name
+— see `repros/import-prelude-collision`), so each module tests itself, but a test may now freely IMPORT
+non-colliding names from a sibling.
 
 ## Structure (mirrors the rcdzc stages)
 
@@ -78,6 +84,12 @@ top. Current `src/` modules (each with same-file `@test`s — 73 tests total acr
   `Result (Map Int64 Ty) String` — the Ok carries the UPDATED substitution (a compound `Map` Ok payload
   threaded through the recursion). Exercises occurs-check recursion, transitive var-chain `resolve`,
   arrow decomposition, and an Int64-keyed compound-valued `Map`.
+
+The next pass, an `infer` (HM inference over an expression language, composing `unify`), is written and
+`cdz check`s clean but currently lives in `repros/blocked-infer-cross-file-hm-borrow.cdz` — its `@test`s
+DECLINE at emit on the `Map.lookup`-returned-heap-value borrow bug (see the log). It was the port's
+first genuine cross-file module (importing `unify`), which is what drove this iteration's `cdz test`
+import-following fix; only the borrow bug — not the linking — keeps it out of the running suite.
 
 Planned, following the rcdzc pipeline: decode (binary AST → `Ast`) · resolve · infer (Hindley-Milner)
 · lower (→ core) · encode/emit. The compiler is fundamentally bytes → bytes.
@@ -241,15 +253,32 @@ are the sharp edges.
   `src/fold.cdz`): bind every element as a plain binder, then nested-`match` each. Ask: N refutable
   elements per list arm. Clean REJECT (not a miscompile) → a Todo, but a common shape.
 
-- **OPEN (seed `rcdzc` — DECLINE + a context-dependent WRONG-VALUE sibling): `String ==` on a value
-  returned from `Map.lookup`.** `repros/decline-borrow-ownership-returned-map-string-eq.sexp`. When a
-  `String` originates from a `Map.lookup`, is RETURNED from a function, then used as a `String ==`
-  operand in the caller → "borrowing op operand has an ownership this backend cannot yet prove" (`cdz
-  check` clean, `cdz compile`/`cdz test` decline). Doing the `==` INSIDE the lookup's match arm is fine.
-  A related WRONG-VALUE variant (a `String ==` on a value from a MISSED lookup's `None → node` return)
-  miscompiles only past a per-module def/test-count THRESHOLD (passes standalone). Surfaced building
-  `src/subst.cdz`; both sidestepped by checking a result's SHAPE (`match … ((Ast.Name _) …)`) instead
-  of `String ==`-ing an extracted payload.
+- **OPEN (seed `rcdzc` — DECLINE, now GENERALIZED): a HEAP value read from `Map.lookup`, RETURNED, then
+  CONSUMED in the caller.** "borrowing op operand has an ownership this backend cannot yet prove" (`cdz
+  check` clean, `cdz compile`/`cdz test` decline). Two repros:
+  `repros/decline-borrow-ownership-returned-map-string-eq.sexp` (the original — `String ==` on the
+  returned value) and `repros/decline-borrow-map-lookup-returned-then-matched.cdz` (the GENERALIZATION).
+  **SHARP BOUND (bisected 2026-07-14):** the `==` is NOT essential — a plain `match` on the returned
+  value triggers it too. The essential ingredients are (a) the value ORIGINATES from `Map.lookup`, (b)
+  it is RETURNED across a call boundary (wrapping it in a ctor counts), and (c) a HEAP payload nested in
+  it (a `String`, or a sum carrying one) is then read in the caller. A looked-up value with ONLY SCALAR
+  payloads returns + inspects fine; consuming it INSIDE the lookup arm (never returning it) is fine; and
+  the same extract-and-compare with NO map is fine — so it is specifically a borrowed heap value
+  escaping its lookup scope via a return. An explicit `copy()` in the arm does NOT sidestep it. **This
+  is the single biggest blocker to running a real pass in the port:** `repros/blocked-infer-cross-file-
+  hm-borrow.cdz` (a full HM inference pass) `cdz check`s clean but its tests DECLINE, because its `Ref`
+  arm looks a binding up in a `Map String Ty` env and returns it. `src/subst.cdz` sidesteps the original
+  narrow form by SHAPE-checking (`match … ((Ast.Name _) …)`) but there is no honest sidestep for an
+  env-lookup whose whole purpose is to return the looked-up type. Likely fix locus: the Perceus/borrow
+  analysis — a heap value read out of a persistent collection needs an owned (dup'd) handle when it
+  escapes via a return.
+
+- **OPEN (seed `rcdzc` — a `///` doc comment on an `import` HIDES it; extends the line-comment finding).**
+  A `///` doc comment on a `def`/`type`/`module` is stripped by the top-level scan (works), but a `///`
+  on an `(import …)` is NOT — the wrapped import becomes invisible ("unbound name `comment`" + the
+  imported names unbound). Same root as the `//`-line-comment gap (`repros/reject-line-comment-hides-
+  toplevel-form.cdz`): the doc/comment-strip covers `def`/`type`/`module` but not `import`. Workaround:
+  put the `import` FIRST (no leading doc), then a `///` module doc on the first `type`/`def`.
 
 - **OPEN (seed `rcdzc` — GAP/BUG): quasiquote `unquote` of an already-`Ast` value is rejected.**
   `repros/reject-unquote-of-an-ast-value.sexp`. `(quasiquote (+ (unquote sub) 1))` with `sub : Ast` →
