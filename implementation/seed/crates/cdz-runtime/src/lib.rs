@@ -2999,6 +2999,40 @@ fn op_str_get(h: Handle) -> String {
     })
 }
 
+/// `String.from-bytes` — the TOTAL UTF-8 decode `Bytes → (Option String)`: validate a RUNTIME byte
+/// buffer as well-formed UTF-8 (strict: rejects invalid bytes, overlong encodings, AND surrogate code
+/// points — the three spec failure modes), returning the buffer AS a String (Some) or NULL (None). A
+/// String IS a byte leaf (`op_str_new` = `alloc(bytes)`, byte-identical to a Bytes leaf), so a VALID
+/// buffer needs no conversion — it is already a valid String; the op is UTF-8 VALIDATION + a re-tag.
+/// CONSUMES `buf`: on success `buf` flows out as the String (its ownership transfers to the result); on
+/// failure the caller drops it. FLATTEN first (`buf` may be a rope — a `Bytes.concat`/`.slice` tree —
+/// whose `raw` holds header bytes, NOT content; strict `from_utf8` must see the actual bytes), exactly as
+/// `op_str_get`/`op_bytes_get`/value-encode's `Shape::Str` arm do. Returns `Handle::NULL` for invalid
+/// UTF-8 so the compiler can build the `(Option String)` sum (`Some buf` / `None`), or wrap directly.
+///
+/// ⚠ NOT YET WIT-EXPORTED — the load-bearing half of the coordinated `str-from-bytes` op (blocks the
+/// compiler-in-Cadenza port's decode/encode string content, `String.from-bytes` on a runtime Bytes
+/// declines at lower.rs). Kept UNEXPORTED (no `Guest` method, no WIT line) so it stays out of the shipped
+/// wasm (DCE'd — no reachable caller) and the frozen runtime hash is UNCHANGED. When the compiler wires
+/// `Core::StrFromBytes` it adds ONLY the one-line WIT export + a `Guest` method calling THIS ready+tested
+/// fn — the load-bearing logic (flatten + strict validate) is done and proven here.
+#[cfg_attr(not(test), allow(dead_code))]
+fn op_str_from_bytes(buf: Handle) -> Handle {
+    if is_immediate(buf) {
+        // The empty/inline-unit Bytes: no bytes → the empty string is valid UTF-8. `buf` (an immediate)
+        // is itself a valid empty leaf-equivalent; return it (an immediate is a fine empty String).
+        return buf;
+    }
+    bytes_flatten(buf);
+    let valid = with_node(buf, false, |n| core::str::from_utf8(&n.raw).is_ok());
+    if valid {
+        buf // already a flat, valid-UTF-8 leaf — a String IS a byte leaf, no conversion
+    } else {
+        op_drop(buf); // ill-formed → None; release the consumed operand
+        Handle::NULL
+    }
+}
+
 // ─── Map: dynamic-key collection of (key, value) handle pairs, stored verbatim ──────────
 // Pairs are flattened into `handles` as [k0, v0, k1, v1, …]; pair count = handles.len() / 2. OOB
 // pair index into a valid map traps; null is benign.
@@ -12227,6 +12261,62 @@ mod tests {
         assert_eq!(op_str_get(empty_rope), "");
         op_drop(empty_rope);
         assert_eq!(live_nodes(), before, "no leak: ropes + twin dropped");
+    }
+
+    /// `op_str_from_bytes` — the READY-BUT-UNEXPORTED load-bearing half of the coordinated `str-from-bytes`
+    /// op (a total UTF-8 decode `Bytes → (Option String)`; the compiler-in-Cadenza port's decode/encode
+    /// string content is blocked on it — `String.from-bytes` on a runtime Bytes declines at lower.rs). Pins
+    /// the contract so the compiler's eventual `Core::StrFromBytes` emit calls a PROVEN fn: (1) valid UTF-8
+    /// → the buffer AS a String, byte-identical to `op_str_new` (a String IS a byte leaf); (2) a ROPE input
+    /// flattens first (the runtime-built-Bytes shape — `Bytes.concat`); (3) strict rejection of invalid
+    /// bytes, an overlong encoding, AND a surrogate (the three spec failure modes) → NULL; (4) empty → valid
+    /// ""; (5) no leak (consumes `buf`; a valid result is dropped, an invalid one already released).
+    #[test]
+    fn str_from_bytes_validates_utf8_and_is_a_byte_leaf() {
+        reset();
+        let before = live_nodes();
+        // (1) a valid multi-byte string → a String leaf byte-identical to op_str_new's.
+        let ok = op_str_from_bytes(bytes_leaf("café".as_bytes()));
+        assert!(ok != Handle::NULL, "valid UTF-8 decodes to Some");
+        let twin = op_str_new(String::from("café"));
+        assert!(
+            champ_eq(ok, twin),
+            "a decoded String == op_str_new's leaf (a String IS a byte leaf)"
+        );
+        assert_eq!(op_str_get(ok), "café", "content round-trips");
+        op_drop(ok);
+        op_drop(twin);
+        // (2) a ROPE input (the runtime-built `Bytes.concat` shape) flattens + validates (é on the seam).
+        let rope = op_bytes_concat(bytes_leaf(b"caf"), bytes_leaf("é".as_bytes()));
+        let from_rope = op_str_from_bytes(rope);
+        assert!(from_rope != Handle::NULL, "a valid rope decodes to Some");
+        assert_eq!(
+            op_str_get(from_rope),
+            "café",
+            "the rope flattens to the right content"
+        );
+        op_drop(from_rope);
+        // (3) strict rejection of the three ill-formed classes → NULL (None): invalid lead byte, an
+        //     OVERLONG "/" (0xC0 0xAF, should be 1-byte 0x2F), a surrogate D800, a bad continuation.
+        for bad in [
+            &[0xFFu8][..],           // invalid byte
+            &[0xC0, 0xAF][..],       // overlong encoding of '/'
+            &[0xED, 0xA0, 0x80][..], // UTF-8-encoded surrogate U+D800
+            &[0xE2, 0x28, 0xA1][..], // bad continuation
+        ] {
+            let n = op_str_from_bytes(bytes_leaf(bad));
+            assert_eq!(n, Handle::NULL, "ill-formed UTF-8 {bad:?} → None");
+        }
+        // (4) the empty buffer is valid "" .
+        let empty = op_str_from_bytes(bytes_leaf(b""));
+        assert_eq!(op_str_get(empty), "", "empty bytes → empty string (valid)");
+        op_drop(empty);
+        // (5) balance: every buffer consumed (valid ones dropped, invalid ones released internally).
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak / no double-free across str-from-bytes"
+        );
     }
 
     // ── Map ─────────────────────────────────────────────────────────────────────────────────
