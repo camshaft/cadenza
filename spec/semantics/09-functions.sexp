@@ -2953,3 +2953,36 @@
                            (len String (Lst.Cons "a" (Lst.Cons "b" (Lst.Cons "c" Lst.Nil))))))
             (export main)))
   (output (: 5 Int64)))
+
+; AD-HOC POLYMORPHISM via a DICTIONARY RECORD — a record of functions passed as an ordinary argument,
+; the body projecting and calling its fields. No trait resolution, no orphan rule, no coherence: it is
+; just records + functions + application. A NON-recursive consumer inlines the dict (β-folds away); a
+; RECURSIVE consumer is monomorphized per distinct dictionary — each field function INLINED directly (no
+; `call_indirect`, no runtime record) and the dictionary argument ERASED from the emitted signature, the
+; same "inline a compile-time-known argument, drop the param" rule that erases a type-valued parameter.
+
+(case "a recursive consumer of a dictionary record inlines and erases the dictionary"
+  (doc    "`fold-n` takes a dictionary `(Record (op (-> Int64 Int64)))` and applies its `op` `n` times.
+           Called with `(record (op (fn (x) (+ x 10))))`, the dictionary is compile-time-known, so
+           `fold-n` is monomorphized with the `op` inlined directly (`(. d op)` folds to `(+ acc 10)` —
+           no call_indirect, no runtime record) and the dictionary argument erased. Folding `+10` from 0
+           three times = 30.")
+  (input  (do
+            (def (fold-n (: d (Record (op (-> Int64 Int64)))) (: n Int64) (: acc Int64))
+              (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
+            (def (main) (fold-n (record (op (fn (x) (+ x 10)))) 3 0))
+            (export main)))
+  (output (: 30 Int64)))
+
+(case "a dictionary consumer called at two dictionaries is monomorphized per dictionary"
+  (doc    "The same `fold-n` called with TWO distinct dictionaries — `(+ x 10)` and `(* x 2)` — is
+           monomorphized into two functions, each with its own `op` inlined (per-dictionary
+           specialization, the ad-hoc-polymorphism analogue of per-type monomorphization). `(+10)` folded
+           from 0 thrice = 30; `(*2)` folded from 1 thrice = 8; 30 + 8 = 38.")
+  (input  (do
+            (def (fold-n (: d (Record (op (-> Int64 Int64)))) (: n Int64) (: acc Int64))
+              (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
+            (def (main) (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0)
+                           (fold-n (record (op (fn (x) (* x 2)))) 3 1)))
+            (export main)))
+  (output (: 38 Int64)))

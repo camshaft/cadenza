@@ -32867,6 +32867,51 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_dictionary_consumer_inlines_and_erases_the_dictionary() {
+        // 09-functions "a recursive consumer of a dictionary record inlines and erases the dictionary":
+        // ad-hoc polymorphism as a record of functions passed as an argument. `fold-n` applies its dict's
+        // `op` `n` times. The dictionary is compile-time-known, so the recursive `fold-n` is monomorphized
+        // per distinct dict — the `op` INLINED directly (no `call_indirect`, no runtime record) and the
+        // dictionary argument ERASED from the emitted signature (the "inline a compile-time-known
+        // argument, drop the param" rule, same as a type-valued parameter). Two distinct dicts (`+10`,
+        // `*2`) get two specializations; 30 + 8 = 38. Pure-scalar (no heap), so runs without the store.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (def (fold-n (: d (Record (op (-> Int64 Int64)))) (: n Int64) (: acc Int64)) \
+                 (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
+               (def (main) (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0) \
+                              (fold-n (record (op (fn (x) (* x 2)))) 3 1))) (export main))",
+        )))
+        .expect("a recursive dictionary consumer compiles");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 38);
+        // The dictionary is ERASED: the emitted core module carries NO `call_indirect` opcode (`0x11` — the
+        // `op` is a direct inlined call, not an indirect dispatch through a runtime record). Scan the core
+        // module's code with `wasmparser` rather than pulling in a text printer. A false positive from a
+        // stray `0x11` data byte is implausible here (a `fold-n` with a runtime dict WOULD emit the opcode,
+        // the pre-fix baseline); the run-value above is the primary correctness signal, this is the
+        // erasure witness.
+        let has_call_indirect = {
+            use wasmparser::{Parser, Payload};
+            let mut found = false;
+            for payload in Parser::new(0).parse_all(&bytes) {
+                if let Ok(Payload::CodeSectionEntry(body)) = payload {
+                    let mut ops = body.get_operators_reader().expect("ops");
+                    while let Ok(op) = ops.read() {
+                        if matches!(op, wasmparser::Operator::CallIndirect { .. }) {
+                            found = true;
+                        }
+                    }
+                }
+            }
+            found
+        };
+        assert!(
+            !has_call_indirect,
+            "the dictionary's op must be inlined (no call_indirect), got a runtime dispatch"
+        );
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the

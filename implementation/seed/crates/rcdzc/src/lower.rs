@@ -5544,19 +5544,32 @@ fn lower_recursive_call_or_decline(
     //# The compiler MUST monomorphize every exported and imported signature to concrete types before emitting the component interface.
     //= spec/contracts/component-abi.md#generics-do-not-cross-the-boundary
     //# A generic definition MUST NOT appear in a component's interface.
-    if !scheme.ty_vars.is_empty() {
+    // SPECIALIZE this call when either (a) the callee scheme is GENERIC (a type parameter to erase), or
+    // (b) some argument is CONST-INLINABLE (a compile-time-known value — a constant or an ad-hoc-poly
+    // DICTIONARY of functions — to inline + drop). Both go through `type_specialize`, which substitutes
+    // the erased args into a specialized copy and returns the dropped positions. A monomorphic callee
+    // called with only plain runtime args takes the byte-identical `Core::Call { callee }` path below.
+    let own_param_occs: Vec<StructId> = db.defs[callee]
+        .params
+        .clone()
+        .iter()
+        .map(|&p| crate::eval::param_name_occ(db, p))
+        .collect();
+    let any_const = args
+        .iter()
+        .any(|&a| arg_is_const_inlinable(db, a, &own_param_occs));
+    if !scheme.ty_vars.is_empty() || any_const {
         return match type_specialize(db, callee, args) {
-            Some((spec, type_arg_positions)) => {
-                trace!(target: "rcdzc::lower", head = head.0, callee, spec, "recursive-generic call → monomorphized Core::Call");
-                // DROP the TYPE-VALUED arguments from the runtime call: a `(: t Type)` argument is
-                // compile-time-only (consumed by the specialization, which substituted its concrete
-                // type-value into the copy's body), so it carries no runtime slot and is not passed. The
-                // remaining args are the runtime ones, in order — matching the specialized def's erased
-                // signature (`type_specialize` omits the type-valued params).
+            Some((spec, erased_positions)) => {
+                trace!(target: "rcdzc::lower", head = head.0, callee, spec, "specialized call → monomorphized Core::Call (type/const args erased)");
+                // DROP the ERASED arguments from the runtime call: a `(: t Type)` type-value OR a
+                // const-inlined value (a dictionary) is compile-time-only (substituted into the copy's
+                // body), so it carries no runtime slot. The remaining args are the runtime ones, in order —
+                // matching the specialized def's signature (which omits the erased params).
                 let runtime_args: Vec<StructId> = args
                     .iter()
                     .enumerate()
-                    .filter(|(i, _)| !type_arg_positions.contains(i))
+                    .filter(|(i, _)| !erased_positions.contains(i))
                     .map(|(_, &a)| a)
                     .collect();
                 Core::Call {
@@ -5564,9 +5577,24 @@ fn lower_recursive_call_or_decline(
                     args: runtime_args,
                 }
             }
-            None => Core::Poison(Reject::decline(
-                "a recursive generic function could not be monomorphized at this call (an argument type is undetermined)",
-            )),
+            None => {
+                // Const inlining is an OPTIMIZATION over a working path: if `type_specialize` declines
+                // (e.g. a non-name binder), fall back to the plain runtime call rather than failing — the
+                // dict-as-runtime-record path (call_indirect) is correct, just unerased. A genuinely
+                // generic scheme with no fallback would have declined before; a monomorphic scheme always
+                // has the plain call available.
+                if scheme.ty_vars.is_empty() {
+                    trace!(target: "rcdzc::lower", head = head.0, callee, "const-inline declined → plain runtime Core::Call");
+                    Core::Call {
+                        callee,
+                        args: args.to_vec(),
+                    }
+                } else {
+                    Core::Poison(Reject::decline(
+                        "a recursive generic function could not be monomorphized at this call (an argument type is undetermined)",
+                    ))
+                }
+            }
         };
     }
     trace!(target: "rcdzc::lower", head = head.0, callee, args = args.len(), "recursive call → Core::Call");
@@ -5574,6 +5602,166 @@ fn lower_recursive_call_or_decline(
         callee,
         args: args.to_vec(),
     }
+}
+
+/// A CANONICAL STRUCTURAL FINGERPRINT of the subtree at `id` — a string that is EQUAL for two subtrees of
+/// identical shape+leaves regardless of their `StructId`s. The specialization memo needs a key stable
+/// across an argument and its β-COPY (the self-call re-passes a copied node, a fresh `StructId`): node
+/// identity would miss, re-specializing without end. For a CONST arg (a dictionary record of lambdas) this
+/// fingerprint distinguishes `(record (op (fn (x) (+ x 10))))` from `(record (op (fn (x) (* x 2))))` (so
+/// they get distinct copies) while collapsing two identical dicts (so they dedup). Bounded by the arg's
+/// size (a const dict is small); walks the raw AST (leaves + child order), NOT resolutions.
+fn subtree_fingerprint(db: &Db, id: StructId, out: &mut String) {
+    match db.ast.get(id) {
+        crate::ast::Struct::Atom(l) => {
+            use crate::ast::Leaf;
+            match db.ast.leaf(*l) {
+                Leaf::Name(n) => {
+                    out.push('n');
+                    out.push_str(n);
+                }
+                Leaf::Int { value, .. } => {
+                    out.push('i');
+                    out.push_str(&value.to_decimal_string());
+                }
+                Leaf::Float(d) => {
+                    out.push('f');
+                    out.push_str(&d.to_f64_bits().to_string());
+                }
+                Leaf::Str(s) => {
+                    out.push('s');
+                    out.push_str(s);
+                }
+                Leaf::Bool(b) => out.push(if *b { 'T' } else { 'F' }),
+                Leaf::Sym(s) => {
+                    out.push('y');
+                    out.push_str(s);
+                }
+                Leaf::Char(c) => {
+                    out.push('c');
+                    out.push(*c);
+                }
+                Leaf::Bytes(bs) => {
+                    out.push('b');
+                    out.push_str(&bs.len().to_string());
+                }
+                other => {
+                    // A defect leaf (BadChar/BadEscape/…) — a non-const arg would not reach here; fingerprint
+                    // by its debug form defensively so two distinct defects do not collide.
+                    out.push('?');
+                    out.push_str(&format!("{other:?}"));
+                }
+            }
+            out.push(';');
+        }
+        crate::ast::Struct::List(kids) => {
+            out.push('(');
+            for &k in kids {
+                subtree_fingerprint(db, k, out);
+            }
+            out.push(')');
+        }
+    }
+}
+
+/// Whether the argument at `arg` is an inlinable DICTIONARY — a compile-time-known RECORD (or TUPLE) that
+/// CONTAINS AT LEAST ONE LAMBDA (an ad-hoc-polymorphism dictionary of functions). Such a value the
+/// compiler splices into a specialized copy so `(. d op)` folds to the concrete function (no
+/// `call_indirect`, no runtime record), removing the argument from the signature — the uniform "inline a
+/// compile-time-known argument, drop the param" rule applied to a dictionary.
+///
+/// CRUCIAL SCOPE: this fires ONLY for a value carrying a function — NOT a plain-data collection (a
+/// `(list 10 20 30)` / a data record). A pure-data argument to a recursive function is RUNTIME data whose
+/// per-call value drives the recursion's base case; inlining it would unfold the recursion at compile
+/// time without end (a self-call on `rest` re-specializing on ever-smaller const sub-lists → stack
+/// exhaustion). Requiring a lambda restricts inlining to the dictionary case, where the functions ARE the
+/// compile-time content and the data flows as ordinary runtime args.
+///
+/// The dictionary MUST be CLOSED: no field-lambda may capture the current def's parameter (`own_param_occs`)
+/// or another enclosing runtime binding — such a value is not known at instantiation. Every field must be
+/// a lambda or a closed const (a mixed dict of ops + config constants is fine). Conservative: anything not
+/// recognized → false (the value stays a runtime argument, the existing correct call_indirect path).
+fn arg_is_const_inlinable(db: &mut Db, arg: StructId, own_param_occs: &[StructId]) -> bool {
+    // The record/tuple FIELDS of the argument, if it is a literal-constructed record or tuple; else None
+    // (a list, a scalar, a runtime value → not a dictionary to inline).
+    fn dict_fields(db: &mut Db, id: StructId) -> Option<Vec<StructId>> {
+        match resolved_of(db, id) {
+            Resolved::Record { fields } => Some(fields.values().copied().collect()),
+            Resolved::Apply { head, args } => match crate::eval::meta_apply_of(db, head) {
+                // ONLY record/tuple — NOT `ListNew` (a data list is runtime data, not a dictionary).
+                Some(crate::resolved::Prim::RecordNew) | Some(crate::resolved::Prim::TupleNew) => {
+                    Some(
+                        args.iter()
+                            .map(|&a| record_pair_value(db, a).unwrap_or(a))
+                            .collect(),
+                    )
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    let Some(fields) = dict_fields(db, arg) else {
+        return false;
+    };
+    let mut has_lambda = false;
+    for f in fields {
+        if crate::eval::lambda_body(db, f).is_some() {
+            // A dictionary function must be CLOSED (capture no runtime binding) to be const-known.
+            if lambda_captures_runtime(db, f, own_param_occs) {
+                return false;
+            }
+            has_lambda = true;
+        } else if !is_const_value(db, f) || references_own_param(db, f, own_param_occs) {
+            // A non-lambda field must be a closed constant (a config value alongside the ops); a runtime
+            // or param-dependent field makes the whole dictionary non-const.
+            return false;
+        }
+    }
+    // Require at least one function — a pure-data record is NOT a dictionary (it stays a runtime arg).
+    has_lambda
+}
+
+/// The VALUE of a `(key value)` record-field pair, or `None` if `id` is not such a pair. A record literal
+/// `(record (op FN) …)` has each field as a 2-element list `(name value)`; the fingerprint/inlinability
+/// walk reads the value.
+fn record_pair_value(db: &Db, id: StructId) -> Option<StructId> {
+    match db.ast.get(id) {
+        crate::ast::Struct::List(kids) if kids.len() == 2 && db.ast.as_name(kids[0]).is_some() => {
+            Some(kids[1])
+        }
+        _ => None,
+    }
+}
+
+/// Whether the subtree at `id` references one of the current def's parameter name occurrences `own` — a
+/// use that makes an argument depend on the runtime call (so it is not const-known at instantiation).
+fn references_own_param(db: &mut Db, id: StructId, own: &[StructId]) -> bool {
+    if db.ast.as_name(id).is_some()
+        && let Resolved::Ref { value } | Resolved::Param { binder: value } = resolved_of(db, id)
+        && own.contains(&value)
+    {
+        return true;
+    }
+    if let crate::ast::Struct::List(kids) = db.ast.get(id) {
+        return kids
+            .clone()
+            .iter()
+            .any(|&k| references_own_param(db, k, own));
+    }
+    false
+}
+
+/// Whether the lambda at `lam` CAPTURES a runtime binding outside itself — a free variable that is the
+/// current def's param `own` or any enclosing runtime `let`/param (NOT a top-level def / prelude, which
+/// re-resolve by name in the copy). A capturing dictionary function is not const-known, so its dict stays
+/// a runtime argument. Conservative: a reference to `own` → captures.
+fn lambda_captures_runtime(db: &mut Db, lam: StructId, own: &[StructId]) -> bool {
+    // Reuse the def-param reference test over the lambda body — a dictionary function that reads the
+    // consumer's own parameter (the runtime data) is not closed. (A capture of an ENCLOSING runtime
+    // binding is likewise unsafe; `references_own_param` covers the `own` case, which is the one a
+    // recursive dictionary consumer hits — the general enclosing-capture case stays conservative below.)
+    references_own_param(db, lam, own)
 }
 
 /// Monomorphize a RECURSIVE GENERIC def `callee` for a call whose arguments have the concrete types at
@@ -5599,12 +5787,28 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
     // runtime call). Every OTHER argument's concrete TYPE re-annotates its (kept) parameter. Both the
     // type-VALUE (for a type arg) and the type (for a value arg) must be DETERMINED — a loose `Any`/free
     // `Var` would mistype the copied body.
+    // The uniform rule (operator, 2026-07-14): at instantiation, ANY argument that is COMPILE-TIME KNOWN
+    // is inlined into the specialized copy and REMOVED from the runtime signature — no "dictionary" or
+    // "type parameter" concept, just const-fold + drop. A `Ty::Type` arg (a type-value) and a
+    // const-inlinable value (a constant, or an ad-hoc-polymorphism DICTIONARY = a record/tuple of lambdas)
+    // are both instances. This is what makes a recursive dictionary consumer ERASE its dict (inline each
+    // `(. d op)` to a direct call, drop the record arg + its `call_indirect`) rather than threading a
+    // runtime record. A plain runtime value stays a kept, re-annotated parameter.
+    let own_param_occs: Vec<StructId> = orig_params
+        .iter()
+        .map(|&p| crate::eval::param_name_occ(db, p))
+        .collect();
     enum ArgKind {
         // A runtime value param, kept, re-annotated with this concrete type.
         Value(crate::ty::Ty),
         // A type-valued param: its concrete type-VALUE, substituted into the copy's body (the param is
         // ERASED from the signature).
         TypeArg(crate::ty::Ty),
+        // A CONST-INLINABLE arg (a constant, or a dictionary record/tuple of lambdas): the arg's VALUE
+        // NODE is substituted into the copy's body (so `(. d op)` folds to the concrete op) and the param
+        // is ERASED. `String` = a structural fingerprint of the arg (the memo/dedup key, stable across the
+        // arg and its β-copy — see `subtree_fingerprint`).
+        ConstArg(StructId, String),
     }
     let mut kinds: Vec<ArgKind> = Vec::with_capacity(args.len());
     for &a in args {
@@ -5615,6 +5819,11 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
                 return None; // an undetermined type-value cannot monomorphize
             }
             kinds.push(ArgKind::TypeArg(tv));
+        } else if arg_is_const_inlinable(db, a, &own_param_occs) {
+            // A const-known value (a dictionary of functions, a constant) — inline it, drop the param.
+            let mut fp = String::new();
+            subtree_fingerprint(db, a, &mut fp);
+            kinds.push(ArgKind::ConstArg(a, fp));
         } else {
             let t = crate::infer::type_of(db, a);
             if matches!(t, crate::ty::Ty::Any) || t.has_free_var() {
@@ -5623,10 +5832,11 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
             kinds.push(ArgKind::Value(t));
         }
     }
+    // The positions dropped from the runtime call — a type arg OR a const-inlined arg (both erased).
     let type_arg_positions: Vec<usize> = kinds
         .iter()
         .enumerate()
-        .filter(|(_, k)| matches!(k, ArgKind::TypeArg(..)))
+        .filter(|(_, k)| matches!(k, ArgKind::TypeArg(..) | ArgKind::ConstArg(..)))
         .map(|(i, _)| i)
         .collect();
 
@@ -5638,6 +5848,7 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
         .map(|k| match k {
             ArgKind::Value(t) => t.render_name(),
             ArgKind::TypeArg(tv) => format!("@{}", tv.render_name()), // `@` marks a type ARG slot
+            ArgKind::ConstArg(_, fp) => format!("#{fp}"), // `#` marks a const-inlined slot
         })
         .collect::<Vec<_>>()
         .join(",");
@@ -5688,6 +5899,15 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
                 let name_occ = crate::eval::param_name_occ(db, orig_p);
                 let ty_expr = crate::eval::encode_typeval(db, tv);
                 arg_of.insert(name_occ, ty_expr);
+            }
+            ArgKind::ConstArg(arg_node, _) => {
+                // Substitute the arg's VALUE NODE for the param's references (`d` → `(record (op (fn …)))`),
+                // so a body `(. d op)` projects the const record → the concrete lambda → and its application
+                // β-folds to a direct op (no `call_indirect`, no runtime record). The param is dropped from
+                // the signature (erased). The substituted node is the caller-side arg subtree, spliced into
+                // the copy — the same mechanism `beta_reduce` uses for a substituted lambda argument.
+                let name_occ = crate::eval::param_name_occ(db, orig_p);
+                arg_of.insert(name_occ, *arg_node);
             }
         }
     }

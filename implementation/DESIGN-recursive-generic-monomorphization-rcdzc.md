@@ -389,3 +389,47 @@ constructor … applied by ordinary application"; `:250` monomorphized before th
 Implicit ML-style quantification `(: l (Lst a))` with a bare `a` (the operator chose type-valued params
 INSTEAD); trait/constraint predicates (`:232`); dictionary-passing (`:240`). The UNANNOTATED polymorphic
 form already works via inference + monomorphization and is unaffected.
+
+---
+
+# ADDENDUM 2: ad-hoc polymorphism via dictionaries — inline a compile-time-known argument, drop the param
+
+Status: LANDED. Operator's framing (2026-07-14): ad-hoc polymorphism needs NO trait machinery — "just
+have a record passed as an argument with functions that operate on the data; the function uses the
+record; and remove the record argument from the runtime emission when we instantiate it." No global
+trait resolution, no orphan rule, no coherence — just compile-time β-folding. The generalized rule the
+operator then chose: "we shouldn't specialize on anything [special]; when we instantiate we look for
+const-known values and inline them into the function and remove the argument." So `Ty::Type` erasure and
+dictionary erasure are the SAME rule — inline any compile-time-known argument, drop its runtime param.
+
+## What already worked (zero new code)
+A record of functions passed as an argument, the body projecting `(. d op)` and calling it, works for
+BOTH non-recursive and recursive consumers — it is just records + functions + application. A
+NON-recursive consumer already fully ERASES the dict (β-fold inlines it away). A RECURSIVE consumer
+WORKED but kept the dict as a runtime heap record + `call_indirect` (a closure in the record), threaded
+through the recursion — correct, but unerased.
+
+## What this landed — recursive dictionary ERASURE
+`lower_recursive_call_or_decline` now specializes a recursive call when EITHER the callee scheme is
+generic (a type param) OR an argument is a compile-time-known DICTIONARY. `type_specialize` gained a
+third `ArgKind::ConstArg`: the dictionary's VALUE NODE is substituted into the specialized copy (so `(. d
+op) acc` β-folds to the concrete `(+ acc 10)` — no `call_indirect`, no runtime record) and the parameter
+is ERASED from the emitted signature. The self-call re-passes the (copied) dict, re-enters
+`type_specialize`, and hits the memo (keyed on a `subtree_fingerprint` — stable across the arg and its
+β-copy, distinguishing `+10` from `*2` while collapsing identical dicts). Verified: `fold-n` at one dict
+→ 30 with **0 `call_indirect`** and signature `(i64 i64)` (dict gone); two distinct dicts → 38, each op
+inlined; two identical dicts → one deduped function.
+
+## The scope guard (a regression caught + fixed)
+The predicate `arg_is_const_inlinable` fires ONLY for a record/tuple that CONTAINS A LAMBDA (a
+dictionary), and only when CLOSED (no field-lambda captures the consumer's own param / a runtime
+binding). It must NOT fire for a pure-DATA collection: a first pass inlined a const `(list 10 20 30)`
+argument to a recursive `sum`, unfolding the recursion at compile time without end → stack exhaustion
+(one gate FAIL). A data list/record is RUNTIME data whose per-call value drives the base case; only a
+value whose CONTENT is functions is worth (and safe to) inline. Requiring a lambda restricts erasure to
+the dictionary case; data flows as ordinary runtime args. Non-lambda dict fields must be closed constants
+(config alongside the ops). Conservative everywhere else → the value stays a runtime arg (the correct,
+pre-existing `call_indirect` path).
+
+Gate 1850/0, 1318 rcdzc tests + the new dictionary test (asserts no `call_indirect` via `wasmparser`),
++2 corpus cases (09-functions).
