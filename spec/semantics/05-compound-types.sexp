@@ -2207,6 +2207,31 @@
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
+(case "a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime"
+  (doc    "The deepest runtime nested-constructor pattern: `Option (Result C Int64)` where the innermost
+           `Ok` payload is itself a USER sum `(type C (R Int64) (G))`. The scrutinee is runtime (an `if`),
+           so no fold: the matcher dispatches Some/None, then Ok/Err of the payload, then R/G of the Ok's
+           user-sum payload — THREE discriminant levels in one arm `((Some (Ok (C.R n))) n)`. `(f 7)` is
+           `(Some (Ok (C.R 7)))` → 7. Pins that a nested constructor pattern composes to three sum levels
+           with a user sum at the leaf (Option/Result are built-in; `C` is user-declared), the decision tree
+           descending `[Payload]`→Some, `[Payload]`→Ok, `[Payload]`→R. The param annotation `(Option (Result
+           C Int64))` fully determines the Err type (Int64) — an UNANNOTATED build that never constructs an
+           `Err` leaves Err's type a free var and correctly declines (the unconstrained-generic-param
+           boundary, annotate to resolve), so this case pins the DETERMINED shape.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type C (R Int64) (G))
+            (def (f (: x (Option (Result C Int64))))
+              (match x
+                ((Option.Some (Result.Ok (C.R n))) n)
+                ((Option.Some (Result.Ok (C.G)))   -1)
+                ((Option.Some (Result.Err e))      e)
+                ((Option.None)                     -2)))
+            (def (main (: k Int64)) (f (if (> k 0) (Option.Some (Result.Ok (C.R k))) (Option.None))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 7 Int64)))
+
 (case "a sum-type value is deconstructed by an exhaustive match"
   (doc    "Patterns are uniform: `(Ctor _)` for nullary constructors. The binder `_` matches the
            unit payload. Consistent with unary constructor patterns like `(Some x)`.")
