@@ -536,6 +536,24 @@
   (call   main (: 5 Int64))
   (output (: 6 Int64)))
 
+; And the WORKAROUND that confirms the trigger is the INLINE form: LET-BIND the lambda argument first, then
+; pass the let name. A let-bound lambda is a value node with its own binding (not a param-substituted inline
+; AST), so `mk`'s returned closure captures it cleanly. So the decline is specific to passing the lambda
+; INLINE at the call site — hoisting it to a `let` is a working escape hatch (and the same normalization a
+; future reduction-engine fix would apply automatically).
+
+(case "a let-bound lambda passed to a returned-closure factory works (the inline-arg workaround)"
+  (doc    "The SAME `(def (mk (: g (-> Int64 Int64))) (fn (x) (g x)))` returned-closure factory, but the
+           lambda argument is LET-BOUND first: `(let ((f (fn (y) (+ y 1)))) ((mk f) n))`. Passing the let name
+           `f` (a value binding, not an inline AST substituted for the param) captures cleanly. `main(5)` → the
+           returned closure applies `f` to 5 = 6. Confirms the decline above is specific to the INLINE lambda
+           argument — hoisting it to a `let` is a working escape hatch.")
+  (input  (do (def (mk (: g (-> Int64 Int64))) (fn ((: x Int64)) (g x)))
+              (def (main (: n Int64)) (let ((f (fn ((: y Int64)) (+ y 1)))) ((mk f) n)))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
 (case "a closure argument is another closure's result"
   (doc    "The argument to one closure is the result of applying another: `((fn (x) (+ x k)) ((fn (y)
            (* y 2)) 3))` with k = 10 → (fn x)(6) = 16. Composing two closure applications — the inner
