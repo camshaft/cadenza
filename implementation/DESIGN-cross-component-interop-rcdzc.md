@@ -207,6 +207,14 @@ boundary envelope) → **U3** (compile-request override) → **U4** (remove `ext
   consumer `(host (S) (S.sum (tuple x (+ x 1))))` → `main(9)=sum((9,10))=19` under wasmtime. Completes the
   "value crosses BOTH directions" story for Transport B. 18 cross-component tests, gate 2173/0/0.
 
+- **U17 — HANDLE PASS-THROUGH: a peer-produced handle flows straight to another peer. ✅ DONE (`spec`,
+  test-only).** Composes U16 (compound arg in) with U5 (compound result out) across TWO boundary crossings
+  in ONE body: `(host (P) (host (S) (S.sum (P.pair x))))` — the tuple A mints flows straight into B, never
+  inspected by the consumer. Exercises ownership-transfer-on-argument: the handle is in a CONSUMING position,
+  so the consumer NEITHER drops it (double-free) NOR leaks it — ownership transfers to B. Test `u17_*`:
+  producer `pair x = (x, x+1)` / consumer `sum t = (. t 0)+(. t 1)` → `main(9)=sum(pair(9))=19` under
+  wasmtime (correct across two crossings, no double-free/leak). 19 cross-component tests, gate 2176/0/0.
+
 🎉 **THE UNIFICATION IS COMPLETE.** Cross-component interop IS the effect system: a contract is an
 `(effect …)`, a peer dependency is that effect `(bind …)`-ed to a peer interface, a test overrides with a
 `(handle …)` or a compile-request `--bind`. ONE concept — an escaping effect the manifest records — for
