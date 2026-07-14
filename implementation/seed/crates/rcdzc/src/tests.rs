@@ -18487,6 +18487,59 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_rest_binding_pattern_binds_over_a_runtime_list() {
+        // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern: a list REST pattern `(list x
+        // .. rest)` is irrefutable (matches any length ≥ leading count), so it may appear in a `let` binder
+        // or a `def`/`fn` PARAMETER — not only a `match` arm. A def param pattern is desugared to a
+        // destructuring `let` (`binding_params::lower`), so BOTH reuse the same resolve-side `SumPayload`
+        // redirection (a leading binder → `Elem(i)`, the rest binder → `RestFrom(lead)`) reading out of a
+        // RUNTIME list value. Before, every list binding pattern declined "not yet supported".
+
+        // A def PARAM `(list x .. rest)` binds the head of a runtime-built list. build pushes 10,20,30 → 10.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (* i 10))) out)) \
+               (def (head (list x .. rest)) x) \
+               (def (main) (head (build 1 4 (list)))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping list-rest binding-pattern run");
+            return;
+        };
+        assert_eq!(v, "10", "list-rest param binds the head of a runtime list");
+
+        // The REST binder binds a genuine SUBLIST usable by a recursive consumer: `drop-head` binds `x ..
+        // rest` (a param) and sums the rest via a `match`-recursing helper. Runtime [1 2 3 4] → 2+3+4 = 9.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))) \
+                   (def (drop-head (list x .. rest)) (sum rest)) \
+                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                   (def (main) (drop-head (build 1 5 (list)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "9",
+            "a list-rest binding's rest binder is a usable sublist (sum 2+3+4)"
+        );
+
+        // A `let` binder `(list a b .. rest)` over a runtime list binds two leading elements. [5 6 7] → 11.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (+ i 5))) out)) \
+                   (def (f xs) (let (((list a b .. rest) xs)) (+ a b))) \
+                   (def (main) (f (build 0 3 (list)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "11",
+            "a let list-rest binder reads two leading elements of a runtime list"
+        );
+    }
+
+    #[test]
     fn a_recursive_list_consumer_infers_its_element_via_list_at() {
         // A recursive function whose list PARAMETER is touched ONLY through `List.at` (never a direct
         // operator on the list itself) now infers its element type — before, the `(Some x)` payload binder
@@ -28849,6 +28902,109 @@ mod stage1 {
         // NO OVER-REJECTION: a well-formed tuple parameter compiles (used by `main`).
         assert_eq!(
             code("(def (f (tuple a b)) (+ a b)) (def (g) (f (tuple 1 2)))"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_let_binder_may_be_a_list_rest_pattern() {
+        // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern + §A List Is Deconstructed:
+        // a list pattern is irrefutable ONLY in the REST form `(list p… .. rest)` — it matches ANY length ≥
+        // the leading count, so it may bind. A leading element resolves to a `SumPayload{[Elem(i)]}` and the
+        // rest binder to `SumPayload{[RestFrom(lead)]}` reading out of the bound value — the SAME machinery a
+        // `(match v ((list x .. rest) …))` arm uses, so this is a pure resolve-side lift (no new IR). This
+        // test asserts the well-formed forms COMPILE (a list value engages the heap runtime, so the RUNTIME
+        // VALUES are exercised in `match_engine::a_list_rest_binding_pattern_binds_over_a_runtime_list`).
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None;
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        // Leading + rest binder over a constant list — compiles (the rest binder is bound, the leading `a`/`b`
+        // read via `Elem`).
+        assert_eq!(
+            code("(let (((list a b .. rest) (list 10 20 30))) (+ a b))"),
+            None
+        );
+        // Zero-leading `(list .. all)` binds the WHOLE list as `all` (irrefutable, matches any length).
+        assert_eq!(
+            code("(let (((list .. all) (list 1 2 3 4))) ((. List len) all))"),
+            None
+        );
+        // A NESTED tuple leading element composes.
+        assert_eq!(
+            code("(let (((list (tuple a b) .. rest) (list (tuple 1 2) (tuple 3 4)))) (+ a b))"),
+            None
+        );
+    }
+
+    #[test]
+    fn an_ill_formed_list_binding_pattern_is_rejected() {
+        // A binding position is IRREFUTABLE. A FIXED-ARITY list pattern `(list a b)` matches only its exact
+        // length → REFUTABLE → CDZ0210 (the equivalent single-arm match's non-exhaustiveness). A refutable
+        // leading element (a literal) is CDZ0210 too; a non-linear binder is CDZ0102. Only the rest form is
+        // accepted. (core-semantics.md §A Binding Position Accepts An Irrefutable Pattern.)
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None;
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        // FIXED-ARITY list binding is refutable → CDZ0210.
+        assert_eq!(
+            code("(let (((list a b) (list 1 2))) (+ a b))").as_deref(),
+            Some("CDZ0210")
+        );
+        assert_eq!(
+            code("(let (((list) (list))) 0)").as_deref(),
+            Some("CDZ0210")
+        );
+        // A refutable LEADING element (a literal) in a rest binding is CDZ0210 (composes recursively).
+        assert_eq!(
+            code("(let (((list 0 .. rest) (list 0 1))) 42)").as_deref(),
+            Some("CDZ0210")
+        );
+        // A non-linear list binding (a binder repeated) is CDZ0102.
+        assert_eq!(
+            code("(let (((list a a .. rest) (list 1 2 3))) a)").as_deref(),
+            Some("CDZ0102")
+        );
+        // NO OVER-REJECTION: a well-formed rest binding compiles (flat + nested + zero-leading).
+        assert_eq!(code("(let (((list x .. rest) (list 1 2 3))) x)"), None);
+        assert_eq!(code("(let (((list .. all) (list 1 2))) 0)"), None);
+        assert_eq!(
+            code("(let (((list (tuple a b) .. rest) (list (tuple 1 2)))) (+ a b))"),
             None
         );
     }

@@ -326,6 +326,7 @@ pass	a deeply nested constant expression compiles or declines without crashing
 pass	a deeply nested expression is diagnosed by the parser, never crashes it
 pass	a deeply nested literal in a tuple let-binder is refutable and rejected
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
+pass	a def parameter may be a list rest pattern binding the head
 pass	a default-integer pragma naming a non-integer type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
 pass	a delegated capability is not itself an export field
@@ -369,6 +370,7 @@ pass	a field is projected off a record unwrapped from an optional with expect
 pass	a field read follows the record's SORTED field order, not its written order
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a final unquote-splice binds the remaining elements as a list
+pass	a fixed-arity list binding pattern is refutable and rejected
 pass	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
@@ -479,6 +481,7 @@ pass	a left shift by a floating-point count does not silently promote
 pass	a left shift by the bit width or more traps rather than wrapping
 pass	a left shift that overflows Int64 traps like multiplication
 pass	a length-prefixed frame is built from a size segment and a bytes segment
+pass	a let binder may be a list rest pattern binding a leading element and the rest
 pass	a let binder may be a single-variant-sum pattern that destructures the payload
 pass	a let binder may be a tuple pattern that destructures the value
 pass	a let binding is in scope in its body

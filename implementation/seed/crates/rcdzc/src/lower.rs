@@ -3419,12 +3419,59 @@ pub(crate) fn check_binding_pattern(
             "a record binding pattern is not yet supported (Increment B)",
         ));
     }
-    // A `(list …)` binding pattern (length-constrained → refutable; rest-binder → irrefutable) is out of
-    // scope with all list patterns — DECLINE (not reject), so the irrefutable form is not mis-rejected.
-    if db.ast.as_form(pat, "list").is_some() {
-        return Err(Reject::decline(
-            "a list binding pattern is not yet supported",
-        ));
+    // A `(list …)` binding pattern. A binding position is IRREFUTABLE, and a list pattern is irrefutable
+    // ONLY in the REST form `(list p… .. rest)` — it matches ANY length ≥ the leading count, and the empty
+    // prefix `(list .. rest)` matches every list. A FIXED-ARITY `(list a b)` matches only length-2 lists, so
+    // it is REFUTABLE → CDZ0210, the same non-exhaustiveness the equivalent single-arm match raises
+    // (`core-semantics.md §A Binding Position Accepts An Irrefutable Pattern`). Each leading element position
+    // + the rest binder is itself a *Patterns Compose* binder position, so a nested element must ALSO be
+    // irrefutable (recursed via `check_binding_pattern`), and the whole pattern must be LINEAR (CDZ0102).
+    //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
+    //# Each element position and the rest binder MUST be a binder position in the sense of *Patterns Compose*, so an element MAY itself be any pattern (a wildcard, a name, a tuple pattern, a constructor pattern, or a nested element pattern) matched recursively, and the whole pattern MUST remain linear (`CDZ0102`).
+    if let Some(elems) = db
+        .ast
+        .as_form(pat, "list")
+        .or_else(|| db.ast.as_ctor_form(pat, "list"))
+        .map(<[_]>::to_vec)
+    {
+        // Linearity across the WHOLE list pattern (CDZ0102) — the same check the tuple case runs.
+        check_pattern_linear(db, pat)?;
+        let dd = elems.iter().position(|&e| db.ast.as_name(e) == Some(".."));
+        let Some(dd) = dd else {
+            // No `..` — a FIXED-ARITY list pattern, refutable (matches only its exact length). CDZ0210.
+            return Err(Reject::coded(
+                Code::NonExhaustive,
+                "a fixed-arity list pattern is refutable — it matches only lists of that exact length, \
+                 not every list, so it cannot appear in a binding position (use `(list p… .. rest)`, \
+                 which matches any length, or a `match`)",
+            )
+            .at(pat));
+        };
+        // A rest pattern needs EXACTLY one binder after `..`, and that binder must be a bare name / `_`
+        // (it binds the tail SUBLIST — a nested rest pattern is a later increment).
+        if dd + 2 != elems.len() {
+            return Err(Reject::coded(
+                Code::Malformed,
+                "a list rest pattern is `(list p… .. rest)` — exactly one binder after `..`",
+            )
+            .at(pat));
+        }
+        if db.ast.as_name(elems[dd + 1]).is_none() {
+            return Err(Reject::decline(
+                "a list rest binder must be a name or `_` (a nested rest pattern is not yet supported)",
+            ));
+        }
+        // The list's element type (for the leading sub-patterns' shape check); `Any` when unsolved.
+        let elem_ty = match value_ty {
+            crate::ty::Ty::List(e) => (**e).clone(),
+            _ => crate::ty::Ty::Any,
+        };
+        // Each LEADING element sub-pattern must itself be IRREFUTABLE (composes to any depth). A refutable
+        // leading element (a literal, a multi-variant ctor) is CDZ0210 exactly as a top-level binder.
+        for &elem in &elems[..dd] {
+            check_binding_pattern(db, elem, &elem_ty)?;
+        }
+        return Ok(());
     }
     // Otherwise a constructor-headed pattern `(Some x)` / `((. Sum V) x)` — classify by variant count.
     classify_binding_ctor(db, pat, value_ty)

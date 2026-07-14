@@ -2130,6 +2130,47 @@
   (input  (do (def (f p) (let (((tuple a b) p)) (+ a b))) (def (main) (f (tuple 10 20))) (export main)))
   (output (: 30 Int64)))
 
+; A LIST binding pattern. A list pattern is irrefutable ONLY in the REST form `(list p… .. rest)` — it
+; matches ANY length ≥ the leading count (and `(list .. all)` matches every list), so it may bind in a
+; `let` binder or a `def`/`fn` parameter, exactly as a `(match v ((list x .. rest) …))` arm does. A leading
+; element resolves to `SumPayload{Elem(i)}` and the rest binder to `SumPayload{RestFrom(lead)}` reading out
+; of the bound value (core-semantics.md #A Binding Position Accepts An Irrefutable Pattern / #A List Is
+; Deconstructed By Element Patterns With An Optional Rest). A FIXED-ARITY `(list a b)` binding is refutable
+; (it matches only its exact length) → CDZ0210, the rejection below.
+
+(case "a def parameter may be a list rest pattern binding the head"
+  (doc    "`(def (head (list x .. rest)) x)` names the head of its list argument directly — a list REST
+           pattern is irrefutable (matches any non-empty list here), so it is a valid PARAMETER pattern
+           (core-semantics.md #A Binding Position Accepts An Irrefutable Pattern). The parameter is
+           desugared to a destructuring `let`, so `x` resolves to `SumPayload{Elem(0)}` reading the first
+           element of the runtime list. `head` of `(list 7 8 9)` = 7.")
+  (input  (do (def (head (list x .. rest)) x) (def (main) (head (list 7 8 9))) (export main)))
+  (output (: 7 Int64)))
+
+(case "a let binder may be a list rest pattern binding a leading element and the rest"
+  (doc    "`(let (((list a b .. rest) xs)) …)` binds the first two elements of the runtime list `xs` and the
+           remaining elements as the sublist `rest` (core-semantics.md #A List Is Deconstructed By Element
+           Patterns With An Optional Rest) — the ergonomic form of the bind-then-`match` fold. Here `drop2`
+           binds `a`/`b` (dropped) and sums `rest` via a recursive `match` consumer: over `(list 1 2 3 4)`,
+           `rest` is `(list 3 4)` → 7. Pins that a rest binder in a BINDING position is a usable sublist,
+           not only a match-arm one.")
+  (input  (do
+            (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list x .. rest) (+ x (sum rest)))))
+            (def (drop2 ys) (let (((list a b .. rest) ys)) (sum rest)))
+            (def (main) (drop2 (list 1 2 3 4)))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "a fixed-arity list binding pattern is refutable and rejected"
+  (doc    "The contrast to the rest form: a FIXED-ARITY `(list a b)` binding pattern matches ONLY lists of
+           that exact length, so it is REFUTABLE — a binding position has no alternative arm, so it is the
+           non-exhaustive error the equivalent single-arm match raises (CDZ0210, core-semantics.md #A
+           Binding Position Accepts An Irrefutable Pattern). Only the rest form `(list p… .. rest)`, which
+           matches any length ≥ the leading count, earns the binding-position exemption; a length-fixed
+           destructure must be a `match`. Pins the list refutability boundary.")
+  (input  (do (def (main) (let (((list a b) (list 1 2))) (+ a b))) (export main)))
+  (error  CDZ0210))
+
 ; The refutable / ill-shaped / non-linear rejections. A binding position has no alternative arm, so its
 ; pattern MUST be irrefutable and its shape MUST match the value's type (core-semantics.md #A Binding
 ; Position Accepts An Irrefutable Pattern).
