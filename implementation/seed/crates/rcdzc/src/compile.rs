@@ -1008,6 +1008,14 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // lowercase-name leniency (a bare lowercase name is a type-variable artifact, not a global type) covers
     // a `(-> a a)`-style variable.
     let mut op_type_positions: Vec<(StructId, Vec<String>)> = Vec::new();
+    // Op types that are well-formed TYPES but NOT arrows — `(op get Int64)` / `(op get (Option Int64))`.
+    // An operation is PERFORMED (a function call), so its type MUST be an arrow `(-> Arg… Result)`; a
+    // canonical nullary op is `(-> Result)`. A bare type was silently accepted, wrapped as `(fn () Int64)`,
+    // then LEAKED the internal op-value record on perform ("type mismatch: Int64 and (Record (apply Any)
+    // …)") — a non-canonical spelling that garbles downstream, so reject it AT THE DECLARATION with the
+    // wrap fix (`garbage render = not canonical → fix the source`). Collected separately so the arrow-arm
+    // type-position walk above stays the sole caller of `validate_type_position` for op types.
+    let mut non_arrow_op_types: Vec<StructId> = Vec::new();
     for e in &db.effect_decls {
         for op in &e.ops {
             let Some(ty) = op.ty else { continue };
@@ -1020,13 +1028,44 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                         push_payload_type_positions(db, pos, &[], &mut op_type_positions);
                     }
                 }
-                // A non-arrow op type (a bare type / malformed) — validate whole.
-                _ => op_type_positions.push((ty, Vec::new())),
+                // A non-arrow op type (a bare type / malformed). Validate it as a type position FIRST: a
+                // genuinely-unknown name (`(op get Nonesuch)`) keeps its CDZ0101 (more actionable — wrapping
+                // an unknown name in `(-> …)` would not resolve it). A WELL-FORMED non-arrow type
+                // (`Int64`, `(Option Int64)`) is the malformed-op-type case handled below.
+                _ => {
+                    op_type_positions.push((ty, Vec::new()));
+                    non_arrow_op_types.push(ty);
+                }
             }
         }
     }
     for (pos, params) in &op_type_positions {
         validate_type_position(db, *pos, params, "an operation type", &mut faults);
+    }
+    // An op type that is a WELL-FORMED type but not an arrow: reject it (unless `validate_type_position`
+    // already faulted it — an unknown name / non-type — in which case that reject stands and this adds no
+    // second "no" for the same op type). The fix wraps it into the canonical nullary arrow `(-> T)`.
+    for &ty in &non_arrow_op_types {
+        let already_faulted = faults.iter().any(|f| f.at == Some(ty));
+        if already_faulted {
+            continue;
+        }
+        if crate::eval::typeval_of(db, ty).is_some() {
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    "an operation's type must be an arrow `(-> Arg… Result)` — an operation is performed \
+                     like a function; a nullary operation is `(-> Result)`",
+                )
+                .at(ty)
+                .with_fix(crate::diag::Fix::wrap_heuristic(
+                    ty,
+                    "(-> ",
+                    ")",
+                    "make it a nullary operation arrow",
+                )),
+            );
+        }
     }
     // DUPLICATE PARAMETER NAME. A function's parameter list is a BINDER POSITION, so it must be LINEAR
     // exactly as a pattern is (core-semantics.md §Patterns Compose: "A pattern MUST bind each name at
@@ -1440,6 +1479,16 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             && r.message
                 .starts_with(crate::diag::HANDLE_NONCANONICAL_PREFIX)
     });
+    // Likewise: a NON-ARROW op type (`(op get Int64)`) is rejected CDZ0201 at the declaration. Its op-value
+    // `(meta t)` is wrapped `(fn () Int64)`, so PERFORMING the op leaks the internal op-record in a
+    // consequent CDZ0203 ("type mismatch: Int64 and (Record (apply Any) (effect-op Any) …)"). That leak is
+    // a CONSEQUENCE of the malformed declaration — drop it (a fault naming the internal op-record) whenever
+    // the malformed-op-type reject is present, keeping the declaration-site reject (with its wrap fix) as
+    // the ONE primary, actionable error.
+    let has_non_arrow_op_type_reject = faults.iter().any(|r| {
+        r.code == Some(Code::Malformed)
+            && r.message.starts_with(crate::diag::NON_ARROW_OP_TYPE_PREFIX)
+    });
     // Likewise: an exported closure with a non-representable part (an `Any` param/result, a captured
     // value with no machine type) is reported as the coded CDZ0201 "cannot cross the component boundary"
     // at the export clause. The emit path ALSO returns an uncoded "a closure's <part> has no machine
@@ -1653,6 +1702,13 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             // A CDZ0401 (no home) that is the CONSEQUENCE of a non-canonical handle failing to resolve as
             // a handler — drop it in favor of the CDZ0201 that reports the real, fixable defect.
             if has_noncanonical_handle_reject && r.code == Some(Code::EffectNoHome) {
+                return false;
+            }
+            // A perform-site type mismatch that LEAKS the internal op-value record (`(effect-op Any)` — a
+            // synthesized meta-channel field no user type spells) is the CONSEQUENCE of a malformed
+            // non-arrow op type; drop it in favor of the declaration-site CDZ0201 (with its wrap fix).
+            if has_non_arrow_op_type_reject && r.message.contains(crate::diag::OP_VALUE_RECORD_LEAK)
+            {
                 return false;
             }
             // Likewise: a CDZ0401 (no home) that is the CONSEQUENCE of a MALFORMED HANDLER — a misspelled

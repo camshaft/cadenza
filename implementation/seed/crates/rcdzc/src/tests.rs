@@ -20841,6 +20841,74 @@ mod match_engine {
     }
 
     #[test]
+    fn a_non_arrow_effect_operation_type_is_rejected_with_a_wrap_fix() {
+        // An operation is PERFORMED like a function, so its declared type MUST be an arrow `(-> Arg…
+        // Result)` (a nullary op is `(-> Result)`). A WELL-FORMED non-arrow type — `(op get Int64)`,
+        // `(op get (Option Int64))` — was silently accepted: the op-value's `(meta t)` was wrapped
+        // `(fn () Int64)`, so PERFORMING it leaked the internal op-record ("type mismatch: Int64 and
+        // (Record (apply Any) (effect-op Any) …)") — a non-canonical spelling that garbles downstream.
+        // Reject it AT THE DECLARATION (CDZ0201) with a wrap fix into the canonical `(-> T)`.
+        for src in [
+            "(module m (effect E (op get Int64)) (def (main) 0) (export main))",
+            "(module m (effect E (op get (Option Int64))) (def (main) 0) (export main))",
+        ] {
+            let err = compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err("a non-arrow operation type must be rejected");
+            assert_eq!(err.code.as_deref(), Some("CDZ0201"), "got: {}", err.message);
+            assert!(
+                err.message.contains("an operation's type must be an arrow"),
+                "names the arrow requirement: {}",
+                err.message
+            );
+            assert_eq!(
+                err.fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Wrap),
+                "carries the wrap-into-arrow fix: {}",
+                err.message
+            );
+        }
+
+        // The consequent perform-site leak (the internal op-record) is DEDUPED — a bare-type op that is
+        // ALSO performed reports the ONE declaration-site error, not the garbled `(effect-op Any)` mismatch.
+        let performed = "(module m (effect E (op get Int64)) \
+             (def (main) (handle E 0 ((get (u) s (resume 5 s))) (+ (E.get) 1))) (export main))";
+        let d = crate::diagnostics(&mut crate::db::Db::load(parse(performed)));
+        assert!(
+            !d.iter().any(|e| e.message.contains("(effect-op Any)")),
+            "the internal op-record leak is dropped in favor of the decl-site error: {:?}",
+            d.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        assert!(
+            d.iter()
+                .any(|e| e.message.contains("an operation's type must be an arrow")),
+            "the declaration-site reject is present: {:?}",
+            d.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+
+        // NO false positive: a canonical nullary `(-> Result)`, a unary `(-> Arg Result)`, and an unknown
+        // NAME (which keeps its more-actionable CDZ0101, not a spurious arrow reject) all behave correctly.
+        for ok in [
+            "(module m (effect E (op get (-> Int64))) (def (main) 0) (export main))",
+            "(module m (effect E (op e (-> Int64 Unit))) (def (main) 0) (export main))",
+        ] {
+            assert!(
+                compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
+                "a valid arrow operation type must compile: {ok}"
+            );
+        }
+        let unknown = compile_component(&crate::codec::encode(&parse(
+            "(module m (effect E (op get Nonesuch)) (def (main) 0) (export main))",
+        )))
+        .expect_err("an unknown op type name is still rejected");
+        assert_eq!(
+            unknown.code.as_deref(),
+            Some("CDZ0101"),
+            "an unknown name keeps its CDZ0101, not the arrow reject: {}",
+            unknown.message
+        );
+    }
+
+    #[test]
     fn a_false_variant_guard_shields_a_trapping_body() {
         // The variant-guard short-circuit (core-semantics.md §Boolean Connectives Short-Circuit applied to
         // a guarded arm): a guarded arm's BODY is evaluated only when the guard HOLDS. `(guard (Some x) (>
