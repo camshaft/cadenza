@@ -970,9 +970,7 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     // recorded `(trap …)` outcome. (A `?N` return means the body diverges; a genuinely-polymorphic non-
     // diverging export is not producible here — the backend would have declined its unrepresentable result.)
     let diverging = ret_ty.as_deref().is_some_and(|t| {
-        t == "Any"
-            || t == "!"
-            || (t.starts_with('?') && t[1..].chars().all(|c| c.is_ascii_digit()))
+        t == "Any" || t == "!" || (t.starts_with('?') && t[1..].chars().all(|c| c.is_ascii_digit()))
     });
     let body = if diverging {
         format!("fn main() {{ {call_or_await}; }}\n")
