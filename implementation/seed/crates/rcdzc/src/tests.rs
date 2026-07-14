@@ -12955,6 +12955,67 @@ mod match_engine {
     }
 
     #[test]
+    fn a_numeric_leaf_inside_a_compound_offers_the_bare_literal_retype_fix() {
+        // A directly-written compound whose single differing leaf is a numeric LITERAL — `(record (x 5))`
+        // vs `(Record (x Float64))`, `(tuple 1 2)` vs `(Tuple Int64 Float64)`, `(list 5)` vs `(List
+        // Float64)` — should get the SAME one-shot coercion fix a bare `(: 5 Float64)` gets (retype `5` →
+        // `5.0`), anchored at the INNER value node. The structural-delta message already names the leaf;
+        // this closes the fix-parity gap (M116's annotation-site twin) for a value nested in a compound.
+        // Each case: (src, the differing leaf's retyped literal). The record/list leaf is `5`→`5.0`; the
+        // tuple's differing position is `2` (position 1, the Float64 slot)→`2.0`.
+        let cases = [
+            (
+                "(module m (def (h (: r (Record (x Float64)))) (. r x)) (def (g) (h (record (x 5)))) (export g))",
+                "record field",
+                "5.0",
+            ),
+            (
+                "(module m (def (h (: t (Tuple Int64 Float64))) (. t 0)) (def (g) (h (tuple 1 2))) (export g))",
+                "tuple position",
+                "2.0",
+            ),
+            (
+                "(module m (def (h (: xs (List Float64))) xs) (def (g) (h (list 5))) (export g))",
+                "list element",
+                "5.0",
+            ),
+            (
+                "(module m (def (h (: r (Record (a (Record (b Float64)))))) (. r a)) \
+                   (def (g) (h (record (a (record (b 5)))))) (export g))",
+                "nested record leaf",
+                "5.0",
+            ),
+        ];
+        for (src, what, expect) in cases {
+            let d = reject_full(src).unwrap_or_else(|| panic!("{what} rejects"));
+            let fix = d
+                .fix
+                .unwrap_or_else(|| panic!("{what} carries an inner-retype fix: {}", d.message));
+            assert_eq!(
+                fix.kind,
+                crate::abi::FixKind::Replace,
+                "{what}: {}",
+                d.message
+            );
+            assert_eq!(
+                fix.replacement, expect,
+                "{what} retypes the differing inner literal to a float: {}",
+                d.message
+            );
+        }
+        // NO fix for a NON-numeric leaf (Bool vs Int has no coercion) — message only.
+        let boolish = reject_full(
+            "(module m (def (h (: r (Record (x Int64)))) (. r x)) (def (g) (h (record (x true)))) (export g))",
+        )
+        .expect("a Bool-leaf record rejects");
+        assert!(
+            boolish.fix.is_none(),
+            "no coercion fix for a non-numeric leaf: {:?}",
+            boolish.fix
+        );
+    }
+
+    #[test]
     fn a_wrong_type_argument_to_a_prelude_member_op_names_the_operation() {
         // A wrong-type argument to a named prelude MEMBER OP — `(List.push xs true)`, `(Int64.of s)` —
         // named the operation + its expected argument type instead of the generic unify mismatch ("Int64

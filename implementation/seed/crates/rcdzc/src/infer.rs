@@ -3342,6 +3342,106 @@ fn deep_leaf_delta<'a>(want: &'a Ty, got: &'a Ty) -> Option<(String, &'a Ty, &'a
     }
 }
 
+/// A coercion FIX for a numeric leaf buried inside a directly-written COMPOUND value whose annotated type
+/// differs only at that leaf — `(record (x 5))` annotated `(Record (x Float64))` retypes the inner `5` →
+/// `5.0`, `(tuple 1 2)` vs `(Tuple Int64 Float64)` retypes the `2`, `(list 5)` vs `(List Float64)` retypes
+/// the `5`. The structural-delta hint NAMES the leaf (`field \`x\` should be Float64 …`); this gives it the
+/// same one-shot repair a bare `(: 5 Float64)` gets, anchored at the INNER value node. Drills the VALUE
+/// expression (`expr`) in lockstep with the type delta (record field / tuple position / list element),
+/// mirroring `deep_leaf_delta`'s type walk, to reach the leaf value node, then defers to
+/// `numeric_text_coercion_fix` (the same helper the bare annotation uses). `None` unless the value is a
+/// directly-written compound literal whose single differing leaf has a numeric coercion — a value bound to
+/// a name / returned from a call has no inner literal to edit, and a non-numeric leaf (Bool vs Int) has no
+/// coercion (its structural-delta message stands alone).
+fn compound_inner_coercion_fix(
+    db: &mut Db,
+    expr: StructId,
+    expected: &Ty,
+    actual: &Ty,
+) -> Option<Fix> {
+    match (expected, actual) {
+        (Ty::Record(w), Ty::Record(g))
+            if w.len() == g.len() && w.keys().all(|k| g.contains_key(k)) =>
+        {
+            // Find the first field (sorted key order) whose type differs, then the matching value node in
+            // the written record literal.
+            let (key, wt) = w
+                .iter()
+                .find(|(k, wt)| g.get(k).is_some_and(|gt| !wt.agrees_with(gt)))?;
+            let (gt, wt) = (g[key].clone(), (*wt).clone());
+            let value_node = *record_value_nodes(db, expr)?.get(key)?;
+            compound_inner_coercion_fix(db, value_node, &wt, &gt)
+                .or_else(|| numeric_text_coercion_fix(db, &wt, &gt, value_node))
+        }
+        (Ty::Tuple(w), Ty::Tuple(g)) if w.len() == g.len() => {
+            let (i, (wt, gt)) = w
+                .iter()
+                .zip(g.iter())
+                .enumerate()
+                .find(|(_, (wt, gt))| !wt.agrees_with(gt))?;
+            let (gt, wt) = (gt.clone(), wt.clone());
+            let value_node =
+                *positional_value_nodes(db, expr, crate::resolved::Prim::TupleNew)?.get(i)?;
+            compound_inner_coercion_fix(db, value_node, &wt, &gt)
+                .or_else(|| numeric_text_coercion_fix(db, &wt, &gt, value_node))
+        }
+        (Ty::List(we), Ty::List(ge)) if !we.agrees_with(ge) => {
+            // A list is homogeneous — retype the FIRST element whose inner numeric a coercion bridges (the
+            // fix an agent applies element-by-element; the message names the element axis).
+            let (we, ge) = ((**we).clone(), (**ge).clone());
+            positional_value_nodes(db, expr, crate::resolved::Prim::ListNew)?
+                .iter()
+                .find_map(|&e| {
+                    compound_inner_coercion_fix(db, e, &we, &ge)
+                        .or_else(|| numeric_text_coercion_fix(db, &we, &ge, e))
+                })
+        }
+        _ => None,
+    }
+}
+
+/// The `label → value-node` map of a directly-written RECORD literal `expr` — both the `{}`/bare-string
+/// primitive form (`Resolved::Record`) and the `record` NAME-alias application (`Resolved::Apply` whose
+/// `(meta apply)` is `Prim::RecordNew`, read via the shared `read_record_fields`). `None` when `expr` is
+/// not a written record literal (a value bound to a name / returned from a call has no field-value nodes
+/// to edit). Lets `compound_inner_coercion_fix` reach the inner leaf regardless of which record spelling
+/// the author used.
+fn record_value_nodes(
+    db: &mut Db,
+    expr: StructId,
+) -> Option<std::collections::BTreeMap<crate::resolved::Symbol, StructId>> {
+    match resolved_of(db, expr) {
+        Resolved::Record { fields } => Some((*fields).clone()),
+        Resolved::Apply { head, args }
+            if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::RecordNew) =>
+        {
+            crate::resolve::read_record_fields(db, &args).ok()
+        }
+        _ => None,
+    }
+}
+
+/// The ordered element value-nodes of a directly-written TUPLE (`prim = TupleNew`) or LIST (`ListNew`)
+/// literal `expr` — both the `Resolved::Tuple`/`List` primitive form and the `tuple`/`list` NAME-alias
+/// application (`Resolved::Apply` of the matching `(meta apply)` prim, whose `args` ARE the elements).
+/// `None` when `expr` is not the requested written literal kind.
+fn positional_value_nodes(
+    db: &mut Db,
+    expr: StructId,
+    prim: crate::resolved::Prim,
+) -> Option<Vec<StructId>> {
+    match resolved_of(db, expr) {
+        Resolved::Tuple { elems } if prim == crate::resolved::Prim::TupleNew => {
+            Some(elems.to_vec())
+        }
+        Resolved::List { elems } if prim == crate::resolved::Prim::ListNew => Some(elems.to_vec()),
+        Resolved::Apply { head, args } if crate::eval::meta_apply_of(db, head) == Some(prim) => {
+            Some(args.to_vec())
+        }
+        _ => None,
+    }
+}
+
 /// An actionable message TAIL when `expected` and `actual` are BOTH records that differ. Two shapes,
 /// each pointing at the SPECIFIC difference instead of leaving the reader to diff two full record renders:
 ///  • a FIELD-SET difference — the value is MISSING a field the type requires, and/or carries an EXTRA one
@@ -7775,15 +7875,30 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 .as_ref()
                                 .map(|w| w.3.clone())
                                 .or(option_tail)
-                                .or(record_tail)
+                                .or(record_tail.clone())
                                 .or(fn_tail)
-                                .or(collection_tail)
+                                .or(collection_tail.clone())
                                 .unwrap_or_default();
                             let mut reject =
                                 Reject::coded(Code::TypeMismatch, mismatch_lead(&tail));
                             if let Some((prefix, suffix, verb, _)) = wrap {
                                 reject = reject
                                     .with_fix(Fix::wrap_heuristic(expr, prefix, suffix, verb));
+                            } else if record_tail.is_some() || collection_tail.is_some() {
+                                // A same-shape compound whose single differing leaf is a numeric literal —
+                                // `(record (x 5))` vs `(Record (x Float64))`, `(tuple 1 2)` vs `(Tuple
+                                // Int64 Float64)`, `(list 5)` vs `(List Float64)`. The structural-delta tail
+                                // NAMES the leaf; give it the SAME one-shot coercion fix a bare `(: 5
+                                // Float64)` gets, anchored at the inner value node (`compound_inner_coercion_
+                                // fix` drills the written literal in lockstep with the type delta). Fix-parity
+                                // under a wrapper (M116's annotation-site twin): a directly-written compound
+                                // literal is editable; a non-literal / non-numeric leaf yields None (message
+                                // only).
+                                if let Some(fix) =
+                                    compound_inner_coercion_fix(db, expr, &annot_ty, &expr_ty)
+                                {
+                                    reject = reject.with_fix(fix);
+                                }
                             }
                             out.push(reject);
                         }
