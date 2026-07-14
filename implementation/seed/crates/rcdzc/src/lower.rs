@@ -1485,7 +1485,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // `Rational.of n d` — CONSTRUCT an exact rational. A CONSTANT numerator/denominator pair
                 // folds to a NORMALIZED `Core::ConstRational` (gcd-reduce, sign on the numerator, denom
                 // strictly positive); a ZERO denominator TRAPS ("rational with zero denominator"). A
-                // runtime operand declines until the runtime rational compound (a later B4 slice).
+                // runtime operand emits `Core::RationalOfInts` (the runtime `rational-of` op, R3b).
                 Some(Prim::RationalOf) if args.len() == 2 => {
                     lower_rational_of(db, args[0], args[1])
                 }
@@ -10252,8 +10252,8 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     }
     // A comparison over RATIONAL operands — a constant pair folds by comparing the two normalized
     // rationals exactly (cross-multiply: `a/b <=> c/d` ⇔ `a*d <=> c*b`, denominators strictly positive so
-    // the direction is preserved), via `IntValue` bignum. A runtime rational compare is a later B4 slice
-    // (declines). Checked before the scalar folds (a Rational is not `is_scalar`).
+    // the direction is preserved), via `IntValue` bignum; a runtime operand emits `Core::RationalCmp` (the
+    // runtime `rational-cmp` op, R3b). Checked before the scalar folds (a Rational is not `is_scalar`).
     if rational_operand(db, args) {
         return lower_rational_cmp(db, op, args[0], args[1]);
     }
