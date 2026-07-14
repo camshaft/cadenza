@@ -11599,6 +11599,50 @@ mod match_engine {
     }
 
     #[test]
+    fn a_malformed_export_clause_is_rejected_not_silently_dropped() {
+        // `(export (g x))` / `(export 5)` / `(export)` — an export whose argument is NOT a bare name. The
+        // module scan only records an `Export` when the argument `as_name`s, so a malformed clause was
+        // SILENTLY DROPPED: the program compiled as if the export were never written, and the emit path
+        // reported the misleading "nothing is public". A scan-and-drop correctness hazard — now rejected
+        // CDZ0201 at the chokepoint, naming how to fix it (`(export <name>)`).
+        let find_export_fault = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("an export names a single definition"))
+        };
+        // A compound whose HEAD is a name recovers the likely intent — replace the clause with `(export g)`.
+        let d = find_export_fault("(module m (def (g) 1) (export (g x)))")
+            .expect("a malformed compound export clause is rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        let fix = d.fix.as_ref().expect("carries a recover-the-name fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fix.replacement, "(export g)",
+            "recovers the head name: {}",
+            d.message
+        );
+
+        // A non-name argument (`5`) or an empty `(export)` has no name to recover → message only, no fix.
+        let bare = find_export_fault("(module m (def (g) 1) (export 5))")
+            .expect("a non-name export argument is rejected");
+        assert!(
+            bare.fix.is_none(),
+            "no fix for a non-recoverable argument: {:?}",
+            bare.fix
+        );
+        assert!(
+            find_export_fault("(module m (def (g) 1) (export))").is_some(),
+            "an empty export clause is rejected"
+        );
+
+        // NO false positive: a well-formed `(export g)` produces no malformed-export fault.
+        assert!(
+            find_export_fault("(module m (def (g) 1) (export g))").is_none(),
+            "a well-formed export is not flagged"
+        );
+    }
+
+    #[test]
     fn a_mistyped_top_level_keyword_suggests_the_keyword_and_carries_a_replace_fix() {
         // A top-level `(head …)` form whose head is a near-miss for a DECLARATION KEYWORD (`exprot`→
         // `export`, `deff`→`def`) is a mistyped keyword — the likeliest intent in a declaration position.

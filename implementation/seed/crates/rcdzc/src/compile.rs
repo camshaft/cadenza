@@ -1305,6 +1305,34 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             }
         }
     }
+    // A MALFORMED EXPORT CLAUSE — `(export (g x))`, `(export 5)`, `(export)` — whose argument is not a bare
+    // name. The module scan only registers an `Export` when the argument `as_name`s, so a malformed clause
+    // is otherwise SILENTLY DROPPED (no export recorded, `unknown_top_forms` skips it since its head is the
+    // known `export`), and the program compiles as if the author never wrote the export — the emit path
+    // then reports a misleading "nothing is public". Reject it here (CDZ0201) so BOTH `check` and `compile`
+    // name the real fault + how to fix it: an export names a single definition, `(export g)`. A scan-and-
+    // drop correctness hazard closed at the chokepoint. (A WELL-FORMED `(export g)` naming a missing/typo'd
+    // or non-value def is handled above as CDZ0101 — this is only the STRUCTURALLY malformed argument.)
+    for (occ, bad_arg) in db.malformed_exports() {
+        let mut reject = Reject::coded(
+            Code::Malformed,
+            "an export names a single definition — write `(export <name>)`, e.g. `(export main)`"
+                .to_string(),
+        )
+        .at(occ);
+        // When the bad argument is a compound whose HEAD is a name — `(export (g x))` — the author most
+        // likely meant to export `g`; offer replacing the whole clause with `(export <head>)`. A non-name
+        // argument (`(export 5)`) or an empty `(export)` has no name to recover → message only.
+        if let Some(arg) = bad_arg
+            && let Some(head) = db.ast.head_name(arg)
+        {
+            reject = reject.with_fix(crate::diag::Fix::replace_heuristic(
+                occ,
+                format!("(export {head})"),
+            ));
+        }
+        faults.push(reject);
+    }
     // AN EXPORT WHOSE RESULT IS A NON-REPRESENTABLE CLOSURE — e.g. an entrypoint returning a PARTIAL
     // APPLICATION `(f 1)` for a two-parameter `f`, whose residual parameter type inference never fixed
     // (`Any`) — cannot cross the component boundary. The backend rejects it deep in closure-resource

@@ -2021,6 +2021,27 @@ impl Db {
         }
         out
     }
+
+    /// Top-level `(export …)` forms whose argument is NOT a bare name — `(export (g x))`, `(export 5)`,
+    /// `(export)`. The scan (`scan_module`) only records an `Export` when the clause's first tail element
+    /// `as_name`s, so a MALFORMED export clause is otherwise SILENTLY DROPPED: no `Export` is registered,
+    /// `unknown_top_forms` skips it (its head IS `export`, a known top form), and the program compiles as
+    /// if the export were never written — the author's public-surface intent vanishes with no diagnostic
+    /// (the emit path then reports the misleading "nothing is public"). Return each such clause occurrence
+    /// so `collect_faults` can reject it with the actionable "an export names a definition: `(export g)`"
+    /// (a scan-and-drop correctness hazard, the export-clause analogue of the malformed-variant reject).
+    /// The bad-argument occurrence (for a fix anchor) is the clause's first tail element, if any.
+    pub fn malformed_exports(&self) -> Vec<(StructId, Option<StructId>)> {
+        let mut out = Vec::new();
+        for item in top_items(&self.ast) {
+            if let Some(tail) = self.ast.as_form(item, "export")
+                && tail.first().is_none_or(|&s| self.ast.as_name(s).is_none())
+            {
+                out.push((item, tail.first().copied()));
+            }
+        }
+        out
+    }
 }
 
 /// Build the parent index AND the child-position index in one pass: for each structure occurrence,
