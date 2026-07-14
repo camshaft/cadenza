@@ -3607,6 +3607,13 @@ fn collect_module_decl(
 /// walked when `collect_default_int_literals` is called for it). Keyed by the ORIGINAL literal node, so a
 /// later β-copy that reparents the literal (moving it out of the module structurally) still finds its
 /// default via this map — the parent-walk a naive lookup would use is unusable post-copy.
+///
+/// `(pragma default-integer <T>)` is a MEANING-CHANGING directive — it changes the type its module's bare
+/// literals take — and it is read HERE from the module's CANONICAL AST (`mod_form`, the pragma node in the
+/// binary AST), never from a compilation option outside the form. So a module's meaning is determined by
+/// its canonical form alone.
+//= spec/capabilities/modules-and-namespaces.md#a-meaning-changing-directive-is-part-of-the-canonical-form
+//# A module directive that changes the meaning of the module's definitions MUST be carried in the module's canonical form, so that the module's meaning is determined by its canonical form alone and does not depend on a compilation option outside it.
 fn collect_default_int_literals(
     ast: &Arenas,
     mod_form: StructId,
