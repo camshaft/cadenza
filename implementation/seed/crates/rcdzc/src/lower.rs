@@ -304,7 +304,15 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // emits no `sum-payload` — DROP it from the path the backend walks. `erase_nominal_steps`
                 // walks the scrutinee type + heads and keeps only the real (boxed-sum / tuple) steps, so
                 // the existing backend (wasm + rust) needs no nominal awareness: an empty path reads the
-                // scrutinee value directly (`(Mk n)` binds `n` to the whole erased value).
+                // scrutinee value directly (`(Mk n)` binds `n` to the whole erased value). This is HOW a
+                // program strips the name tag — a `(Mk n)` destructure is the explicit ask that yields the
+                // underlying structural value — and because the `Payload` step erases to nothing, the
+                // stripped value IS the same runtime value the nominal already was: a compile-time
+                // reinterpretation, not a copy or conversion.
+                //= spec/capabilities/type-system.md#a-nominal-value-is-convertible-to-its-underlying-structural-value
+                //# A program MUST be able to strip a nominal type's name tag to obtain the underlying structural value, so that a value declared nominal can be compared or used structurally when the program explicitly asks for it rather than silently.
+                //= spec/capabilities/type-system.md#a-nominal-value-is-convertible-to-its-underlying-structural-value
+                //# The stripped structural value MUST be the same value the nominal value already is at runtime, so that removing the tag is a compile-time reinterpretation and not a copy or conversion of the value.
                 let path = erase_nominal_steps(db, scrutinee, &steps, &heads);
                 Core::SumPayload { scrutinee, path }
             }
