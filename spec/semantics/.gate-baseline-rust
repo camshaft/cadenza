@@ -1500,6 +1500,8 @@ todo	a runtime string returned across the run boundary renders as its quoted tex
 todo	a runtime string slice addresses scalar values, not bytes
 todo	a runtime value is constructed into a fixed-width segment and its length read
 todo	a runtime-built string crosses the boundary as its value form
+todo	a runtime string rope compares equal to its flat twin
+todo	a runtime string rope matches a string-literal arm
 todo	a runtime-computed BigInt result crosses the host boundary
 todo	a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)
 todo	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)

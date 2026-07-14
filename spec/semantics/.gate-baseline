@@ -1012,6 +1012,8 @@ pass	a runtime string equality selects a branch by comparing a parameter to a li
 pass	a runtime string is indexed by scalar and the extracted scalar is returned
 pass	a runtime string is sliced by scalar offsets
 pass	a runtime string returned across the run boundary renders as its quoted text
+pass	a runtime string rope compares equal to its flat twin
+pass	a runtime string rope matches a string-literal arm
 pass	a runtime string slice addresses scalar values, not bytes
 pass	a runtime string slice out of range yields None
 pass	a runtime string slice with an empty in-range span is Some of the empty string
