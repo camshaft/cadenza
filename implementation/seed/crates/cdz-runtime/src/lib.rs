@@ -9226,7 +9226,7 @@ mod tests {
         println!("ALLOC map_insert_shared_newkey x{N}: {pinsert_new}");
         assert!(
             pinsert_new <= 6500,
-            "shared/persistent map_insert (new key) x{N} allocs {pinsert_new} exceeds ceiling 6700 (path-copy growth: borrow-and-build, no upfront clone; was 7445)"
+            "shared/persistent map_insert (new key) x{N} allocs {pinsert_new} exceeds ceiling 6500 (path-copy growth: borrow-and-build, no upfront clone; measured ~6418, was 7445)"
         );
         op_drop(mkeep2);
 
@@ -9554,13 +9554,15 @@ mod tests {
             }
         });
         println!("ALLOC map_lookup_tuplekey x{N}: {clookup}");
-        // Each iteration allocates ONLY the probe tuple (arr node Box + its 2-slot handles Vec = 2);
-        // BOTH the shallow-compound champ_hash fast path AND the shallow-compound champ_eq fast path add
-        // NO worklist — so a hit costs exactly the probe. A regression to the general walk (hash and/or
-        // eq) would add ~1-2 more per lookup. ~2000 for N=1000 = 2/lookup (the probe tuple).
+        // Each iteration allocates ONLY the probe tuple = 1 node Box (`op_arr_alloc(2)` carries its 2
+        // handles INLINE, empty raw, immediate elements — the inline-handles win; NOT the 2/op an
+        // out-of-line handles Vec cost before it). BOTH the shallow-compound champ_hash fast path AND the
+        // shallow-compound champ_eq fast path add NO worklist — so a hit costs exactly the probe node.
+        // ~1000 for N=1000 = 1/lookup. A regression to the general hash/eq walk would add ~1-2 more per
+        // lookup; a regression to an out-of-line probe-tuple handles Vec would be ~2/op.
         assert!(
-            clookup <= 1500,
-            "shallow-compound-key lookup x{N} allocs {clookup} exceeds ceiling 2500 (probe tuple only; shallow hash+eq fast paths add no worklist)"
+            clookup <= 1000,
+            "shallow-compound-key lookup x{N} allocs {clookup} exceeds ceiling 1000 (1/op = JUST the probe tuple's node Box; shallow hash+eq fast paths add no worklist, probe handles inline)"
         );
         op_drop(cm);
 
