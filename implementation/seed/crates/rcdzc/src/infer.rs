@@ -1889,6 +1889,12 @@ fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId
 /// `n`th power (`Unit::pow`). `None` when arg0 is not a quantity or arg1 is not a compile-time `Int`
 /// literal (the caller then falls through). `#[inline(never)]` so it does NOT enlarge `apply_type`'s
 /// stack frame — that function is on the deep `type_of`↔`apply_type` recursion.
+///
+/// This is a dimension-DERIVING operation: `Qty.pow` produces the dimension its rule defines (the unit
+/// raised to `n`, e.g. `metre` → `metre²`) carried on the result `Ty::Qty`, rather than discarding the
+/// dimensional information to a bare numeric.
+//= spec/capabilities/units-of-measure.md#dimensional-mismatch-is-an-error
+//# An operation that derives a dimension MUST produce the dimension the operation's rule defines rather than discard dimensional information.
 #[inline(never)]
 fn qty_pow_type(db: &mut Db, args: &[StructId]) -> Option<Ty> {
     if let Ty::Qty { inner, unit } = type_of(db, args[0])
