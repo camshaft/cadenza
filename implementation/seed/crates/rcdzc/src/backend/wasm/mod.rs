@@ -2119,10 +2119,28 @@ fn emit_multi_closure_resource(
             ));
         }
     }
-    let arg_bytes: Vec<u8> = arg_tys
-        .iter()
-        .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
-        .collect::<Result<_, _>>()?;
+    // DIRECT-CALL COMPOUND ARG (multi-export): a single fixed-shape scalar tuple/record arg shared by all
+    // exports crosses as a native component `tuple<…>` the canonical ABI flattens; the shared `call` rebuilds
+    // the cell from the flat fields (`TupleArgRebuild`). Detected here so the scalar `arg_bytes` decline
+    // below doesn't reject it. SCOPE: EXACTLY one such compound arg, a scalar result (a byte-rope/compound/
+    // collection result alongside a tuple arg is a further widening — declines cleanly below).
+    let tuple_arg: Option<(
+        Vec<u8>,
+        Vec<crate::backend::wasm::lir::ValType>,
+        serialize::TupleArgRebuild,
+    )> = if arg_tys.len() == 1 {
+        fixed_shape_scalar_tuple_arg(&arg_tys[0])
+    } else {
+        None
+    };
+    let arg_bytes: Vec<u8> = if tuple_arg.is_some() {
+        Vec::new() // the flattened tuple fields are carried by `tuple_arg`, not `arg_bytes`
+    } else {
+        arg_tys
+            .iter()
+            .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
+            .collect::<Result<_, _>>()?
+    };
     // A byte-rope (`Bytes`/`String`) shared closure result crosses as `list<u8>` — the N-makes-one-`call`
     // memory/realloc list-`call` (`multi_closure_bytes_resource_core_module` + the bytes envelope). A scalar
     // result takes the by-value shared call. All exports share the signature, so one `ret_is_bytes` decides.
@@ -2159,10 +2177,19 @@ fn emit_multi_closure_resource(
     } else {
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
     };
-    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = arg_tys
-        .iter()
-        .map(|t| valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype")))
-        .collect::<Result<_, _>>()?;
+    // Core call-arg valtypes: the FLATTENED tuple fields when a tuple arg, else each arg's own valtype.
+    let arg_vts: Vec<crate::backend::wasm::lir::ValType> = if let Some((_, field_vts, _)) =
+        &tuple_arg
+    {
+        field_vts.clone()
+    } else {
+        arg_tys
+            .iter()
+            .map(|t| {
+                valtype_of(t).ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
+            })
+            .collect::<Result<_, _>>()?
+    };
     let ret_vt = valtype_of(&ret_ty)
         .ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
 
@@ -2367,6 +2394,38 @@ fn emit_multi_closure_resource(
             &arg_bytes,
             &[],
             true,
+        ));
+    }
+    // DIRECT-CALL COMPOUND ARG (multi-export): N same-sig closures share one `call` whose single argument is
+    // a fixed-shape scalar tuple/record. The shared `call` receives the FLATTENED fields (`arg_vts`) and
+    // rebuilds the cell (`TupleArgRebuild`); the envelope's shared `call` functype takes a `tuple<…>` type.
+    // `own<t>` (single-use) this cut — the rebuilt-arg cell drop is unconditional, so still leak-free.
+    if let Some((field_bytes, _field_vts, rebuild)) = &tuple_arg {
+        let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
+            &funcs,
+            &imports,
+            &[],
+            &ser_makes,
+            &[], // no plain (non-closure) exports on the pure multi-export path
+            &arg_vts,
+            ret_vt,
+            lifted_type_idx,
+            &layout,
+            false,
+            Some(rebuild),
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &abi_makes,
+            &arg_bytes, // empty — the tuple arg is carried by `field_bytes`
+            result_byte,
+            &[], // no plain exports
+            false,
+            Some(field_bytes),
         ));
     }
     // C-HOST-6: the ONE shared scalar `call` takes `borrow<t>`, so each make's handle is repeatable (the
