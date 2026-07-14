@@ -819,6 +819,16 @@ impl<'a> Printer<'a> {
     /// a plain binder prints as itself. (Any other shape in parameter position — it shouldn't
     /// occur — falls back to the ordinary expression printer.)
     fn print_param(&mut self, p: StructId) {
+        // A `(const BINDER)` wrapper — an EXPLICIT compile-time parameter. Emit the `const ` keyword prefix
+        // then the inner binder (so `(const (: d T))` → `const d: T`, `(const d)` → `const d`). The ML
+        // reader's `param` accepts a leading `const`; s-expr keeps the `(const …)` form.
+        if let Some(t) = self.a.as_form(p, "const")
+            && t.len() == 1
+        {
+            self.doc.word("const ");
+            self.print_param(t[0]);
+            return;
+        }
         if let Some(t) = self.a.as_form(p, ":")
             && t.len() == 2
         {

@@ -2968,7 +2968,7 @@
            no call_indirect, no runtime record) and the dictionary argument erased. Folding `+10` from 0
            three times = 30.")
   (input  (do
-            (def (fold-n (: d (Record (op (-> Int64 Int64)))) (: n Int64) (: acc Int64))
+            (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
               (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
             (def (main) (fold-n (record (op (fn (x) (+ x 10)))) 3 0))
             (export main)))
@@ -2980,9 +2980,27 @@
            specialization, the ad-hoc-polymorphism analogue of per-type monomorphization). `(+10)` folded
            from 0 thrice = 30; `(*2)` folded from 1 thrice = 8; 30 + 8 = 38.")
   (input  (do
-            (def (fold-n (: d (Record (op (-> Int64 Int64)))) (: n Int64) (: acc Int64))
+            (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
               (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
             (def (main) (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0)
                            (fold-n (record (op (fn (x) (* x 2)))) 3 1)))
             (export main)))
   (output (: 38 Int64)))
+
+; A `const` parameter DECLARES its argument must be compile-time-known: the compiler inlines + erases it,
+; and REJECTS an argument that depends on runtime data (the author's contract, enforced). Here the dict's
+; `op` captures `main`'s runtime parameter `k`, so the dictionary is NOT compile-time-known — a coded
+; CDZ0201 rejection, not a silent runtime fallback.
+
+(case "a const parameter rejects an argument that depends on runtime data"
+  (doc    "`fold-n`'s dictionary parameter is `const`, so its argument must be compile-time-known. `main`
+           passes `(record (op (fn (x) (+ x k))))` whose `op` captures `main`'s RUNTIME parameter `k` —
+           the dictionary is not a compile-time value, violating the `const` contract. The compiler
+           rejects it (CDZ0201, 'must be compile-time-known'), rather than silently passing it at runtime.
+           The rejection is the program's outcome; there is no value.")
+  (input  (do
+            (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
+              (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
+            (def (main (: k Int64)) (fold-n (record (op (fn (x) (+ x k)))) 3 0))
+            (export main)))
+  (error  CDZ0201))

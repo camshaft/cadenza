@@ -2051,6 +2051,30 @@ impl<'a> Parser<'a> {
     /// type `A -> B`.
     fn param(&mut self) -> StructId {
         let start = self.cur_span();
+        // A `const`-prefixed parameter — an EXPLICIT compile-time parameter (`const d: T` / `const d`),
+        // wrapped `(const BINDER)` so the compiler's load-time strip records it. `const` is not a lexer
+        // keyword (a plain identifier), so treat it as the modifier ONLY when it heads a param AND is
+        // followed by another binder (an identifier or a `(`/`[`/`#{`-led pattern) — a bare param literally
+        // named `const` (no following binder) is left as an ordinary name. The inner binder parses
+        // recursively (so `const (a, b)` / `const d: T` / `const [x, .. r]` all work).
+        if self.at(Kind::Ident)
+            && self.cur_text() == "const"
+            && matches!(
+                self.nth_kind(1),
+                Kind::Ident
+                    | Kind::BacktickName
+                    | Kind::LParen
+                    | Kind::LBracket
+                    | Kind::BinOpen
+                    | Kind::Hash
+            )
+        {
+            self.bump(); // `const`
+            let kw = self.name("const", start);
+            let inner = self.param();
+            let span = start.merge(self.prev_span());
+            return self.list(vec![kw, inner], span);
+        }
         // A parameter is normally a plain binder name, but a parameter that OPENS a destructuring
         // PATTERN is parsed as a pattern: a tuple `(a, b)` (or a literal-bearing one like `(1, x)`
         // desugaring to a refutable binder → CDZ0210), a list `[x, .. rest]`, a map `#{ k = p }`, or a

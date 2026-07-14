@@ -433,3 +433,80 @@ pre-existing `call_indirect` path).
 
 Gate 1850/0, 1318 rcdzc tests + the new dictionary test (asserts no `call_indirect` via `wasmparser`),
 +2 corpus cases (09-functions).
+
+---
+
+# ADDENDUM 3: EXPLICIT `const` parameters — the author declares what is compile-time
+
+Status: DESIGN → implementing. Operator's direction (2026-07-14): the IMPLICIT dict-sniffing of Addendum
+2 is "overly specific and inflexible" — the compiler guessing "is this arg a const dictionary" is what
+produced the const-data-list stack-overflow footgun. Replace it with an EXPLICIT `const` parameter: the
+FUNCTION declares which parameters are compile-time-known; the compiler obeys (inlines + erases them) and
+ERRORS if a `const` argument cannot fold. No detection heuristic, no specialization-guessing.
+
+## Surface (operator's choice)
+A parameter binder is wrapped `(const BINDER)` to mark it compile-time:
+```
+(def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
+  (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
+(fold-n (record (op (fn (x) (+ x 10)))) 3 0)   ; d is const → inlined + erased; n/acc runtime
+```
+- A `const` parameter MUST be compile-time-known at each call site: it is inlined into a specialized copy
+  (so `(. d op)` folds to the concrete op — no `call_indirect`, no runtime record) and ERASED from the
+  emitted signature. `n`/`acc` stay ordinary runtime parameters.
+- A non-foldable argument to a `const` param is a CODED COMPILE ERROR ("argument to const parameter must
+  be compile-time-known"), NOT a silent runtime fallback — the author declared the contract.
+- This SUBSUMES the type-valued parameter: `(: t Type)` is just a `const` param whose value is a type.
+  (Kept working for back-compat; the general `const` is the primary surface.)
+
+## Why this is cleaner than Addendum 2's heuristic
+- The trigger is a DECLARATION, not a guess. No `arg_is_const_inlinable` sniffing "is this a record of
+  lambdas"; no accidental inlining of a const data list (the stack-overflow footgun) — a data arg is
+  const only if the AUTHOR marks it, and then it must genuinely fold or it is an error.
+- More flexible: ANY value can be a const param (a config record, a comparator, a type, a tuning
+  constant), not just "a record containing a lambda".
+- One rule everywhere: at instantiation, a `const` param's argument is folded in and dropped.
+
+## Implementation — load-time strip + a const-param set (mirrors `strip_def_docs`)
+1. **`strip_const_params(&mut ast) -> FxHashSet<StructId>`** in `db.rs`, run in `Db::load` BEFORE
+   `scan_top_level` (exactly like `strip_def_docs`): for every `def`/`fn` signature, rewrite each
+   `(const BINDER)` child in place to `BINDER`, and record the stripped param's NAME occurrence
+   (`param_name_occ` of the inner binder) in the returned set. After this pass every downstream reader
+   (`param_name_occ`, `is_param_occurrence`, the 12 `(: name T)` unwraps, resolve, infer) sees a PLAIN
+   binder — ZERO changes to any of them. `const`-ness lives in `db.const_params`.
+2. **`type_specialize`** (`lower.rs`): DELETE the `arg_is_const_inlinable` heuristic + the `Ty::Type`
+   auto-detection. Classify a param as erased iff it is in `db.const_params` (or its solved type is
+   `Ty::Type` — the type-valued back-compat case). For a const param, fold its argument to a value
+   (`typeval_of` for a type, else the arg's value node) and substitute it into the copy; require the fold
+   to succeed or the call declines with the coded error. Same substitute-into-copy + drop-from-signature
+   machinery, now keyed on the DECLARATION.
+3. **The gate** in `lower_recursive_call_or_decline`: specialize when the scheme is generic OR the callee
+   has any `const` param (`db.const_params` intersects the callee's params). A non-const monomorphic call
+   is byte-identical to today.
+4. **The coded error**: a `const` param whose argument does not fold (references runtime data) →
+   `Code::Malformed` (CDZ0201) "argument to const parameter `d` must be compile-time-known".
+5. `const` joins the resolver `GRAMMAR` set only if a bare `const` name could otherwise be misread — but
+   since the strip runs at load before resolution and removes every `(const …)` wrapper, `const` never
+   reaches resolution as a head. (A `const` used as an ordinary NAME elsewhere is unaffected.)
+
+## Non-recursive const params
+A non-recursive call already β-reduces (inlines) the whole body at the call site, so a const param is
+folded away for free there too — the const marking additionally lets the compiler REJECT a non-foldable
+argument (the contract) rather than silently keeping it. The recursive case is where erasure needs the
+specialized copy (as before).
+
+## ML surface (both sides)
+`const` is a param modifier on BOTH surfaces. S-expr: `(const (: d T))` / `(const d)`. ML: `const d: T` /
+`const d` (the printer emits `const ` before the binder; the parser's `param` accepts a leading `const`
+identifier followed by a binder, wrapping it `(const …)`). `const` is NOT a lexer keyword — a bare param
+literally named `const` (with no following binder) stays an ordinary name. Verified: the corpus dict cases
+round-trip s-expr↔ML↔binary cleanly.
+
+## Landed
+Gate 1890/0; corpus: the two dict cases now use `(const (: d …))` + a new "a const parameter rejects an
+argument that depends on runtime data" (CDZ0201); +1 unit test (the const-contract reject) + the dict
+erasure test updated to `const`. The implicit dict-sniffing heuristic (`arg_is_const_inlinable` and its
+helpers) is DELETED — erasure is now driven purely by the `const` DECLARATION (`db.const_params`, filled
+by `strip_const_params` at load), which also subsumes the `Ty::Type` type-valued-parameter case. Soundness:
+`arg_captures_runtime_binding` rejects a `const` arg that captures ANY enclosing runtime param (not just
+the callee's own), closing the caller-capture gap the `own`-only check missed.

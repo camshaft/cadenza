@@ -33638,15 +33638,15 @@ mod stage1 {
     #[test]
     fn a_recursive_dictionary_consumer_inlines_and_erases_the_dictionary() {
         // 09-functions "a recursive consumer of a dictionary record inlines and erases the dictionary":
-        // ad-hoc polymorphism as a record of functions passed as an argument. `fold-n` applies its dict's
-        // `op` `n` times. The dictionary is compile-time-known, so the recursive `fold-n` is monomorphized
-        // per distinct dict — the `op` INLINED directly (no `call_indirect`, no runtime record) and the
-        // dictionary argument ERASED from the emitted signature (the "inline a compile-time-known
-        // argument, drop the param" rule, same as a type-valued parameter). Two distinct dicts (`+10`,
-        // `*2`) get two specializations; 30 + 8 = 38. Pure-scalar (no heap), so runs without the store.
+        // ad-hoc polymorphism as a record of functions passed as an argument. `fold-n` marks its dict
+        // parameter `const` (`(const (: d …))`) — an EXPLICIT compile-time parameter (Addendum 3), so the
+        // recursive `fold-n` is monomorphized per distinct dict, the `op` INLINED directly (no
+        // `call_indirect`, no runtime record) and the dict argument ERASED from the emitted signature (the
+        // "inline a compile-time-known argument, drop the param" rule, same as a type-valued parameter).
+        // Two distinct dicts (`+10`, `*2`) get two specializations; 30 + 8 = 38. Pure-scalar (no heap).
         let bytes = compile_component(&crate::codec::encode(&parse(
             "(module m \
-               (def (fold-n (: d (Record (op (-> Int64 Int64)))) (: n Int64) (: acc Int64)) \
+               (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
                  (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
                (def (main) (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0) \
                               (fold-n (record (op (fn (x) (* x 2)))) 3 1))) (export main))",
@@ -33677,6 +33677,37 @@ mod stage1 {
         assert!(
             !has_call_indirect,
             "the dictionary's op must be inlined (no call_indirect), got a runtime dispatch"
+        );
+    }
+
+    #[test]
+    fn a_const_parameter_rejects_a_runtime_dependent_argument() {
+        // 09-functions "a const parameter rejects an argument that depends on runtime data": a `const`
+        // parameter DECLARES its argument compile-time-known (Addendum 3). Here `main` passes a dictionary
+        // whose `op` captures `main`'s RUNTIME parameter `k` — the dict is not a compile-time value, so
+        // the `const` contract is violated. The compiler must REJECT (coded CDZ0201, "must be
+        // compile-time-known"), NOT silently pass it at runtime — the closedness check
+        // (`arg_captures_runtime_binding`) catches the captured enclosing param.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m \
+                       (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
+                         (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
+                       (def (main (: k Int64)) (fold-n (record (op (fn (x) (+ x k)))) 3 0)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let has_coded = out.diagnostics.iter().any(|d| {
+            d.severity == crate::abi::Severity::Error && d.code.as_deref() == Some("CDZ0201")
+        });
+        assert!(
+            has_coded,
+            "a const arg capturing a runtime param must be a coded CDZ0201 reject, got: {:?}",
+            out.diagnostics
         );
     }
 

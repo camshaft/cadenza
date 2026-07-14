@@ -1010,6 +1010,17 @@ pub struct Db {
     /// with no recursive-generic call — byte-identical to before.
     pub(crate) type_specializations: crate::fxhash::FxHashMap<(StructId, String), usize>,
 
+    /// The NAME OCCURRENCES of parameters declared `const` — an EXPLICIT compile-time parameter (`(def (f
+    /// (const (: d T)) …) …)`, `DESIGN-…-monomorphization-rcdzc.md` Addendum 3). A `const` param MUST be
+    /// compile-time-known at each call: it is folded + inlined into a specialized copy and ERASED from the
+    /// emitted runtime signature (a non-foldable argument is a coded compile error). Populated ONCE by
+    /// `strip_const_params` at load (which also unwraps the `(const …)` binder in place, so every
+    /// downstream reader sees a plain binder), keyed by the inner binder's `param_name_occ` — the identity
+    /// `type_specialize` / the gate test against a def's params. Empty for a program with no `const` param
+    /// (byte-identical to before). This replaces the implicit dict-sniffing heuristic: the AUTHOR declares
+    /// what is compile-time, the compiler obeys.
+    pub(crate) const_params: crate::fxhash::FxHashSet<StructId>,
+
     /// TRANSIENT flow-sensitive value-range REFINEMENTS, active only during wasm emit. A stack of
     /// frames, each mapping a variable's binder occurrence (a `Core::Param`/`LocalRef` `binder`) to a
     /// range `[lo, hi]` KNOWN to hold in the current control-flow branch (`hi = None` = unbounded above).
@@ -1048,6 +1059,13 @@ impl Db {
         // stripped text is CAPTURED (keyed by each def's signature occurrence) so the `DocOf`/`DocAt`
         // queries can still surface a definition's documentation after it leaves the body.
         let doc_by_sig = strip_def_docs(&mut ast);
+        // Normalize away a `(const BINDER)` PARAMETER wrapper on every `def`/`fn` signature BEFORE anything
+        // reads a parameter: `const` marks a COMPILE-TIME parameter (`DESIGN-…-monomorphization` Addendum
+        // 3), a declaration the specializer consumes — not part of the binder shape the resolver/typer
+        // walk. Unwrap `(const (: d T))` → `(: d T)` in place (ids of the inner binder unchanged) and
+        // RECORD the stripped param's name occurrence in `const_params`. Done here, like `strip_def_docs`,
+        // so every downstream reader sees a PLAIN binder and const-ness lives only in the set.
+        let const_params = strip_const_params(&mut ast);
         // The program's node count, captured BEFORE the prelude appends — the boundary between user
         // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
         // are the user program; ids at/above are prelude or evaluator-synthesized.
@@ -1341,6 +1359,7 @@ impl Db {
             effect_specializations: crate::fxhash::FxHashMap::default(),
             subtree_performs_cache: crate::fxhash::FxHashMap::default(),
             type_specializations: crate::fxhash::FxHashMap::default(),
+            const_params,
             range_refinements: Vec::new(),
         };
         // NEWTYPE ERASURE: materialize, once, which declared sums are erasable NEWTYPES and their
@@ -2677,6 +2696,78 @@ fn strip_def_docs(ast: &mut Arenas) -> crate::fxhash::FxHashMap<StructId, String
         ast.structure[i] = Struct::List(kept);
     }
     docs
+}
+
+/// Unwrap every `(const BINDER)` PARAMETER wrapper in a `def` signature or `fn` parameter list, in place,
+/// and return the set of the stripped params' NAME occurrences — the EXPLICIT compile-time parameters
+/// (`DESIGN-recursive-generic-monomorphization-rcdzc.md` Addendum 3). A `const` param is inlined + erased
+/// at instantiation; `const` is a DECLARATION consumed by the specializer, not part of the binder shape
+/// the resolver/typer walk — so it is removed here (BEFORE `scan_top_level` / resolution), exactly as
+/// `strip_def_docs` removes a doc form, leaving every downstream reader a plain binder.
+///
+/// A `const` param may wrap a bare name `(const d)` or an annotated binder `(const (: d T))`; the inner
+/// node replaces the wrapper in the parameter list, and its NAME occurrence (the bare name, or the `(: name
+/// T)`'s first child) is recorded. Runs over ALL forms (a def OR an fn), so a lambda `(fn ((const d) …)
+/// …)` marks its const params too. Non-`const` params are untouched. A `(const …)` in a NON-parameter
+/// position (a value expression) is NOT a parameter and is left alone (only a direct child of a def
+/// signature / fn param list is unwrapped).
+fn strip_const_params(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId> {
+    let mut const_params: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
+    // The NAME occurrence of a (already-unwrapped) binder: a bare name is itself; a `(: name T)` binder is
+    // its first child. Mirrors `param_name_occ` but over `&Arenas` (no `Db` yet at load).
+    fn name_occ_of(ast: &Arenas, binder: StructId) -> StructId {
+        if ast.as_name(binder).is_some() {
+            return binder;
+        }
+        if let Some(tail) = ast.as_form(binder, ":")
+            && let Some(&n) = tail.first()
+        {
+            return n;
+        }
+        binder
+    }
+    for i in 0..ast.structure.len() {
+        let id = StructId(i as u32);
+        // The parameter list to scan: a `def`'s SIGNATURE (its first tail element, `[NAME, p…]` — params
+        // are indices 1..) or an `fn`'s PARAMETER LIST (its first tail element, `(p…)` — params are all).
+        let (list_occ, first_param_ix) = if let Some(tail) = ast.as_form(id, "def") {
+            match tail.first() {
+                Some(&sig) if matches!(ast.get(sig), Struct::List(_)) => (sig, 1usize),
+                _ => continue,
+            }
+        } else if let Some(tail) = ast.as_form(id, "fn") {
+            match tail.first() {
+                Some(&params) if matches!(ast.get(params), Struct::List(_)) => (params, 0usize),
+                _ => continue,
+            }
+        } else {
+            continue;
+        };
+        let Struct::List(children) = ast.get(list_occ) else {
+            continue;
+        };
+        let children = children.clone();
+        let mut rewritten = children.clone();
+        let mut changed = false;
+        for (ix, &child) in children.iter().enumerate() {
+            if ix < first_param_ix {
+                continue; // the def NAME at index 0 is not a parameter
+            }
+            // A `(const BINDER)` wrapper — exactly one operand. Unwrap to BINDER, record its name occ.
+            if let Some(tail) = ast.as_form(child, "const")
+                && tail.len() == 1
+            {
+                let binder = tail[0];
+                const_params.insert(name_occ_of(ast, binder));
+                rewritten[ix] = binder;
+                changed = true;
+            }
+        }
+        if changed {
+            ast.structure[list_occ.0 as usize] = Struct::List(rewritten);
+        }
+    }
+    const_params
 }
 
 /// The one cheap top-level scan: gather the definitions, export requests, and `(type …)` declarations
