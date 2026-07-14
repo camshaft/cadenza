@@ -2110,6 +2110,21 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             false
         };
 
+        // Compute the structural patch for the fix ONCE — shared by BOTH output shapes. A fix carries a
+        // `help:`/`fix` only when its node parses AND the patch actually builds (non-empty edits);
+        // otherwise it is message-only guidance. This is the SINGLE source of truth for "does this
+        // diagnostic have an applicable fix", so the human `help:` line and the JSON `fix` object AGREE:
+        // previously the text path advertised a `help:` whenever `fix_node != "-"` (a raw column flag),
+        // while JSON emitted `fix` only when `do_fix_edits` succeeded — so a fix whose `fix_repl` does not
+        // parse (a malformed wrap payload) printed a phantom `help:` line the JSON/`cdz fix` path silently
+        // dropped, misleading a human/agent reading the text output. Gating both on the built patch closes
+        // that. The edits are relative to the fix's OWN file (which may be an imported library, not entry).
+        let patch = if fix_node != "-" {
+            do_fix_edits(fix_kind, fix_node, fix_repl).filter(|e| !e.is_empty())
+        } else {
+            None
+        };
+
         if args.json {
             // The machine-readable shape: one JSON object per diagnostic, its structured fix nested. The
             // fix carries a STRUCTURAL PATCH — `edits: [{from, to, text}]` — that an agent applies
@@ -2138,15 +2153,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
                 obj.raw("from", &from.to_string());
                 obj.raw("to", &to.to_string());
             }
-            // Compute the structural patch for the fix (if any). Only when the fix's node parses AND the
-            // patch builds — otherwise the diagnostic carries no `fix` (message-only guidance). The edits
-            // are relative to the fix's OWN file (which may be an imported library, not the entry).
-            let patch = if fix_node != "-" {
-                do_fix_edits(fix_kind, fix_node, fix_repl)
-            } else {
-                None
-            };
-            if let Some(edits) = patch.filter(|e| !e.is_empty()) {
+            if let Some(edits) = patch {
                 let mut fix = json::Object::new();
                 fix.string("kind", fix_kind); // "replace" | "insert" | "wrap" | "delete"
                 fix.raw("verified", if verified_flag { "true" } else { "false" });
@@ -2171,11 +2178,13 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             format!(" [{code}]")
         };
         println!("{}: {severity}{code_part}: {message}", loc_label(node));
-        // A structural fix, if the diagnostic carries one — the rustc-style `help:` line an agent (or an
-        // editor's quick-fix) applies directly. `replace` swaps the node's spelling; `insert` appends the
-        // rendered form(s) into the node (e.g. the missing match arms). The applicability marker rides
-        // along so a consumer branches (`verified` = apply blind, else confirm intent).
-        if fix_node != "-" {
+        // A structural fix, if the diagnostic carries an APPLICABLE one — the rustc-style `help:` line an
+        // agent (or an editor's quick-fix) applies directly. `replace` swaps the node's spelling; `insert`
+        // appends the rendered form(s) into the node (e.g. the missing match arms). The applicability
+        // marker rides along so a consumer branches (`verified` = apply blind, else confirm intent). Gated
+        // on the SAME built `patch` the JSON path uses, so text and JSON never disagree on whether a fix
+        // exists — a fix whose payload does not build is message-only on both.
+        if patch.is_some() && fix_node != "-" {
             let marker = if verified_flag {
                 "" // machine-applicable — no caveat
             } else {
