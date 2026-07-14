@@ -89,8 +89,9 @@ fn host_import_item(op_name: &str, type_idx: u32) -> Vec<u8> {
     item
 }
 
-/// The core functype `0x60 <params> <result>` of a cross-component extern op (X4b) — its scalar
-/// parameter/result core valtypes. Scalar-only this increment (a `value`-handle param is X5).
+/// The core functype `0x60 <params> <result>` of a cross-component extern op (X4b) — its parameter/result
+/// core valtypes. A scalar crosses by value; a runtime-owned COMPOUND crosses as its `u32` handle (an i32
+/// core valtype; X5b/U5), so the core functype is uniform over both.
 fn extern_import_functype(f: &crate::backend::wasm::host::ExternImport) -> Vec<u8> {
     let mut item = vec![0x60];
     let params: Vec<u8> = f.params.iter().map(|v| v.core_byte()).collect();
@@ -224,10 +225,10 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             uleb128(*index as u64, out);
         }
         Lir::CallExternImport(index) => {
-            // A cross-component extern import occupies core-func index `index` — X4b-3 is extern-ONLY (no
-            // host/runtime imports precede it), so the index is exactly the op's position in the
-            // extern-import set. `call <index>`. (Composition with host/runtime shifts the base by
-            // `h + k` — a later increment; the select layer would add the base then.)
+            // A cross-component extern (peer) import occupies core-func index `index` — the serializer lays
+            // the peer imports FIRST (`0..e`, ahead of the runtime ops; X5's extern-first order), so the
+            // index is exactly the op's position in the extern-import set. `call <index>`. (An extern op
+            // never coexists with a host effect — that fusion declines upstream — so no host base shifts it.)
             out.push(op::CALL);
             uleb128(*index as u64, out);
         }
@@ -534,9 +535,9 @@ pub fn core_module(
 }
 
 /// [`core_module`] with a leading CROSS-COMPONENT extern-import set (X4b): `extern_fns` are peer ops
-/// imported from module `"peer"`, laid AFTER the host + runtime imports (core-func indices `h+k..`). A
-/// `Lir::CallExternImport(i)` resolves to `h + k + i`. X4b-3 scope: an extern-ONLY program (`host_fns`
-/// and `imports` empty), so the base is 0.
+/// imported from module `"peer"`, laid FIRST (core-func indices `0..e`; the extern-first order), so a
+/// `Lir::CallExternImport(i)` resolves to `i`. This entry is the extern-ONLY program (`host_fns` and
+/// `imports` empty); an extern + value-heap runtime consumer uses [`core_module_with_extern_runtime`].
 pub fn core_module_with_extern(
     funcs: &[SelectedFunc],
     extern_fns: &[crate::backend::wasm::host::ExternImport],
@@ -583,17 +584,14 @@ fn core_module_impl(
     let e = extern_fns.len();
     let import_count = h + imports.len() + e;
 
-    // Type section: HOST import functypes first (type indices `0..h`), then RUNTIME import functypes
-    // (`h..h+k`), then CROSS-COMPONENT extern functypes (`h+k..import_count`), then one functype per
-    // defined function (`import_count..import_count+n`). Numbering imports' types first keeps a defined
-    // func's type index equal to `import_count + its emission position`, which the function section
-    // references.
-    // EXTERN peer functypes FIRST (`0..e`), then HOST (`e..e+h`), then RUNTIME (`e+h..import_count`), then
-    // one per defined func. Extern and host never coexist (the emit guard forbids extern+host), so an
-    // extern-only program keeps host empty (extern at `0..e`, `CallExternImport(i)=call i`) and a host
-    // program keeps extern empty (host at `0..h`, `CallHostImport(i)=call i`) — both indices stay valid
-    // with either ordering; extern-first is chosen so extern+RUNTIME lays peer ops before runtime ops,
-    // matching the `assemble_extern_runtime` envelope's alias order.
+    // Type section, then the imports, in ONE fixed order: EXTERN peer functypes FIRST (type indices
+    // `0..e`), then HOST (`e..e+h`), then RUNTIME (`e+h..import_count`), then one functype per defined
+    // function (`import_count..import_count+n`). Numbering imports' types first keeps a defined func's type
+    // index equal to `import_count + its emission position`, which the function section references. Extern
+    // and host never coexist (the emit guard forbids extern+host), so an extern-only program keeps host
+    // empty (extern at `0..e`, `CallExternImport(i)=call i`) and a host program keeps extern empty (host at
+    // `0..h`, `CallHostImport(i)=call i`) — both indices stay valid; extern-first is chosen so extern+RUNTIME
+    // lays peer ops before runtime ops, matching the `assemble_extern_runtime` envelope's alias order.
     let mut type_items = Vec::new();
     for f in extern_fns {
         type_items.extend_from_slice(&extern_import_functype(f));

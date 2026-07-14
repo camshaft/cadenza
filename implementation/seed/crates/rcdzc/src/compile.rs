@@ -111,8 +111,9 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
 
     let mut db = Db::load_linked(arenas, linkage);
     // A PROVIDER compile names the interface it publishes its exports under (X4b) — the
-    // `component-name` request artifact. A peer consumer's `(extern "cadenza:pkg/iface" …)` binds to
-    // this name. Absent (the common case) → exports cross as top-level funcs (byte-identical).
+    // `component-name` request artifact. A peer consumer binds to this name with an `(effect …)`
+    // `(bind "cadenza:pkg/iface")` (the effects-unified surface, U2). Absent (the common case) → exports
+    // cross as top-level funcs (byte-identical).
     db.component_name = inputs
         .iter()
         .find(|a| a.kind == link::KIND_COMPONENT_NAME)

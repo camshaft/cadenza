@@ -205,7 +205,7 @@ fn assemble_bare(core: &[u8], exports: &[BoundaryExport]) -> Vec<u8> {
 
 /// The PROVIDER shape (X4b, `DESIGN-cross-component-interop-rcdzc.md`): a component that publishes its
 /// scalar boundary exports as members of a NAMED INTERFACE INSTANCE `iface` (`cadenza:pkg/iface`), so a
-/// peer consumer's `(extern "iface" (op …) …)` binds to it. Identical to [`assemble_bare`] through the
+/// peer consumer's `(effect …)` `(bind "iface")` binds to it (the effects-unified surface, U2). Identical to [`assemble_bare`] through the
 /// canon-lift (embed core, instantiate, one functype + alias + lift per export), but instead of exporting
 /// each lifted func at TOP LEVEL, it bundles them into a COMPONENT INSTANCE (a component-instance
 /// export-items section) and exports THAT one instance under the interface name. SCOPE: scalar/unit

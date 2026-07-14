@@ -280,9 +280,11 @@ pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>
     }
 }
 
-/// One CROSS-COMPONENT extern import a `Core::ExternCall` names (X4b) — the peer INTERFACE, the operation
-/// NAME (the func the interface exports), and its boundary signature. Two calls are the same import iff
-/// `(interface, op)` match; the SET is ordered (its position is the import's core-func index in the
+/// One CROSS-COMPONENT extern import a PEER-BOUND effect names — the peer INTERFACE, the operation NAME
+/// (the func the interface exports), and its boundary signature. Since U4 (extern→effects) an extern import
+/// is derived from an escaping `Core::HostCall` whose effect is peer-bound (`db.effect_bindings`), retargeted
+/// to the bound interface in [`emit`]; there is no separate `Core::ExternCall`. Two calls are the same import
+/// iff `(interface, op)` match; the SET is ordered (its position is the import's core-func index in the
 /// `"peer"`-bound import block, laid AFTER the host + runtime imports). The peer analogue of [`HostImport`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ExternImport {
@@ -290,8 +292,9 @@ pub struct ExternImport {
     pub interface: String,
     /// The operation's name — the func the peer interface exports.
     pub op: String,
-    /// The op's boundary parameters (scalar; a `Unit` domain is elided). X4b-3 scope: scalar/unit only
-    /// (a `value`-handle param is X5); a param with no scalar ABI makes the call undelegable (declines).
+    /// The op's boundary parameters. A scalar/unit param crosses by value; a runtime-owned COMPOUND crosses
+    /// as its opaque `u32` handle over the shared runtime (`extern_abi_val_type`, U5). A `Unit` domain is
+    /// elided; a param with no boundary ABI at all makes the call undelegable (declines upstream).
     pub params: Vec<AbiValType>,
     /// The op's boundary result — `None` for a `Unit` result.
     pub result: Option<AbiValType>,

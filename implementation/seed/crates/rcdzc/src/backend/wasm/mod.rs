@@ -534,7 +534,8 @@ pub fn emit(
             }
         }
     }
-    // The extern-import order (X4b) — `(interface, op)` pairs a `Core::ExternCall` resolves against.
+    // The extern-import order (X4b) — `(interface, op)` pairs a peer-bound `Core::HostCall` resolves against
+    // (select.rs maps such a call to `Lir::CallExternImport` of its position here).
     let extern_order: Vec<(String, String)> = extern_imports
         .iter()
         .map(|e| (e.interface.clone(), e.op.clone()))
@@ -871,7 +872,8 @@ pub fn emit(
     }
 
     // A PROVIDER (X4b/X5c) publishes its boundary exports as a named INTERFACE INSTANCE (the name the
-    // `component-name` request supplied, stored on the Db) so a peer's `(extern "iface" …)` binds to it. A
+    // `component-name` request supplied, stored on the Db) so a peer's `(effect …)` `(bind "iface")` binds
+    // to it (the effects-unified surface, U2). A
     // scalar export crosses by value; a runtime COMPOUND export crosses as its `u32` handle (the boundary
     // loop above already set that). A provider whose exports build runtime values imports the runtime, so
     // it takes the provider+runtime envelope; a bare (no-runtime) provider the plain provider envelope.
