@@ -889,7 +889,10 @@ fn rustc_roundtrip_recursive_sum_folds() {
            (def (sm (: l L)) (match l (((. L Nil) _) 0) \
                                       (((. L Cons) (tuple h t)) (+ h (sm t))))) (export sm))",
     );
-    if let Some(out) = rustc_run(&rs, "sm(L::Cons(Box::new((1, L::Cons(Box::new((2, L::Nil)))))))") {
+    if let Some(out) = rustc_run(
+        &rs,
+        "sm(L::Cons(Box::new((1, L::Cons(Box::new((2, L::Nil)))))))",
+    ) {
         assert_eq!(out, "3");
     }
     if let Some(out) = rustc_run(&rs, "sm(L::Nil)") {

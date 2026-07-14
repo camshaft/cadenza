@@ -142,11 +142,7 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
         // element). A non-recursive variant is unboxed as before.
         let recursive = variant_payloads_mention(db, variant, decl.occ);
         let field = |ty: String| {
-            if recursive {
-                format!("Box<{ty}>")
-            } else {
-                ty
-            }
+            if recursive { format!("Box<{ty}>") } else { ty }
         };
         match payloads.len() {
             // A nullary variant is a unit variant (`None`).
@@ -159,7 +155,10 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
             // it as one bound value indexed `.0`/`.1`. So the enum field is that tuple: `Cons((T0, T1))` —
             // the SAME shape construction (`SumNew`) and matching (`SumPayload`) agree on. (A native
             // `Cons(T0, T1)` would disagree with the single-tuple payload the match binds → non-compiling.)
-            _ => variants.push(format!("{vname}({})", field(format!("({})", payloads.join(", "))))),
+            _ => variants.push(format!(
+                "{vname}({})",
+                field(format!("({})", payloads.join(", ")))
+            )),
         }
     }
 
@@ -351,8 +350,9 @@ fn variant_payloads_mention(
 ) -> bool {
     let occs = variant.payloads.clone();
     occs.iter().any(|&pty| {
-        crate::eval::typeval_of(db, pty)
-            .is_some_and(|ty| reaches_decl(db, &ty, decl_occ, &mut std::collections::HashSet::new()))
+        crate::eval::typeval_of(db, pty).is_some_and(|ty| {
+            reaches_decl(db, &ty, decl_occ, &mut std::collections::HashSet::new())
+        })
     })
 }
 
@@ -384,8 +384,11 @@ fn reaches_decl(
             if visited.insert(*d)
                 && let Some(td) = db.type_decl_by_occ(*d)
             {
-                let payload_occs: Vec<crate::ast::StructId> =
-                    td.variants.iter().flat_map(|v| v.payloads.clone()).collect();
+                let payload_occs: Vec<crate::ast::StructId> = td
+                    .variants
+                    .iter()
+                    .flat_map(|v| v.payloads.clone())
+                    .collect();
                 for pty in payload_occs {
                     if let Some(pt) = crate::eval::typeval_of(db, pty)
                         && reaches_decl(db, &pt, decl_occ, visited)
@@ -400,7 +403,9 @@ fn reaches_decl(
         // L))` reaches `decl` if any element/field does. (A `List`/`Map`/`Set` element does NOT — the
         // container's heap indirection already makes it finite; only a by-value position needs the Box.)
         Ty::Tuple(elems) => elems.iter().any(|e| reaches_decl(db, e, decl_occ, visited)),
-        Ty::Record(fields) => fields.values().any(|t| reaches_decl(db, t, decl_occ, visited)),
+        Ty::Record(fields) => fields
+            .values()
+            .any(|t| reaches_decl(db, t, decl_occ, visited)),
         _ => false,
     }
 }
