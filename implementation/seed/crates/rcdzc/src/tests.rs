@@ -24259,6 +24259,37 @@ mod match_engine {
         }
     }
 
+    /// A MALFORMED `(Unit.define …)` — wrong arity, a non-symbol name, or a non-integer scale — is CDZ0201,
+    /// not silently dropped. `scan_unit_defines`' guard is one `&&` chain, so a deviation registers NO
+    /// family unit and a later use of the unit surfaces only as "unknown unit `furlong`" (naming REAL
+    /// units, never hinting the author's own `Unit.define` was malformed). Now the malformed FORM is named
+    /// — the `Unit.define` scan-and-drop companion of the malformed-extern / -effect checks.
+    #[test]
+    fn a_malformed_unit_define_is_cdz0201() {
+        use crate::testkit::parse;
+        for src in [
+            // wrong arity (3 args), non-symbol name (a string), non-integer scale (a float).
+            "(do (Unit.define #\"furlong\" (Unit.of #\"foot\") 660) (def (main) 1) (export main))",
+            "(do (Unit.define \"furlong\" (Unit.of #\"foot\") 660 1) (def (main) 1) (export main))",
+            "(do (Unit.define #\"furlong\" (Unit.of #\"foot\") 660.5 1) (def (main) 1) (export main))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("a `Unit.define` is"))
+                .unwrap_or_else(|| panic!("a malformed Unit.define must be rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        }
+        // NO FALSE POSITIVE: a well-formed `Unit.define` (and its use) is clean.
+        let ok = "(do (Unit.define #\"furlong\" (Unit.of #\"foot\") 660 1) \
+                   (def (main) (Qty.of 5 (Unit.of #\"furlong\"))) (export main))";
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                .iter()
+                .any(|d| d.message.contains("a `Unit.define` is")),
+            "a well-formed Unit.define is not flagged"
+        );
+    }
+
     #[test]
     fn dividing_quantities_composes_their_dimensions_to_a_velocity() {
         // L1-2: `(/ (Qty 6.0 meter) (Qty 2.0 second))` derives meter/second (the classic velocity) with

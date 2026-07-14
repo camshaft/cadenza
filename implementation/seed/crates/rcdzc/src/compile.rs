@@ -2070,6 +2070,11 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // (not a def body `type_errors` walks), so its uniqueness is checked here: a name declared with a
     // conversion conflicting with the built-in family table or an earlier declaration is CDZ0502
     // (`units-of-measure.md` §A Named Unit's Conversion Is Unique). An agreeing redeclaration is fine.
+    // A MALFORMED `(Unit.define …)` — wrong arity / non-symbol name / non-integer scale — is silently
+    // DROPPED by `scan_unit_defines`, so it registers no family unit and a later use surfaces only as
+    // "unknown unit `…`". Reject the malformed FORM here so the real defect is named (the scan-and-drop
+    // companion of the malformed-extern / -effect checks); a well-formed one flows to the conflict check.
+    crate::infer::check_malformed_unit_defines(db, &mut faults);
     crate::infer::check_unit_defines(db, &mut faults);
     // UNKNOWN UNITS. A quantity literal / `(Unit.of #"name")` naming a unit that is neither a built-in
     // family nor a user `Unit.define` (`5zorks`, `5gram`) fails to reduce and otherwise surfaces only as a

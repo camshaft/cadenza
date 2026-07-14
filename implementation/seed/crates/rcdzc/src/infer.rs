@@ -4588,6 +4588,54 @@ pub(crate) fn check_unit_defines(db: &mut Db, out: &mut Vec<Reject>) {
     }
 }
 
+/// Reject a MALFORMED `(Unit.define #"name" base num den)` top-level declaration — one whose shape does
+/// not match what `db::scan_unit_defines` accepts (exactly 4 args, a SYMBOL name, INTEGER num + den). The
+/// scan SILENTLY DROPS a malformed one (its guard is one big `&&` chain), so a `Unit.define` written with
+/// the wrong arity / a string name / a fractional scale registers NO family unit — and a later use of
+/// that unit surfaces only as "unknown unit `furlong`" (naming REAL units, never hinting the author's own
+/// `Unit.define` was malformed), the real defect lost. Reject it here CDZ0201 at the `Unit.define` form so
+/// the fault names the actual shape — the `Unit.define` analogue of the malformed-extern / -effect
+/// scan-and-drop checks. Only fires on a form whose head IS `(. Unit define)` (so a WELL-FORMED define, or
+/// any non-`Unit.define` call, is untouched). Walked over every arena node.
+pub(crate) fn check_malformed_unit_defines(db: &mut Db, out: &mut Vec<Reject>) {
+    let node_count = db.ast.structure.len();
+    for id in (0..node_count as u32).map(crate::ast::StructId) {
+        // The form must be a call `((. Unit define) arg…)` — read its head + args off the raw list.
+        let crate::ast::Struct::List(items) = db.ast.get(id) else {
+            continue;
+        };
+        let Some((&head, args)) = items.split_first() else {
+            continue;
+        };
+        // The head must be `(. Unit define)`.
+        let is_unit_define = db.ast.as_form(head, ".").is_some_and(|dot| {
+            dot.len() == 2
+                && db.ast.as_name(dot[0]) == Some("Unit")
+                && db.ast.as_name(dot[1]) == Some("define")
+        });
+        if !is_unit_define {
+            continue;
+        }
+        let args = args.to_vec();
+        // The shape `scan_unit_defines` requires: exactly 4 args, a SYMBOL name (`#"furlong"`), and INTEGER
+        // num + den. Any deviation is what the scan silently dropped.
+        let well_formed = args.len() == 4
+            && db.ast.as_sym(args[0]).is_some()
+            && db.ast.as_int(args[2]).is_some()
+            && db.ast.as_int(args[3]).is_some();
+        if !well_formed {
+            out.push(
+                Reject::coded(
+                    Code::Malformed,
+                    "a `Unit.define` is `(Unit.define #\"name\" <base-unit> <num> <den>)` — a symbol \
+                     name, a base-unit expression, and two integer scale factors",
+                )
+                .at(id),
+            );
+        }
+    }
+}
+
 /// Reject a QUANTITY LITERAL / `Unit.of` naming a unit that is neither a built-in family
 /// (`unit_families`) nor a user `Unit.define` — `5zorks` / `5gram` (a plausible-but-undefined unit). The
 /// unit fails to reduce (`eval::unit_of` → `None`), so `Qty.of`'s type falls through to a non-`Qty` and
