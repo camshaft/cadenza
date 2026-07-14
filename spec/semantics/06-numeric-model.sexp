@@ -2171,3 +2171,25 @@
            form a constant Rational bakes. Mirrors the runtime-BigInt boundary escape.")
   (input  (Rational.of-int (Int64.of (* (BigInt.of 1000000) (BigInt.of 1000000)))))
   (output (: 1000000000000/1 Rational)))
+
+(case "a Rational is usable as a map key, matched by its exact value"
+  (doc    "`(Map.lookup (Map.insert (Map.insert Map.empty (Rational.of 1 2) 10) (Rational.of 2 3) 20)
+           (Rational.of 1 2))` = `Some 10`: a Rational KEY is inserted and looked up by VALUE — the CHAMP
+           map hashes/compares it via `champ_hash`/`champ_eq` descending the two BigInt child leaves (the
+           normalized 2-handle node), so `1/2` finds its stored value 10. Pins that a Rational is a
+           first-class map key (a constant Rational key materializes as a heap handle at the insert/lookup
+           site — `box_op_ty`/`get_op_ty` treat it as already-a-handle, like BigInt).")
+  (input  (match (Map.lookup
+                   (Map.insert (Map.insert Map.empty (Rational.of 1 2) 10) (Rational.of 2 3) 20)
+                   (Rational.of 1 2))
+                 ((Some v) v)
+                 ((None) 0)))
+  (output (: 10 Int64)))
+
+(case "a Rational set deduplicates by exact value regardless of how each was written"
+  (doc    "`(Set.len (Set.of (list (Rational.of 1 2) (Rational.of 2 4) (Rational.of 1 3))))` = 2: `1/2` and
+           `2/4` normalize to the SAME rational (one node shape), so the set collapses them — leaving
+           `{1/2, 1/3}` of size 2. Confirms a Rational set element deduplicates by its normalized value
+           (the CHAMP descends the two BigInt children), the set companion of the Rational-map-key case.")
+  (input  (Set.len (Set.of (list (Rational.of 1 2) (Rational.of 2 4) (Rational.of 1 3)))))
+  (output (: 2 Int64)))
