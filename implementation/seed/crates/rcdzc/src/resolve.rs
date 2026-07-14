@@ -2198,7 +2198,11 @@ fn is_variant_pattern_binder_occurrence(db: &Db, id: StructId) -> bool {
         return false;
     }
     // Walk up from `id` to the arm's pattern node (the child of the arm that the pattern subtree roots at).
+    // `prev` trails one step behind `node` — the child of `node` the ascent came up through — so when
+    // `node` turns out to be a guard we can tell in O(1) which of its children (`g[0]` inner pattern vs
+    // `g[1]` cond) holds `id`, without re-searching the (possibly O(N)-deep) cond subtree.
     let mut node = id;
+    let mut prev = id;
     let mut hops = 0;
     while hops < 64 {
         let Some(parent) = db.parent_of(node) else {
@@ -2218,14 +2222,15 @@ fn is_variant_pattern_binder_occurrence(db: &Db, id: StructId) -> bool {
             // so a reference reached from the COND must resolve NORMALLY (Case 5g/6 gives it the payload),
             // NOT inert. Only treat `id` inert if it sits in the INNER PATTERN, not the cond: unwrap the
             // guard and require the ascent to have come UP THROUGH the inner pattern (i.e. `id` is within
-            // `g[0]`, not `g[1]`). Detected by re-descending: the binder walk over the inner pattern only
-            // finds `id`'s name when `id` is genuinely a pattern binder, but a cond reference to the same
-            // name would ALSO match by name — so gate on structural containment in the inner pattern.
+            // `g[0]`, not `g[1]`).
             let pattern = match db.ast.as_form(node, "guard") {
                 Some(g) if g.len() == 2 => {
-                    // `id` must be inside the inner pattern `g[0]`, not the cond `g[1]`. The ascent path
-                    // from `id` passed through some child of `node`; if that child is the cond, bail.
-                    if node_contains(db, g[1], id) {
+                    // `prev` is the DIRECT child of `node` (the guard) the ascent passed through, so `id` is
+                    // in the cond iff `prev == g[1]` — an O(1) check. (A guard's children are `[guard, g0,
+                    // g1]`; `id` is a name nested below, so `prev` is `g[0]` or `g[1]`.) This replaces an
+                    // O(cond-size) `node_contains(g[1], id)` re-descent — the O(N²) driver on a desugared
+                    // refutable-literal arm whose cond is an O(N)-deep `and`-chain (N binders × O(N) scan).
+                    if prev == g[1] {
                         return false; // `id` is in the guard COND — a value reference, resolve normally.
                     }
                     g[0]
@@ -2259,19 +2264,9 @@ fn is_variant_pattern_binder_occurrence(db: &Db, id: StructId) -> bool {
                 .is_some();
             return shadows;
         }
+        prev = node;
         node = parent;
         hops += 1;
-    }
-    false
-}
-
-/// Whether `needle` is `root` or a transitive child of `root` — a bounded structural containment check.
-fn node_contains(db: &Db, root: StructId, needle: StructId) -> bool {
-    if root == needle {
-        return true;
-    }
-    if let Struct::List(children) = db.ast.get(root) {
-        return children.iter().any(|&c| node_contains(db, c, needle));
     }
     false
 }

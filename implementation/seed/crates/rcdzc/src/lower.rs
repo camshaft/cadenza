@@ -3224,6 +3224,13 @@ fn desugar_refutable_literal_list_elements(
     let mut items = vec![match_head, scrutinee];
     items.extend(new_arms);
     let rewritten = db.push_list(items);
+    // The synth arms hold a `(guard (list …) (and (and (= __le0 …) …) …))` whose guard COND is an O(N)-
+    // DEEP left-nested `and`-chain (`and` is strictly binary). Those synth nodes are past-load, so without
+    // scope-skip coverage each `__leK` guard reference (and each prelude `=`/`and`) walks O(depth) `and`
+    // forms to reach the enclosing `(guard …)` → O(N²). Cover the subtree with the CANDIDATE-AWARE
+    // extension (the `and`-spine is non-binding, the one `(guard …)` node is a candidate its children skip
+    // TO) so every inner reference hops O(1). See `Db::extend_scope_skip_into_subtree`.
+    db.extend_scope_skip_into_subtree(rewritten);
     crate::resolve::resolve_subtree(db, rewritten);
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with refutable literal elements → fresh-binder + value-test guards");
     Some(core_of(db, rewritten))

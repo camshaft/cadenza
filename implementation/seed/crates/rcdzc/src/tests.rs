@@ -40391,6 +40391,59 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wide_refutable_literal_list_arm_resolves_its_guard_chain_in_bounded_time() {
+        // REGRESSION (perf): `lower::desugar_refutable_literal_list_elements` rewrites a list arm with N
+        // literal LEADING elements `(list 0 1 … N .. r)` into `(guard (list __le0 … __leN .. r) (and (and
+        // (= __le0 0) (= __le1 1)) …))` — an O(N)-DEEP left-nested `and`-chain guard cond (`and` is strictly
+        // binary). Those synth nodes are appended AFTER load, so without scope-skip coverage each `__leK`
+        // guard reference (and each prelude `=`/`and`) walked O(depth) `and` forms to reach the enclosing
+        // `(guard …)` → O(N²) `binder_in` calls. FIX: `Db::extend_scope_skip_into_subtree` — the CANDIDATE-
+        // AWARE scope-skip extension (the `and`-spine is non-binding, the one `(guard …)` node is a
+        // candidate its children skip TO) makes each such resolution hop O(1). (A SEPARATE O(N²) — the
+        // `node_contains(g[1], id)` re-descent in `is_variant_pattern_binder_occurrence` classifying each
+        // pattern binder — was fixed in the same change by tracking the ascent's `prev` child; the timing
+        // sweep confirms both, this counter pins the scope-walk one.)
+        //
+        // The NOISE-FREE signal is the total `binder_in` call count (a pure function of the program). A
+        // match with N literal-element arms should resolve its synth guard-chain names in O(N) `binder_in`
+        // calls, not O(N²). Correctness (the arm matches the right prefix) is pinned by the run-value tests.
+        fn wide_literal_list_src(n: usize) -> String {
+            let elems: String = (0..n).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
+            format!(
+                "(module m (def (f (: xs (List Int64))) (match xs ((list {elems} .. r) 1) (_ 0))) \
+                   (def (main) (f (list))) (export main))"
+            )
+        }
+        // A small instance compiles with no error diagnostics (a valid refutable-literal-element arm).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_literal_list_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide refutable-literal list arm compiles with no error diagnostics: {diags:?}"
+        );
+        fn binder_in_calls(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::BINDER_IN_CALLS.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::BINDER_IN_CALLS.with(|c| c.get())
+            })
+        }
+        // Width 200→400 is a 2× arm; linear `binder_in` growth ⇒ ~2×, the O(N²) deep-walk was ~4×. Require
+        // < 3× (between the regimes, with margin for constant terms).
+        let n200 = binder_in_calls(&wide_literal_list_src(200));
+        let n400 = binder_in_calls(&wide_literal_list_src(400));
+        let ratio = n400 as f64 / (n200.max(1)) as f64;
+        assert!(
+            ratio < 3.0,
+            "a wide refutable-literal list arm must resolve its synthesized `and`-chain guard names in \
+             O(N) `binder_in` calls, not O(N²) (the desugar's O(depth)-nested `and`-chain cond needs \
+             candidate-aware scope-skip coverage — `extend_scope_skip_into_subtree`): width 200→400 grew \
+             binder_in calls {ratio:.1}× (n200={n200}, n400={n400}); linear is ~2×, the deep-walk was ~4×"
+        );
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the
