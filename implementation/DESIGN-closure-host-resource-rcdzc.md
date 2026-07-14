@@ -1074,13 +1074,18 @@ the component type. The new work:
   same `tuple_shape` param + recursive mint; the 3 list-result routings thread a shared `list_rebuild`/
   `list_shape` (falling back from flat `tuple_arg` to `nested_tuple`). e2e: nested tuple/record arg ×
   List/Bytes/compound. The single-export nested-compound-arg surface is now COMPLETE across all result shapes.
+- **✅ NESTED compound ARG on the MULTI-EXPORT path** (`3f217430`, scalar + list<u8> results). N same-sig
+  closures each taking a sole nested tuple/record arg share one `call`. `emit_multi_closure_resource` binds
+  `nested_tuple`; the multi/mixed envelopes + their inner components gained the same `tuple_shape` param (the
+  `tuple_shift` / running type counters absorb `nested_tuple_type_count` extra types). Mixed passes `None`
+  (sole-tuple only); distinct-sig nested still declines cleanly. e2e: mk-a→113, mk-b→87, nested × List.
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (1) **N
   compound args** (two tuple args) — `single_compound_among_scalars` rejects >1 tuple; `TupleArgRebuild` + ~65
   envelope sites + 16 `tuple_defined_type` mint sites assume EXACTLY ONE tuple; a `Vec<TupleArgRebuild>`
-  generalization is a large multi-tick vertical. (2) **NESTED compound fields on the MULTI/MIXED/DISTINCT-SIG
-  paths** — single-export (scalar + list result) DONE; the multi/mixed/distinct-sig envelopes thread the same
-  `tuple_shape` (a mechanical widening). (3) a **SUM (Option) direct-call arg** (needs host→guest decode of
+  generalization is a large multi-tick vertical. (2) **NESTED compound fields on the MIXED/DISTINCT-SIG
+  paths** — single-export (all results) + multi-export (scalar + list) DONE; the mixed + distinct-sig
+  envelopes thread the same `tuple_shape` (a mechanical widening). (3) a **SUM (Option) direct-call arg** (needs host→guest decode of
   the discriminant+payload). (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
   does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works for all of
   these — no direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-
