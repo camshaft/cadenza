@@ -5310,7 +5310,15 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<usiz
     // Copy the body structurally (fresh occurrences that re-resolve against the new def's scope): a body
     // reference to a param re-resolves by name to the new annotated binder; a self-call `(callee …)`
     // re-resolves by name to the ORIGINAL def and, lowered with the same-typed args, re-enters here → memo.
-    let spec_body = crate::eval::copy_structural_pub(db, orig_body);
+    // Pass the ORIGINAL def's param name occurrences as `own_params` so those references copy + re-resolve
+    // against the specialized sig, while every OTHER free reference (a self-call, or — for a DO-LOCAL
+    // generic — a sibling whose lexical do-scope the copy escapes) is pinned and SHARED. Without the pin a
+    // do-local generic's self-call re-resolved unbound in the orphan copy (CDZ0101).
+    let own_params: Vec<StructId> = orig_params
+        .iter()
+        .map(|&p| crate::eval::param_name_occ(db, p))
+        .collect();
+    let spec_body = crate::eval::copy_structural_pub(db, orig_body, &own_params);
 
     // Wrap in a real `(def (spec params…) body)` arena node so the parent index links param → sig → def
     // (`is_param_occurrence` walks that chain; `binder_in` resolves a body reference against the sig).

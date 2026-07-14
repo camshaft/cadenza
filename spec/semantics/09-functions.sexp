@@ -2837,3 +2837,36 @@
             (def (main) (if (wrap 1 true) (wrap 2 40) 99))
             (export main)))
   (output (: 40 Int64)))
+
+; Recursive-generic monomorphization reaches EVERY recursive-def flavor, not just top-level defs: a
+; MUTUALLY-recursive generic group and a DO-LOCAL generic function are each instantiated once per
+; concrete type at their call sites, exactly as a top-level generic is. The do-local case needs the
+; specialized copy's self-call to stay resolved to the original def (a do-local name resolves by lexical
+; scope, which the re-parented copy escapes) — the copy SHARES the pinned self-call occurrence.
+
+(case "a mutually-recursive generic group is instantiated per type"
+  (doc    "`ping`/`pong` mutually recurse, each threading a generic second argument unchanged. Called at
+           Bool (`(ping 3 true)`) and Int64 (`(pong 2 40)`), BOTH functions are monomorphized at BOTH
+           types — the cross-calls re-resolve by name and re-enter specialization at the same
+           instantiation. `(ping 3 true)` bounces ping→pong→ping→pong ending at the base with `true`, so
+           the `if` takes `(pong 2 40)` = 40.")
+  (input  (do
+            (def (ping (: n Int64) x) (if (= n 0) x (pong (- n 1) x)))
+            (def (pong (: n Int64) x) (if (= n 0) x (ping (- n 1) x)))
+            (def (main) (if (ping 3 true) (pong 2 40) 99))
+            (export main)))
+  (output (: 40 Int64)))
+
+(case "a do-local generic function is instantiated per type"
+  (doc    "A do-local `(def (idr n x) …)` threading a generic `x`, called at Bool and Int64 within the
+           same `do` block, is monomorphized per type. A do-local name resolves by LEXICAL do-scope, so
+           the specialized copy's self-call must stay resolved to the original def (the re-parented copy
+           escapes that scope) — the copy shares the pinned self-call. `(idr 1 true)` = true → `(idr 2
+           40)` = 40.")
+  (input  (do
+            (def (main)
+              (do
+                (def (idr (: n Int64) x) (if (= n 0) x (idr (- n 1) x)))
+                (if (idr 1 true) (idr 2 40) 99)))
+            (export main)))
+  (output (: 40 Int64)))

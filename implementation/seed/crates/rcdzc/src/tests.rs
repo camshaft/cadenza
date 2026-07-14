@@ -23779,6 +23779,43 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_generic_monomorphizes_across_def_flavors() {
+        // Recursive-generic monomorphization reaches every recursive-def flavor. MUTUAL recursion: `ping`
+        // /`pong` each thread a generic 2nd arg; called at Bool + Int64, both monomorphize at both types
+        // (cross-calls re-resolve by name → re-enter specialization). `(ping 3 true)` = true → `(pong 2
+        // 40)` = 40.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (def (ping (: n Int64) x) (if (= n 0) x (pong (- n 1) x))) \
+               (def (pong (: n Int64) x) (if (= n 0) x (ping (- n 1) x))) \
+               (def (main) (if (ping 3 true) (pong 2 40) 99)) (export main))",
+        )))
+        .expect("a mutually-recursive generic group monomorphizes per type");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
+        // DO-LOCAL generic: `idr` inside a `do` block, called at Bool + Int64. A do-local name resolves by
+        // LEXICAL do-scope, which the specialized copy (re-parented out of the block) escapes — the copy
+        // must SHARE the pinned self-call occurrence (`copy_structural_pub`'s `pin_self_calls`), else the
+        // copied `(idr …)` re-resolves unbound (CDZ0101). `(idr 1 true)` = true → `(idr 2 40)` = 40.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (main) \
+               (do (def (idr (: n Int64) x) (if (= n 0) x (idr (- n 1) x))) \
+                   (if (idr 1 true) (idr 2 40) 99))) (export main))",
+        )))
+        .expect("a do-local generic function monomorphizes per type");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
+        // MODULE-MEMBER generic: `m.idr` called at Bool + Int64 through the projection chain. Resolves via
+        // `member_value` (the `callee_def_index` Member arm) to the internal member def. `(idr 1 true)` =
+        // true → `(idr 2 40)` = 40.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module top (def (main) \
+               (do (module m (def (idr (: n Int64) x) (if (= n 0) x (idr (- n 1) x)))) \
+                   (if ((. m idr) 1 true) ((. m idr) 2 40) 99))) (export main))",
+        )))
+        .expect("a module-member generic function monomorphizes per type");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
+    }
+
+    #[test]
     fn a_top_level_value_definition_binds_a_name() {
         // 11-modules "a top-level value definition binds a name usable by the program's functions": a
         // bare-name `(def NAME VALUE)` at the top level (signature is a NAME atom, not a `(sig param…)`
