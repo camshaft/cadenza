@@ -24046,8 +24046,7 @@ mod match_engine {
         // (the inverse of quote reification) and splices it in, so it folds through the ordinary path —
         // compile-time evaluation is one tier (§Compile-Time Evaluation Is One Tier). Both a QUOTED
         // argument (reified to `Ast.*` first) and a HAND-BUILT `Ast.*` tree reconstruct identically.
-        let quoted =
-            "(module m (def (main) (eval (quote (+ 1 2)))) (export main))";
+        let quoted = "(module m (def (main) (eval (quote (+ 1 2)))) (export main))";
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(quoted))).expect("compile"),
