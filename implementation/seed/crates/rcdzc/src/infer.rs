@@ -5801,17 +5801,33 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     (Ty::Record(fields), Some((label, value))) => {
                         collect(db, value, out);
                         let present = fields.contains_key(&label);
+                        // The operation-KEY occurrence of the `(. Record extend|with)` head — the node an
+                        // OPERATOR-SWAP fix rewrites (`extend`→`with` or `with`→`extend`). The message
+                        // already NAMES the sibling op to use; the fix makes that one-token swap applyable
+                        // (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix — the
+                        // row-op analogue of `float_sibling_operator`). `None` if the head is not `(. R op)`.
+                        let op_key_occ = db.ast.as_form(head, ".").and_then(|t| t.get(1).copied());
                         if is_extend && present {
-                            out.push(
-                                Reject::coded(
-                                    Code::PresentField,
-                                    format!(
-                                        "record already has field `{}` (use `Record.with` to replace)",
-                                        label.name
-                                    ),
-                                )
-                                .at(args[1]),
-                            );
+                            // `extend` REQUIRES an absent field; the field is present → the author means
+                            // `with` (replace). Swap the op: `Record.extend`→`Record.with`, VERIFIED — the
+                            // present field is exactly `with`'s precondition, so the swap clears the fault
+                            // without introducing another (unlike a heuristic near-miss guess).
+                            let mut reject = Reject::coded(
+                                Code::PresentField,
+                                format!(
+                                    "record already has field `{}` (use `Record.with` to replace)",
+                                    label.name
+                                ),
+                            )
+                            .at(args[1]);
+                            if let Some(occ) = op_key_occ {
+                                reject = reject.with_fix(crate::diag::Fix::replace_verified(
+                                    occ,
+                                    "with".to_string(),
+                                    "replace `extend` with `with` to update the existing field",
+                                ));
+                            }
+                            out.push(reject);
                         } else if !is_extend && !present {
                             // A did-you-mean over the record's own fields — a mistyped `with` field is
                             // the closed-set case (like `without`/`project`, M51): `Record.with r (alpa …)`
@@ -5831,18 +5847,32 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 ),
                             )
                             .at(args[1]);
-                            // The near-miss carries a REPLACE fix on the label occurrence — the `(z v)`
-                            // pair's FIRST child is the field name `z` (`args[1]` is the pair list), so a
-                            // mistyped `(alpa 2)` rewrites just `alpa`→`alpha`, the same fix `without`/
-                            // `project` labels get (M63). No near → message only.
-                            if let (Some(near), crate::ast::Struct::List(items)) =
-                                (&near, db.ast.get(args[1]))
-                                && let Some(&label_node) = items.first()
-                            {
-                                reject = reject.with_fix(crate::diag::Fix::replace_heuristic(
-                                    label_node,
-                                    near.clone(),
-                                ));
+                            // TWO possible repairs, and which is right depends on intent: (a) the label is a
+                            // TYPO of a real field → rewrite the label (the near-miss case, like `without`/
+                            // `project`, M63); (b) the field genuinely does NOT exist → the author means
+                            // `extend` (ADD it), so swap the op `with`→`extend`. Prefer the label typo-fix
+                            // when a near field exists (the likelier intent — a present-looking field name);
+                            // else offer the operator swap (VERIFIED — an absent field is exactly `extend`'s
+                            // precondition). The `(z v)` pair's FIRST child is the label node `z`.
+                            let label_node = match db.ast.get(args[1]) {
+                                crate::ast::Struct::List(items) => items.first().copied(),
+                                _ => None,
+                            };
+                            match (&near, label_node, op_key_occ) {
+                                (Some(near), Some(label_node), _) => {
+                                    reject = reject.with_fix(crate::diag::Fix::replace_heuristic(
+                                        label_node,
+                                        near.clone(),
+                                    ));
+                                }
+                                (None, _, Some(occ)) => {
+                                    reject = reject.with_fix(crate::diag::Fix::replace_verified(
+                                        occ,
+                                        "extend".to_string(),
+                                        "replace `with` with `extend` to add the new field",
+                                    ));
+                                }
+                                _ => {}
                             }
                             out.push(reject);
                         }

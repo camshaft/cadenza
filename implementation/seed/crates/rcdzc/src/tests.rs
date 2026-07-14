@@ -13461,6 +13461,66 @@ mod match_engine {
     }
 
     #[test]
+    fn a_wrong_record_row_op_carries_the_operator_swap_fix_the_message_names() {
+        // `Record.extend`/`Record.with` have complementary presence preconditions (extend REQUIRES the
+        // field absent, with REQUIRES it present), and each rejection already NAMES the sibling op to use
+        // ("use `Record.with` to replace" / "use `Record.extend` to add"). Now that named fix is APPLYABLE:
+        // a one-token operator swap on the operation head, marked VERIFIED (the swap's precondition is
+        // exactly the fault's condition — it clears the fault and preserves types by construction, no
+        // guess). The row-op analogue of the numeric `float_sibling_operator` swap.
+
+        // extend a PRESENT field → CDZ0211 + a VERIFIED swap `extend`→`with`.
+        let de = reject_full(
+            "(module m (def (main) (Record.extend (record (a 1)) (a 2))) (export main))",
+        )
+        .expect("extend of a present field is CDZ0211");
+        assert_eq!(de.code.as_deref(), Some("CDZ0211"), "got: {}", de.message);
+        let fe = de.fix.as_ref().expect("carries the operator-swap fix");
+        assert_eq!(fe.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fe.replacement, "with",
+            "swaps the op to `with`: {}",
+            de.message
+        );
+        assert!(
+            fe.verified,
+            "the presence precondition makes the swap verified"
+        );
+
+        // with an ABSENT field that is NOT a near typo → CDZ0212 + a VERIFIED swap `with`→`extend`.
+        let dw = reject_full(
+            "(module m (def (main) (Record.with (record (alpha 1)) (zzzzz 5))) (export main))",
+        )
+        .expect("with of an absent field is CDZ0212");
+        assert_eq!(dw.code.as_deref(), Some("CDZ0212"), "got: {}", dw.message);
+        let fw = dw.fix.as_ref().expect("carries the operator-swap fix");
+        assert_eq!(
+            fw.replacement, "extend",
+            "swaps the op to `extend`: {}",
+            dw.message
+        );
+        assert!(
+            fw.verified,
+            "the absence precondition makes the swap verified"
+        );
+
+        // A NEAR-miss field still prefers the label typo-fix (the likelier intent), NOT the op swap.
+        let dn = reject_full(
+            "(module m (def (main) (Record.with (record (alpha 1)) (alpXa 5))) (export main))",
+        )
+        .expect("with of a near-miss field is CDZ0212");
+        let fn_ = dn
+            .fix
+            .as_ref()
+            .expect("a near typo carries the label rewrite");
+        assert!(
+            fn_.replacement.contains("alpha") && fn_.replacement != "extend",
+            "a near typo rewrites the label, not the op: {}",
+            fn_.replacement
+        );
+    }
+
+    #[test]
     fn tuple_cat_split_at_pop_reshape_tuples_positionally() {
         // 15-rows tuple reshaping — the POSITIONAL analogue of the record row ops. `Tuple.cat a b`
         // concatenates (arity = sum, each element keeps its position's type); `Tuple.split-at t k` splits
