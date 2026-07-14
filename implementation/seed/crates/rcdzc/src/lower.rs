@@ -5100,7 +5100,9 @@ fn eta_ctor_closure(db: &mut Db, ctor_head: StructId) -> Option<Core> {
     let _ = ty_body_ok;
     for (k, &p) in params.iter().enumerate() {
         let occ = crate::eval::param_name_occ(db, p);
-        db.param_types.entry(occ).or_insert_with(|| payload_tys[k].clone());
+        db.param_types
+            .entry(occ)
+            .or_insert_with(|| payload_tys[k].clone());
     }
     // Lower the synthesized lambda as a runtime closure value.
     match resolved_of(db, lambda) {
