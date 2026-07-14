@@ -2060,3 +2060,19 @@
                   (n 200))))
             (export main)))
   (output (: 100 Int64)))
+
+(case "a performing match-arm guard folds with WILDCARD patterns (no binder to let-bind)"
+  (doc    "The wildcard spelling of the guard-desugar above: both the guarded arm's inner pattern and the
+           catch-all are `_` (bind nothing), so the desugar to `(if <guard> <arm-body> <catch-all-body>)`
+           needs NO enclosing `let` — the bare `if` suffices (the `binders.is_empty()` path). `Ask` seeded 5,
+           `(> (Ask.get) 3)` reads 5 → true, so the first arm fires → 100. Pins that the guard-routing
+           desugar handles a wildcard-patterned guarded arm (no scrutinee binder) as well as a named one.")
+  (input  (do
+            (effect Ask (op get (-> Int64)))
+            (def (main)
+              (handle Ask 5 ((get () s (resume s (- s 1))))
+                (match 9
+                  ((guard _ (> (Ask.get) 3)) 100)
+                  (_ 200))))
+            (export main)))
+  (output (: 100 Int64)))
