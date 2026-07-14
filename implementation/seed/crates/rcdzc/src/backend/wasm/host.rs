@@ -110,6 +110,8 @@ pub fn abi_val_type(ty: &Ty) -> Option<AbiValType> {
 //# A compiled component MUST make the host calls its observable behavior records only through the host functions the program's manifest enumerates.
 //= spec/capabilities/self-hosting-surface.md#host-calls-reach-the-host-through-the-manifest-s-capabilities
 //# A compiled component MUST NOT make a host call through a host function the program's manifest does not enumerate.
+//= spec/capabilities/self-hosting-surface.md#a-compiled-program-computes-its-behavior-without-ambient-authority
+//# A program MUST NOT reach a host function outside the capabilities its manifest enumerates to compute its observable behavior, so that behavior is deterministic and capability-bound.
 //= spec/contracts/build-tool-interface.md#the-tool-produces-a-component-a-manifest-and-diagnostics
 //# The component the build tool produces MUST have imports that mirror the manifest it produces, as fixed by the host-interface-binding contract.
 //= spec/capabilities/capabilities-and-effects.md#a-host-import-is-a-boundary-effect-and-the-manifest-is-its-row

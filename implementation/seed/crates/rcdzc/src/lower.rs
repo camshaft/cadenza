@@ -80,6 +80,12 @@ fn reduction_bound_element(db: &mut Db, elems: &[StructId]) -> Option<Reject> {
     None
 }
 
+/// Lower one node's resolved form to its core form. Records fold: a bare name is its bound value's
+/// core, a `let` is its body's core, and a member projection is the FIELD'S core read directly — so a
+/// record used only to read a field leaves no runtime trace (it folds to the projected scalar). A
+/// record used as a runtime value survives as `Core::Record` (which declines at select until the
+/// value heap exists). This is the one compile-time reduction tier acting through lowering
+/// (`reference-compiler.md` §A Construct Whose Value Is Fully Determined At Compile Time).
 pub fn core_of(db: &mut Db, id: StructId) -> Core {
     if let Slot::Filled(c) = db.core.get(id) {
         trace!(target: "rcdzc::lower", node = id.0, "memo hit");
@@ -119,12 +125,6 @@ pub fn core_of(db: &mut Db, id: StructId) -> Core {
     c
 }
 
-/// Lower one node's resolved form to its core form. Records fold: a bare name is its bound value's
-/// core, a `let` is its body's core, and a member projection is the FIELD'S core read directly — so a
-/// record used only to read a field leaves no runtime trace (it folds to the projected scalar). A
-/// record used as a runtime value survives as `Core::Record` (which declines at select until the
-/// value heap exists). This is the one compile-time reduction tier acting through lowering
-/// (`reference-compiler.md` §A Construct Whose Value Is Fully Determined At Compile Time).
 /// Whether the core form at `id` reaches a `Core::HostCall` (directly or nested) — a bounded structural
 /// walk over the core tree. Used by the `do`-sequencing lowering to decide whether a non-final statement
 /// has a host-call side effect that must be emitted (rather than dropped by the ordinary `Ref{last}` fold).
