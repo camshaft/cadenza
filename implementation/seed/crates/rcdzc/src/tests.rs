@@ -13223,6 +13223,38 @@ mod match_engine {
     }
 
     #[test]
+    fn applying_an_effect_name_names_the_category_not_the_leaked_record_type() {
+        // `(E 5)` applies an EFFECT name as a function. The head's type is the effect's SYNTHESIZED record,
+        // so rendering it dumped an internal representation at the user (`cannot apply a value of type
+        // (Record (foo (Record (apply Any) …)) …)`). It now names the CATEGORY — "`E` is an effect, not a
+        // function" — the apply-position analogue of the export-a-type category message. A leaky internal
+        // type is never shown.
+        let d = reject_full(
+            "(module m (effect E (op foo (-> Int64))) (def (main) (E 5)) (export main))",
+        )
+        .expect("applying an effect is rejected");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("`E` is an effect, not a function"),
+            "names the category: {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("Record") && !d.message.contains("Any"),
+            "the leaked synthesized record type must never appear: {}",
+            d.message
+        );
+        // A non-name head keeps the type-named message (the type IS the useful fact for a literal/value).
+        let lit = reject_full("(module m (def (main) (5 3)) (export main))")
+            .expect("applying a literal is rejected");
+        assert!(
+            lit.message.contains("cannot apply a value of type Int64"),
+            "a literal head keeps the type message: {}",
+            lit.message
+        );
+    }
+
+    #[test]
     fn applying_a_non_function_reports_one_error_not_a_shadowing_decline() {
         // Applying a non-function must be ONE primary `error:` — the coded `cannot apply a value of
         // type … — it is not a function` — NOT that reject PLUS the emit path's uncoded "value is not

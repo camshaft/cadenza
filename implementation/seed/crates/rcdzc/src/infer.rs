@@ -4167,15 +4167,36 @@ fn check_application(
             if !args.is_empty() && crate::eval::meta_apply_of(db, head).is_none() {
                 let ht = type_of(db, head);
                 if is_definite_non_function(&ht) {
+                    // When the head is a bare name that DECLARES a type or effect, name the CATEGORY —
+                    // `(E 5)` for an effect `E`, `(Color 5)` for a type `Color`. Rendering `ht.render_name()`
+                    // for an effect leaks its SYNTHESIZED record type verbatim (`(Record (foo (Record (apply
+                    // Any) …)) …)`) — an internal representation dumped at the user, the leaky-message
+                    // anti-pattern. Say "`E` is an effect, not a function" (the apply-position analogue of
+                    // the M74 export-a-type category message). A non-name head (a literal `(5 3)`, a value)
+                    // keeps the type-named message — the type IS the useful fact there.
+                    let name_category = db.ast.as_name(head).and_then(|n| {
+                        if db.type_decl_by_name(n).is_some() {
+                            Some((n.to_string(), "a type"))
+                        } else if db.effect_decl_by_name(n).is_some() {
+                            Some((n.to_string(), "an effect"))
+                        } else {
+                            None
+                        }
+                    });
                     trace!(target: "rcdzc::infer", head = head.0, ty = %ht.render_name(), "fault: applying a non-function value (CDZ0201)");
-                    out.push(Reject::coded(
-                        Code::Malformed,
-                        format!(
+                    let message = match name_category {
+                        Some((name, cat)) => {
+                            format!(
+                                "`{name}` is {cat}, not a function — it cannot be applied to arguments"
+                            )
+                        }
+                        None => format!(
                             "{} {} — it is not a function",
                             crate::diag::NOT_A_FUNCTION_PREFIX,
                             ht.render_name()
                         ),
-                    ));
+                    };
+                    out.push(Reject::coded(Code::Malformed, message));
                 }
             }
             return;
