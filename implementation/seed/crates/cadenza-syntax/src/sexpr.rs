@@ -44,6 +44,10 @@ pub const MAX_NESTING_DEPTH: u32 = 1024;
 //# A reader MUST convert the text of a program to the program's canonical representation, so that a program can be written as text before a surface syntax exists.
 //= spec/capabilities/self-hosting-surface.md#a-reader-converts-text-to-the-canonical-representation
 //# A reader MUST NOT be required in the path that derives a component, consistent with the ast-encoding contract keeping parsing out of the compiler's trusted path.
+//= spec/contracts/ast-encoding.md#a-textual-syntax-parses-to-and-prints-from-the-canonical-form
+//# A textual syntax MUST provide a parser that converts its text to the canonical binary AST.
+//= spec/contracts/ast-encoding.md#a-textual-syntax-parses-to-and-prints-from-the-canonical-form
+//# No textual syntax MUST be privileged as the stored form, so that a program's identity is its binary AST and not any one rendering of it.
 pub fn read(text: &str) -> Result<Arenas, ReadError> {
     let mut b = Builder::new();
     let mut p = Reader::new(text, &mut b, false);
@@ -136,6 +140,8 @@ fn read_all_impl(text: &str, track: bool) -> Result<(Arenas, Option<SpanTable>),
 //# Reading the text a printer produced for a value MUST yield a value equal to the original under structural equality, so that the reader and printer round-trip.
 //= constitution.md#x-programs-are-readable-by-agents-and-humans
 //# A textual syntax MUST be a lossless projection of the canonical form, such that parsing its text yields the canonical form and printing the canonical form yields text that parses back to the same canonical form.
+//= spec/contracts/ast-encoding.md#a-textual-syntax-parses-to-and-prints-from-the-canonical-form
+//# A textual syntax MUST provide a printer that converts the canonical binary AST to its text.
 pub fn print(arenas: &Arenas) -> String {
     let mut out = String::new();
     print_node(arenas, arenas.root, &mut out);
