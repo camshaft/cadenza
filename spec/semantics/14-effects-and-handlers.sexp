@@ -2042,17 +2042,15 @@
 (case "a perform in a match-arm guard is discharged by the enclosing handle"
   (doc    "`(handle Ask 5 ((get () s (resume s (- s 1)))) (match 9 ((guard n (> (Ask.get) 3)) 100) (n 200)))`
            — a perform `(Ask.get)` inside a match-arm GUARD condition, discharged by an intra-program
-           `handle`. A perform in the SCRUTINEE, ARM BODY, or an IF CONDITION under the same handle all fold
-           (→6/→5/→100), and the same guard-perform runs host-delegated (→100) — but a perform in the GUARD
-           condition is a position the effect-routing distribution does not descend (it routes the scrutinee
-           + arm bodies, not the guard conds). It previously reached lowering as a bare perform → the
-           FACTUALLY-WRONG 'performed with no enclosing handler here' (the handle plainly encloses it).
-           `reduce_handle` now DECLINES cleanly ('this handler is not yet reducible …') when a guard cond
-           performs a discharged op — an honest not-yet-reducible todo, never the misleading error. The
-           target value once guard-condition performs are routed through the enclosing handle (a later
-           increment — a guard runs before its arm, advancing handler state per arm-test, which the
-           per-branch-sees-the-seed distribution does not yet model) is 100: the guard reads the seed 5,
-           `5 > 3` holds, so the first arm fires. Grades a Todo (the honest decline) until that lands.")
+           `handle`. A perform in the SCRUTINEE, ARM BODY, or an IF CONDITION under the same handle all fold,
+           and NOW so does a guard condition — for the SOUND, NARROW shape: a guarded arm whose inner pattern
+           is IRREFUTABLE (a bare name / `_`) followed by an irrefutable catch-all. Such a match is selected
+           iff the guard holds, so `reduce_handle` desugars it to `(if <guard> <arm-body> <catch-all-body>)`
+           (each binder let-bound to the scrutinee), where the guard is an `if` CONDITION — a strict-first
+           position the if-condition fold routes through the enclosing handle. The guard reads the seed 5,
+           `5 > 3` holds, so the first arm fires → 100. (A REFUTABLE guarded pattern, or MULTIPLE guarded
+           arms — which sequence handler state per arm-test — is not this narrow shape and still declines
+           cleanly, an honest 'not yet reducible' todo, never the misleading 'no enclosing handler'.)")
   (input  (do
             (effect Ask (op get (-> Int64)))
             (def (main)

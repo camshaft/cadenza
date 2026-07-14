@@ -31920,21 +31920,35 @@ mod stage1 {
                 .map(|d| d.message.clone())
                 .collect::<Vec<_>>()
         };
+        // The IRREFUTABLE-guarded shape (a bare-name inner pattern guarded by a performing cond, plus an
+        // irrefutable catch-all) is now ROUTED: `reduce_handle` desugars it to an `if` on the guard, so it
+        // FOLDS (→100) rather than declines. (Updated from the interim honest-decline behavior: the corpus
+        // case "a perform in a match-arm guard is discharged by the enclosing handle" now grades pass →100,
+        // the target the interim decline anticipated.)
         let guard_src = "(do (effect Ask (op get (-> Int64))) \
                          (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) \
                            (match 9 ((guard n (> (Ask.get) 3)) 100) (n 200)))) (export main))";
-        let ms = msg(guard_src);
-        // The misleading "no enclosing handler" message is GONE.
+        assert!(
+            msg(guard_src).is_empty(),
+            "an irrefutable-guarded performing arm under a handle now folds (desugars to an if): {:?}",
+            msg(guard_src)
+        );
+        // A shape the desugar does NOT cover — a REFUTABLE guarded inner pattern (the literal `9`, not a
+        // bare name) — still DECLINES, and CLEANLY: the honest "not yet reducible" todo, NOT the misleading
+        // "no enclosing handler" (the handle plainly encloses the guard perform).
+        let refutable_guard = "(do (effect Ask (op get (-> Int64))) \
+                         (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) \
+                           (match 9 ((guard 9 (> (Ask.get) 3)) 100) (n 200)))) (export main))";
+        let ms = msg(refutable_guard);
         assert!(
             !ms.iter()
                 .any(|m| *m == crate::diag::NO_HOME_STANDALONE_DECLINE),
             "a guard perform UNDER a handle must NOT report 'no enclosing handler' — the handle encloses it: {ms:?}"
         );
-        // It is the honest "not yet reducible" decline instead.
         assert!(
             ms.iter()
                 .any(|m| *m == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE),
-            "expected the honest not-yet-reducible decline for a guard-condition perform: {ms:?}"
+            "expected the honest not-yet-reducible decline for a refutable guarded-pattern perform: {ms:?}"
         );
         // NO REGRESSION: a NON-performing guard under the same handle still COMPILES (my detection fires
         // ONLY on a guard cond that performs a discharged op — a `(guard n (> n 3))` performs nothing).
