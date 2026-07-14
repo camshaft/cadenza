@@ -4658,10 +4658,29 @@ fn check_application(
             )
         };
         let is_atom = |t: &Ty| is_text(t) || is_scalar(t);
+        // A compound's STRUCTURAL KIND tag (Record/Tuple/List/Map/Set) — two compounds of DIFFERENT kinds
+        // (`(< (tuple …) (list …))`, `(= r m)` a record vs a map) are as cross-kind as a compound-vs-atom
+        // pair: there is no shared order/equality between a tuple and a list. Same-kind compounds (two
+        // records, two tuples) return the SAME tag, so they fall through to the generic path where their
+        // structural-delta hints (M91/M92, "field `x` should be …", "element 1 …") fire — this only pulls
+        // out the genuinely-incomparable DIFFERENT-kind case. A non-compound is `None` (not this test).
+        let compound_kind = |t: &Ty| match t {
+            Ty::Record(_) => Some(0u8),
+            Ty::Tuple(_) => Some(1),
+            Ty::List(_) => Some(2),
+            Ty::Map(..) => Some(3),
+            Ty::Set(_) => Some(4),
+            _ => None,
+        };
+        let different_compound_kinds = match (compound_kind(&a), compound_kind(&b)) {
+            (Some(ka), Some(kb)) => ka != kb,
+            _ => false,
+        };
         let cross_kind = (is_text(&a) && is_scalar(&b))
             || (is_scalar(&a) && is_text(&b))
             || (is_compound(&a) && is_atom(&b))
-            || (is_atom(&a) && is_compound(&b));
+            || (is_atom(&a) && is_compound(&b))
+            || different_compound_kinds;
         if cross_kind {
             trace!(target: "rcdzc::infer", head = head.0, "fault: operands of distinct kinds — not comparable/operable across the boundary (CDZ0201)");
             out.push(Reject::coded(

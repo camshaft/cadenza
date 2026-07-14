@@ -25348,8 +25348,15 @@ mod diagnostics {
     fn a_mismatched_comparison_drops_the_misleading_heap_walk_decline() {
         use crate::testkit::parse;
         for src in [
+            // compound/text-vs-scalar cross-kind (M111)
             "(module m (def (main) (if (< 1 \"x\") 1 2)) (export main))",
             "(module m (def (main) (if (< true \"x\") 1 2)) (export main))",
+            // two compounds of DIFFERENT structural kinds — tuple vs list, record vs map (this increment).
+            // These formerly took the generic "must be the same type here" unify path (so the M111 dedup,
+            // keyed on "are different types", did NOT fire and the heap-walk secondary leaked); the
+            // cross-kind reject now covers different-kind compounds too, giving the clear message + the dedup.
+            "(module m (def (main) (if (< (tuple 1 2) (list 3)) 1 2)) (export main))",
+            "(module m (def (main) (if (= (tuple 1 2) (list 3)) 1 2)) (export main))",
         ] {
             let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
             assert!(
@@ -25377,6 +25384,22 @@ mod diagnostics {
             err.message.contains("needs a heap walk") && err.code.is_none(),
             "the honest decline survives when there is no mismatch to defer to: {}",
             err.message
+        );
+        // NO OVER-REACH: two SAME-kind compounds that differ internally (two records, two tuples of
+        // different arity) keep the GENERIC path — the different-compound-kind guard fires only across
+        // distinct kinds, so a same-kind structural mismatch is NOT relabeled a "kind boundary".
+        let same_kind = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (g (: a (Tuple Int64)) (: b (Tuple Int64 Int64))) (if (< a b) 1 2)) (export g))",
+        )));
+        assert!(
+            same_kind
+                .iter()
+                .any(|d| d.message.contains("must be the same type here"))
+                && !same_kind
+                    .iter()
+                    .any(|d| d.message.contains("across that kind boundary")),
+            "two same-kind (tuple) compounds keep the generic mismatch, not the kind-boundary message: {:?}",
+            same_kind.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 
