@@ -3201,6 +3201,21 @@ fn total_conversion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, 
             ")".to_string(),
             "convert the integer to a Rational with `Rational.of-int`".to_string(),
         )),
+        // A Char where Int64 is expected — `(+ #\a 1)`. `Char.to-int : Char → Int64` is TOTAL (a char's
+        // scalar value), so wrap it. Only when the expected width is the Int64 `Char.to-int` yields (a
+        // narrower target would still mismatch after the wrap — leave that to the author).
+        (Ty::Int(exp), Ty::Char) if exp.ground_signed() && exp.ground_width() == 64 => Some((
+            "(Char.to-int ".to_string(),
+            ")".to_string(),
+            "convert the char to its Int64 scalar value with `Char.to-int`".to_string(),
+        )),
+        // A Symbol where a String is expected — `Symbol.to-string : Symbol → String` is TOTAL (recovers
+        // the symbol's underlying content), so wrap it. The text-model twin of the String→Bytes case.
+        (Ty::String, Ty::Symbol) => Some((
+            "(Symbol.to-string ".to_string(),
+            ")".to_string(),
+            "recover the symbol's content string with `Symbol.to-string`".to_string(),
+        )),
         _ => None,
     }
 }
