@@ -36978,6 +36978,37 @@ mod closure_host_resource {
             esc_err.code,
             esc_err.message
         );
+        // The honest decline covers the make-time host call in ANY capture position — the export-body scan
+        // is a structural AST descent, so a host call nested in an operand feeding a capture, or one of
+        // several captures, is caught just as a bare let-init is. Regression guard: none may leak the
+        // internal "not in the host-import set" message.
+        for (what, src) in [
+            (
+                "a host call in an operand feeding a capture",
+                "(do (effect ask (op ask (-> Unit Int64))) \
+                 (def (main) (host (ask) (let ((v (+ (ask.ask) 1))) (fn ((: x Int64)) (+ x v))))) (export main))",
+            ),
+            (
+                "one of several captures performing",
+                "(do (effect ask (op ask (-> Unit Int64))) \
+                 (def (main) (host (ask) (let ((a (ask.ask)) (b 5)) (fn ((: x Int64)) (+ (+ x a) b))))) (export main))",
+            ),
+        ] {
+            let e = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err(
+                    "a make-time host call in a closure export is not yet emitted — must decline",
+                );
+            assert!(
+                !e.message.contains("not in the host-import set"),
+                "{what} must decline honestly, not with the internal message, got: {}",
+                e.message
+            );
+            assert!(
+                e.message.contains("ask.ask") && e.message.contains("not yet emitted"),
+                "{what} must name the op + feature limitation, got: {}",
+                e.message
+            );
+        }
     }
 
     /// A host operation with a STRING (or compound) RESULT has no component boundary form this compiler

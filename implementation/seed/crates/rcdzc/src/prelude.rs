@@ -1609,6 +1609,17 @@ enum OpShape {
 /// An operator record `(record ((meta t) TYPE-LAMBDA) ((meta apply) (intrinsic PRIM)))`. `(meta t)`
 /// is the operator's type — a compile-time type-lambda read generically by `infer`; `(meta apply)` is
 /// the reduction, read by `lower`. `shape` selects the type-lambda (integer-binary vs comparison).
+/// A BUILT-IN OPERATION VALUE — the record a built-in module's operation field holds. It carries a
+/// `(meta t)` scheme (the operation's type) and a `(meta apply)` intrinsic (its implementation). It is an
+/// ordinary VALUE: projecting the field (member access on the module) yields THIS record without applying
+/// it — the first-class treatment `A Function Is A First-Class Value` gives any value. APPLYING it
+/// `(Mod.op args)` rides the ordinary `(meta apply)` dispatch and produces the operation's defined
+/// result; applying at an argument count the operation's arrow does not accept is an ordinary type error
+/// (the application unifies against the `(meta t)` arrow), never an unspecified result.
+//= spec/capabilities/core-semantics.md#a-built-in-module-is-a-record-of-its-operations
+//# A field of a built-in module whose implementation the language provides MUST hold a **built-in operation value** — a first-class value denoting that operation. A built-in operation value MUST be a value in the sense of *A Function Is A First-Class Value*: projecting it MUST yield the value itself, so that member access on a built-in module evaluates to the operation it names without applying it.
+//= spec/capabilities/core-semantics.md#a-built-in-module-is-a-record-of-its-operations
+//# Applying a built-in operation value to arguments MUST produce the same result the operation defines for those arguments, so that `(Mod.op args)` — the application of the projected field — is equivalent to invoking the built-in operation directly. Applying it at an argument count the operation does not accept MUST be a compile-time error under *Applying A Function Binds Its Parameter To Its Argument* and the arity rules, exactly as for any other function value, rather than an unspecified result.
 fn operator_record(ast: &mut Arenas, op: &str, shape: OpShape) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     let lambda = match shape {

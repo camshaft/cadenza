@@ -1046,8 +1046,18 @@ pub mod driver {
                 // (span-splicing) rewrite over a hand-formatted `.sexp` corpus (`apply_rewrite_text`).
                 let (arena, spans) = match sexpr::read_spanned(text) {
                     Ok(pair) => pair,
-                    Err(_) => sexpr::read_all_spanned(text)
-                        .map_err(|e| format!("s-expr parse: {}", e.0))?,
+                    // Render the position as `line:col`, not a raw `at byte N` — the same mapping the JSON/
+                    // TOML arms above (and the `convert`/`check`/`load` paths) apply, so `query`/`rewrite`/
+                    // `clones`/`diff` over a malformed MULTI-LINE `.sexp` point at a navigable place. This
+                    // arm was the last s-expr reader-error render still leaking the raw byte offset (`cdz
+                    // clones F` → `s-expr parse: unexpected ')' at byte 18`, where `check F` already said
+                    // `at 2:8`); route it through `locate_byte_in_message` like every other surface.
+                    Err(_) => sexpr::read_all_spanned(text).map_err(|e| {
+                        format!(
+                            "s-expr parse: {}",
+                            crate::convert::locate_byte_in_message(&e.0, text)
+                        )
+                    })?,
                 };
                 Ok((
                     Target {
@@ -3231,6 +3241,19 @@ mod tests {
         assert!(
             err.contains(" at 2:") && !err.contains("byte"),
             "a malformed JSON query error must be line:col, not a byte offset; got {err}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_sexpr_load_reports_line_col_not_a_byte_offset() {
+        // The s-expr twin of the JSON case: `query`/`rewrite`/`clones`/`diff` over a malformed MULTI-LINE
+        // `.sexp` render the position as `line:col`, not the raw `at byte N` this arm used to leak (it was
+        // the last s-expr reader-error render still passing `e.0` verbatim; `cdz check` already mapped it).
+        // The trailing `)` on line 2 is an `unexpected ')' at byte N` the multi-form fallback surfaces.
+        let err = driver::load(b"(module m)\n(x))", crate::convert::Format::Sexpr).unwrap_err();
+        assert!(
+            err.contains(" at 2:") && !err.contains("byte"),
+            "a malformed s-expr query error must be line:col, not a byte offset; got {err}"
         );
     }
 
