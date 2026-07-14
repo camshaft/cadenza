@@ -3247,6 +3247,27 @@
             (def (main) (f (tuple false true))) (export main)))
   (output (: 2 Int64)))
 
+(case "a list of bools is exhaustive when the empty and both first-element values are covered"
+  (doc    "The LIST analogue of the tuple-of-bools case: `(match xs ((list) …) ((list true .. r) …)
+           ((list false .. r) …))` over `(List Bool)` is exhaustive WITHOUT a `_`. A list-element arm set
+           is exhaustive when it covers the empty list AND every non-empty list (core-semantics.md §A List
+           Is Deconstructed By Element Patterns With An Optional Rest); the empty arm covers length 0, and
+           the two bool-lead rest arms saturate the first element of any non-empty list — `true` or `false`,
+           nothing else. Each bool-lead element is a value TEST (excluded from length-coverage on its own),
+           but `Bool` is a finite 2-value type, so `true`+`false` together close the non-empty tail exactly
+           as they close a top-level `(match b (true …) (false …))`. `mk 2` builds `[false, true]`, which
+           selects the `false`-lead arm → 2.")
+  (input  (do
+            (def (mk (: n Int64))
+              (if (< n 1) (list) (if (< n 2) (list true false) (list false true))))
+            (def (f (: xs (List Bool)))
+              (match xs
+                ((list) 0)
+                ((list true .. r) 1)
+                ((list false .. r) 2)))
+            (def (main) (f (mk 2))) (export main)))
+  (output (: 2 Int64)))
+
 (case "a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching"
   (doc    "The route around the not-yet-lowered ctor-in-tuple-slot binder: bind the tuple element to a
            NAME in the outer arm, then re-match it in a nested `match`. `(Outer.Wrap (tuple i k))` binds

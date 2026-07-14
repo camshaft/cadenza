@@ -5783,15 +5783,25 @@ fn check_application(
             (Some(ka), Some(kb)) => ka != kb,
             _ => false,
         };
-        // ARITHMETIC on TWO TEXT operands of the SAME kind — `(+ s t)` / `(- b c)` on two Strings or two
-        // Bytes. Comparison (`= < >`) on two texts is VALID (lexical order / equality), so this fires ONLY
-        // for the arithmetic prims (Add/Sub/Mul/Div). The generic scheme-unify defaults the operator's
-        // `∀a.(Int a)→…` first parameter to `Int64`, then reports the second operand as "type mismatch:
-        // Int64 and String must be the same type here" — a PHANTOM `Int64` the author never wrote, reading
-        // as an internal clash. Name the real situation: arithmetic is not defined on text. For `+`
-        // specifically the intent is almost always CONCATENATION (the Python/JS reflex), and `String.concat`
-        // / `Bytes.concat` are the total operations — so offer the `((. String concat) …)` rewrite on the
-        // operator head (`(+ a b)` → `((. String concat) a b)`), the actionable repair.
+        // ARITHMETIC on TWO operands of the SAME TEXT-or-COMPOUND type — `(+ s t)` on two Strings/Bytes,
+        // `(+ xs ys)` on two Lists, `(+ r q)` on two Records/Tuples/Maps/Sets. Comparison (`= < >`) on two
+        // same-typed values is VALID (equality / lexical-or-structural order), so this fires ONLY for the
+        // arithmetic prims (Add/Sub/Mul/Div). Because the two operands are the SAME type, the earlier
+        // cross-kind guard (which needs DIFFERENT kinds) never catches them — instead the generic
+        // scheme-unify defaults the operator's `∀a.(Int a)→…` first parameter to `Int64` and reports the
+        // second operand as "type mismatch: Int64 and <T> must be the same type here" — a PHANTOM `Int64`
+        // the author never wrote, reading as an internal clash. Name the real situation: arithmetic is not
+        // defined on <T>. For `+` on a type with a total CONCATENATION op (String/Bytes/List — the Python/JS
+        // reflex), rewrite the operator head to that `.concat` (`(+ a b)` → `((. List concat) a b)`), the
+        // actionable repair; other compound types / other ops get the honest message with no (forced) fix.
+        //
+        // SCOPED to text + compound (not the scalar-ish LEAVES Bool/Unit/Symbol): the corpus pins a
+        // Bool-in-integer-addition — a body-inferred `(+ true true)` — at CDZ0203 (an argument checked
+        // against a body-inferred param type, `09-functions.sexp`), so a leaf scalar stays on that path.
+        // EXCLUDES too (each has its own correct path): numeric types (valid arithmetic); `Char`
+        // (`Char.to-int` coercion wrap fix, below); `Qty` (the dimensional path below); `Nominal`/`Sum` (a
+        // user newtype over a number may define arithmetic — unknown intent, stay conservative); `Var`/`Any`
+        // (unsolved — never a false reject).
         let is_arith = matches!(
             crate::eval::meta_apply_of(db, head),
             Some(
@@ -5801,18 +5811,38 @@ fn check_application(
                     | crate::resolved::Prim::Div
             )
         );
-        if is_arith && is_text(&a) && is_text(&b) && a == b {
-            let module = if a == Ty::Bytes { "Bytes" } else { "String" };
-            trace!(target: "rcdzc::infer", head = head.0, "fault: arithmetic on two text operands — not defined (CDZ0201)");
+        let text_or_compound_ty = |t: &Ty| {
+            matches!(
+                t,
+                Ty::String
+                    | Ty::Bytes
+                    | Ty::List(_)
+                    | Ty::Record(_)
+                    | Ty::Tuple(_)
+                    | Ty::Map(..)
+                    | Ty::Set(_)
+            )
+        };
+        if is_arith && text_or_compound_ty(&a) && a == b {
+            // A total-concatenation `.concat` exists on these modules → `+` is concatenation intent.
+            let concat_module = match a {
+                Ty::String => Some("String"),
+                Ty::Bytes => Some("Bytes"),
+                Ty::List(_) => Some("List"),
+                _ => None,
+            };
+            trace!(target: "rcdzc::infer", head = head.0, "fault: arithmetic on two same-typed non-numeric operands — not defined (CDZ0201)");
             let mut reject = Reject::coded(
                 Code::Malformed,
                 format!(
-                    "arithmetic is not defined on {} — Cadenza never coerces text to a number",
+                    "arithmetic is not defined on {} — Cadenza never coerces this to a number",
                     a.render_name()
                 ),
             );
-            // `+` on two texts is concatenation intent → rewrite the operator to the module's `concat`.
-            if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::Add) {
+            // `+` on a concatenable type → rewrite the operator to that module's `concat`.
+            if let Some(module) = concat_module
+                && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::Add)
+            {
                 reject =
                     reject.with_fix(Fix::replace_heuristic(head, format!("(. {module} concat)")));
             }

@@ -943,9 +943,15 @@ fn unbox_bigint(h: Handle) -> bigint::Big {
     })
 }
 /// `bigint-of-i64` — widen a fixed-width `i64` into a `BigInt` leaf (the `BigInt.of` target for a runtime
-/// integer; a constant folds in the compiler and never calls this).
+/// integer; a constant folds in the compiler and never calls this). Boxes the value DIRECTLY through the
+/// i128 path (`box_bigint_i128`, which serializes to inline sign-magnitude bytes with NO `Big`) — an i64
+/// trivially fits i128. This skips the transient `Big::from_i64` limb `Vec` the `box_bigint(&Big)` route
+/// allocated-then-freed per call (the same transient-small-Vec smell `box_bigint`'s own inline fast path
+/// avoids, reintroduced by the `Big` intermediate). Byte-identical leaf (both emit the canonical
+/// `[sign][LE magnitude, trailing-zeros-stripped]` form — verified across the full i64 range incl. i64::MIN
+/// + limb boundaries).
 fn op_bigint_of_i64(v: i64) -> Handle {
-    box_bigint(&bigint::Big::from_i64(v))
+    box_bigint_i128(v as i128)
 }
 /// `bigint-of-bytes` — build a BigInt leaf from a Bytes leaf holding the canonical sign-magnitude bytes
 /// (`[sign][LE magnitude, trailing-zeros-stripped]`). The compiler emits this to materialize a CONSTANT
@@ -10027,6 +10033,23 @@ mod tests {
             "tuple2_build x{N} allocs {tbuild} exceeds ceiling 1000 (JUST the node Box = 1/op; handles inline, raw empty, immediate elements — a regression to an out-of-line handles Vec would be ~2/op)"
         );
 
+        // (K3d) `bigint-of-i64` — the WIDENING entry (`BigInt.of` on a runtime int; also the on-ramp for
+        // fixed-width int arithmetic that promotes to BigInt). Boxes the i64 DIRECTLY through the i128 path
+        // (`box_bigint_i128` → inline sign-magnitude bytes, NO `Big`) = ONLY the result node = 1/op. Was
+        // 2/op — the `box_bigint(&Big::from_i64(v))` route allocated a transient `Big` limb `Vec` (freed
+        // once serialized to the inline leaf) on top of the node. A regression back to the `Big` route
+        // would climb to ~2/op.
+        let bofi = measure(&mut || {
+            for _ in 0..N {
+                op_drop(op_bigint_of_i64(1_000_003));
+            }
+        });
+        println!("ALLOC bigint_of_i64 x{N}: {bofi}");
+        assert!(
+            bofi <= 1500,
+            "bigint_of_i64 x{N} allocs {bofi} exceeds ceiling 1500 (direct i128 box: only the result node, 1/op; was 2/op via the transient Big::from_i64 limb Vec — a regression to the Big route would climb to ~2000)"
+        );
+
         // (K4) `bigint-add` — a runtime BigInt op (B3b/B3c emit these for runtime-valued BigInt arithmetic),
         // now on the hot path of any bignum loop. The SMALL-operand FAST PATH reads both operands as `i128`
         // DIRECTLY from their raw sign-magnitude bytes (no limb `Vec`), computes with `checked_add`, and
@@ -11249,6 +11272,50 @@ mod tests {
         assert_eq!(cmp(-3, -3), 0, "-3 == -3");
         assert_eq!(cmp(0, -1), 1, "0 > -1");
         assert_eq!(cmp(-1, 0), -1, "-1 < 0");
+        assert_eq!(live_object_count(), before, "no BigInt leak");
+    }
+
+    /// `bigint-of-i64` boxes DIRECTLY via the i128 path (`box_bigint_i128`, no transient `Big`) — the leaf
+    /// MUST stay byte-identical to the old `box_bigint(&Big::from_i64(v))` route (both emit the canonical
+    /// `[sign][LE magnitude, trailing-zeros-stripped]` form). Pins that equivalence across the full i64
+    /// range — the endpoints (`i64::MIN`, whose `unsigned_abs` is a limb-boundary case), the i32 boundaries,
+    /// exactly 2^32 (single→double limb in `Big::from_i64`), and zero — so a future refactor of EITHER path
+    /// can't silently diverge (a divergent leaf would break BigInt map-key equality + narrowing). Also
+    /// checks the value round-trips through `bigint-to-i64-checked`.
+    #[test]
+    fn bigint_of_i64_direct_i128_box_is_byte_identical_to_the_big_route() {
+        reset();
+        let before = live_object_count();
+        for v in [
+            0i64,
+            1,
+            -1,
+            255,
+            256,
+            -256,
+            i32::MAX as i64,
+            i32::MIN as i64,
+            4_294_967_296, // 2^32 — crosses the single→double limb boundary in Big::from_i64
+            -4_294_967_296,
+            i64::MAX,
+            i64::MIN, // unsigned_abs limb-boundary endpoint
+            1_000_003,
+            -1_000_003,
+        ] {
+            let via_direct = op_bigint_of_i64(v); // the new direct-i128 path
+            let via_big = box_bigint(&bigint::Big::from_i64(v)); // the old Big route (oracle)
+            assert!(
+                champ_eq(via_direct, via_big),
+                "bigint-of-i64({v}): direct-i128 leaf must be byte-identical (champ_eq) to the Big route"
+            );
+            assert_eq!(
+                op_bigint_to_i64_checked(via_direct),
+                v,
+                "bigint-of-i64({v}) round-trips through to-i64-checked"
+            );
+            op_drop(via_direct);
+            op_drop(via_big);
+        }
         assert_eq!(live_object_count(), before, "no BigInt leak");
     }
 

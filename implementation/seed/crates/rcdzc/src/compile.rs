@@ -2927,12 +2927,18 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             {
                 return false;
             }
-            // A `handle` whose HEAD names a value leaks two consequents from the desugared `(. foo op)`
-            // projections: the uncoded fold-decline and a "member access requires a record" CDZ0201 (foo is
-            // a scalar). Both are consequences of the value head — drop them for the clean head reject.
+            // A `handle` whose HEAD is not an effect leaks a consequent from the desugared `(. head op)`
+            // projections — the SHAPE of the consequent depends on what the head IS:
+            //   • a VALUE head (`foo`, a scalar) → "member access requires a record" + the fold-decline;
+            //   • a TYPE head (`T`, a sum with variants — a record-like value) → `(. T a)` reads the arm-op
+            //     name as a MISSING VARIANT ("the type `T` has no variant `a`" / "record has no field").
+            // All are consequences of the non-effect head — drop them for the clean head reject (the one
+            // primary that names the real problem: the head must be an effect).
             if has_value_head_reject
                 && (r.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE
-                    || r.message.contains("member access requires a record"))
+                    || r.message.contains("member access requires a record")
+                    || r.message.contains("has no variant")
+                    || r.message.starts_with(crate::diag::NO_FIELD_PREFIX))
             {
                 return false;
             }
