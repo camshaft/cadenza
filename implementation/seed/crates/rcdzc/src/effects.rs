@@ -2691,6 +2691,33 @@ fn thread_bounded(
                 rewritten_args.push(ra);
                 cur = next;
             }
+            // EFFECT-DUPLICATION GUARD. The arm body β-reduces by SUBSTITUTING each argument for its
+            // parameter, so a param used more than once COPIES its argument. If that argument is not
+            // strongly pure — it (still) reaches a perform, as `(E.op (tuple (A.get) (A.get)))` where the
+            // rewritten tuple arg carries two foreign gets — duplicating it would run the effect once per
+            // use (`(. p 0)` AND `(. p 1)` → four gets threaded, not two; a miscompile). Decline instead:
+            // when any param whose rewritten arg is NOT strongly pure is referenced more than once in the
+            // arm body, this fold cannot represent it without a let-binding the tail surface does not model.
+            // (A strongly-pure arg — a literal, a name — duplicates no effect, so multi-use is fine; a
+            // single-use param likewise runs its arg exactly once. This mirrors the applied-lambda
+            // pre-reduction's pure-args soundness guard.)
+            // "Carries an effect" = reaches a perform of THIS handler's op (`!strongly_pure`) OR a FOREIGN
+            // one (`body_reaches_foreign_perform` — an outer handler's op or a host call, which
+            // `strongly_pure` does not flag since it is ctx-relative to the discharged set). Either kind
+            // must not be duplicated: the miscompiling `(Add.sum (tuple (Ask.get) (Ask.get)))` carries
+            // FOREIGN `Ask` gets in the `Add`-discharged arm.
+            if arm.params.len() == rewritten_args.len() {
+                for (&p, &a) in arm.params.iter().zip(&rewritten_args) {
+                    let arg_carries_effect =
+                        !strongly_pure(db, a, ctx) || body_reaches_foreign_perform(db, a, ctx);
+                    if !is_unit_param(db, p)
+                        && arg_carries_effect
+                        && count_param_refs(db, arm.body, p) > 1
+                    {
+                        return None;
+                    }
+                }
+            }
             // The arm binds its params to the args and its state binder to THIS SLOT's current state.
             // Substitute both into the arm body (a capture-safe arena substitution), then extract the tail
             // resume.
@@ -3999,6 +4026,45 @@ fn count_resumes(db: &mut Db, node: StructId) -> u32 {
     let here = u32::from(matches!(resolved_of(db, node), Resolved::Resume { .. }));
     let below = match db.ast.get(node).clone() {
         Struct::List(children) => children.iter().map(|&c| count_resumes(db, c)).sum(),
+        Struct::Atom(_) => 0,
+    };
+    here + below
+}
+
+/// The number of references to the parameter `binder` in the arm body at `node` — how many times a
+/// substituted argument would be COPIED when the arm body β-reduces. A reference resolves to
+/// `Resolved::Param { binder }` (or a `Ref` transitively to it). Used to guard the perform-threading arm
+/// against duplicating a PERFORMING argument: substituting an arg that reaches an effect into a param used
+/// more than once would run that effect once per use (a miscompile — `(E.op (tuple (A.get) (A.get)))` whose
+/// arm reads `(. p 0)` AND `(. p 1)` duplicated the two inner gets, threading four reads instead of two).
+fn count_param_refs(db: &mut Db, node: StructId, binder: StructId) -> u32 {
+    // A reference matches the way `beta_reduce` substitutes: either a `Param { binder }` whose binder IS
+    // the arm param, OR a `Ref { value }` whose chain reaches that binder transitively (an op-arm param
+    // `p` used as `(. p 0)` resolves to a `Ref` reaching `p`'s declaration occurrence, not a `Param`).
+    let here = match resolved_of(db, node) {
+        Resolved::Param { binder: b } => u32::from(b == binder),
+        Resolved::Ref { value } => {
+            let mut target = value;
+            let mut hit = false;
+            loop {
+                if target == binder {
+                    hit = true;
+                    break;
+                }
+                match resolved_of(db, target) {
+                    Resolved::Ref { value: next } => target = next,
+                    _ => break,
+                }
+            }
+            u32::from(hit)
+        }
+        _ => 0,
+    };
+    let below = match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .map(|&c| count_param_refs(db, c, binder))
+            .sum(),
         Struct::Atom(_) => 0,
     };
     here + below

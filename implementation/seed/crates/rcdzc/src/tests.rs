@@ -32572,6 +32572,38 @@ mod stage1 {
     }
 
     #[test]
+    fn a_perform_arg_with_a_foreign_effect_used_twice_in_the_arm_declines_not_miscompiles() {
+        // EFFECT-DUPLICATION GUARD. An operation whose ARGUMENT carries a FOREIGN perform, bound to an arm
+        // parameter the arm uses MORE THAN ONCE, must DECLINE — never duplicate the effect. `Add.sum`'s arm
+        // reads `(. p 0)` AND `(. p 1)`, and the argument `(tuple (Ask.get) (Ask.get))` carries two `Ask`
+        // gets foreign to the `Add` handler. β-substituting the tuple for `p` (used twice) would copy it,
+        // so the outer `Ask` handler would thread FOUR gets instead of two — a miscompile (observed: the
+        // second read jumped from 11 to 13). The guard turns that into a clean decline. Regression pin:
+        // before the guard, this compiled and ran to a wrong value.
+        let src = "(do (effect Ask (op get (-> Unit Int64))) \
+                   (effect Add (op sum (-> (Tuple Int64 Int64) Int64))) \
+                   (def (main) (handle Ask 10 ((get (u) s (resume s (+ s 1)))) \
+                     (handle Add 0 ((sum (p) s (resume (+ (* (. p 0) 100) (. p 1)) s))) \
+                       (Add.sum (tuple (Ask.get) (Ask.get)))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a foreign-performing argument bound to a multiply-used arm param must decline, not miscompile"
+        );
+        // The SAME shape with PURE tuple elements folds fine (no effect to duplicate) → 7.
+        let pure = "(do (effect Add (op sum (-> (Tuple Int64 Int64) Int64))) \
+                   (def (main) (handle Add 0 ((sum (p) s (resume (+ (. p 0) (. p 1)) s))) \
+                     (Add.sum (tuple 3 4)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(pure)))
+                    .expect("a pure-args tuple-param op folds"),
+                "main"
+            ),
+            7
+        );
+    }
+
+    #[test]
     fn a_handle_body_reads_an_enclosing_function_parameter() {
         // The fold's rewritten body must resolve a FREE variable up the ORIGINAL lexical chain — a handle
         // body is not closed, it may read an enclosing function's parameter. `(+ x (Get.get 0))` under a

@@ -1519,6 +1519,23 @@
               (handle E unit ((put (xs) s (resume unit s))) (E.put 42))) (export main)))
   (error  CDZ0203))
 
+(case "an operation with a TUPLE parameter binds the compound and the arm projects it"
+  (doc    "The positive companion: an operation whose declared PARAMETER is a compound `(Tuple Int64
+           Int64)` binds the whole tuple to the arm's parameter, which the arm projects. `Add.sum : (->
+           (Tuple Int64 Int64) Int64)`; performed as `(Add.sum (tuple 3 4))`, the arm binds `p` to the pair
+           and resumes with `(+ (. p 0) (. p 1))` = 7. Pins that a compound OP parameter threads through the
+           fold and is projectable in the arm (the type-position spelling is capital `Tuple`, the type
+           constructor — lowercase `tuple` is the value constructor). NOTE: the arm here projects `p` from a
+           pure `(tuple 3 4)` argument; when the tuple argument itself PERFORMS and the arm uses `p` more
+           than once, the fold declines rather than duplicate the perform (see the effect-duplication guard
+           — a substituted performing argument copied per param-use would re-issue its effect).")
+  (input  (do
+            (effect Add (op sum (-> (Tuple Int64 Int64) Int64)))
+            (def (main)
+              (handle Add 0 ((sum (p) s (resume (+ (. p 0) (. p 1)) s)))
+                (Add.sum (tuple 3 4)))) (export main)))
+  (output (: 7 Int64)))
+
 ; The SAME spec sentence has a second half: performing an operation must "YIELD the operation's declared
 ; RESULT type" (capabilities-and-effects.md #Performing An Operation Is Typed And Contributes To The Row).
 ; A handler arm resumes the continuation with the value the operation yields — `(resume <value> <state>)`
