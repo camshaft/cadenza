@@ -368,6 +368,21 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip))) (+ x (Amb.flip))))) (export main)))
   (output (: 22 Int64)))
 
+(case "a one-shot two-hole body folds with the leading perform in an if condition"
+  (doc    "The one-shot re-reducing fold descends an `if` CONDITION — the strict, evaluated-first position —
+           for its leading hole, and a further perform in a BRANCH is served when the re-reduced condition
+           selects that branch. Here `(if (< (Amb.flip) 50) (+ 1 (Amb.flip)) 0)`: the leading flip is the
+           condition, `C = (if (< [] 50) (+ 1 (Amb.flip)) 0)`; `(resume 10 s)` re-reduces `C[10] = (if (< 10
+           50) (+ 1 (Amb.flip)) 0)` — the condition is now the constant `(< 10 50)` = true, so the then-branch
+           is taken and its remaining flip folds (by handler distribution over the now-constant conditional):
+           `(+ 1 (+ 1 10))` = 12; the outer arm `(+ 1 (resume 10 s))` → `(+ 1 12)` = 13. The condition runs
+           once (one resume), so no effect is duplicated.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 50) (+ 1 (Amb.flip)) 0))) (export main)))
+  (output (: 13 Int64)))
+
 (case "a handler arm that resumes NON-tail folds when the perform is in an if condition"
   (doc    "The pure one-hole continuation extends into an `if` CONDITION — a strict, always-evaluated-first
            position, so the continuation `C = (if (< [] 5) 1 2)` is uniform (the branches run only AFTER the

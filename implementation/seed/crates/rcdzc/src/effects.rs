@@ -3442,8 +3442,20 @@ fn leading_strict_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<
         // perform in an ARM BODY is a non-uniform (conditionally-run) position — NOT a leading strict hole
         // (handler distribution handles a pure-scrutinee arm perform; a scrutinee hole is this path).
         Resolved::Match { scrutinee, .. } => leading_strict_hole(db, scrutinee, ctx),
-        // Any other shape (`if`/`and`/`or`/`handle`/`resume`) or an already-pure leaf: not a clean strict
-        // leading hole here — decline (a conditional's non-uniform positions are the frame vertical's job).
+        // An `if`: the CONDITION is strict, evaluated FIRST, so a leading hole may sit there. The
+        // continuation `C = (if <cond[□]> then else)` is re-reduced by the refold — where the condition is
+        // now a concrete VALUE, so the taken branch is selected (a performing branch is then served by the
+        // recursive fold / distribution). Unlike `pure_hole`'s if-cond arm, the branches need NOT be pure
+        // (the refold re-reduces `C`). A leading hole in a BRANCH (a conditionally-run position) is NOT
+        // returned — only the condition is a strict-first uniform position.
+        Resolved::If { cond, .. } => leading_strict_hole(db, cond, ctx),
+        // A short-circuit `and`/`or`: the LHS is strict, evaluated FIRST — a leading hole may sit there. `C
+        // = (and <lhs[□]> rhs)` is re-reduced by the refold (lhs now a value → short-circuit resolves; a
+        // performing rhs on the taken path is served by the fold). The RHS (conditionally-run) is not a
+        // strict-first position, so only the LHS is descended.
+        Resolved::And { lhs, .. } => leading_strict_hole(db, lhs, ctx),
+        // Any other shape (`handle`/`resume`) or an already-pure leaf: not a clean strict leading hole
+        // here — decline.
         _ => None,
     }
 }

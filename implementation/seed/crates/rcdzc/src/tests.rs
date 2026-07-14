@@ -28058,17 +28058,36 @@ mod stage1 {
     }
 
     #[test]
-    fn a_perform_in_the_condition_and_a_branch_declines_the_distribution() {
-        // ADVERSARIAL: distribution requires a STRONGLY-PURE condition (it runs once, before either branch).
-        // `(if (< (Amb.flip) 5) (+ 1 (Amb.flip)) 0)` performs in BOTH the condition and a branch — a
-        // two-hole shape distribution must not touch (a performing condition would need its own frame). It
-        // declines cleanly (the pure-one-hole fold also declines: the condition hole makes the branch
-        // perform a SECOND hole). Never a mis-fold.
-        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
+    fn a_perform_in_the_condition_and_a_branch_folds_via_the_one_shot_refold() {
+        // E5 TWO-HOLE with the leading hole in an if-CONDITION composing with distribution: `(if (< (Amb.flip)
+        // 5) (+ 1 (Amb.flip)) 0)` performs in BOTH the condition and the then-branch. The one-shot refold
+        // takes the CONDITION flip as the leading hole → `C = (if (< □ 5) (+ 1 (Amb.flip)) 0)`; `(resume 10
+        // s)` re-reduces `C[10] = (if (< 10 5) (+ 1 (Amb.flip)) 0)` where the condition is now the constant
+        // `(< 10 5)` = false, so the ELSE branch (pure `0`) is taken and the then-branch perform never runs →
+        // 0; the outer arm `(+ 1 (resume 10 s))` → `(+ 1 0)` = 1. (Was a clean decline; the refold turns the
+        // condition hole into a leading strict hole, and the now-constant condition selects a branch.)
+        let false_dir = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 5) (+ 1 (Amb.flip)) 0))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a perform in the condition AND a branch must decline (distribution needs a pure condition)"
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(false_dir)))
+                    .expect("a condition-and-branch two-hole folds via the refold"),
+                "main"
+            ),
+            1
+        );
+        // The TRUE direction, where the taken (then) branch DOES perform: `(< 10 50)` = true → `(+ 1
+        // (Amb.flip))` (distribution serves the branch perform) → `(+ 1 (+ 1 10))` = 12; outer arm `(+ 1 12)`
+        // = 13. The refold composes with handler distribution for the surviving branch perform.
+        let true_dir = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 50) (+ 1 (Amb.flip)) 0))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(true_dir)))
+                    .expect("a condition-and-taken-branch two-hole folds via the refold"),
+                "main"
+            ),
+            13
         );
     }
 

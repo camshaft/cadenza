@@ -581,6 +581,7 @@ pass	a nullary variant applied to unit constructs correctly through the applicat
 pass	a one-element tuple pattern against a two-tuple is a type error
 pass	a one-shot handler arm folds a body with TWO performs by re-reducing the continuation
 pass	a one-shot two-hole body folds across a let binding
+pass	a one-shot two-hole body folds with the leading perform in an if condition
 pass	a param-shadowing let with a param-referencing initializer folds at a constant argument
 pass	a parameter annotation contradicting its use is rejected
 pass	a parameter carries a type annotation in the signature
