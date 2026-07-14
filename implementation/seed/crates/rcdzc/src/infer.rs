@@ -5326,7 +5326,8 @@ fn check_application(
                     // anti-pattern. Say "`E` is an effect, not a function" (the apply-position analogue of
                     // the M74 export-a-type category message). A non-name head (a literal `(5 3)`, a value)
                     // keeps the type-named message — the type IS the useful fact there.
-                    let name_category = db.ast.as_name(head).and_then(|n| {
+                    let name = db.ast.as_name(head).map(str::to_string);
+                    let name_category = name.as_deref().and_then(|n| {
                         if db.type_decl_by_name(n).is_some() {
                             Some((n.to_string(), "a type"))
                         } else if db.effect_decl_by_name(n).is_some() {
@@ -5335,14 +5336,37 @@ fn check_application(
                             None
                         }
                     });
+                    // A bare name resolving to a NULLARY FUNCTION def — `(def (g) …)` applied `(g 5)`. A
+                    // nullary def resolves its name straight to its body VALUE (a `Ref`), so `g` IS that
+                    // value and `(g 5)` genuinely applies a non-function — but the author wrote `g` with a
+                    // `()` signature and CALLED it, so "cannot apply a value of type Int64" hides both the
+                    // name and the real cause (it takes no arguments). Distinguish it from a plain value def
+                    // `(def v …)` by its SIGNATURE shape: a nullary FUNCTION's `sig_occ` is a list `(g)`, a
+                    // value def's is a bare name. Name it + say it takes no arguments (the nullary companion
+                    // of the over-application naming — M99/M105). A value def keeps the type-named message
+                    // (its value IS the fact — `v` names nothing more useful than its type).
+                    let nullary_fn = name
+                        .as_deref()
+                        .filter(|_| name_category.is_none())
+                        .and_then(|n| {
+                            let idx = db.def_by_name(n)?;
+                            let sig = db.defs[idx].sig_occ;
+                            matches!(db.ast.get(sig), crate::ast::Struct::List(_))
+                                .then(|| n.to_string())
+                        });
                     trace!(target: "rcdzc::infer", head = head.0, ty = %ht.render_name(), "fault: applying a non-function value (CDZ0201)");
-                    let message = match name_category {
-                        Some((name, cat)) => {
+                    let message = match (name_category, nullary_fn) {
+                        (Some((name, cat)), _) => {
                             format!(
                                 "`{name}` is {cat}, not a function — it cannot be applied to arguments"
                             )
                         }
-                        None => format!(
+                        (None, Some(name)) => format!(
+                            "`{name}` takes no arguments, but {} {} applied — call it as `({name})`, without arguments",
+                            args.len(),
+                            if args.len() == 1 { "was" } else { "were" }
+                        ),
+                        (None, None) => format!(
                             "{} {} — it is not a function",
                             crate::diag::NOT_A_FUNCTION_PREFIX,
                             ht.render_name()
