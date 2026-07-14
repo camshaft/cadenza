@@ -506,15 +506,14 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // resource `encode()` path, like a String. (Constant symbol escape is a later increment; for now
         // a Symbol crossing the boundary declines cleanly.)
         Ty::Symbol => None,
-        // A `BigInt` HAS a boundary representation per the spec — a `list<u8>` in the pinned
-        // two's-complement encoding (`options/type-mapping`), so it MAY cross an exported signature. But
-        // that encoding path is a later increment (B4); B0 adds the type only. So a `BigInt` at the
-        // boundary declines cleanly for now (`None`), like the compound types that escape via `encode()`,
-        // rather than mapping to a wrong primitive. It is NOT a primitive valtype in any case.
+        // A `BigInt` is NOT a primitive valtype — it has no primitive boundary form. It crosses the
+        // boundary via the value-form escape (the value-encode walker renders it as a `KIND_INT` leaf),
+        // like the compound types that escape via `encode()`, NOT through this primitive-valtype map — so
+        // this returns `None` (the escape path in `mod.rs` handles the actual crossing).
         Ty::BigInt => None,
-        // A `Rational` has no primitive boundary valtype (a later B4 slice crosses it as a
-        // `record { numerator: list<u8>, denominator: list<u8> }` value-form, like BigInt's list<u8>).
-        // Declines cleanly for now.
+        // A `Rational` is likewise NOT a primitive valtype — it crosses via the value-form escape as a
+        // `{numerator, denominator}` record (`ShapeNode::Rational`, R3c), handled by the escape path in
+        // `mod.rs`, not this primitive-valtype map. So this returns `None`.
         Ty::Rational => None,
         // A float crosses the component boundary as its width's primitive: `Float32` → `f32`, `Float64`
         // → `f64`. Both admitted widths ({32,64}) have a faithful component-model float primitive.

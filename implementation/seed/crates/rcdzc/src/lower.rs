@@ -7929,7 +7929,7 @@ fn lower_rational_of(db: &mut Db, num: StructId, den: StructId) -> Core {
 }
 
 /// The two `IntValue`s of a `Core::ConstRational` operand (already normalized), or `None` if `id` did not
-/// fold to a constant rational (a runtime rational — declines this increment).
+/// fold to a constant rational (a runtime rational — the caller then emits the runtime `rational-*` op, R3b).
 fn const_rational_of(
     db: &mut Db,
     id: StructId,
@@ -7987,10 +7987,11 @@ fn lower_rational_arith(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> 
     normalized_rational(num, den)
 }
 
-/// Lower a rational comparison `<`/`>`/`<=`/`>=`/`=` — fold a constant pair to a `Core::ConstBool` by
+/// Lower a rational comparison `<`/`>`/`<=`/`>=`/`=` — fold a CONSTANT pair to a `Core::ConstBool` by
 /// comparing the two normalized rationals EXACTLY: `a/b <=> c/d` ⇔ `a*d <=> c*b` (both denominators are
-/// strictly positive after normalization, so cross-multiplication preserves the order direction). A
-/// runtime rational compare is a later B4 slice (declines). A poison propagates.
+/// strictly positive after normalization, so cross-multiplication preserves the order direction), or
+/// (R3b) emit `Core::RationalCmp` (the runtime `rational-cmp` op + a fixed compare-with-zero) when an
+/// operand is RUNTIME-valued. A poison propagates.
 fn lower_rational_cmp(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, lhs) {
         return Core::Poison(r);
