@@ -2477,8 +2477,33 @@ fn emit_multi_closure_resource(
     } else {
         single_compound_among_scalars(arg_tys.as_slice())
     };
-    let arg_bytes: Vec<u8> = if tuple_arg.is_some() {
-        Vec::new() // the flattened tuple fields are carried by `tuple_arg`, not `arg_bytes`
+    // A SOLE fixed-shape compound arg with a NESTED compound field (all exports share it): the shared `call`
+    // rebuilds the nested cell recursively, the envelope mints the inner `tuple<…>` types by index. Detected
+    // when `tuple_arg` (all-scalar-field) is None. Scoped like single-export: sole nested arg, any result.
+    let nested_tuple: Option<NestedCompoundArgBoundary> =
+        if tuple_arg.is_none() && arg_tys.len() == 1 {
+            nested_fixed_shape_tuple_arg(&arg_tys[0]).and_then(|(lb, lv, rf, shape)| {
+                let has_nested = shape.iter().any(|f| {
+                    matches!(
+                        f,
+                        crate::backend::wasm::envelope::TupleFieldShape::Nested(_)
+                    )
+                });
+                has_nested.then_some((
+                    lb,
+                    lv,
+                    serialize::TupleArgRebuild {
+                        fields: rf,
+                        base_param: 1,
+                    },
+                    shape,
+                ))
+            })
+        } else {
+            None
+        };
+    let arg_bytes: Vec<u8> = if tuple_arg.is_some() || nested_tuple.is_some() {
+        Vec::new() // the flattened tuple fields are carried by `tuple_arg`/`nested_tuple`, not `arg_bytes`
     } else {
         arg_tys
             .iter()
@@ -2526,11 +2551,14 @@ fn emit_multi_closure_resource(
     } else {
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
     };
-    // Core call-arg valtypes: the FLATTENED tuple fields when a tuple arg, else each arg's own valtype.
+    // Core call-arg valtypes: the FLATTENED tuple fields when a (flat or nested) tuple arg, else each arg's
+    // own valtype.
     let arg_vts: Vec<crate::backend::wasm::lir::ValType> = if let Some((_, all_vts, _, _, _)) =
         &tuple_arg
     {
         all_vts.clone()
+    } else if let Some((_, leaf_vts, _, _)) = &nested_tuple {
+        leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
     } else {
         arg_tys
             .iter()
@@ -2632,6 +2660,15 @@ fn emit_multi_closure_resource(
                 });
             }
         }
+        if let Some((_, _, rebuild, _)) = &nested_tuple {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for f in &rebuild.fields {
+                f.collect_box_ops(&mut |bop| {
+                    used.insert(bop);
+                });
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -2678,13 +2715,21 @@ fn emit_multi_closure_resource(
         })
         .collect();
     // A fixed-shape tuple ARG (shared by all makes): the shared list-`call` cores rebuild the arg cell from
-    // the flattened fields, the shared list<u8> envelope emits the `tuple<…>` type. `None` on the scalar path.
-    let rebuild = tuple_arg.as_ref().map(|(_, _, _, _, rb)| rb);
+    // the flattened fields, the shared list<u8> envelope mints a flat `tuple<…>` (from `tuple_bytes`) OR a
+    // recursive NESTED one (from `shape`). A flat arg carries `tuple_bytes = Some` + `shape = None`; a nested
+    // one the reverse (its shape is the SOLE arg → no prefix/suffix). `None` on the scalar-arg path.
+    let rebuild = tuple_arg
+        .as_ref()
+        .map(|(_, _, _, _, rb)| rb)
+        .or_else(|| nested_tuple.as_ref().map(|(_, _, rb, _)| rb));
     let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
-    // Prefix/suffix scalar bytes when the tuple sits among scalars; empty for a sole tuple. Both the SCALAR
-    // and the three LIST-result multi cores now interleave these around the rebuilt tuple (via the shared
-    // `serialize::emit_closure_call_args`); the shared `call` functype interleaves the scalar boundary bytes
-    // around the `tuple<…>` type (`assemble_multi_closure_bytes_resource_borrow_tuple` threads prefix/suffix).
+    let tuple_shape: Option<&[crate::backend::wasm::envelope::TupleFieldShape]> = nested_tuple
+        .as_ref()
+        .map(|(_, _, _, shape)| shape.as_slice());
+    // Prefix/suffix scalar bytes when the tuple sits among scalars; empty for a sole tuple (flat OR nested).
+    // Both the SCALAR and the three LIST-result multi cores now interleave these around the rebuilt tuple (via
+    // the shared `serialize::emit_closure_call_args`); the shared `call` functype interleaves the scalar
+    // boundary bytes around the `tuple<…>` type.
     let tpre = tuple_arg
         .as_ref()
         .map(|(_, _, pre, _, _)| pre.as_slice())
@@ -2724,6 +2769,7 @@ fn emit_multi_closure_resource(
                 tuple_bytes,
                 tpre,
                 tsuf,
+                tuple_shape,
             ),
         );
     }
@@ -2757,6 +2803,7 @@ fn emit_multi_closure_resource(
                 tuple_bytes,
                 tpre,
                 tsuf,
+                tuple_shape,
             ),
         );
     }
@@ -2789,6 +2836,7 @@ fn emit_multi_closure_resource(
                 tuple_bytes,
                 tpre,
                 tsuf,
+                tuple_shape,
             ),
         );
     }
@@ -2824,6 +2872,42 @@ fn emit_multi_closure_resource(
             Some(field_bytes),
             tpre2, // prefix scalar bytes (empty for a sole-tuple arg)
             tsuf2, // suffix scalar bytes
+            None,  // an all-scalar-field tuple — no nested shape
+        ));
+    }
+    // DIRECT-CALL NESTED COMPOUND ARG (multi-export, SCALAR result): N same-sig closures share one `call`
+    // whose sole arg is a NESTED fixed-shape compound. The shared `call` rebuilds the nested cell recursively;
+    // the envelope mints the inner `tuple<…>` types by index (`tuple_shape`). (A nested arg with a list result
+    // was handled by the list-result routings above.)
+    if let Some((_leaf_bytes, _leaf_vts, rebuild, shape)) = &nested_tuple {
+        let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
+            &funcs,
+            &imports,
+            &[],
+            &ser_makes,
+            &[], // no plain exports on the pure multi-export path
+            &arg_vts,
+            ret_vt,
+            lifted_type_idx,
+            &layout,
+            false,
+            Some(rebuild),
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &abi_makes,
+            &arg_bytes, // empty — the flattened leaves are carried by the shape
+            result_byte,
+            &[], // no plain exports
+            false,
+            None, // the flat all-scalar path is unused; the shape drives the mint
+            &[],  // sole nested tuple → no prefix/suffix scalars
+            &[],
+            Some(shape),
         ));
     }
     // C-HOST-6: the ONE shared scalar `call` takes `borrow<t>`, so each make's handle is repeatable (the
@@ -3233,6 +3317,7 @@ fn emit_mixed_closure_resource(
                 tuple_bytes,
                 tpre,
                 tsuf,
+                None, // the MIXED path detects a SOLE all-scalar tuple only (no nested shape yet)
             ),
         );
     }
@@ -3266,6 +3351,7 @@ fn emit_mixed_closure_resource(
                 tuple_bytes,
                 tpre,
                 tsuf,
+                None, // the MIXED path detects a SOLE all-scalar tuple only (no nested shape yet)
             ),
         );
     }
@@ -3298,6 +3384,7 @@ fn emit_mixed_closure_resource(
                 tuple_bytes,
                 tpre,
                 tsuf,
+                None, // the MIXED path detects a SOLE all-scalar tuple only (no nested shape yet)
             ),
         );
     }
@@ -3333,6 +3420,7 @@ fn emit_mixed_closure_resource(
             Some(field_bytes),
             tpre2,
             tsuf2,
+            None, // the MIXED path detects a SOLE all-scalar tuple only (no nested shape yet)
         ));
     }
     // C-HOST-6: the shared scalar `call` takes `borrow<t>` (repeatable — each make's handle survives across
