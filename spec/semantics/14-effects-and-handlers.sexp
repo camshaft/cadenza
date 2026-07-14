@@ -1736,3 +1736,22 @@
             (def (main)
               (handle Log 0 ((record (n) s (resume n s))) 0)) (export main)))
   (error  CDZ0403))
+
+(case "an effect operation returning a SUM is resumed with a sum value and matched"
+  (doc    "The effect/sum intersection: `Ask`'s operation `query` is typed `(-> Int64 Resp)` where `Resp`
+           is a user sum `(Yes Int64) | No`. An in-program handler discharges it by RESUMING with a
+           constructed sum value `(Resp.Yes n)`, and the body MATCHES the operation's result on `Resp`'s
+           variants. `(handle Ask unit ((query (n) s (resume (Resp.Yes n) s))) (match (Ask.query 5) …))`
+           resumes with `(Yes 5)`, the match binds `v = 5` → 5. Pins that a sum flows through an effect
+           operation's result — constructed in the handler arm, resumed, and deconstructed at the perform
+           site — the sum companion of the Int/Unit-resuming handler cases (none of which resume a sum).")
+  (input  (do
+            (type Resp (Yes Int64) (No))
+            (effect Ask (op query (-> Int64 Resp)))
+            (def (main (: k Int64))
+              (handle Ask unit ((query (n) s (resume (Resp.Yes n) s)))
+                (match (Ask.query k) ((Resp.Yes v) v) ((Resp.No) -1))))
+            (export main)))
+  (needs  effects)
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
