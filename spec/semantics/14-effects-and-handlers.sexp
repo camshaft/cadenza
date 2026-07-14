@@ -1122,6 +1122,22 @@
            state; the handle's value is the body's tail.")
   (output (: 99 Int64)))
 
+(case "textually-identical performs are DISTINCT state-advancing reads, not a common subexpression"
+  (doc    "A soundness pin against the backend optimizer's CSE/value-numbering: four TEXTUALLY-IDENTICAL
+           `(C.t)` performs are FOUR DISTINCT reads that each advance the handler state, NOT a common
+           subexpression to dedup. `(+ (* (C.t) (C.t)) (* (C.t) (C.t)))` seeded 0, arm `(resume s (+ s 1))`:
+           evaluated left-to-right, the four reads are 0, 1, 2, 3, so it is `(+ (* 0 1) (* 2 3))` = `(+ 0 6)`
+           = 6. Were the compiler to treat the identical `(C.t)` as a common subexpression and compute it
+           ONCE (a CSE that ignores effect ordering), the answer would be wrong (e.g. `(* 0 0) + (* 0 0)` =
+           0). The effect fold discharges each perform to its own distinct state-advancing read BEFORE the
+           optimizer runs, so straight-line CSE never sees a shared effectful node — pinned here at 6.")
+  (input  (do
+            (effect C (op t (-> Unit Int64)))
+            (def (main)
+              (handle C 0 ((t (u) s (resume s (+ s 1))))
+                (+ (* (C.t) (C.t)) (* (C.t) (C.t))))) (export main)))
+  (output (: 6 Int64)))
+
 ; --- A perform inside an if/match BRANCH threads its state OUT to the continuation after the conditional.
 ; A branch's state advance is not local to the branch: the code following the conditional must run against
 ; the branch's POST-state, not the pre-branch state. Because only one branch runs, the state after the
