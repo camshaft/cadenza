@@ -193,6 +193,7 @@ pass	a Rational-annotated literal composes with exact rational arithmetic
 pass	a Rational-payload sum value escapes across the boundary in its canonical form
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
+pass	a Result pipeline short-circuits on the first Err
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a STRING-result effect op resumes with a string that folds through a concat
 pass	a SUM is threaded as a handler's folded state across operations
@@ -1078,6 +1079,8 @@ pass	a runtime BigInt remainder takes the dividend's sign
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime Rational built from a parameter compares by its exact value
 pass	a runtime Rational comparison of a parameter is false when it should be
+pass	a runtime Result carrying a String error is matched
+pass	a runtime Result constructed from a condition selects its Ok or Err arm
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bin match binds the tail after a fixed header via a final rest segment
