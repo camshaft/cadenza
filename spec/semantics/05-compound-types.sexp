@@ -1614,6 +1614,38 @@
             (def (main) (sm (count 5))) (export main)))
   (output (: 15 Int64)))
 
+(case "a lowercase-named type is referenceable in a field (types are values, not gated by case)"
+  (doc    "A type is a VALUE, referenceable by name regardless of case — so a lowercase-named sum
+           `(type mylist (Nil) (Cons Int64 mylist))` may SELF-REFERENCE `mylist` in its `Cons` field, and
+           a recursive fold over it computes. The convention `lowercase-in-type-position = a type VARIABLE`
+           still governs a name that names NO declared type (the `a` in `(type Box (W a))` stays a tyvar),
+           but a name that DOES name a declared type resolves to that type before tyvar-capture: the
+           implicit-param scan drops any payload name matching a gathered type name (`db::scan_top_level`,
+           after the full top-level+nested gather). Before this, `mylist` in the field re-lexed as a tyvar,
+           the sum silently became generic, and its variants failed to resolve → a confusing CDZ0203 far
+           from the cause. `len` folds a 3-element `mylist` → 3, proving the self-referential recursive
+           type genuinely resolves and runs (not merely compiles). The Capitalized `Mylist` spelling and a
+           genuine generic `(type Box (W a))` are both unaffected.")
+  (input  (do
+            (type mylist (Nil) (Cons Int64 mylist))
+            (def (len (: l mylist)) (match l ((Nil) 0) ((Cons h t) (+ 1 (len t)))))
+            (def (main) (len (mylist.Cons 1 (mylist.Cons 2 (mylist.Cons 3 (mylist.Nil))))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "a lowercase-named type cross-references another lowercase-named type in a field"
+  (doc    "The cross-reference companion: a lowercase `(type wrap (W num))` whose field references ANOTHER
+           declared lowercase type `(type num (Z))` resolves `num` to that type (a value), not a tyvar — so
+           `wrap` is a concrete non-generic sum wrapping a `num`. `(g (wrap.W (num.Z)))` matches the `W`
+           arm → 1. Pins that the declared-type-name-wins rule spans distinct types, not only self-reference.")
+  (input  (do
+            (type num (Z))
+            (type wrap (W num))
+            (def (g (: w wrap)) (match w ((W n) 1)))
+            (def (main) (g (wrap.W (num.Z))))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "a recursive-sum payload projected more than once folds to a scalar"
   (doc    "A recursive list `(type L (Nil) (Cons Int64 L))` whose `Cons` payload the Rust backend BOXES,
            where the bound tail `t` is PROJECTED MORE THAN ONCE: `(let ((d (f t))) (if (= d 0) h d))` reads

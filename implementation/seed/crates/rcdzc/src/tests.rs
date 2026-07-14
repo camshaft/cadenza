@@ -10416,6 +10416,47 @@ mod recursion {
     }
 
     #[test]
+    fn a_lowercase_named_type_is_referenceable_in_a_field() {
+        // A type is a VALUE, referenceable by name regardless of case. A lowercase-named sum
+        // `(type mylist (Nil) (Cons Int64 mylist))` SELF-references `mylist` in its field, and a lowercase
+        // `(type wrap (W num))` cross-references a declared `(type num …)`. The implicit-type-parameter scan
+        // (`db::scan_top_level`) captures a free lowercase payload name as a tyvar (`a` in `(type Box (W a))`),
+        // but a name that names a DECLARED type is dropped from the params after the full type-name gather —
+        // so it resolves to the type (step 3), not a fresh variable. Before this the reference re-lexed as a
+        // tyvar, the sum silently became generic, and its variants failed to resolve (a confusing CDZ0203).
+        let ok = |src: &str| {
+            assert!(
+                compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+                "must compile: {src}"
+            )
+        };
+        // Self-referential lowercase recursive sum — the field `mylist` resolves to the type, so its
+        // variants (`Nil`/`Cons`) resolve and the match type-checks + emits (was CDZ0203). A recursive
+        // `len` fold over it (self-referential recursion through the field) also compiles.
+        ok(
+            "(module m (type mylist (Nil) (Cons Int64 mylist)) (def (f (: l mylist)) (match l ((Nil) 0) ((Cons h t) 1))) (def (main) (f (mylist.Nil))) (export main))",
+        );
+        ok(
+            "(module m (type mylist (Nil) (Cons Int64 mylist)) (def (len (: l mylist)) (match l ((Nil) 0) ((Cons h t) (+ 1 (len t))))) (def (main) (len (mylist.Nil))) (export main))",
+        );
+        // Cross-referencing lowercase types (`wrap` references declared `num`).
+        ok(
+            "(module m (type num (Z)) (type wrap (W num)) (def (g (: w wrap)) (match w ((W n) 1))) (def (main) (g (wrap.W (num.Z)))) (export main))",
+        );
+        // NO REGRESSION: a genuine tyvar (`a`, matching no declared type) stays a real type variable — the
+        // generic sum still compiles + instantiates.
+        ok(
+            "(module m (type Box (W a) (E)) (def (main) (match (Box.W 5) ((W n) n) ((E) 0))) (export main))",
+        );
+        // The Capitalized spelling is unaffected.
+        ok(
+            "(module m (type Mylist (Nil) (Cons Int64 Mylist)) (def (f (: l Mylist)) (match l ((Nil) 0) ((Cons h t) 1))) (def (main) (f (Mylist.Nil))) (export main))",
+        );
+        // (The end-to-end RUN — a recursive `len` over a lowercase `mylist` → 3 — is covered by the corpus
+        // gate, which composes the value-heap runtime `run_returns` here does not.)
+    }
+
+    #[test]
     fn a_recursive_newtype_traversal_recurses_on_its_projected_field() {
         // OVER-REJECTION regression: a recursive NEWTYPE `(type Lst (Mk (Option (Tuple Int64 Lst))))` whose
         // recursive field is PROJECTED out (`(. p 1) : Lst`) and passed to a same-typed recursive call was

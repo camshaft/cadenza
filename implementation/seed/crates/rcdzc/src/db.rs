@@ -2642,6 +2642,23 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
         collect_nested_decls(ast, body, &top, &mut types, &mut effects, &mut modules);
     }
 
+    // A DECLARED type name is NOT an implicit type parameter, even lowercase. `collect_type_params`
+    // captures every free lowercase payload name as a tyvar (the `a` in `(type Box (W a))`), following
+    // the "types are Capitalized, lowercase is a type variable" convention. But a type is a VALUE, so a
+    // declared type name — of ANY case — referenced in a field is a reference to that type, not a fresh
+    // variable: `(type mylist (Nil) (Cons Int64 mylist))` self-references `mylist`, and `(type wrap (W
+    // num))` over a declared `(type num …)` references `num`. Without this the reference re-lexed as a
+    // tyvar, the sum silently became generic, and its variants failed to resolve (a confusing CDZ0203
+    // far from the cause). Now that ALL type names are gathered (top-level + nested), drop any param that
+    // names a declared type — so a lowercase self/cross type reference resolves to the type (step 3 of
+    // `resolve_name`) instead of being captured. A genuine tyvar (`a`, matching no declaration) is kept.
+    // (Runs here, after the full gather, because a forward/self reference needs the whole type-name set.)
+    let declared_type_names: std::collections::HashSet<String> =
+        types.iter().map(|t| t.name.clone()).collect();
+    for t in &mut types {
+        t.params.retain(|p| !declared_type_names.contains(p));
+    }
+
     // Resolve each export's target index by name against the gathered defs (a signature read, not a
     // body read).
     // Resolve each export to the def it names. A per-export `defs.iter().position(|d| d.name == …)`
