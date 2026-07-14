@@ -6009,6 +6009,10 @@ fn check_application(
                     | Ty::Set(_)
                     | Ty::Sum { .. }
                     | Ty::Nominal { .. }
+                    // A first-class TYPE value held against a scalar/text — `(+ Color 1)`, `(< Int64 5)` —
+                    // is a cross-kind clash (no shared arithmetic/order between a type and a number). It
+                    // otherwise leaked the phantom "type mismatch: Int64 and Type" from the generic scheme.
+                    | Ty::Type
             )
         };
         let is_atom = |t: &Ty| is_text(t) || is_scalar(t);
@@ -6029,6 +6033,10 @@ fn check_application(
             // stay on the generic path ("type mismatch: Color and Shape"), a genuine same-kind mismatch. A
             // sum vs a RECORD/LIST/etc. differs in tag → the kind-boundary message, correct.
             Ty::Sum { .. } | Ty::Nominal { .. } => Some(5),
+            // A TYPE value gets its own tag: two Types are the SAME kind (a bare `(= Int64 Int64)` is left
+            // to its own path — type equality is `Type.eq`, not the generic `=`), but a Type vs a compound
+            // differs in tag → the kind-boundary message.
+            Ty::Type => Some(6),
             _ => None,
         };
         let different_compound_kinds = match (compound_kind(&a), compound_kind(&b)) {
@@ -6082,6 +6090,11 @@ fn check_application(
         // fix.) Comparison (`= < >`) on two same sums/nominals is VALID (structural equality / a derived
         // order), so this stays arithmetic-only, and the earlier `nominal_inner_vs` guard already handles a
         // nominal-vs-its-INNER comparison — this is the two-SAME-framing arithmetic case that leaks past.
+        // `Ty::Type` (a first-class TYPE value — `Int64`, a user sum name, `List` used as a value) joins
+        // too: arithmetic on a type is always a type error (there is no `+` on types; type EQUALITY is the
+        // dedicated `Type.eq`, not the bare `=`/`+`). The generic scheme grounds the first operand to Int64
+        // and reports "type mismatch: Int64 and Type" — the same phantom leak (plus a cascading uncoded "a
+        // type value has no runtime form" decline). Naming it "arithmetic is not defined on Type" is honest.
         let text_or_compound_ty = |t: &Ty| {
             matches!(
                 t,
@@ -6096,6 +6109,7 @@ fn check_application(
                     | Ty::Unit
                     | Ty::Sum { .. }
                     | Ty::Nominal { .. }
+                    | Ty::Type
             )
         };
         if is_arith && text_or_compound_ty(&a) && text_or_compound_ty(&b) {
