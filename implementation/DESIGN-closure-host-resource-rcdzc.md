@@ -989,9 +989,20 @@ the component type. The new work:
   List) of distinct sigs → (list 10 3) / (list 7). 🎯 A FIXED-SHAPE SCALAR compound closure ARG now composes
   with EVERY result shape (scalar/byte-rope/fixed-compound/collection) across ALL FOUR export shapes
   (single/multi/mixed/distinct-sig). The direct-call tuple-arg surface is complete.
-- **REMAINING (all optional, none blocking):** on the DIRECT-CALL path — a compound arg ALONGSIDE other args
-  (the `TupleArgRebuild` currently assumes the tuple is the SOLE arg — needs interleaving flattened-tuple
-  fields with pass-through scalars); a
+- **✅ A fixed-shape scalar tuple ARG can sit AMONG scalar args** (`@e934430d`, baseline `@54ee91ff`; single-
+  export, scalar result). Generalized the arg model from "the tuple is the SOLE arg" to "exactly one tuple at
+  ANY position among aliased-width scalars". `TupleArgRebuild` gained `base_param` (the core-param index the
+  flattened fields start at = `1 + prefix-scalar-count`); `emit_tuple_rebuild` reads `base_param + i`; the
+  shared scalar `call` body pushes prefix scalars, the rebuilt tuple, suffix scalars, in the closure's arg
+  order. Envelope: `closure_call_tuple_arg_functype_interleaved` (self + prefix bytes + tuple + suffix bytes);
+  `assemble_closure_resource_borrow_tuple` + the inner re-export thread `tuple_prefix_bytes`/`tuple_suffix_
+  bytes`. `single_compound_among_scalars` detects it. 🪤 the envelope's `tuple<…>` type takes the tuple's OWN
+  field bytes (NOT the full flattened list) — else a param-count mismatch. Corpus: scalar-then-tuple → 113,
+  tuple-then-scalar → 113, scalar-tuple-scalar → 114. Still declines: an among-scalars tuple with a LIST result
+  (list-result cores don't yet interleave — a follow-on); multi/mixed/distinct-sig among-scalars.
+- **REMAINING (all optional, none blocking):** on the DIRECT-CALL path — an among-scalars tuple on the
+  multi/mixed/distinct-sig paths OR with a list<u8>-crossing result (the interleaving generalization applied
+  to those cores); a
   VARIABLE-LENGTH collection arg
   (needs a `value-decode` runtime op that does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
   direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-resource passed
