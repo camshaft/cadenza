@@ -6352,6 +6352,41 @@
   (call   main (: 5 Int64)) (output (: (tuple 5 6) (Tuple Int64 Int64)))
   (call   main (: 40 Int64)) (output (: (tuple 40 41) (Tuple Int64 Int64))))
 
+; The parameterized COLLECTION-return cases above always return a NON-EMPTY collection. The EMPTY boundary
+; — a parameterized export whose result is a runtime-SELECTED empty-or-nonempty collection (an `if` choosing
+; between `(list)` and `(list …)`) — is a distinct case: the empty branch must cross as the canonical EMPTY
+; value form (`(list)` / `(map)` / `((. Set of) (list))`), and the non-empty branch as its populated form,
+; both from the SAME export driven by the argument. A collection escape that assumed a non-empty payload (a
+; length-prefix off-by-one, a head read on an empty structure) would break the empty branch. These pin both.
+
+(case "a parameterized export returns a runtime-selected empty-or-nonempty list"
+  (doc    "`main(n) = (if (> n 0) (list n) (list))` returns an empty or one-element list decided by the
+           argument. n=0 → the canonical empty list `(list)`; n=5 → `(list 5)`. Pins that the empty branch
+           of a runtime-selected collection crosses the resource-escape boundary as the canonical empty
+           value form, alongside the populated branch — the degenerate boundary the non-empty
+           parameterized-return cases above cannot witness.")
+  (input  (do (def (main (: n Int64)) (if (> n 0) (list n) (list))) (export main)))
+  (call   main (: 0 Int64)) (output (: (list) (List Int64)))
+  (call   main (: 5 Int64)) (output (: (list 5) (List Int64))))
+
+(case "a parameterized export returns a runtime-selected empty-or-nonempty map"
+  (doc    "The map companion: `main(n) = (if (> n 0) (Map.insert Map.empty n n) Map.empty)` returns an empty
+           or one-entry map by the argument. n=0 → the canonical empty map `(map)`; n=5 → `(map (5 5))`.
+           Pins that `Map.empty` crosses the boundary as the canonical empty map form from a parameterized
+           export, not only a populated map.")
+  (input  (do (def (main (: n Int64)) (if (> n 0) (Map.insert Map.empty n n) Map.empty)) (export main)))
+  (call   main (: 0 Int64)) (output (: (map) (Map Int64 Int64)))
+  (call   main (: 5 Int64)) (output (: (map (5 5)) (Map Int64 Int64))))
+
+(case "a parameterized export returns a runtime-selected empty-or-nonempty set"
+  (doc    "The set companion: `main(n) = (if (> n 0) (Set.of (list n)) (Set.of (list)))` returns an empty or
+           singleton set by the argument. n=0 → the canonical empty set `((. Set of) (list))`; n=5 →
+           `((. Set of) (list 5))`. Pins that the empty set crosses the boundary as its canonical empty
+           value form from a parameterized export.")
+  (input  (do (def (main (: n Int64)) (if (> n 0) (Set.of (list n)) (Set.of (list)))) (export main)))
+  (call   main (: 0 Int64)) (output (: ((. Set of) (list)) (Set Int64)))
+  (call   main (: 5 Int64)) (output (: ((. Set of) (list 5)) (Set Int64))))
+
 (case "a tuple-parameter export returns a list computed from its fields"
   (doc    "An export whose PARAMETER is a fixed-shape tuple crosses the boundary: the param arrives as a
            native `tuple<…>` the canonical ABI flattens into scalar leaves, which `make` rebuilds into the
