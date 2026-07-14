@@ -246,7 +246,16 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             // (a variant whose payload is a tuple, destructured by a nested `(tuple …)` pattern): the next
             // type is the tuple's i-th element. A nested `(Some (Some y))` on `Option (Option Int64)`
             // walks two Payload steps; `(Exp.Add (tuple a b))` walks `[Payload, Elem(0/1)]`.
-            let mut cur = type_of(db, scrutinee);
+            //
+            // A scrutinee that is a TUPLE CONSTRUCTOR — `(match (tuple (fold a) (fold b)) ((tuple fa fb)
+            // …))`, where `fa`/`fb` read its elements — types via the CONSTRUCTOR's element occurrences,
+            // NOT the aggregate `type_of((tuple …))`. Aggregate typing reads a RECURSIVE-call element
+            // (`(fold a)`, during `fold`'s own solve) as `Any` → `(Tuple Any Any)` → the binder `fa` reads
+            // `Any` and the value-heap emit declines; typing each element occurrence on its own reaches the
+            // recursive callee's cached `def_scheme` (`fold : E → E`), so `fa : E`. `tuple_constructor_ty`
+            // builds `(Tuple <elem-tys>)` from the constructor when the scrutinee is one, else `None`.
+            let mut cur =
+                tuple_constructor_ty(db, scrutinee).unwrap_or_else(|| type_of(db, scrutinee));
             let mut heads = heads.iter();
             for step in steps.iter() {
                 cur = match step {
@@ -1900,6 +1909,24 @@ fn tuple_or_unit(elems: &[Ty]) -> Ty {
     } else {
         Ty::Tuple(elems.iter().cloned().collect())
     }
+}
+
+/// The tuple type built from `id`'s element occurrences when `id` is a TUPLE CONSTRUCTOR (the
+/// symbol-headed `Resolved::Tuple` or the `tuple` NAME-alias application) — `(Tuple <type_of(e0)>
+/// <type_of(e1)> …)`. Typing each element on its OWN resolves a RECURSIVE-call element via its cached
+/// `def_scheme`, where the aggregate `type_of((tuple …))` reads it as `Any` during the enclosing def's
+/// own solve. `None` for a non-tuple `id`, so the caller falls back to the ordinary `type_of`.
+fn tuple_constructor_ty(db: &mut Db, id: StructId) -> Option<Ty> {
+    let elems: Vec<StructId> = match resolved_of(db, id) {
+        Resolved::Tuple { elems } => elems.to_vec(),
+        Resolved::Apply { head, args }
+            if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::TupleNew) =>
+        {
+            args.to_vec()
+        }
+        _ => return None,
+    };
+    Some(Ty::Tuple(elems.iter().map(|&e| type_of(db, e)).collect()))
 }
 
 fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {

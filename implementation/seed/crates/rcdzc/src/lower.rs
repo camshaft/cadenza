@@ -3281,6 +3281,22 @@ fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
     db.ast.as_form(id, "tuple").is_some() || db.ast.head_ctor(id) == Some("tuple")
 }
 
+/// The element occurrences of `id` when it is a tuple CONSTRUCTOR expression — the symbol-headed
+/// `Resolved::Tuple { elems }` or the `tuple` NAME-alias application (`Prim::TupleNew`). `None` for a
+/// non-tuple. Used by `type_at_path` to type a tuple-scrutinee's element from the constructor directly,
+/// bypassing the aggregate `type_of` that reads a recursive-call element as `Any`.
+fn tuple_constructor_elems(db: &mut Db, id: StructId) -> Option<Vec<StructId>> {
+    match resolved_of(db, id) {
+        Resolved::Tuple { elems } => Some(elems.to_vec()),
+        Resolved::Apply { head, args }
+            if crate::eval::meta_apply_of(db, head) == Some(Prim::TupleNew) =>
+        {
+            Some(args.to_vec())
+        }
+        _ => None,
+    }
+}
+
 /// The CDZ0210 non-exhaustive-sum-match rejection, enriched with the MISSING variants and a structural
 /// "add the missing arms" fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A
 /// Fix — the match analogue of rustc's `error[E0004]: … patterns not covered` + its "add arms"
@@ -3712,7 +3728,23 @@ fn type_at_path(
     scrutinee: StructId,
     path: &[crate::core::PathStep],
 ) -> Option<crate::ty::Ty> {
-    let mut cur = crate::infer::type_of(db, scrutinee);
+    // A LEADING `Elem(i)` over a scrutinee that is a TUPLE CONSTRUCTOR — `(match (tuple (fold a) (fold b))
+    // …)` — types element `i` DIRECTLY from the constructor rather than from the tuple's aggregate
+    // `type_of`. `type_of((tuple (fold a) (fold b)))` types each element in AGGREGATE, where a RECURSIVE
+    // call `(fold a)` (during `fold`'s own lowering) reads `Any` (the recursion guard), giving `(Tuple Any
+    // Any)` → a non-sum decline at the switch. Typing the element occurrence on its OWN reaches
+    // `apply_type`'s recursive-callee `def_scheme` fallback (`fold : E → E`), so `Elem(0)` resolves to `E`.
+    // Only the leading `Elem` steps are peeled structurally; the rest fall through to the type-walk below.
+    let mut cur = if let Some(&crate::core::PathStep::Elem(i)) = path.first()
+        && let Some(elems) = tuple_constructor_elems(db, scrutinee)
+        && let Some(&elem_occ) = elems.get(i)
+    {
+        // Descend the remaining path from this element occurrence (recurse, so a NESTED tuple constructor
+        // element resolves too), then RETURN — the leading `Elem(i)` is consumed.
+        return type_at_path(db, elem_occ, &path[1..]);
+    } else {
+        crate::infer::type_of(db, scrutinee)
+    };
     for step in path {
         cur = match step {
             crate::core::PathStep::Elem(i) => match &cur {
