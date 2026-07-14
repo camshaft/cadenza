@@ -8998,12 +8998,15 @@ mod tests {
             drop_allocs <= 40,
             "free_cascade_deep DEPTH={DROP_DEPTH} allocs {drop_allocs} exceeds ceiling 40 (O(1) teardown: fixed seed buffer + adopt-by-move worklist; a fresh-Vec-per-node regression would be ~O(DEPTH), a recursive-free regression would stack-overflow)"
         );
-        // MEASURED ~100 allocs/encode of a 50-element IntList (~150 value nodes) = ~0.67 allocs/node after
-        // the flat `child_pool` arena replaced the per-compound-node children Vec (was ~195/encode = ~1.3/
-        // node). The remaining allocs are the grow-once `leaves`/`structs`/`child_pool` Vecs + the output
-        // byte Vec + the returned Bytes leaf — all LINEAR in node count and amortized. The ceiling catches
-        // an O(N²) re-walk or a regression that reintroduces per-node Vec churn.
-        assert!(venc <= 13000, "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 13000 (~100/encode of a 50-node list after the child_pool arena; grow-once leaf/struct/child-pool Vecs + output + Bytes, linear in node count; a per-node Vec regression would push back toward ~195/encode)");
+        // MEASURED 92 allocs/encode of a 50-element IntList (~150 value nodes) = ~0.61 allocs/node — after
+        // the flat `child_pool` arena (was ~195/encode = ~1.3/node, `@80bf18d9`) AND the output-Vec
+        // pre-size that killed the serialization realloc churn (~100→92, `@84ebc883`). The remaining allocs
+        // are the grow-once `leaves`/`structs`/`child_pool` Vecs (amortized) + the now-pre-sized output +
+        // the returned Bytes leaf — all LINEAR in node count. Ceiling TIGHTENED 13000→11000 to track the
+        // reduced floor (the stale 13000 tolerated a 41% regression); catches an O(N²) re-walk or a return
+        // of per-node Vec / output-realloc churn. `xtask bench`'s baseline (9200) is the tight guard; this
+        // is the coarse in-suite backstop.
+        assert!(venc <= 11000, "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 11000 (~92/encode of a 50-node list after the child_pool arena + output pre-size; a per-node-Vec or output-realloc regression would climb)");
         op_drop(ve_list);
     }
 
