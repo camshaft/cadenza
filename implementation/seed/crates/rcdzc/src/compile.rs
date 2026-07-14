@@ -656,6 +656,21 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // so the OUTCOME is unchanged; only the message stops misleading.
     let defined_names: Vec<String> = db.defs.iter().map(|d| d.name.clone()).collect();
     for (head, occ) in db.unknown_top_forms() {
+        // `import` is a KNOWN surface keyword (the ML reader lexes `import { … } from "…"` → an
+        // `(import …)` top-level form) that this compiler does NOT YET model — distinct from a typo. The
+        // generic path below would suggest "did you mean `export`?" (import→export is only 2 edits), an
+        // actively MISLEADING fix: an author who wrote `import` never meant its opposite. Name the real
+        // situation — a recognized module form that is not yet supported — with NO swap fix.
+        if head == "import" {
+            faults.push(
+                Reject::decline(
+                    "`import` is a module form this compiler does not yet model (cross-module imports \
+                     are not supported here) — the program cannot be compiled",
+                )
+                .at(occ),
+            );
+            continue;
+        }
         // FIRST: is the head a plausible TYPO of a top-level DECLARATION KEYWORD (`exprot`→`export`,
         // `deff`→`def`)? That is the far likelier intent than a mistyped VALUE name — a top-level `(head
         // …)` form is a declaration position, so a near-miss for `def`/`export`/`type`/`effect`/`module`/

@@ -11740,6 +11740,38 @@ mod match_engine {
     }
 
     #[test]
+    fn an_import_form_is_named_as_unmodeled_not_a_typo_of_export() {
+        // `import` is a KNOWN surface keyword (the ML reader parses `import { … } from "…"` → an
+        // `(import …)` top-level form) that this compiler does not yet model. Because `import`→`export` is
+        // only 2 edits, the generic keyword-typo path would suggest "did you mean `export`?" — an actively
+        // MISLEADING fix (an author who wrote `import` never meant its opposite). It now gets a specific
+        // "not yet modeled" message with NO export swap.
+        let find = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("import"))
+                .expect("the import form is reported")
+        };
+        for src in [
+            "(module m (import \"lib\" (foo)) (def (main) 1) (export main))",
+            "(do (import \"lib\" (foo)) (def (main) 1) (export main))",
+        ] {
+            let d = find(src);
+            assert!(
+                d.message.contains("does not yet model") && d.message.contains("`import`"),
+                "names import as an unmodeled form: {}",
+                d.message
+            );
+            assert!(
+                !d.message.contains("did you mean `export`?"),
+                "no misleading export suggestion: {}",
+                d.message
+            );
+            assert!(d.fix.is_none(), "no export swap fix: {:?}", d.fix);
+        }
+    }
+
+    #[test]
     fn an_unannotated_context_typed_closure_param_carries_its_narrow_width_to_the_const_fold() {
         // WRONG-VALUE regression: an UNANNOTATED closure param typed narrow from its storage context's
         // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param
