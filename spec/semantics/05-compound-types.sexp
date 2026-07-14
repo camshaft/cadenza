@@ -4519,6 +4519,22 @@
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
+(case "a constructor selected at RUNTIME is a first-class value that is then applied"
+  (doc    "The constructor to use is chosen at RUNTIME — `(if (> which 0) W.A W.B)` returns one of two
+           bare constructors of `(type W (A Int64) (B Int64))` — and the SELECTED one is then applied to a
+           payload: `((pick k) k)`. Neither branch is known at compile time, so the constructor is a genuine
+           first-class value flowing through the `if`, returned, and applied. `(pick 5)` picks `W.A`, `(W.A
+           5)` matches the `A` arm → 5. Pins the strongest first-class-constructor shape: a constructor
+           value that is not statically determined, selected and applied at run time.")
+  (input  (do
+            (type W (A Int64) (B Int64))
+            (def (pick (: which Int64)) (if (> which 0) W.A W.B))
+            (def (main (: k Int64)) (match ((pick k) k) ((W.A n) n) ((W.B n) (+ n 100))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
 (case "nullary constructor patterns are uniform with unary"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (4th sentence): patterns are uniform `(Ctor binder)`. A nullary variant
