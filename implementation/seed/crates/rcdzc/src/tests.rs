@@ -29202,8 +29202,7 @@ mod stage1 {
         let opt = compile_component(&crate::codec::encode(&parse(
             "(module m (def (g (: o (Option Int64))) (. o foo)) (export g))",
         )))
-        .err()
-        .expect("named access on an Option must reject");
+        .expect_err("named access on an Option must reject");
         assert_eq!(opt.code.as_deref(), Some("CDZ0201"), "got: {}", opt.message);
         assert!(
             opt.message
@@ -29218,8 +29217,7 @@ mod stage1 {
         let user = compile_component(&crate::codec::encode(&parse(
             "(module m (type P (Mk Int64) (Z)) (def (g (: p P)) (. p x)) (export g))",
         )))
-        .err()
-        .expect("named access on a user sum must reject");
+        .expect_err("named access on a user sum must reject");
         assert!(
             user.message.contains("(match <value> ((Mk x0) …) ((Z) …))"),
             "spells the user sum's match template with payload binders: {}",
