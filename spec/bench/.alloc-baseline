@@ -4,6 +4,8 @@
 1000	bytes_concat x1000
 132	bytes_flatten x64
 1000	bytes_slice x1000
+4000	fbip_map_fresh x1000
+2000	fbip_map_reuse x1000
 1	free_cascade_deep DEPTH=4000
 766	map_insert x1000
 6143	map_insert_shared x1000

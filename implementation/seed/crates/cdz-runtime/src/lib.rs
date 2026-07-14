@@ -8119,6 +8119,62 @@ mod tests {
             "vec_of_arr_big len={VOA_BIG} allocs {voa_big} exceeds ceiling 40 (⌈n/32⌉ strict leaves + interior spine + header, element handles MOVED not copied; a per-element regression would be ~{VOA_BIG})"
         );
 
+        // (K3) FBIP IN-PLACE REUSE — the `reset` → `arr-alloc-reuse` → refill protocol the compiler emits
+        // for a `List.map` / functional rebuild over a UNIQUE value: instead of free+malloc a new shell,
+        // the dying node's shell (its node Box + handle-Vec backing) is RETAINED as a token and refit in
+        // place. This is the whole point of the FBIP ops (runtime-complete + correctness-tested via
+        // `fbip_map_over_unique_list_reuses_in_place`) yet the reuse WIN was un-benched. Measure a 3-element
+        // "map" done BOTH ways over the loop and prove the reuse path shell-node cost is ZERO. NOTE the ops
+        // are not yet compiler-EMITTED (that's compiler-side), so this guards the runtime's readiness.
+        const REUSE_LEN: u32 = 3;
+        // Baseline: a fresh-alloc rebuild — drop the old shell, arr-alloc a NEW one (what a non-FBIP
+        // emitter does). Per iteration: REUSE_LEN new leaves (immediate ints → 0) + a NEW node Box + its
+        // handle Vec = the shell cost we want reuse to eliminate.
+        let reuse_fresh = measure(&mut || {
+            for k in 0..N {
+                let xs = op_arr_alloc(REUSE_LEN);
+                for i in 0..REUSE_LEN {
+                    op_arr_set(xs, i, op_box_int(k + i as i64));
+                }
+                op_drop(xs); // free the shell — the fresh path will malloc a new one next iteration
+                let ys = op_arr_alloc(REUSE_LEN); // FRESH shell (node Box + handle Vec)
+                for i in 0..REUSE_LEN {
+                    op_arr_set(ys, i, op_box_int(k + i as i64 + 100));
+                }
+                op_drop(ys);
+            }
+        });
+        println!("ALLOC fbip_map_fresh x{N}: {reuse_fresh}");
+        // The FBIP path: reset the unique shell to a token, refit it (SAME node, no new Box/Vec), refill.
+        let reuse_fbip = measure(&mut || {
+            for k in 0..N {
+                let xs = op_arr_alloc(REUSE_LEN);
+                for i in 0..REUSE_LEN {
+                    op_arr_set(xs, i, op_box_int(k + i as i64));
+                }
+                let token = op_reset(xs); // unique → frees old leaves, RETAINS the shell as a token
+                let ys = op_arr_alloc_reuse(REUSE_LEN, token); // SAME shell refit — no new node/Vec
+                for i in 0..REUSE_LEN {
+                    op_arr_set(ys, i, op_box_int(k + i as i64 + 100));
+                }
+                op_drop(ys);
+            }
+        });
+        println!("ALLOC fbip_map_reuse x{N}: {reuse_fbip}");
+        // Reuse must allocate STRICTLY FEWER than fresh: it eliminates the second shell's node Box + handle
+        // Vec every iteration (same-length refit reuses the retained backing, capacity intact → no realloc).
+        // Guard the invariant that reuse never allocates MORE than fresh, and that it saves ≥ the per-iter
+        // shell (≥ N allocs saved over the batch). A regression that lost the shell-reuse would erase the gap.
+        assert!(
+            reuse_fbip < reuse_fresh,
+            "FBIP reuse x{N} ({reuse_fbip}) must allocate fewer than the fresh-alloc rebuild ({reuse_fresh}) — reuse refits the retained shell, saving a node Box + handle Vec per map"
+        );
+        assert!(
+            reuse_fresh - reuse_fbip >= N as u64,
+            "FBIP reuse should save ≥ the per-iteration shell node ({N} over the batch); saved {} (fresh {reuse_fresh} − reuse {reuse_fbip})",
+            reuse_fresh - reuse_fbip
+        );
+
         // (L) value-encode a recursive value (the op-62 escape walker): encode a FIXED 50-element IntList
         // repeatedly. Each encode builds a fresh value-form document — a leaf pool Vec + struct table Vec
         // + the output byte Vec + the returned Bytes leaf — so its allocation is INHERENTLY linear in the
