@@ -696,6 +696,9 @@ pass	a map pattern falls through when the key is absent
 pass	a map pattern matches a present key and binds its value
 pass	a map threaded as a recursive accumulator is grown then measured
 pass	a map whose value is a list: a runtime lookup then indexes the returned list
+pass	a map with a String value is looked up and its value compared in the arm
+pass	a map with a String value: a missing key takes the None arm
+pass	a map with a String value: the looked-up value's byte length is read in the arm
 pass	a map with a computed key equals the same map with a constant key
 pass	a map with a duplicate key is a type error
 pass	a map with a user-sum VALUE looks up and matches the stored variant
