@@ -878,6 +878,17 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 let l = emit(db, lhs, env, ctx)?;
                 let r = emit(db, rhs, env, ctx)?;
                 Ok(format!("({l} == {r})"))
+            } else if let Some(grounded) = super::enums::ground_free_for_eq(db, &ty)
+                && let Some(rust_ty) = types::rust_type(&grounded)
+            {
+                // The operand type's ONLY block to native eq is a PHANTOM free var (a variant never
+                // constructed — e.g. `Result Int64 ?e` with no `Err` built). Grounding it to `()` gives an
+                // `Eq` type with a nameable Rust spelling; pin it via a typed `let` on the lhs so rustc can
+                // instantiate the enum (a bare `Ok(5) == Ok(k)` leaves the phantom `E` un-inferable). Sound
+                // because no value of the phantom type ever flows — see `enums::ground_free_for_eq`.
+                let l = emit(db, lhs, env, ctx)?;
+                let r = emit(db, rhs, env, ctx)?;
+                Ok(format!("{{ let __eq_l: {rust_ty} = {l}; (__eq_l == {r}) }}"))
             } else {
                 Err(Reject::decline(
                     "runtime structural equality over this compound is not yet rendered by the Rust backend",
