@@ -118,6 +118,20 @@
   (input  (match "café" ("cafe" 1) ("café" 2) (_ 9)))
   (output (: 2 Int64)))
 
+(case "a RUNTIME string scrutinee matches string literals by equality"
+  (doc    "The RUNTIME companion of the constant string match above — THE compiler head-dispatch idiom: a
+           `match` over a String chosen at run time, against string-LITERAL patterns. `op`'s scrutinee `s`
+           is a runtime String (selected by a Bool, so it does not fold to a constant), matched `(match s
+           (\"add\" 1) (\"sub\" 2) (_ 0))`. A String is a heap value, so this is not a scalar probe chain;
+           it lowers to a chain of `(= s literal)` runtime string-equality tests (`value-eq`, the same
+           equality `=` uses), the wildcard the tail. `op(if true \"add\" \"sub\")` = `op(\"add\")` selects
+           the `\"add\"` arm → 1. Pins that a compiler can dispatch on a runtime keyword/opcode name by
+           pattern, not only on a compile-time-constant string.")
+  (input  (do
+            (def (op (: s String)) (match s ("add" 1) ("sub" 2) (_ 0)))
+            (def (main) (op (if true "add" "sub"))) (export main)))
+  (output (: 1 Int64)))
+
 ; --- The empty string is an ordinary String value ---------------------------------------
 ; `""` is the zero-length string — a first-class String the compiler needs (an empty error message, an
 ; empty name). Its length is 0 (counted in Unicode scalar values, of which it has none), it is equal

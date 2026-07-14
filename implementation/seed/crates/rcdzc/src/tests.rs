@@ -19743,6 +19743,123 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_string_scrutinee_matches_string_literals() {
+        // THE COMPILER HEAD-DISPATCH SHAPE: a `match` over a RUNTIME String against string literals —
+        // `(match head ("add" …) ("sub" …) (_ …))` — the idiom a compiler uses to dispatch on a keyword /
+        // opcode / identifier name. A String is a heap value (not `is_scalar`), so this declined "matching a
+        // compound value needs a heap walk"; now `lower_match` DESUGARS it to a nested `if`-chain of
+        // `(= scrutinee literal)` — runtime string equality already lowers to `value-eq` — so no new IR /
+        // backend path. The scrutinee here is a runtime value (chosen by a Bool param, so it cannot fold).
+
+        // Each literal selects its arm; the wildcard is the tail. b=true → "add" → 1; b=false → "sub" → 2.
+        let Some(v) = run_heap_value(
+            "(module m (def (op (: s String)) (match s (\"add\" 1) (\"sub\" 2) (_ 0))) \
+               (def (main) (op (if true \"add\" \"sub\"))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime string-match run");
+            return;
+        };
+        assert_eq!(v, "1", "a runtime string matches the \"add\" arm");
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (op (: s String)) (match s (\"add\" 1) (\"sub\" 2) (_ 0))) \
+                   (def (main) (op (if false \"add\" \"sub\"))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "2",
+            "a runtime string matches the \"sub\" arm"
+        );
+
+        // A string matching NO literal takes the wildcard → 0.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (op (: s String)) (match s (\"add\" 1) (\"sub\" 2) (_ 0))) \
+                   (def (main) (op (if true \"mul\" \"div\"))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "0",
+            "a runtime string matching no literal takes the wildcard"
+        );
+
+        // A BINDER wildcard reads the whole scrutinee in its body: `(z (String.byte-len z))` — the binder
+        // must resolve to the scrutinee (Case 5) even though the arm became an if-chain `else`. "abcd" has
+        // 4 bytes → the non-matching literal falls through to the binder arm → 4.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (op (: s String)) (match s (\"x\" 0) (z ((. String byte-len) z)))) \
+                   (def (main) (op (if true \"abcd\" \"x\"))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "4",
+            "a binder wildcard's body reads the whole scrutinee via Case 5"
+        );
+
+        // A GUARDED string arm: the literal must match AND the guard hold, else fall through. Here the
+        // guard reads an outer param `n`; "add" with n>0 → 10, else the wildcard → -1.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (op (: s String) (: n Int64)) \
+                     (match s ((guard \"add\" (> n 0)) 10) (_ -1))) \
+                   (def (main) (op (if true \"add\" \"x\") 5)) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "10",
+            "a guarded string arm fires when literal matches AND guard holds"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (op (: s String) (: n Int64)) \
+                     (match s ((guard \"add\" (> n 0)) 10) (_ -1))) \
+                   (def (main) (op (if true \"add\" \"x\") 0)) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "-1",
+            "a guarded string arm falls through when its guard fails"
+        );
+    }
+
+    #[test]
+    fn a_runtime_string_match_without_a_wildcard_is_non_exhaustive() {
+        // A String is OPEN (like Int) — no finite literal set exhausts it — so a string match MUST end in a
+        // wildcard, else CDZ0210 (the same rule an open-Int match follows). This holds for a runtime string
+        // too (the desugar-to-if-chain does not relax exhaustiveness).
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m (def (op (: s String)) {body}) (export op))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None;
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        assert_eq!(
+            code("(match s (\"add\" 1) (\"sub\" 2))").as_deref(),
+            Some("CDZ0210"),
+            "a wildcard-less string match is non-exhaustive"
+        );
+        // With a wildcard it compiles.
+        assert_eq!(code("(match s (\"add\" 1) (\"sub\" 2) (_ 0))"), None);
+    }
+
+    #[test]
     fn a_guarded_list_arm_does_not_count_toward_exhaustiveness() {
         // A guarded list arm may fail its guard, so it covers NO length unconditionally — a match whose only
         // tail-covering arm is GUARDED is non-exhaustive (CDZ0210), exactly as a guarded scalar/sum tail is.

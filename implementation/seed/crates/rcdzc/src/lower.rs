@@ -2560,6 +2560,69 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "non-scalar match with a single catch-all binder lowers to its body");
         return core_of(db, *body);
     }
+    // A RUNTIME STRING scrutinee matched against STRING LITERALS — the compiler's keyword/opcode dispatch
+    // (`(match head ("if" …) ("let" …) (_ …))`). A String is a heap value (not `is_scalar`), so the scalar
+    // probe-chain below cannot drive it; but runtime string EQUALITY already lowers to `value-eq` (a `(= s
+    // "add")` emits it), so a string match is exactly a chain of `value-eq` tests. Rather than thread a
+    // heap handle through the Int/Bool-shaped `Core::Match` emit, DESUGAR to a nested `if`-chain built from
+    // synthesized AST — `(if (= scrutinee "add") body0 (if (= scrutinee "sub") body1 <else>))` — and lower
+    // THAT (the ordinary `Resolved::If` + `=`-over-strings paths handle it, including tail position). A
+    // guarded arm nests its guard: `(if (= scrutinee lit) (if guard body <else>) <else>)`. The final
+    // catch-all (a `_`/binder wildcard, guaranteed by the exhaustiveness check above) is the innermost
+    // `else`. Only fires for a definitely-`String` scrutinee whose arms are all string-literal / wildcard
+    // probes (the type check above already rejected a mismatched probe); a non-string compound still
+    // declines below.
+    if matches!(scrut_ty, crate::ty::Ty::String)
+        && probes
+            .iter()
+            .all(|(p, _, _)| matches!(p, crate::core::Probe::Str(_) | crate::core::Probe::Wild))
+    {
+        // Split the arms into the leading STRING-LITERAL / guarded probes (each becomes an `if` level) and
+        // the final unconditional WILDCARD tail (the innermost `else`). Build from `arms` (the AST pattern
+        // nodes) so the `=` RHS is the arm's own literal node and each body is reused verbatim.
+        // Find the FIRST unguarded wildcard arm — it is the unconditional tail; arms after it are dead
+        // (unreachable), so the chain ends there. Exhaustiveness guarantees one exists.
+        let tail_ix = arms.iter().position(|&(pat, _)| {
+            let inner = match db.ast.as_form(pat, "guard") {
+                Some(g) if g.len() == 2 => g[0],
+                _ => pat,
+            };
+            // An unguarded bare-name / `_` arm (a `Wild` probe with no guard).
+            db.ast.as_form(pat, "guard").is_none() && db.ast.as_name(inner).is_some()
+        });
+        let Some(tail_ix) = tail_ix else {
+            // No unguarded wildcard — exhaustiveness should have rejected this; decline defensively.
+            return Core::Poison(Reject::decline(
+                "a runtime string match needs an unguarded wildcard tail",
+            ));
+        };
+        // The innermost else = the wildcard tail arm's body (reused in place). A binder wildcard's body
+        // reads the scrutinee via the Case-5 binder→scrutinee rule; a `_` binds nothing.
+        let mut else_node = arms[tail_ix].1;
+        // Fold the leading arms (indices 0..tail_ix) from the LAST backward into nested `if`s.
+        for &(pat, body) in arms[..tail_ix].iter().rev() {
+            let (inner_pat, guard) = match db.ast.as_form(pat, "guard") {
+                Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+                _ => (pat, None),
+            };
+            // `(= scrutinee <literal>)` — runtime string equality, lowers to `value-eq`.
+            let eq_head = db.push_name("=");
+            let eq = db.push_list(vec![eq_head, scrutinee, inner_pat]);
+            // A guard nests INSIDE the matched branch: `(if guard body <else>)`, so a false guard falls
+            // through to the same `else` as a non-matching literal.
+            let then_branch = match guard {
+                Some(g) => {
+                    let if_head = db.push_name("if");
+                    db.push_list(vec![if_head, g, body, else_node])
+                }
+                None => body,
+            };
+            let if_head = db.push_name("if");
+            else_node = db.push_list(vec![if_head, eq, then_branch, else_node]);
+        }
+        trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "runtime string match → value-eq if-chain");
+        return core_of(db, else_node);
+    }
     // Runtime scalar scrutinee — it must BE a scalar (a compound needs a heap walk, later).
     if !is_scalar(db, scrutinee) {
         return Core::Poison(Reject::decline(
