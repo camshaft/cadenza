@@ -1866,6 +1866,18 @@ fn emit_sum_payload(
                     }
                 }
             }
+            // A read of a BOXED payload field MOVES it out of the `Box` — `(*name).i` extracts a non-`Copy`
+            // field by value, so a field used more than once (a `let`-bound tail read in both an `if`
+            // condition and a branch; two accessed fields) is a use-after-move → rustc E0382. The wasm
+            // backend re-reads the heap slot each time with no move discipline, so it never sees this. CLONE
+            // the projection so each read is an owned copy that leaves the box intact (the emitted enums all
+            // `#[derive(Clone)]`, so the field type — a scalar, a nested recursive enum, a tuple of these —
+            // is `Clone`). A `Copy` scalar field's `.clone()` is a plain copy; a recursive field's is a deep
+            // copy — both avoid the move. Only a BOXED bind needs this: a non-boxed bind reads a `Copy`
+            // scalar / a value already bound by the match pattern, which does not move out of a box.
+            if b.boxed {
+                expr = format!("({expr}).clone()");
+            }
             return Ok(expr);
         }
     }

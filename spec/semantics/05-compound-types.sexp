@@ -1556,6 +1556,26 @@
             (def (main) (sm (count 5))) (export main)))
   (output (: 15 Int64)))
 
+(case "a recursive-sum payload projected more than once folds to a scalar"
+  (doc    "A recursive list `(type L (Nil) (Cons Int64 L))` whose `Cons` payload the Rust backend BOXES,
+           where the bound tail `t` is PROJECTED MORE THAN ONCE: `(let ((d (f t))) (if (= d 0) h d))` reads
+           the recursive field in both the `if` condition (`f t`) and — via `d` inlining — the else-branch.
+           `f (Cons 5 (Nil))` = 5. The wasm backend reads the heap slot each time (no move discipline); the
+           Rust backend deref-projects the boxed field, and a bare `(*box).N` read of a non-`Copy` field
+           MOVES it out of the box, so the second projection was a use-after-move (rustc E0382) and the rust
+           artifact did not build — cloning each boxed-payload projection fixes it (the emitted enum derives
+           `Clone`). Pins that a recursive-data consumer inspecting a payload field more than once (a
+           list/tree walker that both tests and returns a field) runs on both backends. A payload projected
+           exactly once (the fold cases above) needs no clone; a `Copy` scalar field copies rather than
+           moves regardless.")
+  (input  (do
+            (type L (Nil) (Cons Int64 L))
+            (def (f (: xs L)) (match xs ((Nil) 0) ((Cons h t) (let ((d (f t))) (if (= d 0) h d)))))
+            (def (main) (f (Cons 5 (Nil))))
+            (export main)))
+  (call   main)
+  (output (: 5 Int64)))
+
 (case "a recursive NEWTYPE-wrapped linked list folds to a scalar"
   (doc    "The single-variant NEWTYPE spelling of the recursive linked list above: `(type Lst (Mk (Option
            (Tuple Int64 Lst))))` wraps `Option (head, tail)` in a one-variant nominal `Lst`, so a node is

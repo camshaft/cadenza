@@ -348,6 +348,7 @@ pass	a recursive parameter used only as a call argument infers from the callee's
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
 pass	a recursive sum type works with pattern matching
+pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a reference to an unbound name is rejected before running
 pass	a refutable constructor pattern in a let binder is rejected
 pass	a repeated let binding shadows the earlier one for what follows
@@ -1066,8 +1067,8 @@ todo	a symbol's identity is its content, not how the content was derived
 todo	a tail-recursive function returning a tuple is tuple-valued
 todo	a tail-recursive string accumulator builds a runtime string and its length is measured
 todo	a three-parameter closure is applied at full arity through a recursive HOF
-todo	a transformation maps a syntax tree to a syntax tree and preserves meaning
-todo	a transformation observably rewrites the tree, not just its value
+pass	a transformation maps a syntax tree to a syntax tree and preserves meaning
+pass	a transformation observably rewrites the tree, not just its value
 todo	a transformation over the built-in Ast composes across a function call
 todo	a truncating conversion to an unusual width keeps that width's low bits
 todo	a tuple payload extracted through a helper return must not be rejected as a type error
@@ -1206,7 +1207,7 @@ todo	record reshaping is subset comparison as explicit projection
 todo	removing a key drops its association and the size
 todo	removing an absent key leaves the map unchanged
 todo	removing an element yields a set without it
-todo	resolving a name in a shadowing environment returns the innermost binding's slot
+pass	resolving a name in a shadowing environment returns the innermost binding's slot
 todo	scaling a quantity by a dimensionless quantity keeps its dimension
 todo	set equality is independent of the order elements are written
 todo	signed 8-bit addition that overflows its width traps

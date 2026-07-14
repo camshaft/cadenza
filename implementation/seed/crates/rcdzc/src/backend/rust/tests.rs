@@ -933,6 +933,34 @@ fn rustc_roundtrip_recursive_sum_folds() {
 }
 
 #[test]
+fn rustc_roundtrip_boxed_payload_projected_more_than_once_clones() {
+    // A recursive sum whose `Cons` payload the Rust backend BOXES (`Cons(Box<(i64,L)>)`), where the bound
+    // payload field is PROJECTED MORE THAN ONCE: `(let ((d (f t))) (if (= d 0) h d))` uses the recursive
+    // tail `t` in both the `if` condition and the else-branch. A bare `(*box).1` read MOVES the non-`Copy`
+    // `L` field out of the box — the FIRST projection moves it, so the second is E0382 "use of moved
+    // value". The fix CLONES each boxed-payload projection, so each read is an owned copy that leaves the
+    // box intact. Pins that the emitted crate BUILDS and runs to f(Cons 5 Nil) = 5 (was a build failure);
+    // the wasm gate never saw this (it re-reads the heap slot with no move discipline).
+    let rs = compile_rust(
+        "(module m (type L (Nil) (Cons Int64 L)) \
+           (def (f (: xs L)) (match xs ((Nil) 0) ((Cons h t) (let ((d (f t))) (if (= d 0) h d))))) \
+           (export f))",
+    );
+    // Each boxed-payload projection is cloned (not a bare moving `(*p).N`).
+    assert!(
+        rs.contains(".clone()"),
+        "a boxed payload projection clones to avoid moving out of the Box:\n{rs}"
+    );
+    // End-to-end through rustc: builds (was E0382) and f(Cons 5 Nil) = 5, matching the wasm oracle.
+    if let Some(out) = rustc_run(&rs, "f(L::Cons(Box::new((5, L::Nil))))") {
+        assert_eq!(
+            out, "5",
+            "the multiply-projected boxed payload builds and runs:\n{rs}"
+        );
+    }
+}
+
+#[test]
 fn rustc_roundtrip_mutually_recursive_sums_fold() {
     // A MUTUALLY-recursive pair of sums (`A` references `B`, `B` references `A`) — NEITHER variant mentions
     // its OWN decl, but the A→B→A cycle needs Box indirection all the same (E0072 otherwise). Both edges

@@ -673,6 +673,7 @@ pass	a recursive sum consumer whose arguments are recursive sum producers compil
 pass	a recursive sum type works with pattern matching
 pass	a recursive user sum built in a lib is folded by the entry's structural copy
 pass	a recursive user sum type is built at run time and renders its variant names
+pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
 pass	a recursively-built byte sequence assembles its bytes at run time
