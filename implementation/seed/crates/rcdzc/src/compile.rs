@@ -2659,6 +2659,19 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             && r.message
                 .contains(crate::diag::DIFFERENT_TYPES_COMPARISON_MARKER)
     });
+    // Likewise: a TUPLE accessed by NAME — `(. (tuple 1 2) foo)` — is rejected by `infer` with the precise,
+    // actionable "a tuple is accessed by position, not by name `foo` — use a numeric index …" at the def.
+    // When that def is CALLED from an exported body, the emit path's reached-poison walk lowers the reduced
+    // `(. (tuple 1 2) foo)`, which cannot fold, and returns the BARE "member access requires a record"
+    // decline at the CALL SITE — a DIFFERENT node with a DIFFERENT (weaker) message than the infer reject,
+    // so neither the same-node dedup nor the reduced-body baseline-diff (which matches on message) collapses
+    // it. It is the SAME defect reached again through lowering. Drop the bare decline program-wide when the
+    // tuple-by-position reject is present, keeping the precise infer message as the ONE primary. The bare
+    // decline (no ", found <T>") is emitted ONLY by lowering — `infer`'s own non-record message always names
+    // the type ("… requires a record, found Int64") — so this cannot swallow a genuine standalone primary.
+    let has_tuple_by_name_reject = faults
+        .iter()
+        .any(|r| r.message.contains(crate::diag::TUPLE_BY_NAME_MARKER));
     // Likewise: a `handle` whose HEAD names a VALUE (`(handle foo …)`) is rejected CDZ0201 at the head. The
     // head is desugared into each arm's `(. foo op)` projection, so the value head ALSO leaks a CDZ0201
     // "member access requires a record, found <T>" (from `(. foo op)`) and the uncoded fold-decline — both
@@ -2985,6 +2998,14 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
                 && r.is_decline()
                 && r.message.contains(crate::diag::COMPOUND_COMPARISON_DECLINE)
             {
+                return false;
+            }
+            // A tuple accessed by NAME whose def is CALLED (`(. (tuple …) foo)` in a called body) leaks the
+            // bare "member access requires a record" decline at the call site through the reached-poison
+            // walk — the same defect the precise "a tuple is accessed by position" reject already names at
+            // the def. Drop the bare decline (an EXACT match — the lowering form has no ", found <T>" tail,
+            // which infer's own non-record message always carries, so this never hides a genuine primary).
+            if has_tuple_by_name_reject && r.message == crate::diag::MEMBER_NOT_RECORD_DECLINE {
                 return false;
             }
             // A `handle` whose HEAD is not an effect leaks a consequent from the desugared `(. head op)`

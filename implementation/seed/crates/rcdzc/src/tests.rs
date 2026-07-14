@@ -33990,6 +33990,52 @@ mod stage1 {
     }
 
     #[test]
+    fn a_called_tuple_by_name_access_reports_the_position_message_once_not_a_call_site_cascade() {
+        // A tuple-literal accessed by NAME in a def that is CALLED — `(def (g) (. (tuple 1 2) foo))` used
+        // from an exported body — reported TWICE: the precise "a tuple is accessed by position" at the def,
+        // PLUS the bare "member access requires a record" at the CALL SITE (the reached-poison walk lowers
+        // the reduced `(. (tuple 1 2) foo)`, which cannot fold). The call-site decline is the same defect
+        // reached again through lowering — a different node + a weaker message, so neither same-node dedup
+        // nor the reduced-body baseline-diff collapsed it. `dedup_faults` now drops the bare decline for the
+        // tuple-by-position reject. Exactly ONE fault, the precise one; the bare decline is gone.
+        let ds = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (g) (. (tuple 1 2) foo)) (def (main) (g)) (export main))",
+        )));
+        let errs: Vec<_> = ds
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errs.len(),
+            1,
+            "one precise fault, not a call-site cascade: {ds:?}"
+        );
+        assert!(
+            errs[0]
+                .message
+                .contains("a tuple is accessed by position, not by name `foo`"),
+            "the surviving fault is the precise position message: {}",
+            errs[0].message
+        );
+        assert!(
+            !ds.iter()
+                .any(|d| d.message == "member access requires a record"),
+            "the bare call-site decline is suppressed: {ds:?}"
+        );
+        // A SCALAR member access on a non-record still reports its own "found <T>" message (NOT suppressed —
+        // the exact-match drops only the bare lowering form). Two independent defects still both report.
+        let scalar = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) (. 5 x)) (export main))",
+        )));
+        assert!(
+            scalar.iter().any(|d| d
+                .message
+                .contains("member access requires a record, found Int64")),
+            "a scalar non-record access keeps its typed message: {scalar:?}"
+        );
+    }
+
+    #[test]
     fn named_member_access_on_a_collection_points_at_the_operation_module() {
         // A collection/text value accessed by NAME — `(. xs foo)` on a `(List …)`, `(Map …)`, `(Set …)`,
         // `String`, `Bytes` — is not a field read (these are not records). Its operations live on the type
