@@ -1308,6 +1308,13 @@ pub struct Db {
     /// An `inline-always` on a RECURSIVE def is a conflict (it cannot inline) — a coded reject.
     pub(crate) inline_always: crate::fxhash::FxHashSet<StructId>,
 
+    /// The BODY occurrences of definitions marked `@test` — the UNIT-TEST hoist markers a `cdz test`
+    /// build reads (`strip_annotations`). A test build exports every `@test` NULLARY def as a boundary
+    /// entry (in place of the program's `(export …)` clauses); an ordinary build ignores this set (a
+    /// `@test` def is just an unexported def — dead, dropped by reachability — so the report effect it
+    /// performs never reaches the normal component's import set). Keyed by BODY occ like the inline sets.
+    pub(crate) tests: crate::fxhash::FxHashSet<StructId>,
+
     /// TRANSIENT flow-sensitive value-range REFINEMENTS, active only during wasm emit. A stack of
     /// frames, each mapping a variable's binder occurrence (a `Core::Param`/`LocalRef` `binder`) to a
     /// range `[lo, hi]` KNOWN to hold in the current control-flow branch (`hi = None` = unbounded above).
@@ -1353,12 +1360,17 @@ impl Db {
         // RECORD the stripped param's name occurrence in `const_params`. Done here, like `strip_def_docs`,
         // so every downstream reader sees a PLAIN binder and const-ness lives only in the set.
         let const_params = strip_const_params(&mut ast);
-        // Normalize away an `(@ inline-never (def …))` / `(@ inline-always (def …))` INLINE-POLICY
-        // annotation on a definition BEFORE `scan_top_level`: the policy is a declaration the emitter
-        // consumes, not part of the def shape every reader walks. Unwrap → `(def …)` in place and RECORD the def's BODY occ in
-        // the `inline_never` / `inline_always` set (Addendum 4). Done here like `strip_def_docs`, so every
-        // downstream reader sees a plain `(def …)` and the policy lives only in the sets.
-        let (inline_never, inline_always) = strip_inline_policy(&mut ast);
+        // Normalize away every known `(@ NAME (def …))` ANNOTATION on a definition BEFORE `scan_top_level`
+        // — `inline-never`/`inline-always` (the emitter's inline policy, Addendum 4) and `test` (the
+        // `cdz test` hoist marker). An annotation is a declaration a build phase consumes, not part of the
+        // def shape every reader walks. Unwrap → `(def …)` in place and RECORD each def's BODY occ in the
+        // matching set. Done here like `strip_def_docs`, so every downstream reader sees a plain `(def …)`
+        // and the annotation lives only in the sets.
+        let StrippedAnnotations {
+            inline_never,
+            inline_always,
+            tests,
+        } = strip_annotations(&mut ast);
         // The program's node count, captured BEFORE the prelude appends — the boundary between user
         // nodes (which the front-end's span table covers) and everything appended after. Ids `0..this`
         // are the user program; ids at/above are prelude or evaluator-synthesized.
@@ -1707,6 +1719,7 @@ impl Db {
             const_params,
             inline_never,
             inline_always,
+            tests,
             range_refinements: Vec::new(),
         };
         // NEWTYPE ERASURE: materialize, once, which declared sums are erasable NEWTYPES and their
@@ -2298,6 +2311,24 @@ impl Db {
     /// [`defs`]: Db::defs
     pub fn def_index_by_body(&self, body: StructId) -> Option<usize> {
         self.def_by_body.get(&body).copied()
+    }
+
+    /// The definitions marked `@test` (`strip_annotations`), as `defs` indices in DECLARATION ORDER — the
+    /// set the `cdz test` build hoists into the test artifact as nullary boundary entries. Each `@test`
+    /// marker is recorded by the annotated def's BODY occurrence, so this maps each back to its def via
+    /// `def_index_by_body`. Declaration order (a `defs`-index sort) gives a deterministic, source-ordered
+    /// test list. Empty for a program with no `@test` (the ordinary build — nothing hoisted). A `@test`
+    /// whose def has PARAMETERS is still returned here; the emit path validates nullary-ness and rejects a
+    /// parameterized test with an actionable diagnostic (a test takes no arguments).
+    pub fn test_defs(&self) -> Vec<usize> {
+        let mut idxs: Vec<usize> = self
+            .tests
+            .iter()
+            .filter_map(|&body| self.def_index_by_body(body))
+            .collect();
+        idxs.sort_unstable();
+        idxs.dedup();
+        idxs
     }
 
     /// The index in [`defs`] of the def whose SIGNATURE occurrence is `sig` — the O(1) reverse backing
@@ -3243,42 +3274,54 @@ fn strip_const_params(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId> {
     const_params
 }
 
-/// Unwrap every INLINE-POLICY annotation `(@ inline-never (def …))` / `(@ inline-always (def …))` in
-/// place, and return `(inline_never, inline_always)` — the sets of the annotated defs' BODY occurrences
+/// The three known annotation NAMES `strip_annotations` consumes off a `(@ NAME (def …))` wrapper —
+/// the inline-policy pair and the unit-test marker. A `@`-annotation whose name is NOT one of these is
+/// left in place (a later pass or a reject handles it), so this pool is the single source of truth for
+/// "which annotations the compiler models today".
+pub(crate) const KNOWN_ANNOTATIONS: &[&str] = &["inline-never", "inline-always", "test"];
+/// The strippable annotations a definition carries, each a set of the annotated defs' BODY occurrences.
+pub(crate) struct StrippedAnnotations {
+    pub(crate) inline_never: crate::fxhash::FxHashSet<StructId>,
+    pub(crate) inline_always: crate::fxhash::FxHashSet<StructId>,
+    /// Definitions marked `@test` — a UNIT TEST the `cdz test` build hoists into the test artifact as a
+    /// nullary export (`property-based-testing.md` sibling: a plain assertion test). Recorded by BODY occ
+    /// like the inline sets; `Db::is_test`/`test_defs` read it. Empty for an ordinary (non-test) build.
+    pub(crate) tests: crate::fxhash::FxHashSet<StructId>,
+}
+
+/// Unwrap every known `@`-ANNOTATION on a definition — `(@ inline-never (def …))`, `(@ inline-always
+/// (def …))`, `(@ test (def …))` — in place, returning the sets of the annotated defs' BODY occurrences
 /// (`DESIGN-recursive-generic-monomorphization-rcdzc.md` Addendum 4). `@` is the GENERAL-PURPOSE
-/// annotation head (`(@ NAME FORM)`, from the ML `@name form` sigil); this pass consumes the two
-/// inline-policy names and leaves any other annotation for a later pass / reject. The policy is a
-/// declaration the emitter consumes (not part of the def shape every reader walks), so it is removed here
-/// BEFORE `scan_top_level`, exactly as `strip_def_docs`/`strip_const_params` remove their wrappers —
-/// leaving every downstream reader a plain `(def …)`.
+/// annotation head (`(@ NAME FORM)`, from the ML `@name form` sigil); this pass consumes the names in
+/// [`KNOWN_ANNOTATIONS`] and leaves any other annotation for a later pass / reject. An annotation is a
+/// declaration a build phase consumes (the emitter's inline policy, the `cdz test` hoist) — not part of
+/// the def shape every reader walks — so it is removed here BEFORE `scan_top_level`, exactly as
+/// `strip_def_docs`/`strip_const_params` remove their wrappers, leaving every downstream reader a plain
+/// `(def …)`.
 ///
 /// The annotation NODE is rewritten IN PLACE to BE the inner `(def SIG BODY)` (it adopts the def's
 /// children), so its `StructId` now identifies the def and every parent that already pointed at the
 /// annotation needs no update — the inner def node is left orphaned (harmless; unreferenced). The
 /// recorded key is the def's BODY occurrence (`def` tail index 1 = child index 2), the identity
 /// `lower`/`layout` key on (`def_index_by_body`). An annotation around a NON-def (or a malformed def), or
-/// one whose name is not an inline-policy name, is left untouched.
-fn strip_inline_policy(
-    ast: &mut Arenas,
-) -> (
-    crate::fxhash::FxHashSet<StructId>,
-    crate::fxhash::FxHashSet<StructId>,
-) {
+/// one whose name is not known, is left untouched. A SINGLE annotation per def is the modeled case (as
+/// with the original inline-policy pass); stacking two known annotations on one def is not relied on here.
+fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
     let mut inline_never: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
     let mut inline_always: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
+    let mut tests: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
     for i in 0..ast.structure.len() {
         let id = StructId(i as u32);
-        // `(@ NAME INNER)` — the annotation head `@`, its name, and the annotated form. Only the two
-        // inline-policy names are consumed here; every other `@` annotation is left in place.
+        // `(@ NAME INNER)` — the annotation head `@`, its name, and the annotated form. Only a known
+        // annotation name is consumed here; every other `@` annotation is left in place.
         let Some(tail) = ast.as_form(id, "@") else {
             continue;
         };
         let (Some(&name_occ), Some(&inner)) = (tail.first(), tail.get(1)) else {
             continue;
         };
-        let never = match ast.as_name(name_occ) {
-            Some("inline-never") => true,
-            Some("inline-always") => false,
+        let name = match ast.as_name(name_occ) {
+            Some(n) if KNOWN_ANNOTATIONS.contains(&n) => n.to_string(),
             _ => continue,
         };
         // The inner must be a `(def SIG BODY …)` — read its children to adopt them + find the BODY occ.
@@ -3294,13 +3337,24 @@ fn strip_inline_policy(
             continue;
         };
         ast.structure[i] = Struct::List(inner_children);
-        if never {
-            inline_never.insert(body);
-        } else {
-            inline_always.insert(body);
+        match name.as_str() {
+            "inline-never" => {
+                inline_never.insert(body);
+            }
+            "inline-always" => {
+                inline_always.insert(body);
+            }
+            "test" => {
+                tests.insert(body);
+            }
+            _ => unreachable!("filtered to KNOWN_ANNOTATIONS above"),
         }
     }
-    (inline_never, inline_always)
+    StrippedAnnotations {
+        inline_never,
+        inline_always,
+        tests,
+    }
 }
 
 /// The one cheap top-level scan: gather the definitions, export requests, and `(type …)` declarations

@@ -156,12 +156,20 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     // Partition the requests: a QUERY reads a fact column (total — run now, answers even for a program
     // that fails to emit), an EMIT materializes a backend artifact (fault-gated — joins `targets`,
     // which IS the Emit half already). `targets` first, then the sidecar's Emit requests, in order.
+    // `EmitTests` is a THIRD kind: it emits a wasm component like `Emit(Wasm)` but from the `@test` defs
+    // (`layout::compute_tests`) — it joins `emit_targets` as `Wasm` (so the fault-gate + backend run the
+    // same way) with a flag that swaps the LAYOUT source.
     let mut queries = Vec::new();
     let mut emit_targets: Vec<Target> = targets.to_vec();
+    let mut emit_tests = false;
     for req in &requests {
         match req {
             sidecar::Request::Query(q) => queries.push(q.clone()),
             sidecar::Request::Emit(t) => emit_targets.push(*t),
+            sidecar::Request::EmitTests => {
+                emit_tests = true;
+                emit_targets.push(Target::Wasm);
+            }
         }
     }
 
@@ -223,7 +231,14 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     // out), so it must run — a well-formed program can still fail to lay out. (Its coarser declines that
     // DUPLICATE a `collect_faults` coded fault — the ambiguous-param case — are handled by reporting the
     // coded fault too, below, so the sidecar `check` surfaces it; the emit path keeps layout's decline.)
-    let layout = match layout::compute(&mut db) {
+    // A test build lays out the boundary from the `@test` NULLARY defs (`compute_tests`) IN PLACE OF the
+    // program's `(export …)` clauses; an ordinary build uses `compute`. Everything downstream (faults,
+    // reachability, emit) is identical — only the export SOURCE differs.
+    let layout = match if emit_tests {
+        layout::compute_tests(&mut db)
+    } else {
+        layout::compute(&mut db)
+    } {
         Ok(l) => l,
         Err(r) => {
             trace!(target: "rcdzc::compile", reason = %r.message, "layout declined");
@@ -3524,6 +3539,11 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
         .iter()
         .filter(|d| d.params.is_empty()) // nullary value defs only (see note above)
         .filter(|d| !exported.contains(d.name.as_str()))
+        // A `@test` definition is an ENTRY POINT (of the `cdz test` build), so it is "used" exactly as an
+        // exported def is — it is invoked by the test runner, not by another def in this program. Flagging
+        // it "never used" is a false positive introduced by the test marker, so skip a def whose body is in
+        // the `@test` set (`db.tests`, keyed by body occ). A non-test unused def still warns.
+        .filter(|d| !d.body.is_some_and(|b| db.tests.contains(&b)))
         .filter_map(|d| {
             let body = d.body?;
             // The def NAME occurrence — the signature's first child (for the warning anchor).

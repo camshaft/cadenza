@@ -25,6 +25,7 @@
 //! `cdz-run` stays a SEPARATE bin — it pulls in wasmtime + the runtime store, a different concern.
 
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use cadenza_syntax::cli as syntax_cli;
@@ -65,6 +66,15 @@ enum Cmd {
     // ── compiler (rcdzc) ────────────────────────────────────────────────────────────────────────
     /// Compile binary-AST artifacts to one or more backend targets (wasm/rust). The `rcdzc` surface.
     Compile(compiler_cli::CompileArgs),
+
+    // ── unit testing ─────────────────────────────────────────────────────────────────────────────
+    /// Compile a SEPARATE test component from a FILE's `@test`-marked NULLARY definitions and run each,
+    /// reporting pass/fail. Each `@test def` crosses the boundary as a nullary entry the runner invokes;
+    /// a test that RETURNS (unit) PASSES, one that TRAPS FAILS (an assertion emits its message via a host
+    /// effect, then traps). The report/host effect is compiled in ONLY here — a normal `cdz compile` build
+    /// never carries it. Shells out to the sibling `cdz-run` binary to execute each test (this bin holds
+    /// no wasm engine). Exits non-zero if any test fails.
+    Test(TestArgs),
 
     // ── semantic queries — the in-process win (both libraries + spans) ──────────────────────────
     /// The solved type of a definition NAME in FILE, rendered (a compiler query over the type column).
@@ -127,6 +137,7 @@ fn main() -> ExitCode {
         // SOURCE file directly — parsing it in-process to the `ast` artifact, and (for a debug target)
         // the `spans` artifact too — rather than requiring a pre-built binary AST.
         Cmd::Compile(a) => run_compile(a),
+        Cmd::Test(a) => run_test(&a),
         // The span-mapped semantic queries live here (they need both libraries in one process).
         Cmd::Type(a) => run_type(&a),
         Cmd::TypeAt(a) => run_type_at(&a),
@@ -302,6 +313,192 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
     compiler_cli::run_prepared(inputs, &targets, args.out_path(), PROG)
 }
 
+// ── cdz test ─────────────────────────────────────────────────────────────────────────────────────
+
+/// `cdz test FILE` — compile a SEPARATE test component from the file's `@test` NULLARY definitions and
+/// run each, reporting pass/fail. The flow, all in this one process for the compile half:
+///  1. Parse the source (`load_program`), encode the `ast` artifact.
+///  2. Enumerate the `@test` definitions' SOURCE names from a `Db` (`db.test_defs`) — the tests to run,
+///     in declaration order; filtered by `--filter` if given.
+///  3. Compile with an `EmitTests` sidecar request → the wasm component whose exports ARE the tests
+///     (`layout::compute_tests`). A test that TRAPS on failure crosses as a nullary no-result entry.
+///  4. Shell out to the sibling `cdz-run` binary once per test (this bin holds no wasm engine, by design):
+///     `cdz-run <component> --call <kebab-name>`. Exit 0 = the test returned (PASS); exit ≠ 0 = it trapped
+///     (FAIL). A failure's message rides `cdz-run`'s `host-arg` stderr line (the assertion text the test
+///     emitted via a host effect before trapping).
+///
+/// Exits non-zero if ANY test fails (or if the compile declines / no `@test` is present) — the CI shape.
+fn run_test(args: &TestArgs) -> ExitCode {
+    // Parse the source once; the arenas feed BOTH the test-name enumeration (a `Db`) and the emit compile.
+    let (_source, arenas) = match load_program(&args.file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Encode the `ast` ONCE — it feeds both the test-name enumeration (decoded into a compiler `Db`) and
+    // the emit compile below. The front-end (`cadenza_syntax`) and compiler (`rcdzc`) have DISTINCT arena
+    // types; the canonical binary form is the bridge, so `Db::load` reads a `codec::decode` of these bytes.
+    let ast = cadenza_syntax::codec::encode(&arenas);
+
+    // The `@test` definitions' SOURCE names, in declaration order (`db.test_defs` returns `defs` indices
+    // sorted). Building a `Db` here is the same load the compile does; it is cheap relative to emit and
+    // gives the runner the names to `--call` + report. Filter by `--filter` (a name-substring) if given.
+    let Some(rcdzc_arenas) = rcdzc::codec::decode(&ast) else {
+        eprintln!("{PROG}: {}: could not decode the program's AST", args.file);
+        return ExitCode::FAILURE;
+    };
+    let db = rcdzc::db::Db::load(rcdzc_arenas);
+    let mut tests: Vec<String> = db
+        .test_defs()
+        .into_iter()
+        .map(|i| db.defs[i].name.clone())
+        .filter(|name| {
+            args.filter
+                .as_deref()
+                .is_none_or(|needle| name.contains(needle))
+        })
+        .collect();
+    tests.dedup();
+    if tests.is_empty() {
+        let scope = match &args.filter {
+            Some(f) => format!(" matching `{f}`"),
+            None => String::new(),
+        };
+        eprintln!(
+            "{PROG}: {}: no `@test` definition{scope} (mark a nullary def with `@test`)",
+            args.file
+        );
+        // No tests to run is not a failure to REPORT — but nothing passed either; exit 0 (an empty suite
+        // is vacuously green), matching the common `--filter` "nothing selected" convention.
+        return ExitCode::SUCCESS;
+    }
+
+    // Compile the test component: the `ast` (encoded above) + an `EmitTests` sidecar request. `EmitTests`
+    // lays the boundary out from the `@test` defs (`layout::compute_tests`), not the `(export …)` clauses.
+    let inputs = vec![
+        rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast),
+        rcdzc::Artifact::new(
+            rcdzc::sidecar::KIND_SIDECAR,
+            "drive",
+            rcdzc::sidecar::encode(&[rcdzc::Request::EmitTests]),
+        ),
+    ];
+    let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    let Some(component) = out.artifact("component") else {
+        // The test compile declined — report its errors (a parameterized `@test`, an ill-typed test body,
+        // etc.). `report_errors` prints each coded/uncoded error to stderr.
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    let component = component.to_vec();
+
+    // Write the component to a temp file the runner reads. (cdz-run also reads `-` from stdin, but a
+    // per-test re-invocation reuses one file rather than re-piping the bytes each call.)
+    let tmp = std::env::temp_dir().join(format!("cdz-test-{}.wasm", std::process::id()));
+    if let Err(e) = std::fs::write(&tmp, &component) {
+        eprintln!(
+            "{PROG}: writing the test component to {}: {e}",
+            tmp.display()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    // Locate the sibling `cdz-run` binary — it lives beside THIS binary in `target/<profile>/` (both are
+    // built together). `current_exe().parent()/cdz-run` is the robust, install-location-independent path
+    // (the same `current_exe`-relative convention xtask uses to re-invoke its own tools).
+    let cdz_run = match std::env::current_exe().ok().and_then(|p| {
+        p.parent().map(|dir| {
+            dir.join(if cfg!(windows) {
+                "cdz-run.exe"
+            } else {
+                "cdz-run"
+            })
+        })
+    }) {
+        Some(p) if p.exists() => p,
+        _ => {
+            eprintln!(
+                "{PROG}: cannot find the `cdz-run` binary beside this executable — build it \
+                 (`cargo build --bin cdz-run`) so `cdz test` can run the compiled tests"
+            );
+            let _ = std::fs::remove_file(&tmp);
+            return ExitCode::FAILURE;
+        }
+    };
+    let store = args.store.clone().unwrap_or_else(default_store);
+
+    // Run each test through `cdz-run`, in declaration order. PASS = exit 0 (the test returned); FAIL =
+    // nonzero (it trapped). A failure's message is `cdz-run`'s `host-arg\t<op>\t<message>` stderr line —
+    // the assertion text the test emitted via its report host effect just before trapping.
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    for name in &tests {
+        let kebab = cadenza_syntax::extern_name::kebab_extern_name(name);
+        let run = std::process::Command::new(&cdz_run)
+            .arg(&tmp)
+            .arg("--call")
+            .arg(&kebab)
+            .arg("--store")
+            .arg(&store)
+            .output();
+        match run {
+            Ok(o) if o.status.success() => {
+                passed += 1;
+                println!("PASS {name}");
+            }
+            Ok(o) => {
+                failed += 1;
+                match test_failure_message(&o.stderr) {
+                    Some(msg) => println!("FAIL {name}: {msg}"),
+                    None => println!("FAIL {name}"),
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                println!("FAIL {name}: could not run `cdz-run`: {e}");
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&tmp);
+
+    println!("\n{passed} passed, {failed} failed");
+    if failed == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// The failure MESSAGE a trapped test emitted — the FIRST `host-arg\t<op>\t<message>` line in `cdz-run`'s
+/// stderr (the assertion text a test performs via its report host effect before trapping). `None` when no
+/// message rode along (a test that trapped with no host report — just the bare trap). The `host-arg`
+/// protocol is `cdz-run`'s additive channel for a host call's STRING argument (`main.rs`), distinct from
+/// the gate's `host-call` line, so reading it here never collides with the observed-op sequence.
+fn test_failure_message(stderr: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .find_map(|l| l.strip_prefix("host-arg\t").map(str::to_string))
+        // `host-arg` is `<op>\t<message>`; take the message (everything after the op's tab).
+        .and_then(|entry| entry.split_once('\t').map(|(_op, msg)| msg.to_string()))
+}
+
+/// The default content-addressed runtime store — `<repo>/target/cadenza-store`, resolved relative to this
+/// binary (`target/<profile>/cdz` → up two → `target` → `cadenza-store`). Mirrors `cdz-run`'s own default
+/// so `cdz test` and a direct `cdz-run` agree on where the value-heap runtime lives.
+fn default_store() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| {
+            p.parent()
+                .and_then(|d| d.parent())
+                .map(|t| t.join("cadenza-store"))
+        })
+        .unwrap_or_else(|| PathBuf::from("target/cadenza-store"))
+}
+
 /// The artifact NAME for a source file — its file stem (so `add.cdz` → `add`), matching the compiler
 /// CLI's default naming; falls back to `main`.
 fn program_name(spec: &str) -> String {
@@ -381,6 +578,21 @@ fn read_artifact_spec(spec: &str) -> Result<rcdzc::Artifact, String> {
         std::fs::read(&path).map_err(|e| format!("cannot read {path}: {e}"))?
     };
     Ok(rcdzc::Artifact::new(kind, name, bytes))
+}
+
+// ── unit testing ───────────────────────────────────────────────────────────────────────────────────
+
+#[derive(clap::Args)]
+struct TestArgs {
+    /// The program file whose `@test` definitions to run (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
+    file: String,
+    /// Run only tests whose name CONTAINS this substring (a filter). Absent = run every `@test`.
+    #[arg(long)]
+    filter: Option<String>,
+    /// The content-addressed runtime store `cdz-run` resolves the value-heap runtime from, if a test
+    /// builds heap values. Defaults to `<repo>/target/cadenza-store` (built by `cargo xtask build`).
+    #[arg(long)]
+    store: Option<PathBuf>,
 }
 
 // ── the semantic queries ─────────────────────────────────────────────────────────────────────────

@@ -1579,6 +1579,32 @@ fn collect_cont_ops(
     }
 }
 
+/// Whether the body at `id` PROVABLY diverges — its core reduces to an unconditional `Core::Trap`,
+/// possibly THROUGH a sequencing/binding wrapper whose value is that trap. A diverging body's
+/// `unreachable` is stack-polymorphic (validates in any result position), so its function is emitted
+/// with a UNIT (0-result) signature rather than declining "return type has no machine representation".
+///
+/// Peers through the two value-position wrappers whose value is their TAIL: `Core::Seq { tail }` (an
+/// effect-statement run then a value — the `(do (log.emit …) (trap …))` shape a test-failure path takes)
+/// and `Core::Let { body }` (a binding then a body). A bare `Core::Trap` is the base case. Every other
+/// core shape is NOT provably diverging (returns `false`) — so a genuine value-returning body keeps its
+/// solved type and a real "no machine representation" decline still fires for it. Conservative: it proves
+/// divergence only through these value-forwarding wrappers, never guesses.
+///
+/// `pub(crate)` because the component-boundary layer (`wasm::mod`) makes the same "diverging export → a
+/// unit (no-result) boundary entry" decision and must recognize the same shapes (a bare trap AND a
+/// trap-through-`Seq`/`Let`), so both the core-signature site here and the boundary site there share this.
+pub(crate) fn body_diverges(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::Trap => true,
+        // A sequence's value is its tail; the statements run for effect. Diverges iff the tail does.
+        Core::Seq { tail, .. } => body_diverges(db, tail),
+        // A `let`'s value is its body; the bindings are evaluated first. Diverges iff the body does.
+        Core::Let { body, .. } => body_diverges(db, body),
+        _ => false,
+    }
+}
+
 /// Select a function body with `params` — each a `(name-occurrence, solved-type)`, in signature order.
 /// The parameters occupy wasm local slots `0..n` in order; a `Core::Param` reference to a parameter
 /// emits `local.get <slot>`. The return type is the body's solved type. A parameter whose type has no
@@ -1636,13 +1662,12 @@ pub fn select_function_of(
     // representation, but it never RETURNS a value — its `unreachable` is stack-polymorphic and validates
     // in any result position. So a diverging function is emitted with a UNIT (0-result) signature rather
     // than declining "return type has no machine representation": `(def (main) (trap …))`, a zero-arm
-    // match on a `Never` scrutinee (`(match (never-returns))` → `Core::Trap`), or a call to such a
-    // function. Only rewrite when `ret` has NO valtype AND the body reduces to `Core::Trap` — a genuine
-    // value-returning body keeps its type (a real "no machine rep" decline still fires for those).
-    if valtype_of(&ret).is_none()
-        && !matches!(ret, Ty::Unit)
-        && matches!(core_of(db, body), Core::Trap)
-    {
+    // match on a `Never` scrutinee (`(match (never-returns))` → `Core::Trap`), or a body that runs some
+    // effect statements and THEN traps (`(host (log) (do (log.emit "m") (trap …)))` — a `Core::Seq` whose
+    // tail is the trap, the shape a unit-test failure path takes). Only rewrite when `ret` has NO valtype
+    // AND the body PROVABLY diverges (`body_diverges`) — a genuine value-returning body keeps its type (a
+    // real "no machine rep" decline still fires for those).
+    if valtype_of(&ret).is_none() && !matches!(ret, Ty::Unit) && body_diverges(db, body) {
         ret = Ty::Unit;
     }
     let mut code = Emit::new();

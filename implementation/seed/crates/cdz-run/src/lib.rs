@@ -686,13 +686,27 @@ fn bind_host_imports(
             let responses = Arc::clone(&responses);
             let observed = Arc::clone(observed);
             let op_label = format!("{iface_name}.{fname}");
-            iface.func_new(&fname, move |_ctx, _params, results| {
+            iface.func_new(&fname, move |_ctx, params, results| {
                 // OBSERVE the call — append its dotted `E.op` in call order (so the gate can verify the
-                // sequence against `(host-calls …)`).
-                observed
-                    .lock()
-                    .expect("observed calls mutex")
-                    .push(op_label.clone());
+                // sequence against `(host-calls …)`). When the call carries STRING arguments (a
+                // `report.fail("msg")` / `log.emit("…")`), append them after a TAB so a consumer that
+                // wants the message (`cdz test`, whose failure path emits the assertion text) can read it —
+                // WITHOUT polluting the op field: `main.rs` splits the entry on the first tab, so the
+                // `host-call\t<op>` line the gate parses keeps a clean `<op>`, and the message rides a
+                // separate `host-arg` line. A non-string arg (a scalar) is not captured (nothing reads it).
+                let str_args: Vec<String> = params
+                    .iter()
+                    .filter_map(|v| match v {
+                        Val::String(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                let entry = if str_args.is_empty() {
+                    op_label.clone()
+                } else {
+                    format!("{op_label}\t{}", str_args.join(" "))
+                };
+                observed.lock().expect("observed calls mutex").push(entry);
                 // A unit-result op returns nothing and consumes no response. A scalar-result op pops the
                 // next recorded response, coerces it to the result type, and returns it.
                 if let Some(slot) = results.get_mut(0) {

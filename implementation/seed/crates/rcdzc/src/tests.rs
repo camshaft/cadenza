@@ -20696,6 +20696,28 @@ mod match_engine {
     }
 
     #[test]
+    fn a_body_that_traps_through_a_seq_emits_a_trapping_function() {
+        // The divergence detection peers THROUGH a `Core::Seq` (an effect-statement run then a value) to
+        // its trapping tail — the shape a unit-test FAILURE path takes: run a `report`/`log` host effect
+        // FOR ITS EFFECT, then `(trap …)`. Before, `(host (log) (do (log.emit "m") (trap …)))` selected
+        // the body's result type to the trap's `Never` (a fresh var, no machine rep) and DECLINED "function
+        // return type has no machine representation" — the whole `do` block's value is the trap, but the
+        // Seq wrapper hid it from the bare `Core::Trap`-exact guard. Now `body_diverges` recurses through
+        // `Seq { tail }` (and `Let { body }`), so the body is recognized as diverging → emitted UNIT
+        // (0-result), the host observes the effect THEN the trap. The dual sites — the core function
+        // signature (`select_function`) and the component boundary (`wasm::mod`) — share `body_diverges`.
+        let src = "(module m (effect log (op emit (-> String Unit))) \
+                   (def (main) (host (log) (do ((. log emit) \"boom\") (trap \"failed\")))) \
+                   (export main))";
+        // The KEY assertion: it EMITS (no "no machine representation" decline). A component is produced.
+        let bytes = component(src);
+        assert!(
+            !bytes.is_empty(),
+            "an effect-then-trap body must emit, not decline as unrepresentable"
+        );
+    }
+
+    #[test]
     fn a_runtime_built_map_and_set_escape_via_value_encode() {
         // A RUNTIME `(Map Int64 Int64)` / `(Set Int64)` (insert-built, not constant-foldable) now crosses
         // the host boundary, where before they declined "needs a value-form walker". Both escape via the

@@ -1218,6 +1218,18 @@ impl<'a> Printer<'a> {
         {
             return self.form_starts_with_keyword(a[1]);
         }
+        // An annotation `(@ name inner)` prints as `@name inner`; its LEADING surface token is the `@`
+        // sigil, which — like a keyword — is a self-delimiting form boundary the next juxtaposed form
+        // cannot fuse onto (an `@` can only begin a fresh annotation). So an annotation counts as
+        // keyword-starting: without this, a top-level `@test def …` FOLLOWED by another form was treated as
+        // "next form is open" and got a spurious trailing `;` (`@test def a() = unit;`), which then failed
+        // to re-parse (`a do block must end in a value form`). Recurse to the annotated inner too, so the
+        // stacked/nested cases agree, matching the `comment`-wrapper recursion above.
+        if let Some(a) = self.a.as_form(id, "@")
+            && a.len() == 2
+        {
+            return true;
+        }
         let head = match self.a.get(id) {
             Struct::List(items) if !items.is_empty() => items[0],
             _ => return false,
@@ -2636,6 +2648,26 @@ mod tests {
         );
         assert_eq!(assert_roundtrip("def main() = 42", 80), "def main() = 42");
         assert_eq!(assert_roundtrip("fn(x) => x * 2", 80), "fn(x) => x * 2");
+    }
+
+    #[test]
+    fn an_annotated_def_juxtaposes_without_a_spurious_semicolon() {
+        // A top-level `@name def …` FOLLOWED by another form must NOT get a trailing `;`: an annotation is
+        // a self-delimiting form boundary (an `@` only ever begins a fresh annotation), so the next form
+        // juxtaposes, exactly as after a bare `def`. Before, the root-form printer treated the following
+        // `@`-form as "open" and appended a `;` (`@test def a() = unit;`), which then FAILED to re-parse
+        // ("a do block must end in a value form"). `assert_roundtrip` re-parses the printed text, so it
+        // would panic on that breakage — this pins the fix. Two annotated defs in a row is the exact case.
+        let printed = assert_roundtrip("@test def a() = unit\n@test def b() = unit", 80);
+        assert!(
+            !printed.contains(';'),
+            "an annotated def must not gain a trailing `;`: {printed:?}"
+        );
+        // The inline-policy annotation (the original `@` user) juxtaposes the same way.
+        assert!(
+            !assert_roundtrip("@inline-never def h() = 1\ndef m() = h()", 80).contains("1;"),
+            "an @inline-never def must not gain a trailing `;`"
+        );
     }
 
     #[test]
