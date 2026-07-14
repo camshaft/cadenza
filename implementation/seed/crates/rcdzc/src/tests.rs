@@ -22254,6 +22254,101 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_binary_operator_over_or_under_application_on_a_function_param_surfaces_in_the_query() {
+        // The binop-ARITY twin of the mistyped-variant case above. A fixed-arity operator applied to a
+        // count other than 2 has a CLEAR operator-specific CDZ0201 "+ takes exactly 2 operands" (with a
+        // delete-surplus fix on an over-application) — but it was produced ONLY by the emit-path lowering
+        // walk (nullary-EXPORTED bodies). So in a PARAMETERIZED body, `cdz check` reported only the GENERIC
+        // CDZ0203 "applied N arguments to a function of arity M …" for the over-application and NOTHING for
+        // the under-application, while `compile` rejected both with the operator message. `collect`'s Apply
+        // arm now surfaces the operator CDZ0201 whether the def takes parameters or not.
+
+        // OVER-application `(+ n 1 2)` on a parameter: one CDZ0201 with the operator message + delete fix,
+        // and the generic CDZ0203 is deduped away (reported exactly once, not twice).
+        let over = "(module m (def (g (: n Int64)) (+ n 1 2)) (export g))";
+        let d: Vec<_> = crate::diagnostics(&mut Db::load(parse(over)))
+            .into_iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            d.len(),
+            1,
+            "one arity fault, generic CDZ0203 deduped: {d:?}"
+        );
+        assert_eq!(d[0].code.as_deref(), Some("CDZ0201"));
+        assert!(
+            d[0].message.contains("takes exactly 2 operands"),
+            "the clear operator message, not the generic arity phrasing: {}",
+            d[0].message
+        );
+        let fix = d[0].fix.as_ref().expect("carries the delete-surplus fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+
+        // UNDER-application `(+ n)` on a parameter: the same operator CDZ0201 (previously check was SILENT
+        // while compile rejected it — no unary operator form exists, so this is a genuine arity error).
+        let under = "(module m (def (g (: n Int64)) (+ n)) (export g))";
+        let du: Vec<_> = crate::diagnostics(&mut Db::load(parse(under)))
+            .into_iter()
+            .filter(|d| {
+                d.severity == crate::abi::Severity::Error && d.code.as_deref() == Some("CDZ0201")
+            })
+            .collect();
+        assert_eq!(
+            du.len(),
+            1,
+            "under-application reports the operator fault once: {du:?}"
+        );
+        assert!(
+            du[0].message.contains("takes exactly 2 operands"),
+            "{}",
+            du[0].message
+        );
+
+        // A comparison and a float operator take the same path (the message names the operator).
+        for (src, op) in [
+            ("(module m (def (g (: n Int64)) (< n 1 2)) (export g))", "<"),
+            (
+                "(module m (def (g (: x Float64)) (+. x 1.0 2.0)) (export g))",
+                "+.",
+            ),
+        ] {
+            let dc: Vec<_> = crate::diagnostics(&mut Db::load(parse(src)))
+                .into_iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .collect();
+            assert_eq!(dc.len(), 1, "{op}: one arity fault: {dc:?}");
+            assert_eq!(dc[0].code.as_deref(), Some("CDZ0201"));
+            assert!(
+                dc[0]
+                    .message
+                    .contains(&format!("{op} takes exactly 2 operands")),
+                "{op}: names the operator: {}",
+                dc[0].message
+            );
+        }
+
+        // A WELL-FORMED 2-operand application on a parameter stays clean — no false positive.
+        let ok = "(module m (def (g (: n Int64)) (+ n 1)) (export g))";
+        assert!(
+            crate::diagnostics(&mut Db::load(parse(ok)))
+                .iter()
+                .all(|d| d.code.as_deref() != Some("CDZ0201")),
+            "a correct 2-operand application produces no arity fault"
+        );
+
+        // A USER-function over-application keeps its OWN generic CDZ0203 (no operator CDZ0201 is minted for
+        // a non-operator head) — the accessor is scoped to the fixed-arity binary operators.
+        let userfn =
+            "(module m (def (f (: x Int64)) x) (def (g (: n Int64)) (f n 1 2)) (export g))";
+        let df: Vec<_> = crate::diagnostics(&mut Db::load(parse(userfn)))
+            .into_iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(df.len(), 1, "user-fn over-app reports once: {df:?}");
+        assert_eq!(df[0].code.as_deref(), Some("CDZ0203"), "{}", df[0].message);
+    }
+
+    #[test]
     fn an_unbound_name_anchors_to_a_user_node() {
         // The diagnostic for an unbound name carries a node index, and it is a genuine USER node (below
         // the program's node count) — the front-end can map it to the `nope` occurrence.

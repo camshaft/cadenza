@@ -2131,6 +2131,44 @@ pub fn match_pattern_fault(db: &mut Db, id: StructId) -> Option<Reject> {
     }
 }
 
+/// The OPERATOR-SPECIFIC wrong-arity fault of an application whose head is a fixed-arity binary operator
+/// applied to a number of operands other than 2 — an OVER-application (`(+ 1 2 3)`, `(< n 1 2)`, `(+. x 1.0
+/// 2.0)`) or an UNDER-application (`(+ n)`, `(-)`) — the CDZ0201 "+ takes exactly 2 operands"
+/// (`binop_arity_reject`), carrying a delete-surplus fix on the over-application. Surfaced for
+/// `type_errors` so `cdz check` reports the CLEAR operator message in EVERY body, not only the
+/// nullary-EXPORTED ones the emit-path lowering walk (`collect_reached_poisons`) reaches. Without this,
+/// `check` on a PARAMETERIZED body reported only `infer::check_application`'s GENERIC CDZ0203 ("applied 3
+/// arguments to a function of arity 2 — it is not a function after its arguments are consumed") for an
+/// over-application, and NOTHING at all for an under-application — the same "check missed what only
+/// lowering produced" hole [`match_pattern_fault`]/[`match_nonexhaustive_fault`] close for patterns
+/// (`compile` rejects both, `check` was silent/vaguer).
+///
+/// Arity is a purely SYNTACTIC property of the application — `binop_arity_reject` fires on `args.len() != 2`
+/// before touching either operand, and the language has NO unary form of any binary operator (`(- n)` is a
+/// wrong-arity error, not negation) — so surfacing it over an unreached parameterized body is not a false
+/// alarm, and reading `core_of` here is safe (β-reduction copies the callee body into fresh nodes, never
+/// this node's memoized core). On an OVER-application the CDZ0201's delete-fix node matches the sibling
+/// CDZ0203's, so `dedup_faults` keeps this operator-specific message and drops the generic one
+/// (`operator_arity_fix_nodes`), reporting ONE primary error with the fix. On an UNDER-application there is
+/// no CDZ0203 sibling (`check_application` stays silent) and no fix, so this is the sole report. A
+/// well-formed 2-operand application lowers to real arithmetic, not a poison, so it yields `None`.
+pub fn binop_arity_fault(db: &mut Db, id: StructId) -> Option<Reject> {
+    let Resolved::Apply { head, args } = resolved_of(db, id) else {
+        return None;
+    };
+    if args.len() == 2 {
+        return None;
+    }
+    let prim = crate::eval::meta_apply_of(db, head)?;
+    if !(prim.is_arith() || prim.is_comparison() || prim.is_float_arith()) {
+        return None;
+    }
+    match core_of(db, id) {
+        Core::Poison(r) if r.code == Some(Code::Malformed) => Some(r),
+        _ => None,
+    }
+}
+
 /// Lower a `(match scrutinee (pattern body)…)` over a SCALAR scrutinee. Each pattern classifies to a
 /// [`Probe`] (an integer/boolean literal, a binder, or the wildcard `_`); a pattern that is none of
 /// these declines (sum/tuple/record patterns walk the value heap — a separate path). If the scrutinee
