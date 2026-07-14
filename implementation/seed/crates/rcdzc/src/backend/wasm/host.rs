@@ -90,6 +90,10 @@ pub fn abi_val_type(ty: &Ty) -> Option<AbiValType> {
 //# An import of the value-heap runtime interface MUST NOT be a host capability and MUST NOT appear in the manifest, so that reaching the runtime is an internal linkage the compiler controls rather than an effect that escapes to the host, and capability-safety stays auditable as "every import other than the one well-known runtime interface is a capability the manifest enumerates."
 //= spec/contracts/host-interface-binding.md#imports-mirror-the-manifest-exactly
 //# The set of host operations a component imports MUST equal the set of capabilities its manifest enumerates.
+//= constitution.md#iv-no-ambient-authority
+//# A compiled component MUST import only the host operations enumerated in its capability manifest.
+//= constitution.md#iv-no-ambient-authority
+//# The compiler MUST NOT emit an import that the program's declared capabilities do not enumerate.
 //= spec/contracts/host-interface-binding.md#imports-mirror-the-manifest-exactly
 //# The compiler MUST NOT emit an import for a host operation the manifest does not enumerate.
 //= spec/contracts/host-interface-binding.md#imports-mirror-the-manifest-exactly

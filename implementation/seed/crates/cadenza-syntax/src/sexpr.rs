@@ -134,6 +134,8 @@ fn read_all_impl(text: &str, track: bool) -> Result<(Arenas, Option<SpanTable>),
 //# A printer MUST render a program's canonical representation as text that a reader converts back to the same canonical representation.
 //= spec/capabilities/self-hosting-surface.md#a-printer-renders-the-canonical-representation-as-re-readable-text
 //# Reading the text a printer produced for a value MUST yield a value equal to the original under structural equality, so that the reader and printer round-trip.
+//= constitution.md#x-programs-are-readable-by-agents-and-humans
+//# A textual syntax MUST be a lossless projection of the canonical form, such that parsing its text yields the canonical form and printing the canonical form yields text that parses back to the same canonical form.
 pub fn print(arenas: &Arenas) -> String {
     let mut out = String::new();
     print_node(arenas, arenas.root, &mut out);
