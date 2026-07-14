@@ -360,6 +360,16 @@
   (input  (: (tuple 1 2) (Tuple Int64 Int64 Int64)))
   (error  CDZ0203))
 
+(case "a tuple annotated with too many elements is rejected"
+  (doc    "The other arity direction: `(: (tuple 1 2 3) (Tuple Int64 Int64))` annotates a THREE-element
+           tuple as a two-element type — the value has MORE positions than the annotation. Rejected
+           (CDZ0203, 'expected a tuple with 2 elements, but this one has 3'), the too-many companion of the
+           too-few case above. Pins that the arity check catches a surplus element as well as a missing
+           one (the tuple analog of the record extra-field case), so a tuple's length must match exactly in
+           both directions — not merely be at-least or at-most the annotation's.")
+  (input  (: (tuple 1 2 3) (Tuple Int64 Int64)))
+  (error  CDZ0203))
+
 (case "an unannotated program with a valid typing type-checks and runs"
   (doc    "Witnesses type-system.md #An Unannotated Program Is Accepted When It Has A Valid Typing: a
            valid typing need not be written by the author; the program type-checks and evaluates to 3.")

@@ -1327,6 +1327,26 @@
             (_ 999)))
   (output (: 7 Int64)))
 
+(case "a guarded match over a runtime scrutinee with constant arms computes correctly"
+  (doc    "`(def (main (: x Int64)) (match x ((guard n (> n 100)) 1) (_ 0)))` — a guarded scalar match over
+           a RUNTIME argument. This is semantically `(if (> x 100) 1 0)`; the guard `(> n 100)` reads the
+           binder `n` (the scrutinee value) and the two arms are constants, so the compiler compiles it to
+           the same branchless form the plain `if` gets. Called with 150 (> 100) → 1. Pins that a
+           runtime guarded match with a binder-reading guard evaluates the guard against the scrutinee and
+           selects the right arm.")
+  (input  (do (def (main (: x Int64)) (match x ((guard n (> n 100)) 1) (_ 0))) (export main)))
+  (call   main (: 150 Int64))
+  (output (: 1 Int64)))
+
+(case "a guarded match over a runtime scrutinee whose guard fails takes the wildcard"
+  (doc    "The false-guard companion of the runtime guarded match `(match x ((guard n (> n 100)) 1) (_ 0))`:
+           called with 50 (not > 100), so the guard fails and the unguarded wildcard 0 is taken. Together
+           with the true case this pins value parity of the desugared branchless form with the guarded
+           probe chain it replaced.")
+  (input  (do (def (main (: x Int64)) (match x ((guard n (> n 100)) 1) (_ 0))) (export main)))
+  (call   main (: 50 Int64))
+  (output (: 0 Int64)))
+
 (case "a guard reads a binding from the enclosing scope, not only its pattern's"
   (doc    "A guard is an ordinary expression evaluated in the arm's full scope, so it reads names from the
            ENCLOSING scope too, not only the ones its pattern binds: `classify` guards `v if v < limit`
