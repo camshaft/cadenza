@@ -6489,6 +6489,16 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             // list `ListNew` — a list binding is always a whole-value use and simply keeps under the
             // >= 2-use rule below. (A single-use list still inlines: `n < 2`.)
             | Core::ListNew { .. }
+            // A residual `Core::Call` (a recursive def that could not inline to a value) is a genuine
+            // runtime computation — a real function call that may build heap structures, run a loop, etc.
+            // A `let`-bound call used more than once must be NAMED (called ONCE, its result read by each
+            // use) rather than copy-propagated into every use site — otherwise `(let ((xs (build …))) (+
+            // (len xs) (* (len xs) 2)))` REBUILDS the whole list at each `xs`, an N× blow-up of the call
+            // (and its transitive allocations). Sound under strict-`let` semantics (the binding evaluates
+            // once at the `let`, as the kept `Arith`/`If`/… bindings already do); and strictly SAFER than
+            // duplication for a call with any effect (calling it once, not N times). A single-use call
+            // still inlines (`n < 2`).
+            | Core::Call { .. }
     )
 }
 

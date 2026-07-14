@@ -8967,6 +8967,58 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_multi_use_call_binding_calls_once_not_per_use() {
+        // A `let`-bound value whose initializer is a residual `Core::Call` (a RECURSIVE def that could not
+        // inline to a value) is a genuine runtime computation — so a call binding used MORE THAN ONCE must
+        // be NAMED (called once, its result read by each use), not copy-propagated into every use site.
+        // Before, `Core::Call` was absent from `is_runtime_computation`, so `(let ((xs (build …))) …)` with
+        // `xs` used twice RECOMPUTED the whole `build` call (rebuilding the list + its allocations) at each
+        // use. Pin exactly ONE call to `build` in the emitted body, and value parity.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        use crate::db::Db;
+        use crate::infer::type_of;
+        use crate::testkit::parse;
+        let ast = parse(
+            "(module m \
+               (def (build (: i Int64) (: n Int64) (: out (List Int64))) \
+                 (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+               (def (f (: n Int64)) \
+                 (let ((xs (build 0 n (list)))) (+ ((. List len) xs) ((. List len) xs)))) \
+               (export f))",
+        );
+        let mut db = Db::load(ast);
+        let d = db.def_by_name("f").expect("def f");
+        let body = db.defs[d].body.expect("body");
+        let sig_params = db.defs[d].params.clone();
+        let mut params = Vec::new();
+        for p in sig_params {
+            let binder = match db.ast.as_form(p, ":").and_then(|t| t.first().copied()) {
+                Some(name_occ) => name_occ,
+                None => p,
+            };
+            let ty = type_of(&mut db, binder);
+            params.push((binder, ty));
+        }
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let code = select_function(&mut db, body, &params, &layout)
+            .expect("select")
+            .code;
+        // The `build` recursion is a real `Core::Call` → a `Lir::Call`/`ReturnCall`. With `xs` NAMED it is
+        // called EXACTLY ONCE; if `xs` were copy-propagated it would appear twice (once per `List.len xs`).
+        let calls = code
+            .iter()
+            .filter(|i| matches!(i, Lir::Call(_) | Lir::ReturnCall(_)))
+            .count();
+        assert_eq!(
+            calls, 1,
+            "a multi-use call binding is called ONCE, not per use, got {calls}: {code:?}"
+        );
+        // (End-to-end value parity for shared runtime call-bindings is covered by the corpus gate + the
+        // `len`-twice / `concat xs xs` runtime probes; here the Lir call-count is the precise witness.)
+    }
+
+    #[test]
     fn a_single_use_runtime_binding_is_inlined_not_named() {
         // A binding used ONCE is copy-propagated (no `Core::Let`), so it emits identically to writing
         // the value inline — byte-for-byte. `(let ((s (+ a b))) (* s 2))` and `(* (+ a b) 2)` are the
