@@ -2570,6 +2570,37 @@
   (call   mk (: (tuple 3 4) (Tuple Int64 Int64)))
   (output (: 7 Int64)))
 
+(case "a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary"
+  (doc    "Like the tuple-arg case but the closure argument is a RECORD `(Record (a Int64) (b Int64))`. A
+           record of aliased-width scalars flattens the same way (its fields in canonical SORTED-key order —
+           the value-heap cell's field order), so the guest `call` rebuilds the record cell from the flat
+           fields. `call(handle, (record 3 4))` → `(. p a) + (. p b)` = 7. (The corpus arg is the value form
+           in field order; the `record` head token is dropped by the runner's tuple-literal parser.)")
+  (input  (do (def (mk) (fn ((: p (Record (a Int64) (b Int64)))) (+ (. p a) (. p b))))
+              (export mk)))
+  (call   mk (: (record 3 4) (Record (a Int64) (b Int64))))
+  (output (: 7 Int64)))
+
+(case "a NARROW-int-field Tuple closure ARG flattens + rebuilds (exercises the i32->i64 extend)"
+  (doc    "A `(Tuple Int32 Int32)` closure arg: each field crosses as a component `s32` (an i32 core param),
+           so the cell rebuild SIGN-EXTENDS each field i32→i64 before `box-int` (the value-heap cell holds
+           i64-boxed ints). Distinct from the Int64 case, which needs no extend. `call(handle, (100, 23))`
+           → 123, proving the narrow-field extend path in `TupleArgRebuild`.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int32 Int32))) (+ (. p 0) (. p 1))))
+              (export mk)))
+  (call   mk (: (tuple 100 23) (Tuple Int32 Int32)))
+  (output (: 123 Int32)))
+
+(case "a CAPTURING closure taking a Tuple ARG crosses the DIRECT-CALL boundary"
+  (doc    "The tuple-arg path composes with capture (C-HOST-2): a parameterized export `(def (mk (: k
+           Int64)) …)` returns a closure that BOTH captures `k` AND takes a `(Tuple Int64 Int64)` argument.
+           `make(10)` → a handle closing over k=10; `call(handle, (3, 4))` → `(. p 0) + (. p 1) + k` = 17.
+           The make-forwarded capture cell and the rebuilt arg cell coexist in the one `call`.")
+  (input  (do (def (mk (: k Int64)) (fn ((: p (Tuple Int64 Int64))) (+ (+ (. p 0) (. p 1)) k)))
+              (export mk)))
+  (call   mk (: 10 Int64) (: (tuple 3 4) (Tuple Int64 Int64)))
+  (output (: 17 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner
