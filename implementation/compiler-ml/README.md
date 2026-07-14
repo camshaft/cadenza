@@ -241,25 +241,21 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   `src/traverse.cdz` now provides these hand-rolled (map/filter/fold + Ast predicate-count/fold).
 
 - **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value): a consuming persistent-collection op MUTATES a
-  shared recursive-param collection (Map/List/Set).**
-  `repros/miscompile-map-insert-mutates-shared-recursive-param.sexp`. A persistent `Map.insert`/
-  `List.push`/`Set.insert` on a collection PARAMETER shared across the SIBLING recursive calls of a
-  self-recursive function mutates its operand — violating `collections-and-text.md` §"… leaves its
-  operand … unchanged". A tree-walking interpreter's `(Add (Bind Var) Var)` under `{x:1}` returns 4 (2+2)
-  not 3 (2+1): the left operand's `Map.insert(env, x, 2)` corrupts the shared `env`. SHARP: `let`-bound
-  collections, non-recursive helpers, and a single non-recursive fn all compute correctly — only a
-  SELF-RECURSIVE fn (consume in one recursive sub-call, sibling read of the same param in another)
-  miscompiles; and it reproduces IDENTICALLY for `List.push` and `Set.insert` (each returns 4), so it is
-  a GENERAL persistent-collection operand-consumption bug, not Map-specific. Borrow/Perceus family — the
-  cross-call ownership seam: a borrowed collection param passed to a consuming call needs a `dup`. Blocks
-  a scope-threading interpreter/type-checker; `src/interp.cdz`'s `interp-shadow-restores` is withheld.
-  🔬 SHARPENED (iter 29) to a 6-line non-interpreter repro
-  `repros/miscompile-selfcall-plus-consuming-op-share-param.sexp`: the trigger is a param used by a
-  consuming op in one operand AND passed to a SELF-CALL of the same fn in a sibling operand — the WAT
-  shows the guest emits `local.get 1 … vec-push … local.get 1 (self-call)` with NO `dup` before the
-  consuming `vec-push`, so the self-call reads the mutated handle. An ordinary call to a SEPARATE fn dups
-  correctly; only the self-call arg path omits the dup. Fix locus: the self-call arg emit in
-  `backend/wasm/select.rs`.
+  STILL-LIVE binding (Map/List/Set).** 🔬 ROOT + MINIMAL form (iter 33)
+  `repros/miscompile-consuming-op-mutates-still-live-binding.sexp` — no recursion, no self-call, one
+  `let` used twice: `let xs = [7] in (List.len (List.push xs 9)) + (List.len xs)` returns **4**, not 3 —
+  the `List.push` consumes/mutates `xs` in place, so the later `List.len xs` reads `[7,9]`. ORDER-
+  SENSITIVE (the tell): borrowing BEFORE the consume (`(len xs) + (len (push xs 9))`) returns 3
+  (correct). ROOT: the Perceus last-use analysis — a binding consumed by an op but READ AGAIN LATER must
+  be `dup`'d before the consume. Reproduces for `Map.insert`/`Set.insert`. ⚠ CORRECTION: my iters 27–29
+  wrongly said "let-bound collections compute correctly / only self-call fails" — those "working" cases
+  were CONSTANT-FOLDED (small literals); a genuinely runtime shared binding fails regardless of
+  recursion. The self-call
+  (`repros/miscompile-selfcall-plus-consuming-op-share-param.sexp`) and interpreter
+  (`repros/miscompile-map-insert-mutates-shared-recursive-param.sexp`) repros are INSTANCES of this root.
+  Fix locus: the dup-before-consume in `backend/wasm/select.rs` (a binding live after a consuming op
+  needs a `dup`). Blocks ANY pass building a modified collection while still needing the original (a diff,
+  a "with one more binding", a before/after) — including `src/interp.cdz`'s withheld `interp-shadow-restores`.
 
 - **OPEN (seed `rcdzc` — RESOLVER, both surfaces; RE-DIAGNOSED iter 25): a NULLARY variant DOTTED pattern
   (`Ty.TInt`) in a NESTED match resolves as member ACCESS.**

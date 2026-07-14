@@ -14068,6 +14068,72 @@ mod tests {
         assert_eq!(live_nodes(), before, "identity concat leaves no leak");
     }
 
+    /// `vec-concat` is ASSOCIATIVE: `(a ++ b) ++ c` and `a ++ (b ++ c)` denote the same list. This is the
+    /// runtime foundation for the compiler's `List.concat` associativity law (pinned in corpus
+    /// `spec@5783cabb`). It is the SUBTLE RRB property: the two associations run the relaxed-node rebalance
+    /// with DIFFERENT boundaries, so they build DIFFERENT internal tree SHAPES — but an RRB vector is
+    /// element-canonical, NOT shape-canonical (concat leaves relaxed interior nodes), so the invariant is
+    /// OBSERVABLE equivalence, NOT `champ_eq`: the element sequence (`vec_to_ints`) and the value-encode
+    /// (renders by `op_vec_get` in order) must agree, and each result's RRB structural invariants must hold.
+    /// Covers a systematic size matrix straddling the `VEC_BITS=5` (32) + multi-level boundaries so the
+    /// rebalance genuinely runs on both sides — a range the corpus (fixed sizes) cannot reach. Distinct
+    /// value ranges per operand make any element-order divergence detectable (not masked by equal values).
+    #[test]
+    fn vec_concat_is_associative_observably() {
+        reset();
+        let before = live_nodes();
+        // A vec of `n` elements starting at `lo` (distinct ranges per operand → order-sensitive).
+        let mkv = |lo: i64, n: i64| -> Handle {
+            let mut v = op_vec_empty();
+            for i in 0..n {
+                v = op_vec_push(v, op_box_int(lo + i));
+            }
+            v
+        };
+        let list_desc: &[u8] = &[0x02, 0x00, 0x07, 0x00, 0x01]; // [0]=Int [1]=List(elem→0); root=1
+        let sizes = [1i64, 5, 31, 32, 33, 100, 500];
+        for &na in &sizes {
+            for &nb in &sizes {
+                for &nc in &[1i64, 33, 100] {
+                    // Left association: (a ++ b) ++ c.
+                    let left = {
+                        let ab = op_vec_concat(mkv(0, na), mkv(1000, nb));
+                        op_vec_concat(ab, mkv(2000, nc))
+                    };
+                    // Right association: a ++ (b ++ c).
+                    let right = {
+                        let bc = op_vec_concat(mkv(1000, nb), mkv(2000, nc));
+                        op_vec_concat(mkv(0, na), bc)
+                    };
+                    // Both are well-formed RRB trees (relaxed size tables consistent, header count == leaves).
+                    assert_vec_invariants(left);
+                    assert_vec_invariants(right);
+                    // Observable equivalence 1: identical element sequence.
+                    assert_eq!(
+                        vec_to_ints(left),
+                        vec_to_ints(right),
+                        "concat associativity: same element sequence for ({na},{nb},{nc})"
+                    );
+                    // Observable equivalence 2: byte-identical value-encode (renders by element order), so
+                    // the differing internal shapes are unobservable at the boundary.
+                    let el = op_value_encode_form(left, list_desc);
+                    let er = op_value_encode_form(right, list_desc);
+                    assert_eq!(
+                        el, er,
+                        "concat associativity: byte-identical value-encode for ({na},{nb},{nc})"
+                    );
+                    op_drop(left);
+                    op_drop(right);
+                }
+            }
+        }
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak across the associativity matrix"
+        );
+    }
+
     #[test]
     fn vec_concat_then_push_get_update() {
         reset();

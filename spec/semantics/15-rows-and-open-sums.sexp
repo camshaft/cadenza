@@ -123,6 +123,30 @@
   (input  (Record.merge (record (a 1)) (record (a 2))))
   (error  CDZ0211))
 
+(case "merging with the empty record on the left is the identity"
+  (doc    "The empty record `(record)` has no fields, so it is trivially disjoint from any record and is the
+           IDENTITY of `Record.merge`: `(Record.merge (record) (record (a 1) (b 2)))` equals `(record (a 1)
+           (b 2))` — merging in nothing adds nothing. Pins the empty-operand identity the disjoint-merge
+           cases above (which union two non-empty records) do not exercise — the record companion of the
+           empty-list / empty-set / empty-tuple identity laws.")
+  (input  (= (Record.merge (record) (record (a 1) (b 2))) (record (a 1) (b 2))))
+  (output (: true Bool)))
+
+(case "merging with the empty record on the right is the identity"
+  (doc    "The mirror: `(Record.merge (record (a 1) (b 2)) (record))` equals `(record (a 1) (b 2))` — the
+           empty record is the identity on the right as well as the left. Pins that a merge with an empty
+           operand on either side is a no-op on value (merge is symmetric on the empty record).")
+  (input  (= (Record.merge (record (a 1) (b 2)) (record)) (record (a 1) (b 2))))
+  (output (: true Bool)))
+
+(case "merging two empty records is the empty record"
+  (doc    "The degenerate boundary: `(Record.merge (record) (record))` combines two field-less records into
+           the empty record `(record)` — a genuine value equal to itself (its type is `(Record)`). Pins that
+           merge handles the empty+empty case, the record companion of the empty+empty list/set/tuple
+           cases, and that the empty record is a first-class value, not only a type-error foil.")
+  (input  (= (Record.merge (record) (record)) (record)))
+  (output (: true Bool)))
+
 (case "extending a record adds a new field"
   (doc    "Witnesses type-system.md #A Field Is Added To Or Replaced In A Record By A Derived Operation:
            `Record.extend` adds a field ABSENT from the operand, defined as `(Record.merge r (record (z v)))`.

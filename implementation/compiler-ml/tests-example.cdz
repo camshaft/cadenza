@@ -1,4 +1,5 @@
 effect Test =
+  | gen : Unit -> Int64
   | fail : String -> Unit
 
 def assert(cond, msg: String) =
@@ -45,3 +46,20 @@ def assert_ne(a, b, msg: String) =
 
 @test def and_with_true_is_identity(b: Bool) =
   assert(if b then (b and true) else ((b and true) == false), "b and true equals b")
+
+@test def generated_int_is_reflexive() =
+  host Test in (
+    let n = Test.gen() in
+    assert(n == n, "a generated int equals itself")
+  )
+
+@test def a_generated_pair_negates_involutively() =
+  host Test in (
+    let a = Test.gen() in
+    let b = Test.gen() in
+    assert(
+      (0 - (0 - a)) == a,
+      "negating a generated value twice returns it (for each field of a generated pair)"
+    );
+    assert((0 - (0 - b)) == b, "…and the second field too")
+  )

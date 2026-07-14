@@ -247,6 +247,42 @@ fn a_recovered_error_placeholder_does_not_cascade_into_an_unbound_name() {
 }
 
 #[test]
+fn a_fix_the_patch_engine_cannot_build_shows_no_help_line_and_no_json_fix() {
+    // The text `help:` line and the JSON `fix` object must AGREE on whether a diagnostic has an
+    // APPLICABLE fix — both are gated on the SAME built structural patch. The concrete trigger: a
+    // non-exhaustive `match` carries an INSERT-ARMS fix, but `insert` scaffold has no ML fragment print,
+    // so on an ML file the fix is dropped (`fix_node` → `-`). Neither surface may then advertise it —
+    // previously the text path printed a phantom `help: add …` whenever a fix column was present, even
+    // when the JSON/`cdz fix` path could not build the edit. Assert the CDZ0210 line has NO `help: add`
+    // and the JSON diagnostic has NO `fix`.
+    let dir = pkg_dir("ml-insert-drop");
+    let bad = write(
+        &dir,
+        "bad.cdz",
+        "type T = A | B\ndef f (t: T) = match t with A => 1\ndef main() = f A\n",
+    );
+    let (ok, stdout, _) = run(&["check", &bad]);
+    assert!(!ok, "a non-exhaustive match fails the check");
+    assert!(
+        stdout.contains("non-exhaustive match"),
+        "the CDZ0210 diagnostic is reported: {stdout}"
+    );
+    assert!(
+        !stdout.contains("help: add") && !stdout.contains("help (heuristic): add"),
+        "no phantom add-arm help line when the insert fix can't build on ML: {stdout}"
+    );
+    let (_, json, _) = run(&["check", &bad, "--json"]);
+    let exhaustive_line = json
+        .lines()
+        .find(|l| l.contains("non-exhaustive match"))
+        .expect("the CDZ0210 diagnostic is present in json");
+    assert!(
+        !exhaustive_line.contains("\"fix\""),
+        "the json diagnostic carries no fix when the patch can't build: {exhaustive_line}"
+    );
+}
+
+#[test]
 fn a_legit_error_symbol_in_sexpr_is_not_suppressed_as_a_placeholder() {
     // The `<error>`-cascade suppression is GATED on the file having actually had a parse error. In s-expr
     // `<error>` is a LEGAL symbol (the reader hard-errors on a malformed program, so a well-formed one

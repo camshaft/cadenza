@@ -388,3 +388,70 @@ fn an_imported_library_test_is_not_double_counted() {
         "lib-own must not be double-counted via app: {stdout}"
     );
 }
+
+/// A PROPERTY test — a nullary `@test` that pulls random ints from the runner via the well-known
+/// `Test.gen : Unit -> Int64` op — is detected (by the `Test.gen` calls it makes) and run over many
+/// trials with a seeded, reproducible int pool. The generator builds its own input from the int stream
+/// (bolero's Driver model). A test that pulls NO generated int is a plain unit test (one run). This
+/// exercises the whole driver: gen-detection, the seeded pool, and the let-bound-perform single-eval fix
+/// (each `Test.gen` binding evaluates exactly once).
+fn proptest_src() -> String {
+    // `refl` is a true property over any generated int; `plain` pulls no gen (a unit test).
+    "effect Test =\n\
+     \x20 | gen : Unit -> Int64\n\
+     \x20 | fail : String -> Unit\n\
+     def assert(cond, msg: String) =\n\
+     \x20 if cond then unit else host Test in (Test.fail(msg); trap(\"assertion failed\"))\n\
+     @test def refl() = host Test in (let n = Test.gen() in assert(n == n, \"int equals itself\"))\n\
+     @test def plain() = assert(1 + 1 == 2, \"1+1 is 2\")\n"
+        .to_string()
+}
+
+#[test]
+fn a_property_test_runs_many_trials_and_a_plain_test_runs_once() {
+    let d = dir("proptest");
+    let f = write(&d, "p.cdz", &proptest_src());
+    let (ok, stdout, stderr) = run(&["test", &f, "--trials", "20"]);
+    assert!(
+        ok,
+        "a true property + a passing unit test → success: {stdout}{stderr}"
+    );
+    // The property test is detected (pulls Test.gen ints) and run over the trial count.
+    assert!(
+        stdout.contains("PASS refl (20 trials)"),
+        "the property test runs the trial count: {stdout}"
+    );
+    // The gen-less test is a plain unit test — one run, no trial count.
+    assert!(
+        stdout.contains("PASS plain\n") || stdout.contains("PASS plain "),
+        "the non-generating test runs once as a plain unit test: {stdout}"
+    );
+    assert!(stdout.contains("2 passed, 0 failed"), "{stdout}");
+}
+
+#[test]
+fn a_false_property_fails_with_a_shrunk_counterexample_and_a_seed() {
+    let d = dir("proptest-fail");
+    // `n > 0` is false for a generated 0 / negatives — the property fails and shrinks toward 0.
+    let src = "effect Test =\n\
+        \x20 | gen : Unit -> Int64\n\
+        \x20 | fail : String -> Unit\n\
+        def assert(cond, msg: String) =\n\
+        \x20 if cond then unit else host Test in (Test.fail(msg); trap(\"assertion failed\"))\n\
+        @test def always_positive() = host Test in (let n = Test.gen() in assert(n > 0, \"n should be positive\"))\n";
+    let f = write(&d, "p.cdz", src);
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0"]);
+    assert!(!ok, "a false property → non-zero exit: {stdout}{stderr}");
+    assert!(stdout.contains("FAIL always_positive"), "{stdout}");
+    // The reported failure message rides through, and the seed is printed to replay.
+    assert!(stdout.contains("n should be positive"), "{stdout}");
+    assert!(
+        stdout.contains("seed 0"),
+        "the replay seed is reported: {stdout}"
+    );
+    // The counterexample is the shrunk int pool — 0 is the minimal failing int for `n > 0`.
+    assert!(
+        stdout.contains("generated ints [0]"),
+        "shrinks to the minimal failing int: {stdout}"
+    );
+}

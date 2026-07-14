@@ -4135,6 +4135,57 @@
   (call   mk (: 100 Int64) (: None (Option Int64)))
   (output (: 100 Int64)))
 
+; DIRECT-CALL RESULT ARG: a closure taking a `(Result scalar scalar)` — a TWO-payload sum (Ok a, Err b) —
+; crosses as a native component `result<ok, err>` (the `0x6a` former). A general `variant<…>` must be a NAMED
+; component type, but `result`/`option` are anonymous-allowed, so `Result` maps to `result<…>`. The canonical
+; ABI flattens it to `(disc: i32, payload)` (the payload slot the JOIN of both cases' scalars — same width this
+; increment), and the guest branches on the boundary disc (result sends Ok=0, Err=1) then `sum-new(decl-disc,
+; box payload)` per arm. Scope: a SOLE `(Result scalar scalar)` arg with same-width ok/err payloads,
+; single-export, scalar result (different-width payloads + list results are later widenings).
+
+(case "a closure taking a Result Int64 Int64 ARG — Ok crosses the direct-call boundary"
+  (doc    "`mk : () -> (-> (Result Int64 Int64) Int64)` returns `(fn (r) (match r ((Ok x) x) ((Err e) (- 0
+           e))))`. The `(Result Int64 Int64)` arg crosses as a native `result<s64,s64>` the ABI flattens to
+           `(disc, payload)`; the guest rebuilds the sum cell (branch on the boundary disc → `sum-new`) and
+           matches it. `call(handle, Ok(7))` → 7.")
+  (input  (do (def (mk) (fn ((: r (Result Int64 Int64))) (match r ((Ok x) x) ((Err e) (- 0 e))))) (export mk)))
+  (call   mk (: (Ok 7) (Result Int64 Int64)))
+  (output (: 7 Int64)))
+
+(case "a closure taking a Result Int64 Int64 ARG — Err crosses the direct-call boundary"
+  (doc    "The SAME closure driven with `Err(3)`: the boundary result's disc 1 (Err) → the guest builds the
+           `Err` cell, the match takes the `Err` arm → `(- 0 3)` = -3. Both variants carry a payload (unlike
+           Option's nullary None), boxed into the rebuilt cell.")
+  (input  (do (def (mk) (fn ((: r (Result Int64 Int64))) (match r ((Ok x) x) ((Err e) (- 0 e))))) (export mk)))
+  (call   mk (: (Err 3) (Result Int64 Int64)))
+  (output (: -3 Int64)))
+
+(case "a closure taking a Result Bool Bool ARG crosses the direct-call boundary"
+  (doc    "A Bool payload on both sides: `(Result Bool Bool)` crosses as `result<bool,bool>`, each arm boxes
+           its Bool (`box-bool`). `call(handle, Ok(true))` → `(if b 1 2)` = 1.")
+  (input  (do (def (mk) (fn ((: r (Result Bool Bool))) (match r ((Ok b) (if b 1 2)) ((Err b) (if b 3 4)))))
+              (export mk)))
+  (call   mk (: (Ok true) (Result Bool Bool)))
+  (output (: 1 Int64)))
+
+(case "a CAPTURING closure taking a Result Int64 Int64 ARG crosses the direct-call boundary"
+  (doc    "The result-arg path composes with capture: `(def (mk (: k Int64)) …)` returns a closure that
+           captures `k` AND takes a `(Result Int64 Int64)`. `make(100)` → a handle; `call(handle, Ok(5))` →
+           `(match r ((Ok x) (+ x k)) …)` = `5 + 100` = 105. The forwarded capture cell + the rebuilt sum-arg
+           cell coexist.")
+  (input  (do (def (mk (: k Int64)) (fn ((: r (Result Int64 Int64))) (match r ((Ok x) (+ x k)) ((Err e) (- k e)))))
+              (export mk)))
+  (call   mk (: 100 Int64) (: (Ok 5) (Result Int64 Int64)))
+  (output (: 105 Int64)))
+
+(case "a CAPTURING closure taking a Result Int64 Int64 ARG — Err arm uses the captured value"
+  (doc    "The SAME capturing closure driven with `Err(30)`: the `Err` arm computes `(- k e)` = `100 - 30` =
+           70.")
+  (input  (do (def (mk (: k Int64)) (fn ((: r (Result Int64 Int64))) (match r ((Ok x) (+ x k)) ((Err e) (- k e)))))
+              (export mk)))
+  (call   mk (: 100 Int64) (: (Err 30) (Result Int64 Int64)))
+  (output (: 70 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner

@@ -1168,18 +1168,32 @@ the component type. The new work:
   two-tuple group with a List result, capturing, and alongside a plain export.
   **✅ N-COMPOUND-ARGS COMPLETE across ALL FOUR export shapes** (single/multi/mixed/distinct-sig), each × the
   full result matrix (scalar + byte-rope + fixed-compound + collection).
-- **🏗️ SUM (Option/Result) direct-call arg — VERTICAL STARTED, brick 1 (oracle) landed (`spec@8442e483`).**
-  Test `an_option_scalar_closure_arg_crosses_by_native_flattening` PROVES the ABI: an `(Option scalar)` arg
-  crosses as a native component `option<s64>`, which the canonical ABI FLATTENS to `(disc: i32, payload: i64)`
-  core params — NO memory/realloc/`value-decode`. So a SUM arg is an IMPLEMENTATION GAP, not an ABI wall (same
-  finding shape as the N-compound-args tuple oracle). **REMAINING emit bricks:** (b) a classifier
-  `fixed_shape_sum_arg` (an Option/Result — 2-variant, ≤1 fixed-shape-scalar payload per variant — flattening to
-  `disc` + the payload leaf; the disc is the variant's decl index via `option_discs`/`result_discs`); (c) the
-  guest `call` decode: branch on the flattened `disc`, `sum-new(disc, box-<ty>(payload))` for the payload-bearing
-  variant / the inline-unit for the nullary variant, before `call_indirect`; (d) mint the `option<…>`/`variant<…>`
-  boundary type in the envelope (a NEW component-type former — no `option`/`variant` type is minted anywhere yet,
-  unlike `tuple`). A large multi-tick vertical, decompose like N-compound-args. Scope brick-by-brick:
-  single-export `(Option scalar)` scalar-result first.
+- **✅ SUM (Option scalar) direct-call arg — single-export scalar-result COMPLETE, end-to-end (`spec@90f35c00`).**
+  A closure taking an `(Option scalar)` arg (Int64/Int32/Bool/Float payload) crosses via a native component
+  `option<payload>` the canonical ABI flattens to `(disc: i32, payload)` — the first host→guest SUM decode.
+  Bricks: 1 oracle (`@8442e483`); 2–4 (`@90f35c00`): `serialize::SumArgRebuild` + `emit_sum_arg_rebuild` (the
+  guest branches on the flattened disc → `sum-new(decl-disc, box payload)` / `sum-new(decl-disc, IMM_UNIT)`),
+  threaded via `emit_closure_call_args_with_sums` + a `sums: &[SumArgRebuild]` param on the core fn (`&[]`
+  byte-identical); `envelope::ArgSlot::OptionScalar(byte)` + `option_defined_type` (the `0x6b` former), minted
+  through the existing `call_arg_slots` slot model; `mod.rs::fixed_shape_option_scalar_arg` classifier; a
+  `cdz-run` `Type::Option` arg coercion (`(Some v)`/`None`). 🔑🪤 the disc has TWO conventions: the component
+  `option<T>` sends Some=1/None=0 (canonical `variant{none,some}`), but Cadenza's `(Some a) None` decl has
+  Some=0 — the guest BRANCHES on the boundary disc (`boundary_payload_disc=1`) but BUILDS with the decl disc.
+  Conflating them returned 0 for Some (the first bug). Corpus: Option Int64 Some+None, Bool, Float64, Int32
+  (narrow-int), + capturing (Some+None).
+- **✅ SUM (Result scalar scalar) direct-call arg — single-export scalar-result COMPLETE (`spec@47a31a6a`).**
+  Extends the vertical to a TWO-payload sum: a `(Result Int64 Int64)`/`(Result Bool Bool)` arg crosses via a
+  native component `result<ok,err>` (the `0x6a` former) flattened to `(disc, payload)` (Ok=0, Err=1). 🔑🪤 KEY
+  FINDING (oracle `a_result_scalar_closure_arg_crosses_by_native_flattening`): a general component `variant<…>`
+  must be a NAMED type (wasmparser `type_named_type_id` — Variant/Record/Flags/Enum are never anonymous), but
+  `result`/`option` ARE anonymous-allowed — so `Result` maps to `result<…>`, NOT `variant`. Generalized
+  `SumArgRebuild` to a two-arm form (`SumArgArm` per variant, each optionally boxing a payload — subsumes
+  Option's one-payload+nullary AND Result's two payloads); `ArgSlot::Result(ok,err)` + `result_defined_type`;
+  the classifier dispatches by payload counts (`[0,1]`→Option, `[1,1]`→Result same-width); `cdz-run`
+  `Type::Result` coercion. Corpus: Result Int64 (Ok+Err), Result Bool, + capturing (Ok+Err).
+  **REMAINING within SUM-arg:** a general USER sum / >2 variants (needs a NAMED `variant<…>` — an
+  export-a-named-type step); a Result with DIFFERENT-width ok/err payloads (a wider flattened join); a
+  compound/nested payload; the multi/mixed/distinct-sig + list-result shapes (each a slot/core-fn widening).
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap).
   (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
