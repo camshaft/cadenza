@@ -56,6 +56,11 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // arrive in later increments.
     names.insert("BigInt".to_string(), bigint_module(ast));
 
+    // `Rational` — the exact-rational type (a NULLARY type like `BigInt`). B4-0 binds it as a bare
+    // ground-type record (`(meta t) = (intrinsic "Rational")`, so `Rational` in type position reduces to
+    // `Ty::Rational`); the `of`/`of-int`/`value` operation fields + constant folding arrive in B4-1.
+    names.insert("Rational".to_string(), ground_type_record(ast, "Rational"));
+
     // The unit VALUE, bound to the bare name `unit` — an alias for the empty list `()`, the other
     // spelling of the same value (core-semantics.md #Unit And The Empty Tuple Are The Same Value;
     // 01-literals "unit and the empty tuple are the same value"). An empty-list node resolves to

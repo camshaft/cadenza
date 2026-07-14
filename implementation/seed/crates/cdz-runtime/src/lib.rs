@@ -983,9 +983,16 @@ fn op_bigint_rem(a: Handle, b: Handle) -> Handle {
     }
 }
 /// `bigint-cmp` — three-way compare: `-1`/`0`/`1` for `a < b`/`a = b`/`a > b` (the primitive the
-/// comparison operators `<`/`>`/`=`/… lower to + a fixed compare).
+/// comparison operators `<`/`>`/`=`/… lower to + a fixed compare). Compares the operands' canonical
+/// sign-magnitude `raw` slices DIRECTLY (`Big::cmp_sign_magnitude_bytes`) — a comparison is READ-ONLY, so
+/// it needs NO `Big` (no limb `Vec`): allocation-FREE, unlike the arithmetic ops which must build a
+/// result. A null/mismatched node reads as the empty slice = canonical zero.
 fn op_bigint_cmp(a: Handle, b: Handle) -> i64 {
-    match unbox_bigint(a).cmp(&unbox_bigint(b)) {
+    let av = unsafe { a.0.as_ref() };
+    let bv = unsafe { b.0.as_ref() };
+    let as_ = av.map_or(&[][..], |n| n.raw.as_slice());
+    let bs = bv.map_or(&[][..], |n| n.raw.as_slice());
+    match bigint::Big::cmp_sign_magnitude_bytes(as_, bs) {
         core::cmp::Ordering::Less => -1,
         core::cmp::Ordering::Equal => 0,
         core::cmp::Ordering::Greater => 1,
@@ -8723,6 +8730,24 @@ mod tests {
         assert!(
             bigadd <= 8000,
             "bigint_add x{N} allocs {bigadd} exceeds ceiling 8000 (unbox 2 limb Vecs + box the result Vec+node per op; a per-op churn regression would climb)"
+        );
+
+        // (K4b) `bigint-cmp` — a READ-ONLY comparison (the primitive `<`/`>`/`<=`/`>=`/`=` on BigInt lower
+        // to, and the BigInt map/set-key comparator). It compares the operands' `raw` sign-magnitude slices
+        // DIRECTLY (`Big::cmp_sign_magnitude_bytes`) with NO `Big` decode → ZERO allocations (was 2/op, both
+        // unbox limb Vecs, when it went through `unbox_bigint`). Build the operands once; measure the cmp.
+        let (bc_a, bc_b) = (op_bigint_of_i64(111), op_bigint_of_i64(222));
+        let bigcmp = measure(&mut || {
+            for _ in 0..N {
+                core::hint::black_box(op_bigint_cmp(bc_a, bc_b));
+            }
+        });
+        op_drop(bc_a);
+        op_drop(bc_b);
+        println!("ALLOC bigint_cmp x{N}: {bigcmp}");
+        assert_eq!(
+            bigcmp, 0,
+            "bigint_cmp x{N} allocs {bigcmp} — a comparison reads the raw slices directly, allocating NOTHING (a regression to unbox-both would be ~2/op)"
         );
 
         // (K2) `vec-of-arr` — the bulk list-literal constructor. EVERY `(list e0…e{n-1})` literal lowers to

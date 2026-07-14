@@ -5671,21 +5671,30 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         };
                         for (i, label) in labels.iter().enumerate() {
                             if !fields.contains_key(label) {
+                                // The confident single (tier 1) drives the REPLACE fix; the two-tier
+                                // `did_you_mean` message adds the closest-matches LIST when there is no
+                                // confident typo, so a FAR label (`Record.without r (zzzzz)`) tells the
+                                // author what fields the record actually has instead of a dead-end "no
+                                // field" — the row-op twin of `no_field_reject`'s member-access enrichment.
                                 let near = crate::diag::suggest::nearest(
                                     &label.name,
                                     field_names.iter().copied(),
                                 );
-                                let msg = match &near {
-                                    Some(near) => format!(
-                                        "record has no field `{}` — did you mean `{near}`?",
-                                        label.name
-                                    ),
-                                    None => format!("record has no field `{}`", label.name),
-                                };
+                                let hint = crate::diag::suggest::did_you_mean(
+                                    &label.name,
+                                    field_names.iter().copied(),
+                                    3,
+                                );
+                                let msg = format!(
+                                    "{}`{}`{hint}",
+                                    crate::diag::NO_FIELD_PREFIX,
+                                    label.name
+                                );
                                 let mut reject = Reject::coded(Code::AbsentField, msg).at(args[1]);
                                 // Attach the replace fix on THIS label's occurrence when a near field
                                 // exists AND its node is known — `label_nodes[i]` is the i-th label of
-                                // `args[1]` (positionally aligned with `labels`).
+                                // `args[1]` (positionally aligned with `labels`). Only tier 1 (a confident
+                                // single) carries a fix; a tier-2 list of options is not one mechanical edit.
                                 if let (Some(near), Some(&node)) = (near, label_nodes.get(i)) {
                                     reject = reject
                                         .with_fix(crate::diag::Fix::replace_heuristic(node, near));
@@ -6262,20 +6271,26 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     // loses its `file:line:col`; the key child carries the arm's op-name span. Fall back
                     // to the projection only if the key child is somehow absent.
                     let anchor = crate::effects::arm_op_key_occ(db, arm.op).unwrap_or(arm.op);
-                    // Name the nearest DECLARED operation of the effect + carry a replace fix on the
-                    // mistyped op key (the effect-op analogue of the absent-field "did you mean?").
-                    match crate::effects::nearest_declared_op(db, arm.op) {
-                        Some((key_occ, candidate)) => out.push(
-                            Reject::coded(
+                    // Name the effect's DECLARED operations, two-tier (the effect-op analogue of
+                    // `no_field_reject`): a confident typo → `` — did you mean `op`? `` + a replace fix on
+                    // the mistyped key; a FAR miss → `` — closest matches: `a`, `b` `` listing the effect's
+                    // ops (a closed set), so a mistyped arm never dead-ends at "does not declare" with no
+                    // hint of what the effect actually offers. Only the confident single carries a fix.
+                    match crate::effects::declared_op_hint(db, arm.op) {
+                        Some((key_occ, hint, single)) => {
+                            let mut reject = Reject::coded(
                                 Code::HandlerUndeclaredOp,
                                 format!(
-                                    "this handler arm names an operation its effect does not declare \
-                                     — did you mean `{candidate}`?"
+                                    "this handler arm names an operation its effect does not declare{hint}"
                                 ),
                             )
-                            .at(key_occ)
-                            .with_fix(Fix::replace_heuristic(key_occ, candidate)),
-                        ),
+                            .at(key_occ);
+                            if let Some(candidate) = single {
+                                reject =
+                                    reject.with_fix(Fix::replace_heuristic(key_occ, candidate));
+                            }
+                            out.push(reject);
+                        }
                         None => out.push(
                             Reject::coded(
                                 Code::HandlerUndeclaredOp,

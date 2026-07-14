@@ -2,6 +2,7 @@
 # Source: the `hot_op_allocation_ceilings` test in cdz-runtime. Regenerate with
 # `cargo xtask bench --save`; check with `cargo xtask bench`. Lower is better.
 4000	bigint_add x1000
+0	bigint_cmp x1000
 1000	bytes_concat x1000
 132	bytes_flatten x64
 1000	bytes_slice x1000

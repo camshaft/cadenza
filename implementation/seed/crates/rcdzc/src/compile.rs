@@ -1542,6 +1542,18 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
         .filter(|r| r.at.is_some())
         .map(|r| (r.code, r.message.as_str()))
         .collect();
+    // The no-field ANALOGUE of `anchored_keys`, keyed by the INVARIANT CORE (not the full message): an
+    // absent-field miss can surface ANCHORED with one tier-suffix (`— closest matches: …`) AND UNANCHORED
+    // bare (a second desugar/reduction path — e.g. a handler op `(. E k)` reaches both the handle's
+    // op-resolution and the perform), so the two carry DIFFERENT messages and slip past `anchored_keys`.
+    // Collect the no-field cores that appear ANCHORED; an unanchored no-field fault sharing a core is that
+    // same miss minus its location + suffix — drop it, keeping the LOCATED (richer) copy. A distinct
+    // field-miss keeps its own core, so this never over-merges.
+    let anchored_no_field_cores: std::collections::HashSet<&str> = faults
+        .iter()
+        .filter(|r| r.at.is_some())
+        .filter_map(|r| no_field_key(&r.message))
+        .collect();
     // The GENERAL shadowing rule (subsumes the specific ones above for the same-node case): a node that
     // carries a CODED reject already has its authoritative, actionable "no"; an UNCODED decline anchored
     // at that SAME node is the weaker consequence of the same defect (`reference-compiler.md` §Outcomes
@@ -1669,6 +1681,14 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             if r.at.is_none() && anchored_keys.contains(&(r.code, r.message.as_str())) {
                 return false;
             }
+            // The no-field CORE analogue: an unanchored "record has no field `k`" whose core ALSO appears
+            // anchored is that same miss minus its location + tier-suffix — drop it, keep the located copy.
+            // (Full-message `anchored_keys` misses it when the two carry different tier-suffixes.)
+            if r.at.is_none()
+                && no_field_key(&r.message).is_some_and(|k| anchored_no_field_cores.contains(k))
+            {
+                return false;
+            }
             // A DECLINE anchored at a node that also carries a CODED reject is shadowed by it — drop it.
             if r.is_decline() && r.at.is_some_and(|s| coded_nodes.contains(&s.0)) {
                 return false;
@@ -1701,8 +1721,19 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
                 return false;
             }
             // An anchored fault is identified by (code, node); an unanchored one by (code, message)
-            // so distinct declines with no node still both appear.
-            let msg_key = r.at.is_none().then(|| r.message.clone());
+            // so distinct declines with no node still both appear. EXCEPTION: an unanchored "record has
+            // no field `k`" is keyed by its INVARIANT CORE (`no_field_key` strips the ` — did you mean …`
+            // / ` — closest matches: …` tail), NOT the full message — because ONE absent-field miss can
+            // surface via TWO unanchored reduction paths (a handler op `(. E k)` is desugared into both
+            // the handle's op-resolution AND the perform) whose tier-suffixes DIFFER (one drew a
+            // closest-matches list, the other stayed bare), so a full-message key lets both through as a
+            // double report. Keying by the core collapses the two copies of the SAME field-miss while
+            // leaving a DISTINCT field-miss (different `k`, or anchored at its own node) its own key.
+            let msg_key = r.at.is_none().then(|| {
+                no_field_key(&r.message)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| r.message.clone())
+            });
             seen.insert((r.code, r.at.map(|s| s.0), msg_key))
         })
         .cloned()

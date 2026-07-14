@@ -2567,6 +2567,9 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
         // analogue). Round-trips with `decode_ty`'s `"BigInt"` arm; without it the catch-all would
         // encode it as `Unit` (the same round-trip hole the `Bytes`/`String`/`Char`/`Symbol` arms fix).
         Ty::BigInt => db.push_name("BigInt"),
+        // The exact rational: the bare name `Rational` (a monomorphic leaf, like `BigInt`). Round-trips
+        // with `decode_ty`'s `"Rational"` arm; without it the catch-all would encode it as `Unit`.
+        Ty::Rational => db.push_name("Rational"),
         // A float type-value: the `(Float N)` HEAD form (like `(Int N)`), so the WIDTH round-trips
         // FAITHFULLY through `decode_ty`'s `(Float N)` arm — INCLUDING the sentinel width 0 a
         // non-admitted `(Float 16)` reduces to (a bare alias name would lose it: width 0 has no alias,
