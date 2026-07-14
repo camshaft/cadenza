@@ -225,6 +225,8 @@ pub enum Code {
     /// two things on two toolchains). Opens the CDZ06xx MODULE-DIRECTIVE band.
     //= spec/capabilities/modules-and-namespaces.md#an-unrecognized-module-directive-is-rejected
     //# A module directive whose key is not one the fixed set defines MUST be rejected at compile time with a machine-readable diagnostic, rather than ignored, so that a directive can neither silently change a program's meaning on a toolchain that understands it while being dropped by one that does not, nor silently fail to take effect.
+    //= spec/capabilities/modules-and-namespaces.md#a-module-directive-is-drawn-from-a-fixed-set
+    //# A module MAY carry directives that instruct the compiler how to compile it, and every such directive's key MUST be drawn from a set fixed by this specification rather than invented per program, so that a directive has one fixed meaning across generations.
     UnknownDirective,
     /// A recognized module directive whose ARGUMENTS do not match the shape its key defines: the key is
     /// in the registry but the directive is structurally malformed (wrong arity), e.g. `(pragma

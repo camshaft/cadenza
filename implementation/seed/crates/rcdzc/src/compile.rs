@@ -514,6 +514,12 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // still DECLINES downstream rather than being mistaken for compiled. Every `(pragma …)` in the arena
     // is checked (a top-level one or a module member alike); the fault anchors at the pragma form, which
     // sorts before a later reference, so it is the reported error.
+    //
+    // A `(pragma …)` is resolved entirely at compile time — it is validated here and never lowered to a
+    // `Core` node, so it introduces NO runtime representation of its own into the emitted component (it
+    // affects how the module is compiled without adding runtime cost or crossing the boundary).
+    //= spec/capabilities/modules-and-namespaces.md#a-module-directive-is-compile-time-only
+    //# A module directive MUST be resolved at compile time and MUST NOT introduce any runtime representation of its own into the emitted component, so that a directive affects how the module is compiled without adding runtime cost or crossing the boundary.
     for form in (0..db.ast.structure.len() as u32).map(StructId) {
         // OWN the tail + key before matching: the domain check below reduces the type argument via
         // `eval::typeval_of` (which needs `&mut Db`), and a borrowed `key: &str` / `ptail: &[StructId]`
