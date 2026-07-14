@@ -904,6 +904,76 @@ fn op_get_float32(h: Handle) -> f32 {
     })
 }
 
+// ─── Arbitrary-precision integer (BigInt) — a sign-magnitude limb-array LEAF ─────────────────────
+// A `BigInt` value is a raw-only heap leaf (zero handles), the `Bytes`-leaf shape: its `raw` holds the
+// canonical sign-magnitude bytes of a `bigint::Big` (`to/from_sign_magnitude_bytes`). ALWAYS a heap leaf
+// — never a fixnum immediate — because `BigInt` is a DISTINCT type from a fixed-width int: an immediate
+// tag means "small int", and conflating the two would let a `BigInt` handle be misread as an `Int`. The
+// arithmetic ops unbox both operands to `Big`, compute (the hand-written limb library), and re-box the
+// normalized result. `op_dup`/`op_drop` need no change (a raw-only leaf is the cheapest node shape).
+
+/// Box a `Big` as a BigInt heap leaf — its canonical sign-magnitude bytes in `raw`, zero handles.
+fn box_bigint(b: &bigint::Big) -> Handle {
+    alloc_raw(Vec::new(), Raw::from(b.to_sign_magnitude_bytes()))
+}
+/// Read a BigInt leaf back to a `Big`. Total: a null/mismatched node reads as zero (deterministic bits,
+/// never a trap — the scalar-read discipline). A BigInt is never an immediate, so no immediate decode.
+fn unbox_bigint(h: Handle) -> bigint::Big {
+    with_node(h, bigint::Big::zero(), |n| {
+        bigint::Big::from_sign_magnitude_bytes(&n.raw)
+    })
+}
+/// `bigint-of-i64` — widen a fixed-width `i64` into a `BigInt` leaf (the `BigInt.of` target for a runtime
+/// integer; a constant folds in the compiler and never calls this).
+fn op_bigint_of_i64(v: i64) -> Handle {
+    box_bigint(&bigint::Big::from_i64(v))
+}
+/// `bigint-to-i64-checked` — the CHECKED narrowing back to `i64`: the value if it fits, else TRAP
+/// (`options/numeric-model/explicit-checked.md` — `Int64.of` of an out-of-range BigInt traps).
+fn op_bigint_to_i64_checked(h: Handle) -> i64 {
+    match unbox_bigint(h).to_i64_checked() {
+        Some(v) => v,
+        None => trap_bigint_narrow(),
+    }
+}
+#[cold]
+#[inline(never)]
+fn trap_bigint_narrow() -> ! {
+    panic!("cdz-runtime: BigInt value out of range for the target integer type")
+}
+/// `bigint-add`/`-sub`/`-mul` — the total (never-trapping) arithmetic: unbox both, compute, re-box.
+fn op_bigint_add(a: Handle, b: Handle) -> Handle {
+    box_bigint(&unbox_bigint(a).add(&unbox_bigint(b)))
+}
+fn op_bigint_sub(a: Handle, b: Handle) -> Handle {
+    box_bigint(&unbox_bigint(a).sub(&unbox_bigint(b)))
+}
+fn op_bigint_mul(a: Handle, b: Handle) -> Handle {
+    box_bigint(&unbox_bigint(a).mul(&unbox_bigint(b)))
+}
+/// `bigint-div` — TRUNCATING integer division (quotient toward zero); TRAPS on a zero divisor (an
+/// unbounded range does not give `n/0` a value — numeric-model.md). Returns the quotient.
+fn op_bigint_div(a: Handle, b: Handle) -> Handle {
+    match unbox_bigint(a).divmod(&unbox_bigint(b)) {
+        Some((q, _r)) => box_bigint(&q),
+        None => trap_bigint_div_zero(),
+    }
+}
+#[cold]
+#[inline(never)]
+fn trap_bigint_div_zero() -> ! {
+    panic!("cdz-runtime: BigInt division by zero")
+}
+/// `bigint-cmp` — three-way compare: `-1`/`0`/`1` for `a < b`/`a = b`/`a > b` (the primitive the
+/// comparison operators `<`/`>`/`=`/… lower to + a fixed compare).
+fn op_bigint_cmp(a: Handle, b: Handle) -> i64 {
+    match unbox_bigint(a).cmp(&unbox_bigint(b)) {
+        core::cmp::Ordering::Less => -1,
+        core::cmp::Ordering::Equal => 0,
+        core::cmp::Ordering::Greater => 1,
+    }
+}
+
 // ─── Positional array — the ONE runtime shape for TUPLE, RECORD, and LIST ───────────────
 // Elements live in `handles`. Access by an out-of-bounds index into a valid array TRAPS; a null
 // handle is benign (returns NULL / no-op).
@@ -3678,6 +3748,27 @@ impl Guest for Component {
     }
     fn get_float32(handle: u32) -> f32 {
         op_get_float32(Handle::from_u32(handle))
+    }
+    fn bigint_of_i64(v: i64) -> u32 {
+        op_bigint_of_i64(v).to_u32()
+    }
+    fn bigint_to_i64_checked(handle: u32) -> i64 {
+        op_bigint_to_i64_checked(Handle::from_u32(handle))
+    }
+    fn bigint_add(a: u32, b: u32) -> u32 {
+        op_bigint_add(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
+    }
+    fn bigint_sub(a: u32, b: u32) -> u32 {
+        op_bigint_sub(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
+    }
+    fn bigint_mul(a: u32, b: u32) -> u32 {
+        op_bigint_mul(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
+    }
+    fn bigint_div(a: u32, b: u32) -> u32 {
+        op_bigint_div(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
+    }
+    fn bigint_cmp(a: u32, b: u32) -> i64 {
+        op_bigint_cmp(Handle::from_u32(a), Handle::from_u32(b))
     }
     fn arr_alloc(len: u32) -> u32 {
         op_arr_alloc(len).to_u32()
@@ -9387,6 +9478,61 @@ mod tests {
                 op_drop(h); // reclaim the boxed ones
             }
         }
+    }
+
+    #[test]
+    fn bigint_ops_wire_the_limb_library_through_heap_leaves() {
+        reset();
+        // B3a: the `op_bigint_*` WIT-op glue boxes a `Big` into a sign-magnitude heap LEAF and reads it
+        // back through the arithmetic. A BigInt leaf is ALWAYS heap (never a fixnum immediate) — distinct
+        // type. The `bigint::Big` arithmetic itself is differential-tested vs num-bigint in `bigint.rs`;
+        // this pins the WIRING (box/unbox round-trip + each op threading handles), the B3a deliverable.
+        // Every value here fits i64 for a readable round-trip, but the rep is the unbounded limb leaf.
+        for v in [0i64, 1, -1, 42, -42, 1_000_000, i64::MAX, i64::MIN] {
+            let h = op_bigint_of_i64(v);
+            assert!(!is_immediate(h), "a BigInt leaf is always heap, never an immediate ({v})");
+            assert_eq!(
+                op_bigint_to_i64_checked(h),
+                v,
+                "bigint-of-i64 / to-i64-checked round-trip for {v}"
+            );
+            op_drop(h);
+        }
+        // Arithmetic threads handles: (6 op 2) for each op, checked back to i64.
+        let check = |op: fn(Handle, Handle) -> Handle, a: i64, b: i64, want: i64, name: &str| {
+            let (ha, hb) = (op_bigint_of_i64(a), op_bigint_of_i64(b));
+            let hr = op(ha, hb);
+            assert_eq!(op_bigint_to_i64_checked(hr), want, "bigint {name}");
+            op_drop(ha);
+            op_drop(hb);
+            op_drop(hr);
+        };
+        check(op_bigint_add, 6, 2, 8, "add");
+        check(op_bigint_sub, 6, 2, 4, "sub");
+        check(op_bigint_mul, 6, 2, 12, "mul");
+        check(op_bigint_div, 7, 2, 3, "div (truncating)");
+        check(op_bigint_div, -7, 2, -3, "div toward zero");
+        // cmp: -1 / 0 / 1.
+        let three_way = |a: i64, b: i64| {
+            let (ha, hb) = (op_bigint_of_i64(a), op_bigint_of_i64(b));
+            let c = op_bigint_cmp(ha, hb);
+            op_drop(ha);
+            op_drop(hb);
+            c
+        };
+        assert_eq!(three_way(1, 2), -1);
+        assert_eq!(three_way(2, 2), 0);
+        assert_eq!(three_way(3, 2), 1);
+        // A product that OVERFLOWS i64 is a valid BigInt (never traps) but does NOT narrow back.
+        let (ha, hb) = (op_bigint_of_i64(i64::MAX), op_bigint_of_i64(2));
+        let big = op_bigint_mul(ha, hb);
+        assert!(!is_immediate(big), "the overflowing product is a heap BigInt");
+        // (No trap on the mul itself — magnitude grows. Narrowing THAT back would trap; not exercised
+        // here to keep the test panic-free — the trap path is a compiler/gate concern.)
+        op_drop(ha);
+        op_drop(hb);
+        op_drop(big);
+        assert_eq!(live_object_count(), 0, "no BigInt leak");
     }
 
     #[test]
