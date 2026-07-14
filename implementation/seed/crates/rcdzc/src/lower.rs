@@ -609,6 +609,19 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 _ if let Some(keep) = bool_nested_idempotent(db, lhs, rhs, is_and) => {
                     core_of(db, keep)
                 }
+                // ABSORPTION LAW: `(and a (or a b))` → `a` and `(or a (and a b))` → `a` — a boolean combined
+                // with the DUAL connective of itself-with-anything absorbs to itself (the short-circuit
+                // analogue of the bitwise `x & (x|y)`→x / `x | (x&y)`→x fold, c118). One operand is an inner
+                // `and`/`or` of the DUAL connective CONTAINING `x`; the other is `x`. Result is `x`. DISCARDS
+                // the inner op's OTHER operand `y`, so gated on `is_trap_free(y)` — `y` is only conditionally
+                // evaluated in the short-circuit original, so trap-freedom suffices to drop it. `x` is pure
+                // (`core_equiv`) so returning it evaluates once with no trap. Both orders via
+                // `bool_absorption_operand`.
+                _ if let Some((x, y)) = bool_absorption_operand(db, lhs, rhs, is_and)
+                    && is_trap_free(db, y) =>
+                {
+                    core_of(db, x)
+                }
                 // COMPLEMENT LAW: `(and a (not a))` → `false` and `(or a (not a))` → `true` — a boolean and
                 // its negation are exhaustive+exclusive, so `and` is always false and `or` always true. The
                 // boolean analogue of the bitwise `x & ~x`/`x | ~x` fold (c119). DISCARDS both operands (the
@@ -7213,6 +7226,46 @@ fn bool_nested_idempotent(
             return None;
         }
         (core_equiv(db, p, outer) || core_equiv(db, q, outer)).then_some(nested)
+    };
+    check(db, lhs, rhs).or_else(|| check(db, rhs, lhs))
+}
+
+/// The SHORT-CIRCUIT BOOLEAN ABSORPTION LAW: `(and a (or a b))` → `a` and `(or a (and a b))` → `a` (either
+/// outer order, `a` on either side of the inner op). A boolean combined with the DUAL connective of
+/// itself-with-anything absorbs to itself — the boolean analogue of the bitwise `x & (x|y)`→x / `x | (x&y)`
+/// →x fold (c118, `absorption_operand`). The outer connective is `is_and`; one operand must be an inner
+/// `Core::And` of the DUAL connective (`or` under `and`, `and` under `or`) that CONTAINS `x` (either side);
+/// the OTHER outer operand is `x` (`core_equiv`). Returns `(x, y)` — the whole expression absorbs to `x`,
+/// discarding the inner op's OTHER operand `y`. `x` is pure (`core_equiv` matches only pure cores) so
+/// returning it evaluates it once with no trap; `y` may be arbitrary, so the caller gates `is_trap_free(y)`
+/// (in the short-circuit original `y` is only conditionally evaluated, so trap-freedom is SUFFICIENT to
+/// drop it soundly). Both outer orders and both inner-operand positions are tried.
+fn bool_absorption_operand(
+    db: &mut Db,
+    lhs: StructId,
+    rhs: StructId,
+    is_and: bool,
+) -> Option<(StructId, StructId)> {
+    // `inner` must be a `Core::And` of the DUAL connective; `outer_x` must be `core_equiv` to one operand.
+    let check = |db: &mut Db, inner: StructId, outer_x: StructId| -> Option<(StructId, StructId)> {
+        let Core::And {
+            lhs: ip,
+            rhs: iq,
+            is_and: inner_is_and,
+        } = core_of(db, inner)
+        else {
+            return None;
+        };
+        if inner_is_and == is_and {
+            return None; // must be the DUAL connective (`or` under `and`, `and` under `or`)
+        }
+        if core_equiv(db, ip, outer_x) {
+            Some((outer_x, iq)) // x matched ip → y is iq
+        } else if core_equiv(db, iq, outer_x) {
+            Some((outer_x, ip)) // x matched iq → y is ip
+        } else {
+            None
+        }
     };
     check(db, lhs, rhs).or_else(|| check(db, rhs, lhs))
 }

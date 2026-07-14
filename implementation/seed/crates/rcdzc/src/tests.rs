@@ -15919,6 +15919,113 @@ mod match_engine {
     }
 
     #[test]
+    fn a_short_circuit_connective_absorbs_the_dual_connective_of_itself() {
+        // ABSORPTION LAW: `(and a (or a b))` → `a` and `(or a (and a b))` → `a` — a boolean combined with the
+        // DUAL connective of itself-with-anything absorbs to itself (short-circuit analogue of the bitwise
+        // `x & (x|y)`→x fold). Result is `a`, DISCARDING the inner op's other operand `b` (gated
+        // `is_trap_free(b)`). A DISTINCT operand does not absorb; the SAME connective is the idempotent fold.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let conn = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I32And | Lir::I32Or))
+                .count()
+        };
+        // Every absorption order collapses to ZERO connective ops (the whole thing is just `a`), both outer
+        // orders, both inner-operand positions, both outer connectives.
+        for body in [
+            "(: (or (and a b) a) Bool)",
+            "(: (or a (and a b)) Bool)",
+            "(: (and (or a b) a) Bool)",
+            "(: (and a (or a b)) Bool)",
+            "(: (or (and b a) a) Bool)", // a on the RIGHT of the inner op
+        ] {
+            assert_eq!(
+                conn(&lir("(: a Bool) (: b Bool)", body)),
+                0,
+                "absorbs to a: {body}"
+            );
+        }
+        // A DISTINCT inner operand does NOT absorb (nothing shared with the outer operand): kept as 2 ops.
+        assert_eq!(
+            conn(&lir(
+                "(: a Bool) (: b Bool) (: c Bool)",
+                "(: (or (and c b) a) Bool)"
+            )),
+            2,
+            "distinct inner kept"
+        );
+
+        // VALUE PARITY: each absorption form equals `a` over all truth combinations.
+        use wasmtime::component::Val;
+        let f = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: a Bool) (: b Bool)) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
+        for body in [
+            "(or (and a b) a)",
+            "(or a (and a b))",
+            "(and (or a b) a)",
+            "(and a (or a b))",
+            "(or (and b a) a)",
+        ] {
+            let comp = f(body);
+            for (a, b) in [(true, true), (true, false), (false, true), (false, false)] {
+                assert_eq!(
+                    run_returns_with::<bool>(&comp, "f", &[Val::Bool(a), Val::Bool(b)]),
+                    a,
+                    "{body} @{a},{b} must equal a"
+                );
+            }
+        }
+        // TRAP SAFETY: when `b` carries a trap, the gate keeps the runtime form rather than dropping `b`, so
+        // no trap is added or dropped. `(and (or a b) a)` evaluates `b` only when `a` is false; the fold's
+        // `is_trap_free(b)` guard declines here (b is a trapping `/`), leaving the real short-circuit form.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: a Bool) (: n Int64)) (if (and (or a (> (/ 10 n) 0)) a) 1 0)) (export f))"
+        ))).expect("compile");
+        // a=false forces evaluation of `(or a (> (/ 10 n) 0))` → the trapping `/` fires at n=0.
+        assert!(
+            call_traps(&tb, "f", &[Val::Bool(false), Val::S64(0)]),
+            "a trapping inner operand keeps its trap (fold declined)"
+        );
+        // a=true short-circuits before the trap → runs to 1 (the outer `and` needs `a`, which is true, and
+        // `(or a …)` short-circuits true without touching the `/`).
+        assert_eq!(
+            run_returns_with::<i64>(&tb, "f", &[Val::Bool(true), Val::S64(0)]),
+            1,
+            "a=true short-circuits the trap"
+        );
+    }
+
+    #[test]
     fn a_short_circuit_connective_with_a_value_and_its_negation_folds_to_a_constant() {
         // BOOLEAN COMPLEMENT LAWS: `(and a (not a))` → false, `(or a (not a))` → true — a boolean and its
         // negation are exclusive+exhaustive. The `and`/`or` analogue of the bitwise `x & ~x`/`x | ~x` fold.
