@@ -1535,22 +1535,25 @@ fn tuple_field_abi(
     Some((comp_bytes, core_vts, field_box_ops, field_extend_signed))
 }
 
+/// The flattened `call`-boundary description for a compound closure argument on the direct-call path:
+/// `(tuple field component bytes, full flattened arg core valtypes, prefix scalar bytes, suffix scalar
+/// bytes, the rebuild)`. Named so the producer functions and the `tuple_arg` binding share one type
+/// (clippy's `type_complexity`) rather than repeating the 5-tuple.
+type CompoundArgBoundary = (
+    Vec<u8>,
+    Vec<crate::backend::wasm::lir::ValType>,
+    Vec<u8>,
+    Vec<u8>,
+    crate::backend::wasm::serialize::TupleArgRebuild,
+);
+
 /// EXACTLY ONE fixed-shape scalar tuple/record argument AMONG scalar args (the compound-arg-alongside-scalars
 /// direct-call path). Given the closure's `arg_tys`, if precisely one is a fixed-shape scalar tuple/record and
 /// every OTHER arg is an aliased-width scalar, returns the flattened `call` boundary (prefix scalar bytes +
 /// vts, the tuple's field bytes + vts + `TupleArgRebuild` with `base_param`, suffix scalar bytes + vts). The
 /// core `call` receives `[prefix scalars, tuple fields, suffix scalars]` flattened; the body pushes prefix
 /// scalars, rebuilds the tuple, pushes suffix scalars. `None` if not exactly one tuple among scalars.
-#[allow(clippy::type_complexity)]
-fn single_compound_among_scalars(
-    arg_tys: &[crate::ty::Ty],
-) -> Option<(
-    Vec<u8>, // the TUPLE's field component bytes (for the `tuple<…>` type)
-    Vec<crate::backend::wasm::lir::ValType>, // full FLATTENED arg core valtypes (prefix + fields + suffix)
-    Vec<u8>,                                 // prefix scalar bytes
-    Vec<u8>,                                 // suffix scalar bytes
-    crate::backend::wasm::serialize::TupleArgRebuild,
-)> {
+fn single_compound_among_scalars(arg_tys: &[crate::ty::Ty]) -> Option<CompoundArgBoundary> {
     // Find the single compound (tuple/record) arg; every other arg must be an aliased-width scalar.
     let tuple_positions: Vec<usize> = arg_tys
         .iter()
@@ -1667,19 +1670,12 @@ fn emit_closure_resource(
     // scalar bytes, rebuild). The SOLE-tuple case (one compound arg, no scalars) has empty prefix/suffix and
     // `base_param=1`; the AMONG-SCALARS case (one tuple + ≥1 scalar arg) carries the prefix/suffix + a shifted
     // `base_param`. Both flatten the tuple into native `tuple<…>` fields the core `call` rebuilds.
-    let tuple_arg: Option<(
-        Vec<u8>,
-        Vec<crate::backend::wasm::lir::ValType>,
-        Vec<u8>,
-        Vec<u8>,
-        serialize::TupleArgRebuild,
-    )> = if host_imports.is_empty() {
+    let tuple_arg: Option<CompoundArgBoundary> = if host_imports.is_empty() {
         if arg_tys.len() == 1 {
             fixed_shape_scalar_tuple_arg(&arg_tys[0])
                 .map(|(fb, fv, rb)| (fb, fv, Vec::new(), Vec::new(), rb))
         } else {
             single_compound_among_scalars(arg_tys.as_slice())
-                .map(|(ab, av, pre, suf, rb)| (ab, av, pre, suf, rb))
         }
     } else {
         None
