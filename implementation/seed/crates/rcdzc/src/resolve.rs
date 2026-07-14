@@ -486,23 +486,43 @@ fn def_as_resolved(db: &Db, d: usize, name: &str) -> Resolved {
 /// body resolves to a bare `Resolved::Ref` to another (or the same) body, forming a `Ref` cycle that
 /// bottoms out in no value. Such a def has no meaning (`g = g` names nothing), and the reduction would
 /// spin until the depth guard fires, mislabeling it "expression nests too deeply (a resource limit)".
-/// This detects the cycle STRUCTURALLY — follow the `Ref` chain, tracking visited body nodes; a revisit
-/// closes the cycle — WITHOUT reducing, so it names the real fault before the limit is hit.
+/// This detects the cycle STRUCTURALLY — follow the `Ref` chain, tracking visited body nodes — WITHOUT
+/// reducing, so it names the real fault before the limit is hit.
+///
+/// Reports `body` only when the chain returns to `body` ITSELF — i.e. `body` is a member of the cycle.
+/// A def that merely POINTS INTO a cycle without being part of it — `(def (a) b) (def (b) b)`, where `a`
+/// references the self-cyclic `b` — is NOT "defined in terms of itself": `a` is not in its own cycle, so
+/// the "`a` is defined in terms of itself" message would be a false positive (the same misfire that flagged
+/// `main` in `(def x x) (def (main) x)` — `main` names the broken `x`, but is not itself cyclic). `b`'s own
+/// check reports the real cycle. Tracking a `seen` set of ALL visited nodes and reporting on ANY revisit
+/// mis-attributed a downstream cycle to the upstream referrer; keying the closure on the START node fixes
+/// that. (`a`'s non-termination is a consequence of `b`'s cycle, reported once at `b`, not doubled at `a`.)
 ///
 /// Only a BARE-`Ref` chain is a cycle here: a body that does COMPUTATION (`(def (g) (+ g 1))` — an
 /// `Apply`, not a `Ref`) is NOT reported (its non-termination needs reduction analysis to distinguish
 /// from a legitimately-deep program), and a recursive FUNCTION (`(def (f n) …)` — params, so `def_as_
 /// resolved` yields a `Lambda`, never a bare `Ref`) is untouched. Conservative: reports only an
-/// unambiguous value cycle, never a false alarm on a well-formed program.
+/// unambiguous value cycle THROUGH `body`, never a false alarm on a well-formed program.
 pub(crate) fn value_ref_cycle(db: &mut Db, body: StructId) -> bool {
     let mut cur = body;
+    // Bound the walk by the visited-node count so a chain that enters a cycle NOT containing `body`
+    // (`a → b → b`) terminates instead of spinning: once we have followed more distinct `Ref` steps than
+    // there are nodes, a cycle exists somewhere downstream — but it did not return to `body`, so `body`
+    // is not self-referential. `seen` provides that bound and the not-through-`body` exit.
     let mut seen: std::collections::HashSet<StructId> = std::collections::HashSet::new();
     loop {
-        if !seen.insert(cur) {
-            return true; // revisited a body node — a Ref cycle with no base value
-        }
         match resolved_of(db, cur) {
-            Resolved::Ref { value } => cur = value,
+            Resolved::Ref { value } => {
+                if value == body {
+                    return true; // the chain returned to the START — `body` is in its own cycle
+                }
+                // A revisit of a NON-start node means we entered a cycle downstream of `body` that does
+                // not include `body` — `body` reaches a non-terminating value but is not itself cyclic.
+                if !seen.insert(value) {
+                    return false;
+                }
+                cur = value;
+            }
             _ => return false, // the chain reaches a real value (or computation) — not a bare cycle
         }
     }

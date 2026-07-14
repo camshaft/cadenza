@@ -11239,6 +11239,59 @@ mod recursion {
             .all(|d| d.severity != crate::abi::Severity::Error),
             "a recursive function is legitimate, not a value cycle"
         );
+        // NO false positive on a def that merely REFERENCES a self-cyclic value without being IN the cycle.
+        // `(def x x)` is self-cyclic; a `(def (main) x)` naming it must NOT ALSO be reported "`main` is
+        // defined in terms of itself" — `main` is not in its own cycle, it points into `x`'s. The cycle
+        // detector keyed a `seen`-set revisit of ANY node as a cycle, mis-attributing `x`'s downstream cycle
+        // to `main`; keying the closure on the START node fixes it. Exactly ONE CDZ0201 (naming `x`), and it
+        // is `x`, never `main`.
+        let referrer = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def x x) (def (main) x) (export main))",
+            )))
+        });
+        let cycle_defs: Vec<_> = referrer
+            .iter()
+            .filter(|d| {
+                d.code.as_deref() == Some("CDZ0201")
+                    && d.message.contains("defined in terms of itself")
+            })
+            .collect();
+        assert_eq!(
+            cycle_defs.len(),
+            1,
+            "only the actually-cyclic `x` is named, not the referrer `main`: {referrer:?}"
+        );
+        assert!(
+            cycle_defs[0].message.contains("`x`") && !cycle_defs[0].message.contains("`main`"),
+            "the cycle is attributed to `x`, not the referrer `main`: {}",
+            cycle_defs[0].message
+        );
+        // A CHAIN into a cycle that does not include the head — `(def (a) b) (def (b) b)` — reports the
+        // cycle at `b` (which IS self-cyclic) and does NOT report `a` as self-referential (`a` merely
+        // points into `b`'s cycle). Exactly one "defined in terms of itself", naming `b`.
+        let chain = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (a) b) (def (b) b) (export a))",
+            )))
+        });
+        let chain_cycles: Vec<_> = chain
+            .iter()
+            .filter(|d| {
+                d.code.as_deref() == Some("CDZ0201")
+                    && d.message.contains("defined in terms of itself")
+            })
+            .collect();
+        assert_eq!(
+            chain_cycles.len(),
+            1,
+            "only the self-cyclic `b` is named, not the referrer `a`: {chain:?}"
+        );
+        assert!(
+            chain_cycles[0].message.contains("`b`"),
+            "the chain's cycle is attributed to `b`: {}",
+            chain_cycles[0].message
+        );
     }
 
     #[test]
