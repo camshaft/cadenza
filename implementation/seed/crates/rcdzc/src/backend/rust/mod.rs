@@ -221,9 +221,9 @@ fn emit_signature(
     // decline so a diverging `Any`/`Var` result is not misdiagnosed as an unrepresentable type. Gated on
     // `Core::Trap` specifically — a genuinely-unconstrained (non-diverging) result var still declines, as it
     // has no defined value to return.
-    let ret = if types::rust_type(result).is_none()
-        && matches!(crate::lower::core_of(db, body), crate::core::Core::Trap)
-    {
+    let diverges = types::rust_type(result).is_none()
+        && matches!(crate::lower::core_of(db, body), crate::core::Core::Trap);
+    let ret = if diverges {
         "!".to_string()
     } else {
         types::rust_type(result).ok_or_else(|| {
@@ -249,7 +249,16 @@ fn emit_signature(
     // detail a boundary render needs (field NAMES, `Tuple`-vs-`Record` distinction), so a consumer that
     // must reproduce the value's canonical text form — the corpus gate — reads it from here. Inert to
     // rustc (a `//` comment); present on every emitted fn, keyed by ident so a caller finds the right one.
-    let ret_note = format!("// cdz-return[{ident}]: {}\n", result.render_name());
+    // For a DIVERGING body the emitted return type is `!` (not a value type); note it as `!` so the gate
+    // driver recognizes the export never returns and CALLS it without a `println!` (binding/printing a `!`
+    // is an "unreachable statement" + `()`-not-`Display` build error). A `Never` result's `render_name` is
+    // `_` — indistinguishable from other holes and NOT one of the driver's diverging markers — so keying the
+    // note on the actual emitted `!` type is what makes the driver's divergence handling fire.
+    let ret_note = if diverges {
+        format!("// cdz-return[{ident}]: !\n")
+    } else {
+        format!("// cdz-return[{ident}]: {}\n", result.render_name())
+    };
     if mode.is_async() {
         // `async fn <name><__CdzE: CdzEnv>(env: &mut __CdzE, …) -> <ret> { env.consume(1).await; <body> }`
         // — the per-call fuel charge + cooperative-yield point at entry. The env TYPE PARAMETER is named
