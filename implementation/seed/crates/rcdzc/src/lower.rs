@@ -5231,6 +5231,14 @@ fn lower_recursive_call_or_decline(
     //# The compiler MUST monomorphize a generic definition — specialize it to each concrete set of type arguments it is used with, by compile-time reduction with those type-values bound — before the definition crosses a component boundary, consistent with the component ABI.
     //= spec/capabilities/type-system.md#a-generic-definition-is-monomorphized-before-the-component-boundary
     //# Monomorphization MUST be the same compile-time reduction by which the compiler specializes any definition applied to compile-time-known arguments, so that a generic instantiation is not a distinct lowering path from ordinary compile-time application.
+    // This is also the component-ABI obligation that generics do not cross the boundary: every emitted copy
+    // is monomorphic (concrete type arguments), so no generic definition appears in the component interface
+    // — and an undetermined boundary type (a `Ty::Var`/`Ty::Any` that never got specialized) has no
+    // `comp_valtype_of` and is rejected rather than emitted.
+    //= spec/contracts/component-abi.md#generics-do-not-cross-the-boundary
+    //# The compiler MUST monomorphize every exported and imported signature to concrete types before emitting the component interface.
+    //= spec/contracts/component-abi.md#generics-do-not-cross-the-boundary
+    //# A generic definition MUST NOT appear in a component's interface.
     if !scheme.ty_vars.is_empty() {
         return match type_specialize(db, callee, args) {
             Some(spec) => {
@@ -6768,6 +6776,13 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         //# A map's canonical form MUST present its entries as key-value pairs in the deterministic order of *Map Iteration Is Deterministic*, so that two equal maps have identical canonical forms regardless of the order their entries were added.
         //= spec/capabilities/collections-and-text.md#a-map-renders-as-its-entries-in-canonical-key-order
         //# The canonical form MUST be distinguishable from a record's, so that a map and a record are never confused by their rendered form even when they carry the same keys and values (a map's keys are values of one key type; a record's field names are fixed compile-time labels).
+        // The canonical render is the only entry-visiting the seed exposes for a map, and it sorts by
+        // `const_key_order` — a deterministic order derived from the KEYS, not insertion order — which is
+        // exactly the order the canonical byte form places them in (this render IS that byte form).
+        //= spec/capabilities/collections-and-text.md#map-iteration-is-deterministic
+        //# Iterating a map MUST visit its entries in a deterministic order derived from the keys, not from insertion order.
+        //= spec/capabilities/collections-and-text.md#map-iteration-is-deterministic
+        //# The order in which a map's entries are visited MUST agree with the order its canonical byte form places them in.
         Core::MapNew { entries, .. } => {
             let mut sorted: Vec<(StructId, StructId)> = entries.clone();
             // Sort by canonical key order. A key that is not orderable-as-a-constant declines the whole
@@ -6796,6 +6811,12 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         // canonical written form is `(Set.of (list …))`). The constant set already has each element at
         // most once (the `Set.of`/insert folds dedup by value); sort by `const_key_order` (reused — an
         // element orders exactly like a map key). A non-orderable element declines the escape.
+        // This sorted render is the only element-visiting the seed exposes for a set: a deterministic order
+        // derived from the ELEMENTS (not insertion order), agreeing with the canonical byte form it builds.
+        //= spec/capabilities/collections-and-text.md#set-iteration-is-deterministic
+        //# Iterating a set MUST visit its elements in a deterministic order derived from the elements, not from insertion order.
+        //= spec/capabilities/collections-and-text.md#set-iteration-is-deterministic
+        //# The order in which a set's elements are visited MUST agree with the order its canonical byte form places them in.
         Core::SetOf { elems, .. } => {
             let mut sorted: Vec<StructId> = elems.clone();
             let mut orderable = true;
