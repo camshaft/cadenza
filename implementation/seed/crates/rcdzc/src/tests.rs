@@ -25509,6 +25509,52 @@ mod match_engine {
     }
 
     #[test]
+    fn eval_of_a_non_compile_time_ast_names_the_form_not_an_unbound_eval() {
+        // `eval` desugars ONLY a compile-time-visible AST (`(quote …)` / literal `Ast.*`); a runtime /
+        // non-Ast argument does not desugar, so the `eval` head fell through to `resolve` as "unbound name
+        // `eval`" — MISLEADING (as if `eval` were a typo, even offering a did-you-mean to a near name). The
+        // message now NAMES the real situation: `eval` is a recognized form that executes only a
+        // compile-time AST, so a runtime/non-Ast argument has nothing to reconstruct.
+        let msg = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0101"))
+                .unwrap_or_else(|| panic!("expected CDZ0101 for {src}"))
+                .message
+        };
+        for src in [
+            "(module m (def (main) (eval 5)) (export main))", // a scalar (non-Ast)
+            "(module m (def (f (: a Ast)) (eval a)) (export f))", // a runtime Ast
+        ] {
+            let m = msg(src);
+            assert!(
+                m.contains("COMPILE-TIME-VISIBLE AST") && !m.contains("did you mean"),
+                "eval of a non-compile-time AST names the form, not an unbound-name typo: {m}"
+            );
+        }
+        // NO REGRESSION: a real `(eval (quote …))` still compiles + runs (the desugar fires).
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (main) (eval (quote (+ 1 2)))) (export main))"
+                )))
+                .expect("compile"),
+                "main"
+            ),
+            3
+        );
+        // NO OVER-REACH: a bare `eval`-shaped typo that is NOT an `(eval …)` head still gets the ordinary
+        // unbound-name did-you-mean (a near def wins), not the eval-form message.
+        let typo = "(module m (def (evil) 5) (def (main) (evel)) (export main))";
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(typo)))
+                .iter()
+                .any(|d| d.message.contains("did you mean `evil`?")),
+            "a near-eval typo keeps the ordinary unbound path"
+        );
+    }
+
+    #[test]
     fn eval_of_a_quasiquote_splices_a_compile_time_known_value() {
         use crate::testkit::parse;
         // 12-metaprogramming §Eval Is Optional / §Quasiquote: eval a quasiquoted form whose unquote splices
