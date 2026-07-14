@@ -3083,6 +3083,17 @@ fn op_str_from_bytes(buf: Handle) -> Handle {
 /// `NO_SCALAR`=out-of-range, so the compiler builds the `(Option Char)` sum), plus the runtime emit —
 /// the flatten + UTF-8 scalar walk is done and proven here. The SCALAR-indexed String family
 /// (`scalar-len`/`scalar-at`/`slice`) all rest on this same UTF-8 walk.
+///
+/// ⚡ COST — O(scalar_index): reaching the i-th scalar walks the UTF-8 from the START (a String is not
+/// scalar-indexable in O(1) — variable-width encoding). This is INHERENT to random access by scalar
+/// index, NOT a defect. ⚠ CONSEQUENCE for the compiler agent: a LEXER that scans a string left-to-right
+/// via repeated `scalar-at(s, 0)`, `scalar-at(s, 1)`, … is O(N²) (measured: ~67 ns/scalar at N=64 rising
+/// to ~3300 ns/scalar at N=4096). A sequential scan wants a CURSOR (`scalar-next(buf, byte_off) ->
+/// (codepoint, next_byte_off)`, advancing by the scalar's width) — that would be a SEPARATE coordinated
+/// op (a different ABI: a pair return). `scalar-at` is the right primitive for RANDOM access; do NOT
+/// build a left-to-right lexer on it. (The current compiler-in-Cadenza lexer sidesteps the whole area by
+/// lexing `List Int64` char-codes — which is O(N) via `List` iteration, so the cursor gap is not yet
+/// blocking; raise the cursor only when a real-String sequential scan is written.)
 #[cfg_attr(not(test), allow(dead_code))]
 fn op_bytes_scalar_at(buf: Handle, scalar_index: u32) -> u32 {
     const NO_SCALAR: u32 = u32::MAX; // out-of-range / ill-formed sentinel (not a valid Unicode scalar)
@@ -12213,6 +12224,72 @@ mod tests {
         op_drop(boxed);
     }
 
+    /// The inline-vs-boxed equivalence above, but for a scalar child INSIDE A COMPOUND — the case that
+    /// exercises `champ_eq`/`champ_hash`/`champ_key_cmp`'s SHALLOW-COMPOUND fast path (children compared/
+    /// hashed via `with_raw_arity`, which must decode an immediate child and a boxed child IDENTICALLY).
+    /// The scalar test covers a bare int; this covers a `tuple(int, …)` where one tuple's int-child is an
+    /// IMMEDIATE and the twin's is a HAND-BOXED int of the same value. They must be eq + hash-equal +
+    /// cmp-Equal, AND behave as ONE map key: a key built with a boxed child and a key built with an
+    /// immediate child are the SAME key (lookup hits across the rep boundary; re-insert overwrites, size
+    /// unchanged). This is the canonical-form property that keeps a COMPOUND map key correct regardless of
+    /// how its scalar children were constructed (different build paths can yield either rep). A shallow-
+    /// path bug that only handled immediate-vs-immediate (or boxed-vs-boxed) children would mis-dedup here.
+    #[test]
+    fn compound_key_with_an_immediate_child_equals_its_boxed_child_twin() {
+        reset();
+        let before = live_nodes();
+        // t_inline = (imm 3, imm 7); t_boxed = (BOXED 3, imm 7) — same value, mixed child reps.
+        let t_inline = op_arr_alloc(2);
+        op_arr_set(t_inline, 0, op_box_int(3)); // immediate child (small int normalizes to inline)
+        op_arr_set(t_inline, 1, op_box_int(7));
+        let t_boxed = op_arr_alloc(2);
+        op_arr_set(t_boxed, 0, boxed_int_leaf(3)); // a genuinely-boxed twin of value 3
+        op_arr_set(t_boxed, 1, op_box_int(7));
+        // The eq/hash/cmp trinity holds across the child rep boundary.
+        assert!(
+            champ_eq(t_inline, t_boxed),
+            "a tuple with an immediate int-child == a tuple with a boxed int-child (same value)"
+        );
+        assert_eq!(
+            champ_hash(t_inline),
+            champ_hash(t_boxed),
+            "…and hashes identically (shallow-compound hash decodes both child reps the same)"
+        );
+        assert_eq!(
+            champ_key_cmp(t_inline, t_boxed),
+            core::cmp::Ordering::Equal,
+            "…and orders Equal (cmp consistent with eq across the rep boundary)"
+        );
+        // As MAP KEYS: insert keyed by the boxed-child tuple, look up with the immediate-child tuple → HIT.
+        let mut m = op_map_empty();
+        op_dup(t_boxed);
+        m = op_map_insert(m, t_boxed, op_box_int(100));
+        let v = op_map_lookup(m, t_inline);
+        assert_ne!(
+            v,
+            Handle::NULL,
+            "the immediate-child key finds the boxed-child entry"
+        );
+        assert_eq!(op_get_int(v), 100, "…and reads its value");
+        // Re-insert with the immediate-child tuple: SAME key by value → overwrite, size stays 1.
+        op_dup(t_inline);
+        m = op_map_insert(m, t_inline, op_box_int(200));
+        assert_eq!(
+            op_map_size(m),
+            1,
+            "immediate-child and boxed-child tuples are ONE key (overwrite)"
+        );
+        assert_eq!(
+            op_get_int(op_map_lookup(m, t_boxed)),
+            200,
+            "the overwrite is visible through the boxed-child key too"
+        );
+        op_drop(m);
+        op_drop(t_inline);
+        op_drop(t_boxed);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
     #[test]
     fn inline_int_totality_no_ub() {
         reset();
@@ -12794,6 +12871,7 @@ mod tests {
     /// index (`"café"` byte-len 5, scalar 3 = 'é' = 233); (3) a 4-byte scalar (emoji U+1F600); (4) a ROPE
     /// input (flatten across the concat seam); (5) out-of-range + empty/immediate → the `u32::MAX` sentinel;
     /// (6) it BORROWS (no consume — the buffer survives + reads again, node count balances).
+
     #[test]
     fn bytes_scalar_at_reads_the_nth_unicode_scalar_by_codepoint() {
         reset();

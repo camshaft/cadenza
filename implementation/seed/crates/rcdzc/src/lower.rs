@@ -3573,17 +3573,53 @@ fn refutable_ctor_element_head(db: &mut Db, elem_pat: StructId) -> Option<Struct
 /// whole-tail cover (a bare `_`/name arm or a lead-0 `(list .. rest)`), else the match is already total and
 /// the rewrite would only add a redundant arm (CDZ0213). A single-variant sum is irrefutable (handled
 /// inline, never reaches here). Returns `Some(Core)` iff it fired (rebuilds the match, re-resolves, recurses).
-/// Whether the list-element pattern `elem` is a BARE-MEMBER ctor `(. Sum V)` used whole (a nullary variant
-/// written `C.R`) — as opposed to an applied ctor `(C.V p…)` or a paren-nullary `(R)`. The saturating-ctor
-/// pass excludes this form: reusing a bare-member node as a synthesized inner-match pattern head re-lowers
-/// as member ACCESS in the emit path (a synthesized-member-pattern resolve gap), so the pass declines it and
-/// the honest CDZ0210 stands instead.
-fn bare_member_ctor_element(db: &Db, elem: StructId) -> bool {
-    matches!(
+/// Normalize a BARE-MEMBER ctor list-element `(. Sum V)` (a nullary variant written `C.R`) into the
+/// PAREN-APPLIED form `((. Sum V))` — a 1-child list whose head is a FRESH copy of the member. A bare member
+/// re-parented as a synthesized inner-match / guard-cond pattern head re-lowers as member ACCESS (CDZ0201)
+/// in the emit path (a synthesized-member-pattern resolve gap the ctor desugar hits); the paren-applied
+/// form resolves cleanly as a nullary-variant pattern (verified — `((C.R) …)` compiles + dispatches exactly
+/// as `(C.V p…)` does). An APPLIED `(C.V p…)` / paren-nullary `(R)` element is already fine — returned
+/// unchanged. The head is FRESH-cloned (`clone_ctor_head`) so it re-resolves out of its stale element-inert
+/// context. Used by the saturating-ctor pass to make the bare-member spelling a first-class candidate.
+fn wrap_bare_member_element(db: &mut Db, elem: StructId) -> StructId {
+    let is_bare_member = matches!(
         db.ast.get(elem),
         crate::ast::Struct::List(children)
             if children.first().is_some_and(|&h| db.ast.as_name(h) == Some("."))
-    )
+    );
+    if is_bare_member {
+        let head = clone_ctor_head(db, elem);
+        db.push_list(vec![head])
+    } else {
+        elem
+    }
+}
+
+/// Rebuild the list pattern `pat` (`(list <elem0> …rest)`) with its LEADING element replaced by
+/// `wrap_bare_member_element` — i.e. a bare-member `(. C V)` lead becomes `((. C V))`, everything else
+/// unchanged. Preserves the `list` head token and every following element / rest binder. Used to normalize a
+/// saturating arm's bare-member lead before it flows to the ctor desugar (earlier arms) or the body-rematch
+/// (the last arm).
+fn list_pattern_with_wrapped_lead(db: &mut Db, pat: StructId) -> StructId {
+    let Some(es) = db
+        .ast
+        .as_ctor_form(pat, "list")
+        .or_else(|| db.ast.as_form(pat, "list"))
+        .map(<[_]>::to_vec)
+    else {
+        return pat;
+    };
+    if es.is_empty() {
+        return pat;
+    }
+    let list_head = match db.ast.get(pat) {
+        crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+        _ => db.push_name("list"),
+    };
+    let wrapped0 = wrap_bare_member_element(db, es[0]);
+    let mut children = vec![list_head, wrapped0];
+    children.extend(es[1..].iter().copied());
+    db.push_list(children)
 }
 
 fn desugar_saturating_ctor_list_elements(
@@ -3643,19 +3679,13 @@ fn desugar_saturating_ctor_list_elements(
             }
             // A single leading element + rest, that element a refutable ctor of the element sum → a
             // saturating candidate; record the variant it names. A BARE-MEMBER element `(. C R)` (a nullary
-            // variant written `C.R`) is EXCLUDED: reusing it as a synthesized inner-match pattern head
-            // re-lowers as member ACCESS (CDZ0201) in the emit path — a synthesized-member-pattern resolve
-            // gap this pass does not attempt to fix; the paren-nullary `(R)` and applied `(C.V p…)` forms
-            // work. Excluding it → the member-form case simply does not saturate here → the honest CDZ0210
-            // (add a `_`) stands. See `bare_member_ctor_element`.
+            // variant written `C.R`) is a candidate too — the rewrite NORMALIZES it to the paren-applied form
+            // `((. C R))` (which resolves cleanly as a variant pattern where the bare member re-lowers as
+            // member ACCESS — a synthesized-member-pattern resolve gap), see `wrap_bare_member_element`.
             Some(i) if i == 1 && i + 2 == es.len() => {
-                if bare_member_ctor_element(db, es[0]) {
-                    ctor_lead.push(None);
-                } else {
-                    match refutable_ctor_element_head(db, es[0]) {
-                        Some(head) => ctor_lead.push(ctor_head_display_name(db, head)),
-                        None => ctor_lead.push(None),
-                    }
+                match refutable_ctor_element_head(db, es[0]) {
+                    Some(head) => ctor_lead.push(ctor_head_display_name(db, head)),
+                    None => ctor_lead.push(None),
                 }
             }
             _ => ctor_lead.push(None),
@@ -3677,7 +3707,11 @@ fn desugar_saturating_ctor_list_elements(
     let mut new_arms: Vec<StructId> = Vec::with_capacity(arms.len());
     for (ai, &(pat, body)) in arms.iter().enumerate() {
         if ai != last {
-            new_arms.push(db.push_list(vec![pat, body]));
+            // Reuse the earlier arm — but NORMALIZE a bare-member `(. C V)` lead element to `((. C V))` so
+            // the ctor desugar (which processes these arms on the recursion) resolves it as a variant pattern
+            // rather than mis-lowering it as member access. A non-saturating / non-bare-member arm is a no-op.
+            let normalized = list_pattern_with_wrapped_lead(db, pat);
+            new_arms.push(db.push_list(vec![normalized, body]));
             continue;
         }
         let es = db
@@ -3691,13 +3725,17 @@ fn desugar_saturating_ctor_list_elements(
             _ => db.push_name("list"),
         };
         let ctor_pat = es[0]; // the leading ctor element (es = [<ctor>, "..", rest])
-        // Rebuild the ctor pattern with a FRESH head (via `clone_ctor_head`) — the original `(. C R)` /
-        // `C.V` head was resolved in list-ELEMENT position (INERT), and reusing it as an inner MATCH-arm
-        // pattern head leaves `(. C R)` mis-resolved as member ACCESS (CDZ0201) even after `forget_subtree`
-        // (the member form needs to re-resolve as a variant reference from scratch — exactly what
-        // `refutable_ctor_element_head` does to read the element's variant). Payload sub-patterns are reused
-        // (they re-resolve cleanly against the fresh binder scrutinee once forgotten).
-        let body_ctor_pat = clone_ctor_pattern_head(db, ctor_pat);
+        // Rebuild the ctor pattern with a FRESH head (via `clone_ctor_head`) — the original `C.V` head was
+        // resolved in list-ELEMENT position (INERT), and reusing it as an inner MATCH-arm pattern head leaves
+        // it mis-resolved (the member form needs to re-resolve as a variant reference from scratch — exactly
+        // what `refutable_ctor_element_head` does). A bare-member `(. C V)` is additionally WRAPPED to the
+        // paren-applied `((. C V))` form (`wrap_bare_member_element`), which resolves cleanly as a
+        // nullary-variant pattern where the bare member alone re-lowers as member access. Payload
+        // sub-patterns are reused (they re-resolve cleanly against the fresh binder scrutinee once forgotten).
+        let body_ctor_pat = {
+            let cloned = clone_ctor_pattern_head(db, ctor_pat);
+            wrap_bare_member_element(db, cloned)
+        };
         // The new list pattern: a fresh bare binder in place of the ctor element, keeping `.. rest`.
         let binder_name = format!("__ls{ai}");
         let binder = db.push_name(&binder_name);

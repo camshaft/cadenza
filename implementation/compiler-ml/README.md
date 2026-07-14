@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 277 tests total across 30 modules):
+top. Current `src/` modules (each with same-file `@test`s — 297 tests total across 32 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -207,6 +207,22 @@ top. Current `src/` modules (each with same-file `@test`s — 277 tests total ac
   a self-recursive effectful fn with TWO sibling recursive calls in a match arm MISCOMPILES (findings
   below). Checks the drawn count == `count-nodes` and the id sum == the Gauss closed form N*(N-1)/2. 8
   `@test`s. Confirmed WORKING (in the single-spine shape).
+- `src/verify.cdz` — a STACK-MACHINE VERIFIER: statically check an `Instr` program (cross-file from
+  `codegen`) is stack-safe BEFORE it runs, returning `Result(Int64, String)` — Ok(final depth) or
+  Err(underflow / wrong-depth). The "verify the lowered form" stage (wasm's own operand-stack validator in
+  miniature): abstract-interpret tracking only the depth, reject anything that would fault. Stresses
+  `Result` early-return threaded through a recursive walk (short-circuit on the first Err) + the cross-file
+  `Instr` sum. Contract ties it to the VM: every compiled `Expr` verifies as `Ok(1)` (one result), and
+  hand-built malformed programs (bare BinOp, one-operand BinOp, two-value stack) are rejected with the
+  right reason. 10 `@test`s. Confirmed WORKING.
+- `src/unparse.cdz` — a PRETTY-PRINTER for the arithmetic `Expr` (cross-file from `parse`): render a tree
+  back to infix source with MINIMAL parenthesization — parens ONLY where precedence or left-associativity
+  requires (the inverse of `parse`; the "render IR to source" a compiler needs for errors / a formatter).
+  A child is wrapped iff it binds LOOSER than its parent, or ties on the RIGHT of a left-assoc op
+  (`10-(3-2)` keeps its parens, `10-3-2` and `1+2*3` don't). Stresses precedence-aware recursion + string
+  building; the round-trip through `parse` is checked (`parse "(1+2)*3"` → tree → `unparse` → `"(1+2)*3"`).
+  10 `@test`s. Confirmed WORKING. (⚠ hit the `bin`-is-reserved papercut below: a `Bin`-node builder named
+  `bin` couldn't be called — renamed to `mkb`.)
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -382,6 +398,18 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   `/loop` owns this class.) 🔑 the WORKING generic spelling: omit the annotation — `def id(x) = x`,
   `def swap(p) = (p.1, p.0)` both compile + monomorphize correctly.
 
+- **OPEN (seed `rcdzc` — ML SURFACE PAPERCUT, iter 40): `bin` and `quote` can be DEFINED but not CALLED as
+  function names.** `repros/reject-bin-quote-as-callable-fn-names.cdz`. `bin(…)` is the binary-matching
+  construct and `quote(…)` the metaprogramming reifier, captured by the reader at CALL position before
+  resolution — so `def bin(x) = x+1` then `bin(5)` → CDZ0201 "a bin segment must be (<kind> <slot>…)"
+  (backtick-quoting `` `bin`(5) `` does NOT escape it), and `def quote(x) = x+1` mis-parses the DEFINITION
+  itself (`x` reported unused AND unbound — the body is reified). CONTRAST: the other compound-ctor head
+  words — `list`/`tuple`/`record`/`map`/`set` — DO work as fn names (define + call + run), so the hijack is
+  specific to `bin`/`quote`. Hit organically (a `Bin`-node builder named `bin` in `unparse.cdz`, renamed
+  to `mkb`). Ideal: a "`bin`/`quote` is a reserved construct name — rename" diagnostic, and/or let a
+  backtick-escaped name resolve to the user binding at call position. Low-severity (rename works); the
+  misleading diagnostic is the cost.
+
 - **OPEN (seed `rcdzc` — RESOLVER, both surfaces; RE-DIAGNOSED iter 25): a NULLARY variant DOTTED pattern
   (`Ty.TInt`) in a NESTED match resolves as member ACCESS.**
   `repros/reject-nullary-variant-pattern-in-nested-match.cdz`. `(match x | Ty.TInt => (match x | Ty.TInt
@@ -432,12 +460,16 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   depth-threshold sensitivity of the slot-alias family. `src/prec.cdz`'s deep `paren-count` case is
   withheld for this (its shallow cases pass).
 
-- **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value): runtime `String.at` breaks content equality.**
-  `repros/miscompile-runtime-string-at-content-equality.sexp`. A `String.at` at a RUNTIME index yields a
-  one-char String that never `=`-compares equal to the same char obtained any other way — a different-
-  index `String.at`, a `String.concat`-built char, or a literal; it only equals ITSELF at the identical
-  index. So `count-a "banana"` (scan + `= "a"`) returns 0, not 3. A CONSTANT-index `String.at` folds and
-  compares correctly. This silently breaks char-by-char scanning — i.e. a LEXER. **ROOT-CAUSED (two
+- **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value; ⚠ NARROWED to LOOP-CONTEXT iter 39): runtime
+  `String.at` breaks content equality INSIDE A SELF-RECURSIVE LOOP.**
+  `repros/miscompile-runtime-string-at-content-equality.sexp`. ⚠ A sibling PARTIALLY FIXED this — every
+  STRAIGHT-LINE case now works: `at(runtime i) == "a"` → true, `at(runtime 1) == at(runtime 3)` → true, a
+  helper called twice → correct, two sequenced `at`+`==` → correct. The REMAINING failure is LOOP-CONTEXT
+  ONLY: `String.at(s,i) == c` inside a self-recursive loop threading `s` as a param returns FALSE every
+  iteration (even the FIRST — the char is a valid `Some` of byte-len 1, but `==` yields false). So
+  `count-a "banana"` STILL returns 0; minimal survivor `cnt "aa" 0 0` (2-iter loop) → 0 not 2. A
+  CONSTANT-index `String.at` folds + compares correctly. This still silently breaks a LOOP-based LEXER
+  (which is why `src/lex.cdz` lexes over char-CODES not a String). **ROOT-CAUSED (two
   layers in `backend/wasm/select.rs`):** (1) `Core::ValueEq` `bytes-compact`s a String operand only when
   OWNED, but a `String.at` result is a non-flat `bytes-slice` rope reached via `Option.expect`; (2)
   `heap_operand_ownership` classifies `SumExpect`/`SumPayload`/`Proj` as always `Borrowed` — right for a
@@ -445,8 +477,10 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   transfers it out). The principled fix is layer 2 (a `SumExpect`/`SumPayload` of a producer is Owned) —
   which then also serves the `Map.lookup` borrow-decline family. A naive layer-1-only fix (compact
   borrowed Strings too) makes isolated compares correct but double-frees in a loop; reverted, root-cause
-  documented in the repro for a seed agent. `String.slice` on a runtime string DECLINES outright
-  ("constant strings only") — a separate gap.
+  documented in the repro for a seed agent. Now that the straight-line path is fixed, the residual is the
+  LOOP-TRANSFORM emit needing the same slice-compact the straight-line emit got. `String.slice` on a
+  runtime string NOW WORKS (iter 39: returns `Option String`, `slice("hello world",0,5)` → Some "hello",
+  OOB → None) — the earlier "constant strings only" decline is GONE.
 
 - **OPEN (seed `rcdzc` — HM inference GAP): an unannotated closure passed to a SELF-RECURSIVE HOF fails
   to infer the closure's parameter types.** `repros/reject-inferred-closure-param-through-recursive-hof.

@@ -1,0 +1,119 @@
+/// verify.cdz — a STACK-MACHINE VERIFIER: statically check that an `Instr` program (imported cross-file
+/// from `codegen`) is stack-safe BEFORE it runs, returning `Result(Int64, String)` — Ok(final depth) for
+/// a well-formed program, Err(reason) for one that would underflow (a `BinOp` with fewer than two
+/// operands) or finish with the wrong depth. This is the "verify the lowered form" stage a real backend
+/// runs (wasm's own validator does exactly this for its operand stack): abstract-interpret the program,
+/// tracking only the stack DEPTH, and reject anything that would fault at run time.
+///
+/// It stresses `Result` early-return threaded through a recursive walk (short-circuit on the first Err),
+/// a `Result`-returning helper composed at each step, and the cross-file `Instr` sum. The correctness
+/// contract ties it to the real VM: a program `verify` accepts with `Ok(1)` (a single result on the
+/// stack) is exactly one `exec` can run; a program `verify` rejects is one `exec` would fault on. The
+/// tests check both directions — every compiled `Expr` verifies to `Ok(1)`, and hand-built malformed
+/// programs are rejected with the right reason.
+
+import { Instr, compile } from "codegen"
+import { Tok, Expr, parse } from "parse"
+
+/// The stack-depth delta of one instruction: a `Push` grows the stack by 1; a `BinOp` pops 2, pushes 1
+/// (net -1). Verification tracks the running depth against these deltas.
+def needs(ins: Instr) = match ins with
+  | Instr.Push(_) => 0
+  | Instr.BinOp(_) => 2
+
+def yields(ins: Instr) = match ins with
+  | Instr.Push(_) => 1
+  | Instr.BinOp(_) => 1
+
+/// Abstract-interpret from index `i` with a current stack `depth`, returning the final depth or an Err on
+/// the first instruction that would underflow. `Result` is threaded and SHORT-CIRCUITS: an underflow at
+/// step `i` stops the walk immediately.
+def walk(prog: List(Instr), i: Int64, depth: Int64) =
+  if i == List.len(prog) then
+    Result.Ok(depth)
+  else
+    (match List.at(prog, i) with
+      | Option.Some(ins) =>
+        (if depth < needs(ins) then
+          Result.Err("stack underflow")
+        else
+          walk(prog, i + 1, depth - needs(ins) + yields(ins)))
+      | Option.None(_) => Result.Err("index past end"))
+
+/// Verify a whole program from an empty stack. `Ok(d)` = the program is stack-safe and leaves depth `d`.
+def verify(prog: List(Instr)) = walk(prog, 0, 0)
+
+/// Is the program a valid EXPRESSION program — stack-safe AND leaving exactly one result?
+def verify-expr(prog: List(Instr)) = match verify(prog) with
+  | Result.Ok(d) => (if d == 1 then Result.Ok(1) else Result.Err("expression must leave exactly one value"))
+  | Result.Err(e) => Result.Err(e)
+
+/// Extract the Ok depth, or a sentinel for Err (for the tests to compare an Int).
+def depth-or(prog: List(Instr), sentinel: Int64) = match verify(prog) with
+  | Result.Ok(d) => d
+  | Result.Err(_) => sentinel
+
+/// Is the program accepted as a valid expression? (Bool, for the tests.)
+def accepts-expr(prog: List(Instr)) = match verify-expr(prog) with
+  | Result.Ok(_) => true
+  | Result.Err(_) => false
+
+def add() = 43
+def mul() = 42
+
+@test
+def vf-single-push() =
+  // one Push → depth 1 → a valid expression
+  if depth-or([Instr.Push(9)], 0 - 1) == 1 then unit else trap("one push → depth 1")
+
+@test
+def vf-push-push-add() =
+  // Push, Push, Add → depth 1 (2 up, then 2→1) → valid
+  let p = [Instr.Push(2), Instr.Push(3), Instr.BinOp(add())] in
+  if depth-or(p, 0 - 1) == 1 then (if accepts-expr(p) then unit else trap("accepted")) else trap("depth 1")
+
+@test
+def vf-underflow-rejected() =
+  // a bare BinOp with an empty stack underflows → Err (sentinel -1)
+  if depth-or([Instr.BinOp(add())], 0 - 1) == 0 - 1 then unit else trap("bare BinOp underflows")
+
+@test
+def vf-underflow-not-accepted() =
+  if accepts-expr([Instr.BinOp(add())]) then trap("underflow must be rejected") else unit
+
+@test
+def vf-one-operand-binop-underflows() =
+  // Push then BinOp: depth 1, BinOp needs 2 → underflow
+  if accepts-expr([Instr.Push(5), Instr.BinOp(mul())]) then trap("1-operand BinOp underflows") else unit
+
+@test
+def vf-two-values-not-an-expression() =
+  // Push, Push → depth 2 → stack-safe but NOT a single-result expression
+  let p = [Instr.Push(1), Instr.Push(2)] in
+  if depth-or(p, 0 - 1) == 2 then (if accepts-expr(p) then trap("two values is not an expr") else unit) else trap("depth 2")
+
+@test
+def vf-empty-program() =
+  // no instructions → depth 0 → stack-safe but not a single-result expression
+  if depth-or([], 0 - 1) == 0 then unit else trap("empty → depth 0")
+
+@test
+def vf-compiled-expr-verifies() =
+  // EVERY compiled Expr is a valid single-result program — the verify/compile contract
+  let p = compile(Expr.Bin(add(), Expr.Lit(1), Expr.Bin(mul(), Expr.Lit(2), Expr.Lit(3)))) in
+  if accepts-expr(p) then unit else trap("a compiled Expr verifies as an expression")
+
+@test
+def vf-compiled-from-parser-verifies() =
+  // parse "2*(3+4)-1" → compile → verify accepts, and depth is exactly 1
+  let ts = [Tok.TNum(2), Tok.TOp(42), Tok.TLP, Tok.TNum(3), Tok.TOp(43), Tok.TNum(4), Tok.TRP, Tok.TOp(45), Tok.TNum(1)] in
+  let p = compile(parse(ts)) in
+  if depth-or(p, 0 - 1) == 1 then unit else trap("parsed+compiled → depth 1")
+
+@test
+def vf-nested-deep-verifies() =
+  // a deep left chain compiles to a valid program
+  let e = Expr.Bin(add(), Expr.Bin(add(), Expr.Bin(add(), Expr.Lit(1), Expr.Lit(2)), Expr.Lit(3)), Expr.Lit(4)) in
+  if accepts-expr(compile(e)) then unit else trap("deep chain verifies")
+
+export { verify, verify-expr, accepts-expr }
