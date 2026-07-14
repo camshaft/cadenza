@@ -472,6 +472,7 @@ pass	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
 pass	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)
 pass	a fixpoint loop that threads a growing list accumulator returns that list
 pass	a fixpoint that re-seeds a fresh list each round via a helper returns a list
+pass	a flat string map key is found by a runtime rope twin
 pass	a float annotation reaches the 32-bit width
 pass	a float in integer-width position is rejected
 pass	a float width outside the admitted set is rejected
@@ -1054,6 +1055,7 @@ pass	a runtime string is indexed by scalar and the extracted scalar is returned
 pass	a runtime string is sliced by scalar offsets
 pass	a runtime string returned across the run boundary renders as its quoted text
 pass	a runtime string rope compares equal to its flat twin
+pass	a runtime string rope map key is found by its flat twin
 pass	a runtime string rope matches a string-literal arm
 pass	a runtime string slice addresses scalar values, not bytes
 pass	a runtime string slice out of range yields None
