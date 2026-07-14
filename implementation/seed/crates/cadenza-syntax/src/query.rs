@@ -1106,6 +1106,25 @@ pub mod driver {
                     Vec::new(),
                 ))
             }
+            Format::Toml => {
+                // A TOML document is a queryable/rewritable tree like any surface (its `(toml-document
+                // …)` decor-in-arena nodes are all matchable). Fallible, mapped to `line:col`.
+                let text =
+                    std::str::from_utf8(input).map_err(|e| format!("input not UTF-8: {e}"))?;
+                let (arena, spans) = crate::toml_surface::read_spanned(text).map_err(|e| {
+                    format!(
+                        "TOML parse: {}",
+                        crate::convert::locate_byte_in_message(&e.0, text)
+                    )
+                })?;
+                Ok((
+                    Target {
+                        tree: Tree::of(&arena),
+                        spans: Some(spans),
+                    },
+                    Vec::new(),
+                ))
+            }
             Format::Debug | Format::Flat => Err(format!(
                 "`{}` is an output-only format, not an input",
                 from.name()
@@ -1282,6 +1301,7 @@ pub mod driver {
             Format::Sexpr => Ok(sexpr::print(arena)),
             Format::Markdown => Ok(crate::markdown::print(arena, width)),
             Format::Json => Ok(crate::json::print(arena, width)),
+            Format::Toml => Ok(crate::toml_surface::print(arena, width)),
             Format::Debug => Ok(crate::debug::print(arena)),
             Format::Flat => Ok(crate::debug::print_flat(arena)),
             Format::Binary => Err("binary output is not supported for query results".to_string()),

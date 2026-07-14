@@ -470,17 +470,37 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // so the OUTCOME is unchanged; only the message stops misleading.
     let defined_names: Vec<String> = db.defs.iter().map(|d| d.name.clone()).collect();
     for (head, occ) in db.unknown_top_forms() {
-        // A two-tier "did you mean?": a confident single suggestion for a plausible typo, else the closest
-        // few defined names (never nothing when defs exist) — a message-only hint (no fix here, unlike the
-        // export-name site which carries a single-replace fix and so keeps the confident-only `nearest`).
-        let hint = crate::diag::suggest::did_you_mean(&head, &defined_names, 3);
-        faults.push(
-            Reject::decline(format!(
-                "unbound name `{head}` at the top level{hint} (if `{head}` is meant as a declaration, \
-                 it is not one this compiler models — the program cannot be compiled either way)"
-            ))
-            .at(occ),
-        );
+        // FIRST: is the head a plausible TYPO of a top-level DECLARATION KEYWORD (`exprot`→`export`,
+        // `deff`→`def`)? That is the far likelier intent than a mistyped VALUE name — a top-level `(head
+        // …)` form is a declaration position, so a near-miss for `def`/`export`/`type`/`effect`/`module`/
+        // `pragma` (the closed keyword pool) is named AND carries a REPLACE fix on the HEAD occurrence (the
+        // form's first child), the same closed-set "did you mean?"-with-fix the export-name / unbound-name
+        // sites give (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). The pool
+        // is the keyword set itself, so a suggestion can never name a keyword the grammar would reject.
+        let keyword_hit =
+            crate::diag::suggest::nearest(&head, crate::db::TOP_LEVEL_KEYWORDS.iter().copied());
+        // The head NAME occurrence — the form's first child — is what a keyword fix rewrites (`(exprot f)`
+        // → replace just `exprot`, not the whole form). Falls back to no fix if the shape is unexpected.
+        let head_node = match db.ast.get(occ) {
+            crate::ast::Struct::List(items) => items.first().copied(),
+            _ => None,
+        };
+        // The hint text: prefer the keyword suggestion; else the two-tier defined-name hint (a confident
+        // single typo, else the closest few — never nothing when defs exist), message-only.
+        let hint = match &keyword_hit {
+            Some(kw) => format!(" — did you mean `{kw}`?"),
+            None => crate::diag::suggest::did_you_mean(&head, &defined_names, 3),
+        };
+        let mut reject = Reject::decline(format!(
+            "unbound name `{head}` at the top level{hint} (if `{head}` is meant as a declaration, \
+             it is not one this compiler models — the program cannot be compiled either way)"
+        ))
+        .at(occ);
+        // Attach the keyword-swap fix only when both the near-miss keyword AND the head node are known.
+        if let (Some(kw), Some(node)) = (keyword_hit, head_node) {
+            reject = reject.with_fix(crate::diag::Fix::replace_heuristic(node, kw));
+        }
+        faults.push(reject);
     }
     // MODULE DIRECTIVE `(pragma <key> <arg>…)`. A directive's key must be drawn from the fixed registry
     // the specification defines (`modules-and-namespaces.md` §A Module Directive Is Drawn From A Fixed

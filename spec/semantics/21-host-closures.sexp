@@ -1640,3 +1640,83 @@
               (export mkt) (export mkb) (export inc)))
   (call   inc (: 41 Int64))
   (output (: 42 Int64)))
+
+; A COMPOUND (tuple/record) result on the ROUND-TRIP path — a consumer takes a produced closure back,
+; applies it, and RETURNS a fixed-shape compound. The consumer crosses as `(own<t>, args…) -> list<u8>`
+; carrying the value form (its own template, walked from the body's returned handle). Completes the compound
+; result across ALL closure shapes. A compound consumer coexists with a scalar consumer, a byte-rope
+; consumer of the same closure, and a plain export (disjoint memory: compound templates in the data section,
+; byte-rope payloads written past them, scalars by value).
+
+(case "round-trip: a consumer applies the handed-back closure and returns a tuple"
+  (doc    "`mk : () -> (-> Int64 Int64)` (adds 1); `app : (own<t>, Int64) -> (Tuple Int64 Int64)` returns
+           `(tuple x (g x))`. Host produces via `mk`, hands the handle to `app(handle, 5)` → the closure
+           yields 6, so the tuple is `(5, 6)`, decoded to `(: (tuple 5 6) (Tuple Int64 Int64))`. Pins the
+           compound value-form result on the round-trip path.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (tuple 5 6) (Tuple Int64 Int64))))
+
+(case "round-trip: a consumer returns a record built from the closure result"
+  (doc    "`mk` doubles; `app : (own<t>, Int64) -> (Record (inp Int64) (out Int64))` = `(record (inp x) (out
+           (g x)))`. `app(handle, 10)` → `(: (record (inp 10) (out 20)) …)`.")
+  (input  (do (def (mk) (fn ((: n Int64)) (* n 2)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (record (inp x) (out (g x))))
+              (export mk) (export app)))
+  (call   app (: 10 Int64))
+  (output (: (record (inp 10) (out 20)) (Record (inp Int64) (out Int64)))))
+
+(case "round-trip: a scalar consumer + a compound consumer of the same closure — the compound"
+  (doc    "One closure signature, TWO consumers: `asnum` returns the value, `aspair` returns `(tuple x (g
+           x))`. `aspair(handle, 8)` → `(: (tuple 8 9) (Tuple Int64 Int64))`. Pins a scalar consumer and a
+           compound (value-form) consumer of the same resource coexisting.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (asnum (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (aspair (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (export mk) (export asnum) (export aspair)))
+  (call   aspair (: 8 Int64))
+  (output (: (tuple 8 9) (Tuple Int64 Int64))))
+
+(case "round-trip: a scalar consumer + a compound consumer of the same closure — the scalar"
+  (doc    "The SAME two-consumer program, driving the SCALAR consumer: `asnum(handle, 8)` → 9 (by value, NOT
+           a value-form document). Confirms the scalar consumer is unaffected by the sibling compound
+           consumer's memory/template.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (asnum (: g (-> Int64 Int64)) (: x Int64)) (g x))
+              (def (aspair (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (export mk) (export asnum) (export aspair)))
+  (call   asnum (: 8 Int64))
+  (output (: 9 Int64)))
+
+(case "round-trip: a compound consumer + a byte-rope consumer of the same closure — the compound"
+  (doc    "One signature, a COMPOUND consumer (`aspair` → tuple value form) AND a BYTE-ROPE consumer
+           (`asbytes` → raw `list<u8>`). `aspair(handle, 3)` → `(: (tuple 3 4) …)`. Pins disjoint memory: the
+           compound template region vs the byte-rope payload written past it.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (aspair (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (asbytes (: g (-> Int64 Int64)) (: x Int64)) (bin (u8 (UInt8.wrap (g x)))))
+              (export mk) (export aspair) (export asbytes)))
+  (call   aspair (: 3 Int64))
+  (output (: (tuple 3 4) (Tuple Int64 Int64))))
+
+(case "round-trip: a compound consumer + a byte-rope consumer of the same closure — the byte-rope"
+  (doc    "The SAME program, driving the byte-rope consumer: `asbytes(handle, 40)` → `(41)` (a raw byte
+           list, its payload written PAST the compound template region — the two never collide).")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (aspair (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (asbytes (: g (-> Int64 Int64)) (: x Int64)) (bin (u8 (UInt8.wrap (g x)))))
+              (export mk) (export aspair) (export asbytes)))
+  (call   asbytes (: 40 Int64))
+  (output (41)))
+
+(case "round-trip: a compound consumer alongside a plain export — the plain"
+  (doc    "A tuple-returning consumer `app` beside a plain `five : () -> 5`. Calling `five` → 5. Confirms a
+           plain top-level export is reachable when a compound round-trip consumer shares the component.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (five) 5)
+              (export mk) (export app) (export five)))
+  (call   five)
+  (output (: 5 Int64)))

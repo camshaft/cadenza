@@ -185,3 +185,72 @@ pub fn set_needs_memory(imports: &[HostImport]) -> bool {
         .iter()
         .any(|h| h.params.iter().any(|p| matches!(p, HostParam::Str)))
 }
+
+/// The first host operation the subtree at `id` performs whose BOUNDARY SIGNATURE this increment cannot
+/// yet emit — returns `Some((op, "result"|"argument", type-name))` for an HONEST feature-limitation
+/// decline, or `None` when every reached host op is representable. A `Core::HostCall`'s result is emittable
+/// when it is `Unit` or a scalar (`abi_val_type`); a NON-scalar non-Unit result (a `String`, a compound)
+/// is NOT — a `String`/`list<u8>` result needs the memory + list-lifting envelope the closure-`Bytes`
+/// path has but the plain host envelope does not (a later increment). An ARGUMENT is emittable when it is
+/// `Unit`, a `String` (crosses `(ptr,len)`), or a scalar; a compound argument is likewise deferred.
+/// Without this, an unrepresentable result silently collected `result: None` (indistinguishable from a
+/// Unit result), then `select` hit the INTERNAL "not in the host-import set" path — a message documented
+/// as "a compiler bug" surfacing for a valid-but-unsupported program. Diagnosing it here names the real
+/// limitation instead. Walks the same positions as `collect_host_imports` (bounded by the AST).
+/// Whether `ty` is UNDETERMINED — a top-level `Ty::Any` or a type carrying a free unification variable.
+/// A synthesized `Core::HostCall` (a fold-forwarded perform) types its result `Ty::Any`, and an unresolved
+/// operand types a var; neither is a real "unrepresentable boundary type" signal (selection resolves it),
+/// so [`first_unrepresentable_host_op`] must not flag it. A genuinely-declared non-scalar (`Ty::String`, a
+/// compound) is DETERMINED and still flagged.
+fn ty_undetermined(ty: &Ty) -> bool {
+    matches!(ty, Ty::Any) || ty.has_free_var()
+}
+
+pub fn first_unrepresentable_host_op(
+    db: &mut Db,
+    id: StructId,
+) -> Option<(String, &'static str, String)> {
+    if let Core::HostCall {
+        op, args, result, ..
+    } = core_of(db, id)
+    {
+        // The RESULT: emittable iff Unit or scalar. A DETERMINED non-scalar (a `String`, a compound) is
+        // deferred → decline. An UNDETERMINED result (`Ty::Any` / a free var) is NOT flagged: a fold-
+        // SYNTHESIZED `Core::HostCall` (a forwarded/interposed perform) types its result `Ty::Any`
+        // (infer.rs), and its real emittability is decided when selection resolves it — flagging `Any` here
+        // would falsely reject the working interpose-forward case. Only a genuinely-determined non-scalar
+        // (e.g. a declared `(-> Unit String)` op) is the unsupported feature.
+        if !matches!(result, Ty::Unit)
+            && !ty_undetermined(&result)
+            && abi_val_type(&result).is_none()
+        {
+            return Some((op, "result", result.render_name()));
+        }
+        // Each ARGUMENT: emittable iff Unit, String, or scalar. A DETERMINED compound argument is deferred;
+        // an undetermined arg type (a synthesized node) is skipped for the same reason as the result.
+        for &a in &args {
+            let at = crate::infer::type_of(db, a);
+            if !matches!(at, Ty::Unit | Ty::String)
+                && !ty_undetermined(&at)
+                && abi_val_type(&at).is_none()
+            {
+                return Some((op, "argument", at.render_name()));
+            }
+        }
+        // Descend the args too (a host call may be nested in an arg).
+        for a in args {
+            if let Some(hit) = first_unrepresentable_host_op(db, a) {
+                return Some(hit);
+            }
+        }
+        return None;
+    }
+    if let crate::ast::Struct::List(children) = db.ast.get(id).clone() {
+        for c in children {
+            if let Some(hit) = first_unrepresentable_host_op(db, c) {
+                return Some(hit);
+            }
+        }
+    }
+    None
+}

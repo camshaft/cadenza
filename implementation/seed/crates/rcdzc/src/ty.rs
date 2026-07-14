@@ -883,6 +883,106 @@ impl Ty {
     /// rejection that should name the AMBIGUITY (annotate the type) rather than a boundary-SHAPE error.
     /// (Deferred integer width/sign are NOT free variables — they ground to a default; only a `Ty::Var`
     /// is genuinely undetermined.)
+    /// Whether this type contains an `Any` anywhere — an unconstrained position the body inference could
+    /// not pin (and grounded to `Any`, not a free `Var`). Used with [`has_free_var`] by call-site seeding
+    /// to recognize a param whose type still has a hole to fill (`(Tuple Int64 Any)` — the body pinned the
+    /// first field but left the second). Structurally mirrors `has_free_var`.
+    pub fn has_any(&self) -> bool {
+        match self {
+            Ty::Any => true,
+            Ty::Fn(p, r) => p.has_any() || r.has_any(),
+            Ty::Tuple(elems) => elems.iter().any(|t| t.has_any()),
+            Ty::List(elem) => elem.has_any(),
+            Ty::Map(k, v) => k.has_any() || v.has_any(),
+            Ty::Set(elem) => elem.has_any(),
+            Ty::Record(fields) => fields.values().any(|t| t.has_any()),
+            Ty::Sum { args, .. } => args.iter().any(|t| t.has_any()),
+            Ty::Qty { inner, .. } => inner.has_any(),
+            Ty::Nominal { args, .. } => args.iter().any(|t| t.has_any()),
+            Ty::Var(_)
+            | Ty::Int(_)
+            | Ty::Bool
+            | Ty::Unit
+            | Ty::Type
+            | Ty::Bytes
+            | Ty::String
+            | Ty::Char
+            | Ty::Symbol
+            | Ty::BigInt
+            | Ty::Float(_) => false,
+        }
+    }
+
+    /// Fill this type's HOLES (`Any` / a free `Var`) with the corresponding part of `concrete` — a
+    /// structural merge that keeps `self`'s already-determined parts and takes `concrete`'s only where
+    /// `self` is unconstrained. Used by call-site seeding: a body-solved param `(Tuple Int64 Any)` merged
+    /// with a call site's `(Tuple Int64 Int64)` becomes `(Tuple Int64 Int64)` — the `Any` value field is
+    /// filled while the pinned key field is preserved. Where the shapes AGREE the merge recurses
+    /// element-wise; where `self` is a hole it takes `concrete` wholesale; otherwise `self` is kept (a
+    /// genuine disagreement is a fault reported elsewhere — the merge never invents an incompatible type).
+    pub fn fill_holes(&self, concrete: &Ty) -> Ty {
+        match self {
+            Ty::Any | Ty::Var(_) => concrete.clone(),
+            Ty::Tuple(a) => match concrete {
+                Ty::Tuple(b) if a.len() == b.len() => Ty::Tuple(
+                    a.iter()
+                        .zip(b.iter())
+                        .map(|(x, y)| x.fill_holes(y))
+                        .collect(),
+                ),
+                _ => self.clone(),
+            },
+            Ty::List(a) => match concrete {
+                Ty::List(b) => Ty::List(Box::new(a.fill_holes(b))),
+                _ => self.clone(),
+            },
+            Ty::Set(a) => match concrete {
+                Ty::Set(b) => Ty::Set(Box::new(a.fill_holes(b))),
+                _ => self.clone(),
+            },
+            Ty::Map(ka, va) => match concrete {
+                Ty::Map(kb, vb) => {
+                    Ty::Map(Box::new(ka.fill_holes(kb)), Box::new(va.fill_holes(vb)))
+                }
+                _ => self.clone(),
+            },
+            Ty::Record(a) => match concrete {
+                Ty::Record(b) if self.agrees_with(concrete) => {
+                    let merged = a
+                        .iter()
+                        .map(|(k, ta)| {
+                            let t = b
+                                .get(k)
+                                .map(|tb| ta.fill_holes(tb))
+                                .unwrap_or_else(|| ta.clone());
+                            (k.clone(), t)
+                        })
+                        .collect();
+                    Ty::Record(std::sync::Arc::new(merged))
+                }
+                _ => self.clone(),
+            },
+            Ty::Sum {
+                decl,
+                name,
+                args: aa,
+            } => match concrete {
+                Ty::Sum { args: ab, .. } if self.agrees_with(concrete) => Ty::Sum {
+                    decl: *decl,
+                    name: name.clone(),
+                    args: aa
+                        .iter()
+                        .zip(ab.iter())
+                        .map(|(x, y)| x.fill_holes(y))
+                        .collect(),
+                },
+                _ => self.clone(),
+            },
+            // Leaves and other determined shapes keep themselves (no hole to fill).
+            _ => self.clone(),
+        }
+    }
+
     pub fn has_free_var(&self) -> bool {
         match self {
             Ty::Var(_) => true,

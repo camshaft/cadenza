@@ -1016,7 +1016,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         // Is Marked Verified). Only heuristic fixes with a real target span are candidates.
         let verified_flag = if fix_verified == "verified" {
             true
-        } else if args.verify_fixes && fix_node != "-" && code != "-" {
+        } else if args.verify_fixes && fix_node != "-" {
             let is_ml = is_ml_source(&args.file);
             fix_node
                 .parse::<u32>()
@@ -1193,7 +1193,13 @@ fn run_fix(args: &FixArgs) -> ExitCode {
             let (severity, code, fix_kind, fix_node, fix_repl, fix_verified, message) = (
                 cols[0], cols[1], cols[3], cols[4], cols[5], cols[6], cols[7],
             );
-            if fix_node == "-" || code == "-" {
+            // A fix is a candidate when it has a real TARGET node. A CODED fault is the common case; a
+            // code-less DECLINE that nonetheless carries a targeted fix (a top-level keyword typo —
+            // `(exprot …)` declines "unbound name … did you mean `export`?" with a replace fix) is ALSO
+            // applicable, so gate on the fix node, not the code. `fix_verifies` (below, keyed on
+            // severity+code+the cleared count) still proves the edit clears the fault before `--all`
+            // applies it, so admitting a code-less fix cannot apply an unverified edit.
+            if fix_node == "-" {
                 continue;
             }
             considered_any = true;

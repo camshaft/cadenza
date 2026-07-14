@@ -2911,9 +2911,11 @@ pub struct ClosureConsumeAbi {
     pub name: String,
     pub params: Vec<ConsumeParamAbi>,
     pub result_byte: u8,
-    /// True when the consumer's result is a byte-rope (`Bytes`/`String`) — it crosses as `list<u8>` (via the
-    /// shared memory + `cabi_realloc`, lifted with Memory/Realloc) rather than the inline scalar
-    /// `result_byte`. The round-trip inner re-export component types such a consumer as `(…) -> list<u8>`.
+    /// True when the consumer's result crosses as `list<u8>` rather than the inline scalar `result_byte` —
+    /// i.e. a byte-rope (`Bytes`/`String`, raw payload) OR a fixed-shape COMPOUND (tuple/record/sum, the
+    /// canonical value form). The envelope treats both identically (a `list<u8>` result via the shared
+    /// memory + `cabi_realloc`, lifted with Memory/Realloc; the inner re-export component types the consumer
+    /// as `(…) -> list<u8>`); the core serializer decides what bytes fill it.
     pub ret_is_bytes: bool,
 }
 
@@ -4781,6 +4783,10 @@ fn op_comp_functype(op: &RtOp) -> Vec<u8> {
 //# The entry's exported signature MUST be a plain function from the program's input type to its result type, carrying no additional outcome arm — no suspension outcome and no injected trap outcome — so that a run either returns its result value or halts out-of-band, and the interface declares nothing beyond `input -> output`.
 //= spec/contracts/component-abi.md#the-entry-is-a-plain-function
 //# The entry MUST NOT carry a resume parameter and its result MUST NOT encode a pending host call or a position in the program's execution, so that how a host call suspends and resumes is host runtime policy the ABI does not represent (capabilities-and-effects.md §A Host Call Returns A Response) and the same emitted bytes serve a host that answers inline, one that suspends a fiber and resumes in place, and one that tears down and replays from a log.
+//= spec/contracts/component-abi.md#the-entry-is-a-plain-function
+//# A trap MUST be an out-of-band halt the embedder observes when it invokes the entry — the wasm-level failure a partial operation or an aborting host function raises — rather than a variant the entry's result type declares, so that the internal trap mechanism (core-semantics.md §A Trap Halts Execution At A Defined Point) stays a run's terminal behavior and is not duplicated as a redundant arm of the interface.
+//= spec/contracts/component-abi.md#the-entry-is-a-plain-function
+//# The host MUST NOT require the component to encode any resume state, so that whichever resumption strategy a host chooses is invisible to the emitted component and constrained only by the run's determinism (capabilities-and-effects.md §A Run Is A Deterministic Function Of Its Input And Responses).
 //= spec/contracts/component-abi.md#the-entry-signature-crosses-the-boundary-by-the-same-rules
 //# The entry's parameter and result types MUST each have a boundary representation fixed by this contract.
 //= spec/contracts/component-abi.md#the-entry-signature-crosses-the-boundary-by-the-same-rules
