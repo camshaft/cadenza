@@ -848,6 +848,37 @@ fn a_recursive_sum_emits_a_boxed_enum() {
 }
 
 #[test]
+fn rustc_roundtrip_generic_recursive_tree_boxes_and_counts() {
+    // A GENERIC recursive sum `(type Tree (Leaf a) (Node (Tuple (Tree a) (Tree a))))` — the recursive
+    // `Tree` occurrence is a type PARAMETER instantiation nested inside a `Tuple`. The Box-decision
+    // (`variant_payloads_mention`) resolved a payload with `typeval_of`, which returns `None` for a payload
+    // mentioning a type param (unbound), so `Node`'s recursive tuple was NOT boxed → `Node((Tree<T0>,
+    // Tree<T0>))` had INFINITE size (rustc E0072). Resolving the payload PARAM-TOLERANTLY (at a sentinel
+    // instantiation, the same path the enum-field render uses) makes `reaches_decl` see the self-reference
+    // and box it: `Node(Box<(Tree<T0>, Tree<T0>)>)`. `cnt` counts leaves; a two-leaf node = 2.
+    let rs = compile_rust(
+        "(module m (type Tree (Leaf a) (Node (Tuple (Tree a) (Tree a)))) \
+           (def (cnt (: t (Tree Int64))) (match t (((. Tree Leaf) _) 1) \
+                                                   (((. Tree Node) (tuple l r)) (+ (cnt l) (cnt r))))) \
+           (export cnt))",
+    );
+    assert!(
+        rs.contains("enum Tree<T0>") && rs.contains("Node(Box<"),
+        "the generic recursive variant's nested-tuple field is boxed (was E0072 infinite size): {rs}"
+    );
+    // End-to-end through rustc: builds (was E0072) and cnt of a two-leaf node = 2, matching wasm.
+    if let Some(out) = rustc_run(
+        &rs,
+        "cnt(Tree::Node(Box::new((Tree::Leaf(1), Tree::Leaf(2)))))",
+    ) {
+        assert_eq!(
+            out, "2",
+            "the generic recursive tree builds and counts:\n{rs}"
+        );
+    }
+}
+
+#[test]
 fn a_recursive_newtype_declines_the_whole_function() {
     // A RECURSIVE NEWTYPE `(type Lst (Mk (Option (Tuple Int64 Lst))))` erases to its inner type on the rust
     // backend — but the inner type mentions `Lst` (the μ back-edge), which erasure would render as a bare

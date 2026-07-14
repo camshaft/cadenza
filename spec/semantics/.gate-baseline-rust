@@ -566,6 +566,7 @@ pass	an un-projected tuple element is not evaluated, so its trap does not occur
 pass	an un-read record field is not evaluated, so its trap does not occur
 pass	an unannotated closure typed Int8 from context computes an in-range constant
 pass	an unannotated closure typed Int8 from context overflows a constant like an explicit Int8 param
+pass	an unannotated generic recursive tree consumer whose result is independent of the payload infers
 pass	an unannotated program with a valid typing type-checks and runs
 pass	an unbound name as a parameter's annotation type is rejected
 pass	an unbound name in a map key is a scope error, not a coerced string
