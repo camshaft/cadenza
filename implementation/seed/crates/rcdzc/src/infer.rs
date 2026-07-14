@@ -3101,6 +3101,52 @@ fn option_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     None
 }
 
+/// Drill through two SAME-SHAPE nested compounds (records with the same field set, tuples of the same
+/// arity) to the DEEPEST single leaf where the types actually differ, returning the relative access PATH
+/// to that leaf and the leaf's expected-vs-actual types. `(Record (a (Record (b Int64))))` vs `(… (b
+/// Bool))` drills to `("a.b", Int64, Bool)` so a caller can say "field `a.b` should be Int64, but this one
+/// is Bool" instead of re-rendering the whole differing sub-record. Segments are dotted — a record field
+/// contributes its name, a tuple position its 0-based index (`pt.1` = field `pt`, element 1) — matching
+/// the member-access spelling. `None` when the two types are NOT further drillable at this level: a scalar
+/// (or other) leaf, a field-SET / arity difference, or a cross-kind clash — in those cases the caller
+/// keeps its own single-level phrasing (naming the immediate member + rendering the two sub-types, whose
+/// difference the render then shows). Terminates because each step descends into a strictly smaller
+/// structural sub-type (a `Ty::Nominal`/collection is a non-drillable leaf, so a recursive nominal stops).
+fn deep_leaf_delta<'a>(want: &'a Ty, got: &'a Ty) -> Option<(String, &'a Ty, &'a Ty)> {
+    match (want, got) {
+        (Ty::Record(w), Ty::Record(g)) => {
+            // Only drill a SAME field-set record; a field-set difference is not a single-leaf type diff
+            // (the caller renders the sub-record, whose missing/extra field the render shows).
+            if w.len() != g.len() || !w.keys().all(|k| g.contains_key(k)) {
+                return None;
+            }
+            let (k, wt) = w
+                .iter()
+                .find(|(k, wt)| g.get(k).is_some_and(|gt| !wt.agrees_with(gt)))?;
+            let gt = &g[k];
+            Some(match deep_leaf_delta(wt, gt) {
+                Some((sub, lw, lg)) => (format!("{}.{sub}", k.name), lw, lg),
+                None => (k.name.clone(), wt, gt),
+            })
+        }
+        (Ty::Tuple(w), Ty::Tuple(g)) => {
+            if w.len() != g.len() {
+                return None; // an arity difference is reported at this level, not drilled
+            }
+            let (i, (wt, gt)) = w
+                .iter()
+                .zip(g.iter())
+                .enumerate()
+                .find(|(_, (wt, gt))| !wt.agrees_with(gt))?;
+            Some(match deep_leaf_delta(wt, gt) {
+                Some((sub, lw, lg)) => (format!("{i}.{sub}"), lw, lg),
+                None => (i.to_string(), wt, gt),
+            })
+        }
+        _ => None,
+    }
+}
+
 /// An actionable message TAIL when `expected` and `actual` are BOTH records that differ. Two shapes,
 /// each pointing at the SPECIFIC difference instead of leaving the reader to diff two full record renders:
 ///  • a FIELD-SET difference — the value is MISSING a field the type requires, and/or carries an EXTRA one
@@ -3131,17 +3177,22 @@ fn record_field_diff_hint(expected: &Ty, actual: &Ty) -> Option<String> {
         // Same field-name set — look for the FIRST field (sorted key order) whose type differs and name
         // it. `agrees_with` is the same relation `unify` uses, so we only flag a genuine clash (a deferred
         // `Var`/`Any` field agrees and is skipped). Naming one field is enough to point the fix; the full
-        // render still carries the complete picture for a multi-field clash.
+        // render still carries the complete picture for a multi-field clash. When the differing field is
+        // itself a same-shape nested compound, DRILL to the deepest scalar leaf so the hint reads "field
+        // `a.b.c` should be Int64, but this one is Bool" instead of re-rendering the whole sub-record.
         let culprit = want
             .iter()
             .find(|(k, wt)| got.get(k).is_some_and(|gt| !wt.agrees_with(gt)));
         return culprit.map(|(k, wt)| {
             let gt = &got[k];
+            let (path, lw, lg) = match deep_leaf_delta(wt, gt) {
+                Some((sub, lw, lg)) => (format!("{}.{sub}", k.name), lw, lg),
+                None => (k.name.clone(), wt, gt),
+            };
             format!(
-                " — field `{}` should be {}, but this one is {}",
-                k.name,
-                wt.render_name(),
-                gt.render_name()
+                " — field `{path}` should be {}, but this one is {}",
+                lw.render_name(),
+                lg.render_name()
             )
         });
     }
@@ -3191,16 +3242,22 @@ fn tuple_arity_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
             got.len(),
         ));
     }
-    // Same arity — name the FIRST position whose type differs (0-indexed).
+    // Same arity — name the FIRST position whose type differs (0-indexed). When that position is itself a
+    // same-shape nested compound, DRILL to the deepest scalar leaf ("element 0.x should be …") rather than
+    // re-rendering the whole sub-compound.
     want.iter()
         .zip(got.iter())
         .enumerate()
         .find(|(_, (wt, gt))| !wt.agrees_with(gt))
         .map(|(i, (wt, gt))| {
+            let (path, lw, lg) = match deep_leaf_delta(wt, gt) {
+                Some((sub, lw, lg)) => (format!("{i}.{sub}"), lw, lg),
+                None => (i.to_string(), wt, gt),
+            };
             format!(
-                " — element {i} should be {}, but this one is {}",
-                wt.render_name(),
-                gt.render_name()
+                " — element {path} should be {}, but this one is {}",
+                lw.render_name(),
+                lg.render_name()
             )
         })
 }
