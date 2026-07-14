@@ -10861,6 +10861,40 @@ mod match_engine {
     }
 
     #[test]
+    fn a_deeply_nested_option_pattern_lowers_in_bounded_time() {
+        // REGRESSION (perf): the match decision-tree builder (`lower::build_tree`) threads a `PathTypes`
+        // map (path → the sub-value's `Ty`) that `extend_path_types` CLONED whole at every nesting level so
+        // sibling arms don't share a mutation. A deeply-NESTED pattern `(Some (Some … x))` descends `depth`
+        // levels with a map that grows one entry per level, each value a `Ty` itself O(depth) deep — so the
+        // per-level clone was O(depth²) and the whole build O(depth³) (depth-400: 7.5s, 52% in `Ty::clone`).
+        // Two fixes: (1) `PathTypes` values are `Arc<Ty>` (the per-level map clone is a pointer-bump per
+        // entry, not a deep `Ty` copy); (2) `const_at_path`'s per-step nominal-newtype check reads only the
+        // type KIND via `infer::type_is_nominal` instead of cloning the whole `Ty`. Depth 60 would have been
+        // well into the superlinear regime; that it lowers AND evaluates correctly is the gate.
+        let mut val = String::from("0");
+        let mut pat = String::from("x");
+        for _ in 0..60 {
+            val = format!("(Some {val})");
+            pat = format!("(Some {pat})");
+        }
+        let src = format!("(module m (def (main) (match {val} ({pat} x) (_ -1))) (export main))");
+        // The pattern matches the value exactly (60 `Some` layers around `0`), binding `x` to the innermost
+        // `0` — so the result is `0`, NOT the `-1` fallback. Diagnostics must be clean and return quickly.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&src)));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a deeply-nested Option match lowers with no error diagnostics: {diags:?}"
+        );
+        assert_eq!(
+            run_heap_value(&src, vec![]).unwrap_or_else(|| "0".to_string()),
+            "0",
+            "the 60-deep nested Some pattern binds the innermost 0"
+        );
+    }
+
+    #[test]
     fn a_multi_payload_variant_value_escapes_to_the_host() {
         // `(type Rec (Mk Int64 Int64 Int64))` is a SINGLE-variant sum — a NOMINAL NEWTYPE (a struct), so
         // its box is ERASED: the runtime value IS the payload TUPLE (no `sum-new`, no discriminant), and

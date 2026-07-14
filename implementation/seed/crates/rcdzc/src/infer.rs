@@ -77,6 +77,23 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
     t
 }
 
+/// Whether the solved type of `id` is a `Ty::Nominal` — a cheap KIND check that does NOT clone the type.
+/// `type_of` returns a `Ty` BY VALUE (a deep clone of a nested type), so a caller that only needs the
+/// outermost constructor — e.g. `lower::const_at_path`, which tests each `Payload` step for a nominal
+/// newtype (a run-time-erased box) once per step, per match-tree level — paid an O(depth) clone per check,
+/// compounding to O(depth³) on a deeply-nested pattern. This computes/memoizes as `type_of` does, then
+/// BORROWS the memoized slot to read only the discriminant. (A type with a free var / `Any` is not
+/// memoized, so borrow the freshly-computed value in that case — it is cheap and never `Nominal` here.)
+pub fn type_is_nominal(db: &mut Db, id: StructId) -> bool {
+    if let Slot::Filled(t) = db.types.get(id) {
+        return matches!(t, Ty::Nominal { .. });
+    }
+    // Not yet memoized — compute (this fills the slot for a ground type). Re-borrow after, or fall back to
+    // inspecting the just-computed value for the unmemoized (free-var / `Any`) case.
+    let t = type_of(db, id);
+    matches!(t, Ty::Nominal { .. })
+}
+
 /// Solve one node's type. A poison is typed `Any` (compatible with everything) so a "no" never
 /// induces a spurious mismatch upward. An integer literal is typed with a DEFERRED width, which
 /// inference (or, failing that, the backend) grounds later.
