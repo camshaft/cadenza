@@ -790,3 +790,49 @@
            of the Char order case.")
   (input  (= #\a #\a))
   (output (: true Bool)))
+
+; --- String operations at RUN TIME: a string not fixed at compile time ---------------------------------
+; The string cases above operate on CONSTANT string literals, so their lengths / slices / concatenations
+; fold at compile time. A string chosen at run time — an `(if …)` selecting between two literals produces
+; ONE `String` handle unified from both branches, whose identity is known only at run time — exercises the
+; runtime query path: the length op reads the actual handle, not a folded constant. These pin that path,
+; the string analogue of the runtime-index `List.at` and runtime-key `Map.lookup` cases. (`String.byte-len`
+; and `String.at`/`String.concat` accept a runtime string; `String.scalar-len` on a runtime string and
+; `String.slice` with a runtime bound are later increments the seed declines — not witnessed here.)
+
+(case "the byte length of a run-time-selected string reads the actual handle"
+  (doc    "`(String.byte-len (if b \"hello\" \"hi\"))` — the `if` selects one of two literals at run time,
+           yielding one `String` handle whose length is not a compile-time constant. `b`=true → \"hello\"
+           (5 bytes), `b`=false → \"hi\" (2 bytes). Pins that `String.byte-len` reads the runtime handle's
+           length rather than folding a constant, the string companion of runtime `List.len`.")
+  (input  (do (def (main (: b Bool)) (String.byte-len (if b "hello" "hi"))) (export main)))
+  (call   main (: true Bool)) (output (: 5 Int64))
+  (call   main (: false Bool)) (output (: 2 Int64)))
+
+(case "the byte length of a run-time multibyte string exceeds its scalar length"
+  (doc    "`(String.byte-len (if b \"café\" \"ab\"))` = 5 for \"café\" — the é is a 2-byte UTF-8 scalar, so
+           the BYTE length (5) exceeds the 4 SCALARS (collections-and-text.md — byte length counts the
+           UTF-8 encoding, not the scalars). Pins that the runtime byte-length op counts encoded bytes on a
+           string whose content is decided at run time, not the scalar count.")
+  (input  (do (def (main (: b Bool)) (String.byte-len (if b "café" "ab"))) (export main)))
+  (call   main (: true Bool)) (output (: 5 Int64))
+  (call   main (: false Bool)) (output (: 2 Int64)))
+
+(case "a run-time-index scalar read is present in bounds and absent out of bounds"
+  (doc    "`(String.at \"abc\" i)` at a run-time index reads the one-scalar substring at scalar position
+           `i` — total (collections-and-text.md #A String's Scalars Are Addressable): in bounds → `(Some
+           <one-scalar string>)` (i=0 → \"a\", byte-len 1), out of bounds → `None` (i=5 → -1), never a trap.
+           The string companion of the runtime-index `List.at`; the index is a parameter, so the read runs
+           on the value heap rather than folding.")
+  (input  (do (def (main (: i Int64)) (match (String.at "abc" i) ((Some s) (String.byte-len s)) (None -1))) (export main)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64)) (output (: -1 Int64)))
+
+(case "concatenation with a run-time-selected operand joins the actual strings"
+  (doc    "`(String.concat (if b \"ab\" \"abcd\") \"z\")` joins a run-time-selected left operand with a
+           constant right one; the result's byte length is 3 for \"ab\"+\"z\" and 5 for \"abcd\"+\"z\". Pins
+           that `String.concat` joins the ACTUAL runtime string (not a folded constant) — the total binary
+           join the compiler itself uses to build messages, exercised with a non-constant operand.")
+  (input  (do (def (main (: b Bool)) (String.byte-len (String.concat (if b "ab" "abcd") "z"))) (export main)))
+  (call   main (: true Bool)) (output (: 3 Int64))
+  (call   main (: false Bool)) (output (: 5 Int64)))

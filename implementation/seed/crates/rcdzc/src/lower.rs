@@ -11909,7 +11909,25 @@ pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option
         // VALUE, order-independent — a set is unordered; collections-and-text.md §A Set Is A Collection Of
         // Unique Elements: two sets are equal when they contain equal elements, independent of order). Both
         // are already dedup'd (the `Set.of`/insert folds), so equal size + one-way containment suffices.
+        //
+        // This fold is sound ONLY when EVERY element of BOTH sets is a compile-time constant. A RUNTIME
+        // element (a parameter, a call result) breaks it two ways: `lower_set_of` dedups only the CONSTANT
+        // elements of its source list, so a `Core::SetOf` carrying a runtime element is NOT dedup'd —
+        // `elems.len()` is then the source count, not the true cardinality (`(Set.of (list 1 2 x))` holds
+        // three `elems` even when `x` = 1 at run time), so the size test is meaningless — and
+        // `set_has_const_elem` reports a runtime element ABSENT (its `const_compound_eq` is `None`), so
+        // containment silently treats an undecidable element as missing. Together these mis-folded a
+        // runtime-element set comparison to a definite `false` — even `(= (Set.of (list x)) (Set.of (list
+        // x)))` (a set equal to itself) folded to `false`. So a non-constant element on EITHER side declines
+        // here (`None`) and defers to the runtime `value-eq` heap walk, which compares two `Set` handles
+        // correctly (the CHAMP is order-independent + canonical by construction, `ty_heap_walkable`'s
+        // `Ty::Set` arm). The sibling `MapNew` arm below already guards its runtime keys this way.
         (Core::SetOf { elems: ea, .. }, Core::SetOf { elems: eb, .. }) => {
+            for &e in ea.iter().chain(eb.iter()) {
+                if const_compound_eq(db, e, e) != Some(true) {
+                    return None; // a runtime element — undecidable at compile time, defer to the walk
+                }
+            }
             if ea.len() != eb.len() {
                 return Some(false);
             }
@@ -12506,8 +12524,19 @@ fn lower_set_algebra(
         Prim::SetIntersection => SetAlgebraOp::Intersection,
         _ => SetAlgebraOp::Difference,
     };
+    // FOLD two SetOf operands ONLY when every element of BOTH is a compile-time constant. A runtime
+    // element (a parameter, a call result) makes `set_has_const_elem` report it ABSENT (its
+    // `const_compound_eq` is `None`) — so union would keep a spurious duplicate, and
+    // intersection/difference would drop or keep the wrong element — and `lower_set_of` leaves a
+    // runtime-element `SetOf` un-dedup'd, so the folded result's cardinality is wrong too. When either
+    // side carries a non-constant element the fold is declined and the runtime `Core::SetAlgebra` (below)
+    // operates on two canonical CHAMP handles correctly (the same protection the equality fold and the
+    // `MapNew` folds apply to their runtime elements/keys).
     if let (Core::SetOf { elems: a, elem_ty }, Core::SetOf { elems: b, .. }) =
         (core_of(db, lhs), core_of(db, rhs))
+        && a.iter()
+            .chain(b.iter())
+            .all(|&e| const_compound_eq(db, e, e) == Some(true))
     {
         let out: Vec<StructId> = match op {
             // union: a's elements, then b's elements not already present.

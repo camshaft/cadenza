@@ -178,3 +178,106 @@
             (def (build s n) (if (< n 1) s (build (Set.insert s n) (- n 1))))
             (def (main) (build (Set.of (list)) 3)) (export main)))
   (output (: ((. Set of) (list 1 2 3)) (Set Int64))))
+
+; --- RUNTIME-element `Set.of`: equality and set algebra over a set whose element is a runtime value ----
+; The cases above build every set from CONSTANT `Set.of` literals or a constant insert-loop, so they
+; exercise only the compile-time constant-set folds. A `Set.of` over a list that CONTAINS a runtime
+; element — `(Set.of (list 1 2 x))` where `x` is a boundary parameter — is a DIFFERENT path: the set is
+; built at run time by `set-empty` + a `set-insert` per element, and its equality / set algebra CANNOT be
+; folded (the runtime element is undecidable at compile time), so each defers to the runtime CHAMP
+; operation. These pin that the deferral is CORRECT — the same order-independent, canonical-by-construction
+; result the constant path records. (Regression witnesses: the constant-set equality fold and the
+; set-algebra fold each treated a runtime element as ABSENT, mis-folding a runtime-element set comparison
+; to a definite wrong value — even a set was NOT equal to ITSELF — and dropping/keeping the wrong element
+; in a difference/intersection; the fix declines the fold to the runtime walk when any element is not a
+; compile-time constant, exactly as the sibling map-equality / map-insert folds already guard their keys.)
+
+(case "a runtime-element set equals itself"
+  (doc    "`(= (Set.of (list x)) (Set.of (list x)))` with `x` a runtime parameter builds two sets from a
+           list carrying a runtime element, so the comparison CANNOT fold — it defers to the runtime
+           `value-eq` walk over two CHAMP handles, which are canonical by construction. A set is always
+           equal to itself, so the result is true for every `x` (reflexivity). Pins that a runtime-element
+           set comparison is not mis-folded to a constant `false` (the const-set-equality fold treated the
+           runtime element as absent, folding even reflexivity to `false`).")
+  (input  (do (def (main (: x Int64)) (= (Set.of (list x)) (Set.of (list x)))) (export main)))
+  (call   main (: 9 Int64)) (output (: true Bool)))
+
+(case "a runtime-element set's equality is independent of written order"
+  (doc    "`(= (Set.of (list 1 2 x)) (Set.of (list x 2 1)))` — the same three elements written in a
+           different order, one of them a runtime value. Sets are unordered (collections-and-text.md #A Set
+           Is A Collection Of Unique Elements), so the two are equal regardless of order and regardless of
+           `x`. Pins order-independence on the RUNTIME path — the const-set fold's order-independence,
+           carried onto the deferred `value-eq` walk. True for every `x`.")
+  (input  (do (def (main (: x Int64)) (= (Set.of (list 1 2 x)) (Set.of (list x 2 1)))) (export main)))
+  (call   main (: 9 Int64)) (output (: true Bool))
+  (call   main (: 3 Int64)) (output (: true Bool)))
+
+(case "a runtime-element set compares equal to the constant set of the same elements"
+  (doc    "`(= (Set.of (list 1 2 x)) (Set.of (list 1 2 3)))` — with `x` = 3 the two sets contain exactly
+           {1,2,3} and are EQUAL; with `x` = 9 they differ and are UNEQUAL. The left set is built at run
+           time (a runtime element), the right is a constant fold, and the comparison defers to the runtime
+           walk. Pins that a runtime-built set and a constant set of the same elements agree — the runtime
+           and constant construction paths produce byte-identical canonical CHAMP handles, and that a
+           GENUINELY different element set is `false`, not accidentally `true`.")
+  (input  (do (def (main (: x Int64)) (= (Set.of (list 1 2 x)) (Set.of (list 1 2 3)))) (export main)))
+  (call   main (: 3 Int64)) (output (: true Bool))
+  (call   main (: 9 Int64)) (output (: false Bool)))
+
+(case "a runtime element collapses against a constant one at build"
+  (doc    "`(Set.len (Set.of (list 1 2 x)))` is 2 when `x` = 1 (it collapses against the constant 1, held
+           once) and 3 when `x` = 9 (a distinct third element). Pins that construction deduplicates by
+           VALUE across a mix of constant and runtime elements — the uniqueness invariant holds when the
+           source list is built at run time, not only when every element is a literal.")
+  (input  (do (def (main (: x Int64)) (Set.len (Set.of (list 1 2 x)))) (export main)))
+  (call   main (: 1 Int64)) (output (: 2 Int64))
+  (call   main (: 9 Int64)) (output (: 3 Int64)))
+
+(case "difference over a runtime-element set removes exactly that element"
+  (doc    "`(Set.difference (Set.of (list 1 2 3)) (Set.of (list x)))` removes `x` from {1,2,3}: with `x`
+           = 2 the result is {1,3} (does not contain 2), with `x` = 9 the result is unchanged {1,2,3}
+           (still contains 2). The subtrahend is built from a runtime element, so the algebra defers to the
+           runtime `set-difference` over CHAMP handles. Pins that a runtime-element operand is subtracted
+           by VALUE (a regression witness: the set-algebra fold reported the runtime element absent and
+           subtracted nothing, leaving 2 in the result).")
+  (input  (do (def (main (: x Int64))
+                (Set.contains (Set.difference (Set.of (list 1 2 3)) (Set.of (list x))) 2)) (export main)))
+  (call   main (: 2 Int64)) (output (: false Bool))
+  (call   main (: 9 Int64)) (output (: true Bool)))
+
+(case "difference cardinality with a runtime-element subtrahend"
+  (doc    "`(Set.len (Set.difference (Set.of (list 1 2 3)) (Set.of (list x))))` is 2 when `x` ∈ {1,2,3}
+           (one element removed) and 3 when `x` is absent from the first set. The size companion of the
+           membership case above, over the deferred runtime `set-difference`.")
+  (input  (do (def (main (: x Int64))
+                (Set.len (Set.difference (Set.of (list 1 2 3)) (Set.of (list x))))) (export main)))
+  (call   main (: 2 Int64)) (output (: 2 Int64))
+  (call   main (: 9 Int64)) (output (: 3 Int64)))
+
+(case "intersection cardinality with a runtime-element operand"
+  (doc    "`(Set.len (Set.intersection (Set.of (list 1 2 3)) (Set.of (list x))))` is 1 when `x` ∈ {1,2,3}
+           (the one shared element) and 0 when `x` is absent from the first set. The intersection defers to
+           the runtime `set-intersection` because its second operand carries a runtime element. Pins that a
+           runtime element is intersected by VALUE (a regression witness: the fold reported it absent and
+           produced the empty intersection even when `x` was present).")
+  (input  (do (def (main (: x Int64))
+                (Set.len (Set.intersection (Set.of (list 1 2 3)) (Set.of (list x))))) (export main)))
+  (call   main (: 2 Int64)) (output (: 1 Int64))
+  (call   main (: 9 Int64)) (output (: 0 Int64)))
+
+(case "union cardinality with a runtime-element operand"
+  (doc    "`(Set.len (Set.union (Set.of (list 1 2 3)) (Set.of (list x))))` is 3 when `x` ∈ {1,2,3} (the
+           shared element is held once) and 4 when `x` is a new element. The union defers to the runtime
+           `set-union`; pins that a runtime element already present is not double-counted — the
+           uniqueness invariant on the deferred path.")
+  (input  (do (def (main (: x Int64))
+                (Set.len (Set.union (Set.of (list 1 2 3)) (Set.of (list x))))) (export main)))
+  (call   main (: 2 Int64)) (output (: 3 Int64))
+  (call   main (: 9 Int64)) (output (: 4 Int64)))
+
+(case "membership of a runtime element in a runtime-element set"
+  (doc    "`(Set.contains (Set.of (list 1 2 x)) x)` is true for every `x` — a set built from a list
+           containing `x` contains `x`. The membership predicate over a runtime-built set, deferring to the
+           runtime `set-contains`. Pins that a runtime element is found by VALUE after construction.")
+  (input  (do (def (main (: x Int64)) (Set.contains (Set.of (list 1 2 x)) x)) (export main)))
+  (call   main (: 9 Int64)) (output (: true Bool))
+  (call   main (: 2 Int64)) (output (: true Bool)))

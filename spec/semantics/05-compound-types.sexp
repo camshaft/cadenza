@@ -5354,6 +5354,60 @@
   (call   main 4294967296)
   (trap   "unreachable"))
 
+; --- `List.at` at a RUNTIME index: the fallible positional read on the value heap -----------------------
+; The `List.at` cases elsewhere read at a CONSTANT index (`(List.at (list …) 3)` folds to the element at
+; compile time). A RUNTIME index — a boundary parameter — cannot fold: the read runs on the value heap,
+; the runtime bounds check governs, and the fallible result (`Option a`, present in bounds / absent out of
+; bounds, collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping) is deconstructed by a
+; match. These pin that path: the same element the constant fold would yield, and a total `None` (never a
+; trap) out of bounds — the read companion of the runtime-index UPDATE cases above.
+
+(case "a runtime-index list read yields the element at that index"
+  (doc    "`(List.at (list 10 20 30) i)` with `i` a boundary parameter reads element `i` on the value heap
+           (the index is not a constant, so nothing folds). In bounds it is `(Some element)`, unwrapped by
+           the match: `i`=0 → 10, `i`=2 → 30. Pins the runtime positional read against the constant folds.")
+  (input  (do (def (main (: i Int64)) (match (List.at (list 10 20 30) i) ((Some v) v) (None -1))) (export main)))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: 2 Int64)) (output (: 30 Int64)))
+
+(case "a runtime-index list read out of bounds is None, not a trap"
+  (doc    "`(List.at (list 10 20 30) i)` at an out-of-bounds runtime index is `None` — indexing is FALLIBLE,
+           not trapping (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping), so the
+           absent case is an ordinary value the match handles (→ -1 here), never a halt. Pins that a runtime
+           index past the end totally yields the absent optional, the read analogue of a total `Map.lookup`
+           miss. Contrast `List.update`, whose out-of-bounds index TRAPS (the update is defined only in
+           bounds) — the read is total where the update is partial.")
+  (input  (do (def (main (: i Int64)) (match (List.at (list 10 20 30) i) ((Some v) v) (None -1))) (export main)))
+  (call   main (: 3 Int64)) (output (: -1 Int64))
+  (call   main (: 99 Int64)) (output (: -1 Int64)))
+
+(case "a runtime-index read of a runtime-built list"
+  (doc    "The fully-runtime idiom: a list built by a run-time loop (`build` pushes `0,10,20,30,40`), then
+           read at a run-time index. Neither the list nor the index is a constant, so both the construction
+           and the read run on the value heap. `i`=3 → 30 (in bounds), `i`=7 → absent (→ -1). Pins that
+           `List.at`'s bounds check reads the ACTUAL runtime length, not a compile-time-assumed one.")
+  (input  (do (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out (* i 10))) out))
+              (def (main (: i Int64)) (match (List.at (build 0 5 (list)) i) ((Some v) v) (None -1))) (export main)))
+  (call   main (: 3 Int64)) (output (: 30 Int64))
+  (call   main (: 7 Int64)) (output (: -1 Int64)))
+
+(case "a runtime-index update replaces exactly that element, read back at the same index"
+  (doc    "`(List.at (List.update (list 10 20 30) i 99) i)` updates element `i` to 99, then reads element `i`
+           back — it is 99 for every in-bounds `i` (1 → 99, 2 → 99). Pins the replace-at-index on the runtime
+           path: the write lands at exactly the runtime index, observed by reading the same index back.")
+  (input  (do (def (main (: i Int64)) (match (List.at (List.update (list 10 20 30) i 99) i) ((Some v) v) (None -1))) (export main)))
+  (call   main (: 1 Int64)) (output (: 99 Int64))
+  (call   main (: 2 Int64)) (output (: 99 Int64)))
+
+(case "a runtime-index update leaves the other elements unchanged"
+  (doc    "The functional-update invariant on the runtime path: `(List.update (list 10 20 30) i 99)` replaces
+           ONLY element `i` — reading element 0 back yields 10 regardless of `i` (1 or 2), so the update did
+           not disturb a slot it was not addressed to. Pins that a runtime-index update is a single-slot
+           replace, not a whole-list rewrite.")
+  (input  (do (def (main (: i Int64)) (match (List.at (List.update (list 10 20 30) i 99) 0) ((Some v) v) (None -1))) (export main)))
+  (call   main (: 1 Int64)) (output (: 10 Int64))
+  (call   main (: 2 Int64)) (output (: 10 Int64)))
+
 (case "a list built by a runtime-length loop has that many elements"
   (doc    "The genuine self-hosting idiom: a list whose LENGTH is decided at run time, built by a
            recursion that pushes an element per step, then measured. `build` pushes `0,1,…,n-1` onto
@@ -5551,6 +5605,73 @@
   (input  (do
             (def (main) (. (Map.take (Map.insert Map.empty 1 10) 1) 0)) (export main)))
   (output (: (Some 10) (Option Int64))))
+
+; --- Map operations at a RUNTIME key: lookup / swap / take / insert / remove on the value heap ----------
+; The map cases above use CONSTANT keys, so the lookup/swap/take/size results fold at compile time. A
+; RUNTIME key — a boundary parameter — cannot fold: the key is boxed and the CHAMP is probed at run time,
+; and the fallible result (`Option v` for lookup, the `(tuple <prior-optional> <new-map>)` for swap/take)
+; is deconstructed by a match/projection. These pin that path — the same value the constant fold records,
+; a total `None`/`(None unit)` on an absent key (never a trap), and a size that reflects replace-vs-add /
+; present-vs-absent decided at run time. (The computed-key `(map …)` LITERAL defect noted above is a
+; DISTINCT path; these build every map by `Map.insert`, whose runtime-key behavior is realized.)
+
+(case "a lookup at a runtime key finds the present value, else None"
+  (doc    "`(Map.lookup mp k)` with `k` a boundary parameter probes the CHAMP at run time (the key is not a
+           constant, so nothing folds). A present key yields `(Some value)` (k=2 → 20); an absent key yields
+           `None` — lookup is TOTAL (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping),
+           never a trap (k=7 → -1 via the match). Pins the runtime-key lookup against the constant folds.")
+  (input  (do (def (main (: k Int64))
+                (match (Map.lookup (Map.insert (Map.insert Map.empty 1 10) 2 20) k) ((Some v) v) (None -1))) (export main)))
+  (call   main (: 2 Int64)) (output (: 20 Int64))
+  (call   main (: 7 Int64)) (output (: -1 Int64)))
+
+(case "the value-yielding insert reports the prior value at a runtime key"
+  (doc    "`Map.swap` at a runtime key reports the value the key held before as an optional (the first tuple
+           element): replacing a present key `1` reports `(Some 10)` (→10 unwrapped), swapping at an ABSENT
+           key reports `(None unit)` (→ -1). Pins that the value-yielding insert's prior-value report is
+           computed at run time by a CHAMP probe, agreeing with the plain insert on the new map.")
+  (input  (do (def (main (: k Int64))
+                (match (. (Map.swap (Map.insert Map.empty 1 10) k 99) 0) ((Some v) v) (None -1))) (export main)))
+  (call   main (: 1 Int64)) (output (: 10 Int64))
+  (call   main (: 5 Int64)) (output (: -1 Int64)))
+
+(case "the value-yielding remove reports the dropped value at a runtime key"
+  (doc    "`Map.take` at a runtime key reports the value it dropped: taking a present key `1` reports
+           `(Some 10)` (→10), taking an ABSENT key reports `(None unit)` (→ -1) and leaves the map unchanged
+           (removal is total). The runtime-key companion of the constant `Map.take` case above.")
+  (input  (do (def (main (: k Int64))
+                (match (. (Map.take (Map.insert Map.empty 1 10) k) 0) ((Some v) v) (None -1))) (export main)))
+  (call   main (: 1 Int64)) (output (: 10 Int64))
+  (call   main (: 5 Int64)) (output (: -1 Int64)))
+
+(case "size after a runtime-key insert reflects replace-vs-add"
+  (doc    "`(Map.size (Map.insert {1↦10} k 20))` is 1 when `k`=1 (an existing key — its value is REPLACED,
+           each key held once, collections-and-text.md §A Map Is Built By Functional Construction) and 2
+           when `k`=5 (a new key — a second entry added). Pins that whether an insert replaces or adds is
+           decided by the RUNTIME key, observed through the resulting size.")
+  (input  (do (def (main (: k Int64))
+                (Map.size (Map.insert (Map.insert Map.empty 1 10) k 20))) (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64)) (output (: 2 Int64)))
+
+(case "size after a runtime-key remove reflects whether the key was present"
+  (doc    "`(Map.size (Map.remove {1↦10, 2↦20} k))` is 1 when `k` ∈ {1,2} (a present key dropped) and 2 when
+           `k`=9 (an absent key — removal is total, the map is unchanged). The remove companion of the
+           insert-size case, over a runtime key.")
+  (input  (do (def (main (: k Int64))
+                (Map.size (Map.remove (Map.insert (Map.insert Map.empty 1 10) 2 20) k))) (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 9 Int64)) (output (: 2 Int64)))
+
+(case "the new map from a runtime-key swap holds the new value at that key"
+  (doc    "The SECOND tuple element of `Map.swap` is the NEW map; looking `k` up in it yields the swapped-in
+           value 99 for every `k` (an existing key `1` replaced, or a new key `5` added). Pins that the
+           value-yielding insert's resulting map agrees with the plain `Map.insert` — the swap reports the
+           prior value AND produces the same updated map, both driven by the runtime key.")
+  (input  (do (def (main (: k Int64))
+                (match (Map.lookup (. (Map.swap (Map.insert Map.empty 1 10) k 99) 1) k) ((Some v) v) (None -1))) (export main)))
+  (call   main (: 1 Int64)) (output (: 99 Int64))
+  (call   main (: 5 Int64)) (output (: 99 Int64)))
 
 ; A map operation applies to a map that arrives through a FUNCTION PARAMETER, not only a map constructed
 ; inline in the same expression. Every OTHER heap collection already supports this — `(def (f xs) (List.len

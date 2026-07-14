@@ -1412,6 +1412,57 @@
             (def (main) (w Int64.max 1)) (export main)))
   (output (: -9223372036854775808 Int64)))
 
+; The runtime case above passes a CONSTANT `Int64.max` into the wrapping op, so the boundary operand still
+; folds before reaching the raw i64 op. These pin the wrapping ops on an operand that CROSSES the boundary
+; as a `(call …)` argument — the value cannot be constant-folded, so the emitted raw machine op (no
+; overflow guard) is exercised directly — across Int64, and the NARROW widths whose wraparound modulus is
+; NOT 2^64 (a UInt8 wraps mod 256, an Int8 at ±128): a narrow wrap that reused the i64 op without masking
+; to the type's width would give the un-wrapped value, so these witness the per-width wraparound.
+
+(case "wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary"
+  (doc    "`(Int64.wrapping-add x 1)` with `x` a boundary parameter cannot fold; called with Int64.max it
+           wraps to Int64.min on the raw i64.add path (wasm's add wraps, no overflow guard), and called with
+           5 it is the ordinary 6. Pins wrapping-add on a genuinely runtime operand — the const-fold and the
+           earlier constant-arg runtime case never cross the boundary with the max value itself.")
+  (input  (do (def (main (: x Int64)) (Int64.wrapping-add x 1)) (export main)))
+  (call   main (: 9223372036854775807 Int64)) (output (: -9223372036854775808 Int64))
+  (call   main (: 5 Int64)) (output (: 6 Int64)))
+
+(case "wrapping-mul wraps a boundary-crossing runtime Int64"
+  (doc    "`(Int64.wrapping-mul x 2)` over a boundary parameter: 2^62 · 2 = 2^63 ≡ Int64.min (mod 2^64) →
+           -9223372036854775808, and 3 · 2 = 6. Pins wrapping MULTIPLICATION on a runtime operand (the raw
+           i64.mul, no overflow guard) — the multiply's overflow is more than a carry bit, so a runtime
+           wrapping-mul is a distinct emit from wrapping-add.")
+  (input  (do (def (main (: x Int64)) (Int64.wrapping-mul x 2)) (export main)))
+  (call   main (: 4611686018427387904 Int64)) (output (: -9223372036854775808 Int64))
+  (call   main (: 3 Int64)) (output (: 6 Int64)))
+
+(case "wrapping-add on a runtime UInt8 wraps modulo 256"
+  (doc    "`(UInt8.wrapping-add x 1)` on a runtime UInt8: 255 + 1 wraps to 0 (mod 256), 10 + 1 = 11. The
+           wraparound modulus is the TYPE's width (2^8), not 2^64 — a narrow wrap that reused the i64 op
+           without masking to 8 bits would give 256, which is not even a UInt8. Pins per-width wraparound
+           on the unsigned narrow type.")
+  (input  (do (def (main (: x UInt8)) (UInt8.wrapping-add x 1)) (export main)))
+  (call   main (: 255 UInt8)) (output (: 0 UInt8))
+  (call   main (: 10 UInt8)) (output (: 11 UInt8)))
+
+(case "wrapping-mul on a runtime UInt8 wraps modulo 256"
+  (doc    "`(UInt8.wrapping-mul x 2)` on a runtime UInt8: 200 · 2 = 400 ≡ 144 (mod 256), 3 · 2 = 6. The
+           multiply companion of the narrow wrapping-add — the product is masked to the UInt8 width, so a
+           value exceeding 255 wraps into range rather than widening. Pins narrow wrapping multiplication.")
+  (input  (do (def (main (: x UInt8)) (UInt8.wrapping-mul x 2)) (export main)))
+  (call   main (: 200 UInt8)) (output (: 144 UInt8))
+  (call   main (: 3 UInt8)) (output (: 6 UInt8)))
+
+(case "wrapping-add on a runtime Int8 wraps at its signed boundary"
+  (doc    "`(Int8.wrapping-add x 1)` on a SIGNED narrow type: 127 (Int8.max) + 1 wraps to -128 (Int8.min),
+           -5 + 1 = -4. The signed narrow wraparound folds at the type's ±128 boundary, distinct from the
+           unsigned mod-256 wrap above — a signed narrow wrap must sign-extend the wrapped low 8 bits, so
+           127+1 is -128, not 128. Pins per-width wraparound on the SIGNED narrow type.")
+  (input  (do (def (main (: x Int8)) (Int8.wrapping-add x 1)) (export main)))
+  (call   main (: 127 Int8)) (output (: -128 Int8))
+  (call   main (: -5 Int8)) (output (: -4 Int8)))
+
 (case "greater-than comparison"
   (doc    "The compiler uses > for bounds checking and conditional logic.")
   (input  (> 5 3))
