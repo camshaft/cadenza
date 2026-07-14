@@ -12668,8 +12668,7 @@ mod match_engine {
         // `cdz check`'s Diagnostics query MISSED it). Now it is a coded CDZ0101 in `collect_faults`, so
         // BOTH surfaces report it, anchored at the `(export …)` clause and (for a typo) with a suggestion.
         // Use the DIAGNOSTICS query — the path `cdz check` runs (`collect_faults`) — where the fault is
-        // the coded CDZ0101 (the full `compile` pipeline ALSO surfaces the emit-path layout decline for
-        // the same issue, uncoded; `check` is the surface this fix is about).
+        // the coded CDZ0101.
         let mut db = crate::db::Db::load(parse("(module m (def (main) 1) (export mian))"));
         let diags = crate::compile::diagnostics(&mut db);
         let d = diags
@@ -12688,6 +12687,40 @@ mod match_engine {
             d.message.contains("`mian`") && d.message.contains("did you mean `main`?"),
             "names the bad export + suggests the nearest def: {}",
             d.message
+        );
+
+        // The FULL `compile` pipeline agrees now (a check≡compile fix): layout declines a missing export
+        // with an UNCODED "names no definition", and `compile` used to short-circuit on that BEFORE
+        // `collect_faults` ran — so `cdz compile` showed the fix-less message while `cdz check` showed the
+        // coded CDZ0101 + suggestion. `compile` now runs `collect_faults` on a layout decline and reports
+        // its richer coded set, so BOTH surfaces carry the code, the "did you mean?", and the replace fix.
+        let compiled = reject_full("(module m (def (main) 1) (export mian))")
+            .expect("compile reports the missing export");
+        assert_eq!(
+            compiled.code.as_deref(),
+            Some("CDZ0101"),
+            "compile agrees with check — coded, not the uncoded layout decline: {}",
+            compiled.message
+        );
+        assert!(
+            compiled.message.contains("did you mean `main`?"),
+            "compile carries the suggestion too: {}",
+            compiled.message
+        );
+        assert_eq!(
+            compiled.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Replace),
+            "compile carries the replace fix: {:?}",
+            compiled.fix
+        );
+        // A layout decline with NO `collect_faults` fault still falls back to the layout message — a
+        // program with no export at all is not a `collect_faults` fault, so its decline is preserved.
+        let no_export =
+            reject_full("(module m (def (main) 1))").expect("a program with no export declines");
+        assert!(
+            no_export.message.contains("nothing is public"),
+            "the no-export layout decline is preserved (no collect fault to prefer): {}",
+            no_export.message
         );
     }
 

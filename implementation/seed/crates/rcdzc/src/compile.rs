@@ -198,7 +198,22 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
         Ok(l) => l,
         Err(r) => {
             trace!(target: "rcdzc::compile", reason = %r.message, "layout declined");
-            return fail_with(query_artifacts, vec![r]);
+            // Layout's decline can be the WEAKER twin of a coded well-formedness fault `collect_faults`
+            // reports better — e.g. a missing export: layout returns an UNCODED "export `x` names no
+            // definition", but `collect_faults` gives the coded CDZ0101 WITH a "did you mean?" + replace
+            // fix. `compile` short-circuited on layout's decline before `collect_faults` ran, so `cdz
+            // compile` showed the fix-less message while `cdz check` showed the actionable one — a
+            // check≡compile discrepancy. Run `collect_faults` now; if it found any coded fault, report
+            // THAT set (the richer, actionable diagnostics), keeping layout's decline only as the fallback
+            // for a decline `collect_faults` does not model (a boundary-shape it cannot lay out).
+            let mut faults = collect_faults(&mut db);
+            if faults.is_empty() {
+                return fail_with(query_artifacts, vec![r]);
+            }
+            for f in &mut faults {
+                sanitize_origin(&db, f);
+            }
+            return fail_with(query_artifacts, faults);
         }
     };
 
