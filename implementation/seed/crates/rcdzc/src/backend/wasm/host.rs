@@ -112,6 +112,12 @@ pub fn abi_val_type(ty: &Ty) -> Option<AbiValType> {
 //# A compiled component MUST NOT make a host call through a host function the program's manifest does not enumerate.
 //= spec/contracts/build-tool-interface.md#the-tool-produces-a-component-a-manifest-and-diagnostics
 //# The component the build tool produces MUST have imports that mirror the manifest it produces, as fixed by the host-interface-binding contract.
+//= spec/capabilities/capabilities-and-effects.md#a-host-import-is-a-boundary-effect-and-the-manifest-is-its-row
+//# A program's escaping effect row MUST equal the set of effects its entrypoints delegate to the host, so that a capability and a boundary effect are one concept and the manifest is a projection of the effects an entrypoint routes to the boundary rather than of every effect declared.
+//= spec/capabilities/capabilities-and-effects.md#a-host-import-is-a-boundary-effect-and-the-manifest-is-its-row
+//# Purity MUST be the empty effect row: an entrypoint that delegates no effect to the host MUST reach no effect that escapes and MUST run to normal termination without suspending, so that an entrypoint's determinism is legible from an empty delegation and an entrypoint whose every reached effect is handled in-program is pure.
+//= spec/capabilities/capabilities-and-effects.md#an-effect-that-does-not-escape-is-discharged-by-a-handler
+//# An effect discharged by an in-program handler MUST NOT appear in the program's manifest, so that only effects that escape to the host — those an entrypoint delegates and no nearer handler discharges — are capabilities.
 pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>) {
     match core_of(db, id) {
         Core::HostCall {
