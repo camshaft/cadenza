@@ -1402,6 +1402,25 @@
                     (Diag.collect)))) (export main)))
   (output (: (list 201 210) (List Int64))))
 
+(case "a handler threads a SET as its state — the seen-set idiom, deduping across performs"
+  (doc    "The Set analogue of the list-accumulator handler: the threaded state is a SET (a `seen`/`visited`
+           set), and an `add` operation inserts into it while a `count` operation reads its size. Because a
+           Set DEDUPES, two `(Seen.add 2)` performs of the same key leave the set unchanged after the first.
+           `Seen.add : Int64 -> Int64`, arm `(add (k) m (resume k (Set.insert m k)))`; `Seen.count : Unit ->
+           Int64`, arm `(count (u) m (resume (Set.len m) m))`. Seeded `{1}`: `(Seen.add 2)` → `{1, 2}` (2
+           elements), `(Seen.add 2)` inserts the duplicate 2 → still `{1, 2}`, and `(Seen.count)` reads
+           `Set.len {1,2}` = 2. Pins that a handler state slot carries a persistent SET through the fold —
+           the arm reads it (`Set.len`) and rebuilds it (`Set.insert`) per performance, and the set's
+           set-semantics (dedup) hold across the threaded reads — the visited-set idiom a graph/AST walk
+           needs. (wasm: the rust target declines — it lacks the value-heap/Set emission the component-model
+           backend has, the same backend-parity gap as the list-state cases, not an effects-fold limitation.)")
+  (input  (do
+            (effect Seen (op add (-> Int64 Int64)) (op count (-> Unit Int64)))
+            (def (main)
+              (handle Seen (Set.of (list 1)) ((add (k) m (resume k (Set.insert m k))) (count (u) m (resume (Set.len m) m)))
+                (let ((a (Seen.add 2))) (let ((b (Seen.add 2))) (Seen.count))))) (export main)))
+  (output (: 2 Int64)))
+
 (case "a RECURSIVE effectful walk accumulates into a list-state handler"
   (doc    "Witnesses capabilities-and-effects.md #A Handler Threads State Across The Operations It
            Discharges with the state on the VALUE HEAP and the performer RECURSIVE — the compiler's real
