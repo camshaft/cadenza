@@ -760,6 +760,16 @@ the component type. The new work:
   HOF-passed-as-value CDZ0203 decline is unchanged). +2 corpus (an unannotated Tuple inner param; an
   unannotated List inner param). **Every closure ARGUMENT — annotated OR not, scalar/compound/sum/nested/
   String/collection/closure-typed — is now supported on both round-trip paths.**
+- **✅ FLAT multi-argument arrow `(-> A B … R)` curries COMPLETE `@fd232a9a`.** The arrow type constructor
+  handled only arity 1 (`(-> R)` = nullary `Unit -> R`) + arity 2 (`(-> P R)`); a FLAT multi-arg arrow
+  `(-> A B … R)` errored "-> takes one or two type arguments" (`eval::reduce_ctor` + `type_in_env`). So a
+  round-trip consumer whose closure parameter was written flat — `(: g (-> Int64 Int64 Int64))` — solved
+  `Any` and declined "parameter type is ambiguous", though it WAS annotated; only the explicitly-curried
+  `(-> Int64 (-> Int64 Int64))` spelling worked. Fix: both arrow arms now CURRY any arity ≥1
+  right-associatively into `A -> (B -> (… -> R))`. A foundational inference win (not closure-specific — any
+  flat n-ary arrow annotation) that unblocks the idiomatic multi-arg closure signature. +4 corpus (flat 2-arg
+  beside the curried-spelling case; flat 3-arg; flat multi-arg with compound args; flat multi-arg with a
+  compound result).
 - **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG on the DIRECT-CALL path
   (the HOST supplies it over the boundary — a compound needs a `value-decode` runtime op that does not exist;
   a closure needs a closure-resource passed INTO a call); a closure TRANSFORMER (`own<t>` both directions —
@@ -768,9 +778,9 @@ the component type. The new work:
   the variable-length collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape —
   single-export + multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete
   closure-RESULT matrix is closed. Every MACHINE-REPRESENTABLE closure ARGUMENT (scalar, compound, sum,
-  nested, String, collection, closure-typed — annotated or not) is now supported on BOTH round-trip paths
-  (built in-guest). The remaining gaps are all DIRECT-CALL host→guest transfer + the `borrow<t>`/transformer
-  frontier.**
+  nested, String, collection, closure-typed — annotated or not, flat OR curried multi-arg arrow) is now
+  supported on BOTH round-trip paths (built in-guest). The remaining gaps are all DIRECT-CALL host→guest
+  transfer + the `borrow<t>`/transformer frontier.**
 
 ## Risks / open questions
 
