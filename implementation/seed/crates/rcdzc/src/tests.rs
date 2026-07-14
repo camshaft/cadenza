@@ -31423,6 +31423,51 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn a_uses_of_query_excludes_every_declaration_site_across_a_wide_module() {
+        // `uses_of` walks every node and skips DECLARATION-SITE name occurrences via a set of every def's
+        // signature-name head (was an O(defs) `Vec::contains` per node → O(nodes × defs) = O(N²); now an
+        // O(1) hash-set membership). This locks in the set's correctness at WIDTH: in a module of many
+        // defs that each REFERENCE `helper`, the query returns EXACTLY one use per referencing def and NOT
+        // a single one of the (many) declaration-name occurrences — the exclusion the set must preserve.
+        // `helper` is NULLARY so each reference is a bare `helper` name resolving to a `Ref` at its body
+        // (the same shape the small sibling test checks) — one reference per `d{i}` body.
+        let n = 30;
+        let defs = (0..n)
+            .map(|i| format!("(def (d{i}) helper)"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let src = format!("(module m (def (helper) 1) {defs} (def (main) 42) (export main))");
+        let out = compile(
+            &inputs(
+                &src,
+                &[Request::Query(Query::UsesOf {
+                    name: "helper".into(),
+                })],
+            ),
+            &[],
+        );
+        assert!(!out.has_error());
+        let text = artifact_text(&out, KIND_USES).expect("a uses artifact");
+        let ids: Vec<u32> = text.lines().map(|l| l.parse().unwrap()).collect();
+        // Exactly N references (one bare `helper` per `d{i}`) — no declaration-site name (helper's own, or
+        // any of the N `d{i}` / `main` sig names) leaked in, and none of the N uses was missed. Ascending.
+        assert_eq!(ids.len(), n, "one use per referencing def: {ids:?}");
+        assert!(ids.windows(2).all(|w| w[0] < w[1]), "ascending: {ids:?}");
+        // Every reported node genuinely resolves to `helper`'s body (not a mis-included declaration name).
+        let mut db = crate::db::Db::load(parse(&src));
+        let helper_body = db.defs[db.def_by_name("helper").unwrap()].body.unwrap();
+        for &id in &ids {
+            assert!(
+                matches!(
+                    crate::resolve::resolved_of(&mut db, crate::ast::StructId(id)),
+                    crate::resolved::Resolved::Ref { value } if value == helper_body
+                ),
+                "node {id} must reference helper"
+            );
+        }
+    }
+
+    #[test]
     fn a_uses_of_query_for_an_unused_or_unknown_name_is_empty() {
         // A name with no references (or no such definition) yields an empty list, not an error.
         let src = "(module m (def (lonely) 1) (def (main) 42) (export main))";
