@@ -1430,6 +1430,14 @@ impl Db {
         // Returns the quote-PATTERN nodes with a NON-FINAL `,@` splice (ill-formed — a rest binds the
         // tail, meaningful only last), which `collect_faults` reports CDZ0221.
         let nonfinal_splice_patterns = crate::quote::reify_quotes(&mut ast);
+        // Desugar every `(eval AST)` whose argument is a compile-time-visible `Ast` construction into the
+        // SOURCE form that AST denotes — the inverse of the reification just run, so `(eval (quote (+ 1
+        // 2)))` (now `(eval (Ast.List …))`) becomes `(+ 1 2)` and folds to `3` through the ordinary path
+        // (`metaprogramming.md` §Eval Is Optional / §Compile-Time Evaluation Is One Tier). Runs AFTER
+        // `reify_quotes` (so a quoted argument is already `Ast.*`) and BEFORE the parent index (so the
+        // spliced-in source resolves like hand-written code). A non-constant/runtime AST argument is left
+        // untouched for `resolve` to decline (the compiler does not execute a dynamically-built AST).
+        crate::eval_ast::desugar_eval(&mut ast);
         // ACCUMULATOR INTRODUCTION: rewrite a linear NON-tail recursion (`f n = if base 0 (+ n (f (- n
         // 1)))`) into a tail-recursive accumulator def (which `select`'s loop transform then compiles to a
         // constant-stack `loop`). Synthesizes a fresh accumulator def and re-seeds the original — appending

@@ -1640,6 +1640,7 @@ pass	encoding and decoding a constructor-built compound AST round-trips
 pass	equality across incompatible dimensions is a compile-time error
 pass	equality applied to one operand is rejected, not a crash
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
+pass	eval is optional for macros and interactive use
 pass	every not-a-number value is equal to every not-a-number value
 pass	exact rational arithmetic is exact and normalized
 pass	exact rational division is total and exact for a nonzero divisor
@@ -2132,7 +2133,6 @@ todo	an open sum payload that does not match its schema yields a typed failure, 
 todo	an open sum's payload decodes against a schema to a typed result
 todo	comparing same-shape nominal types is a type error
 todo	constructing a runtime value that does not fit its segment traps
-todo	eval is optional for macros and interactive use
 todo	eval on malformed AST traps
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional

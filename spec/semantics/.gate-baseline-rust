@@ -1630,7 +1630,7 @@ todo	distinct-signature closures alongside a plain export — the Int64->Bool cl
 todo	distinct-signature closures alongside a plain export — the Int64->Int64 closure runs
 todo	distinct-signature closures alongside a plain export — the plain export runs
 todo	dividing quantities divides their dimensions
-todo	eval is optional for macros and interactive use
+pass	eval is optional for macros and interactive use
 todo	eval on malformed AST traps
 todo	exact rational arithmetic is exact and normalized
 todo	exact rational division is total and exact for a nonzero divisor

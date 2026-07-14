@@ -23978,6 +23978,49 @@ mod match_engine {
     }
 
     #[test]
+    fn eval_of_a_compile_time_ast_executes_it_as_code() {
+        use crate::testkit::parse;
+        // 12-metaprogramming §Eval Is Optional For Macros And Interactive Use: `(eval <ast>)` executes an
+        // AST value as code. `crate::eval_ast::desugar_eval` reconstructs the SOURCE form the AST denotes
+        // (the inverse of quote reification) and splices it in, so it folds through the ordinary path —
+        // compile-time evaluation is one tier (§Compile-Time Evaluation Is One Tier). Both a QUOTED
+        // argument (reified to `Ast.*` first) and a HAND-BUILT `Ast.*` tree reconstruct identically.
+        let quoted =
+            "(module m (def (main) (eval (quote (+ 1 2)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(quoted))).expect("compile"),
+                "main"
+            ),
+            3,
+            "(eval (quote (+ 1 2))) executes the reconstructed form to 3"
+        );
+        let built = "(module m (def (main) \
+            (eval (Ast.List (list (Ast.Name \"+\") (Ast.Int 4) (Ast.Int 5))))) \
+          (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(built))).expect("compile"),
+                "main"
+            ),
+            9,
+            "(eval (Ast.List …)) reconstructs and executes a hand-built AST identically to a quoted one"
+        );
+        // A nested reconstruction: the reconstructed form is itself compound and folds.
+        let nested = "(module m (def (main) \
+            (eval (quote (+ (* 2 3) 4)))) \
+          (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(nested))).expect("compile"),
+                "main"
+            ),
+            10,
+            "(eval (quote (+ (* 2 3) 4))) reconstructs a nested form and folds to 10"
+        );
+    }
+
+    #[test]
     fn quasiquote_selectively_evaluates_at_unquote_holes() {
         // 12-metaprogramming §Quasiquote Constructs AST With Selective Evaluation: `(quasiquote T)`
         // reifies like quote, EXCEPT an active `(unquote e)` hole EVALUATES `e` and inserts its value.
