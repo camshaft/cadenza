@@ -458,6 +458,50 @@
   (error  CDZ0220))
 
 ; ============================================================================================
+; Unrecognized segment KIND — the kind head names no segment (CDZ0201, distinct from CDZ0220)
+; ============================================================================================
+; A segment's KIND head must be one of the closed vocabulary `bits`/`bytes`/`utf8`/`u8..u64`/`i8..i64`.
+; A head outside it names no segment — a type error (CDZ0201), distinct from the CDZ0220 well-formedness
+; failures above (which have a valid kind but a bad LAYOUT: an unclosed byte, a non-final unsized segment,
+; a non-constant width). A CONFIDENT typo of a known kind (`byte`→`bytes`, `utf`→`utf8`, `bit`→`bits`)
+; carries a rename suggestion — the bin-segment analogue of the member/variant did-you-mean; a wrong
+; INTEGER WIDTH (`u9`) keeps its own dedicated "must be a byte-aligned width" message pointing at `bits`;
+; a far miss keeps the plain "unrecognized kind" message. All CDZ0201; the message differs by how close.
+
+(case "a misspelled segment kind is rejected with a rename suggestion"
+  (doc    "`(bin (byte 5))` uses `byte` where the kind is `bytes` — a confident typo of a known segment
+           kind. The kind head names no segment, so it is rejected (CDZ0201, 'unrecognized bin segment kind
+           `byte` — did you mean `bytes`?'), the bin-segment did-you-mean. Pins the misspelled-kind path
+           (the rename fix), distinct from a valid kind with a bad layout (CDZ0220 above).")
+  (input  (do (def (main) (bin (byte 5))) (export main)))
+  (error  CDZ0201))
+
+(case "a misspelled utf8 segment kind is rejected"
+  (doc    "`(bin (utf 65))` uses `utf` for `utf8` — another confident kind typo, rejected CDZ0201 with the
+           `utf8` rename suggestion. Pins that the did-you-mean covers the text-segment kind as well as
+           `bytes`, so a near-miss on any closed-vocabulary kind is named.")
+  (input  (do (def (main) (bin (utf 65))) (export main)))
+  (error  CDZ0201))
+
+(case "a fixed-width integer segment of a non-byte-aligned width is rejected"
+  (doc    "`(bin (u9 5))` names a 9-bit unsigned integer segment — `uNN` segments are the byte-aligned
+           widths u8/u16/u32/u64 only, so `u9` is not a segment kind (CDZ0201, with the dedicated message
+           pointing at `(bits v k)` for an arbitrary bit width). Distinct from a plain typo: the head is a
+           recognizable `u`-integer shape at a width the byte-aligned segments do not offer, so it keeps its
+           own message rather than a rename. Pins the wrong-integer-width path.")
+  (input  (do (def (main) (bin (u9 5))) (export main)))
+  (error  CDZ0201))
+
+(case "a far-miss segment kind keeps the plain unrecognized message"
+  (doc    "`(bin (zzz 5))` uses `zzz` — a head that is not close to any known kind. It is rejected
+           (CDZ0201) with the plain 'unrecognized bin segment kind (expected uNN/iNN/bits/bytes/utf8)'
+           message, no rename fix (there is no confident correction). Pins the far-miss path, the
+           complement of the misspelled-kind case: the vocabulary is closed and a head outside it — near or
+           far — is rejected.")
+  (input  (do (def (main) (bin (zzz 5))) (export main)))
+  (error  CDZ0201))
+
+; ============================================================================================
 ; Fit — a value that does not fit its segment has no encoding (rejected when provable, else traps)
 ; ============================================================================================
 
