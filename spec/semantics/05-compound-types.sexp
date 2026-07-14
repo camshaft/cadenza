@@ -1810,6 +1810,45 @@
             (def (main) (sum (list 10 20 30))) (export main)))
   (output (: 60 Int64)))
 
+(case "a list element position composes with a nested tuple pattern"
+  (doc    "A list ELEMENT position is a *Patterns Compose* binder position (`core-semantics.md` §A List Is
+           Deconstructed By Element Patterns With An Optional Rest): an element MAY itself be any pattern —
+           here a `(tuple k v)` — matched recursively, binding the union of its sub-binders. `first-key`
+           reads the FIRST element of a runtime association list of pairs by `((list (tuple k v) .. rest)
+           …)`, binding both the key and value of that pair in one arm. The dispatch stays LENGTH-based (the
+           arm matches a list of length ≥ 1), so an IRREFUTABLE element pattern like a tuple always matches
+           once the length holds — its binders resolve down the extended `Elem`/`Payload` access path, no
+           new runtime test. Before, a non-bare-binder leading element declined \"not a binder is not yet
+           supported\", forcing a bind-then-rematch (`((list p .. rest) (match p ((tuple k v) …)))`). This
+           is the shape a reader takes to destructure the head of a sequence of tagged pairs directly. The
+           list `(list (tuple 1 10) (tuple 2 20))` binds `k`=1, `v`=10 → 11.")
+  (input  (do
+            (def (first-key xs) (match xs
+                                  ((list (tuple k v) .. rest) (+ k v))
+                                  (_                          -1)))
+            (def (main) (first-key (list (tuple 1 10) (tuple 2 20)))) (export main)))
+  (output (: 11 Int64)))
+
+(case "a nested tuple list element is bound over a runtime list and folded across the rest"
+  (doc    "The RUNTIME-scrutinee form of list-element composition, recursing across the rest: `sum-firsts`
+           sums the FIRST component of every pair in a runtime-built `(List (Tuple Int64 Int64))`, matching
+           `((list (tuple a _) .. rest) (+ a (sum-firsts rest)))` — a nested tuple element (its second
+           position a wildcard, dropped) plus a rest binder recursed as the tail. The list is built by a
+           push-loop (a genuine heap vector, not a constant that folds away), so each `(tuple a _)` reads a
+           runtime pair element out of the list by `vec-get` then destructures its first slot. Pins that a
+           nested element pattern composes with the length-dispatch runtime list matcher AND with rest
+           recursion — the exact idiom a self-hosted pass uses to walk a list of key/value or head/payload
+           pairs. build pushes (1,·)(2,·)(3,·); the fold yields 1 + 2 + 3 = 6.")
+  (input  (do
+            (def (build i n out) (if (< i n)
+                                     (build (+ i 1) n ((. List push) out (tuple i 99)))
+                                     out))
+            (def (sum-firsts xs) (match xs
+                                   ((list)                    0)
+                                   ((list (tuple a _) .. rest) (+ a (sum-firsts rest)))))
+            (def (main) (sum-firsts (build 1 4 (list)))) (export main)))
+  (output (: 6 Int64)))
+
 (case "an expression tree built at run time is evaluated by matching its node variants"
   (doc    "The compiler's own expression-evaluator shape: a multi-variant recursive sum `Expr` — the
            canonical little AST — is built at run time by `build` (its structure decided by a runtime

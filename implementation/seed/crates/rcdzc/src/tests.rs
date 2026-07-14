@@ -15459,6 +15459,67 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_pattern_must_be_linear_and_refutable_elements_decline() {
+        // LINEARITY (`core-semantics.md §145`): a list pattern is a binder position and MUST be linear —
+        // `(list a a)` binds `a` twice → CDZ0102, exactly as `(tuple a a)` does. This was previously a
+        // SOUNDNESS GAP: the list matcher never ran the linearity check, so `(list a a)` compiled silently.
+        assert_eq!(
+            reject_code(
+                "(module m (def (f xs) (match xs ((list a a) (+ a a)) (_ 0))) \
+                         (def (main) (f (list 1 2))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0102"),
+            "a repeated leading binder is non-linear"
+        );
+        // A repeat spanning a leading position AND the rest binder is the same CDZ0102 (`(list a b .. a)`).
+        assert_eq!(
+            reject_code(
+                "(module m (def (f xs) (match xs ((list a b .. a) a) (_ 0))) \
+                         (def (main) (f (list 1 2 3))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0102"),
+            "a binder repeated across a leading position and the rest is non-linear"
+        );
+        // A repeat NESTED inside an element sub-pattern is still caught (`(list (tuple a a) .. r)`).
+        assert_eq!(
+            reject_code(
+                "(module m (def (f xs) (match xs ((list (tuple a a) .. r) a) (_ 0))) \
+                         (def (main) (f (list (tuple 1 2)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0102"),
+            "a binder repeated inside a nested tuple element is non-linear"
+        );
+
+        // A SHAPE-INCOMPATIBLE element (a wrong-arity tuple against a scalar-list element) is a hard reject,
+        // NOT a decline: `(list Int64)` elements are scalars, so a `(tuple a b)` element cannot match.
+        assert_eq!(
+            reject_code("(module m (def (f (: xs (List Int64))) (match xs ((list (tuple a b) .. r) a) (_ 0))) \
+                         (export f))")
+            .as_deref(),
+            Some("CDZ0201"),
+            "a tuple element pattern against a scalar list element is a shape error"
+        );
+
+        // A REFUTABLE element (a literal, a multi-variant ctor) is NOT ill-formed — it needs element-value
+        // refinement the length-dispatch matcher does not yet do, so it DECLINES (codeless), never a false
+        // reject. `reject_code` returns None (no CODE) but compilation still fails (a decline blocks emit).
+        let decline = reject_full(
+            "(module m (def (f xs) (match xs ((list 0 .. r) 1) (_ 0))) \
+                                    (def (main) (f (list 0 1))) (export main))",
+        )
+        .expect("a refutable element blocks compilation");
+        assert_eq!(decline.code, None, "a refutable element declines (no code)");
+        assert!(
+            decline.message.contains("refutable list element"),
+            "the decline names the refutable element: {}",
+            decline.message
+        );
+    }
+
+    #[test]
     fn a_rest_list_pattern_matches_by_minimum_length_and_binds_leading_elements() {
         // 05-compound-types "an element pattern matches a list by its length and elements": a REST pattern
         // `(list p0 … p_{k-1} .. rest)` matches any list of length ≥ k, binding each LEADING position to
@@ -18067,6 +18128,93 @@ mod match_engine {
             .unwrap(),
             "10",
             "multi-binder cons arm reads both heads across the consuming rest slice"
+        );
+    }
+
+    #[test]
+    fn a_list_element_position_composes_with_nested_patterns() {
+        // `core-semantics.md §145`: each list element position is a *Patterns Compose* binder position — it
+        // MAY itself be any nested pattern, matched recursively. The dispatch stays LENGTH-based, so an
+        // IRREFUTABLE element (tuple / single-variant ctor / nested binder) always matches once the length
+        // holds; its sub-binders resolve down the extended `Elem`/`Payload` path (resolve Case 6l). Before,
+        // any non-bare-binder leading element declined "not a binder is not yet supported".
+
+        // CONSTANT list, nested TUPLE element in a REST pattern: `(list (tuple a b) .. rest)` binds `a`/`b`
+        // to the first pair's elements. `(list (tuple 1 2) (tuple 3 4))` → a + b = 3 (folds, no runtime).
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (main) \
+                   (match (list (tuple 1 2) (tuple 3 4)) ((list (tuple a b) .. rest) (+ a b)) (_ 0))) \
+                 (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "3",
+            "constant list, nested tuple element binds the pair"
+        );
+
+        // RUNTIME list (a PARAMETER scrutinee), nested tuple element: association-list style. `first-key`
+        // reads the first pair's key via `(list (tuple k v) .. rest)`; called on a runtime-built list.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (tuple i (* i 10)))) out)) \
+               (def (first-key xs) (match xs ((list (tuple k v) .. rest) (+ k v)) (_ -1))) \
+               (def (main) (first-key (build 1 3 (list)))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping nested list-element run");
+            return;
+        };
+        // build pushes (1,10) then (2,20); first pair is (1,10) → k+v = 11.
+        assert_eq!(
+            v, "11",
+            "runtime list, nested tuple element binds first pair"
+        );
+
+        // A nested tuple element in a FIXED-ARITY arm, RUNTIME list: `(list (tuple a b))` matches a
+        // one-element list of a pair, binding both fields. `(build)` pushes a single (5, 6) pair.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (one) ((. List push) (list) (tuple 5 6))) \
+                   (def (f xs) (match xs ((list (tuple a b)) (* a b)) (_ -1))) \
+                   (def (main) (f (one))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "30",
+            "runtime fixed-arity list, nested tuple element binds both fields"
+        );
+
+        // A NESTED single-variant CONSTRUCTOR element (irrefutable): `(list (Mk n) .. rest)` unwraps each
+        // newtype element. `(type Box (Mk Int64))` — the sole ctor always matches, so the element is
+        // irrefutable. Constant list `(list (Mk 7) (Mk 8))` → n of the first = 7.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Box (Mk Int64)) (def (main) \
+                   (match (list (Mk 7) (Mk 8)) ((list (Mk n) .. rest) n) (_ 0))) \
+                 (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "7",
+            "constant list, nested single-variant ctor element unwraps"
+        );
+
+        // DEEP nesting + rest recursion: sum the first components of a runtime list of pairs by recursing on
+        // `rest`. `sum-firsts` binds `(tuple a _)` and recurses `(sum-firsts rest)`; the wildcard second
+        // element is dropped. build pushes (1,·)(2,·)(3,·) → 1+2+3 = 6.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (tuple i 99))) out)) \
+                   (def (sum-firsts xs) (match xs ((list) 0) ((list (tuple a _) .. rest) (+ a (sum-firsts rest))))) \
+                   (def (main) (sum-firsts (build 1 4 (list)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "6",
+            "runtime list-of-pairs, recurse on rest summing first components"
         );
     }
 
