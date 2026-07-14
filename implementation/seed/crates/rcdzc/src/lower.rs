@@ -634,6 +634,45 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, "(if c true b) → (or c b)");
                     fold_short_circuit(db, cond, else_, false)
                 }
+                // IF-TOWER FLATTENING (shared-arm condition combination). Two nested `if`s that share an
+                // arm collapse to ONE `if` on a COMBINED condition, replacing a nested branch with a single
+                // (backend-selectable-branchless) decision:
+                //   `(if c1 x (if c2 x y))` → `(if (or c1 c2) x y)`  — the THEN arm `x` is shared (taken
+                //       when c1, OR when !c1 && c2 — i.e. `c1 || c2`).
+                //   `(if c1 (if c2 x y) y)` → `(if (and c1 c2) x y)` — the ELSE arm `y` is shared (`x` taken
+                //       only when c1 && c2).
+                // SHORT-CIRCUIT ORDER PRESERVED: `or`/`and` evaluate `c1` then `c2` (c2 only on the
+                // deciding polarity), exactly as the nested `if` did — so a trap/effect in `c2` fires under
+                // the same conditions. The shared arm and the surviving inner arm stay in `if`-branch
+                // (guarded) positions, so trapping branches keep their shielding AND the tail-loop transform
+                // is unaffected (no call is moved into a connective — only the two CONDITIONS combine).
+                // `reduce_to_if` sees through refs/annotations/non-recursive calls to the inner `if`; the
+                // combined condition is synthesized (`fold_short_circuit` folds it — `(or (> x 5) (> x 3))`
+                // etc.) and the inner arms are reused by occurrence. A constant `c1` was handled above.
+                _ if let Some((c2, t2, e2)) = crate::eval::reduce_to_if(db, else_)
+                    && core_equiv(db, then_, t2) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, "(if c1 x (if c2 x y)) → (if (or c1 c2) x y)");
+                    let combined = fold_short_circuit(db, cond, c2, false); // (or c1 c2)
+                    let cid = synth_core(db, combined, crate::ty::Ty::Bool);
+                    Core::If {
+                        cond: cid,
+                        then_,
+                        else_: e2,
+                    }
+                }
+                _ if let Some((c2, t2, e2)) = crate::eval::reduce_to_if(db, then_)
+                    && core_equiv(db, else_, e2) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, "(if c1 (if c2 x y) y) → (if (and c1 c2) x y)");
+                    let combined = fold_short_circuit(db, cond, c2, true); // (and c1 c2)
+                    let cid = synth_core(db, combined, crate::ty::Ty::Bool);
+                    Core::If {
+                        cond: cid,
+                        then_: t2,
+                        else_,
+                    }
+                }
                 _ => Core::If { cond, then_, else_ },
             }
         }

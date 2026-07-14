@@ -4175,6 +4175,130 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_nested_if_sharing_an_arm_flattens_to_one_if_on_a_combined_condition() {
+        // IF-TOWER FLATTENING: two nested `if`s sharing an arm collapse to ONE `if` on a combined condition.
+        //   `(if c1 x (if c2 x y))` → `(if (or c1 c2) x y)`  (shared THEN arm `x`)
+        //   `(if c1 (if c2 x y) y)` → `(if (and c1 c2) x y)` (shared ELSE arm `y`)
+        // Emits a single (backend-branchless) `select` on `i32.or`/`i32.and` instead of a nested branch, and
+        // routes the combined condition through the boolean folds (so `(if (>5) 1 (if (>3) 1 0))` subsumes
+        // to `(> x 3)`). Short-circuit order + trap shielding are preserved.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // A1: shared THEN arm → `i32.or` combined condition + a single `select` (no nested `if`).
+        let a1 = lir(
+            "(: c1 Bool) (: c2 Bool) (: x Int64) (: y Int64)",
+            "(if c1 x (if c2 x y))",
+        );
+        assert!(
+            a1.iter().any(|i| matches!(i, Lir::I32Or))
+                && a1.iter().filter(|i| matches!(i, Lir::Select)).count() == 1
+                && !a1.iter().any(|i| matches!(i, Lir::If(_))),
+            "(if c1 x (if c2 x y)) → (if (or c1 c2) x y), got: {a1:?}"
+        );
+        // A2: shared ELSE arm → `i32.and` combined condition + a single `select`.
+        let a2 = lir(
+            "(: c1 Bool) (: c2 Bool) (: x Int64) (: y Int64)",
+            "(if c1 (if c2 x y) y)",
+        );
+        assert!(
+            a2.iter().any(|i| matches!(i, Lir::I32And))
+                && a2.iter().filter(|i| matches!(i, Lir::Select)).count() == 1
+                && !a2.iter().any(|i| matches!(i, Lir::If(_))),
+            "(if c1 (if c2 x y) y) → (if (and c1 c2) x y), got: {a2:?}"
+        );
+        // The combined condition folds: `(if (> x 5) 1 (if (> x 3) 1 0))` → `(or (> x 5) (> x 3))` subsumes
+        // to `(> x 3)`, so the whole tower is ONE compare (`gt_s`), no and/or/select/if.
+        let sub = lir("(: x Int64)", "(if (> x 5) 1 (if (> x 3) 1 0))");
+        assert!(
+            sub.iter().filter(|i| matches!(i, Lir::I64GtS)).count() == 1
+                && !sub
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32And | Lir::I32Or | Lir::Select | Lir::If(_))),
+            "nested-if tower collapses to (> x 3), got: {sub:?}"
+        );
+
+        // VALUE PARITY over the truth tables (x=10, y=20).
+        let a1v = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: c1 Bool) (: c2 Bool)) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
+        let a1c = a1v("(if c1 10 (if c2 10 20))");
+        let a2c = a1v("(if c1 (if c2 10 20) 20)");
+        for (c1, c2) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(
+                run_returns_with::<i64>(&a1c, "f", &[Val::Bool(c1), Val::Bool(c2)]),
+                if c1 || c2 { 10 } else { 20 },
+                "A1 @{c1},{c2}"
+            );
+            assert_eq!(
+                run_returns_with::<i64>(&a2c, "f", &[Val::Bool(c1), Val::Bool(c2)]),
+                if c1 && c2 { 10 } else { 20 },
+                "A2 @{c1},{c2}"
+            );
+        }
+
+        // TRAP SHIELDING (shared arm): `(if c1 (/ 10 n) (if c2 (/ 10 n) 20))` — the shared `/` is reached
+        // exactly when `c1 || c2`, shielded otherwise. At c1=c2=false it must NOT trap; when reached it does.
+        let ta = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: c1 Bool) (: c2 Bool) (: n Int64)) (if c1 (/ 10 n) (if c2 (/ 10 n) 20))) (export f))",
+        )))
+        .expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&ta, "f", &[Val::Bool(false), Val::Bool(false), Val::S64(0)]),
+            20,
+            "shared arm shielded when neither condition selects it"
+        );
+        assert!(
+            call_traps(&ta, "f", &[Val::Bool(true), Val::Bool(false), Val::S64(0)]),
+            "shared arm reached via c1 traps"
+        );
+        assert!(
+            call_traps(&ta, "f", &[Val::Bool(false), Val::Bool(true), Val::S64(0)]),
+            "shared arm reached via c2 traps"
+        );
+        // TRAP SHIELDING (combined condition c2): `(if c1 10 (if (> (/ 10 n) 0) 10 20))` — c2's `/` is
+        // evaluated only when c1 is false (short-circuit `or`). c1=true must not trap; c1=false does.
+        let tc = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: c1 Bool) (: n Int64)) (if c1 10 (if (> (/ 10 n) 0) 10 20))) (export f))",
+        )))
+        .expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&tc, "f", &[Val::Bool(true), Val::S64(0)]),
+            10,
+            "c1=true short-circuits the trapping condition c2"
+        );
+        assert!(
+            call_traps(&tc, "f", &[Val::Bool(false), Val::S64(0)]),
+            "c1=false reaches the trapping condition c2"
+        );
+    }
+
+    #[test]
     fn if_not_comparison_one_zero_computes_the_negated_predicate() {
         // `(if (not (CMP a b)) 1 0)` — a negated comparison materialized as an int. `lower` branch-swaps
         // to `(if (CMP a b) 0 1)` and the backend folds the negation into the complement comparison (no
