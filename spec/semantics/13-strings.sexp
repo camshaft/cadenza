@@ -1022,3 +1022,42 @@
   (input  (do (def (main (: b Bool)) (String.byte-len (String.concat (if b "ab" "abcd") "z"))) (export main)))
   (call   main (: true Bool)) (output (: 3 Int64))
   (call   main (: false Bool)) (output (: 5 Int64)))
+
+; --- A run-time-index String.at result compares by CONTENT ----------------------------------------
+; `String.at` at a run-time index returns the one-scalar substring as `Some(<slice>)`, where the slice is
+; a ROPE — a byte offset INTO the source string, not a flat leaf. String content-equality (`=`) and
+; map/set-key hashing compare PHYSICAL bytes, so a rope slice would compare by its OFFSET and never match
+; a flat twin of identical content: `(= (String.at s i) "a")` was SILENTLY false even when the char at `i`
+; IS 'a' (a wrong value, valid wasm, no diagnostic), so a hand-written lexer scanning a runtime string
+; char-by-char could not classify a character. The fix compacts the fresh slice to an independent flat
+; leaf at the producer, so the result compares by content everywhere it is used. These pin: a runtime
+; `String.at` result equals the same character obtained as a literal (and is unequal to a different one),
+; and a recursive char-scan counts matching characters correctly.
+(case "a run-time-index String.at result compares equal to the same character as a literal"
+  (doc    "`(= (Option.expect (String.at \"abc\" i) \"c\") \"a\")` at a RUNTIME index `i`: index 0 is \"a\"
+           (→ 1), index 1 is \"b\" (→ 0). The `String.at` result is a one-scalar rope slice, so its content
+           equality against the literal \"a\" must compare by CONTENT, not the slice's rope offset. Before
+           the producer-side slice compaction this returned 0 at index 0 — a runtime `String.at` result
+           never compared equal to the same character obtained any other way (a silent wrong value; the
+           wasm validates). The constant-index form folds and already compared correctly, hiding the bug.")
+  (input  (do (def (main (: i Int64))
+                (if (= (Option.expect (String.at "abc" i) "c") "a") 1 0)) (export main)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: 1 Int64)) (output (: 0 Int64)))
+
+(case "a recursive scan counts a runtime string's matching characters"
+  (doc    "`count-a \"banana\"` — a recursive char-scan reading each scalar with `String.at` at a runtime
+           index and counting `(= (String.at s i) \"a\")`. \"banana\" has three 'a's, so the result must be
+           3. Before the fix it returned 0: each `String.at` result is a `bytes-slice` rope reached through
+           `Option.expect`, and its content-equality compared by rope offset, never matching the flat
+           literal \"a\". The char-by-char lexer idiom over a runtime string — a compiler-in-Cadenza
+           tokenizing its input. The fix compacts the fresh slice at the producer (and `dup`s the borrowed
+           source so the slice's reference is independent — the same string threads on into the recursion).")
+  (input  (do
+            (def (at (: s String) (: i Int64)) (Option.expect (String.at s i) "ok"))
+            (def (cnt (: s String) (: i Int64) (: acc Int64))
+              (if (= i (String.byte-len s)) acc
+                  (cnt s (+ i 1) (if (= (at s i) "a") (+ acc 1) acc))))
+            (def (main) (cnt "banana" 0 0))
+            (export main)))
+  (output (: 3 Int64)))

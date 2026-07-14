@@ -365,11 +365,14 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::BytesAt { bytes, index, .. } => {
             binding_escapes(db, bytes, binder, true) || binding_escapes(db, index, binder, false)
         }
-        // `String.at` CONSUMES its string — the `Some` branch `bytes-slice`s a scalar span OUT of it (the
-        // returned String retains part of the source), and the `None` branch drops it. So a binding used
-        // as the string operand ESCAPES into the result (like `Bytes.slice`), unlike `Bytes.at`'s borrow.
+        // `String.at` BORROWS its string — the `Some` branch `dup`s it before the `bytes-slice` consumes
+        // the copy (so the returned slice owns an INDEPENDENT reference, not part of the source), and the
+        // `None` branch takes no reference. So a binding used as the string operand does NOT escape through
+        // `String.at` — the enclosing `let`/owner still reclaims it — exactly like `List.at`/`Bytes.at`.
+        // The index is a scalar. (This borrow discipline is why `String.at` composes in a recursive char
+        // scan that threads the same string through both `String.at` and the recursive call.)
         Core::StrAt { string, index, .. } => {
-            binding_escapes(db, string, binder, false) || binding_escapes(db, index, binder, false)
+            binding_escapes(db, string, binder, true) || binding_escapes(db, index, binder, false)
         }
         // `Bytes.concat`/`slice`/`compact` all CONSUME their bytes operand(s) into the new sequence
         // (`bytes-concat`/`bytes-slice`/`bytes-compact` consume, per `value-heap-runtime.md §Constructors
@@ -1222,6 +1225,9 @@ pub fn collect_used_ops(
             out.insert(OP_BYTES_LEN);
             out.insert(OP_BYTES_GET);
             out.insert(OP_BYTES_SLICE);
+            // The Some-branch COMPACTS the fresh slice to an independent flat leaf (see the emit) so a
+            // `String.at` result's content-equality / key-hashing compares by content, not rope offset.
+            out.insert(OP_BYTES_COMPACT);
             out.insert(OP_DROP);
             out.insert(OP_DUP);
             out.insert(OP_SUM_NEW);
@@ -5120,19 +5126,49 @@ fn emit(
             out.push(Lir::LocalSet(spanstart_slot));
             emit_skip_one_scalar(out, &push_is_lead);
             out.push(Lir::ConstI32(disc_some as i32)); // [disc_some]
-            out.push(Lir::LocalGet(str_slot)); // [disc_some, str]
+            // `bytes-slice` CONSUMES its buffer, but `str` is a BORROWED operand of `String.at` (the
+            // `str_slot` handle is only borrowed — a param/local the caller owns, or an owned temporary
+            // this arm's own end reclaims uniformly). So RETAIN it (`dup`, rc++) before the consuming slice,
+            // exactly as `List.at` `dup`s the borrowed `vec-get` element before the `Some` consumes it — the
+            // slice then owns an INDEPENDENT reference, and `str` is left untouched for its other uses (the
+            // recursive `(cnt s …)` that threads the same string). Without this, slicing consumes the sole
+            // reference to `str`; the pre-fix code masked it by LEAKING the un-compacted `Some(slice)` (the
+            // leak pinned `str` alive but compared by rope offset — wrong), and compacting the slice
+            // (below) then `op_drop`s `str`'s node → a use-after-free the recursive scan hit as a trap.
+            out.push(Lir::LocalGet(str_slot));
+            out.push(Lir::CallImport(OP_DUP)); // rc++ str: the slice takes an independent reference
+            out.push(Lir::LocalGet(str_slot)); // [disc_some, str] (retained)
             out.push(Lir::LocalGet(spanstart_slot));
             out.push(Lir::I32WrapI64); // [.., spanstart:i32]
             out.push(Lir::LocalGet(pos_slot));
             out.push(Lir::LocalGet(spanstart_slot));
             out.push(Lir::I64Sub);
             out.push(Lir::I32WrapI64); // [.., span_len:i32]
-            out.push(Lir::CallImport(OP_BYTES_SLICE)); // [disc_some, slice-handle] (consumes str)
+            out.push(Lir::CallImport(OP_BYTES_SLICE)); // [disc_some, slice-handle] (consumes the dup'd str)
+            // COMPACT the fresh slice to an INDEPENDENT flat leaf before wrapping it in `Some`. A
+            // `bytes-slice` result is a ROPE node — a `[off, len]` offset INTO the source string — whose
+            // PHYSICAL bytes are the source's, not a flat `[byte…]` leaf. A String's content-equality
+            // (`Core::ValueEq` → `champ_eq`) and its map/set-key hashing compare PHYSICAL bytes, so a rope
+            // slice compares by its offset and never matches a flat twin of identical content (the
+            // `String.at` content-equality miscompile: `(= (String.at s i) "a")` silently false; a lexer
+            // over a runtime string cannot classify a char). `bytes-compact` here is REFCOUNT-NEUTRAL — it
+            // CONSUMES the owned slice we just produced and returns a content-equal owned leaf (flattening
+            // releases the source-string reference the slice pinned, exactly the reference `bytes-slice`
+            // transferred in), so the ownership accounting is unchanged (owned in, owned out) and no
+            // downstream borrow/drop shifts. Doing it at the PRODUCER (not the `=` site) fixes ALL uses of
+            // the result — equality, a map/set key, a re-concat — and is cheap: a `String.at` result is a
+            // SINGLE Unicode scalar (≤4 bytes), so the flatten copies at most 4 bytes. This is why the
+            // `Core::ValueEq` owned-String compaction did NOT catch it: the extracted payload reaches `=` as
+            // a BORROW from the `Some` wrapper (owned by it), so the value-eq site cannot own-and-compact it
+            // without a double-free — the slice must be flattened while it is still the fresh owned producer
+            // result, here.
+            out.push(Lir::CallImport(OP_BYTES_COMPACT)); // slice rope → independent flat leaf (owned→owned)
             out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
             out.push(Lir::Else);
-            // ELSE — None. The str handle was BORROWED (never consumed), so drop it, then build None.
-            out.push(Lir::LocalGet(str_slot));
-            out.push(Lir::CallImport(OP_DROP));
+            // ELSE — None. `str` was BORROWED (the Some branch `dup`'d it for the slice; this branch takes
+            // no reference), so it is NOT dropped here — its owner reclaims it (an enclosing `let`/param),
+            // exactly as `List.at`'s None branch leaves its list untouched. `String.at` is now a clean
+            // BORROW of its string, like `List.at`/`Bytes.at`.
             out.push(Lir::ConstI32(disc_none as i32));
             // The `None` (nullary) variant's unit payload is the inline-unit CONSTANT (`IMM_UNIT`), NOT a
             // runtime `arr-alloc(0)` CALL — the runtime's `arr-alloc(0)` returns exactly `imm_unit()`, so
@@ -7142,6 +7178,9 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // (`sum-payload`/`arr-get` read without transferring ownership; see `binding_escapes`). This is
         // the shape a recursive tree-walker compares — `(= h "+")` where `h` is a variant's tuple-payload
         // element bound via `SumPayload`. `SumExpect` (an `Option.expect` payload read) borrows likewise.
+        // (A `String.at` `Some` payload is a rope slice, but it is COMPACTED at the producer — the `StrAt`
+        // Some-branch flattens the slice before wrapping it — so the extracted payload is a flat leaf that
+        // `value-eq` compares correctly without reclassifying this borrow as owned; see `Core::StrAt` emit.)
         Core::SumPayload { .. } | Core::SumExpect { .. } | Core::Proj { .. } => {
             Ok(HandleOwnership::Borrowed)
         }

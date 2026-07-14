@@ -500,27 +500,30 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   depth-threshold sensitivity of the slot-alias family. `src/prec.cdz`'s deep `paren-count` case is
   withheld for this (its shallow cases pass).
 
-- **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value; ⚠ NARROWED to LOOP-CONTEXT iter 39): runtime
-  `String.at` breaks content equality INSIDE A SELF-RECURSIVE LOOP.**
-  `repros/miscompile-runtime-string-at-content-equality.sexp`. ⚠ A sibling PARTIALLY FIXED this — every
-  STRAIGHT-LINE case now works: `at(runtime i) == "a"` → true, `at(runtime 1) == at(runtime 3)` → true, a
-  helper called twice → correct, two sequenced `at`+`==` → correct. The REMAINING failure is LOOP-CONTEXT
-  ONLY: `String.at(s,i) == c` inside a self-recursive loop threading `s` as a param returns FALSE every
-  iteration (even the FIRST — the char is a valid `Some` of byte-len 1, but `==` yields false). So
-  `count-a "banana"` STILL returns 0; minimal survivor `cnt "aa" 0 0` (2-iter loop) → 0 not 2. A
-  CONSTANT-index `String.at` folds + compares correctly. This still silently breaks a LOOP-based LEXER
-  (which is why `src/lex.cdz` lexes over char-CODES not a String). **ROOT-CAUSED (two
-  layers in `backend/wasm/select.rs`):** (1) `Core::ValueEq` `bytes-compact`s a String operand only when
-  OWNED, but a `String.at` result is a non-flat `bytes-slice` rope reached via `Option.expect`; (2)
-  `heap_operand_ownership` classifies `SumExpect`/`SumPayload`/`Proj` as always `Borrowed` — right for a
-  `Map.lookup`, WRONG for a fresh producer like `String.at` (a `bytes-slice` is Owned, `Option.expect`
-  transfers it out). The principled fix is layer 2 (a `SumExpect`/`SumPayload` of a producer is Owned) —
-  which then also serves the `Map.lookup` borrow-decline family. A naive layer-1-only fix (compact
-  borrowed Strings too) makes isolated compares correct but double-frees in a loop; reverted, root-cause
-  documented in the repro for a seed agent. Now that the straight-line path is fixed, the residual is the
-  LOOP-TRANSFORM emit needing the same slice-compact the straight-line emit got. `String.slice` on a
-  runtime string NOW WORKS (iter 39: returns `Option String`, `slice("hello world",0,5)` → Some "hello",
-  OOB → None) — the earlier "constant strings only" decline is GONE.
+- **✅ FIXED (seed `rcdzc`, 2026-07-14 — was a MISCOMPILE, silent wrong value): runtime `String.at`
+  content equality, INCLUDING the loop-context residual.** `repros/miscompile-runtime-string-at-content-
+  equality.sexp`. A `String.at` at a RUNTIME index yielded a one-char String that never `=`-compared equal
+  to the same char obtained any other way (a literal, a different-index `String.at`); it equalled only
+  ITSELF at the identical index. A sibling had earlier fixed the STRAIGHT-LINE cases (compacting an OWNED
+  String operand at the `=` site); the surviving failure was LOOP-CONTEXT — `String.at(s,i) == c` in a
+  self-recursive loop threading `s` returned false every iteration, so `count-a "banana"` still returned 0
+  not 3, and `src/lex.cdz` had to lex over char-CODES not a String. **ROOT of the residual:** `String.at`
+  returns `Some(bytes-slice(str, pos, len))` — a ROPE slice (a byte offset INTO the source), and String
+  equality (`champ_eq`) + key hashing compare PHYSICAL bytes, so the slice compared by its offset, never
+  matching a flat twin; the `=`-site owned-compact could not reach it because `SumExpect` extracts the
+  payload as a BORROW from the `Some` wrapper the wrapper still owns. **FIX (in the `Core::StrAt` emit) —
+  NOT the layer-2 ownership reclassification hypothesized** (that double-frees, as the borrow above
+  explains): compact the fresh slice to an INDEPENDENT flat leaf AT THE PRODUCER, right after
+  `bytes-slice`, before wrapping it in `Some`. Doing it there fixes ALL uses (straight-line AND loop, a
+  map/set key, a re-concat) and is cheap (a `String.at` result is ≤4 bytes). It also exposed and fixed a
+  latent bug: `String.at` CONSUMED its string operand (`bytes-slice` consumes) without `dup`ing it — the
+  pre-fix code masked this by LEAKING the un-compacted `Some(slice)` (the leak pinned the source alive but
+  compared wrong); compaction then dropped the source early → a use-after-free the recursive scan hit as a
+  trap. So the fix also `dup`s the borrowed source before the slice consumes it and makes `String.at` a
+  clean BORROW (like `List.at`/`Bytes.at`) — the None branch no longer drops the source, and
+  `binding_escapes` marks the string borrowed. Migrated to the graded corpus (`spec/semantics/13-
+  strings.sexp`: content-equal-to-literal + recursive char-scan) + seed unit tests. (`String.slice` on a
+  runtime string now works too — a sibling landed it iter 39.)
 
 - **OPEN (seed `rcdzc` — HM inference GAP): an unannotated closure passed to a SELF-RECURSIVE HOF fails
   to infer the closure's parameter types.** `repros/reject-inferred-closure-param-through-recursive-hof.
