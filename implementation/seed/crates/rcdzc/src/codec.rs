@@ -69,6 +69,17 @@
 //= spec/contracts/ast-encoding.md#the-canonical-stored-form-is-the-binary-ast
 //# A program MUST be supplied to the compiler as its binary AST rather than as a textual rendering.
 //!
+//! This is also the agent-authoring canonical form: a program's canonical form IS this binary AST (its
+//! identity is independent of any textual rendering), an agent READS it directly (`decode`, the same path
+//! the compiler's derive uses — no textual syntax required), and an agent CONSTRUCTS it directly
+//! (`encode`, or the arena builder — again no textual syntax).
+//= spec/capabilities/agent-authoring.md#the-canonical-form-is-the-binary-ast
+//# A program's canonical form MUST be the binary AST fixed by the ast-encoding contract, so that its identity is independent of any textual rendering.
+//= spec/capabilities/agent-authoring.md#the-canonical-form-is-the-binary-ast
+//# An agent MUST be able to read a program's canonical binary AST directly, without going through a textual syntax.
+//= spec/capabilities/agent-authoring.md#the-canonical-form-is-the-binary-ast
+//# An agent MUST be able to construct a program's canonical binary AST directly, without going through a textual syntax.
+//!
 //! This binary serialization of the AST IS the program's canonical form — one canonical byte form
 //! independent of any textual rendering:
 //!
