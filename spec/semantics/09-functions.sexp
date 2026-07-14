@@ -2930,3 +2930,26 @@
             (def (main) (+ (unbox Int64 (Box.Mk 40)) (String.byte-len (unbox String (Box.Mk "hi")))))
             (export main)))
   (output (: 42 Int64)))
+
+; A RECURSIVE generic definition with a TYPE-VALUED PARAMETER — the type-valued-parameter model over the
+; recursive-data idiom. `len` takes `(: t Type)` and `(: l (Lst t))` (a polymorphic linked list applied
+; to the type parameter), recurses on the tail passing `t` along. Called with the concrete element type
+; as an argument at Int64 and String, `len` is monomorphized per type — and because the type argument is
+; compile-time-only, it is ERASED from each specialized function's signature (each `len` takes just the
+; list handle, not the type) and from the recursive self-call. This is the recursive analogue of the
+; `unbox` type-valued-parameter case.
+
+(case "a recursive generic with a type-valued parameter monomorphizes per type, erasing the type argument"
+  (doc    "`len` takes a type-valued `(: t Type)` and `(: l (Lst t))`, recursing on the tail with `(len t
+           tl)`. Called `(len Int64 …)` over a two-element `Lst Int64` (length 2) and `(len String …)`
+           over a three-element `Lst String` (length 3). `len` is monomorphized into one function per
+           element type; the type argument is compile-time-only, erased from the specialized signature and
+           the self-call (each `len` takes only the list handle). 2 + 3 = 5.")
+  (input  (do
+            (type Lst Nil (Cons a (Lst a)))
+            (def (len (: t Type) (: l (Lst t)))
+              (match l ((Lst.Nil) 0) ((Lst.Cons h tl) (+ 1 (len t tl)))))
+            (def (main) (+ (len Int64 (Lst.Cons 1 (Lst.Cons 2 Lst.Nil)))
+                           (len String (Lst.Cons "a" (Lst.Cons "b" (Lst.Cons "c" Lst.Nil))))))
+            (export main)))
+  (output (: 5 Int64)))

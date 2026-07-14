@@ -31757,6 +31757,45 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_generic_with_a_type_valued_parameter_erases_the_type_argument() {
+        // Type-valued-parameter vertical, T3 RECURSIVE (09-functions "a recursive generic with a
+        // type-valued parameter monomorphizes per type, erasing the type argument"): `len` takes `(: t
+        // Type)` and `(: l (Lst t))`, recursing `(len t tl)`. Unlike the non-recursive `unbox` (which
+        // inlines), a recursive `len` lowers to a `Core::Call` — so the compile-time-only `Ty::Type`
+        // argument must be ERASED from the specialized signature AND the self-call (each `len` takes only
+        // the list handle). `type_specialize` substitutes the concrete type-value into the copy's `(Lst
+        // t)` annotation and drops the type param; `lower` drops the type arg from the `Core::Call`.
+        // `(len Int64 …)` over a 2-elem list = 2, `(len String …)` over a 3-elem list = 3; 2 + 3 = 5.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (type Lst Nil (Cons a (Lst a))) \
+               (def (len (: t Type) (: l (Lst t))) \
+                 (match l ((Lst.Nil) 0) ((Lst.Cons h tl) (+ 1 (len t tl))))) \
+               (def (main) (+ (len Int64 (Lst.Cons 1 (Lst.Cons 2 Lst.Nil))) \
+                              (len String (Lst.Cons \"a\" (Lst.Cons \"b\" (Lst.Cons \"c\" Lst.Nil)))))) \
+               (export main))",
+        )))
+        .expect("a recursive generic with a type-valued parameter compiles");
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping recursive type-valued-parameter run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(v) => assert_eq!(
+                v, "5",
+                "len monomorphized over Lst Int64 (2) + Lst String (3), type arg erased"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the
