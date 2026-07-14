@@ -328,6 +328,31 @@ impl<'a> Printer<'a> {
             {
                 return self.expr(args[0], parent_prec);
             }
+            // ---- rational VALUE resugar: `(: <n/d> Rational)` -> `Rational.of(n, d)` ----
+            // A rational VALUE form carries its magnitude as a `Name` leaf of the shape `n/d` (the
+            // canonical s-expr value form `(: 1/3 Rational)`). On the ML surface a bare `n/d` is NOT a
+            // rational — it lexes as the DIVISION `(/ n d)` — so `emit_name` would have to backtick-quote
+            // it (`` `1/3` ``) to round-trip, which reads as an ugly operator-name. Instead resugar the
+            // whole value form to the constructor `Rational.of(n, d)`, which IS re-readable ML for the
+            // same rational (`(. Rational of) n d`) and reads cleanly. Only a value form (a `Name` of
+            // exactly `[-]digits/digits`) annotated `Rational` matches; a source rational is written
+            // `Rational.of`/`1R`/`(: 5 Rational)` and is unaffected. (The s-expr surface keeps the pinned
+            // `(: n/d Rational)` value form — this resugar is ML-only, and the rational value form appears
+            // only in value OUTPUT, never a corpus INPUT, so the ML round-trip contract is untouched.)
+            if head == ":"
+                && args.len() == 2
+                && self.head_name(args[1]) == Some("Rational".to_string())
+                && let Struct::Atom(l) = self.a.get(args[0])
+                && let Leaf::Name(n) = self.a.leaf(*l)
+                && let Some((num, den)) = split_rational_name(n)
+            {
+                // Render as `Rational.of(num, den)` — the member-access call the ML reader parses back to
+                // `((. Rational of) num den)`, an admissible rational construction.
+                self.doc.ibox(0);
+                self.doc.word(format!("Rational.of({num}, {den})"));
+                self.doc.end();
+                return;
+            }
             // ---- function type `(-> A B)` -> `A -> B` (right-associative) ----
             if head == "->" && args.len() == 2 {
                 return self.arrow(args[0], args[1], parent_prec);
@@ -2267,6 +2292,20 @@ impl<'a> Printer<'a> {
 /// not a reserved word; otherwise it is backtick-quoted. This is the lossless escape for symbolic
 /// heads (`|`, `+`, `->`), keyword-shaped names (`let`, `in`), and anything that would otherwise
 /// lex as something else.
+/// Split a rational VALUE-form name `[-]num/den` into its `(num, den)` decimal-digit strings, or `None`
+/// if `s` is not exactly that shape. Used to resugar `(: <n/d> Rational)` → `Rational.of(n, d)` on the
+/// ML surface. STRICT: a single `/`, non-empty all-ASCII-digit numerator (optionally a leading `-`) and
+/// denominator — so an ordinary name with a slash, or a partial/garbage form, is left to `emit_name`.
+fn split_rational_name(s: &str) -> Option<(&str, &str)> {
+    let (num, den) = s.split_once('/')?;
+    if den.contains('/') {
+        return None; // more than one `/` — not a rational value form
+    }
+    let num_digits = num.strip_prefix('-').unwrap_or(num);
+    let ok = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+    (ok(num_digits) && ok(den)).then_some((num, den))
+}
+
 pub fn emit_name(s: &str) -> String {
     if name_is_bare_safe(s) {
         s.to_string()
@@ -3197,6 +3236,32 @@ mod tests {
     fn call_breaks_all_args_when_wide() {
         let out = assert_roundtrip("some-function(alpha, beta, gamma, delta, epsilon)", 20);
         assert!(out.starts_with("some-function(\n"), "got:\n{out}");
+    }
+
+    #[test]
+    fn rational_value_form_resugars_to_constructor_not_backtick() {
+        // A rational VALUE form `(: n/d Rational)` carries its magnitude as a `Name("n/d")`. On the ML
+        // surface a bare `n/d` is division, so `emit_name` would backtick-quote it (`` `1/3` ``) — a bug
+        // the resugar replaces with the re-readable constructor `Rational.of(n, d)`.
+        for (sexpr_form, want) in [
+            ("(: 1/3 Rational)", "Rational.of(1, 3)"),
+            ("(: 5/1 Rational)", "Rational.of(5, 1)"),
+            ("(: -3/4 Rational)", "Rational.of(-3, 4)"),
+        ] {
+            let a = sexpr::read(sexpr_form).unwrap();
+            let printed = print(&a, 80);
+            assert_eq!(printed.trim(), want, "{sexpr_form} should resugar");
+            assert!(!printed.contains('`'), "no backticks: {printed}");
+            // Re-readable: the ML parses back + re-prints identically (idempotent).
+            let reparsed = parser::read_ml(&printed);
+            assert!(reparsed.ok(), "{want} re-reads");
+            assert_eq!(print(&reparsed.arenas, 80).trim(), want, "{want} is idempotent");
+        }
+        // A NON-rational name with a slash is NOT resugared (still backtick-escaped as a name) — the
+        // resugar is strict (annotated `Rational` + a `digits/digits` name only).
+        let a = sexpr::read("(: a/b Rational)").unwrap();
+        let printed = print(&a, 80);
+        assert!(!printed.contains("Rational.of"), "a/b is not a rational value: {printed}");
     }
 
     #[test]
