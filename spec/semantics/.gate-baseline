@@ -10,8 +10,10 @@ pass	MIXED: a List-returning Tuple-arg closure ALONGSIDE a plain export — driv
 pass	MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export
 pass	MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside a Tuple-arg closure
+pass	MULTI-EXPORT: driving the second among-scalars closure (subtract)
 pass	MULTI-EXPORT: two Tuple-arg closures sharing a List-returning `call`
 pass	MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`
+pass	MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg
 pass	MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`
 pass	Ok carrying a Some keeps both variant tags
 pass	Qty.unit recovers a derived unit
