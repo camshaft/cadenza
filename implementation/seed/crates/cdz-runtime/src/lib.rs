@@ -10005,8 +10005,22 @@ mod tests {
         check(op_bigint_add, &p, &q, &p.add(&q), "add");
         check(op_bigint_sub, &p, &q, &p.sub(&q), "sub (goes negative)");
         check(op_bigint_mul, &p, &q, &p.mul(&q), "mul (~2^315)");
-        let (dq, _dr) = q.divmod(&p).unwrap();
+        let (dq, dr) = q.divmod(&p).unwrap();
         check(op_bigint_div, &q, &p, &dq, "div (multi-limb quotient)");
+        // rem at large multi-limb (op 73, added after this test's other arms) — the remainder half of the
+        // same divmod, its magnitude spanning limbs; and the identity `q == (q/p)*p + (q%p)` over the ops.
+        check(op_bigint_rem, &q, &p, &dr, "rem (multi-limb remainder)");
+        {
+            let (hq2, hp2) = (box_bigint(&q), box_bigint(&p));
+            let hquot = op_bigint_div(hq2, hp2);
+            let hrem = op_bigint_rem(hq2, hp2);
+            let qp = op_bigint_mul(hquot, hp2);
+            let recon = op_bigint_add(qp, hrem);
+            assert!(champ_eq(recon, hq2), "q == (q/p)*p + (q%p) at multi-limb");
+            for h in [hq2, hp2, hquot, hrem, qp, recon] {
+                op_drop(h);
+            }
+        }
         // cmp on large operands: p < q, q > p, p == p.
         let (hp, hq) = (box_bigint(&p), box_bigint(&q));
         assert_eq!(op_bigint_cmp(hp, hq), -1, "p < q");
