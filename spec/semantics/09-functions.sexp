@@ -469,6 +469,36 @@
   (call   main (: 5 Int64))
   (output (: 7 Int64)))
 
+(case "a factory RETURNS a closure that captures a let-bound inner closure"
+  (doc    "`(def (mk (: k Int64)) (let ((g (fn (y) (+ y k)))) (fn (x) (g x))))` — `mk` binds an inner closure
+           `g` (capturing `k`), then RETURNS an outer closure that captures `g`. `((mk 10) n)` with n = 5 →
+           the returned closure applies `g` to 5 = 5 + 10 = 15, at runtime. Pins a returned closure capturing
+           a LET-bound closure (a two-level capture: the outer holds `g`, `g` holds `k`).")
+  (input  (do (def (mk (: k Int64)) (let ((g (fn ((: y Int64)) (+ y k)))) (fn ((: x Int64)) (g x))))
+              (def (main (: n Int64)) ((mk 10) n))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 15 Int64)))
+
+; A nested lambda capturing a closure-typed DEF PARAMETER (rather than a let-bound closure) is NOT yet
+; supported: when the def is applied to a closure argument and inlined, the argument lambda is
+; `resolve_subtree`-pinned and later copied, leaving a body occurrence resolving to the ORIGINAL param binder
+; with no local slot at the build site. The compiler DECLINES ("parameter reference has no local slot") rather
+; than emit an invalid module — reject-don't-miscompile. A sound α-renaming fix to the copy machinery is a
+; separate, larger reduction-engine change. (Contrast the case ABOVE: capturing a LET-bound closure works.)
+
+(case "a nested lambda capturing a closure-typed def PARAMETER is declined"
+  (doc    "`(def (mk (: g (-> Int64 Int64))) (fn (x) (g x)))` returns a closure that captures the def's
+           CLOSURE-typed parameter `g`. Applied `((mk (fn (y) (+ y 1))) n)`, the returned lambda captures `g`
+           — but `g` is a closure PARAM pinned+copied through the inline, so its body reference has no local
+           slot. Declines (a `todo`), not a miscompile. The let-bound-closure capture above works; this is the
+           closure-PARAM-capture α-renaming gap.")
+  (input  (do (def (mk (: g (-> Int64 Int64))) (fn ((: x Int64)) (g x)))
+              (def (main (: n Int64)) ((mk (fn (y) (+ y 1))) n))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
 (case "a closure argument is another closure's result"
   (doc    "The argument to one closure is the result of applying another: `((fn (x) (+ x k)) ((fn (y)
            (* y 2)) 3))` with k = 10 → (fn x)(6) = 16. Composing two closure applications — the inner
