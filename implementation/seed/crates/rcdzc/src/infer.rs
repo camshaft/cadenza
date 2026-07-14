@@ -4608,6 +4608,42 @@ fn check_application(
             }
             return;
         }
+        // A `Bool` operand against a DIFFERENT scalar kind — a number or a `Char` — `(< true 5)`, `(+ 1
+        // true)`, `(= true #\a)`. Both are scalars (so the text/compound cross-kind guard above does not
+        // fire), but there is no shared order / arithmetic / equality between a boolean and a number or a
+        // character. The generic scheme-unify gives the opaque "type mismatch: Bool and Int64 must be the
+        // same type here" — an internal-clash read. Name the boundary instead. KEEP THE CODE `CDZ0203` (NOT
+        // the CDZ0201 the text/compound cases take): the corpus pins a two-scalar clash `(< 1 true)` at the
+        // general TypeMismatch. ONLY a `Bool`-vs-other-scalar pair — a `Bool` has NO conversion to a number
+        // or a char, so it is a genuine dead-end (honest no-fix). A `Char`-vs-number pair is DELIBERATELY
+        // excluded: `Char.to-int` is a total conversion, so `(+ #\a 1)` flows on to the numeric-coercion
+        // path below, which offers the `(Char.to-int …)` wrap fix (the M96 twin) — naming it a kind boundary
+        // here would rob it of that repair. Two different NUMERIC types (Int32 vs Int64, int vs float) are
+        // the separate no-promotion path (CDZ0301) handled by `unify::mismatch` below.
+        let scalar_kind = |t: &Ty| match t {
+            Ty::Bool => Some("a boolean"),
+            Ty::Char => Some("a character"),
+            Ty::Int(_) | Ty::Float(_) => Some("a number"),
+            _ => None,
+        };
+        if let (Some(ka), Some(kb)) = (scalar_kind(&a), scalar_kind(&b))
+            && ka != kb
+            && (a == Ty::Bool || b == Ty::Bool)
+        {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: a Bool against a different scalar kind — not comparable/operable across the boundary (CDZ0203)");
+            out.push(Reject::coded(
+                Code::TypeMismatch,
+                format!(
+                    "{} and {} are different types — this operation is not defined between {ka} and {kb}",
+                    a.render_with_article(),
+                    b.render_with_article(),
+                ),
+            ));
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
     }
     // DIMENSIONAL check on a binary operator applied to QUANTITIES (units-of-measure.md §A Dimensional
     // Mismatch Is An Error). Fires BEFORE the generic scheme-unify (whose `∀a. (Int a) → …` scheme has no
