@@ -58,6 +58,7 @@ pass	a CBOR skip steps over a tagged item to the value it wraps
 pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a Float64 closure captures a Float64 build-time host effect result
+pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
 pass	a HOF callback matching a tuple argument computes through the nested reduction
 pass	a HOF callback matching its sum argument reaches the nullary arm
@@ -90,7 +91,11 @@ pass	a THREE-argument closure round-trips — flat arrow spelling
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
 pass	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)
 pass	a Tuple ARG BEFORE a scalar arg crosses the direct-call boundary (tuple, then scalar)
+pass	a Tuple ARG BEFORE a scalar with a LIST result crosses the direct-call boundary
 pass	a Tuple ARG BETWEEN two scalar args crosses the direct-call boundary (scalar, tuple, scalar)
+pass	a Tuple ARG among scalars with a BYTE-ROPE result crosses the direct-call boundary
+pass	a Tuple ARG among scalars with a LIST result crosses the direct-call boundary
+pass	a Tuple ARG among scalars with a fixed-shape COMPOUND result crosses the direct-call boundary
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
@@ -987,6 +992,7 @@ pass	a two-argument closure exported to the host is called with both arguments
 pass	a two-arm Bool match selects its second (false) arm
 pass	a two-arm match does not evaluate the unselected arm's trapping body
 pass	a two-parameter closure is applied at full arity through a recursive HOF
+pass	a two-parameter sum whose variants use the parameters in different orders instantiates correctly
 pass	a two-payload constructor applied in curried form builds the variant
 pass	a two-payload sum escapes its second variant with a bare name
 pass	a type annotation consistent with the value is transparent
@@ -1750,6 +1756,7 @@ pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
 pass	two structural values of the same shape are equal
 pass	two sum arms with textually identical bodies still bind their own variant's payload
+pass	two sum types whose names differ only by punctuation stay DISTINCT types
 pass	two unequal runtime strings compare false by their contents
 pass	two variants of the same sum compare unequal regardless of operand order
 pass	two variants past the first each carry a different nested sum, over a runtime discriminant
