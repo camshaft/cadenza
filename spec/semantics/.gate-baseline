@@ -1199,6 +1199,7 @@ pass	a sequencing block discards a pure compound intermediate
 pass	a sequencing block discards a pure list intermediate
 pass	a sequencing block whose last form is unit yields unit
 pass	a sequencing block yields the value of its last form
+pass	a set accumulator is queried for membership after building
 pass	a set as a map value: runtime membership tested through the lookup
 pass	a set built at run time escapes to the host as its value form
 pass	a set chosen by a runtime if is membership-tested with valid wasm
@@ -1206,6 +1207,7 @@ pass	a set collapses a duplicate element
 pass	a set is constructed from a list of its elements
 pass	a set nested in a tuple compares equal with a runtime element, order-independent
 pass	a set of user-sum elements tests membership by variant
+pass	a set threaded as a recursive accumulator dedups during accumulation
 pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
 pass	a short-circuit connective threads a branch perform to the continuation

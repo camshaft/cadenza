@@ -350,3 +350,36 @@
   (input  (do (def (main (: x Int64)) (Set.len (Set.remove (Set.of (list 1 2 3)) x))) (export main)))
   (call   main (: 2 Int64)) (output (: 2 Int64))
   (call   main (: 9 Int64)) (output (: 3 Int64)))
+
+; --- A Set threaded as a recursive ACCUMULATOR — the seen-set / visited-set idiom ----------------------
+; A compiler carries a Set as an accumulator across a recursion — a set of visited nodes (cycle detection),
+; free variables collected, or declared capabilities — inserting as it walks, then querying membership or
+; cardinality. This is the set analogue of the map-accumulator (05-compound-types) and distinct from the
+; runtime set-escape case above (which RETURNS the set): here the set is THREADED as its own parameter and
+; consumed to a SCALAR (`Set.len` / `Set.contains`), with dedup happening DURING the runtime accumulation.
+
+(case "a set threaded as a recursive accumulator dedups during accumulation"
+  (doc    "`build` inserts `n % 3` for n, n-1, …, 1 into a set THREADED as its own parameter, then `Set.len`
+           measures it. The inserted values cycle through {0,1,2}, so the set holds at most 3 distinct
+           elements regardless of `n`: `build 6` inserts 0,2,1,0,2,1 → 3; `build 2` inserts 2,1 → 2;
+           `build 0` → 0 (the empty accumulator). Pins that a set carried as a recursive accumulator dedups
+           its inserts at run time (the uniqueness invariant across the threaded accumulation), consumed to
+           a scalar — the seen-set idiom, the set companion of the map accumulator.")
+  (input  (do
+            (def (build (: n Int64) (: s (Set Int64))) (if (= n 0) s (build (- n 1) (Set.insert s (% n 3)))))
+            (def (main (: n Int64)) (Set.len (build n (Set.of (list))))) (export main)))
+  (call   main (: 6 Int64)) (output (: 3 Int64))
+  (call   main (: 2 Int64)) (output (: 2 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+(case "a set accumulator is queried for membership after building"
+  (doc    "The visited-set query: `build 5` accumulates {1,2,3,4,5} through the threaded set parameter, then
+           `Set.contains` tests a runtime query element — q=3 → present (1), q=9 → absent (0). Pins that a
+           set grown across a recursion answers a membership query afterward — the cycle-detection /
+           already-seen check a compiler pass makes while walking, the set companion of the map-lookup
+           accumulator query.")
+  (input  (do
+            (def (build (: n Int64) (: s (Set Int64))) (if (= n 0) s (build (- n 1) (Set.insert s n))))
+            (def (main (: q Int64)) (if (Set.contains (build 5 (Set.of (list))) q) 1 0)) (export main)))
+  (call   main (: 3 Int64)) (output (: 1 Int64))
+  (call   main (: 9 Int64)) (output (: 0 Int64)))
