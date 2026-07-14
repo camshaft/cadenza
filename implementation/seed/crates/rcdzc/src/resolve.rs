@@ -1128,17 +1128,18 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             heads: heads.into(),
         });
     }
-    // Case 6l: `form` is a MATCH ARM `((list a b …) body)` (ascended from `body`) whose FIXED-ARITY list
-    // pattern binds `name` at element position `i`. Reading element `i` of the (list) scrutinee is the
-    // SAME `Elem(i)` access a tuple-payload binder uses, so it reuses `SumPayload` with a bare `[Elem(i)]`
-    // path (no `Payload` step, no head). Its type is the list's element type; a constant scrutinee folds
-    // the element (`fold_sum_path`'s `ListNew` arm). Scoped to this arm. (A REST binder binds a SUBLIST,
-    // not one element — a later increment; `list_pattern_element_binds` declines a pattern with `..`.)
-    if let Some((scrutinee, index)) = list_pattern_element_binds(db, form, from, name) {
+    // Case 6l: `form` is a MATCH ARM `((list p… …) body)` (ascended from `body`) whose list pattern binds
+    // `name` at a LEADING element position — possibly NESTED inside that element's own sub-pattern. Reading
+    // leading element `i` of the (list) scrutinee is the SAME `Elem(i)` access a tuple-payload binder uses,
+    // so it reuses `SumPayload`; a nested `(tuple a b)` / `(Mk n)` element extends the path with the
+    // sub-pattern's own `Elem`/`Payload` steps (element positions compose, §145). Its type is walked from
+    // the list's element type; a constant scrutinee folds the leaf (`fold_sum_path`). Scoped to this arm.
+    // (A REST binder binds a SUBLIST — Case 6r, `list_pattern_rest_binds`.)
+    if let Some((scrutinee, steps, heads)) = list_pattern_element_binds(db, form, from, name) {
         return Some(Resolved::SumPayload {
             scrutinee,
-            steps: vec![crate::core::PathStep::Elem(index)].into(),
-            heads: vec![].into(),
+            steps: steps.into(),
+            heads: heads.into(),
         });
     }
     // Case 6r: `form` is a MATCH ARM `((list p… .. rest) body)` (ascended from `body`) whose REST pattern
@@ -1654,18 +1655,23 @@ fn match_arm_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Optio
     Some(scrutinee)
 }
 
-/// If `form` is a match arm `((list a b …) body)` ascended from `body`, and the list pattern binds `name`
-/// at LEADING element position `i`, return `(scrutinee, i)`. Handles a fixed-arity `(list a b)` AND the
-/// LEADING binders of a rest pattern `(list a b .. rest)` (the binders BEFORE `..`) — both read a definite
-/// element index via `SumPayload{Elem(i)}`. The REST binder itself (the name after `..`) binds a SUBLIST,
-/// not one element, so it is NOT matched here (it resolves inert; a used rest sublist is a later
-/// increment). `None` if not a `(list …)` arm binding `name` at a leading position.
+/// If `form` is a match arm `((list p… …) body)` ascended from `body`, and the list pattern binds `name`
+/// at a LEADING element position — possibly NESTED inside that element's own sub-pattern — return
+/// `(scrutinee, path, heads)`: the access path is `Elem(i)` (into leading position `i` of the list) then
+/// the steps the element sub-pattern imposes (a `(tuple a b)` element adds a further `Elem(j)`, a `(Some
+/// x)` element adds `[Payload]`), and `heads` the variant heads at each `Payload` step. Handles a bare
+/// binder element `(list a b)` (path `[Elem(i)]`), a nested tuple `(list (tuple a b) .. r)` (path
+/// `[Elem(i), Elem(j)]`), and a nested irrefutable constructor `(list (Mk n) …)` (path `[Elem(i),
+/// Payload]`) — element positions compose exactly as a variant payload / tuple element does
+/// (`core-semantics.md §A List Is Deconstructed By Element Patterns With An Optional Rest`, §145). The REST
+/// binder (the name after `..`) binds a SUBLIST, matched by `list_pattern_rest_binds`, not here. `None` if
+/// no leading element sub-pattern binds `name`.
 fn list_pattern_element_binds(
     db: &Db,
     form: StructId,
     from: StructId,
     name: &str,
-) -> Option<(StructId, usize)> {
+) -> Option<(StructId, Vec<crate::core::PathStep>, Vec<StructId>)> {
     let Struct::List(pb) = db.ast.get(form) else {
         return None;
     };
@@ -1687,11 +1693,26 @@ fn list_pattern_element_binds(
     if form == scrutinee {
         return None;
     }
-    // The FIRST leading element position bound to `name` (a bare name, not `_`).
-    elems[..lead]
-        .iter()
-        .position(|&e| db.ast.as_name(e) == Some(name) && name != "_")
-        .map(|i| (scrutinee, i))
+    // Try each leading element position in turn: reach the element at `Elem(i)`, then descend the element
+    // sub-pattern for `name` exactly as a tuple element / variant payload does. A bare-name element is
+    // found at `[Elem(i)]`; a nested tuple/ctor element extends the path (via `find_binder_in_tuple` /
+    // `find_binder_in_pattern`), giving `name` its sub-value's type + fold for free (the same walkers +
+    // `SumPayload` the tuple/variant cases use — element positions compose to any depth).
+    for (i, &elem) in elems[..lead].iter().enumerate() {
+        let mut path = vec![crate::core::PathStep::Elem(i)];
+        let mut heads = Vec::new();
+        let found = if let Some(elem_name) = db.ast.as_name(elem) {
+            elem_name == name && elem_name != "_"
+        } else if is_tuple_pattern(db, elem) {
+            find_binder_in_tuple(db, elem, name, &mut path, &mut heads)
+        } else {
+            find_binder_in_pattern(db, elem, name, &mut path, &mut heads)
+        };
+        if found {
+            return Some((scrutinee, path, heads));
+        }
+    }
+    None
 }
 
 /// The REST binder of a `(list p0 … p_{lead-1} .. rest)` match pattern binding `name`: returns
@@ -1836,31 +1857,47 @@ fn node_contains(db: &Db, root: StructId, needle: StructId) -> bool {
 }
 
 fn is_list_pattern_element_occurrence(db: &Db, id: StructId) -> bool {
-    let Some(list) = db.parent_of(id) else {
+    // `id` must be a bare name (not `_`, not the `..` marker). A binder occurrence may be a DIRECT child
+    // of the `(list …)` pattern (`(list a b)` — `a`/`b`) or NESTED inside a leading element sub-pattern
+    // (`(list (tuple a b) .. r)` — `a`/`b` inside the tuple), so we ascend to the enclosing `(list …)`
+    // arm pattern rather than only checking the direct parent.
+    let Some(nm) = db.ast.as_name(id) else {
         return false;
     };
-    let Some(elems) = db.ast.as_form(list, "list") else {
+    if nm == "_" || nm == ".." {
         return false;
-    };
-    if !elems.contains(&id) {
-        return false; // not an element of the list
     }
-    let Some(arm) = db.parent_of(list) else {
-        return false;
-    };
-    let Struct::List(pb) = db.ast.get(arm) else {
-        return false;
-    };
-    if pb.len() != 2 || pb[0] != list {
-        return false; // the list must be the arm's PATTERN (first element)
+    // Ascend from `id` to the enclosing `(list …)` form that is an arm's PATTERN. Bounded (patterns are
+    // shallow). A reference in the arm BODY ascends from the body, never through the pattern, so this only
+    // fires for an occurrence sitting inside the pattern subtree.
+    let mut node = id;
+    let mut hops = 0;
+    while hops < 64 {
+        let Some(parent) = db.parent_of(node) else {
+            return false;
+        };
+        // Is `parent` a `(list …)` form that is the PATTERN of a match arm `(pattern body)`?
+        if db.ast.as_form(parent, "list").is_some()
+            && let Some(arm) = db.parent_of(parent)
+            && let Struct::List(pb) = db.ast.get(arm)
+            && pb.len() == 2
+            && pb[0] == parent
+            && let Some(matchf) = db.parent_of(arm)
+            && let Some(mtail) = db.ast.as_form(matchf, "match")
+            && mtail.first().copied() != Some(arm)
+            && mtail.contains(&arm)
+        {
+            // `parent` is the arm's list pattern. `id` is a genuine binder iff a leading element sub-pattern
+            // or the rest binder binds its name — the SAME walk Case 6l/6r use, so it agrees exactly with
+            // where a body reference resolves. (A pattern HEAD — the `(. Sum V)` parts, a bare variant name —
+            // is not a binder; those never match here since the walkers skip heads.)
+            return list_pattern_element_binds(db, arm, pb[1], nm).is_some()
+                || list_pattern_rest_binds(db, arm, pb[1], nm).is_some();
+        }
+        node = parent;
+        hops += 1;
     }
-    let Some(matchf) = db.parent_of(arm) else {
-        return false;
-    };
-    match db.ast.as_form(matchf, "match") {
-        Some(mtail) => mtail.first().copied() != Some(arm) && mtail.contains(&arm),
-        None => false,
-    }
+    false
 }
 
 /// The MAP PATTERN `(map (k v) … .. rest)` of the arm whose pattern is `pat`, as `(entries, rest)`:

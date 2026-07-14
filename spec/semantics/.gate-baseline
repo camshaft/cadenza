@@ -35,6 +35,7 @@ pass	Result propagates errors without trapping
 pass	Result type for fallible operations
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
+pass	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
 pass	Type.eq compares a reflected type against a written type
 pass	Type.eq distinguishes quantities by their unit
 pass	Type.eq is false for values of different types
@@ -45,6 +46,7 @@ pass	Type.of reflects a value's type for use as an annotation
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in to a unit of a different dimension is a compile-time error
+pass	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
 pass	a 32-bit-float closure crosses the host boundary
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
@@ -84,6 +86,7 @@ pass	a List-returning closure alongside a plain export — the plain
 pass	a MIXED Int-and-Float Tuple closure ARG flattens + rebuilds (box-int + box-float)
 pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
 pass	a MULTI-shot arm folds a perform in a let-bound lambda applied in the body
+pass	a MULTI-shot arm folds a perform under a CURRIED lambda applied to pure arguments
 pass	a MULTI-shot arm folds a perform wrapped in an inline lambda application
 pass	a MULTI-shot arm keeps a pure applied lambda in its duplicated continuation
 pass	a MULTI-shot handler arm folds a two-hole body by re-reducing per resume
@@ -91,15 +94,26 @@ pass	a MUTUALLY-recursive effectful group is specialized under a state handler
 pass	a Map-returning closure alongside a parameterized plain export — the closure
 pass	a Map-returning closure alongside a parameterized plain export — the plain
 pass	a NARROW-int-field Tuple closure ARG flattens + rebuilds (exercises the i32->i64 extend)
+pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 pass	a NaN nested in a list compares equal under the canonical byte form
 pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
+pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
+pass	a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)
+pass	a RECORD closure ARG on the MULTI-EXPORT path
+pass	a RECORD closure ARG whose fields are NOT in sorted source order
+pass	a RECORD closure ARG with a LIST result
+pass	a RECORD closure ARG with a narrow Bool field, among scalars
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
 pass	a RUNTIME payload-literal refinement dispatches through its literal test
+pass	a Rational accumulator threaded through recursion sums exactly
+pass	a Rational is usable as a map key, matched by its exact value
+pass	a Rational set deduplicates by exact value regardless of how each was written
 pass	a Rational-payload sum value escapes across the boundary in its canonical form
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
+pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
@@ -115,17 +129,22 @@ pass	a Tuple ARG BETWEEN two scalar args crosses the direct-call boundary (scala
 pass	a Tuple ARG among scalars with a BYTE-ROPE result crosses the direct-call boundary
 pass	a Tuple ARG among scalars with a LIST result crosses the direct-call boundary
 pass	a Tuple ARG among scalars with a fixed-shape COMPOUND result crosses the direct-call boundary
+pass	a Tuple ARG of FLOAT fields crosses the direct-call boundary
+pass	a Tuple ARG of MIXED widths (Int32, Int64) crosses the direct-call boundary
+pass	a Tuple ARG with a Bool field between Int64 fields crosses the direct-call boundary
 pass	a UInt32 addition that overflows the 32-bit width is rejected at compile time
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
 pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
+pass	a bare built-in constructor Some is passed as a first-class function
 pass	a bare conditional keyword is rejected, not a crash
 pass	a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare nullary constructor is the nullary sum value
 pass	a bare prelude-colliding variant name matches as the local variant
+pass	a bare user constructor is passed as a first-class function to a higher-order function
 pass	a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant
 pass	a bin arm whose fixed-width segment overruns the input falls through
 pass	a bin pattern binds an integer read from a fixed-width segment
@@ -278,6 +297,7 @@ pass	a constant multi-payload variant match binds both payloads and folds to a s
 pass	a constant tuple is returned as a program result
 pass	a constructor pattern in a tuple payload slot is matched in one arm
 pass	a constructor pattern nested under Some matches a runtime list element
+pass	a constructor selected at RUNTIME is a first-class value that is then applied
 pass	a constructor whose payload is a constructor keeps the outer variant tag
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
 pass	a consumer applies TWO handed-back closures
@@ -424,6 +444,7 @@ pass	a handler folds a counter across the operations it discharges
 pass	a handler mixing arms of two different effects is rejected
 pass	a handler resumes its continuation at most once by default
 pass	a handler that does not discharge every operation of its effect is rejected
+pass	a handler whose STATE is a sum destructures it in the arm
 pass	a header of packed nibbles and a length-prefixed body round-trips
 pass	a helper decodes bytes to a string and consumes the fallible result
 pass	a helper projects a record parameter constrained by its argument
@@ -481,6 +502,7 @@ pass	a list built by a recursive push-loop is then iterated by index
 pass	a list built by a runtime-length loop has that many elements
 pass	a list chosen by a runtime if is length-measured without emitting invalid wasm
 pass	a list compound export under a non-main name crosses to the host
+pass	a list element position composes with a nested tuple pattern
 pass	a list mixing integer and boolean elements is a type error
 pass	a list mixing integer and float elements is a type error
 pass	a list of maps with different keys is homogeneous, not a type error
@@ -643,6 +665,7 @@ pass	a nested option value annotated with the wrong inner payload type is reject
 pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
+pass	a nested tuple list element is bound over a runtime list and folded across the rest
 pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested unquote pattern matches a sub-AST by shape
@@ -692,6 +715,7 @@ pass	a perform in a taken if-branch threads its state to the continuation after 
 pass	a perform in a taken match-arm threads its state to the continuation after the match
 pass	a performed operation composes under a projection and a negation
 pass	a performed operation is the scrutinee of a match that dispatches on its result
+pass	a performed operation whose result is a sum is matched on its variant
 pass	a performing argument to a multiply-using performing callee is not duplicated
 pass	a pipeline chain applies its stages left to right
 pass	a plain number def is unaffected by a following statement (the `as` sugar stays in its statement)
@@ -708,6 +732,7 @@ pass	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
 pass	a projected tuple element IS observed, so its trap occurs (the anchor)
+pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
@@ -1036,6 +1061,7 @@ pass	a two-parameter sum whose variants use the parameters in different orders i
 pass	a two-payload constructor applied in curried form builds the variant
 pass	a two-payload sum escapes its second variant with a bare name
 pass	a type annotation consistent with the value is transparent
+pass	a type stored in a compound result cannot cross the boundary
 pass	a type-value in integer-width position is rejected
 pass	a u16 segment encodes an integer big-endian by default
 pass	a u32 segment encodes four big-endian bytes

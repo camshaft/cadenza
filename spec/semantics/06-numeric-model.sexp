@@ -2161,6 +2161,11 @@
   (call   main (: 1 Int64) (: 3 Int64))
   (output (: 1 Int64)))
 
+(case "a Rational accumulator threaded through recursion sums exactly"
+  (doc "Threading a Rational through a recursive accumulator sums 1/2 three times to 3/2, then compares 3/2 < 2/1 as true, exercising borrow/consume drop discipline across the recursion.")
+  (input (do (def (loop (: n Int64) (: acc Rational)) (if (= n 0) acc (loop (- n 1) (+ acc (Rational.of 1 2))))) (def (main) (if (< (loop 3 (Rational.of 0 1)) (Rational.of 2 1)) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
 (case "a runtime-computed Rational crosses the host boundary as its exact value"
   (doc    "`(Rational.of-int (Int64.of (* (BigInt.of 1000000) (BigInt.of 1000000))))` — a Rational built
            from a RUNTIME value (the BigInt product 1e12 does not fold, so `Rational.of-int` of the
@@ -2171,3 +2176,26 @@
            form a constant Rational bakes. Mirrors the runtime-BigInt boundary escape.")
   (input  (Rational.of-int (Int64.of (* (BigInt.of 1000000) (BigInt.of 1000000)))))
   (output (: 1000000000000/1 Rational)))
+
+(case "a Rational is usable as a map key, matched by its exact value"
+  (doc    "`(Map.lookup (Map.insert (Map.insert Map.empty (Rational.of 1 2) 10) (Rational.of 2 3) 20)
+           (Rational.of 1 2))` = `Some 10`: a Rational KEY is inserted and looked up by VALUE — the CHAMP
+           map hashes/compares it via `champ_hash`/`champ_eq` descending the two BigInt child leaves (the
+           normalized 2-handle node), so `1/2` finds its stored value 10. Pins that a Rational is a
+           first-class map key (a constant Rational key materializes as a heap handle at the insert/lookup
+           site — `box_op_ty`/`get_op_ty` treat it as already-a-handle, like BigInt).")
+  (input  (match (Map.lookup
+                   (Map.insert (Map.insert Map.empty (Rational.of 1 2) 10) (Rational.of 2 3) 20)
+                   (Rational.of 1 2))
+                 ((Some v) v)
+                 ((None) 0)))
+  (output (: 10 Int64)))
+
+(case "a Rational set deduplicates by exact value regardless of how each was written"
+  (doc    "`(Set.len (Set.of (list (Rational.of 1 2) (Rational.of 2 4) (Rational.of 1 3))))` = 2: `1/2` and
+           `2/4` normalize to the SAME rational (one node shape), so the set collapses them — leaving
+           `{1/2, 1/3}` of size 2. Confirms a Rational set element deduplicates by its normalized value
+           (the CHAMP descends the two BigInt children), the set companion of the Rational-map-key case.")
+  (input  (Set.len (Set.of (list (Rational.of 1 2) (Rational.of 2 4) (Rational.of 1 3)))))
+  (output (: 2 Int64)))
+

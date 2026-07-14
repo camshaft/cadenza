@@ -83,9 +83,9 @@ export default function Strings() {
 
       <H2>Your turn</H2>
       <P>
-        The word <C>"naïve"</C> has an accented <C>ï</C> that takes two bytes in UTF-8 — so its two
-        lengths disagree. These two exercises ask for each in turn; the point is choosing the operation
-        that answers the question you actually mean.
+        First a length question, then a slice. The word <C>"naïve"</C> has an accented <C>ï</C> that
+        takes two bytes in UTF-8 — so its character count and its byte count disagree, and the point is to
+        pick the operation that answers the question you actually mean.
       </P>
       <Exercise
         id="strings:1"
@@ -110,17 +110,23 @@ export default function Strings() {
         id="strings:2"
         prompt={
           <>
-            Now how many <em>bytes</em> does <C>"naïve"</C> take in UTF-8? The two-byte <C>ï</C> pushes it
-            one past the character count — the answer is <C>6</C>.
+            Now a slice. <C>String.slice</C> takes a half-open range <C>[start, end)</C>; pull the word{" "}
+            <C>"world"</C> out of <C>"hello world"</C> by filling in the <em>start</em> index. Measuring
+            the result confirms you got it — <C>"world"</C> is <C>5</C> characters.
           </>
         }
-        starter={`(def (main) (String.?-len "naïve"))`}
-        solution={`(def (main) (String.byte-len "naïve"))`}
-        expected="6"
+        starter={`(def (main)
+  (String.scalar-len
+    (Option.expect (String.slice "hello world" ? 11) "in range")))`}
+        solution={`(def (main)
+  (String.scalar-len
+    (Option.expect (String.slice "hello world" 6 11) "in range")))`}
+        expected="5"
         hint={
           <>
-            Bytes, not characters → <C>byte-len</C>. Five characters, but <C>ï</C> costs two bytes, so{" "}
-            <C>6</C>.
+            Count characters from <C>0</C>: <C>"world"</C> begins at index <C>6</C> (right after the
+            space at <C>5</C>), and the range runs up to but not including <C>11</C>. Start at <C>5</C>{" "}
+            instead and you'd catch the leading space — six characters, not five.
           </>
         }
       />

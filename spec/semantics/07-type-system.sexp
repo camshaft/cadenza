@@ -693,3 +693,19 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 8 Int64)))
+
+; A TYPE-VALUE is compile-time-only (`type-system.md §A Type Parameter Is Resolvable At Compile Time`: a
+; type-value never flows from runtime data into a position that determines a type). So a value that would
+; carry a type-value into RUNTIME data — a compound storing a type, returned across the component boundary
+; — is rejected at compile time. A bare type export (`(def (main) Int64)`) is already rejected; this pins
+; the NESTED case: a type stored in a tuple result is ONE coded CDZ0201, naming the compound, not a cascade
+; of internal no-runtime-form declines.
+
+(case "a type stored in a compound result cannot cross the boundary"
+  (doc    "`(def (main) (tuple Int64 5))` returns `(Tuple Type Int64)` — a tuple carrying a TYPE-value in
+           its first slot. A type-value is compile-time only and has no runtime form, so a compound
+           carrying one cannot cross the component boundary. The compiler reports ONE coded CDZ0201 naming
+           the compound (not the four uncoded no-runtime-form declines the emit path would otherwise leak).
+           The rejection is the program's outcome; there is no value.")
+  (input  (do (def (main) (tuple Int64 5)) (export main)))
+  (error  CDZ0201))

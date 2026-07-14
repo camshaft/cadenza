@@ -11645,6 +11645,57 @@ mod match_engine {
     }
 
     #[test]
+    fn a_type_stored_in_a_compound_result_reports_one_coded_error() {
+        // Type-valued-parameter vertical, T4: a type-value NESTED in a compound result — `(def (main)
+        // (tuple Int64 5))` returns `(Tuple Type Int64)`. A type-value is compile-time-only
+        // (`type-system.md §226`: a type-value never flows from runtime data), so a compound carrying one
+        // cannot cross the boundary. Like the BARE type export, this must be ONE coded CDZ0201 (naming the
+        // compound), not the four uncoded no-runtime-form declines the emit path leaks. `ty.has_type_value`
+        // detects the nested `Ty::Type`; the message embeds the `TYPE_EXPORT_MARKER` so `dedup_faults`
+        // drops the downstream declines.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) (tuple Int64 5)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "a type stored in a compound result = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
+        assert!(
+            errors[0].message.contains("is a TYPE, not a runtime value"),
+            "the surviving error names the real cause: {}",
+            errors[0].message
+        );
+        // None of the no-runtime-form declines accompany it (dedup dropped them).
+        assert!(
+            !out.diagnostics.iter().any(|d| {
+                matches!(
+                    d.message.as_str(),
+                    crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE
+                        | crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE
+                        | crate::diag::PRIM_AS_VALUE_DECLINE
+                )
+            }),
+            "the no-runtime-form declines must not accompany the coded reject: {:?}",
+            out.diagnostics
+        );
+    }
+
+    #[test]
     fn an_effect_valued_export_reports_one_clean_error_not_a_leaked_cascade() {
         // Exporting a bare EFFECT name — `(def (main) E)` — evaluates the effect's SYNTHESIZED record,
         // which leaked a 4-error cascade of INTERNAL errors ("unknown intrinsic", `unbound name effect-op`,
@@ -12637,6 +12688,38 @@ mod match_engine {
         );
         // No mechanical fix — the repair is retyping the elements, which the author must supply.
         assert!(list.fix.is_none(), "no mechanical fix: {:?}", list.fix);
+    }
+
+    #[test]
+    fn an_unsolved_type_variable_renders_as_underscore_not_an_internal_number() {
+        // An UNSOLVED type variable in a rendered type — the error type of a bare `(Ok 1)` is `(Result
+        // Int64 _)`, inference never pins the `Err` payload — must render as `_` (rustc's placeholder for
+        // an unknown type), NOT the internal `?{n}`. The `n` is a nondeterministic solver-assigned number
+        // that means nothing to the author and reads as a naive-HM internal leak. Checked across the sites
+        // an unsolved var reaches a user message: a list-element clash, a call argument, an if-branch join.
+        let list = reject_full("(module m (def (g) (list (Some 1) (Ok 2))) (export g))")
+            .expect("mixing Option and Result in a list rejects");
+        assert!(
+            list.message.contains("(Result Int64 _)") && !list.message.contains("?"),
+            "an unsolved var renders as `_`, no `?N`: {}",
+            list.message
+        );
+        let arg = reject_full(
+            "(module m (def (g (: o (Option Int64))) o) (def (main) (g (Ok 2))) (export main))",
+        )
+        .expect("passing a Result where Option is wanted rejects");
+        assert!(
+            arg.message.contains("(Result Int64 _)") && !arg.message.contains("?"),
+            "the call-argument message renders the unsolved var as `_`: {}",
+            arg.message
+        );
+        let iff = reject_full("(module m (def (f (: b Bool)) (if b (Some 1) (Ok 2))) (export f))")
+            .expect("if branches Option vs Result reject");
+        assert!(
+            iff.message.contains("(Result Int64 _)") && !iff.message.contains("?"),
+            "the if-branch message renders the unsolved var as `_`: {}",
+            iff.message
+        );
     }
 
     #[test]
@@ -15408,6 +15491,67 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_pattern_must_be_linear_and_refutable_elements_decline() {
+        // LINEARITY (`core-semantics.md §145`): a list pattern is a binder position and MUST be linear —
+        // `(list a a)` binds `a` twice → CDZ0102, exactly as `(tuple a a)` does. This was previously a
+        // SOUNDNESS GAP: the list matcher never ran the linearity check, so `(list a a)` compiled silently.
+        assert_eq!(
+            reject_code(
+                "(module m (def (f xs) (match xs ((list a a) (+ a a)) (_ 0))) \
+                         (def (main) (f (list 1 2))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0102"),
+            "a repeated leading binder is non-linear"
+        );
+        // A repeat spanning a leading position AND the rest binder is the same CDZ0102 (`(list a b .. a)`).
+        assert_eq!(
+            reject_code(
+                "(module m (def (f xs) (match xs ((list a b .. a) a) (_ 0))) \
+                         (def (main) (f (list 1 2 3))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0102"),
+            "a binder repeated across a leading position and the rest is non-linear"
+        );
+        // A repeat NESTED inside an element sub-pattern is still caught (`(list (tuple a a) .. r)`).
+        assert_eq!(
+            reject_code(
+                "(module m (def (f xs) (match xs ((list (tuple a a) .. r) a) (_ 0))) \
+                         (def (main) (f (list (tuple 1 2)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0102"),
+            "a binder repeated inside a nested tuple element is non-linear"
+        );
+
+        // A SHAPE-INCOMPATIBLE element (a wrong-arity tuple against a scalar-list element) is a hard reject,
+        // NOT a decline: `(list Int64)` elements are scalars, so a `(tuple a b)` element cannot match.
+        assert_eq!(
+            reject_code("(module m (def (f (: xs (List Int64))) (match xs ((list (tuple a b) .. r) a) (_ 0))) \
+                         (export f))")
+            .as_deref(),
+            Some("CDZ0201"),
+            "a tuple element pattern against a scalar list element is a shape error"
+        );
+
+        // A REFUTABLE element (a literal, a multi-variant ctor) is NOT ill-formed — it needs element-value
+        // refinement the length-dispatch matcher does not yet do, so it DECLINES (codeless), never a false
+        // reject. `reject_code` returns None (no CODE) but compilation still fails (a decline blocks emit).
+        let decline = reject_full(
+            "(module m (def (f xs) (match xs ((list 0 .. r) 1) (_ 0))) \
+                                    (def (main) (f (list 0 1))) (export main))",
+        )
+        .expect("a refutable element blocks compilation");
+        assert_eq!(decline.code, None, "a refutable element declines (no code)");
+        assert!(
+            decline.message.contains("refutable list element"),
+            "the decline names the refutable element: {}",
+            decline.message
+        );
+    }
+
+    #[test]
     fn a_rest_list_pattern_matches_by_minimum_length_and_binds_leading_elements() {
         // 05-compound-types "an element pattern matches a list by its length and elements": a REST pattern
         // `(list p0 … p_{k-1} .. rest)` matches any list of length ≥ k, binding each LEADING position to
@@ -18016,6 +18160,98 @@ mod match_engine {
             .unwrap(),
             "10",
             "multi-binder cons arm reads both heads across the consuming rest slice"
+        );
+    }
+
+    #[test]
+    fn a_list_element_position_composes_with_nested_patterns() {
+        // `core-semantics.md §145`: each list element position is a *Patterns Compose* binder position — it
+        // MAY itself be any nested pattern, matched recursively. The dispatch stays LENGTH-based, so an
+        // IRREFUTABLE element (tuple / single-variant ctor / nested binder) always matches once the length
+        // holds; its sub-binders resolve down the extended `Elem`/`Payload` path (resolve Case 6l). Before,
+        // any non-bare-binder leading element declined "not a binder is not yet supported".
+
+        // CONSTANT list, nested TUPLE element in a REST pattern: `(list (tuple a b) .. rest)` binds `a`/`b`
+        // to the first pair's elements. `(list (tuple 1 2) (tuple 3 4))` → a + b = 3 (folds, no runtime).
+        let Some(v) = run_heap_value(
+            "(module m (def (main) \
+               (match (list (tuple 1 2) (tuple 3 4)) ((list (tuple a b) .. rest) (+ a b)) (_ 0))) \
+             (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping constant nested list-element run");
+            return;
+        };
+        assert_eq!(v, "3", "constant list, nested tuple element binds the pair");
+
+        // RUNTIME list (a PARAMETER scrutinee), nested tuple element: association-list style. `first-key`
+        // reads the first pair's key via `(list (tuple k v) .. rest)`; called on a runtime-built list.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (tuple i (* i 10)))) out)) \
+               (def (first-key xs) (match xs ((list (tuple k v) .. rest) (+ k v)) (_ -1))) \
+               (def (main) (first-key (build 1 3 (list)))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping nested list-element run");
+            return;
+        };
+        // build pushes (1,10) then (2,20); first pair is (1,10) → k+v = 11.
+        assert_eq!(
+            v, "11",
+            "runtime list, nested tuple element binds first pair"
+        );
+
+        // A nested tuple element in a FIXED-ARITY arm, RUNTIME list: `(list (tuple a b))` matches a
+        // one-element list of a pair, binding both fields. `(build)` pushes a single (5, 6) pair.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (one) ((. List push) (list) (tuple 5 6))) \
+               (def (f xs) (match xs ((list (tuple a b)) (* a b)) (_ -1))) \
+               (def (main) (f (one))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping fixed-arity nested list-element run");
+            return;
+        };
+        assert_eq!(
+            v, "30",
+            "runtime fixed-arity list, nested tuple element binds both fields"
+        );
+
+        // A NESTED single-variant CONSTRUCTOR element (irrefutable): `(list (Mk n) .. rest)` unwraps each
+        // newtype element. `(type Box (Mk Int64))` — the sole ctor always matches, so the element is
+        // irrefutable. Constant list `(list (Mk 7) (Mk 8))` → n of the first = 7.
+        let Some(v) = run_heap_value(
+            "(module m (type Box (Mk Int64)) (def (main) \
+               (match (list (Mk 7) (Mk 8)) ((list (Mk n) .. rest) n) (_ 0))) \
+             (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping nested-ctor list-element run");
+            return;
+        };
+        assert_eq!(
+            v, "7",
+            "constant list, nested single-variant ctor element unwraps"
+        );
+
+        // DEEP nesting + rest recursion: sum the first components of a runtime list of pairs by recursing on
+        // `rest`. `sum-firsts` binds `(tuple a _)` and recurses `(sum-firsts rest)`; the wildcard second
+        // element is dropped. build pushes (1,·)(2,·)(3,·) → 1+2+3 = 6.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (tuple i 99))) out)) \
+               (def (sum-firsts xs) (match xs ((list) 0) ((list (tuple a _) .. rest) (+ a (sum-firsts rest))))) \
+               (def (main) (sum-firsts (build 1 4 (list)))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping list-of-pairs recurse run");
+            return;
+        };
+        assert_eq!(
+            v, "6",
+            "runtime list-of-pairs, recurse on rest summing first components"
         );
     }
 
@@ -44141,6 +44377,45 @@ mod closure_host_resource {
                 && err.message.contains("cannot cross the component boundary"),
             "expected the partial-application explanation, got: {}",
             err.message
+        );
+    }
+
+    /// A PARTIAL APPLICATION whose residual parameter type is an unresolved unification variable — NOT
+    /// `Ty::Any` — escaping as an exported FUNCTION's result. `(def (g (: n Int64)) (Map.insert (Map.empty)
+    /// n))` returns `(-> ?7 (Map Int64 ?7))`: the residual first-parameter type inference never grounded
+    /// surfaces as a `Ty::Var(_)`, not `Any` (the `Any` case is the nullary-export sibling above). Before
+    /// the fix, `arrow_has_unconstrained` matched only `Any`, so `cdz check` accepted this while the backend
+    /// declined it deep in closure-resource emit — and the backend's message LEAKED the internal `?7`
+    /// verbatim ("a closure argument of type ?7 has no scalar host-boundary representation"). Matching
+    /// `Any | Var(_)` in BOTH the `collect_faults` detector and the backend's `closure_boundary_reject`
+    /// closes the check-vs-emit gap and replaces the leaky `?7` with the actionable partial-application
+    /// explanation. Pins: CDZ0201 on the compile surface, the partial-application wording, and that the raw
+    /// `?7` is NOT the whole message (it may appear once inside the backticked type context, but the
+    /// explanation must carry the cause).
+    #[test]
+    fn a_partial_application_with_a_var_residual_reports_at_both_surfaces_without_leaking_a_type_var()
+     {
+        use crate::testkit::parse;
+        let src = "(module m (def (g (: n Int64)) (Map.insert (Map.empty) n)) (export g))";
+        let encoded = crate::codec::encode(&parse(src));
+        // The COMPILE surface: a coded CDZ0201, not the leaky bare-`?7` backend decline.
+        let err = crate::compile::compile_component(&encoded)
+            .expect_err("a partial application escaping as a function result must decline");
+        assert_eq!(err.code.as_deref(), Some("CDZ0201"), "got: {}", err.message);
+        assert!(
+            err.message.contains("cannot cross the component boundary")
+                && err.message.contains("partial application"),
+            "expected the partial-application explanation, got: {}",
+            err.message
+        );
+        // The CHECK surface must report the SAME fault (the check-vs-emit gap this increment closed): the
+        // `collect_faults` detector's `arrow_has_unconstrained` now matches a `Var(_)` residual too.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("cannot cross the component boundary")),
+            "cdz check must also report the closure-boundary fault, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 

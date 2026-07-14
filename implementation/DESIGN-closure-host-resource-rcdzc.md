@@ -1043,6 +1043,15 @@ the component type. The new work:
   tuple closures (Int64-pair + Int64/Bool) × scalar/List results, e2e. **A fixed-shape scalar tuple ARG among
   scalar args is now supported on ALL FOUR export shapes (single/multi/mixed/distinct-sig) for EVERY result
   shape (scalar/byte-rope/fixed-compound/collection) — the direct-call tuple-among-scalars surface is CLOSED.**
+- **✅ a RECORD closure argument is now DRIVABLE end-to-end** (cdz-run `dd9e6530`). A record arg already
+  COMPILED (it erases to a component `tuple<…>` in canonical SORTED-NAME order via `tuple_field_abi`/
+  `Core::Record`'s `BTreeMap`), but the cdz-run corpus driver could only supply a positional `(tuple …)` — a
+  record value `(record (x 10) (y 3))` failed to coerce. Fixed in `coerce_one`'s `Type::Tuple` arm: when every
+  parsed field is a `(name value)` group, sort the fields by name (matching the boundary tuple's sorted-key
+  layout) + unwrap each to its value. Proven sound by an OUT-OF-SORTED-ORDER record (`(z, a)` → boundary
+  `(a, z)` → `r.z - r.a` = 97, not a positional coincidence). A TEST-HARNESS fix, not a compiler change.
+  Corpus: record arg — sole/among-scalars/out-of-order/narrow-Bool-field/List-result/multi-export + a 3-field
+  tuple + a 2-prefix/1-suffix interleaving.
 - **REMAINING (all optional, none blocking):** on the DIRECT-CALL path — a VARIABLE-LENGTH collection arg
   (needs a `value-decode` runtime op that does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
   direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-resource passed

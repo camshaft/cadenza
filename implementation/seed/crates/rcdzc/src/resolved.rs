@@ -239,8 +239,8 @@ pub enum Prim {
     /// `Rational.of n d` — CONSTRUCT an exact rational from a numerator and denominator (`(Int a) → (Int
     /// b) → Rational`). Normalizes immediately: gcd-reduce to lowest terms, sign onto the numerator,
     /// denominator strictly positive. A ZERO denominator has no value → TRAPS ("rational with zero
-    /// denominator"). A CONSTANT pair FOLDS to a normalized `Core::ConstRational`; a runtime operand
-    /// declines until the runtime rational compound (a later B4 slice). B4-1.
+    /// denominator"). A CONSTANT pair FOLDS to a normalized `Core::ConstRational`; a runtime operand emits
+    /// `Core::RationalOfInts` (widen each to a BigInt + the runtime `rational-of` op, R3b). B4-1.
     ///
     /// The canonical normalized form (lowest terms + fixed sign placement) makes two rationals denoting
     /// the same number share one representation, and it is a deterministic function of the numerator and

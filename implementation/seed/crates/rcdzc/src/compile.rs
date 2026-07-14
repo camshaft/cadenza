@@ -1554,16 +1554,23 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // parameter or result has no `abi_val_type`) so BOTH surfaces report it, coded CDZ0201 (ill-formed:
     // the public surface is not boundary-representable), anchored at the export clause. A REPRESENTABLE
     // closure export (`(-> Int64 Int64)` — the C-HOST feature) is fine and NOT flagged.
-    // An UNCONSTRAINED (`Any`) parameter/result in an exported closure's type — inference never fixed
-    // it, the partial-application / unannotated-closure case. This is the genuinely-unrepresentable
-    // signal, NARROWER than "not host-ABI-representable": the closure boundary supports every aliased
-    // scalar width (Float32, Int8/16/…), which `abi_val_type` (the host-CALL table) does NOT model, so
-    // keying on `abi_val_type` would over-reject a REPRESENTABLE closure export (the C-HOST feature). A
+    // An UNCONSTRAINED parameter/result in an exported closure's type — inference never fixed it, the
+    // partial-application / unannotated-closure case. This is the genuinely-unrepresentable signal,
+    // NARROWER than "not host-ABI-representable": the closure boundary supports every aliased scalar width
+    // (Float32, Int8/16/…), which `abi_val_type` (the host-CALL table) does NOT model, so keying on
+    // `abi_val_type` would over-reject a REPRESENTABLE closure export (the C-HOST feature). A
     // concrete-but-unrepresentable component is the backend's own decline, not this well-formedness fault.
+    // "Unconstrained" is BOTH `Ty::Any` AND an unresolved unification variable `Ty::Var(_)`: a residual
+    // param of a partial application in a FUNCTION body — `(def (g (: n Int64)) (Map.insert (Map.empty) n))`,
+    // whose result is `(-> ?7 (Map …))` — surfaces as a `Var(_)`, not `Any`. Matching only `Any` let that
+    // case slip through `check` while the backend declined it (leaking the internal `?7` in its message);
+    // matching both makes `check` report the same CDZ0201 and closes the check-vs-emit gap. The backend's
+    // own `closure_boundary_reject` guards on the same `Any | Var(_)` pair (they must agree).
     fn arrow_has_unconstrained(ty: &crate::ty::Ty) -> bool {
         match ty {
             crate::ty::Ty::Fn(p, r) => {
-                matches!(p.as_ref(), crate::ty::Ty::Any) || arrow_has_unconstrained(r)
+                matches!(p.as_ref(), crate::ty::Ty::Any | crate::ty::Ty::Var(_))
+                    || arrow_has_unconstrained(r)
             }
             _ => false,
         }
@@ -1594,6 +1601,29 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                         "export `{name}` is a TYPE, not a runtime value — a type is compile-time only \
                          and cannot cross the component boundary (export a value of the type, or a \
                          function, not the type itself)"
+                    ),
+                )
+                .at(occ),
+            );
+            continue;
+        }
+        // A type-value NESTED in a compound result — `(def (main) (tuple Int64 5))` returns `(Tuple Type
+        // Int64)`. A type-value is compile-time-only (`type-system.md §226`: a type-value never flows from
+        // runtime data), so a compound CARRYING one cannot cross the boundary either. Without this the emit
+        // path declines through the same uncoded no-runtime-form cascade with no coded, actionable reject.
+        // Report ONE coded CDZ0201 here; the message embeds `TYPE_EXPORT_MARKER` ("is a TYPE, not a runtime
+        // value") so `dedup_faults` drops the downstream declines exactly as for the bare type-valued
+        // export. The bare `Ty::Type` case above is handled first, so this is only a NESTED occurrence.
+        if ty.has_type_value() {
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "export `{name}`: a {} is a TYPE, not a runtime value — the {} carries a type, \
+                         which is compile-time only and cannot cross the component boundary (a type-value \
+                         never flows into runtime data; store a value of the type, not the type itself)",
+                        ty.render_name(),
+                        ty.render_name()
                     ),
                 )
                 .at(occ),
