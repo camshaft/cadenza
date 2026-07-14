@@ -1372,22 +1372,24 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // drop correctness hazard closed at the chokepoint. (A WELL-FORMED `(export g)` naming a missing/typo'd
     // or non-value def is handled above as CDZ0101 — this is only the STRUCTURALLY malformed argument.)
     for (occ, bad_arg) in db.malformed_exports() {
+        // Anchor at the BAD ELEMENT when there is one (so a `(export a 5)` points at `5`, not the whole
+        // clause); fall back to the clause for an empty `(export)`.
+        let anchor = bad_arg.unwrap_or(occ);
         let mut reject = Reject::coded(
             Code::Malformed,
-            "an export names a single definition — write `(export <name>)`, e.g. `(export main)`"
+            "an export names a definition — write `(export <name>)`, e.g. `(export main)` \
+             (an export clause is one or more bare definition names)"
                 .to_string(),
         )
-        .at(occ);
-        // When the bad argument is a compound whose HEAD is a name — `(export (g x))` — the author most
-        // likely meant to export `g`; offer replacing the whole clause with `(export <head>)`. A non-name
-        // argument (`(export 5)`) or an empty `(export)` has no name to recover → message only.
+        .at(anchor);
+        // When the bad element is a compound whose HEAD is a name — `(export (g x))` — the author most
+        // likely meant to export `g`; offer replacing that element with the bare `<head>`. A non-name
+        // atom (`(export 5)`, the `5` in `(export a 5)`) or an empty `(export)` has no name to recover →
+        // message only (the author drops or replaces it).
         if let Some(arg) = bad_arg
             && let Some(head) = db.ast.head_name(arg)
         {
-            reject = reject.with_fix(crate::diag::Fix::replace_heuristic(
-                occ,
-                format!("(export {head})"),
-            ));
+            reject = reject.with_fix(crate::diag::Fix::replace_heuristic(arg, head.to_string()));
         }
         faults.push(reject);
     }

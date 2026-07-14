@@ -323,6 +323,44 @@ fn a_recursive_export_emits_a_self_calling_fn() {
 }
 
 #[test]
+fn a_recursive_def_named_a_rust_keyword_emits_a_raw_identifier() {
+    // `loop` is a valid Cadenza identifier but a Rust KEYWORD. A recursive def named it SURVIVES as a
+    // top-level `fn` (a non-recursive one inlines away), so the emitter writes `fn loop(…)` — invalid Rust
+    // (`expected `{`, found `(``). It must be a RAW identifier `r#loop` at the declaration AND the call, the
+    // way rustc round-trips a keyword-named symbol. (The body's own `loop { }` tail-loop is a real loop
+    // keyword and stays bare — only the NAME is escaped.)
+    let rs = compile_rust(
+        "(module m (def (loop (: n Int64)) (if (= n 0) 42 (loop (- n 1)))) (def (go) (loop 3)) (export go))",
+    );
+    assert!(
+        rs.contains("fn r#loop(") && rs.contains("r#loop("),
+        "a keyword-named fn + its call are raw identifiers:\n{rs}"
+    );
+    assert!(
+        !rs.contains("fn loop("),
+        "the fn name must not be the bare keyword:\n{rs}"
+    );
+    // A non-keyword name is unaffected — no `r#` on `sum_to`.
+    let ok = compile_rust(
+        "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (- n 1))))) (export sum-to))",
+    );
+    assert!(
+        !ok.contains("r#"),
+        "a non-keyword name gets no raw prefix:\n{ok}"
+    );
+    // End-to-end through rustc: the keyword-named recursion builds (was a rustc parse error) and loop(3) = 42.
+    let run = compile_rust(
+        "(module m (def (loop (: n Int64)) (if (= n 0) 42 (loop (- n 1)))) (def (go) (loop 3)) (export go))",
+    );
+    if let Some(out) = rustc_run(&run, "go()") {
+        assert_eq!(
+            out, "42",
+            "the keyword-named recursion builds and runs:\n{run}"
+        );
+    }
+}
+
+#[test]
 fn an_inlined_do_local_recursive_fn_uniques_its_name_per_copy() {
     // A helper with a do-local recursive worker, called from MORE THAN ONE site: the helper's body is
     // β-copied per call, each copy carrying its OWN `fac` DEFINITION (a distinct `db.defs` index) but the

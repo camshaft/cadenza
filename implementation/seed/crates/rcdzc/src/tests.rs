@@ -11608,16 +11608,16 @@ mod match_engine {
         let find_export_fault = |src: &str| {
             crate::diagnostics(&mut crate::db::Db::load(parse(src)))
                 .into_iter()
-                .find(|d| d.message.contains("an export names a single definition"))
+                .find(|d| d.message.contains("an export names a definition"))
         };
-        // A compound whose HEAD is a name recovers the likely intent — replace the clause with `(export g)`.
+        // A compound whose HEAD is a name recovers the likely intent — replace that element with `g`.
         let d = find_export_fault("(module m (def (g) 1) (export (g x)))")
             .expect("a malformed compound export clause is rejected");
         assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
         let fix = d.fix.as_ref().expect("carries a recover-the-name fix");
         assert_eq!(fix.kind, crate::abi::FixKind::Replace);
         assert_eq!(
-            fix.replacement, "(export g)",
+            fix.replacement, "g",
             "recovers the head name: {}",
             d.message
         );
@@ -11635,11 +11635,24 @@ mod match_engine {
             "an empty export clause is rejected"
         );
 
-        // NO false positive: a well-formed `(export g)` produces no malformed-export fault.
+        // A MALFORMED ELEMENT of a MULTI-NAME export (`(export a b …)` is valid; a non-name element is not)
+        // is caught too — the scan publishes the well-formed names and defers the bad element's check here,
+        // so `(export a 5)` must flag `5` rather than silently drop it.
         assert!(
-            find_export_fault("(module m (def (g) 1) (export g))").is_none(),
-            "a well-formed export is not flagged"
+            find_export_fault("(module m (def (a) 1) (export a 5))").is_some(),
+            "a non-name element of a multi-name export is caught, not silently dropped"
         );
+
+        // NO false positive: a well-formed single OR multi-name export produces no malformed-export fault.
+        for ok in [
+            "(module m (def (g) 1) (export g))",
+            "(module m (def (a) 1) (def (b) 2) (export a b))",
+        ] {
+            assert!(
+                find_export_fault(ok).is_none(),
+                "a well-formed export is not flagged: {ok}"
+            );
+        }
     }
 
     #[test]
@@ -15388,6 +15401,52 @@ mod match_engine {
             "names the bit total + the padding to the next byte: {}",
             d.message
         );
+    }
+
+    #[test]
+    fn a_non_byte_aligned_int_bin_segment_names_the_supported_widths() {
+        // A fixed-width integer bin segment is one of the byte-aligned widths — `u8/u16/u32/u64` or
+        // `i8/i16/i32/i64`. A `uNN`/`iNN` head with any OTHER width (`u24`, `u7`, `u128`, `i0`) IS the
+        // `uNN` SHAPE the generic "unrecognized kind (expected uNN/iNN/…)" message points at, so that
+        // message misled — it told the author to write what they already wrote. Now such a head names the
+        // real limit (the supported widths) and points a non-byte-aligned width at the `(bits v k)` segment.
+        for bad in ["u24", "u17", "u7", "u128", "i24", "i0"] {
+            let d = reject_full(&format!(
+                "(module m (def (main) (bin ({bad} 1))) (export main))"
+            ))
+            .unwrap_or_else(|| panic!("`{bad}` must reject"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{bad}: {}", d.message);
+            assert!(
+                d.message.contains("u8/u16/u32/u64")
+                    && d.message.contains("(bits v k)")
+                    && d.message.contains(bad),
+                "`{bad}` names the supported widths + the bits alternative: {}",
+                d.message
+            );
+        }
+        // A GENUINELY unrecognized kind (not the `uNN`/`iNN` shape) keeps the generic message — no
+        // over-reach onto a `u`/`i` with no digits or an arbitrary word.
+        for generic in ["frob", "u", "i", "xyz"] {
+            let d = reject_full(&format!(
+                "(module m (def (main) (bin ({generic} 1))) (export main))"
+            ))
+            .unwrap_or_else(|| panic!("`{generic}` must reject"));
+            assert!(
+                d.message.contains("unrecognized bin segment kind"),
+                "`{generic}` keeps the generic kind message: {}",
+                d.message
+            );
+        }
+        // The valid byte-aligned widths still parse (no false positive).
+        for ok in ["u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64"] {
+            assert!(
+                reject_code(&format!(
+                    "(module m (def (main) (if (= (bin ({ok} 1)) (bin ({ok} 1))) 1 0)) (export main))"
+                ))
+                .is_none(),
+                "`{ok}` is a valid integer segment width"
+            );
+        }
     }
 
     #[test]
@@ -23775,6 +23834,43 @@ mod stage1 {
         .expect(
             "a three-level generic chain propagates genericity and keeps param=result connected",
         );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
+    }
+
+    #[test]
+    fn a_recursive_generic_monomorphizes_across_def_flavors() {
+        // Recursive-generic monomorphization reaches every recursive-def flavor. MUTUAL recursion: `ping`
+        // /`pong` each thread a generic 2nd arg; called at Bool + Int64, both monomorphize at both types
+        // (cross-calls re-resolve by name → re-enter specialization). `(ping 3 true)` = true → `(pong 2
+        // 40)` = 40.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (def (ping (: n Int64) x) (if (= n 0) x (pong (- n 1) x))) \
+               (def (pong (: n Int64) x) (if (= n 0) x (ping (- n 1) x))) \
+               (def (main) (if (ping 3 true) (pong 2 40) 99)) (export main))",
+        )))
+        .expect("a mutually-recursive generic group monomorphizes per type");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
+        // DO-LOCAL generic: `idr` inside a `do` block, called at Bool + Int64. A do-local name resolves by
+        // LEXICAL do-scope, which the specialized copy (re-parented out of the block) escapes — the copy
+        // must SHARE the pinned self-call occurrence (`copy_structural_pub`'s `pin_self_calls`), else the
+        // copied `(idr …)` re-resolves unbound (CDZ0101). `(idr 1 true)` = true → `(idr 2 40)` = 40.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (main) \
+               (do (def (idr (: n Int64) x) (if (= n 0) x (idr (- n 1) x))) \
+                   (if (idr 1 true) (idr 2 40) 99))) (export main))",
+        )))
+        .expect("a do-local generic function monomorphizes per type");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
+        // MODULE-MEMBER generic: `m.idr` called at Bool + Int64 through the projection chain. Resolves via
+        // `member_value` (the `callee_def_index` Member arm) to the internal member def. `(idr 1 true)` =
+        // true → `(idr 2 40)` = 40.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module top (def (main) \
+               (do (module m (def (idr (: n Int64) x) (if (= n 0) x (idr (- n 1) x)))) \
+                   (if ((. m idr) 1 true) ((. m idr) 2 40) 99))) (export main))",
+        )))
+        .expect("a module-member generic function monomorphizes per type");
         assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
     }
 

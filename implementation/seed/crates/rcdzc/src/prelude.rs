@@ -75,6 +75,17 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // Type constructors — a record whose META channel `(meta apply)` holds the native builder. `(Int
     // a)` / `(-> A B)` are ORDINARY applications: project `(meta apply)`, apply it. `Int`/`UInt` build
     // a width-specialized integer MODULE; `->` builds a function type-value.
+    //
+    // A generic type constructor (`List`/`Map`/`Set`/`Tuple` below, `Option`/`Result` from the sum
+    // synthesis) is a compile-time function from TYPES to a type, applied by the SAME ordinary application
+    // as any value — `(List Int64)` projects `(meta apply)` and applies it, no special syntax — so a
+    // parameterized type is the RESULT of applying a type constructor. Generics reuse this first-class
+    // -type machinery (`Meta.apply` over type-valued arguments), not a separate parametric-polymorphism
+    // construct; a type argument is a compile-time value, never runtime data.
+    //= spec/capabilities/type-system.md#generics-are-type-valued-parameters-not-a-separate-polymorphism-mechanism
+    //# A generic definition MUST be expressed as an ordinary definition that takes type-valued parameters, so that generics reuse the first-class-type machinery rather than introducing a separate parametric-polymorphism construct.
+    //= spec/capabilities/type-system.md#generics-are-type-valued-parameters-not-a-separate-polymorphism-mechanism
+    //# A generic type constructor — a type parameterized by another type, such as a list of a given element type or an optional of a given type — MUST be a compile-time function from types to a type, applied by ordinary application, so that a parameterized type like an optional integer is the result of applying a type constructor rather than special syntax.
     names.insert("Int".to_string(), ctor_record(ast, "Int"));
     names.insert("UInt".to_string(), ctor_record(ast, "UInt"));
     names.insert("->".to_string(), ctor_record(ast, "->"));
