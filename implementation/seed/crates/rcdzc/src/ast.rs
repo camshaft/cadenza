@@ -343,6 +343,341 @@ impl IntValue {
         // Equal magnitudes: sign matters only for a non-zero value (zero is never "negative").
         a.is_empty() || self.negative == other.negative
     }
+
+    // ── Arbitrary-precision arithmetic (the "later compile-time-evaluation concern" this crate's
+    // Cargo.toml names). Hand-written schoolbook algorithms over the big-endian magnitude bytes — the
+    // COPY-DON'T-DEPEND rule forbids a bignum crate here (the compiler ports to Cadenza then back to
+    // Rust; a shared external crate would break that round-trip). Used by `Rational` constant folding
+    // (normalize via `gcd`, arithmetic via `mul`/`divmod`) and BigInt constant compare. Every op keeps
+    // the canonical minimal magnitude (no leading zero bytes; zero is the empty magnitude, never
+    // negative). ─────────────────────────────────────────────────────────────────────────────────────
+
+    /// True iff the value is zero (empty canonical magnitude, or all-zero bytes).
+    pub fn is_zero(&self) -> bool {
+        self.magnitude.iter().all(|&b| b == 0)
+    }
+
+    /// Strip leading zero bytes + force a zero value to the canonical (positive, empty) form.
+    fn normalize(mut neg: bool, mut mag: Vec<u8>) -> IntValue {
+        let mut start = 0;
+        while start < mag.len() && mag[start] == 0 {
+            start += 1;
+        }
+        mag.drain(..start);
+        if mag.is_empty() {
+            neg = false; // zero is never negative
+        }
+        IntValue {
+            negative: neg,
+            magnitude: mag,
+        }
+    }
+
+    /// Compare two MAGNITUDES (unsigned) — big-endian byte vectors, ignoring leading zeros. `Less`/
+    /// `Equal`/`Greater` on the numeric magnitude.
+    fn cmp_mag(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+        let trim = |m: &[u8]| {
+            let mut i = 0;
+            while i < m.len() && m[i] == 0 {
+                i += 1;
+            }
+            m.len() - i
+        };
+        let (la, lb) = (trim(a), trim(b));
+        if la != lb {
+            return la.cmp(&lb);
+        }
+        // Same significant length: compare the significant bytes MSB-first.
+        let (sa, sb) = (&a[a.len() - la..], &b[b.len() - lb..]);
+        sa.cmp(sb)
+    }
+
+    /// Add two magnitudes (unsigned big-endian), returning the canonical minimal sum magnitude.
+    fn add_mag(a: &[u8], b: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(a.len().max(b.len()) + 1);
+        let mut carry = 0u16;
+        let (mut ia, mut ib) = (a.len(), b.len());
+        while ia > 0 || ib > 0 || carry > 0 {
+            let da = if ia > 0 {
+                ia -= 1;
+                a[ia] as u16
+            } else {
+                0
+            };
+            let db = if ib > 0 {
+                ib -= 1;
+                b[ib] as u16
+            } else {
+                0
+            };
+            let s = da + db + carry;
+            out.push((s & 0xff) as u8);
+            carry = s >> 8;
+        }
+        out.reverse();
+        out
+    }
+
+    /// Subtract two magnitudes (unsigned big-endian), REQUIRES `a >= b`. Returns the canonical minimal
+    /// difference magnitude.
+    fn sub_mag(a: &[u8], b: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(a.len());
+        let mut borrow = 0i16;
+        let (mut ia, mut ib) = (a.len(), b.len());
+        while ia > 0 {
+            ia -= 1;
+            let da = a[ia] as i16;
+            let db = if ib > 0 {
+                ib -= 1;
+                b[ib] as i16
+            } else {
+                0
+            };
+            let mut d = da - db - borrow;
+            if d < 0 {
+                d += 256;
+                borrow = 1;
+            } else {
+                borrow = 0;
+            }
+            out.push(d as u8);
+        }
+        out.reverse();
+        let mut start = 0;
+        while start < out.len() && out[start] == 0 {
+            start += 1;
+        }
+        out.drain(..start);
+        out
+    }
+
+    /// Multiply two magnitudes (unsigned big-endian), returning the canonical minimal product magnitude.
+    fn mul_mag(a: &[u8], b: &[u8]) -> Vec<u8> {
+        if a.is_empty() || b.is_empty() {
+            return Vec::new();
+        }
+        // Schoolbook: product limb array is little-endian during accumulation, then reversed.
+        let mut acc = vec![0u32; a.len() + b.len()];
+        for (i, &ai) in a.iter().rev().enumerate() {
+            let mut carry = 0u32;
+            for (j, &bj) in b.iter().rev().enumerate() {
+                let idx = i + j;
+                let cur = acc[idx] + (ai as u32) * (bj as u32) + carry;
+                acc[idx] = cur & 0xff;
+                carry = cur >> 8;
+            }
+            let mut k = i + b.len();
+            while carry > 0 {
+                let cur = acc[k] + carry;
+                acc[k] = cur & 0xff;
+                carry = cur >> 8;
+                k += 1;
+            }
+        }
+        let mut out: Vec<u8> = acc.iter().rev().map(|&d| d as u8).collect();
+        let mut start = 0;
+        while start < out.len() && out[start] == 0 {
+            start += 1;
+        }
+        out.drain(..start);
+        out
+    }
+
+    /// Divide magnitude `a` by magnitude `b` (unsigned big-endian, `b` nonzero), returning `(quotient,
+    /// remainder)` magnitudes, both canonical. Bit-at-a-time long division — `a` is small at compile
+    /// time (a folded literal), so simplicity beats a limb-wise Knuth division.
+    fn divmod_mag(a: &[u8], b: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        // Number of significant bits in `a` (MSB-first).
+        let sig = |m: &[u8]| -> usize {
+            let mut i = 0;
+            while i < m.len() && m[i] == 0 {
+                i += 1;
+            }
+            m.len() - i
+        };
+        let a_sig = sig(a);
+        if a_sig == 0 || IntValue::cmp_mag(a, b) == std::cmp::Ordering::Less {
+            // a < b → quotient 0, remainder a (canonicalized).
+            return (Vec::new(), IntValue::sub_mag(a, &[]));
+        }
+        let total_bits = a_sig * 8;
+        // Build the quotient bit-by-bit from the most-significant bit down.
+        let bit = |m: &[u8], idx: usize| -> u8 {
+            // idx counts from LSB (0) up; return that bit.
+            let byte_from_end = idx / 8;
+            let bit_in_byte = idx % 8;
+            if byte_from_end >= m.len() {
+                return 0;
+            }
+            (m[m.len() - 1 - byte_from_end] >> bit_in_byte) & 1
+        };
+        let mut rem: Vec<u8> = Vec::new(); // running remainder magnitude (canonical)
+        let mut quo_bits: Vec<u8> = Vec::with_capacity(total_bits);
+        for i in (0..total_bits).rev() {
+            // rem = rem << 1 | bit_i(a)
+            rem = IntValue::shl1_mag(&rem);
+            if bit(a, i) == 1 {
+                // set the low bit of rem
+                if rem.is_empty() {
+                    rem = vec![1];
+                } else {
+                    let last = rem.len() - 1;
+                    rem[last] |= 1;
+                }
+            }
+            if IntValue::cmp_mag(&rem, b) != std::cmp::Ordering::Less {
+                rem = IntValue::sub_mag(&rem, b);
+                quo_bits.push(1);
+            } else {
+                quo_bits.push(0);
+            }
+        }
+        // quo_bits is MSB-first; pack into bytes.
+        let quo = IntValue::pack_bits_be(&quo_bits);
+        (quo, rem)
+    }
+
+    /// Shift a magnitude left by one bit (multiply by 2), canonical result.
+    fn shl1_mag(m: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(m.len() + 1);
+        let mut carry = 0u8;
+        for &byte in m.iter().rev() {
+            let v = ((byte as u16) << 1) | carry as u16;
+            out.push((v & 0xff) as u8);
+            carry = (v >> 8) as u8;
+        }
+        if carry > 0 {
+            out.push(carry);
+        }
+        out.reverse();
+        let mut start = 0;
+        while start < out.len() && out[start] == 0 {
+            start += 1;
+        }
+        out.drain(..start);
+        out
+    }
+
+    /// Pack an MSB-first bit vector into canonical big-endian bytes.
+    fn pack_bits_be(bits: &[u8]) -> Vec<u8> {
+        // Drop leading zero bits.
+        let first_one = bits.iter().position(|&b| b == 1);
+        let Some(first) = first_one else {
+            return Vec::new();
+        };
+        let sig = &bits[first..];
+        let pad = (8 - sig.len() % 8) % 8;
+        let mut out = Vec::new();
+        let mut cur = 0u8;
+        let mut count = 0usize;
+        for &b in std::iter::repeat_n(&0u8, pad).chain(sig.iter()) {
+            cur = (cur << 1) | b;
+            count += 1;
+            if count == 8 {
+                out.push(cur);
+                cur = 0;
+                count = 0;
+            }
+        }
+        out
+    }
+
+    /// The greatest common divisor of two MAGNITUDES (unsigned), Euclidean. `gcd(0,0)=0`; `gcd(a,0)=a`.
+    fn gcd_mag(a: &[u8], b: &[u8]) -> Vec<u8> {
+        let mut x = IntValue::sub_mag(a, &[]); // canonicalize
+        let mut y = IntValue::sub_mag(b, &[]);
+        while !y.is_empty() {
+            let (_q, r) = IntValue::divmod_mag(&x, &y);
+            x = y;
+            y = r;
+        }
+        x
+    }
+
+    /// Signed comparison of two integer values (canonical or not) — the NUMERIC order, which is NOT the
+    /// derived field order (`Ord` on the struct would compare `negative` then the raw magnitude bytes,
+    /// getting negatives and non-canonical magnitudes wrong), so this is a named method, not an `Ord` impl.
+    #[allow(clippy::should_implement_trait)]
+    pub fn cmp(&self, other: &IntValue) -> std::cmp::Ordering {
+        use std::cmp::Ordering::*;
+        let (za, zb) = (self.is_zero(), other.is_zero());
+        match (za, zb) {
+            (true, true) => return Equal,
+            (true, false) => return if other.negative { Greater } else { Less },
+            (false, true) => return if self.negative { Less } else { Greater },
+            (false, false) => {}
+        }
+        match (self.negative, other.negative) {
+            (false, true) => Greater,
+            (true, false) => Less,
+            (false, false) => IntValue::cmp_mag(&self.magnitude, &other.magnitude),
+            (true, true) => IntValue::cmp_mag(&other.magnitude, &self.magnitude),
+        }
+    }
+
+    /// Signed addition.
+    pub fn add(&self, other: &IntValue) -> IntValue {
+        if self.negative == other.negative {
+            // Same sign: add magnitudes, keep the sign.
+            IntValue::normalize(
+                self.negative,
+                IntValue::add_mag(&self.magnitude, &other.magnitude),
+            )
+        } else {
+            // Opposite signs: subtract the smaller magnitude from the larger; sign of the larger.
+            match IntValue::cmp_mag(&self.magnitude, &other.magnitude) {
+                std::cmp::Ordering::Equal => IntValue::zero(),
+                std::cmp::Ordering::Greater => IntValue::normalize(
+                    self.negative,
+                    IntValue::sub_mag(&self.magnitude, &other.magnitude),
+                ),
+                std::cmp::Ordering::Less => IntValue::normalize(
+                    other.negative,
+                    IntValue::sub_mag(&other.magnitude, &self.magnitude),
+                ),
+            }
+        }
+    }
+
+    /// Signed negation.
+    pub fn neg(&self) -> IntValue {
+        if self.is_zero() {
+            IntValue::zero()
+        } else {
+            IntValue {
+                negative: !self.negative,
+                magnitude: self.magnitude.clone(),
+            }
+        }
+    }
+
+    /// Signed subtraction (`self - other`).
+    pub fn sub(&self, other: &IntValue) -> IntValue {
+        self.add(&other.neg())
+    }
+
+    /// Signed multiplication.
+    pub fn mul(&self, other: &IntValue) -> IntValue {
+        let mag = IntValue::mul_mag(&self.magnitude, &other.magnitude);
+        IntValue::normalize(self.negative != other.negative, mag)
+    }
+
+    /// Truncating signed division `(quotient, remainder)` — quotient toward zero, remainder takes the
+    /// DIVIDEND's sign (matching fixed-width `/`/`%`). Returns `None` on a zero divisor. `q*d + r == n`.
+    pub fn divmod(&self, other: &IntValue) -> Option<(IntValue, IntValue)> {
+        if other.is_zero() {
+            return None;
+        }
+        let (q_mag, r_mag) = IntValue::divmod_mag(&self.magnitude, &other.magnitude);
+        let q = IntValue::normalize(self.negative != other.negative, q_mag);
+        let r = IntValue::normalize(self.negative, r_mag); // remainder takes the dividend's sign
+        Some((q, r))
+    }
+
+    /// The GCD of two values (by magnitude — the result is non-negative). `gcd(0,0)=0`.
+    pub fn gcd(&self, other: &IntValue) -> IntValue {
+        IntValue::normalize(false, IntValue::gcd_mag(&self.magnitude, &other.magnitude))
+    }
 }
 
 /// The base an integer literal's text used. Display-only — it does not change the value.
@@ -687,6 +1022,110 @@ impl Arenas {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── IntValue arbitrary-precision arithmetic (the B4-1 Rational-fold foundation). Differential-test
+    // every op against i128 over a spread of in-range values (both signs, zero, powers of two, primes),
+    // then pin the OUT-of-i128 cases the whole point of bignum is to get right. ──────────────────────
+
+    fn iv(v: i128) -> IntValue {
+        if v >= 0 {
+            IntValue::from_u128(v as u128)
+        } else {
+            IntValue::from_neg_u128((-v) as u128)
+        }
+    }
+
+    #[test]
+    fn bignum_arithmetic_matches_i128_over_a_spread() {
+        let vals: [i128; 17] = [
+            0,
+            1,
+            -1,
+            2,
+            -2,
+            7,
+            -7,
+            10,
+            255,
+            256,
+            -256,
+            1000,
+            -1000,
+            65536,
+            123456789,
+            -987654321,
+            1_000_000_000_000,
+        ];
+        for &a in &vals {
+            for &b in &vals {
+                let (ia, ib) = (iv(a), iv(b));
+                assert_eq!(ia.add(&ib).to_i128(), Some(a + b), "add {a}+{b}");
+                assert_eq!(ia.sub(&ib).to_i128(), Some(a - b), "sub {a}-{b}");
+                assert_eq!(ia.mul(&ib).to_i128(), Some(a * b), "mul {a}*{b}");
+                assert_eq!(ia.cmp(&ib), a.cmp(&b), "cmp {a} vs {b}");
+                if b != 0 {
+                    let (q, r) = ia.divmod(&ib).expect("nonzero divisor");
+                    assert_eq!(q.to_i128(), Some(a / b), "div {a}/{b}");
+                    assert_eq!(r.to_i128(), Some(a % b), "rem {a}%{b}");
+                    // q*d + r == n
+                    assert!(q.mul(&ib).add(&r).eq_value(&ia), "q*d+r == n for {a}/{b}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bignum_divmod_by_zero_is_none() {
+        assert!(iv(5).divmod(&iv(0)).is_none());
+        assert!(iv(0).divmod(&iv(0)).is_none());
+    }
+
+    #[test]
+    fn bignum_gcd_matches_a_reference() {
+        // gcd(a,b) over magnitudes (non-negative result).
+        fn ref_gcd(mut a: u128, mut b: u128) -> u128 {
+            while b != 0 {
+                let t = a % b;
+                a = b;
+                b = t;
+            }
+            a
+        }
+        for a in [0u128, 1, 2, 6, 12, 18, 100, 255, 1024, 123456, 999983] {
+            for b in [0u128, 1, 4, 8, 9, 24, 36, 255, 1000, 123456, 999983] {
+                assert_eq!(
+                    iv(a as i128).gcd(&iv(b as i128)).to_i128(),
+                    Some(ref_gcd(a, b) as i128),
+                    "gcd({a},{b})"
+                );
+            }
+        }
+        // GCD ignores sign (result is the non-negative common divisor).
+        assert_eq!(iv(-12).gcd(&iv(18)).to_i128(), Some(6));
+        assert_eq!(iv(-12).gcd(&iv(-18)).to_i128(), Some(6));
+    }
+
+    #[test]
+    fn bignum_handles_values_beyond_i128() {
+        // 2^64 (does not fit i64) squared = 2^128 (does not fit i128) — the whole reason the type exists.
+        let two_64 = iv(1).add(&iv(u64::MAX as i128)); // 2^64
+        let two_128 = two_64.mul(&two_64); // 2^128
+        assert_eq!(two_128.to_i128(), None, "2^128 exceeds i128");
+        // Divide it back down: 2^128 / 2^64 = 2^64.
+        let (q, r) = two_128.divmod(&two_64).expect("nonzero");
+        assert!(q.eq_value(&two_64), "2^128 / 2^64 == 2^64");
+        assert!(r.is_zero(), "exact division, zero remainder");
+        // 2^128 - 1 is one less, and (2^128 - 1) % 2^64 == 2^64 - 1.
+        let big = two_128.sub(&iv(1));
+        let (_q2, r2) = big.divmod(&two_64).expect("nonzero");
+        assert!(
+            r2.eq_value(&two_64.sub(&iv(1))),
+            "(2^128-1) mod 2^64 == 2^64-1"
+        );
+        // gcd of two large even numbers carries a factor of 2^64.
+        let g = two_128.gcd(&two_64);
+        assert!(g.eq_value(&two_64), "gcd(2^128, 2^64) == 2^64");
+    }
 
     #[test]
     fn leaves_dedup_occurrences_do_not() {

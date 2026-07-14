@@ -13196,7 +13196,9 @@ mod match_engine {
             "the absent-field near-miss carries a replace fix: {:?}",
             d.fix
         );
-        // NO OVERREACH: an absent field with no near candidate carries the message but NO fix.
+        // NO OVERREACH: an absent field with no near candidate carries no fix + no confident "did you
+        // mean" — but now LISTS the record's fields ("— closest matches: `alpha`"), the row-op twin of the
+        // member-access two-tier, so a far label tells the author what fields exist instead of dead-ending.
         let far = reject_full(
             "(module m (def (main) (Record.without (record (alpha 1)) (zzzzzz))) (export main))",
         )
@@ -13205,6 +13207,12 @@ mod match_engine {
             far.fix.is_none(),
             "no fix without a plausible near field: {:?}",
             far.fix
+        );
+        assert!(
+            !far.message.contains("did you mean")
+                && far.message.contains("closest matches: `alpha`"),
+            "a far label lists the available fields, no confident single: {}",
+            far.message
         );
         // `Record` is STILL the record-TYPE constructor in type position — the module dual-shape did not
         // break `(: r (Record (a Int64)))`. A one-field record annotated with its own type compiles.
@@ -19553,6 +19561,70 @@ mod match_engine {
     }
 
     #[test]
+    fn ast_encode_decode_round_trip_over_constant_values() {
+        // 12-metaprogramming / ast-encoding.md §The Encoding Is A Bijection: `Ast.encode : Ast → Bytes`
+        // serializes an AST value to its canonical bytes, `Ast.decode : Bytes → (Result Ast e)` is the
+        // TOTAL inverse. Both constant-fold this increment (a compile-time-visible AST / Bytes value).
+        //
+        // (1) The BYTE FORMAT is locked by an equality against a hand-written `Bytes.of`: `(Ast.Int 7)`
+        //     encodes as tag 0x00 then 7 as 8 bytes little-endian. This pins the declared-default layout
+        //     (the contract pins the bijection, not the bytes — this test is what would need updating if
+        //     the format were ever versioned).
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (= (Ast.encode (Ast.Int 7)) (Bytes.of (list 0 7 0 0 0 0 0 0 0)))) (export main))"
+            )
+            .is_none(),
+            "Ast.encode of (Ast.Int 7) is the canonical bytes 0x00 + 7i64-le"
+        );
+        // (2) A quote-built and a constructor-built AST of the SAME tree encode to IDENTICAL bytes (the
+        //     one-canonical-byte-form requirement) — they are the ONE value form.
+        assert!(
+            reject_code(
+                "(module m (def (main) (= (Ast.encode (quote 42)) (Ast.encode (Ast.Int 42)))) (export main))"
+            )
+            .is_none(),
+            "equal trees encode identically, however constructed"
+        );
+        // (3) decode(encode t) = t over a leaf AND a compound (the round-trip), matched through the total
+        //     `(Ok a)` arm.
+        for tree in [
+            "(Ast.Int 7)",
+            "(Ast.List (list (Ast.Name \"g\") (Ast.Int 5)))",
+        ] {
+            let src = format!(
+                "(module m (def (main) (match (Ast.decode (Ast.encode {tree})) \
+                   ((Ok a) (= a {tree})) ((Err _) false))) (export main))"
+            );
+            assert!(
+                reject_code(&src).is_none(),
+                "encode∘decode round-trips to an equal value: {tree}"
+            );
+        }
+        // (4) decode is TOTAL over EXTERNAL bytes: a non-canonical sequence (bad tag) → `Err`, NOT a trap;
+        //     and valid canonical bytes FOLLOWED BY a trailing byte → `Err` (decode consumes the WHOLE
+        //     input or reports an error — a valid prefix is not silently accepted).
+        assert!(
+            reject_code(
+                "(module m (def (main) (match (Ast.decode (Bytes.of (list 255 255 255))) \
+                   ((Ok _) 1) ((Err _) 0))) (export main))"
+            )
+            .is_none(),
+            "decoding non-canonical bytes yields Err, not a trap"
+        );
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (match (Ast.decode (Bytes.concat (Ast.encode (Ast.Int 7)) (Bytes.of (list 99)))) \
+                     ((Ok _) 1) ((Err _) 0))) (export main))"
+            )
+            .is_none(),
+            "canonical bytes plus a trailing byte decode to Err (whole-input bijection)"
+        );
+    }
+
+    #[test]
     fn a_list_sub_pattern_destructures_a_sum_variant_payload() {
         // The decision-tree matcher destructures a `(list …)` sub-pattern inside a sum-variant PAYLOAD —
         // the general capability quote patterns rest on (`` `(+ ,a ,b) `` desugars to `(Ast.List (list
@@ -20026,6 +20098,36 @@ mod match_engine {
                 decoded,
                 ty,
                 "a {} type MUST survive the encode/decode round-trip (a missing arm would encode BigInt as Unit)",
+                ty.render_name()
+            );
+        }
+    }
+
+    #[test]
+    fn a_rational_type_round_trips_through_encode_and_decode() {
+        // B4-0 SAFETY (the DESIGN-bigint doc §10 mandatory test, the Ty::Qty lesson): `Ty::Rational` MUST
+        // survive the `Ty → type-value AST → Ty` round-trip. A MISSING `encode_ty`/`decode_ty` arm would
+        // silently encode `Rational` as `Unit` (the catch-all) — mis-typing any `(… → Rational)` scheme.
+        // Test bare `Rational` AND `Rational` NESTED in a compound (where a missing arm bites).
+        use crate::db::Db;
+        use crate::eval::{encode_typeval, typeval_of};
+        use crate::testkit::parse;
+        use crate::ty::Ty;
+        let ast = parse("(module m (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let cases = vec![
+            Ty::Rational,
+            Ty::Tuple(vec![Ty::Rational, Ty::int64()].into()),
+            Ty::List(Box::new(Ty::Rational)),
+        ];
+        for ty in cases {
+            let node = encode_typeval(&mut db, &ty);
+            let decoded = typeval_of(&mut db, node)
+                .unwrap_or_else(|| panic!("a {} type-value must decode", ty.render_name()));
+            assert_eq!(
+                decoded,
+                ty,
+                "a {} type MUST survive the encode/decode round-trip (a missing arm would encode it as Unit)",
                 ty.render_name()
             );
         }
@@ -21822,15 +21924,30 @@ mod diagnostics {
             "replaces the mistyped key with the variant"
         );
 
-        // A FAR typo (no near variant) → the bare "record has no field" message, no spurious suggestion.
+        // A FAR typo (no near variant) → no CONFIDENT "did you mean" (that would be a baseless guess), but
+        // the diagnostic now LISTS the sum's variants ("— closest matches: `Alpha`, `Beta`") so a far
+        // pattern-head typo tells the author what variants exist instead of a dead-end "no field". A sum is
+        // a CLOSED variant set, so listing is signal (the pattern-position twin of the member two-tier).
         let far = first_error(
             "(module m (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((C.Zzz) 1) (_ 2))) (export main))",
         );
         assert_eq!(far.code.as_deref(), Some("CDZ0201"), "got: {}", far.message);
         assert!(
             !far.message.contains("did you mean"),
-            "no spurious suggestion for a far typo: {}",
+            "no confident single suggestion for a far typo: {}",
             far.message
+        );
+        assert!(
+            far.message.contains("closest matches:")
+                && far.message.contains("`Alpha`")
+                && far.message.contains("`Beta`"),
+            "lists the sum's variants on a far typo: {}",
+            far.message
+        );
+        assert!(
+            far.fix.is_none(),
+            "a tier-2 list of variants carries no single fix: {:?}",
+            far.fix
         );
 
         // A BARE (unqualified) pattern head `((Alph) …)` where `Alph` is not a variant resolves as an
@@ -26409,6 +26526,64 @@ mod stage1 {
             Some("CDZ0403"),
             "expected CDZ0403 (handler arm names an undeclared op), got: {}",
             err.message
+        );
+        // TWO-TIER (the effect-op analogue of the member-access enrichment): `guess` is FAR from the sole
+        // declared op `pick`, so no confident "did you mean" — instead LIST the effect's operations
+        // ("— closest matches: `pick`") so the author sees what `Choose` actually offers, not a dead-end.
+        assert!(
+            !err.message.contains("did you mean")
+                && err.message.contains("closest matches: `pick`"),
+            "a far undeclared op lists the effect's declared operations: {}",
+            err.message
+        );
+        // A CLOSE typo (`picks`→`pick`, edit distance 1) instead gets the confident "did you mean" + a
+        // replace fix on the mistyped op key — the tier-1 path.
+        let close = "(do (effect Choose (op pick (-> Unit Int64))) \
+                   (def (main) (handle Choose unit ((picks () s (resume 5 s))) ((. Choose pick)))) \
+                   (export main))";
+        let mut db = crate::db::Db::load(parse(close));
+        let dc = crate::diagnostics(&mut db)
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0403"))
+            .expect("a close undeclared-op typo is CDZ0403");
+        assert!(
+            dc.message.contains("did you mean `pick`?"),
+            "a close op typo names the declared op: {}",
+            dc.message
+        );
+        assert_eq!(
+            dc.fix.as_ref().map(|f| (f.kind, f.replacement.as_str())),
+            Some((crate::abi::FixKind::Replace, "pick")),
+            "carries a replace-with-the-op fix: {:?}",
+            dc.fix
+        );
+    }
+
+    #[test]
+    fn a_far_handler_op_access_typo_reports_the_absent_field_exactly_once() {
+        // A FAR-typo op ACCESS in a handle body — `((. E zzzzz))` where `zzzzz` matches no op — surfaces
+        // the member "record has no field" CDZ0201 via TWO unanchored desugar/reduction paths (the handle's
+        // op-resolution AND the perform). Once the member two-tier (M82) began appending a closest-matches
+        // suffix, the two copies' MESSAGES differed (one listed matches, one bare) so the full-message
+        // dedup key let both through as a DOUBLE report. `dedup_faults` now keys an unanchored no-field
+        // fault by its INVARIANT CORE (+ collapses an unanchored copy against an anchored one by core), so
+        // the miss reports exactly ONCE — keeping the located, closest-matches copy.
+        let src = "(do (effect E (op ask (-> Unit Int64)) (op tell (-> Int64 Unit))) \
+                   (def (main) (handle E unit ((ask () s (resume 1 s)) (tell (x) s (resume unit s))) \
+                     ((. E zzzzz)))) (export main))";
+        let field_errs: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+            .into_iter()
+            .filter(|d| d.message.contains("record has no field `zzzzz`"))
+            .collect();
+        assert_eq!(
+            field_errs.len(),
+            1,
+            "the far op-access miss reports exactly once, not a double: {field_errs:?}"
+        );
+        assert!(
+            field_errs[0].message.contains("closest matches:") && field_errs[0].node.is_some(),
+            "the surviving copy lists the ops AND is located: {}",
+            field_errs[0].message
         );
     }
 

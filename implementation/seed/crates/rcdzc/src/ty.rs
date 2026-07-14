@@ -670,6 +670,21 @@ pub enum Ty {
     /// exported signature. See `implementation/DESIGN-bigint-and-rational-rcdzc.md`. B0 adds the type
     /// through the closed universe (byte-neutral — nothing constructs one yet).
     BigInt,
+    /// An EXACT RATIONAL number — `Rational`, a normalized pair of arbitrary-precision integers
+    /// (`numeric-model.md` §Exact Arithmetic Is Exact; `options/numeric-model/explicit-checked.md` §Exact
+    /// rational). A monomorphic LEAF type (no parameter) kept in a canonical NORMALIZED form: lowest terms
+    /// (numerator and denominator share no common factor via `gcd`), the sign carried on the numerator,
+    /// the denominator strictly positive. So `2/4` and `1/2` are ONE value with one canonical byte form,
+    /// and equality is structural over the normalized pair. It is a DISTINCT numeric type — `agrees_with`
+    /// is true only `Rational`↔`Rational`, so a `Rational`/integer mix is a mismatch (CDZ0301) with no
+    /// silent promotion (crossing in is explicit via `Rational.of-int`), exactly as `BigInt`/`Int64` is. A
+    /// zero denominator has no value (`Rational.of _ 0` traps). A constant folds in the compiler (the
+    /// normalized `num`/`den` pair over `ast::IntValue` bignum arithmetic); a runtime-valued `Rational` is
+    /// a two-`BigInt`-child compound, boundary-encoded as `record { numerator: list<u8>, denominator:
+    /// list<u8> }`. It is one admissible inner numeric `T` for `(Qty T u)`, so a dimensioned exact
+    /// quantity `(Qty Rational u)` composes the two orthogonally. See the design doc. B4-0 adds the type
+    /// through the closed universe (byte-neutral — nothing constructs one yet).
+    Rational,
     /// A FLOATING-POINT number, indexed by its bit WIDTH (`numeric-model.md` §A Floating-Point Type Is
     /// Indexed By A Compile-Time Width) — the float analogue of [`Ty::Int`], carrying a [`FloatTy`]
     /// (a possibly-deferred [`FloatWidth`]) rather than a fixed name. `Float64` is the signed 64-bit
@@ -803,6 +818,7 @@ impl PartialEq for Ty {
             | (Ty::Char, Ty::Char)
             | (Ty::Symbol, Ty::Symbol)
             | (Ty::BigInt, Ty::BigInt)
+            | (Ty::Rational, Ty::Rational)
             | (Ty::Type, Ty::Type)
             | (Ty::Any, Ty::Any) => true,
             (Ty::Float(a), Ty::Float(b)) => a == b,
@@ -915,6 +931,7 @@ impl Ty {
             | Ty::Char
             | Ty::Symbol
             | Ty::BigInt
+            | Ty::Rational
             | Ty::Float(_) => false,
         }
     }
@@ -1007,7 +1024,7 @@ impl Ty {
             // nominal's inner holds a `Ty::Sum{decl}` back-edge that is not a free var anyway; `args` is
             // the identity/instantiation axis).
             Ty::Nominal { args, .. } => args.iter().any(|t| t.has_free_var()),
-            // Bytes, String, Char, Symbol, and BigInt are leaves — no inner type, so no free variable.
+            // Bytes, String, Char, Symbol, BigInt, and Rational are leaves — no inner type, no free var.
             Ty::Int(_)
             | Ty::Bool
             | Ty::Unit
@@ -1018,6 +1035,7 @@ impl Ty {
             | Ty::Char
             | Ty::Symbol
             | Ty::BigInt
+            | Ty::Rational
             | Ty::Float(_) => false,
         }
     }
@@ -1144,6 +1162,11 @@ impl Ty {
             // with itself, NEVER with a fixed-width `Ty::Int` (no silent promotion: a `BigInt`/`Int64`
             // mix is CDZ0301, via the `_ => false` fallthrough), the same discipline as float-vs-int.
             (Ty::BigInt, Ty::BigInt) => true,
+            // `Rational` is monomorphic and DISTINCT — the one exact-rational type agrees only with itself,
+            // NEVER with an integer or a `BigInt` (crossing in is explicit via `Rational.of-int`; a
+            // `Rational`/integer mix is CDZ0301 via the `_ => false` fallthrough), the same no-promotion
+            // discipline as float-vs-int and BigInt-vs-int.
+            (Ty::Rational, Ty::Rational) => true,
             // Two floats agree iff their WIDTHS agree — `Float32` ≠ `Float64` (no silent promotion), a
             // deferred/variable width is compatible (not yet fixed). A float never agrees with an integer
             // (numeric-model.md §Numeric Types Do Not Silently Promote). Mirrors the `Ty::Int` width check.
@@ -1296,6 +1319,8 @@ impl Ty {
             Ty::Symbol => "Symbol".to_string(),
             // The arbitrary-precision integer renders as `BigInt` — one monomorphic type, no parameters.
             Ty::BigInt => "BigInt".to_string(),
+            // The exact rational renders as `Rational` — one monomorphic type, no parameters.
+            Ty::Rational => "Rational".to_string(),
             // A float renders as its aliased width name — `Float32`/`Float64`. Every admitted float
             // width ({32, 64}) has an alias, so an observed float type is always a concrete `FloatN`
             // (an unresolved width grounds to `Float64`), mirroring the integer `IntN`/`UIntN` render.

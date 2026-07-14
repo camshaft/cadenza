@@ -685,6 +685,34 @@ pub fn nearest_declared_op(db: &mut Db, op: StructId) -> Option<(StructId, Strin
     Some((key_occ, candidate))
 }
 
+/// The TWO-TIER hint for a handler arm whose op `(. E k)` names an operation `E` does not declare — the
+/// effect-op analogue of `no_field_reject`'s member-access enrichment. Returns `(key-occurrence, hint,
+/// confident-single)`: `hint` is the `did_you_mean` suffix (a confident `` — did you mean `k`? `` when a
+/// declared op is a plausible typo, ELSE `` — closest matches: `a`, `b` `` listing the effect's declared
+/// operations — a CLOSED, small set, so listing is signal); `confident-single` is `Some(op)` ONLY when
+/// there is a confident typo, driving the REPLACE fix (a tier-2 list is not one mechanical edit). `None`
+/// if `op` is not `(. E k)` on an effect, or the effect declares no operations. Unlike `nearest_declared_op`
+/// (which yields nothing on a far miss), this always produces a hint when the effect has ops to list.
+pub fn declared_op_hint(db: &mut Db, op: StructId) -> Option<(StructId, String, Option<String>)> {
+    let Resolved::Member { operand, key } = resolved_of(db, op) else {
+        return None;
+    };
+    let decl = effect_decl_of_value(db, operand)?;
+    let names: Vec<String> = db
+        .effect_decl_by_occ(crate::ast::StructId(decl))?
+        .ops
+        .iter()
+        .map(|o| o.name.clone())
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    let key_occ = db.ast.as_form(op, ".").and_then(|t| t.get(1).copied())?;
+    let single = crate::diag::suggest::nearest(&key.name, names.iter().map(String::as_str));
+    let hint = crate::diag::suggest::did_you_mean(&key.name, names.iter().map(String::as_str), 3);
+    Some((key_occ, hint, single))
+}
+
 /// The CANONICAL identity of a handler arm's operation `(. E k)` — `(effect-declaration-occurrence,
 /// op-name)`. Two arms discharge the SAME operation exactly when their identities are equal, so this is
 /// the key a duplicate-arm check dedups on. Keyed by the effect's DECLARATION (not just the name) so two

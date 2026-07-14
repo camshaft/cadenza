@@ -217,6 +217,11 @@ pub enum Prim {
     /// (`Int64.of`/`(UInt N).of` from a `BigInt`, checked/trapping) is the existing `CheckedOf` extended to
     /// a `BigInt` source, not a new prim.
     BigIntOf,
+    /// The ground `Rational` type-value — held in the `Rational` module record's `(meta t)`, so bare
+    /// `Rational` in type position reduces to `Ty::Rational` (a NULLARY type, like `BigInt`; the
+    /// `Rational` module also carries the `of`/`of-int`/`value` operation fields, but this is its type
+    /// role). `ground_type` maps it. B4-0 adds the type-position prim (byte-neutral, no ops yet).
+    RationalTy,
     /// `Symbol.of` — INTERN a String into a Symbol (`String → Symbol`, 17-symbols). A constant string
     /// FOLDS to a constant symbol (represented as the underlying `Core::ConstStr` at type `Ty::Symbol` —
     /// the identity is content-derived), so `(= (Symbol.of "a") (Symbol.of "a"))` folds via the shared
@@ -342,6 +347,22 @@ pub enum Prim {
     /// nodes; a runtime list operand declines (the runtime map is a later increment). Int-only lift, the
     /// splice companion of the active-unquote `(Ast.Int e)` wrap.
     AstSpliceLift,
+    /// `Ast.encode` — serialize an AST value to its canonical binary form: `Ast → Bytes` (the `(meta
+    /// apply)` of the `encode` field of the `Ast` sum record). Realizes `ast-encoding.md` §The Encoding
+    /// Is A Bijection With One Canonical Byte Form: each tree has EXACTLY ONE encoding, equal trees encode
+    /// identically. Constant-fold ONLY this increment — a compile-time-visible `Ast` value (a `Core::SumNew`
+    /// tree of the `Int`/`Name`/`List` variants) folds to a `Core::BytesOf` of the canonical bytes; a
+    /// runtime `Ast` declines. The canonical byte format is a DECLARED-DEFAULT choice (the contract pins
+    /// the bijection, not the concrete bytes) — see `lower::encode_ast_value` for the tag layout.
+    AstEncode,
+    /// `Ast.decode` — the TOTAL inverse of `Ast.encode`: `Bytes → (Result Ast e)` (the `(meta apply)` of
+    /// the `decode` field of the `Ast` sum record). Total over POSSIBLY-EXTERNAL bytes (`value-interchange.md`
+    /// §A Decode Over External Bytes Is Total): a byte sequence that is the canonical encoding of an AST →
+    /// `(Ok ast)`; anything else (ill-formed, truncated, or valid-prefix-plus-trailing) → `(Err …)`, NEVER
+    /// a trap. Constant-fold ONLY this increment — a compile-time-visible `Core::BytesOf` parses to `(Ok
+    /// <SumNew tree>)` / `(Err unit)`; a runtime `Bytes` declines (the runtime deserializer is a later
+    /// increment). The decode companion of `AstEncode`; the format is `lower::decode_ast_value`.
+    AstDecode,
     /// `Bytes.of` — construct a byte sequence from a list of integers in `0..=255`: `(List Int64) →
     /// Bytes`. The `(meta apply)` of the `of` field of the `Bytes` module. A CONSTANT list literal folds
     /// to the baked byte value (range-checking each element: `< 0` or `> 255` is a compile-time trap,
@@ -670,6 +691,7 @@ impl Prim {
             "Unit" => Some(Prim::UnitTy),
             "String" => Some(Prim::StringTy),
             "BigInt" => Some(Prim::BigIntTy),
+            "Rational" => Some(Prim::RationalTy),
             "Char" => Some(Prim::CharTy),
             "char-to-int" => Some(Prim::CharToInt),
             "char-from-int" => Some(Prim::CharFromInt),
@@ -697,6 +719,8 @@ impl Prim {
             "list-update" => Some(Prim::ListUpdate),
             "list-at" => Some(Prim::ListAt),
             "ast-splice-lift" => Some(Prim::AstSpliceLift),
+            "ast-encode" => Some(Prim::AstEncode),
+            "ast-decode" => Some(Prim::AstDecode),
             "List" => Some(Prim::ListCtor),
             "bytes-of" => Some(Prim::BytesOf),
             "bytes-len" => Some(Prim::BytesLen),
@@ -819,6 +843,7 @@ impl Prim {
             Prim::CharTy => Some(crate::ty::Ty::Char),
             Prim::SymbolTy => Some(crate::ty::Ty::Symbol),
             Prim::BigIntTy => Some(crate::ty::Ty::BigInt),
+            Prim::RationalTy => Some(crate::ty::Ty::Rational),
             _ => None,
         }
     }
