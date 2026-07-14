@@ -18491,6 +18491,147 @@ mod tests {
         });
     }
 
+    // ── value-encode ITERATIVE vs RECURSIVE equivalence over RANDOM MIXED shapes ────────────────
+    // The escape's load-bearing correctness property is: the iterative production walk (`encode_value`,
+    // an explicit worklist — the walk the guest actually runs) produces byte-IDENTICAL output to the
+    // simple recursive reference (`encode_value_recursive`). Today that equivalence is differential-tested
+    // ONLY on int LISTS (`value_encode_iterative_matches_recursive_reference`, varied depth); every other
+    // shape (nested tuple/sum/record, mixed leaves) is guarded only by FIXED hand-built encode tests, not
+    // by the iterative-vs-recursive equivalence over VARIED shapes — exactly the nested AST shapes a
+    // self-hosting compiler's value-encode will hit. A worklist-management bug in the iterative walk
+    // (wrong child order, a mishandled Sum/Tuple frame, a pool-reuse aliasing error) that the recursive
+    // mirror would NOT have would slip through. This fuzzes that equivalence: build a random mixed value
+    // AND its matching descriptor together, then assert both walks agree byte-for-byte.
+
+    /// Build a random value AND its matching shape descriptor from one byte stream. Appends each node's
+    /// `Shape` to `table` and returns its index, so the value's node structure and the descriptor stay
+    /// aligned by construction. Shapes mirror `build_rand_value`'s producers (int/bool/unit/str/bytes/
+    /// float leaves + 2-tuple/sum/3-tuple compounds) — the ones with a settled canonical value form. Depth
+    /// is capped low (the recursive oracle overflows on deep values — that is the ITERATIVE walk's reason
+    /// to exist, tested separately by `value_encode_deep_recursive_value_does_not_overflow_the_stack`);
+    /// this targets shape VARIETY, not depth.
+    fn build_rand_value_and_shape(
+        bytes: &[u8],
+        cur: &mut usize,
+        budget: &mut u32,
+        depth: u32,
+        table: &mut Vec<super::Shape>,
+    ) -> (Handle, u32) {
+        use super::Shape as S;
+        let tag = if *cur < bytes.len() { bytes[*cur] } else { 0 };
+        *cur += 1;
+        let p = if *cur < bytes.len() { bytes[*cur] } else { 0 };
+        *cur += 1;
+        let allow_compound = *budget > 3 && depth < 4;
+        *budget = budget.saturating_sub(1);
+        // Push a shape and return its table index.
+        fn emit(t: &mut Vec<super::Shape>, s: super::Shape) -> u32 {
+            t.push(s);
+            (t.len() - 1) as u32
+        }
+        match tag % if allow_compound { 9 } else { 6 } {
+            0 => {
+                let h = op_box_int(p as i64 - 128);
+                (h, emit(table, S::Int))
+            }
+            1 => {
+                let h = op_box_bool(p & 1 == 0);
+                (h, emit(table, S::Bool))
+            }
+            2 => {
+                let h = op_arr_alloc(0); // unit
+                (h, emit(table, S::Unit))
+            }
+            3 => {
+                let h = op_str_new(alloc::format!("s{}", p % 7));
+                (h, emit(table, S::Str))
+            }
+            4 => {
+                let n = (p % 4) as u32;
+                let b = op_bytes_alloc(n);
+                for i in 0..n {
+                    op_bytes_set(b, i, (p.wrapping_add(i as u8)) as u32);
+                }
+                (b, emit(table, S::Bytes))
+            }
+            5 => {
+                let h = op_box_float(((p % 5) as f64) - 2.0);
+                (h, emit(table, S::Float))
+            }
+            6 => {
+                // 2-tuple. Reserve this node's table slot BEFORE recursing so children get later indices.
+                let ix = emit(table, S::Tuple(vec![0, 0]));
+                let (a, sa) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
+                let (bch, sb) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
+                table[ix as usize] = S::Tuple(vec![sa, sb]);
+                let t = op_arr_alloc(2);
+                op_arr_set(t, 0, a);
+                op_arr_set(t, 1, bch);
+                (t, ix)
+            }
+            7 => {
+                // Sum with a single payload, disc in 0..3. The descriptor's variant table must have an
+                // entry for the CHOSEN disc (the walk indexes `variants[disc]`); give it disc+1 variants,
+                // all pointing at the same payload shape (only the chosen one is read).
+                let disc = (p % 3) as usize;
+                let ix = emit(table, S::Sum(vec![]));
+                let (payload, sp) =
+                    build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
+                let variants: Vec<(String, u32)> =
+                    (0..=disc).map(|d| (alloc::format!("V{d}"), sp)).collect();
+                table[ix as usize] = S::Sum(variants);
+                (op_sum_new(disc as u32, payload), ix)
+            }
+            _ => {
+                // 3-tuple.
+                let ix = emit(table, S::Tuple(vec![0, 0, 0]));
+                let (a, sa) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
+                let (bch, sb) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
+                let (cch, sc) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
+                table[ix as usize] = S::Tuple(vec![sa, sb, sc]);
+                let t = op_arr_alloc(3);
+                op_arr_set(t, 0, a);
+                op_arr_set(t, 1, bch);
+                op_arr_set(t, 2, cch);
+                (t, ix)
+            }
+        }
+    }
+
+    #[test]
+    fn prop_value_encode_iterative_matches_recursive_over_random_shapes() {
+        bolero::check!().with_type::<Vec<u8>>().for_each(|bytes| {
+            reset();
+            let before = live_nodes();
+            let mut table: Vec<super::Shape> = Vec::new();
+            let (mut cur, mut budget) = (0usize, 40u32);
+            let (v, root) = build_rand_value_and_shape(bytes, &mut cur, &mut budget, 0, &mut table);
+            let descriptor = super::Descriptor { table, root };
+            // Iterative production walk (what the guest runs).
+            let iter_doc = {
+                let mut b = DocBuilder::default();
+                encode_value(&descriptor, &mut b, &mut Vec::new(), v, descriptor.root)
+                    .map(|r| b.finish(r))
+            };
+            // Recursive reference over the SAME borrowed value + descriptor.
+            let rec_doc = {
+                let mut b = DocBuilder::default();
+                encode_value_recursive(&descriptor, &mut b, v, descriptor.root, 0)
+                    .map(|r| b.finish(r))
+            };
+            assert_eq!(
+                iter_doc, rec_doc,
+                "iterative and recursive value-encode disagree on a random mixed value"
+            );
+            op_drop(v);
+            assert_eq!(
+                live_nodes(),
+                before,
+                "value-encode borrows — no leak building/encoding a random value"
+            );
+        });
+    }
+
     // ── U6: FBIP rc==1 in-place cursor advance for map-iter-next / set-iter-next ────────────────
     // Load-bearing: (1) a forked/peeked/teed cursor (rc>1) stays INDEPENDENT — advancing one owner
     // must not disturb the other (aliasing catcher); (2) a unique (rc==1) walk allocates ZERO new
