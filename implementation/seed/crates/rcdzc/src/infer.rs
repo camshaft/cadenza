@@ -863,13 +863,22 @@ fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out:
     let before = out.len();
     collect(db, ty_expr, out);
     if out.len() == before {
-        out.push(
-            Reject::coded(
-                Code::TypeMismatch,
-                non_type_annotation_message(db, ty_expr, lead),
-            )
-            .at(ty_expr),
-        );
+        // A type-CONSTRUCTOR form with a well-formed NON-TYPE in an argument position — `(List 5)`, `(Tuple
+        // Int64 5)`, `(-> Int64 5)` — names the SPECIFIC offending element + anchors THERE, rather than the
+        // flat "requires a type, but found a non-type" over the whole form (which never says which sub-part
+        // is wrong). Falls back to the flat message when no single argument is the culprit (a bare literal
+        // `(: x 5)`, or a head that is not a recognized type constructor).
+        if let Some((arg, msg)) = non_type_argument_message(db, ty_expr) {
+            out.push(Reject::coded(Code::TypeMismatch, format!("{lead}: {msg}")).at(arg));
+        } else {
+            out.push(
+                Reject::coded(
+                    Code::TypeMismatch,
+                    non_type_annotation_message(db, ty_expr, lead),
+                )
+                .at(ty_expr),
+            );
+        }
     }
 }
 
@@ -989,6 +998,87 @@ fn type_ctor_arity_message_here(db: &mut Db, ty_expr: StructId) -> Option<String
         if supplied == 1 { "was" } else { "were" },
         params.join(" "),
     ))
+}
+
+/// When `ty_expr` is a type-CONSTRUCTOR form (`(List T)`, `(Map K V)`, `(Tuple T…)`, `(-> A… R)`, `(Qty T
+/// u)`) with a well-formed NON-TYPE in one of its type-argument positions — a literal or value where a type
+/// belongs, `(List 5)` / `(Tuple Int64 5)` / `(-> Int64 5)` — return the offending CHILD node and a message
+/// naming that specific position, instead of the flat "requires a type, but found a non-type" that neither
+/// says WHICH element is wrong nor anchors at it. The type-argument positions are the form's children after
+/// the head (the last child of `->` is its result, the earlier ones its parameters; `Qty`'s second child is
+/// a UNIT, not a type, so it is excluded). Only fires for a child that (a) `typeval_of` rejects, (b) is not
+/// itself a wrong-arity ctor (that has its own message via `type_ctor_arity_message`), and (c) surfaces no
+/// fault of its own from `collect` (an unbound name is already CDZ0101 — this is for a WELL-FORMED value, a
+/// literal). The head must be a recognized type constructor (via `meta_apply_of`), so a user application in
+/// a type slot is not misread. `None` when no such position exists. Reports the FIRST offending argument
+/// (left-to-right), one fault per annotation.
+fn non_type_argument_message(db: &mut Db, ty_expr: StructId) -> Option<(StructId, String)> {
+    let children = match db.ast.get(ty_expr) {
+        crate::ast::Struct::List(cs) if cs.len() >= 2 => cs.to_vec(),
+        _ => return None,
+    };
+    let head = children[0];
+    // Recognize the constructor + how to describe its argument positions. `role(i, n)` names the i-th
+    // argument (0-based over the args after the head; `n` = arg count) for that constructor.
+    let role: fn(usize, usize) -> String = match crate::eval::meta_apply_of(db, head)? {
+        crate::resolved::Prim::ListCtor | crate::resolved::Prim::SetCtor => {
+            |_, _| "the element type".to_string()
+        }
+        crate::resolved::Prim::MapCtor => |i, _| {
+            if i == 0 {
+                "the key type".to_string()
+            } else {
+                "the value type".to_string()
+            }
+        },
+        crate::resolved::Prim::TupleCtor => |i, _| format!("element {i}'s type"),
+        crate::resolved::Prim::FnCtor => |i, n| {
+            // `(-> A… R)` — the LAST argument is the result, the earlier ones parameters.
+            if i + 1 == n {
+                "the result type".to_string()
+            } else {
+                format!("parameter {i}'s type")
+            }
+        },
+        // `Qty`'s first arg is the inner numeric TYPE; its second is a UNIT (validated separately, not a
+        // type), so only position 0 is a type slot here.
+        crate::resolved::Prim::QtyCtor => |_, _| "the inner type".to_string(),
+        _ => return None,
+    };
+    let args = &children[1..];
+    let n = args.len();
+    for (i, &arg) in args.iter().enumerate() {
+        // `Qty`'s unit position (index 1) is NOT a type slot — skip it (its own "is not a unit" check stands).
+        if matches!(
+            crate::eval::meta_apply_of(db, head),
+            Some(crate::resolved::Prim::QtyCtor)
+        ) && i == 1
+        {
+            continue;
+        }
+        if crate::eval::typeval_of(db, arg).is_some() {
+            continue; // this position IS a type — fine
+        }
+        // A wrong-arity nested ctor has its OWN (better) message — leave it to `type_ctor_arity_message`.
+        if type_ctor_arity_message(db, arg).is_some() {
+            return None;
+        }
+        // A fault of the argument's own (an unbound name → CDZ0101) is the real report — only a WELL-FORMED
+        // non-type (a literal `5`, a compound value) reaches this naming. Probe with a throwaway buffer.
+        let mut probe = Vec::new();
+        collect(db, arg, &mut probe);
+        if !probe.is_empty() {
+            return None;
+        }
+        return Some((
+            arg,
+            format!(
+                "{} must be a type, but this is a value — a type belongs here",
+                role(i, n)
+            ),
+        ));
+    }
+    None
 }
 
 /// A NON-LINEAR parameter list — a name bound more than once (`(fn (x x) …)`, `(f x x)`) — is CDZ0102: a
