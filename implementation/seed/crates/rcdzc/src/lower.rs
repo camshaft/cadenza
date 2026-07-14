@@ -4335,7 +4335,9 @@ fn desugar_runtime_map_match(
         )));
     };
     // Validate the key-directed arms before the catch-all: each must be a `(map …)` pattern whose value
-    // sub-patterns are bare binders (a nested value pattern is a later increment — decline honestly).
+    // sub-patterns are IRREFUTABLE (a bare binder, or a tuple / single-variant ctor — checked just below);
+    // a refutable value sub-pattern declines. (Over a RUNTIME map a nested value binder's READ isn't wired
+    // yet, so it accepts the shape here and declines at `lower_map_field` — honest, no miscompile.)
     for &(pat, _) in &arms[..catch_all_ix] {
         let inner = match db.ast.as_form(pat, "guard") {
             Some(g) if g.len() == 2 => g[0],
@@ -4432,7 +4434,8 @@ fn clone_key_expr(db: &mut Db, k: StructId) -> StructId {
 /// it, so the first arm whose keys are all present is selected and its body lowered (the body's `MapField`
 /// binders then fold). A RUNTIME map is handled by `desugar_runtime_map_match` (a nested `Map.lookup`
 /// chain) — the pre-pass below. A map's key set is UNBOUNDED, so a `(map …)` arm covers no shape — the
-/// match needs a catch-all (else CDZ0210). A key-sub-pattern that is not a bare binder declines.
+/// match needs a catch-all (else CDZ0210). A value sub-pattern MAY be a bare binder OR an irrefutable
+/// compound (tuple / single-variant ctor, read via `value_steps`); a refutable value sub-pattern declines.
 ///
 /// The runtime-map matcher (`90cd317e`) realizes most of this section: a `(map (k v) …)` pattern names
 /// keys with value binders and MAY end in a `.. rest`; it matches iff every named key is PRESENT (the
@@ -4453,9 +4456,16 @@ fn clone_key_expr(db: &mut Db, k: StructId) -> StructId {
 //# Because a map's key set is unbounded, no finite set of key-directed patterns can cover every map, so a match on a map MUST end in a name or wildcard pattern that binds the whole map; a set of key-directed arms with no such catch-all MUST be a compile-time error under *Matching Is Exhaustive Or Rejected*.
 //= spec/capabilities/core-semantics.md#a-map-is-matched-by-key-directed-patterns
 //# A key-directed pattern MUST observe a map only through the presence of keys and the values it associates with them; it MUST NOT expose or depend on any internal ordering or node structure of the map's representation, so that the same pattern matches a map regardless of how the map is represented.
-// (§4 "each value binder position … a value MAY be bound by ANY pattern matched recursively" stays
-// DECLINED: a value sub-pattern that is not a bare binder is not yet supported — a nested value pattern
-// declines here and in `desugar_runtime_map_match`.)
+// A value binder position is itself a binder position (Patterns Compose): a value MAY be a wildcard, a
+// name (bare binder), a tuple pattern, or a (single-variant) constructor pattern, matched recursively to
+// any depth against the value at the key — resolve descends the sub-pattern giving `MapField.value_steps`
+// (`880c95b6`; `5bc7215e` first did binder-free literals), and the whole-arm CDZ0102 linearity walk spans
+// the value binders. (SCOPE, honest: a REFUTABLE value — a bare literal, lifted; or a MULTI-variant ctor
+// `(Some n)`, needing value-discriminant dispatch — declines, and a RUNTIME-map nested value binder
+// declines: the constant-map fold reads `value_steps`, the runtime `Map.lookup` sub-path read is a later
+// increment. The sentence's ENUMERATED kinds — wildcard/name/tuple/constructor — all bind.)
+//= spec/capabilities/core-semantics.md#a-map-is-matched-by-key-directed-patterns
+//# Each value binder position MUST be a binder position in the sense of *Patterns Compose*, so a value MAY be bound by any pattern (a wildcard, a name, a tuple pattern, a constructor pattern) matched recursively against the value at that key, and the whole pattern MUST remain linear (`CDZ0102`).
 fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     // PRE-PASS (value sub-patterns): a non-bare map VALUE sub-pattern `(map ("k" (tuple a b)))` /
     // `(map ("k" (Some v)))` / `(map ("k" 0))` is lifted into the body as `(match __mv (<subpat> body) (_
