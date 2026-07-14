@@ -2554,23 +2554,21 @@
   (call   appa (: 5 Int64))
   (output (: 15 Int64)))
 
-(case "a compound closure ARG on the DIRECT-CALL path is declined — an IMPLEMENTATION gap (oracle-proven)"
-  (doc    "A single closure export whose closure takes a Tuple, called DIRECTLY by the host (no consumer to
-           apply it in-guest). The compiler currently DECLINES (a `todo`). NOTE the decline is an
-           IMPLEMENTATION gap, NOT an ABI wall: a FIXED-SHAPE SCALAR tuple `(Tuple Int64 Int64)` does NOT need
-           the nonexistent `value-decode` runtime op — it crosses as a native component `tuple<s64,s64>`
-           type, which the canonical ABI FLATTENS into scalar core params, and the guest `call` wrapper
-           rebuilds the tuple cell in-guest from the flat fields with the ORDINARY `arr-alloc`/`box-int`/
-           `arr-set` ops. The `a_fixed_shape_tuple_closure_arg_crosses_by_native_flattening` ComponentBuilder
-           ORACLE proves this shape validates + RUNS under wasmtime (`call(handle,(3,4))` → 7). The remaining
-           emit vertical (serializer cell-rebuild + envelope tuple defined type + routing + cdz-run
-           `Val::Tuple`) is a later increment; a VARIABLE-LENGTH collection arg genuinely would need runtime
-           decode and stays out of scope. Contrast the round-trip cases above, where the argument is built
-           in-guest.")
+(case "a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)"
+  (doc    "A single closure export whose closure takes a `(Tuple Int64 Int64)`, called DIRECTLY by the host
+           (no consumer to apply it in-guest). This USED to decline (recorded as needing a nonexistent
+           `value-decode` runtime op / out of scope), but that conflated two cases: a FIXED-SHAPE SCALAR
+           tuple does NOT need runtime decode. It crosses as a native component `tuple<s64,s64>` type, which
+           the canonical ABI FLATTENS into scalar core params; the guest `call` wrapper rebuilds the tuple
+           cell in-guest from the flat fields with the ORDINARY `arr-alloc`/`box-int`/`arr-set` ops (the
+           `TupleArgRebuild` serializer path), then dispatches `call_indirect`. `make()` → the closure
+           handle; `call(handle, (3, 4))` → `(. p 0) + (. p 1)` = 7. Proved by the
+           `a_fixed_shape_tuple_closure_arg_crosses_by_native_flattening` oracle + the real emit pipeline.
+           (A VARIABLE-LENGTH collection arg genuinely still needs runtime decode — out of scope.)")
   (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
               (export mk)))
-  (call   mk (: 3 Int64))
-  (output (: 5 Int64)))
+  (call   mk (: (tuple 3 4) (Tuple Int64 Int64)))
+  (output (: 7 Int64)))
 
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter

@@ -1092,12 +1092,78 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
                 .map(Val::Char),
         )?,
         Type::String => Val::String(s.to_string()),
+        // A FIXED-SHAPE tuple argument (the direct-call compound-arg path): the host supplies it as a
+        // component `tuple<…>` value, which the canonical ABI flattens into the guest's core params. The
+        // corpus writes it as `(tuple <f0> <f1> …)` (an optional leading `tuple` head, else a bare
+        // `(<f0> <f1> …)`); parse the paren-wrapped, whitespace-separated fields and coerce each against
+        // the tuple's element types. Fields must be scalars (this increment supports a fixed-shape SCALAR
+        // tuple; a nested compound field would recurse, a later widening).
+        Type::Tuple(tt) => {
+            let elem_types: Vec<Type> = tt.types().collect();
+            let fields = parse_tuple_fields(s).ok_or_else(|| {
+                anyhow!("argument `{s}`: expected a tuple literal like `(tuple 3 4)` or `(3 4)`")
+            })?;
+            if fields.len() != elem_types.len() {
+                return Err(anyhow!(
+                    "argument `{s}`: tuple has {} field(s), the parameter type expects {}",
+                    fields.len(),
+                    elem_types.len()
+                ));
+            }
+            let vals: Result<Vec<Val>> = fields
+                .iter()
+                .zip(&elem_types)
+                .map(|(f, ft)| coerce_one(f, ft))
+                .collect();
+            Val::Tuple(vals?)
+        }
         other => {
             return Err(anyhow!(
                 "argument `{s}`: compound parameter type {other:?} is not supported by cdz-run yet"
             ));
         }
     })
+}
+
+/// Parse a corpus tuple argument literal into its field texts. Accepts `(tuple f0 f1 …)` (the canonical
+/// value-form spelling the corpus renders) or a bare `(f0 f1 …)`; the outer parens are required. Fields are
+/// split on whitespace at the TOP level (a nested `(…)` field stays one token so a nested compound can be
+/// coerced recursively later). Returns `None` if `s` is not a paren-wrapped group. This is a minimal
+/// scalar-field splitter — sufficient for a fixed-shape SCALAR tuple, where every field is a bare token.
+fn parse_tuple_fields(s: &str) -> Option<Vec<String>> {
+    let inner = s.trim().strip_prefix('(')?.strip_suffix(')')?.trim();
+    // Split on whitespace, respecting nested parens (a nested `(…)` field is one token).
+    let mut fields = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for ch in inner.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            ')' => {
+                depth -= 1;
+                cur.push(ch);
+            }
+            c if c.is_whitespace() && depth == 0 => {
+                if !cur.is_empty() {
+                    fields.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        fields.push(cur);
+    }
+    // Drop an optional leading `tuple`/`record` head token (the canonical value-form spelling).
+    if let Some(first) = fields.first()
+        && (first == "tuple" || first == "record")
+    {
+        fields.remove(0);
+    }
+    Some(fields)
 }
 
 #[cfg(test)]
