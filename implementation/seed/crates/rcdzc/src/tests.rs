@@ -2274,6 +2274,21 @@ fn runtime_bigint_arithmetic_leaves_no_live_objects() {
         "bigint borrow leak/double-free: `big` (borrowed by `*`/`/`, dropped by the `let`) plus the owned \
          `(* big big)` temporary (dropped by `/`) must net to 0 live cells"
     );
+
+    // (c) a COMPARISON (`bigint-cmp` + compare-with-zero, B3c) — also borrows both operands and returns a
+    // scalar (a Bool), so each owned `BigInt.of` operand must be dropped. `(< (BigInt.of a) (BigInt.of b))`
+    // leaves no cell live.
+    let src3 = "(module m \
+                  (def (main (: a Int64) (: b Int64)) \
+                     (if (< (BigInt.of a) (BigInt.of b)) 1 0)) (export main))";
+    let program3 = compile_component(&crate::codec::encode(&parse(src3))).expect("compile");
+    let mut rt3 = ComposedRuntime::new(&program3, &runtime_bytes);
+    assert_eq!(rt3.call("main", &[Val::S64(2), Val::S64(5)]), Val::S64(1));
+    assert_eq!(
+        rt3.live_objects(),
+        0,
+        "bigint-cmp leak: the two owned `BigInt.of` operands must be dropped after the borrowing compare"
+    );
 }
 
 /// RUNTIME STRUCTURAL EQUALITY, BORROWED operand: a `let`-bound list compared by `=` (a BORROW) leaves

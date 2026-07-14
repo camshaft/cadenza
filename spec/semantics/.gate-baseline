@@ -690,8 +690,10 @@ pass	a round-trip consumer binds the applied closure through a let
 pass	a round-trip consumer takes the non-applying match arm
 pass	a round-trip consumer that does NOT apply the closure on the taken branch
 pass	a run's result is a deterministic function of a host call's recorded response
+pass	a runtime BigInt comparison sees an intermediate that overflows Int64
 pass	a runtime BigInt intermediate that overflows Int64 does not trap
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
+pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
@@ -1439,6 +1441,7 @@ pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure 
 pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
 pass	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 pass	runtime BigInt addition runs on the arbitrary-precision runtime
+pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	scalar length counts Unicode scalar values, not bytes

@@ -336,6 +336,47 @@
             (export main)))
   (error  CDZ0301))
 
+(case "a runtime BigInt ordering compares by the arbitrary-precision value"
+  (doc    "`(< (BigInt.of a) (BigInt.of b))` with runtime a,b widens each to a BigInt and orders by the
+           true value via the runtime three-way `bigint-cmp` + a signed compare-with-zero (B3c): a=2,b=5 →
+           `<` true → 1. A BigInt has no fixed machine slot, so the comparison cannot ride the scalar path;
+           it routes through the runtime primitive. Pins the runtime comparison wiring.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (if (< (BigInt.of a) (BigInt.of b)) 1 0))
+            (export main)))
+  (call   main (: 2 Int64) (: 5 Int64))
+  (output (: 1 Int64)))
+
+(case "a runtime BigInt comparison sees an intermediate that overflows Int64"
+  (doc    "`(> (* big big) big)` with `big = BigInt.of 5000000000`: the product 2.5e19 OVERFLOWS Int64 but
+           is a valid BigInt, and `bigint-cmp` orders it against `big` by the TRUE unbounded value → the
+           product is far larger → `>` true → 1. Pins that the comparison, like the arithmetic, sees the
+           full arbitrary-precision magnitude rather than a wrapped/trapped machine value.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((big (BigInt.of a)))
+                (if (> (* big big) big) 1 0)))
+            (export main)))
+  (call   main (: 5000000000 Int64))
+  (output (: 1 Int64)))
+
+(case "runtime BigInt equality holds for values reached by different arithmetic"
+  (doc    "`(= (+ big big) (* big two))` with `big = BigInt.of a`, `two = BigInt.of t` (t=2): `big+big` and
+           `big*2` are the SAME value reached two ways; `bigint-cmp` returns 0 → `=` (`i64.eqz`) true → 1.
+           Confirms BigInt `=` compares by value (each op returns a normalized leaf, so equal values are
+           byte-identical) rather than by handle identity. (`two` is a runtime widening `BigInt.of t`
+           rather than a constant `BigInt.of 2` — a CONSTANT BigInt used as a runtime arithmetic operand
+           does not yet materialize as a heap leaf, a B4 boundary/const-heap concern; here both operands
+           are runtime, exercising the comparison itself.)")
+  (input  (do
+            (def (main (: a Int64) (: t Int64))
+              (let ((big (BigInt.of a)) (two (BigInt.of t)))
+                (if (= (+ big big) (* big two)) 1 0)))
+            (export main)))
+  (call   main (: 123456789 Int64) (: 2 Int64))
+  (output (: 1 Int64)))
+
 ; --- Module pragma `default-integer`: fixes a literal's TYPE, never a conversion ----------
 ; A module MAY declare `(pragma default-integer <T>)` so a bare integer literal with no other constraint
 ; takes `<T>` instead of Int64 within that module (numeric-model.md #A Module May Declare Its Default

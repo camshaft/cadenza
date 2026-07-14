@@ -180,9 +180,9 @@ const OP_BIGINT_ADD: &str = "bigint-add";
 const OP_BIGINT_SUB: &str = "bigint-sub";
 const OP_BIGINT_MUL: &str = "bigint-mul";
 const OP_BIGINT_DIV: &str = "bigint-div";
-// (`bigint-cmp` is exposed by the runtime for BigInt comparison; the compiler wires `<`/`>`/`=` to it in
-// the next slice. The op stays in the runtime ABI regardless — it is a runtime capability, not gated on
-// the compiler emitting it yet.)
+/// `bigint-cmp(a, b) -> s64` — the three-way compare (`-1`/`0`/`1` for `a<b`/`a=b`/`a>b`), which the
+/// BigInt comparison operators `<`/`>`/`<=`/`>=`/`=` lower to + a fixed signed compare-with-zero (B3c).
+const OP_BIGINT_CMP: &str = "bigint-cmp";
 /// `bytes-slice(buf, start, len) -> handle` — `len` bytes from `start` (consumes buf; `start+len >
 /// bytes-len` TRAPS, so the caller bounds-checks first and returns `None` instead).
 const OP_BYTES_SLICE: &str = "bytes-slice";
@@ -350,7 +350,7 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // which the op then drops — the `tail_borrowed: true` borrow-in-tail computes exactly this (a
         // direct `LocalRef` borrows; a producer arm resets to consuming). `bigint-of-i64`'s operand is an
         // i64 scalar (no heap ref) — always consuming, `false`.
-        Core::BigIntBinOp { lhs, rhs, .. } => {
+        Core::BigIntBinOp { lhs, rhs, .. } | Core::BigIntCmp { lhs, rhs, .. } => {
             binding_escapes(db, lhs, binder, true) || binding_escapes(db, rhs, binder, true)
         }
         Core::BigIntOfI64 { value } => binding_escapes(db, value, binder, false),
@@ -1129,6 +1129,14 @@ pub fn collect_used_ops(
                 crate::core::BigIntOp::Mul => OP_BIGINT_MUL,
                 crate::core::BigIntOp::Div => OP_BIGINT_DIV,
             });
+            out.insert(OP_DROP);
+            collect_used_ops(db, lhs, out);
+            collect_used_ops(db, rhs, out);
+        }
+        // A BigInt comparison imports `bigint-cmp` (the three-way primitive) AND `drop` (to reclaim an
+        // owned-temporary operand after the borrowing compare — the `emit_bigint_borrow_binary` helper).
+        Core::BigIntCmp { lhs, rhs, .. } => {
+            out.insert(OP_BIGINT_CMP);
             out.insert(OP_DROP);
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
@@ -3774,6 +3782,49 @@ fn emit(
                 crate::core::BigIntOp::Div => OP_BIGINT_DIV,
             };
             emit_bigint_borrow_binary(db, lhs, rhs, import, high, slots, scratch_ty, layout, out)
+        }
+        // A runtime BigInt COMPARISON `<`/`>`/`<=`/`>=`/`=` — `bigint-cmp` BORROWS both operands and
+        // returns the three-way `-1`/`0`/`1` (`a<b`/`a=b`/`a>b`) as an i64; the operator is then the
+        // SIGNED i64 compare of that against `0`: `< → cmp <ₛ 0`, `> → cmp >ₛ 0`, `<= → cmp <=ₛ 0`,
+        // `>= → cmp >=ₛ 0`, `= → cmp == 0` (`i64.eqz`). The borrowing binary helper emits the operands,
+        // drops each OWNED temporary, and leaves the i64 `cmp` result; then push the compare-with-zero.
+        Core::BigIntCmp { op, lhs, rhs } => {
+            emit_bigint_borrow_binary(
+                db,
+                lhs,
+                rhs,
+                OP_BIGINT_CMP,
+                high,
+                slots,
+                scratch_ty,
+                layout,
+                out,
+            )?; // → [cmp : i64]
+            match op {
+                Prim::Eq => out.push(Lir::I64Eqz), // cmp == 0
+                Prim::Lt => {
+                    out.push(Lir::ConstI64(0));
+                    out.push(Lir::I64LtS);
+                }
+                Prim::Gt => {
+                    out.push(Lir::ConstI64(0));
+                    out.push(Lir::I64GtS);
+                }
+                Prim::Le => {
+                    out.push(Lir::ConstI64(0));
+                    out.push(Lir::I64LeS);
+                }
+                Prim::Ge => {
+                    out.push(Lir::ConstI64(0));
+                    out.push(Lir::I64GeS);
+                }
+                // `lower_bigint_cmp` only builds `BigIntCmp` for a comparison prim; anything else is a
+                // compiler invariant violation.
+                _ => {
+                    return Err(Reject::decline("BigIntCmp carries a non-comparison prim"));
+                }
+            }
+            Ok(())
         }
         // `Bytes.compact(b)` — emit the handle, `bytes-compact` (consumes it, returns a content-equal one).
         Core::BytesCompact { operand } => {

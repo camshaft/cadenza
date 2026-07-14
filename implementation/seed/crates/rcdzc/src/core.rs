@@ -402,6 +402,17 @@ pub enum Core {
         lhs: StructId,
         rhs: StructId,
     },
+    /// A runtime BigInt COMPARISON — `<`/`>`/`<=`/`>=`/`=` (and `≠`, as `not =`) over `BigInt` operands,
+    /// lowered through the runtime `bigint-cmp` op (a three-way `-1`/`0`/`1` for `a < b`/`a = b`/`a > b`)
+    /// then the operator's fixed i64 compare-with-zero: `<` is `cmp <ₛ 0`, `>` is `cmp >ₛ 0`, `<=` is
+    /// `cmp <=ₛ 0`, `>=` is `cmp >=ₛ 0`, `=` is `cmp == 0` (`eqz`). Result is a `Bool` (i32 0/1). Present
+    /// when at least one operand is a runtime `BigInt` (a constant pair folds via `num-bigint` in `lower`);
+    /// like the arithmetic ops, `bigint-cmp` BORROWS both operands (the emit drops each owned temporary).
+    BigIntCmp {
+        op: Prim,
+        lhs: StructId,
+        rhs: StructId,
+    },
     /// A `(bin <seg>…)` CONSTRUCTION with at least one RUNTIME segment value (an all-constant `(bin …)`
     /// folds to a `Core::BytesOf` in `lower`). Builds a `Bytes` on the rope heap at run time: each
     /// fixed-width integer segment range-checks its value against the segment (trap "binary value does not

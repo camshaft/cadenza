@@ -7080,6 +7080,32 @@ fn lower_bigint_arith(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Co
     }
 }
 
+/// Lower a BigInt comparison `<`/`>`/`<=`/`>=`/`=` to either a constant `Bool` fold or a runtime
+/// `Core::BigIntCmp` (the runtime `bigint-cmp` op + a fixed compare-with-zero). A CONSTANT pair (both
+/// operands `Core::ConstInt` — the shape a folded `(BigInt.of <constant>)` leaves) folds when both values
+/// fit `i128` (`to_i128` reads the exact value; every constant a program is likely to compare fits, and
+/// the runtime op covers the rest), comparing at 128-bit precision. A poison operand propagates. Otherwise
+/// (a runtime operand) emit `Core::BigIntCmp`; the emit borrows both operands and applies the operator's
+/// signed compare against the three-way `-1`/`0`/`1` result.
+fn lower_bigint_cmp(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Core {
+    let lc = core_of(db, lhs);
+    let rc = core_of(db, rhs);
+    match (lc, rc) {
+        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+        // A constant BigInt pair — both carry the exact `IntValue`. Fold at 128-bit precision when both
+        // fit; a value beyond i128 (astronomically large) falls through to the runtime op.
+        (Core::ConstInt(a), Core::ConstInt(b)) => match (a.to_i128(), b.to_i128()) {
+            (Some(x), Some(y)) => {
+                let r = compare_ord(op, x.cmp(&y));
+                trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant BigInt comparison (i128)");
+                Core::ConstBool(r)
+            }
+            _ => Core::BigIntCmp { op, lhs, rhs },
+        },
+        _ => Core::BigIntCmp { op, lhs, rhs },
+    }
+}
+
 fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
         return Core::Poison(binop_arity_reject(op, args));
@@ -9082,6 +9108,16 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
 fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
         return Core::Poison(binop_arity_reject(op, args));
+    }
+    // A comparison over BIGINT operands routes through the runtime `bigint-cmp` (B3c) — a `BigInt` has no
+    // fixed machine slot, so `is_scalar` is false and the plain scalar-compare path below never fires. A
+    // CONSTANT pair still folds (both reach as `Core::ConstInt` carrying the exact `IntValue`, compared by
+    // `lower_bigint_cmp` at 128-bit precision where it fits, else the runtime op); a runtime operand emits
+    // `Core::BigIntCmp` (`bigint-cmp` + a fixed compare-with-zero). A `BigInt`/fixed mix was rejected
+    // CDZ0301 in `check_application`, so if one operand is BigInt the other is too. Checked before the
+    // constant folds below (a BigInt `ConstInt`'s value can exceed i64, so the `to_i64` fold would decline).
+    if bigint_operand(db, args) {
+        return lower_bigint_cmp(db, op, args[0], args[1]);
     }
     let lhs = core_of(db, args[0]);
     let rhs = core_of(db, args[1]);

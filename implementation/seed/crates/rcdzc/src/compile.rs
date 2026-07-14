@@ -1895,7 +1895,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
             collect_reached_poisons(db, lhs, out);
             collect_reached_poisons(db, rhs, out);
         }
-        Core::BigIntBinOp { lhs, rhs, .. } => {
+        Core::BigIntBinOp { lhs, rhs, .. } | Core::BigIntCmp { lhs, rhs, .. } => {
             collect_reached_poisons(db, lhs, out);
             collect_reached_poisons(db, rhs, out);
         }

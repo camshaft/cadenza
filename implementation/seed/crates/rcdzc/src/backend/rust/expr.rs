@@ -830,6 +830,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::BigIntOfI64 { .. }
         | Core::BigIntToI64 { .. }
         | Core::BigIntBinOp { .. }
+        | Core::BigIntCmp { .. }
         | Core::MapNew { .. }
         | Core::MapInsert { .. }
         | Core::MapLookup { .. }

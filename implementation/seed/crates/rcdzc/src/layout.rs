@@ -424,7 +424,8 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         | Core::And { lhs, rhs, .. }
         | Core::ListConcat { lhs, rhs }
         | Core::BytesConcat { lhs, rhs }
-        | Core::BigIntBinOp { lhs, rhs, .. } => {
+        | Core::BigIntBinOp { lhs, rhs, .. }
+        | Core::BigIntCmp { lhs, rhs, .. } => {
             collect_closure_codes(db, lhs, out);
             collect_closure_codes(db, rhs, out);
         }
@@ -712,7 +713,8 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, lhs, out);
             collect_call_callees(db, rhs, out);
         }
-        crate::core::Core::BigIntBinOp { lhs, rhs, .. } => {
+        crate::core::Core::BigIntBinOp { lhs, rhs, .. }
+        | crate::core::Core::BigIntCmp { lhs, rhs, .. } => {
             collect_call_callees(db, lhs, out);
             collect_call_callees(db, rhs, out);
         }
