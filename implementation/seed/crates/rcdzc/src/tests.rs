@@ -16968,6 +16968,44 @@ mod match_engine {
     }
 
     #[test]
+    fn a_guarded_pattern_with_a_surplus_element_offers_a_delete_fix() {
+        // A `(guard <pattern> <cond>)` is a fixed-arity form (want 2 tail elements). A SURPLUS third element
+        // `(guard x (> x 0) extra)` now routes through the same `fixed_arity_reject` the other fixed-arity
+        // forms use — a delete-the-surplus fix, bringing the guard to fix-parity with `if`/`and`/member.
+        // TOO FEW (`(guard x)`) keeps the message with no fix (nothing to delete).
+        let many = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: n Int64)) (match n ((guard x (> x 0) extra) 1) (_ 0))) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("a guarded pattern must be"))
+        .expect("a surplus guard element reports");
+        assert_eq!(
+            many.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            many.message
+        );
+        assert_eq!(
+            many.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "a surplus guard element carries a delete fix: {:?}",
+            many.fix
+        );
+        // TOO FEW — a lone `(guard x)` — has nothing to delete, so no fix.
+        let few = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: n Int64)) (match n ((guard x) 1) (_ 0))) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("a guarded pattern must be"))
+        .expect("a lone-pattern guard reports");
+        assert!(
+            few.fix.is_none(),
+            "a too-few guard has no surplus to delete: {:?}",
+            few.fix
+        );
+    }
+
+    #[test]
     fn an_if_missing_its_else_branch_offers_to_add_one() {
         // `(if b then)` — the reflex of a language where `if` without `else` is a statement — is a
         // wrong-arity `if` in Cadenza, where `if` is an EXPRESSION (both branches must produce a value).

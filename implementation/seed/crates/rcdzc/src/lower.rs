@@ -2832,15 +2832,16 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         let (inner_pat, guard) = match db.ast.as_form(pat, "guard") {
             // `(guard <inner-pat> <cond>)` — a guarded pattern.
             Some(g) if g.len() == 2 => (g[0], Some(g[1])),
-            Some(_) => {
-                // Anchor at the offending arm PATTERN, not the enclosing match.
-                return Core::Poison(
-                    Reject::coded(
-                        Code::Malformed,
-                        "a guarded pattern must be (guard <pattern> <cond>)",
-                    )
-                    .at(pat),
-                );
+            Some(g) => {
+                // A wrong-arity `(guard …)` — anchored at the offending arm PATTERN, with a delete fix on
+                // the FIRST surplus element when there are too many (the fixed-arity family's shared
+                // surplus-delete; too few has nothing to delete → message only).
+                return Core::Poison(crate::resolve::fixed_arity_reject(
+                    pat,
+                    g,
+                    2,
+                    "a guarded pattern must be (guard <pattern> <cond>)",
+                ));
             }
             None => (pat, None),
         };
@@ -4429,15 +4430,15 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
         // `<cond>` is the guard (a boolean the pattern's binders are in scope for, resolve Case 6lg / 5g).
         let (pat, guard) = match db.ast.as_form(pat, "guard") {
             Some(g) if g.len() == 2 => (g[0], Some(g[1])),
-            Some(_) => {
-                // Anchor at the offending arm PATTERN, not the enclosing match.
-                return Core::Poison(
-                    Reject::coded(
-                        Code::Malformed,
-                        "a guarded pattern must be (guard <pattern> <cond>)",
-                    )
-                    .at(pat),
-                );
+            Some(g) => {
+                // A wrong-arity `(guard …)` — a surplus element gets the shared delete fix; too few is
+                // message-only. Anchored at the offending arm PATTERN, not the enclosing match.
+                return Core::Poison(crate::resolve::fixed_arity_reject(
+                    pat,
+                    g,
+                    2,
+                    "a guarded pattern must be (guard <pattern> <cond>)",
+                ));
             }
             None => (pat, None),
         };
@@ -6116,11 +6117,13 @@ fn pattern_constraints(
     // `(guard (Some x) …)` still constrains `[]` to the `Some` disc + binds `x` at `[Payload]`.
     if let Some(g) = db.ast.as_form(pat, "guard") {
         if g.len() != 2 {
-            return Err(Reject::coded(
-                Code::Malformed,
+            // A surplus element gets the shared delete fix; too few is message-only. Anchored at `pat`.
+            return Err(crate::resolve::fixed_arity_reject(
+                pat,
+                g,
+                2,
                 "a guarded pattern must be (guard <pattern> <cond>)",
-            )
-            .at(pat));
+            ));
         }
         return pattern_constraints(db, g[0], ty, path, lit_tests);
     }
