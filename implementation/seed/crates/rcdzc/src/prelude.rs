@@ -429,6 +429,8 @@ fn row_op_placeholder_type(ast: &mut Arenas) -> StructId {
 //# A list MUST offer an operation that appends an element and an operation that replaces the element at an index, each of which MUST produce a new list value and leave its operand list unchanged, so that a list is immutable under growth exactly as it is under reading.
 //= spec/capabilities/collections-and-text.md#a-list-is-grown-by-functional-construction
 //# A list MUST also offer an operation that concatenates two lists, producing a new list whose elements are those of the first list in order followed by those of the second, and leaving both operand lists unchanged.
+//= spec/capabilities/collections-and-text.md#a-list-is-grown-by-functional-construction
+//# The replace-at-index operation MUST be defined only for an index that is in bounds, consistent with the fallible reading rule below, so that growth never observes an element at a position the list does not have.
 //= spec/capabilities/collections-and-text.md#indexing-and-lookup-are-fallible-not-trapping
 //# An operation that reads an element of a sequence by position — indexing a list, a string (by scalar or byte offset), or a `Bytes` value, or taking a sub-sequence slice — MUST be total, yielding an optional value that is present when the position is in bounds and absent when it is out of bounds, rather than trapping or producing an unspecified value.
 fn list_module(ast: &mut Arenas) -> StructId {
@@ -468,11 +470,18 @@ fn list_module(ast: &mut Arenas) -> StructId {
 /// ∀k v. (Map k v) → Int64`. Mirrors `list_module`, but the type constructor and every scheme take two
 /// parameters instead of one. `empty`/`insert`/`remove` are the functional-construction surface (each
 /// yields a NEW map, operand unchanged, on the persistent CHAMP heap); `lookup` is total (`Option v`,
-/// `None` for an absent key, never a trap); `size` reports the key count.
+/// `None` for an absent key, never a trap); `size` reports the key count. `swap`/`take` are the
+/// VALUE-YIELDING second forms of insert/remove — each returns `(tuple <prior value as Option> <new
+/// map>)`, agreeing with the plain form on the resulting map and additionally reporting what the key
+/// held before, so a program observes a replaced/dropped value without a separate `lookup`.
 //= spec/capabilities/collections-and-text.md#a-map-is-built-by-functional-construction
 //# A map MUST offer an empty map value, an operation that adds or replaces the association for a key, and an operation that removes the association for a key.
 //= spec/capabilities/collections-and-text.md#a-map-is-built-by-functional-construction
 //# Each MUST produce a new map value and leave its operand map unchanged, so that a map is immutable under update exactly as a list is under growth (*A List Is Grown By Functional Construction*).
+//= spec/capabilities/collections-and-text.md#a-map-is-built-by-functional-construction
+//# A map MUST report the number of keys it associates, and that count MUST equal the number of distinct keys added and not since removed.
+//= spec/capabilities/collections-and-text.md#a-map-is-built-by-functional-construction
+//# The add-or-replace and the remove operations MUST each come in two forms: a plain form yielding only the new map, and a form that additionally yields the value the key held before the operation as an optional — present when the key was associated beforehand and absent when it was not — paired with the new map. The plain form is the common case that discards the prior value; the value-yielding form lets a program observe what an add replaced or a remove dropped in a single operation, without a separate lookup. The two forms MUST agree on the resulting map, so that the only difference is whether the prior value is reported.
 //= spec/capabilities/collections-and-text.md#indexing-and-lookup-are-fallible-not-trapping
 //# Looking a key up in a map MUST likewise be total, yielding an optional value that is present when the map contains the key and absent when it does not.
 fn map_module(ast: &mut Arenas) -> StructId {
