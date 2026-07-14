@@ -265,6 +265,23 @@
   (input  (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807)))
   (output (: 85070591730234615847396907784232501249 BigInt)))
 
+(case "a beyond-i64 constant BigInt is an operand of a runtime bigint op"
+  (doc    "`(: 100000000000000000000 BigInt)` is a constant BigInt = 1e20, BEYOND i64::MAX (~9.2e18). As an
+           OPERAND of a runtime bigint op it must materialize a heap leaf: an i64-fitting constant widens via
+           `bigint-of-i64`, but a beyond-i64 one has no i64 to feed it — so the compiler bakes its canonical
+           sign-magnitude bytes as a Bytes leaf and re-tags them via `bigint-of-bytes`. Compared against
+           `(BigInt.of 1e10)²` = 1e20 (computed on the runtime limb library), the `=` is true. Before the
+           `bigint-of-bytes` op the beyond-i64 constant operand declined 'not yet materialized as a heap leaf
+           (B4)', while an in-i64 constant operand + a beyond-i64 constant as the sole export body both
+           worked — the arbitrary-magnitude constant-operand leaf was the remaining B4 gap. THE defining
+           BigInt use case: exact arithmetic/comparison against a literal larger than i64 holds.")
+  (input  (do
+            (def (main)
+              (if (= (: 100000000000000000000 BigInt) (* (BigInt.of 10000000000) (BigInt.of 10000000000)))
+                  1 0))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "a runtime-computed BigInt result crosses the host boundary"
   (doc    "`(+ (BigInt.of 40) (BigInt.of 2))` is a RUNTIME BigInt add (the compiler does not fold BigInt
            arithmetic — it emits `bigint-add`), whose result crosses to the host as its value form `42`

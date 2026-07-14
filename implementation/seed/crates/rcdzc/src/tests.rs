@@ -2505,6 +2505,29 @@ fn runtime_bigint_arithmetic_leaves_no_live_objects() {
         "bigint const-operand leak: the inline-materialized `(BigInt.of 2)` temporary must be dropped after \
          the borrowing mul, and `big` left to the `let`"
     );
+
+    // (e) a BEYOND-i64 constant operand — `(: 1e20 BigInt)`, too large for `bigint-of-i64`, so it
+    // materializes via the baked sign-magnitude bytes + `bigint-of-bytes`. Compared against `1e10 * 1e10`
+    // (runtime mul) the `=` is true → 1. Both the beyond-i64 constant leaf (owned temporary) AND the
+    // runtime product must be dropped after the borrowing compare — net 0, exactly as an i64-fitting
+    // constant operand. Guards the arbitrary-magnitude constant-operand materialization + its refcount.
+    let src5 = "(module m \
+                  (def (main) \
+                     (if (= (: 100000000000000000000 BigInt) (* (BigInt.of 10000000000) (BigInt.of 10000000000))) \
+                         1 0)) (export main))";
+    let program5 = compile_component(&crate::codec::encode(&parse(src5))).expect("compile");
+    let mut rt5 = ComposedRuntime::new(&program5, &runtime_bytes);
+    assert_eq!(
+        rt5.call("main", &[]),
+        Val::S64(1),
+        "the beyond-i64 constant `1e20` equals the runtime product `1e10 * 1e10`"
+    );
+    assert_eq!(
+        rt5.live_objects(),
+        0,
+        "beyond-i64 const-operand leak: the `bigint-of-bytes`-materialized `1e20` leaf, the two `BigInt.of` \
+         operands of the product, and the product temporary must all be dropped after the borrowing compare"
+    );
 }
 
 /// RUNTIME STRUCTURAL EQUALITY, BORROWED operand: a `let`-bound list compared by `=` (a BORROW) leaves

@@ -947,6 +947,23 @@ fn unbox_bigint(h: Handle) -> bigint::Big {
 fn op_bigint_of_i64(v: i64) -> Handle {
     box_bigint(&bigint::Big::from_i64(v))
 }
+/// `bigint-of-bytes` — build a BigInt leaf from a Bytes leaf holding the canonical sign-magnitude bytes
+/// (`[sign][LE magnitude, trailing-zeros-stripped]`). The compiler emits this to materialize a CONSTANT
+/// BigInt whose magnitude exceeds i64 range (too large for `bigint-of-i64`): it bakes the sign-magnitude
+/// bytes as a Bytes leaf (`bytes-alloc`/`bytes-set`, like a constant string) then re-tags them here. The
+/// input may be a rope (a concat/slice) in general, so FLATTEN it before reading `raw` — exactly as the
+/// value-encode `Shape::Bytes` walker does. `from_sign_magnitude_bytes` re-normalizes (a malformed/empty
+/// input decodes as zero — total), so `box_bigint` re-emits the canonical leaf form. CONSUMES `buf` (the
+/// transient byte leaf is dropped after its content is read).
+fn op_bigint_of_bytes(buf: Handle) -> Handle {
+    bytes_flatten(buf);
+    let big = with_node(buf, bigint::Big::zero(), |n| {
+        bigint::Big::from_sign_magnitude_bytes(&n.raw)
+    });
+    let out = box_bigint(&big);
+    op_drop(buf);
+    out
+}
 /// `bigint-to-i64-checked` — the CHECKED narrowing back to `i64`: the value if it fits, else TRAP
 /// (`options/numeric-model/explicit-checked.md` — `Int64.of` of an out-of-range BigInt traps). Reads the
 /// leaf's sign-magnitude `raw` slice DIRECTLY (`Big::i64_checked_from_sign_magnitude_bytes`) — a narrowing
@@ -4277,6 +4294,9 @@ impl Guest for Component {
     }
     fn bigint_of_i64(v: i64) -> u32 {
         op_bigint_of_i64(v).to_u32()
+    }
+    fn bigint_of_bytes(buf: u32) -> u32 {
+        op_bigint_of_bytes(Handle::from_u32(buf)).to_u32()
     }
     fn bigint_to_i64_checked(handle: u32) -> i64 {
         op_bigint_to_i64_checked(Handle::from_u32(handle))
@@ -17440,6 +17460,51 @@ mod tests {
         op_drop(cur2);
         op_drop(adv);
         op_drop(m2);
+    }
+
+    #[test]
+    fn bigint_of_bytes_round_trips_a_beyond_i64_value() {
+        // `op_bigint_of_bytes` builds a BigInt leaf from the canonical sign-magnitude bytes of a Bytes leaf
+        // — the compiler's beyond-i64 constant materialization. Bake the sign-magnitude bytes of a value
+        // LARGER than i64 (1e20 = 10000000000² > i64::MAX ~9.2e18) into a Bytes leaf, build the BigInt, and
+        // confirm it equals the SAME value computed by runtime arithmetic. Also confirms it CONSUMES buf.
+        reset();
+        let expected =
+            op_bigint_mul(op_bigint_of_i64(10_000_000_000), op_bigint_of_i64(10_000_000_000));
+        // The canonical sign-magnitude bytes of a beyond-i64 value (what the compiler would bake).
+        let sm_bytes = |v: i128| -> alloc::vec::Vec<u8> {
+            let mut buf = [0u8; 32];
+            let n = bigint::Big::i128_to_sign_magnitude_bytes_into(v, &mut buf).expect("fits 32");
+            buf[..n].to_vec()
+        };
+        let sm = sm_bytes(100_000_000_000_000_000_000i128);
+        let buf = op_bytes_alloc(sm.len() as u32);
+        for (i, &b) in sm.iter().enumerate() {
+            op_bytes_set(buf, i as u32, b as u32);
+        }
+        let got = op_bigint_of_bytes(buf); // consumes buf
+        assert_eq!(
+            op_bigint_cmp(got, expected),
+            0,
+            "bigint-of-bytes(sign-magnitude bytes of 1e20) equals 1e10 * 1e10"
+        );
+        // A negative beyond-i64 value round-trips with its sign.
+        let neg_sm = sm_bytes(-100_000_000_000_000_000_000i128);
+        let nbuf = op_bytes_alloc(neg_sm.len() as u32);
+        for (i, &b) in neg_sm.iter().enumerate() {
+            op_bytes_set(nbuf, i as u32, b as u32);
+        }
+        let ngot = op_bigint_of_bytes(nbuf);
+        let neg_expected = op_bigint_sub(op_bigint_of_i64(0), expected); // -expected
+        assert_eq!(
+            op_bigint_cmp(ngot, neg_expected),
+            0,
+            "bigint-of-bytes of a negative value keeps its sign"
+        );
+        op_drop(got);
+        op_drop(ngot);
+        op_drop(expected);
+        op_drop(neg_expected);
     }
 
     #[test]
