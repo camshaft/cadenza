@@ -1036,6 +1036,7 @@ pass	an Option carrying a Result is matched across two different sum types
 pass	an SI decimal prefix scales a unit by a power of ten
 pass	an abortive handler abandons a host call in the path it discards
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
+pass	an abortive perform deep in a call chain unwinds every intervening frame to the top handler
 pass	an abortive perform in a conditional let binding abandons the computation
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation
 pass	an abortive perform in an if condition abandons the computation before branching

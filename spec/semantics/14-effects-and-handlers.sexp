@@ -217,6 +217,25 @@
               (handle Bail 0 ((bail (n) s n)) (+ 1 (Bail.bail 7)))) (export main)))
   (output (: 7 Int64)))
 
+(case "an abortive perform deep in a call chain unwinds every intervening frame to the top handler"
+  (doc    "The 'bail and catch at the top' pattern across FUNCTIONS (DESIGN-effects-rcdzc.md §4.2 cross-
+           function non-local exit): the abort is performed three calls deep and abandons EVERY pending
+           frame between it and the handler. `main` handles `Bail` and calls `(a 5)`; `a n = (+ 1 (b n))`,
+           `b n = (+ 1 (c n))`, `c n = (+ n (Bail.bail 99))`. Performing `(Bail.bail 99)` at the base
+           abandons `c`'s `(+ n …)`, `b`'s `(+ 1 …)`, and `a`'s `(+ 1 …)` — none of the pending additions
+           runs — so the handle evaluates to the arm value 99, NOT 5+99+1+1. Witnesses that abortion is a
+           non-local exit over the whole call chain, not a per-frame return that the intervening arithmetic
+           could observe. (The callees are non-recursive, so the inline trigger makes the abort unconditional
+           in the inlined body.)")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (c (: n Int64)) (+ n (Bail.bail 99)))
+            (def (b (: n Int64)) (+ 1 (c n)))
+            (def (a (: n Int64)) (+ 1 (b n)))
+            (def (main)
+              (handle Bail 0 ((bail (n) s n)) (a 5))) (export main)))
+  (output (: 99 Int64)))
+
 (case "when two abortive performs sit on one spine the FIRST (leftmost) abort wins"
   (doc    "Refines the abortive class for MULTIPLE performs. Operands evaluate LEFT-TO-RIGHT, and an
            abortive perform ABANDONS the rest of the computation, so on `(+ (Bail.bail 7) (Bail.bail 9))` the
