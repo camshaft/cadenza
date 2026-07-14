@@ -113,6 +113,18 @@ pub(crate) struct FileScopeTable {
     /// file's imports (an import maps the local name to the exporting file's def). A name absent here
     /// is not a package-level def in that file — resolution falls through to the prelude, then unbound.
     visible: Vec<crate::fxhash::FxHashMap<String, usize>>,
+    /// Per file, the visible TYPE names → the synthesized record occurrence the type name resolves to
+    /// (`TypeDecl::synth`). Own `(type …)` declarations plus the types the file imports. A type name
+    /// absent here is NOT visible in that file — a sibling file's type is invisible unless imported
+    /// (`DESIGN-package-linking.md` §8.3 residual (a), closed here). This is the type-name analogue of
+    /// `visible`, and is what makes cross-file type privacy real: without it, `type_decl_by_name`'s flat
+    /// global index let any file name any sibling's type + construct its variants with no import.
+    visible_types: Vec<crate::fxhash::FxHashMap<String, StructId>>,
+    /// Per file, the visible bare VARIANT-CONSTRUCTOR names → the ctor record occurrence
+    /// (`Variant::ctor`). Populated from the SAME set of type declarations as `visible_types` (a file
+    /// that can name a type can construct/match its variants) — so importing a type brings its handle
+    /// AND its constructors. A ctor name absent here is not a visible bare variant in that file.
+    visible_ctors: Vec<crate::fxhash::FxHashMap<String, StructId>>,
 }
 
 impl FileScopeTable {
@@ -135,9 +147,15 @@ fn build_file_scope(
     linkage: &crate::link::Linkage,
     defs: &[Def],
     def_by_name: &crate::fxhash::FxHashMap<String, usize>,
+    type_decls: &[TypeDecl],
+    prelude_type_module_names: &crate::fxhash::FxHashSet<String>,
 ) -> FileScopeTable {
     let files = linkage.files.clone();
     let mut visible: Vec<crate::fxhash::FxHashMap<String, usize>> =
+        vec![crate::fxhash::FxHashMap::default(); files.len()];
+    let mut visible_types: Vec<crate::fxhash::FxHashMap<String, StructId>> =
+        vec![crate::fxhash::FxHashMap::default(); files.len()];
+    let mut visible_ctors: Vec<crate::fxhash::FxHashMap<String, StructId>> =
         vec![crate::fxhash::FxHashMap::default(); files.len()];
 
     // Own defs: assign each def to the file whose range contains its signature occurrence. First-wins
@@ -149,13 +167,60 @@ fn build_file_scope(
         }
     }
 
+    // Own TYPES: assign each `(type …)` declaration to the file whose range contains its declaration
+    // occurrence, binding the type NAME → its synth record and each of its variant CONSTRUCTOR names →
+    // the ctor node. A file that declares a type may name it and construct/match its variants; a sibling
+    // that did NOT declare it and did NOT import it cannot (the privacy this closes). The
+    // prelude-collision skip on bare ctors mirrors `variant_ctor_index` (a variant named `Int`/`List`/
+    // `Name` is reached only qualified, never via the bare-name map). `add_type_to_file` (below) is the
+    // shared helper the import phase reuses so an imported type is registered EXACTLY as an own one.
+    let add_type_to_file =
+        |fi: usize,
+         decl: &TypeDecl,
+         local_name: &str,
+         visible_types: &mut Vec<crate::fxhash::FxHashMap<String, StructId>>,
+         visible_ctors: &mut Vec<crate::fxhash::FxHashMap<String, StructId>>| {
+            if let Some(synth) = decl.synth {
+                visible_types[fi]
+                    .entry(local_name.to_string())
+                    .or_insert(synth);
+            }
+            for v in &decl.variants {
+                if prelude_type_module_names.contains(&v.name) {
+                    continue;
+                }
+                if let Some(ctor) = v.ctor {
+                    visible_ctors[fi].entry(v.name.clone()).or_insert(ctor);
+                }
+            }
+        };
+    for decl in type_decls {
+        if let Some(fi) = files.iter().position(|f| f.contains(decl.occ)) {
+            add_type_to_file(fi, decl, &decl.name, &mut visible_types, &mut visible_ctors);
+        }
+    }
+
     // Imports: bind each imported local name to the def the exporting file defines under the exported
     // name. Resolved via the exporting file's OWN visible map (built above), so an import re-exports
     // exactly the sibling's def — no global scan. (`def_by_name` is the package-wide first-wins index,
     // used only as a last resort if the exporting file's own map somehow lacks it — it will not for a
     // well-formed export, since the link step validated visibility.)
+    //
+    // An import name may name a VALUE def OR a TYPE (the export list is one namespace-agnostic surface —
+    // `modules-and-namespaces.md` §Visibility Is Explicit). So each imported name is tried BOTH ways: if
+    // the exporting file declares a type under the exported name, bring its handle + constructors into
+    // the importing file (via `add_type_to_file`); if it defines a value def, bind that. A name may be
+    // both (rare); both bindings are made and the resolver's ordered steps disambiguate by position.
     for (fi, scope) in linkage.scopes.iter().enumerate() {
         for imp in &scope.imports {
+            // Type import: the exporting file's own `(type …)` under the exported name.
+            if let Some(decl) = type_decls.iter().find(|d| {
+                d.name == imp.exported
+                    && files.get(imp.from_file).is_some_and(|f| f.contains(d.occ))
+            }) {
+                add_type_to_file(fi, decl, &imp.local, &mut visible_types, &mut visible_ctors);
+            }
+            // Value import: the exporting file's def under the exported name.
             let idx = visible
                 .get(imp.from_file)
                 .and_then(|m| m.get(&imp.exported).copied())
@@ -166,7 +231,12 @@ fn build_file_scope(
         }
     }
 
-    FileScopeTable { files, visible }
+    FileScopeTable {
+        files,
+        visible,
+        visible_types,
+        visible_ctors,
+    }
 }
 
 /// A requested export: the name to emit (verbatim) and the definition it names, resolved against the
@@ -1389,7 +1459,15 @@ impl Db {
         // in that file's `StructId` range), plus its imports (each local name → the exporting file's
         // def of that name). A single-file compile carries no linkage, so this stays `None` and every
         // lookup falls through to the flat `def_name_index` — byte-identical to before.
-        let file_scope = linkage.map(|lk| build_file_scope(&lk, &defs, &def_by_name));
+        let file_scope = linkage.map(|lk| {
+            build_file_scope(
+                &lk,
+                &defs,
+                &def_by_name,
+                &type_decls,
+                &prelude_type_module_names,
+            )
+        });
         // Scan the program's `(Unit.define …)` forms BEFORE `ast` moves into the db (a raw-occurrence
         // store the units layer reduces on demand).
         let unit_defines = scan_unit_defines(&ast);
@@ -1989,6 +2067,38 @@ impl Db {
         let fs = self.file_scope.as_ref()?;
         let file = fs.file_of(at)?;
         Some(fs.visible[file].get(name).copied().ok_or(()))
+    }
+
+    /// File-scoped TYPE-name lookup for a multi-file package — the type analogue of `file_scoped_def`.
+    /// Resolves the type NAME `name`, referenced from node `at`, to the synth-record occurrence it names,
+    /// but ONLY the types visible in `at`'s own file (its own `(type …)` declarations + the types it
+    /// imports), never a sibling file's type. Returns:
+    ///  - `Some(Ok(occ))` — `name` resolves to the type whose synth record is `occ` in `at`'s file scope;
+    ///  - `Some(Err(()))` — a package is linked and `at`'s file is KNOWN, but `name` is not a visible type there (fall through; do NOT leak a sibling's type — this is the privacy);
+    ///  - `None` — no linkage, OR `at` is synthesized / β-copied / prelude (indeterminate file); caller uses the flat `type_decl_by_name`.
+    pub(crate) fn file_scoped_type(
+        &self,
+        at: StructId,
+        name: &str,
+    ) -> Option<Result<StructId, ()>> {
+        let fs = self.file_scope.as_ref()?;
+        let file = fs.file_of(at)?;
+        Some(fs.visible_types[file].get(name).copied().ok_or(()))
+    }
+
+    /// File-scoped bare-VARIANT-CONSTRUCTOR lookup for a multi-file package — the ctor analogue of
+    /// `file_scoped_def`. Resolves a bare variant name (`Red` for `(type Color (Red) …)`) to its ctor
+    /// node, but ONLY the constructors visible in `at`'s own file (own type decls + imported types).
+    /// Same tri-state as `file_scoped_type`; `Some(Err(()))` means the file is known and the ctor is not
+    /// visible there (fall through — a same-named prelude ctor like `Some` may still apply).
+    pub(crate) fn file_scoped_variant_ctor(
+        &self,
+        at: StructId,
+        name: &str,
+    ) -> Option<Result<StructId, ()>> {
+        let fs = self.file_scope.as_ref()?;
+        let file = fs.file_of(at)?;
+        Some(fs.visible_ctors[file].get(name).copied().ok_or(()))
     }
 
     /// Whether a package is linked (multi-file). When false, resolution is the flat single-file path.

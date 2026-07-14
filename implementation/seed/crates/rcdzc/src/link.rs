@@ -317,10 +317,19 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
         let mut exports = Vec::new();
         let mut defined = Vec::new();
         for item in top_items(ast) {
-            if let Some(tail) = ast.as_form(item, "export")
-                && let Some(name) = tail.first().and_then(|&s| ast.as_name(s))
-            {
-                exports.push(name.to_string());
+            if let Some(tail) = ast.as_form(item, "export") {
+                // Gather EVERY name in the clause — `(export a b)` publishes both, matching the main
+                // scan (`scan_top_level`). Reading only `tail.first()` here silently dropped every name
+                // past the first, so an importer of a valid `(export Color mk)` library saw only `Color`
+                // and an `(import "lib" (mk))` was falsely rejected as "does not export mk". A
+                // member-access element (`(. T A)`, the concrete-ctor export form) contributes no bare
+                // name here; its constructor visibility is handled by the type-export path, not this
+                // value-import surface.
+                for &s in tail.iter() {
+                    if let Some(name) = ast.as_name(s) {
+                        exports.push(name.to_string());
+                    }
+                }
             } else if let Some(name) = top_item_defined_name(ast, item) {
                 defined.push(name);
             }
@@ -954,26 +963,51 @@ mod tests {
         assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
     }
 
-    /// TYPE NAMES ARE FILE-SCOPED: the entry and an imported lib may EACH declare a structurally-identical
-    /// `type L`. A package splices its files into one merged `(do …)`, but a sibling's `type` is file-local
-    /// (`DESIGN-package-linking.md` §Imports Are Explicit), so the two same-named declarations are NOT a
-    /// duplicate — the duplicate-type check keys on `(file, name)` via `Db::file_of`, not `name` alone.
-    /// Regression guard: the check once keyed on `name` alone and rejected this legitimate cross-module
-    /// case CDZ0201, regressing "a recursive user sum built in a lib is folded by the entry's structural
-    /// copy" (pass→todo). The behavior is covered by that corpus case; this pins the file-scoping at the
-    /// link level so a future duplicate-check change cannot silently reintroduce the global scan.
+    /// TYPE NAMES ARE FILE-SCOPED: the entry and an imported lib may EACH declare a same-named `type C`
+    /// without a duplicate error — a package splices its files into one merged `(do …)`, but a sibling's
+    /// `type` is file-local (`DESIGN-package-linking.md` §Imports Are Explicit), so the two declarations
+    /// are NOT a duplicate. They are DISTINCT NOMINAL TYPES (type-system.md §Nominal — identity is the
+    /// fully-qualified name); this guards that the two same-named decls COEXIST (no duplicate reject) with
+    /// the entry using its OWN `C` locally. Uses a NON-recursive sum: a recursive same-named sum's
+    /// self-referential payload type is still resolved through the flat type index at synthesis time
+    /// (recursive-sum synthesis is not yet file-scoped — a separate follow-up), so a recursive re-declare
+    /// splits its own spine's type. The composing path is to IMPORT the type (next test), which needs no
+    /// re-declaration at all.
     #[test]
-    fn a_same_type_name_in_a_lib_and_the_entry_is_not_a_duplicate() {
+    fn a_same_type_name_in_a_lib_and_the_entry_coexist_but_are_distinct() {
+        // Both files declare `C`; the entry does NOT import the lib's `C` and uses only its OWN `C`
+        // locally (constructs + matches). No duplicate error, and the entry's `C` is its own.
+        let out = compile_package(
+            "(do (type C (A) (B)) (def (mk) C.A) (export mk))",
+            "(do (import \"lib\" (mk)) (type C (A) (B)) \
+                 (def (main) (match C.B ((C.A) 1) ((C.B) 2))) (export main))",
+        );
+        assert!(
+            !out.has_error(),
+            "two same-named `type C` decls (lib + entry) coexist without a duplicate error when each is used within its own file; got {:?}",
+            out.diagnostics
+        );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
+    /// The composing form for a recursive user sum across a module boundary: IMPORT the type both files
+    /// share. `lib` exports its `L` + `mk`; the entry imports `(L mk)` and folds the imported value with
+    /// a `sm` typed over the imported `L`. Because both refer to the SAME nominal declaration (the lib's),
+    /// the value satisfies `sm`'s parameter and the fold composes → 11. This is the file-scoped-types
+    /// replacement for the old "structural copy" form (which relied on the flat type index collapsing two
+    /// same-named decls — a forging path §Nominal forbids). Mirrors the 11-modules corpus case.
+    #[test]
+    fn an_imported_recursive_sum_is_folded_over_the_imported_type() {
         let out = compile_package(
             "(do (type L (Nil) (Cons Int64 L)) \
-                 (def (mk) (L.Cons 5 (L.Cons 6 (L.Nil)))) (export mk))",
-            "(do (import \"lib\" (mk)) (type L (Nil) (Cons Int64 L)) \
-                 (def (sm l) (match l ((L.Nil) 0) ((L.Cons h t) (+ h (sm t))))) \
+                 (def (mk) (L.Cons 5 (L.Cons 6 (L.Nil)))) (export L mk))",
+            "(do (import \"lib\" (L mk)) \
+                 (def (sm (: l L)) (match l ((L.Nil) 0) ((L.Cons h t) (+ h (sm t))))) \
                  (def (main) (sm (mk))) (export main))",
         );
         assert!(
             !out.has_error(),
-            "a structurally-identical `type L` in a lib and the entry is file-scoped, not a duplicate; got {:?}",
+            "an imported recursive sum should fold over the imported type; got {:?}",
             out.diagnostics
         );
         assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());

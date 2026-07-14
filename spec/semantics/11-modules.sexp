@@ -610,21 +610,25 @@
             (export main)))
   (output (: 5 Int64)))
 
-(case "a recursive user sum built in a lib is folded by the entry's structural copy"
-  (doc    "`lib` declares a cons-list sum `L` and exports `mk` building `(Cons 5 (Cons 6 Nil))`. The
-           entry declares its OWN structurally-identical `L` (structural type identity — type-system.md
-           #A Structural Type's Shape Is Its Constituents) and folds the imported value with `sm`. The
-           recursive sum's spine built in one file is walked variant-by-variant in another, summing to 11.
-           Pins that a RECURSIVE user sum composes across the module boundary — its heap spine and variant
-           discriminants are read by the entry's match exactly as a locally-built one.")
+(case "a recursive user sum built in a lib is folded by the entry over the imported type"
+  (doc    "`lib` declares a cons-list sum `L`, exports the TYPE `L` and `mk` building `(Cons 5 (Cons 6
+           Nil))`; the entry `(import \"lib\" (L mk))` brings the type + its constructors into scope and
+           folds the imported value with `sm`. The recursive sum's spine built in one file is walked
+           variant-by-variant in another, summing to 11. A user sum's identity is its declaration
+           (type-system.md #Nominal Is An Orthogonal Modifier Over Any Structural Type — identity is the
+           fully-qualified name, so re-declaring a same-shape `L` in the entry yields a DISTINCT type a
+           value of the lib's `L` does not satisfy); the composing form is to IMPORT the one type both
+           files share, exactly as `#a sum TYPE and its constructors are imported by name` does for a
+           flat sum. Pins that a RECURSIVE user sum composes across the module boundary through an import
+           — its heap spine and variant discriminants are read by the entry's match over the SAME nominal
+           type the lib built.")
   (module "lib"
     (do (type L (Nil) (Cons Int64 L))
         (def (mk) (L.Cons 5 (L.Cons 6 (L.Nil))))
-        (export mk)))
+        (export L mk)))
   (input  (do
-            (import "lib" (mk))
-            (type L (Nil) (Cons Int64 L))
-            (def (sm l) (match l ((L.Nil) 0) ((L.Cons h t) (+ h (sm t)))))
+            (import "lib" (L mk))
+            (def (sm (: l L)) (match l ((L.Nil) 0) ((L.Cons h t) (+ h (sm t)))))
             (def (main) (sm (mk)))
             (export main)))
   (output (: 11 Int64)))

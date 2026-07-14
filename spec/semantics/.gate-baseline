@@ -906,7 +906,7 @@ pass	a recursive sum built then folded by a NESTED recursive call composes on ev
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
 pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
-pass	a recursive user sum built in a lib is folded by the entry's structural copy
+pass	a recursive user sum built in a lib is folded by the entry over the imported type
 pass	a recursive user sum type is built at run time and renders its variant names
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT

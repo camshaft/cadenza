@@ -558,7 +558,34 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // type name) and before the prelude (a type name shadows a built-in). So `Option`, `Option.Some`,
     // and `(: x Option)` all take the ordinary member-access/`(meta t)` paths — no separate name map,
     // no sum special-case in resolve.
-    if let Some(value) = db.type_decl_by_name(name) {
+    // FILE-SCOPED for a linked package: a type name resolves against the reference's OWN file (its own
+    // `(type …)` declarations + its imported types), never a sibling file's type. Without this the flat
+    // `type_decl_by_name` below let ANY file name ANY sibling's type and construct its variants with no
+    // import — no cross-file type privacy at all (`DESIGN-package-linking.md` §8.3 residual (a)). A
+    // single-file compile (`file_scoped_type` → `None`) falls straight through to the flat path,
+    // byte-identical to before. `Some(Err(()))` — file known, type not visible there — falls through to
+    // the effect/variant/prelude steps and then unbound, so a private sibling type is genuinely invisible.
+    let scoped_type = if db.is_linked_package() {
+        db.file_scoped_type(id, name)
+    } else {
+        None
+    };
+    if let Some(Ok(value)) = scoped_type {
+        if db.child_ix_of(id) == 0
+            && db.is_user_node(id)
+            && let Some(ctor) = db.same_name_newtype_ctor(name)
+        {
+            return Resolved::Ref { value: ctor };
+        }
+        trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → file-scoped sum type decl");
+        return Resolved::Ref { value };
+    } else if scoped_type.is_none()
+        && let Some(value) = db.type_decl_by_name(name)
+    {
+        // Reached only when NOT file-scoped (single-file, or an indeterminate β-copied node); a linked
+        // `Some(Err(()))` (file known, type not visible) skips this so a sibling's private type does not
+        // leak — it falls through to the effect/variant/prelude steps and then unbound.
+        // SAME-NAME NEWTYPE, in application/pattern-HEAD position: `(type UserId (UserId Int64))` binds
         // SAME-NAME NEWTYPE, in application/pattern-HEAD position: `(type UserId (UserId Int64))` binds
         // ONE name that must mean the CONSTRUCTOR when it heads an application `(UserId 42)` or a pattern
         // `(UserId n)`, and the TYPE everywhere else (`(: x UserId)`, a bare value). The type decl (above)
@@ -599,7 +626,24 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
     // + effect decls (a type/effect name shadows a variant) and before the prelude (a variant shadows a
     // built-in), resolved generically off `type_decls` (no name special-case). FIRST-WINS across sums; a
     // qualified `(. Type Variant)` disambiguates a shared variant name.
-    if let Some(value) = db.variant_ctor_by_name(name) {
+    // FILE-SCOPED for a linked package (the ctor analogue of the type-name step): a bare variant name
+    // resolves against the reference's own file (own type decls + imported types), never a sibling's
+    // private ctor. `Some(Err(()))` — file known, ctor not visible — falls through so a same-named
+    // PRELUDE ctor (`Some`/`None`/`Ok`/`Err`) can still apply. `None` (indeterminate node) falls to the
+    // flat path.
+    let scoped_ctor = if db.is_linked_package() {
+        db.file_scoped_variant_ctor(id, name)
+    } else {
+        None
+    };
+    if let Some(Ok(value)) = scoped_ctor {
+        trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → file-scoped user sum variant ctor");
+        return Resolved::Ref { value };
+    } else if scoped_ctor.is_none()
+        && let Some(value) = db.variant_ctor_by_name(name)
+    {
+        // Reached only when NOT file-scoped; a linked `Some(Err(()))` (ctor not visible in this file)
+        // falls through so a same-named PRELUDE ctor can still apply.
         trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = value.0, "name → user sum variant ctor");
         return Resolved::Ref { value };
     }
