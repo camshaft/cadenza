@@ -124,6 +124,7 @@ pass	a NESTED Tuple ARG with a LIST result crosses the direct-call boundary
 pass	a NESTED Tuple ARG with a fixed-shape COMPOUND result crosses the direct-call boundary
 pass	a NESTED Tuple ARG with a narrow Bool leaf crosses the direct-call boundary
 pass	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
+pass	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 pass	a NON-tail-resumptive arm projects a tuple parameter twice in its pure one-hole context
 pass	a NaN nested in a list compares equal under the canonical byte form
@@ -166,6 +167,7 @@ pass	a Tuple ARG BETWEEN two scalar args crosses the direct-call boundary (scala
 pass	a Tuple ARG among scalars with a BYTE-ROPE result crosses the direct-call boundary
 pass	a Tuple ARG among scalars with a LIST result crosses the direct-call boundary
 pass	a Tuple ARG among scalars with a fixed-shape COMPOUND result crosses the direct-call boundary
+pass	a Tuple ARG composes with a NESTED-tuple RESULT
 pass	a Tuple ARG of FLOAT fields crosses the direct-call boundary
 pass	a Tuple ARG of MIXED widths (Int32, Int64) crosses the direct-call boundary
 pass	a Tuple ARG with a Bool field between Int64 fields crosses the direct-call boundary
@@ -276,10 +278,13 @@ pass	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
 pass	a closure returned from a recursive function is applied through a recursive HOF
 pass	a closure returning Bytes crosses to the host as list<u8>
+pass	a closure returning a LIST of tuples (direct-call)
 pass	a closure returning a List crosses as the value form
 pass	a closure returning a Map — canonical key order
 pass	a closure returning a NESTED List
+pass	a closure returning a NESTED record crosses as the typed value form
 pass	a closure returning a NESTED tuple
+pass	a closure returning a SUM of a tuple (direct-call)
 pass	a closure returning a Set — canonical member order
 pass	a closure returning a boolean is called by the host
 pass	a closure returning a constant String crosses as its UTF-8 bytes
@@ -288,6 +293,7 @@ pass	a closure returning a nominal-over-scalar crosses as the underlying scalar
 pass	a closure returning a record crosses as the typed value form
 pass	a closure returning a runtime String (concat) crosses as its bytes
 pass	a closure returning a tuple crosses as the typed value form
+pass	a closure returning a tuple whose element is a LIST (compound-with-collection)
 pass	a closure returning a tuple with a Bool leaf
 pass	a closure returning a tuple with a negative int leaf
 pass	a closure returning an EMPTY List
@@ -374,6 +380,10 @@ pass	a deeply nested expression is diagnosed by the parser, never crashes it
 pass	a deeply nested literal in a tuple let-binder is refutable and rejected
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
 pass	a def parameter may be a list rest pattern binding the head
+pass	a default-fraction pragma fixes a type but adds no conversion — no-promotion still holds
+pass	a default-fraction pragma grounds a bare DECIMAL literal to its exact fraction
+pass	a default-fraction pragma makes a bare literal exact — 1/3 not 0
+pass	a default-fraction pragma naming a non-rational type is rejected
 pass	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 pass	a default-integer pragma makes a bare literal take the declared integer type
 pass	a default-integer pragma naming a non-integer type is rejected
@@ -1294,6 +1304,7 @@ pass	an escaping closure whose body binds a multi-variable let
 pass	an escaping closure whose body is a match hits the literal arm
 pass	an escaping closure whose body is a match hits the wildcard arm
 pass	an expect of a list index result is an integer usable in arithmetic
+pass	an explicit annotation overrides the default-fraction pragma
 pass	an explicit annotation overrides the default-integer pragma
 pass	an explicit conversion makes the operation well-typed
 pass	an explicit float-width conversion makes a mixed-width operation well-typed
