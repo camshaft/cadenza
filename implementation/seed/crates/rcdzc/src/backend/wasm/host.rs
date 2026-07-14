@@ -102,6 +102,8 @@ pub fn abi_val_type(ty: &Ty) -> Option<AbiValType> {
 //# The compiler MUST NOT emit a manifest entry for which no corresponding import is generated.
 //= spec/contracts/host-interface-binding.md#the-manifest-is-a-projection-of-the-escaping-effect-row
 //# A program's escaping effect row MUST equal the set of host functions it imports, where the escaping row is the union of the effects its entrypoints delegate to the host that no nearer handler discharges (capabilities-and-effects.md §A Host Import Is A Boundary Effect And The Manifest Is Its Row), so that the manifest is a projection of that delegated row rather than a separately-asserted list and an effect an enclosing handler fully interposes before a delegation generates no import.
+//= spec/contracts/host-interface-binding.md#the-manifest-is-a-projection-of-the-escaping-effect-row
+//# A component that delegates no host function, or whose every otherwise-delegated effect a nearer handler discharges, MUST have an empty manifest, so that a program's purity is the empty row and is legible from an empty manifest, and a program whose every host operation is interposed by a handler is pure.
 //= spec/contracts/host-interface-binding.md#a-host-import-is-a-wit-typed-function-the-manifest-enumerates
 //# A component's imports MUST be host functions declared in the WIT-shaped world it targets, each bound only when the manifest enumerates it.
 //= spec/capabilities/self-hosting-surface.md#host-calls-reach-the-host-through-the-manifest-s-capabilities
@@ -131,6 +133,8 @@ pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>
             //# An imported host function MUST carry a complete WIT-typed signature — its parameter types, its result type, and its error type — sufficient for the compiler to emit that import into the component's world without consulting anything outside the program's source.
             //= spec/contracts/host-interface-binding.md#a-host-import-is-a-wit-typed-function-the-manifest-enumerates
             //# A host-delegated effect operation MUST appear as its declared signature verbatim: an operation `(op nm (-> P… R))` an entrypoint delegates MUST become the imported function `nm` whose parameters are `P…` and whose result is `R`, with the compiler injecting no additional parameter, no resume or continuation argument, no state, and no error or outcome arm the operation did not itself declare, so that the WIT import contract is exactly the effect operation's type and a host implements precisely what the program declared.
+            //= spec/contracts/host-interface-binding.md#a-host-import-is-a-wit-typed-function-the-manifest-enumerates
+            //# An operation whose declared result type is itself fallible MUST carry that fallibility in its own result type, which the program handles as an ordinary value, so that error handling is the program's declared contract rather than something the boundary adds to a delegated operation.
             let mut params = Vec::new();
             for &a in &args {
                 let at = crate::infer::type_of(db, a);
@@ -202,7 +206,11 @@ pub fn set_needs_memory(imports: &[HostImport]) -> bool {
 /// Without this, an unrepresentable result silently collected `result: None` (indistinguishable from a
 /// Unit result), then `select` hit the INTERNAL "not in the host-import set" path — a message documented
 /// as "a compiler bug" surfacing for a valid-but-unsupported program. Diagnosing it here names the real
-/// limitation instead. Walks the same positions as `collect_host_imports` (bounded by the AST).
+/// limitation instead. Walks the same positions as `collect_host_imports` (bounded by the AST). This is
+/// the rejection for a host function whose declared signature the compiler cannot emit as a well-formed
+/// WIT import — it declines rather than emitting a component whose import does not match the world it names.
+//= spec/contracts/host-interface-binding.md#a-host-import-is-a-wit-typed-function-the-manifest-enumerates
+//# The compiler MUST reject a program that imports a host function whose declared signature it cannot emit as a well-formed WIT import, rather than emit a component whose import does not match the world it names.
 /// Whether `ty` is UNDETERMINED — a top-level `Ty::Any` or a type carrying a free unification variable.
 /// A synthesized `Core::HostCall` (a fold-forwarded perform) types its result `Ty::Any`, and an unresolved
 /// operand types a var; neither is a real "unrepresentable boundary type" signal (selection resolves it),
