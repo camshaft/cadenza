@@ -98,6 +98,7 @@ pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
 pass	a RUNTIME payload-literal refinement dispatches through its literal test
+pass	a Rational accumulator threaded through recursion sums exactly
 pass	a Rational is usable as a map key, matched by its exact value
 pass	a Rational set deduplicates by exact value regardless of how each was written
 pass	a Rational-payload sum value escapes across the boundary in its canonical form

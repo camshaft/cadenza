@@ -2161,6 +2161,11 @@
   (call   main (: 1 Int64) (: 3 Int64))
   (output (: 1 Int64)))
 
+(case "a Rational accumulator threaded through recursion sums exactly"
+  (doc "Threading a Rational through a recursive accumulator sums 1/2 three times to 3/2, then compares 3/2 < 2/1 as true, exercising borrow/consume drop discipline across the recursion.")
+  (input (do (def (loop (: n Int64) (: acc Rational)) (if (= n 0) acc (loop (- n 1) (+ acc (Rational.of 1 2))))) (def (main) (if (< (loop 3 (Rational.of 0 1)) (Rational.of 2 1)) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
 (case "a runtime-computed Rational crosses the host boundary as its exact value"
   (doc    "`(Rational.of-int (Int64.of (* (BigInt.of 1000000) (BigInt.of 1000000))))` — a Rational built
            from a RUNTIME value (the BigInt product 1e12 does not fold, so `Rational.of-int` of the
@@ -2193,3 +2198,4 @@
            (the CHAMP descends the two BigInt children), the set companion of the Rational-map-key case.")
   (input  (Set.len (Set.of (list (Rational.of 1 2) (Rational.of 2 4) (Rational.of 1 3)))))
   (output (: 2 Int64)))
+
