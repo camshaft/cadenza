@@ -3885,24 +3885,37 @@ fn check_application(
             _ => Vec::new(), // not a visible list literal — the generic path handles it
         };
         let mut subst = Subst::new();
-        let mut mixed = false;
-        if let Some(&first) = elems.first() {
-            let first_ty = type_of(db, first);
+        // Capture the FIRST clashing element (occurrence + type) so the message can name the two types and
+        // offer the int-literal→float retype fix, like the list-homogeneity check — the set twin of M57.
+        let mut clash: Option<(StructId, Ty)> = None;
+        let first_pair = elems.first().map(|&f| (f, type_of(db, f)));
+        if let Some((_, first_ty)) = &first_pair {
             for &e in elems.iter().skip(1) {
                 let et = type_of(db, e);
-                if crate::unify::unify(&mut subst, &first_ty, &et).is_err() {
-                    mixed = true;
+                if crate::unify::unify(&mut subst, first_ty, &et).is_err() {
+                    clash = Some((e, et));
+                    break;
                 }
             }
         }
-        if mixed {
+        if let (Some((first, first_ty)), Some((e, et))) = (&first_pair, &clash) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: Set.of elements do not share one type (CDZ0201)");
-            out.push(Reject::coded(
+            let mut reject = Reject::coded(
                 Code::Malformed,
-                "a set contains elements of one type (its elements do not share a type)",
-            ));
-            for &e in &elems {
-                collect(db, e, out);
+                format!(
+                    "a set contains elements of one type, but the elements differ: {} and {}",
+                    first_ty.render_name(),
+                    et.render_name()
+                ),
+            );
+            if let Some(fix) = float_literal_retype_fix(db, *first, first_ty, et)
+                .or_else(|| float_literal_retype_fix(db, *e, et, first_ty))
+            {
+                reject = reject.with_fix(fix);
+            }
+            out.push(reject);
+            for &el in &elems {
+                collect(db, el, out);
             }
             return;
         }
@@ -3987,17 +4000,40 @@ fn check_application(
             for &(k, v) in entries.iter().skip(1) {
                 let kt = type_of(db, k);
                 if crate::unify::unify(&mut ksubst, &fkt, &kt).is_err() {
-                    out.push(Reject::coded(
+                    // Name the two clashing key types (like the list-homogeneity message) and, for an
+                    // int-literal-vs-float clash, offer the same `3.0` retype fix — the map-key twin of the
+                    // list/if/match "same repair wherever the same mismatch surfaces" (M57).
+                    let mut reject = Reject::coded(
                         Code::Malformed,
-                        "a map associates keys of one type (its keys do not share a type)",
-                    ));
+                        format!(
+                            "a map associates keys of one type, but the keys differ: {} and {}",
+                            fkt.render_name(),
+                            kt.render_name()
+                        ),
+                    );
+                    if let Some(fix) = float_literal_retype_fix(db, fk, &fkt, &kt)
+                        .or_else(|| float_literal_retype_fix(db, k, &kt, &fkt))
+                    {
+                        reject = reject.with_fix(fix);
+                    }
+                    out.push(reject);
                 }
                 let vt = type_of(db, v);
                 if crate::unify::unify(&mut vsubst, &fvt, &vt).is_err() {
-                    out.push(Reject::coded(
+                    let mut reject = Reject::coded(
                         Code::Malformed,
-                        "a map associates values of one type (its values do not share a type)",
-                    ));
+                        format!(
+                            "a map associates values of one type, but the values differ: {} and {}",
+                            fvt.render_name(),
+                            vt.render_name()
+                        ),
+                    );
+                    if let Some(fix) = float_literal_retype_fix(db, fv, &fvt, &vt)
+                        .or_else(|| float_literal_retype_fix(db, v, &vt, &fvt))
+                    {
+                        reject = reject.with_fix(fix);
+                    }
+                    out.push(reject);
                 }
             }
         }

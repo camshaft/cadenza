@@ -13230,6 +13230,61 @@ mod match_engine {
     }
 
     #[test]
+    fn a_map_or_set_heterogeneity_names_the_types_and_offers_the_retype_fix() {
+        // The map/set twins of the list-homogeneity message+fix: a map's key/value or a set's element
+        // clash now NAMES the two differing types (was a generic "do not share a type") and, for an
+        // int-literal-vs-float clash, carries the SAME `n.0` retype fix the list/if/match sites give.
+        // A map VALUE clash: Int64 vs String — names both types, no fix (cross-kind).
+        let kv = reject_full("(module m (def x (map (1 1) (2 \"b\"))) (export x))")
+            .expect("a map value-heterogeneity violation must reject");
+        assert_eq!(kv.code.as_deref(), Some("CDZ0201"), "got: {}", kv.message);
+        assert!(
+            kv.message.contains("Int64") && kv.message.contains("String"),
+            "names the two differing value types: {}",
+            kv.message
+        );
+        assert!(
+            kv.fix.is_none(),
+            "int-vs-String is not coercible: {:?}",
+            kv.fix
+        );
+        // A map VALUE int-vs-float clash → the retype fix (on the FIRST value, like the list check's
+        // first-operand preference — retyping `1`→`1.0` unifies the values at Float64 in one shot).
+        let mv = reject_full("(module m (def x (map (1 1) (2 2.0))) (export x))").expect("reject");
+        assert_eq!(
+            mv.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("1.0"),
+            "map int-vs-float value offers the float-literal retype: {}",
+            mv.message
+        );
+        // A map KEY int-vs-float clash → the retype fix on the first key.
+        let mk =
+            reject_full("(module m (def x (map (1 10) (2.0 20))) (export x))").expect("reject");
+        assert_eq!(
+            mk.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("1.0"),
+            "map int-vs-float key offers the retype: {}",
+            mk.message
+        );
+        // A SET element int-vs-float clash → the retype fix; a cross-kind set clash names types, no fix.
+        let sf =
+            reject_full("(module m (def x (Set.of (list 1 2.0))) (export x))").expect("reject");
+        assert_eq!(
+            sf.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("1.0"),
+            "set int-vs-float element offers the retype: {}",
+            sf.message
+        );
+        let ss =
+            reject_full("(module m (def x (Set.of (list 1 \"a\"))) (export x))").expect("reject");
+        assert!(
+            ss.message.contains("Int64") && ss.message.contains("String") && ss.fix.is_none(),
+            "set cross-kind names both types, no fix: {}",
+            ss.message
+        );
+    }
+
+    #[test]
     fn if_and_match_int_literal_vs_float_offer_a_float_literal_retype_fix() {
         // An `if`-branch / match-arm clash between an INTEGER LITERAL and a FLOAT branch has the SAME
         // one-shot repair the list-element and annotation sites give: rewrite the integer literal `n` as a
