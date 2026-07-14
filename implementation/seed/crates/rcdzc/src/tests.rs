@@ -24081,6 +24081,41 @@ mod match_engine {
     }
 
     #[test]
+    fn read_of_the_text_a_printer_produced_round_trips() {
+        use crate::testkit::parse;
+        // 08-self-hosting-surface §A Printer Renders The Canonical Representation As Re-Readable Text:
+        // `read(print(v)) == v` under structural equality. `print : Ast → String` renders an AST value as
+        // canonical s-expression text (`lower_print`), `read : String → Ast` parses it back
+        // (`lower_read`), both folded on the compile-time-visible operand. Compiles clean and runs true.
+        for (src, what) in [
+            (
+                "(module m (def (main) (= (read (print (quote (+ 1 2)))) (quote (+ 1 2)))) (export main))",
+                "a compound form round-trips",
+            ),
+            (
+                "(module m (def (main) (= (read (print (quote 42))) (quote 42))) (export main))",
+                "an integer atom round-trips",
+            ),
+            (
+                "(module m (def (main) (= (read (print (quote foo))) (quote foo))) (export main))",
+                "a bare name round-trips",
+            ),
+            (
+                "(module m (def (main) (= (read (print (quote (f (g 1) 2)))) (quote (f (g 1) 2)))) (export main))",
+                "a NESTED form round-trips",
+            ),
+        ] {
+            assert!(
+                run_returns::<bool>(
+                    &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
+                    "main"
+                ),
+                "read(print(v)) == v: {what}"
+            );
+        }
+    }
+
+    #[test]
     fn quasiquote_selectively_evaluates_at_unquote_holes() {
         // 12-metaprogramming §Quasiquote Constructs AST With Selective Evaluation: `(quasiquote T)`
         // reifies like quote, EXCEPT an active `(unquote e)` hole EVALUATES `e` and inserts its value.

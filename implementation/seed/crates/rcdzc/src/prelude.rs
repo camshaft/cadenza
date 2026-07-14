@@ -267,6 +267,25 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
         names.insert("trap".to_string(), list_op_record(ast, "trap", lambda));
     }
 
+    // `print` / `read` — the compiler-exposed PRINTER and READER over the `Ast` value type (self-hosting-
+    // surface.md §Text Is A Projection Reached By A Reader And A Printer). `print : Ast → String` renders an
+    // AST value as its canonical re-readable text; `read : String → Ast` parses that text back. Bare-name
+    // operator records (like `trap`), MONOMORPHIC — a zero-parameter `(fn () (-> …))` wrapper so `scheme_of`
+    // reads a monomorphic scheme, not a bare type-value. `(meta apply)` = the `print`/`read` intrinsic
+    // (`Prim::Print`/`Prim::Read`), folded on a compile-time-visible operand in `lower`. Reading the text a
+    // printer produced round-trips: `read(print(v)) == v` (the invariant the corpus witnesses).
+    //= spec/capabilities/self-hosting-surface.md#reading-the-text-a-printer-produced-round-trips-to-an-equal-value
+    //# Reading the text a printer produced for a value MUST yield a value equal to the original under structural equality, so that the reader and printer round-trip.
+    {
+        let print_lambda = mono_op_type_lambda(ast, "Ast", "String");
+        names.insert(
+            "print".to_string(),
+            list_op_record(ast, "print", print_lambda),
+        );
+        let read_lambda = mono_op_type_lambda(ast, "String", "Ast");
+        names.insert("read".to_string(), list_op_record(ast, "read", read_lambda));
+    }
+
     // The FLOATING-POINT binary operators `+.` `-.` `*.` `/.` — spelled distinctly from the integer
     // `+`/`-`/`*`/`/` (OCaml-style dot suffix) so no operator silently mixes an integer and a float
     // operand. Each is a width-generic `∀a. (Float a) → (Float a) → (Float a)` — the SAME operator-record
@@ -1811,6 +1830,20 @@ fn trap_type_lambda(ast: &mut Arenas) -> StructId {
     let a = push_atom(ast, Leaf::Name("a".to_string()));
     let body = arrow_type(ast, string_ty, a); // (-> String a)
     list_type_lambda(ast, body)
+}
+
+/// Build the MONOMORPHIC operator scheme `(fn () (-> FROM TO))` — a zero-parameter type-lambda over the
+/// concrete named types `FROM`/`TO`. The `(fn () …)` wrapper is REQUIRED even with no quantified
+/// variables so `scheme_of` reads a monomorphic SCHEME rather than collapsing the bare arrow to
+/// `Ty::Type` (the same reason the fixed-width `checked_field`/float `of-int` schemes wrap a `(fn () …)`).
+/// Used for `print : Ast → String` and `read : String → Ast`.
+fn mono_op_type_lambda(ast: &mut Arenas, from: &str, to: &str) -> StructId {
+    let from_ty = push_atom(ast, Leaf::Name(from.to_string()));
+    let to_ty = push_atom(ast, Leaf::Name(to.to_string()));
+    let body = arrow_type(ast, from_ty, to_ty); // (-> FROM TO)
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]); // zero parameters — monomorphic
+    push_list(ast, vec![fn_head, params, body])
 }
 
 /// Build `(List a)` — the list type applied to the element parameter `a`, a shared shape in the `List`

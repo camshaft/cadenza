@@ -401,6 +401,23 @@ pub enum Prim {
     /// <SumNew tree>)` / `(Err unit)`; a runtime `Bytes` declines (the runtime deserializer is a later
     /// increment). The decode companion of `AstEncode`; the format is `lower::decode_ast_value`.
     AstDecode,
+    /// `print` — render an `Ast` value as its canonical re-readable TEXT: `Ast → String` (self-hosting-
+    /// surface.md §A Printer Renders The Canonical Representation As Re-Readable Text). The text analogue of
+    /// `AstEncode` (which produces canonical BYTES): a compile-time-visible `Ast` value (a `Core::SumNew`
+    /// tree of the `Int`/`Name`/`List` variants) folds to the `Core::ConstStr` of the s-expression the tree
+    /// denotes (`(Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)))` → `"(+ 1 2)"`); a runtime `Ast`
+    /// declines. Paired with `Read` so `read(print(v)) == v` under structural equality.
+    //= spec/capabilities/self-hosting-surface.md#a-printer-renders-the-canonical-representation-as-re-readable-text
+    //# A printer MUST render a program's canonical representation as text that a reader converts back to the same canonical representation.
+    Print,
+    /// `read` — the inverse of `print`: parse canonical TEXT back to the `Ast` value it denotes: `String →
+    /// Ast` (self-hosting-surface.md §A Reader Converts Text To The Canonical Representation). The text
+    /// analogue of `AstDecode`: a compile-time-visible `Core::ConstStr` is parsed as one s-expression and
+    /// reified into the `Ast` `Core::SumNew` tree (`"(+ 1 2)"` → `(Ast.List …)`); a runtime `String`
+    /// declines. `read(print(v))` reproduces `v` exactly (the round-trip the corpus witnesses).
+    //= spec/capabilities/self-hosting-surface.md#a-reader-converts-text-to-the-canonical-representation
+    //# A reader MUST convert the text of a program to the program's canonical representation, so that a program can be written as text before a surface syntax exists.
+    Read,
     /// `Bytes.of` — construct a byte sequence from a list of integers in `0..=255`: `(List Int64) →
     /// Bytes`. The `(meta apply)` of the `of` field of the `Bytes` module. A CONSTANT list literal folds
     /// to the baked byte value (range-checking each element: `< 0` or `> 255` is a compile-time trap,
@@ -762,6 +779,8 @@ impl Prim {
             "ast-splice-lift" => Some(Prim::AstSpliceLift),
             "ast-encode" => Some(Prim::AstEncode),
             "ast-decode" => Some(Prim::AstDecode),
+            "print" => Some(Prim::Print),
+            "read" => Some(Prim::Read),
             "List" => Some(Prim::ListCtor),
             "bytes-of" => Some(Prim::BytesOf),
             "bytes-len" => Some(Prim::BytesLen),

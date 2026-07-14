@@ -1844,6 +1844,7 @@ pass	reading a member from an if-of-records resolves each branch's field by its 
 pass	reading a string's scalar addresses scalar values, not bytes
 pass	reading a string's scalar in bounds yields Some of the char
 pass	reading a string's scalar out of bounds yields None
+pass	reading the text a printer produced round-trips to an equal value
 pass	record equality is independent of the order fields are written
 pass	record fields render in canonical (key-sorted) order regardless of source order
 pass	record reshaping is subset comparison as explicit projection
@@ -2148,4 +2149,3 @@ todo	constructing a runtime value that does not fit its segment traps
 todo	eval on malformed AST traps
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-todo	reading the text a printer produced round-trips to an equal value

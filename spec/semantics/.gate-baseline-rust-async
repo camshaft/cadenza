@@ -1218,7 +1218,7 @@ todo	reading a byte from a sequence built with a RUNTIME element widens it to th
 todo	reading a string's scalar addresses scalar values, not bytes
 todo	reading a string's scalar in bounds yields Some of the char
 todo	reading a string's scalar out of bounds yields None
-todo	reading the text a printer produced round-trips to an equal value
+pass	reading the text a printer produced round-trips to an equal value
 todo	record reshaping is subset comparison as explicit projection
 todo	removing a key drops its association and the size
 todo	removing an absent key leaves the map unchanged

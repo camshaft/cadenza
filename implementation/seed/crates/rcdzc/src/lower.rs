@@ -1397,6 +1397,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // unit)`, NEVER a trap. A runtime Bytes declines (the runtime deserializer is a later
                 // increment).
                 Some(Prim::AstDecode) if args.len() == 1 => lower_ast_decode(db, id, args[0]),
+                // `print` — render a compile-time-visible `Ast` value to its canonical re-readable TEXT
+                // (`Core::ConstStr`). The text analogue of `Ast.encode`; a runtime Ast declines.
+                Some(Prim::Print) if args.len() == 1 => lower_print(db, args[0]),
+                // `read` — the inverse: parse a compile-time-visible `Core::ConstStr` as one s-expression
+                // and reify it into the `Ast` `Core::SumNew` tree it denotes. A runtime String declines.
+                Some(Prim::Read) if args.len() == 1 => lower_read(db, args[0]),
                 Some(Prim::ListConcat) if args.len() == 2 => {
                     match (core_of(db, args[0]), core_of(db, args[1])) {
                         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
@@ -1975,6 +1981,222 @@ fn lower_ast_encode(db: &mut Db, id: StructId, ast_val: StructId) -> Core {
     trace!(target: "rcdzc::fold", node = id.0, len = bytes.len(), "Ast.encode folds a constant AST to its canonical bytes");
     Core::BytesOf {
         elems: bytes_to_elems(db, &bytes),
+    }
+}
+
+/// Lower `(print t)` — FOLD a compile-time-visible `Ast` value to the `Core::ConstStr` of its canonical
+/// re-readable s-expression text (`(Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)))` → `"(+ 1
+/// 2)"`). The text analogue of `Ast.encode`. A runtime `Ast` (no visible `Core::SumNew`) declines; a
+/// poison operand propagates. Paired with `lower_read` so `read(print(v)) == v`.
+fn lower_print(db: &mut Db, ast_val: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, ast_val) {
+        return Core::Poison(r);
+    }
+    let Some(disc) = ast_variant_discs(db) else {
+        return Core::Poison(Reject::decline(
+            "print: the built-in Ast sum is unavailable",
+        ));
+    };
+    let mut text = String::new();
+    if print_ast_value(db, ast_val, &disc, &mut text).is_none() {
+        return Core::Poison(Reject::decline(
+            "print of a runtime AST value is not yet computed (constant AST values only)",
+        ));
+    }
+    Core::ConstStr(text)
+}
+
+/// Render a compile-time-visible `Ast` value (a `Core::SumNew` at an Int/Name/List disc) as canonical
+/// s-expression text into `out`. Returns `None` if the value is not a fully-constant AST. The canonical
+/// spelling is the ordinary s-expression form: `Ast.Int` → the decimal, `Ast.Name` → the bare identifier,
+/// `Ast.List` → `(elem elem …)` space-separated. This is the exact inverse `SexprReader` (in `lower_read`)
+/// parses back, so `read(print(v)) == v`.
+fn print_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut String) -> Option<()> {
+    let Core::SumNew { disc: d, payloads } = core_of(db, node) else {
+        return None;
+    };
+    if d == disc.int && payloads.len() == 1 {
+        let Core::ConstInt(v) = core_of(db, payloads[0]) else {
+            return None;
+        };
+        out.push_str(&v.to_i64()?.to_string());
+        Some(())
+    } else if d == disc.name && payloads.len() == 1 {
+        let Core::ConstStr(s) = core_of(db, payloads[0]) else {
+            return None;
+        };
+        out.push_str(&s);
+        Some(())
+    } else if d == disc.list && payloads.len() == 1 {
+        let Core::ListNew { elems } = core_of(db, payloads[0]) else {
+            return None;
+        };
+        out.push('(');
+        for (i, e) in elems.iter().enumerate() {
+            if i > 0 {
+                out.push(' ');
+            }
+            print_ast_value(db, *e, disc, out)?;
+        }
+        out.push(')');
+        Some(())
+    } else {
+        None
+    }
+}
+
+/// Lower `(read s)` — the inverse of `print`: FOLD a compile-time-visible `Core::ConstStr` by parsing it
+/// as ONE s-expression and reifying it into the `Ast` value it denotes (`"(+ 1 2)"` → `(Ast.List (list
+/// (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)))`). A runtime `String` (no visible `Core::ConstStr`) declines;
+/// a poison operand propagates. Text that does not parse, or that mentions a leaf the `Ast` sum cannot
+/// carry (only Int/Name/List — an integer, a bare atom, or a parenthesized list), declines — never a
+/// miscompile. Parses with a SELF-CONTAINED reader for exactly the Int/Name/List subset (the rcdzc lib is
+/// dependency-free — it carries no general s-expression reader), the minimal inverse of `print_ast_value`.
+fn lower_read(db: &mut Db, str_val: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, str_val) {
+        return Core::Poison(r);
+    }
+    let Core::ConstStr(text) = core_of(db, str_val) else {
+        return Core::Poison(Reject::decline(
+            "read of a runtime string is not yet computed (constant strings only)",
+        ));
+    };
+    let Some(disc) = ast_variant_discs(db) else {
+        return Core::Poison(Reject::decline("read: the built-in Ast sum is unavailable"));
+    };
+    let mut r = SexprReader::new(&text);
+    let parsed = r.read_node();
+    // Exactly one node must consume the whole input (trailing content is ill-formed).
+    match parsed {
+        Some(node) if r.at_end() => reify_read_ast(db, &node, &disc),
+        Some(_) => Core::Poison(Reject::decline(
+            "read of text with trailing content after the first s-expression",
+        )),
+        None => Core::Poison(Reject::decline(
+            "read of text that is not a well-formed s-expression over the Ast subset",
+        )),
+    }
+}
+
+/// A parsed s-expression over the `Ast`-value subset: an integer, a bare atom (name), or a list. The
+/// minimal grammar `read` accepts — exactly the shapes `print_ast_value` emits, so the two round-trip.
+enum SNode {
+    Int(i64),
+    Name(String),
+    List(Vec<SNode>),
+}
+
+/// Reify a parsed [`SNode`] into the `Ast` value (`Core::SumNew` tree) it denotes and return its Core —
+/// the inverse of `print_ast_value`. `Int` → `Ast.Int`, `Name` → `Ast.Name` (identifier as a String
+/// payload), `List` → `Ast.List` of the reified children. The `Core`-building twin of `quote::reify`.
+fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
+    match node {
+        SNode::Int(n) => {
+            let payload = synth_core(
+                db,
+                Core::ConstInt(IntValue::from_i64(*n)),
+                crate::ty::Ty::int64(),
+            );
+            Core::SumNew {
+                disc: disc.int,
+                payloads: vec![payload],
+            }
+        }
+        SNode::Name(name) => {
+            let payload = synth_core(db, Core::ConstStr(name.clone()), crate::ty::Ty::String);
+            Core::SumNew {
+                disc: disc.name,
+                payloads: vec![payload],
+            }
+        }
+        SNode::List(items) => {
+            let elems = items
+                .iter()
+                .map(|e| {
+                    let core = reify_read_ast(db, e, disc);
+                    synth_core(db, core, disc.ty.clone())
+                })
+                .collect();
+            let payload = synth_core(
+                db,
+                Core::ListNew { elems },
+                crate::ty::Ty::List(Box::new(disc.ty.clone())),
+            );
+            Core::SumNew {
+                disc: disc.list,
+                payloads: vec![payload],
+            }
+        }
+    }
+}
+
+/// A minimal recursive s-expression reader for the `Ast`-value subset — integers, bare atoms (names), and
+/// parenthesized lists. Self-contained (the rcdzc lib carries no general reader): whitespace-separated
+/// tokens, `(`/`)` nesting, a leading-`-`/digit token that fully parses as `i64` is an `Int`, any other
+/// bare token is a `Name`. A token the subset cannot represent (a string/float literal) surfaces as a
+/// `Name` of its raw spelling — harmless, since only `print`'s own output is ever round-tripped here.
+struct SexprReader<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+impl<'a> SexprReader<'a> {
+    fn new(text: &'a str) -> Self {
+        SexprReader {
+            bytes: text.as_bytes(),
+            pos: 0,
+        }
+    }
+    fn skip_ws(&mut self) {
+        while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_whitespace() {
+            self.pos += 1;
+        }
+    }
+    fn at_end(&mut self) -> bool {
+        self.skip_ws();
+        self.pos >= self.bytes.len()
+    }
+    /// Parse ONE node from the current position, or `None` on a malformed input (unbalanced parens, an
+    /// empty stray `)`, or an empty token).
+    fn read_node(&mut self) -> Option<SNode> {
+        self.skip_ws();
+        if self.pos >= self.bytes.len() {
+            return None;
+        }
+        if self.bytes[self.pos] == b'(' {
+            self.pos += 1; // consume '('
+            let mut items = Vec::new();
+            loop {
+                self.skip_ws();
+                if self.pos >= self.bytes.len() {
+                    return None; // unterminated list
+                }
+                if self.bytes[self.pos] == b')' {
+                    self.pos += 1; // consume ')'
+                    return Some(SNode::List(items));
+                }
+                items.push(self.read_node()?);
+            }
+        }
+        if self.bytes[self.pos] == b')' {
+            return None; // a stray close-paren
+        }
+        // A bare token: run to the next whitespace or paren.
+        let start = self.pos;
+        while self.pos < self.bytes.len() {
+            let b = self.bytes[self.pos];
+            if b.is_ascii_whitespace() || b == b'(' || b == b')' {
+                break;
+            }
+            self.pos += 1;
+        }
+        if self.pos == start {
+            return None; // empty token
+        }
+        let tok = std::str::from_utf8(&self.bytes[start..self.pos]).ok()?;
+        match tok.parse::<i64>() {
+            Ok(n) => Some(SNode::Int(n)),
+            Err(_) => Some(SNode::Name(tok.to_string())),
+        }
     }
 }
 
@@ -11055,7 +11277,11 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::TypeOf
         | Prim::TypeEq
         // `trap` is the diverging primitive (lowered to `Core::Trap`), never an integer binary operation.
-        | Prim::Trap => {
+        | Prim::Trap
+        // `print`/`read` are the AST-value text printer/reader (`Ast → String` / `String → Ast`), folded
+        // in `lower_print`/`lower_read`, never an integer binary operation.
+        | Prim::Print
+        | Prim::Read => {
             return Core::Poison(Reject::decline("not an integer binary operation"));
         }
     };
@@ -15184,6 +15410,8 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::AstSpliceLift => "ast-splice-lift",
         Prim::AstEncode => "ast-encode",
         Prim::AstDecode => "ast-decode",
+        Prim::Print => "print",
+        Prim::Read => "read",
         Prim::ListCtor => "List",
         Prim::BytesOf => "bytes-of",
         Prim::BytesLen => "bytes-len",
