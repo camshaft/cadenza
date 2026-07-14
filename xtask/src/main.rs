@@ -1136,6 +1136,119 @@ fn rust_ident(name: &str) -> String {
     s
 }
 
+/// Make a Cadenza SUM / VARIANT name a Rust identifier the SAME way the Rust backend's `types::sum_ident`
+/// does — kept in lockstep so a sum VALUE that escapes renders through the enum the backend actually
+/// emitted. A clean ident (valid Rust ident chars, not the mangle marker) passes through, except a Rust
+/// PRIMITIVE type name (`i64`, `bool`, …) which is prefixed `cdz_ty_`; any lossy / leading-digit /
+/// marker-prefixed name is hex-mangled `cdzsum_<hex-utf8>` (injective, so two distinct sum names never
+/// collide into one emitted enum). Mirrors `types::sum_ident` + `sanitize_ident`'s keyword handling.
+fn sum_rust_ident(name: &str) -> String {
+    const MARKER: &str = "cdzsum_";
+    let is_clean = {
+        let mut chars = name.chars();
+        matches!(chars.next(), Some(c) if c == '_' || c.is_ascii_alphabetic())
+            && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+    };
+    if is_clean && !name.starts_with(MARKER) {
+        // A clean ident may be a Rust keyword (→ `r#kw`, or `cdz_kw_…` for the raw-ident exceptions) or a
+        // primitive type name (→ `cdz_ty_…`); mirror the backend's escapes.
+        let s = rust_ident(name);
+        if matches!(s.as_str(), "crate" | "self" | "Self" | "super" | "_") {
+            format!("cdz_kw_{s}")
+        } else if is_rust_keyword_driver(&s) {
+            format!("r#{s}")
+        } else if is_rust_primitive_type_driver(&s) {
+            format!("cdz_ty_{s}")
+        } else {
+            s
+        }
+    } else {
+        let mut hex = String::with_capacity(name.len() * 2 + MARKER.len());
+        hex.push_str(MARKER);
+        for b in name.bytes() {
+            hex.push_str(&format!("{b:02x}"));
+        }
+        hex
+    }
+}
+
+/// Rust reserved words — the driver's copy of the backend's `is_rust_keyword`, for `sum_rust_ident`.
+fn is_rust_keyword_driver(s: &str) -> bool {
+    matches!(
+        s,
+        "as" | "break"
+            | "const"
+            | "continue"
+            | "dyn"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "static"
+            | "struct"
+            | "trait"
+            | "true"
+            | "type"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "async"
+            | "await"
+            | "abstract"
+            | "become"
+            | "box"
+            | "do"
+            | "final"
+            | "macro"
+            | "override"
+            | "priv"
+            | "typeof"
+            | "unsized"
+            | "virtual"
+            | "yield"
+            | "try"
+            | "gen"
+    )
+}
+
+/// Rust primitive type names — the driver's copy of the backend's `is_rust_primitive_type`.
+fn is_rust_primitive_type_driver(s: &str) -> bool {
+    matches!(
+        s,
+        "i8" | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+            | "bool"
+            | "char"
+            | "str"
+    )
+}
+
 /// The export `name`'s CADENZA result type, read off the `// cdz-return[<ident>]: <type>` note the
 /// backend emits before each fn (the type's `render_name`, e.g. `Int64`, `(Tuple Int64 Bool)`, `(Record
 /// (a Int64) (b Int64))`). `None` if no matching note is found. The gate renders the result to cdz-run's
@@ -1336,9 +1449,12 @@ fn cdz_render_at(
         && !args.is_empty()
     {
         let vbind = format!("__g{}", path.len());
+        // The emitted enum ident (escaped/mangled the SAME way the backend's `sum_ident` does), used in the
+        // `prog::<Enum>::` path; the PRINTED name stays the Cadenza `head`/`vname`.
+        let head_ident = sum_rust_ident(&head);
         let mut arms = Vec::with_capacity(variants.len());
         for (vname, payloads) in variants {
-            let vident = rust_ident(vname);
+            let vident = sum_rust_ident(vname);
             // Substitute the instantiation args for the `T{k}` placeholders in each payload token.
             let subst: Vec<String> = payloads
                 .iter()
@@ -1346,14 +1462,14 @@ fn cdz_render_at(
                 .collect();
             match subst.len() {
                 0 => arms.push(format!(
-                    "prog::{head}::{vident} => \"({vname} unit)\".to_string()"
+                    "prog::{head_ident}::{vident} => \"({vname} unit)\".to_string()"
                 )),
                 1 => {
                     let inner = cdz_render_at(
                         &subst[0], &vbind, sums, newtypes, sum_params, helpers, on_path,
                     );
                     arms.push(format!(
-                        "prog::{head}::{vident}({vbind}) => format!(\"({vname} {{}})\", {inner})"
+                        "prog::{head_ident}::{vident}({vbind}) => format!(\"({vname} {{}})\", {inner})"
                     ));
                 }
                 n => {
@@ -1374,7 +1490,7 @@ fn cdz_render_at(
                         })
                         .collect();
                     arms.push(format!(
-                        "prog::{head}::{vident}({vbind}) => format!(\"({vname} {placeholders})\", {})",
+                        "prog::{head_ident}::{vident}({vbind}) => format!(\"({vname} {placeholders})\", {})",
                         parts.join(", ")
                     ));
                 }
@@ -1401,7 +1517,10 @@ fn cdz_render_at(
         // through a helper moves the recursion to Rust RUNTIME over the finite value: the helper matches the
         // variants, and a self-referential payload position emits a CALL to the same helper (because the sum
         // is on `on_path` when its payloads are rendered), so a `Nil` leaf terminates the runtime walk.
-        let fn_name = format!("__render_{}", rust_ident(ty));
+        // The emitted enum ident (escaped/mangled the SAME way the backend's `sum_ident` does), used in the
+        // `prog::<Enum>` path + the helper name; the PRINTED name stays the Cadenza `ty`/`vname`.
+        let ty_ident = sum_rust_ident(ty);
+        let fn_name = format!("__render_{ty_ident}");
         if !on_path.iter().any(|s| s == ty) {
             // First time this sum is unfolded on the path — generate its helper (once; a later occurrence
             // reuses it). Push the name onto the path so a self-reference inside a payload emits a call.
@@ -1412,11 +1531,11 @@ fn cdz_render_at(
                 on_path.push(ty.to_string());
                 let mut arms = Vec::with_capacity(variants.len());
                 for (vname, payloads) in variants {
-                    let vident = rust_ident(vname);
+                    let vident = sum_rust_ident(vname);
                     match payloads.len() {
                         // A nullary variant → `(Name unit)`.
                         0 => arms.push(format!(
-                            "prog::{ty}::{vident} => \"({vname} unit)\".to_string()"
+                            "prog::{ty_ident}::{vident} => \"({vname} unit)\".to_string()"
                         )),
                         // A single-payload variant → `(Name <payload>)`, the payload rendered from `__p`
                         // (its own type — a scalar, tuple, record, or nested sum; kept nested if a tuple).
@@ -1431,7 +1550,7 @@ fn cdz_render_at(
                                 on_path,
                             );
                             arms.push(format!(
-                                "prog::{ty}::{vident}(__p) => format!(\"({vname} {{}})\", {inner})"
+                                "prog::{ty_ident}::{vident}(__p) => format!(\"({vname} {{}})\", {inner})"
                             ));
                         }
                         // A MULTI-payload variant → `(Name e0 e1 …)` SPREAD FLAT. Its N payloads box as ONE
@@ -1456,7 +1575,7 @@ fn cdz_render_at(
                                 })
                                 .collect();
                             arms.push(format!(
-                                "prog::{ty}::{vident}(__p) => format!(\"({vname} {placeholders})\", {})",
+                                "prog::{ty_ident}::{vident}(__p) => format!(\"({vname} {placeholders})\", {})",
                                 parts.join(", ")
                             ));
                         }
@@ -1466,7 +1585,7 @@ fn cdz_render_at(
                 // `#[allow(unused)]` — a mutually-referenced helper may be defined but only reached via
                 // another; the block-hoisting emits every generated fn, some unused on a given path.
                 helpers.push(format!(
-                    "#[allow(unused)] fn {fn_name}(__v: &prog::{ty}) -> String {{ match __v {{ {} }} }}",
+                    "#[allow(unused)] fn {fn_name}(__v: &prog::{ty_ident}) -> String {{ match __v {{ {} }} }}",
                     arms.join(", ")
                 ));
             }

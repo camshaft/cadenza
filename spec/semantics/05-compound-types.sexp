@@ -4337,6 +4337,26 @@
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
+(case "two sum types whose names differ only by punctuation stay DISTINCT types"
+  (doc    "`(type foo-bar …)` and `(type foo_bar …)` are DISTINCT Cadenza types whose names differ only by
+           a `-` vs `_`. A backend that sanitized both to one identifier (`-`→`_`) would define one type
+           twice AND conflate their constructors/matches (Rust E0428 / a wrong-variant miscompile). Each
+           must map to a DISTINCT emitted type. `f` sums a `foo-bar.A 5` (→5) and a `foo_bar.C 3` (→3) = 8,
+           and the two matches dispatch on the correct type's variants. Pins that the emitted-type-name
+           mapping is INJECTIVE — two source type names never collapse to one target type, so a program is
+           free to use both punctuation styles for genuinely different types.")
+  (input  (do
+            (type foo-bar (A Int64) (B))
+            (type foo_bar (C Int64) (D))
+            (def (f (: x foo-bar) (: y foo_bar))
+              (+ (match x ((foo-bar.A n) n) ((foo-bar.B) 0))
+                 (match y ((foo_bar.C m) m) ((foo_bar.D) 0))))
+            (def (main (: k Int64)) (f (foo-bar.A k) (foo_bar.C 3)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 8 Int64)))
+
 (case "a unary constructor is a single-arity function"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (1st sentence): Some is a single-arity constructor. Applied to an

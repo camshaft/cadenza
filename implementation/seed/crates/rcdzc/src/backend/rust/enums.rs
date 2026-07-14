@@ -62,7 +62,12 @@ pub fn emit_sum_descriptors(db: &mut Db) -> String {
         if emit_one_enum(db, i).is_err() {
             continue;
         }
-        let ident = types::sum_ident(&decl.name);
+        // Key the descriptor by the CADENZA name (`decl.name`) — the SAME string `cdz-return` emits (a
+        // type's `render_name`), so the driver's return-type→descriptor lookup matches. The driver
+        // re-escapes it (its `sum_rust_ident`, mirroring the backend) when building the `prog::<Enum>` path,
+        // so a lossy/primitive/keyword name resolves to the ACTUAL emitted enum ident. (For a clean name the
+        // Cadenza name and the enum ident coincide; the distinction only matters for an escaped name.)
+        let ident = &decl.name;
         let mut groups = Vec::with_capacity(decl.variants.len());
         for variant in &decl.variants {
             let payloads = if decl.params.is_empty() {
