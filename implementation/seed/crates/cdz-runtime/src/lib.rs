@@ -9866,6 +9866,58 @@ mod tests {
         assert_eq!(live_object_count(), before, "no leak across the large-value ops");
     }
 
+    /// DESIGN VALIDATION for the pending BigInt ESCAPE (B3c): a runtime BigInt crossing the host boundary
+    /// can REUSE the existing codec `KIND_INT` leaf (`DocLeaf::Int`, sign + big-endian magnitude) — it is
+    /// ALREADY arbitrary-precision (the magnitude is just bytes, NOT i64-bounded), matching the compiler's
+    /// `IntValue { negative, magnitude: Vec<u8> }`. So the escape needs NO new wire tag and NO
+    /// two's-complement form (the spec's "awaits the two's-complement encoding" note is over-conservative
+    /// for the value-encode path) — only a `Shape::BigInt` walk arm that reads the `Big`'s sign + BE
+    /// magnitude into a `DocLeaf::Int`. This test proves the reuse: build a >i64 `Big`, emit it as a
+    /// KIND_INT leaf the way that arm would, and confirm the serialized doc's leaf bytes are the exact
+    /// sign + big-endian magnitude (round-tripping to the same value). Guards the finding so B3c is a
+    /// runtime one-liner, not a wire-format change.
+    #[test]
+    fn bigint_escape_reuses_kind_int_leaf_arbitrary_width() {
+        reset();
+        // A large multi-limb BigInt: i64::MAX² ≈ 2^126 (well beyond any fixed-width int).
+        let max = bigint::Big::from_i64(i64::MAX);
+        let big = max.mul(&max);
+        // Extract (sign, BIG-ENDIAN magnitude) the way a `Shape::BigInt` encode arm would — from the
+        // canonical sign-magnitude bytes `[sign][LE mag…]`: drop the sign, reverse to BE, strip leading 0s.
+        let sm = big.to_sign_magnitude_bytes();
+        let neg = sm[0] != 0;
+        let mut be_mag: Vec<u8> = sm[1..].iter().rev().copied().collect();
+        while be_mag.first() == Some(&0) {
+            be_mag.remove(0);
+        }
+        // Build a single-int doc via the existing DocLeaf::Int (exactly what int_leaf produces, but with a
+        // >i64 magnitude — proving the leaf is not i64-bounded).
+        let mut b = DocBuilder::default();
+        let leaf = {
+            b.leaves.push(DocLeaf::Int(neg, be_mag.clone()));
+            (b.leaves.len() - 1) as u32
+        };
+        let root = b.atom(leaf);
+        let doc = b.finish(root);
+        // Decode the leaf back: header(8) · leaf_count(1) · [KIND · LEB(len) · mag]. KIND 0 = pos, 3 = neg.
+        assert_eq!(doc[8], 1, "one leaf");
+        let kind = doc[9];
+        assert_eq!(kind, if neg { 3 } else { 0 }, "KIND_INT sign matches (0 pos / 3 neg)");
+        let len = doc[10] as usize;
+        let decoded_mag = &doc[11..11 + len];
+        assert_eq!(decoded_mag, &be_mag[..], "the >i64 magnitude round-trips through KIND_INT verbatim");
+        // Reconstruct the value from the decoded (sign, BE magnitude) and confirm it equals `big`.
+        let mut recon = bigint::Big::zero();
+        let base = bigint::Big::from_i64(256);
+        for &byte in decoded_mag {
+            recon = recon.mul(&base).add(&bigint::Big::from_i64(byte as i64));
+        }
+        if neg {
+            recon = bigint::Big::zero().sub(&recon);
+        }
+        assert_eq!(recon.cmp(&big), core::cmp::Ordering::Equal, "KIND_INT leaf reconstructs the exact BigInt");
+    }
+
     #[test]
     fn inline_int_negative_behavioral_roundtrip() {
         reset();
