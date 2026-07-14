@@ -3396,6 +3396,32 @@ fn compound_inner_coercion_fix(
                         .or_else(|| numeric_text_coercion_fix(db, &we, &ge, e))
                 })
         }
+        (Ty::Sum { decl: wd, .. }, Ty::Sum { decl: gd, .. }) if wd == gd => {
+            // A variant-constructed value whose payload's inner numeric differs from the annotated sum's
+            // payload — `(Some 5)` vs `(Option Float64)`, `(Ok 5)` vs `(Result Float64 String)`. The value
+            // is a ctor application `(Some 5)` = `Apply{head=Some, args=[5]}`; drill its payload
+            // argument(s) against the EXPECTED payload type at the annotated sum's instantiation
+            // (`payload_ty_at_instantiation`). Same `decl` (same sum) so the variant + payload align; the
+            // per-arg coercion is the sum-payload twin of the collection-element fix. (A DECLARED sum
+            // applied directly — `(Mk 5)` — already coerces via the variant-ctor-payload branch; this
+            // covers the ANNOTATION/arg-mismatch site, incl. the prelude `Option`/`Result`.)
+            let Resolved::Apply { head, args } = resolved_of(db, expr) else {
+                return None;
+            };
+            // A SINGLE-payload variant construction — `(Some 5)`, `(Ok 5)`, `(Mk 5)` — whose one argument
+            // IS the payload. `payload_ty_at_instantiation` gives that payload's type at the EXPECTED sum
+            // (`Float64` for `(Option Float64)`); coerce the argument against it. A multi-payload variant
+            // (its payload is a tuple) is left alone — the single-arg shape is the common numeric case and
+            // keeps the type-arg↔argument alignment unambiguous.
+            if crate::eval::variant_disc_of(db, head).is_none() || args.len() != 1 {
+                return None;
+            }
+            let want = payload_ty_at_instantiation(db, head, expected)?;
+            let arg = args[0];
+            let got = type_of(db, arg);
+            compound_inner_coercion_fix(db, arg, &want, &got)
+                .or_else(|| numeric_text_coercion_fix(db, &want, &got, arg))
+        }
         (Ty::Map(wk, wv), Ty::Map(gk, gv)) => {
             // A map is homogeneous on each axis. Retype the FIRST entry's KEY (if the key axis differs) or
             // VALUE (if the value axis differs) whose inner numeric a coercion bridges — mirroring the
@@ -3632,6 +3658,39 @@ fn collection_element_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String
     }
 }
 
+/// An actionable message TAIL when `expected` and `actual` are the SAME sum type (same `decl` + variant
+/// set) whose TYPE PARAMETER differs — `(Option Float64)` vs `(Option Int64)`, `(Result Float64 String)`
+/// vs `(Result Int64 String)`. Names the differing payload axis (" — its payload should be Float64, but
+/// this one is Int64") instead of leaving the reader to diff two full `(Option …)` renders, the sum twin
+/// of the collection-axis hint. `None` unless both are the same sum with the same arg count and a genuine
+/// arg difference (a DIFFERENT sum — `Option` vs `Result` — is unrelated, the generic path). `agrees_with`
+/// gates each arg. Reports the first (leftmost) differing type argument.
+fn sum_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+    let (
+        Ty::Sum {
+            decl: wd, args: wa, ..
+        },
+        Ty::Sum {
+            decl: gd, args: ga, ..
+        },
+    ) = (expected, actual)
+    else {
+        return None;
+    };
+    if wd != gd || wa.len() != ga.len() {
+        return None;
+    }
+    wa.iter().zip(ga.iter()).find_map(|(w, g)| {
+        (!w.agrees_with(g)).then(|| {
+            format!(
+                " — its payload should be {}, but this one is {}",
+                w.render_name(),
+                g.render_name()
+            )
+        })
+    })
+}
+
 /// The combined per-member structural-delta TAIL for two SAME-KIND compound types that differ inside — a
 /// record field-set / per-field type, a tuple arity / per-position type, or a collection element/key/value
 /// type. This bundles the three per-member hints (`record_field_diff_hint`, `tuple_arity_mismatch_hint`,
@@ -3654,6 +3713,7 @@ fn structural_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
     record_field_diff_hint(first, other)
         .or_else(|| tuple_arity_mismatch_hint(first, other))
         .or_else(|| collection_element_mismatch_hint(first, other))
+        .or_else(|| sum_payload_mismatch_hint(first, other))
 }
 
 /// An actionable message TAIL when `actual` is a FUNCTION value used where a NON-function `expected` is
@@ -7915,6 +7975,19 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             } else {
                                 None
                             };
+                            // Same SUM type whose payload type-arg differs — `(Option Float64)` vs `(Option
+                            // Int64)`. Names the payload axis, the sum twin of the collection-axis hint;
+                            // last in the chain after the others found none.
+                            let sum_tail = if wrap.is_none()
+                                && option_tail.is_none()
+                                && record_tail.is_none()
+                                && fn_tail.is_none()
+                                && collection_tail.is_none()
+                            {
+                                sum_payload_mismatch_hint(&annot_ty, &expr_ty)
+                            } else {
+                                None
+                            };
                             let tail = wrap
                                 .as_ref()
                                 .map(|w| w.3.clone())
@@ -7922,13 +7995,17 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 .or(record_tail.clone())
                                 .or(fn_tail)
                                 .or(collection_tail.clone())
+                                .or(sum_tail.clone())
                                 .unwrap_or_default();
                             let mut reject =
                                 Reject::coded(Code::TypeMismatch, mismatch_lead(&tail));
                             if let Some((prefix, suffix, verb, _)) = wrap {
                                 reject = reject
                                     .with_fix(Fix::wrap_heuristic(expr, prefix, suffix, verb));
-                            } else if record_tail.is_some() || collection_tail.is_some() {
+                            } else if record_tail.is_some()
+                                || collection_tail.is_some()
+                                || sum_tail.is_some()
+                            {
                                 // A same-shape compound whose single differing leaf is a numeric literal —
                                 // `(record (x 5))` vs `(Record (x Float64))`, `(tuple 1 2)` vs `(Tuple
                                 // Int64 Float64)`, `(list 5)` vs `(List Float64)`. The structural-delta tail
