@@ -1,0 +1,120 @@
+/// unify.cdz — the core of Hindley-Milner inference: unification with a substitution.
+///
+/// A `Ty` is a recursive sum: a unification VARIABLE (an Int64 id), a nullary CONstructor
+/// (`Int`/`Bool`/…), or an ARROW (a two-payload variant — function type). A substitution is a
+/// `Map Int64 Ty` (Int64-keyed, compound-VALUED). `unify` returns `Result (Map Int64 Ty) String`
+/// — an Ok carrying the UPDATED substitution (a compound Ok payload threaded through the recursion)
+/// or an Err message. This maximizes feature use: recursive sum, occurs-check recursion, transitive
+/// var-chain resolution, an Int64-keyed compound-valued Map, and a Result with a Map Ok payload.
+type Ty =
+  | Var(Int64)
+  | Con(String)
+  | Arrow(Ty, Ty)
+
+/// Follow variable bindings to a representative type (path to the end of the chain).
+def resolve(s: Map(Int64, Ty), t: Ty) -> Ty = match t with
+  | Ty.Var(v) => (match Map.lookup(s, v) with
+    | Option.Some(u) => resolve(s, u)
+    | Option.None(_) => t)
+  | _ => t
+
+/// Does variable `v` occur in `t` (after resolving)? The occurs check prevents infinite types.
+def occurs(v: Int64, t: Ty, s: Map(Int64, Ty)) -> Bool = match resolve(s, t) with
+  | Ty.Var(w) => v == w
+  | Ty.Con(_) => false
+  | Ty.Arrow(a, b) => occurs(v, a, s) or occurs(v, b, s)
+
+/// Bind variable `v` to type `t` in the substitution, guarding against a trivial or cyclic binding.
+def bind-var(s: Map(Int64, Ty), v: Int64, t: Ty) -> Result(Map(Int64, Ty), String) = match t with
+  | Ty.Var(w) => (if v == w then Result.Ok(s) else Result.Ok(Map.insert(s, v, t)))
+  | _ => (if occurs(v, t, s) then Result.Err("occurs check: infinite type") else Result.Ok(Map.insert(s, v, t)))
+
+/// Unify two non-variable (structural) types.
+def unify-struct(s: Map(Int64, Ty), a: Ty, b: Ty) -> Result(Map(Int64, Ty), String) = match a with
+  | Ty.Con(n) => (match b with
+    | Ty.Con(m) => (if n == m then Result.Ok(s) else Result.Err("cannot unify distinct constructors"))
+    | _ => Result.Err("cannot unify a constructor with an arrow"))
+  | Ty.Arrow(a1, a2) => (match b with
+    | Ty.Arrow(b1, b2) => (match unify(s, a1, b1) with
+      | Result.Ok(s1) => unify(s1, a2, b2)
+      | Result.Err(e) => Result.Err(e))
+    | _ => Result.Err("cannot unify an arrow with a constructor"))
+  | Ty.Var(_) => Result.Err("unreachable: unify-struct on a variable")
+
+/// Unify two types, extending the substitution. Returns the new substitution or an error.
+def unify(s: Map(Int64, Ty), a: Ty, b: Ty) -> Result(Map(Int64, Ty), String) =
+  let ra = resolve(s, a) in
+  let rb = resolve(s, b) in
+  match ra with
+  | Ty.Var(v) => bind-var(s, v, rb)
+  | _ => (match rb with
+    | Ty.Var(w) => bind-var(s, w, ra)
+    | _ => unify-struct(s, ra, rb))
+
+/// An empty substitution.
+def empty() -> Map(Int64, Ty) = #{}
+
+/// Did unification succeed?
+def is-ok(r: Result(Map(Int64, Ty), String)) -> Bool = match r with
+  | Result.Ok(_) => true
+  | Result.Err(_) => false
+
+/// After unifying, does variable `v` resolve to the constructor named `name`?
+def solved-con(r: Result(Map(Int64, Ty), String), v: Int64, name: String) -> Bool = match r with
+  | Result.Ok(s) => (match resolve(s, Ty.Var(v)) with
+    | Ty.Con(nm) => nm == name
+    | _ => false)
+  | Result.Err(_) => false
+
+@test
+def unify-same-con() = if is-ok(unify(empty(), Ty.Con("Int"), Ty.Con("Int"))) then unit else trap("Int ~ Int")
+
+@test
+def unify-con-mismatch() =
+  if is-ok(unify(empty(), Ty.Con("Int"), Ty.Con("Bool"))) then trap("Int ~ Bool must fail") else unit
+
+@test
+def unify-var-left() =
+  if solved-con(unify(empty(), Ty.Var(0), Ty.Con("Int")), 0, "Int") then unit else trap("?0 ~ Int")
+
+@test
+def unify-var-right() =
+  if solved-con(unify(empty(), Ty.Con("Bool"), Ty.Var(0)), 0, "Bool") then unit else trap("Bool ~ ?0")
+
+@test
+def unify-var-var() =
+  if is-ok(unify(empty(), Ty.Var(0), Ty.Var(1))) then unit else trap("?0 ~ ?1")
+
+@test
+def unify-arrow() =
+  let r = unify(empty(), Ty.Arrow(Ty.Var(0), Ty.Con("Int")), Ty.Arrow(Ty.Con("Bool"), Ty.Var(1))) in
+  if solved-con(r, 0, "Bool") then
+    (if solved-con(r, 1, "Int") then unit else trap("?1 -> Int"))
+  else
+    trap("?0 -> Bool")
+
+@test
+def unify-occurs() =
+  if is-ok(unify(empty(), Ty.Var(0), Ty.Arrow(Ty.Var(0), Ty.Con("Int")))) then
+    trap("occurs check must fail")
+  else
+    unit
+
+@test
+def unify-arrow-vs-con() =
+  if is-ok(unify(empty(), Ty.Arrow(Ty.Con("Int"), Ty.Con("Int")), Ty.Con("Int"))) then
+    trap("arrow ~ con must fail")
+  else
+    unit
+
+@test
+def unify-transitive() =
+  let r0 = unify(empty(), Ty.Var(0), Ty.Var(1)) in
+  match r0 with
+  | Result.Ok(s0) => (if solved-con(unify(s0, Ty.Var(1), Ty.Con("Int")), 0, "Int") then
+    unit
+  else
+    trap("?0 resolves through ?1 to Int"))
+  | Result.Err(_) => trap("?0 ~ ?1 ok")
+
+export { unify }
