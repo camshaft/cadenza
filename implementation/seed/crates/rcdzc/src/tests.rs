@@ -13458,6 +13458,71 @@ mod match_engine {
     }
 
     #[test]
+    fn a_join_site_option_or_unapplied_fn_clash_carries_the_annotation_sites_hint() {
+        // FIX-PARITY: the annotation site `(: v T)` names an OPTION-vs-payload clash ("match it to handle
+        // `None`") and an UNAPPLIED-FUNCTION clash ("apply it to N more arguments"); the PEER-JOIN sites —
+        // `if` branches, `match` arms, `list` elements — carried only the structural-delta hints, leaving
+        // these two shapes as bare "X vs Y" renders. `peer_type_delta_hint` now tries both hints in BOTH
+        // orderings (a peer clash is symmetric — either side may be the Option / the unfinished call).
+        let option_note = "the value is optional; match it to handle the absent (`None`) case";
+        // `if`: an Option branch against its payload — in EITHER order.
+        let if_opt_first =
+            reject_full("(module m (def (f (: b Bool)) (if b (Some 5) 5)) (export f))")
+                .expect("if (Option Int64) vs Int64 rejects");
+        assert!(
+            if_opt_first.message.contains(option_note),
+            "if-branch Option-first carries the match-it hint: {}",
+            if_opt_first.message
+        );
+        let if_opt_second =
+            reject_full("(module m (def (f (: b Bool)) (if b 5 (Some 5))) (export f))")
+                .expect("if Int64 vs (Option Int64) rejects");
+        assert!(
+            if_opt_second.message.contains(option_note),
+            "if-branch Option-SECOND still carries the hint (symmetric): {}",
+            if_opt_second.message
+        );
+        // `match`: an Option arm body against a payload arm body.
+        let m =
+            reject_full("(module m (def (f (: n Int64)) (match n (0 (Some 5)) (_ 5))) (export f))")
+                .expect("match (Option Int64) vs Int64 rejects");
+        assert!(
+            m.message.contains(option_note),
+            "match-arm Option clash carries the hint: {}",
+            m.message
+        );
+        // `list`: an Option element against a payload element.
+        let list = reject_full("(module m (def (g) (list (Some 5) 5)) (export g))")
+            .expect("list (Option Int64) and Int64 rejects");
+        assert!(
+            list.message.contains(option_note),
+            "list-element Option clash carries the hint: {}",
+            list.message
+        );
+        // An UNAPPLIED FUNCTION branch against a scalar — names the missing application.
+        let fn_clash = reject_full(
+            "(module m (def (h x y) (+ x y)) (def (f (: b Bool)) (if b (h 1) 5)) (export f))",
+        )
+        .expect("if (-> _ Int64) vs Int64 rejects");
+        assert!(
+            fn_clash
+                .message
+                .contains("a function that hasn't been fully applied"),
+            "if-branch unapplied-fn clash names the missing application: {}",
+            fn_clash.message
+        );
+        // NO false hint on a plain cross-kind scalar clash (Int vs String) — the peer hint only fires for
+        // the Option/fn shapes, exactly as at the annotation site.
+        let plain = reject_full("(module m (def (f (: b Bool)) (if b 1 \"x\")) (export f))")
+            .expect("(if b 1 \"x\") rejects");
+        assert!(
+            !plain.message.contains(option_note) && !plain.message.contains("fully applied"),
+            "a plain scalar clash gets no Option/fn hint: {}",
+            plain.message
+        );
+    }
+
+    #[test]
     fn a_nested_compound_mismatch_drills_to_the_exact_leaf_path() {
         // When a differing record field / tuple position is ITSELF a same-shape nested compound, the hint
         // drills through the shared structure to the deepest SCALAR leaf and names the access PATH — "field

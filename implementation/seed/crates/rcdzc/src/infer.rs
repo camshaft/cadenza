@@ -3965,6 +3965,26 @@ fn structural_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
         .or_else(|| sum_payload_mismatch_hint(first, other))
 }
 
+/// The message TAIL for a PEER-JOIN type clash — two `if` branches, two `match` arm bodies, two `list`
+/// elements — that must share one type but do not. A peer clash is SYMMETRIC (neither side is the fixed
+/// "expected" type, unlike an annotation/argument mismatch), so this first tries the structural-delta
+/// hints (record field-set / tuple arity / collection axis / sum payload — themselves order-tolerant),
+/// then the two DIRECTIONAL hints the annotation site carried but the join sites did not:
+/// `option_payload_mismatch_hint` (one side is `(Option T)`, the other its payload `T` — "match it to
+/// handle `None`") and `fn_not_applied_hint` (one side is an unapplied `(-> … T)` whose full application
+/// yields the other side — "apply it to N more arguments") — each tried in BOTH orderings, so whichever
+/// branch/arm/element is the Option wrapper or the unfinished call gets named. This brings the join sites
+/// to fix-parity with the annotation site's hint chain. Tail only, no mechanical `Fix`: a peer clash's
+/// repair (match the Option, finish the call, or retype a branch) is the author's choice, and the join
+/// sites keep their own one-shot INT-LITERAL→FLOAT retype fix for the numeric case.
+fn peer_type_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
+    structural_delta_hint(first, other)
+        .or_else(|| option_payload_mismatch_hint(first, other))
+        .or_else(|| option_payload_mismatch_hint(other, first))
+        .or_else(|| fn_not_applied_hint(first, other))
+        .or_else(|| fn_not_applied_hint(other, first))
+}
+
 /// An actionable message TAIL when `actual` is a FUNCTION value used where a NON-function `expected` is
 /// required — the "forgot to call it" slip. A partial application `(h 1)` (h takes 2) or a bare function
 /// name `h` used as a value has type `(-> … …)`; the generic "type mismatch: Int64 and (-> Int64 Int64)"
@@ -5680,7 +5700,7 @@ fn check_application(
                     // one field's type, tuples of one position, a nested collection axis), name the specific
                     // differing sub-part instead of rendering two whole compounds — the join-site reuse of
                     // the annotation-mismatch per-member hints.
-                    let delta = structural_delta_hint(&first_ty, &et).unwrap_or_default();
+                    let delta = peer_type_delta_hint(&first_ty, &et).unwrap_or_default();
                     let mut reject = Reject::coded(
                         code,
                         format!(
@@ -6939,7 +6959,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     Code::TypeMismatch
                 };
                 trace!(target: "rcdzc::infer", node = id.0, then_ty = %then_ty.render_name(), else_ty = %else_ty.render_name(), ?code, "fault: if branches differ");
-                let delta = structural_delta_hint(&then_ty, &else_ty).unwrap_or_default();
+                let delta = peer_type_delta_hint(&then_ty, &else_ty).unwrap_or_default();
                 let mut reject = Reject::coded(
                     code,
                     format!(
@@ -7460,7 +7480,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 for (_, body) in arms.iter().skip(1) {
                     let bt = type_of(db, *body);
                     if !first_ty.agrees_with(&bt) {
-                        let delta = structural_delta_hint(&first_ty, &bt).unwrap_or_default();
+                        let delta = peer_type_delta_hint(&first_ty, &bt).unwrap_or_default();
                         let mut reject = Reject::coded(
                             Code::TypeMismatch,
                             format!(
