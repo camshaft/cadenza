@@ -3262,9 +3262,11 @@ fn refutable_ctor_element_head(db: &mut Db, elem_pat: StructId) -> Option<Struct
 /// fail). Three distinct occurrences of the fresh name `__lc{arm}` (the Inc-11 two-parents lesson): the
 /// inert PATTERN-position element binder, the guard-cond match scrutinee, and the body-rematch scrutinee.
 ///
-/// Scope: ONE refutable-ctor element per arm (the overwhelmingly common tree-walk shape). An arm with ≥2
-/// refutable-ctor elements DECLINES honestly (its body-rematch nesting + payload-scope interleaving is a
-/// later increment). NO new IR, NO backend change. Returns `Some(Core)` iff the rewrite fired.
+/// N refutable-ctor elements per arm (N ≥ 1, `c5d45540`): each gets a fresh binder in the list pattern,
+/// all their discriminant tests are ANDed into the arm guard, and the body re-matches NEST inside-out
+/// (the innermost holds the original body, so every ctor's payload sub-patterns are in scope). The
+/// single-ctor case is exactly N == 1, so the loop generalizes it uniformly. NO new IR, NO backend
+/// change. Returns `Some(Core)` iff the rewrite fired.
 fn desugar_refutable_ctor_list_elements(
     db: &mut Db,
     scrutinee: StructId,
