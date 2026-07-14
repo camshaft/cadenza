@@ -1079,7 +1079,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // operand emits the runtime `bigint-add`/`-sub`/`-mul`/`-div` (B3b). Checked before the
                 // generic int-arith path (which would range-check/trap against a fixed width — wrong for an
                 // unbounded BigInt). Dispatch on the OPERAND type being `Ty::BigInt`, like the float arm.
-                Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
+                Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Rem))
                     if args.len() == 2 && bigint_operand(db, &args) =>
                 {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: BigInt arithmetic");
@@ -7156,6 +7156,7 @@ fn lower_bigint_arith(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Co
         Prim::Sub => crate::core::BigIntOp::Sub,
         Prim::Mul => crate::core::BigIntOp::Mul,
         Prim::Div => crate::core::BigIntOp::Div,
+        Prim::Rem => crate::core::BigIntOp::Rem,
         _ => return Core::Poison(Reject::decline("not a BigInt arithmetic op")),
     };
     Core::BigIntBinOp {

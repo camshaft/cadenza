@@ -843,15 +843,23 @@ the component type. The new work:
   resource_inner_component_multi_closure_bytes_borrow}` (shared list-`call` self = `borrow<t>` on the outer
   lift + nested re-export; makes + plain unaffected); the multi + mixed value-form tails route to borrow.
   PROVEN e2e by `a_multi_export_value_form_shared_borrow_call_is_repeatable` (one `make-lo` handle → the SAME
-  `(tuple 5 6)` value form on two shared calls). +1 corpus witness. **The scalar AND value-form `call`s are
-  now repeatable `borrow<t>` handles across single-export + multi-export + mixed. The ONLY remaining
-  own/self-drop `call` is the distinct-sig per-group `call-g<n>`.**
+  `(tuple 5 6)` value form on two shared calls). +1 corpus witness.
+- **✅ C-HOST-6, DISTINCT-SIG per-group `call-g<n>` — the closure-`call` borrow surface is FULLY CLOSED
+  `@8ac0b753`.** Each distinct-signature group's per-group `call-g<n>` (one resource type per signature) now
+  takes `borrow<t_g>`, completing the borrow migration: EVERY closure `call` — single-export (scalar + all
+  value forms), multi-export/mixed (scalar + all value forms), and distinct-sig per-group (all four branches)
+  — is now a repeatable `borrow<t>` handle. Pieces: `serialize::distinct_sig_resource_core_module` gains a
+  `call_borrow` param branching all FOUR per-group `call-g<n>` bodies (scalar / byte-rope / compound /
+  collection — each skips `resource.rep-g` + the cell self-drop); `envelope::
+  {assemble_distinct_sig_resource_mixed_borrow, resource_inner_component_distinct_sig_borrow}` (each group's
+  `call-g<n>` self = `borrow<t_g>` on the outer lift + nested re-export; makes stay `own<t_g>`);
+  `emit_distinct_sig_resource` routes to borrow. PROVEN e2e by `a_distinct_sig_call_g_is_repeatable` (one
+  `make-inc` handle → `call-g(5)`=6 then `call-g(40)`=41). +1 corpus witness. **A host-held closure of ANY
+  shape is now a repeatable callback — the design's own-vs-borrow fork is fully resolved on the borrow side.**
 - **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG on the DIRECT-CALL path
   (the HOST supplies it over the boundary — a compound needs a `value-decode` runtime op that does not exist;
   a closure needs a closure-resource passed INTO a call); a closure TRANSFORMER (`own<t>` both directions —
-  cleanly declined); a borrow<t> `call-g<n>` for the DISTINCT-SIG per-group calls (single-export all-shapes +
-  multi-export/mixed all-shapes are done; the distinct-sig per-group calls keep own/self-drop for now — the
-  last borrow widening). **The entire byte-rope
+  cleanly declined). **The entire byte-rope
   (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND
   the variable-length collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape —
   single-export + multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete

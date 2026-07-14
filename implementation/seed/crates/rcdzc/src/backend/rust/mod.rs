@@ -94,6 +94,10 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
     // inert to rustc (`//` comments), read by the corpus gate to render a user-sum boundary value to its
     // canonical bare form. The enum decls above give rustc the types; these give the gate the structure.
     out.push_str(&enums::emit_sum_descriptors(db));
+    // …and a descriptor per erased NEWTYPE (`// cdz-newtype[Pt]: <inner render_name>`), so the gate's value
+    // renderer resolves a newtype-typed boundary value (`Pt`) to its erased inner type and renders it
+    // structurally rather than `Display`-ing the erased Rust tuple. Inert to rustc (a `//` comment).
+    out.push_str(&enums::emit_newtype_descriptors(db));
     for &def in &layout.order {
         let f = match layout.export_plan(def) {
             // An exported definition — a `pub fn` under its verbatim boundary name.

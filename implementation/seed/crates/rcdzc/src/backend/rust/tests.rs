@@ -1204,6 +1204,30 @@ fn rustc_roundtrip_runtime_equality_over_a_payload_sum() {
 }
 
 #[test]
+fn rustc_roundtrip_runtime_equality_over_a_generic_sum() {
+    // Runtime `(= a b)` over a GENERIC user sum at a concrete instantiation — `(type Box (W a) (E))`
+    // compared at `Box Int64`. The generic enum `enum Box<T0> { W(T0), E }` `#[derive(PartialEq, Eq)]`
+    // adds a `T0: Eq` bound automatically, so a `=` at `Box Int64` (where `i64: Eq`) emits a native
+    // `a == b`. The derive/eq gate treats a type PARAMETER payload as Eq (the derive bounds it), keyed off
+    // the sentinel instantiation. `f(5)` compares `Box.W(5) == Box.W(5)` → 1, `f(9)` → unequal → 0.
+    let rs = compile_rust(
+        "(module m (type Box (W a) (E)) (def (mk (: k Int64)) (if (> k 0) (Box.W k) (Box.E))) \
+           (def (f (: k Int64)) (if (= (mk k) (mk 5)) 1 0)) (export f))",
+    );
+    assert!(rs.contains("enum Box<T0>"), "generic enum:\n{rs}");
+    assert!(
+        rs.contains("#[derive(Clone, PartialEq, Eq)]\n#[allow(dead_code)]\npub enum Box<T0>"),
+        "generic enum derives Eq (T0: Eq bound added by derive):\n{rs}"
+    );
+    if let Some(out) = rustc_run(&rs, "f(5)") {
+        assert_eq!(out, "1");
+    }
+    if let Some(out) = rustc_run(&rs, "f(9)") {
+        assert_eq!(out, "0");
+    }
+}
+
+#[test]
 fn rustc_roundtrip_builtin_option_matches() {
     // unwrap-or(Some 8, _) = 8, unwrap-or(None, -1) = -1 — a match over std's Option, constructed with
     // std's `Some`/`None` in the driver, runs and matches the oracle.

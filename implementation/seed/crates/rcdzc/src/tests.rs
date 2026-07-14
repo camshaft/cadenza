@@ -2068,6 +2068,76 @@ impl ComposedRuntime {
         (first, second)
     }
 
+    /// DISTINCT-SIGNATURE driver + repeatability probe: mint a named `make-<name>` handle, find the
+    /// `call-g<n>` whose `self` resource type matches that make's result type (as `cdz-run` does), and call
+    /// it TWICE on the SAME handle. Proves the per-group `call-g<n>` is a repeatable `borrow<t_g>` method.
+    /// Returns both scalar results.
+    fn closure_make_call_distinct_g_twice(
+        &mut self,
+        make_name: &str,
+        call_args_1: &[wasmtime::component::Val],
+        call_args_2: &[wasmtime::component::Val],
+    ) -> (wasmtime::component::Val, wasmtime::component::Val) {
+        use wasmtime::component::{Type, Val};
+        let iface = self
+            .program
+            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
+            .expect("closure interface exported");
+        let get = |store: &mut wasmtime::Store<()>,
+                   program: &wasmtime::component::Instance,
+                   name: &str|
+         -> wasmtime::component::Func {
+            let idx = program
+                .get_export_index(&mut *store, Some(&iface), name)
+                .unwrap_or_else(|| panic!("distinct-sig closure `{name}` exported"));
+            program
+                .get_func(&mut *store, idx)
+                .unwrap_or_else(|| panic!("`{name}` is a function"))
+        };
+        let make = get(&mut self.store, &self.program, make_name);
+        // `make`'s result resource type — pair it with the `call-g<n>` whose first param is that same type.
+        let want_res = match make.results(&self.store).first().cloned() {
+            Some(Type::Own(rt)) | Some(Type::Borrow(rt)) => rt,
+            other => panic!("`{make_name}` does not return a resource ({other:?})"),
+        };
+        // Find the matching `call-g<n>` among the interface's funcs.
+        let call_name = (0..8)
+            .map(|n| format!("call-g{n}"))
+            .find(|cn| {
+                let Some(idx) = self
+                    .program
+                    .get_export_index(&mut self.store, Some(&iface), cn)
+                else {
+                    return false;
+                };
+                let Some(cf) = self.program.get_func(&mut self.store, idx) else {
+                    return false;
+                };
+                matches!(cf.params(&self.store).first().map(|(_, t)| t.clone()),
+                    Some(Type::Own(rt)) | Some(Type::Borrow(rt)) if rt == want_res)
+            })
+            .expect("a call-g<n> matching the make's resource type");
+        let call = get(&mut self.store, &self.program, &call_name);
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut self.store, &[], &mut handle).expect("make");
+        make.post_return(&mut self.store).expect("make post_return");
+        let mut a1 = vec![handle[0].clone()];
+        a1.extend_from_slice(call_args_1);
+        let mut o1 = [Val::Bool(false)];
+        call.call(&mut self.store, &a1, &mut o1)
+            .expect("first call-g");
+        call.post_return(&mut self.store)
+            .expect("first post_return");
+        let mut a2 = vec![handle[0].clone()];
+        a2.extend_from_slice(call_args_2);
+        let mut o2 = [Val::Bool(false)];
+        call.call(&mut self.store, &a2, &mut o2)
+            .expect("second call-g on the SAME handle (borrow<t> keeps it live)");
+        call.post_return(&mut self.store)
+            .expect("second post_return");
+        (o1[0].clone(), o2[0].clone())
+    }
+
     /// ROUND-TRIP driver (C-HOST-4): call a PRODUCER export by name (`producer(make_args…)` → a closure
     /// resource handle the host holds), then thread that handle BACK into a CONSUMER export
     /// (`consumer(handle, consume_args…)` → the result). Both are plain funcs in `cadenza:closure/exports`.
@@ -2353,6 +2423,22 @@ fn runtime_bigint_arithmetic_leaves_no_live_objects() {
         rt3.live_objects(),
         0,
         "bigint-cmp leak: the two owned `BigInt.of` operands must be dropped after the borrowing compare"
+    );
+
+    // (d) an INLINE-MATERIALIZED constant operand — `(* big (BigInt.of 2))`: the constant `(BigInt.of 2)`
+    // is boxed at the use site (`bigint-of-i64`), a FRESH OWNED temporary the `*` must drop; `big` is the
+    // borrowed `let`-binding the `let` reclaims. Net 0.
+    let src4 = "(module m \
+                  (def (main (: a Int64)) \
+                     (let ((big (BigInt.of a))) (Int64.of (* big (BigInt.of 2))))) (export main))";
+    let program4 = compile_component(&crate::codec::encode(&parse(src4))).expect("compile");
+    let mut rt4 = ComposedRuntime::new(&program4, &runtime_bytes);
+    assert_eq!(rt4.call("main", &[Val::S64(21)]), Val::S64(42));
+    assert_eq!(
+        rt4.live_objects(),
+        0,
+        "bigint const-operand leak: the inline-materialized `(BigInt.of 2)` temporary must be dropped after \
+         the borrowing mul, and `big` left to the `let`"
     );
 }
 
@@ -8726,6 +8812,82 @@ mod runtime_ops {
             ),
             24
         );
+        // A conditional (`if`/`select`) operand is CSE'd too: `(+ (if (< a b) a b) (if (< a b) a b))` is
+        // `2 * min(a,b)` with the `min` select computed ONCE (`core_eq` now recurses through `Core::If`).
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(+ (if (< a b) a b) (if (< a b) a b))",
+                &[Val::S64(3), Val::S64(5)]
+            ),
+            6
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: a Int64) (: b Int64)",
+                "(+ (if (< a b) a b) (if (< a b) a b))",
+                &[Val::S64(5), Val::S64(3)]
+            ),
+            6
+        );
+        // The `min` select is emitted ONCE (Lir has a single `Select`, not two).
+        {
+            use crate::backend::wasm::lir::Lir;
+            use crate::backend::wasm::select::select_function;
+            let src = "(module m (def (f (: a Int64) (: b Int64)) (+ (if (< a b) a b) (if (< a b) a b))) (def (main) 0) (export main))";
+            let mut db = crate::db::Db::load(crate::testkit::parse(src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            let code = select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code;
+            assert_eq!(
+                code.iter().filter(|i| matches!(i, Lir::Select)).count(),
+                1,
+                "the identical min-select is computed once, got: {code:?}"
+            );
+            // A DISTINCT inner condition (`<` vs `>`) is NOT shared — two selects.
+            let src2 = "(module m (def (f (: a Int64) (: b Int64)) (+ (if (< a b) a b) (if (> a b) a b))) (def (main) 0) (export main))";
+            let mut db2 = crate::db::Db::load(crate::testkit::parse(src2));
+            let layout2 = crate::layout::compute(&mut db2).expect("layout");
+            let d2 = db2.def_by_name("f").expect("f");
+            let ps2: Vec<_> = db2.defs[d2]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db2
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db2, b))
+                })
+                .collect();
+            let body2 = db2.defs[d2].body.expect("body");
+            let code2 = select_function(&mut db2, body2, &ps2, &layout2)
+                .expect("select")
+                .code;
+            assert_eq!(
+                code2.iter().filter(|i| matches!(i, Lir::Select)).count(),
+                2,
+                "distinct conditions are not shared, got: {code2:?}"
+            );
+        }
     }
 
     // ── algebraic identities: an op with an identity constant elides the checked op ───────────────
@@ -13450,6 +13612,44 @@ mod match_engine {
             ss.message.contains("Int64") && ss.message.contains("String") && ss.fix.is_none(),
             "set cross-kind names both types, no fix: {}",
             ss.message
+        );
+    }
+
+    #[test]
+    fn a_map_insert_type_clash_names_the_map_and_operand_types() {
+        // The Map.insert twin of the map-literal heterogeneity message (M75): inserting a key/value whose
+        // type differs from the map's names BOTH the map's type and the operand's type (was a generic "the
+        // inserted key's type differs from the map's"), and offers the int-literal→float retype where it
+        // bridges the clash.
+        let key = reject_full(
+            "(module m (def (main) (Map.size ((. Map insert) (map (1 2)) \"k\" 3))) (export main))",
+        )
+        .expect("a Map.insert key-type clash must reject");
+        assert_eq!(key.code.as_deref(), Some("CDZ0201"), "got: {}", key.message);
+        assert!(
+            key.message.contains("Int64") && key.message.contains("String"),
+            "names the map's key type AND the inserted key type: {}",
+            key.message
+        );
+        let val = reject_full(
+            "(module m (def (main) (Map.size ((. Map insert) (map (1 2)) 9 \"v\"))) (export main))",
+        )
+        .expect("a Map.insert value-type clash must reject");
+        assert!(
+            val.message.contains("Int64") && val.message.contains("String"),
+            "names the map's value type AND the inserted value type: {}",
+            val.message
+        );
+        // Inserting an int VALUE into a map whose values are Float → the `n.0` retype fix (int-lit→float).
+        let f = reject_full(
+            "(module m (def (main) (Map.size ((. Map insert) (map (1 1.0)) 9 3))) (export main))",
+        )
+        .expect("reject");
+        assert_eq!(
+            f.fix.as_ref().map(|x| x.replacement.as_str()),
+            Some("3.0"),
+            "an int value inserted into a Float-valued map offers the retype: {}",
+            f.message
         );
     }
 
@@ -27140,6 +27340,53 @@ mod stage1 {
     }
 
     #[test]
+    fn a_non_tail_outer_handler_reduces_a_reducible_inner_handle_first() {
+        // NESTED-HANDLE PRE-REDUCTION: an OUTER handler whose arm is NON-tail-resumptive, over a body that
+        // is (or contains) a reducible inner handle of a DIFFERENT effect. The inside-out `thread` path
+        // reduces an inner handle only while THREADING (which needs the outer arm tail-resumptive), so
+        // `(handle A non-tail (handle B tail (+ (A.a) (B.b))))` used to decline — B never got reduced before
+        // A's E5 pure-one-hole check ran and saw the raw inner `handle` node. Reducing B FIRST turns the body
+        // into `(+ (A.a) 20)`, a single A-perform in a pure one-hole context A's E5 fold serves:
+        //   B tail `(resume 20 t)` → `(B.b)` = 20; A arm `(+ 1 (resume 10 s))`, `C = (+ (A.a≡10) □)` →
+        //   `(+ 1 (+ 10 20))` = 31.
+        let src = "(do (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64))) \
+                   (def (main) (handle A 0 ((a (u) s (+ 1 (resume 10 s)))) \
+                     (handle B 0 ((b (u) t (resume 20 t))) (+ (A.a) (B.b))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a non-tail outer handler reduces a reducible inner handle first"),
+                "main"
+            ),
+            31
+        );
+        // REGRESSION: both handlers tail-resumptive still folds via the existing threading path (the
+        // pre-reduction is gated to the non-tail-resumptive regime, so this path is untouched).
+        let both_tail = "(do (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64))) \
+                   (def (main) (handle A 0 ((a (u) s (resume 10 s))) \
+                     (handle B 0 ((b (u) t (resume 20 t))) (+ (A.a) (B.b))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(both_tail)))
+                    .expect("both-tail nested distinct effects fold"),
+                "main"
+            ),
+            30
+        );
+        // BOUNDARY: when the INNER handle is itself non-tail with a FOREIGN perform sibling in its body
+        // (`(A.a)` is undischarged by B), B cannot reduce — its continuation is not pure (a foreign effect
+        // would be duplicated by a multi-shot resume). This genuinely needs the frame vertical, so it stays
+        // a clean decline (not a miscompile).
+        let both_non_tail = "(do (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64))) \
+                   (def (main) (handle A 0 ((a (u) s (+ 1 (resume 10 s)))) \
+                     (handle B 0 ((b (u) t (+ 2 (resume 20 t)))) (+ (A.a) (B.b))))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(both_non_tail))).is_err(),
+            "a non-tail inner handle with a foreign perform sibling stays declined (needs frames)"
+        );
+    }
+
+    #[test]
     fn a_pure_one_hole_match_scrutinee_re_resolves_a_binder_arm_and_nests_in_an_operator() {
         // ADVERSARIAL: (1) a match scrutinee hole whose selected arm BINDS the scrutinee and USES the binder
         // — the whole match is copied per resume by `splice_context`, so the pattern binder `k` must
@@ -38938,6 +39185,7 @@ mod closure_host_resource {
             &groups,
             &[],
             &layout,
+            false,
         )
         .expect("distinct-signature closure-resource core serializes");
 
@@ -39430,6 +39678,36 @@ mod closure_host_resource {
         assert_eq!(
             first, second,
             "the SAME make-lo handle yields the SAME value form on a repeated shared call — borrow<t> keeps it live"
+        );
+    }
+
+    /// C-HOST-6, DISTINCT-SIG: each group's per-signature `call-g<n>` is a repeatable `borrow<t_g>` method —
+    /// a `make-<name>` handle serves repeated `call-g<n>`s (the last borrow widening; own<t> would consume it
+    /// on the first). Two distinct-signature closures (`inc : Int64->Int64`, `isz : Int64->Bool`) → two
+    /// resource types; driving `make-inc`'s `call-g<n>` twice on the SAME handle. `#[ignore]` — needs the
+    /// runtime wasm in the store.
+    #[test]
+    #[ignore]
+    fn a_distinct_sig_call_g_is_repeatable() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
+            return;
+        };
+        let src = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
+                   (def (isz) (fn ((: x Int64)) (= x 0))) (export inc) (export isz))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // ONE make-inc handle, its call-g<n> twice: (+ x 1) on 5 then 40 → 6, 41.
+        let (first, second) =
+            rt.closure_make_call_distinct_g_twice("make-inc", &[Val::S64(5)], &[Val::S64(40)]);
+        assert_eq!(first, Val::S64(6), "make-inc's call-g(5) = 6");
+        assert_eq!(
+            second,
+            Val::S64(41),
+            "the SAME make-inc handle, call-g(40) = 41 — borrow<t_g> keeps it live (repeatable)"
         );
     }
 

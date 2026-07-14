@@ -2933,6 +2933,38 @@ pub fn assemble_distinct_sig_resource_mixed(
     groups: &[SigGroupAbi],
     plain: &[PlainExportAbi],
 ) -> Vec<u8> {
+    assemble_distinct_sig_resource_mixed_borrow(
+        main_core,
+        dtor_core,
+        imports,
+        import_name,
+        groups,
+        plain,
+        false,
+    )
+}
+
+/// [`assemble_distinct_sig_resource_mixed`] with a `call_borrow` switch (C-HOST-6, distinct-sig per-group
+/// `call-g<n>`). When TRUE each group's `call-g<n>` self handle is `borrow<t_g>` (repeatable) on the outer
+/// lift + the nested re-export; `make`s stay `own<t_g>`. `false` reproduces the shipped own component
+/// byte-for-byte.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_distinct_sig_resource_mixed_borrow(
+    main_core: &[u8],
+    dtor_core: &[u8],
+    imports: &[&RtOp],
+    import_name: &str,
+    groups: &[SigGroupAbi],
+    plain: &[PlainExportAbi],
+    call_borrow: bool,
+) -> Vec<u8> {
+    let call_handle = |idx: u32| -> Vec<u8> {
+        if call_borrow {
+            borrow_item(idx)
+        } else {
+            own_item(idx)
+        }
+    };
     let k = imports.len();
     let g = groups.len();
     let np = plain.len();
@@ -3137,8 +3169,8 @@ pub fn assemble_distinct_sig_resource_mixed(
                 ti += 2;
             }
             if gr.ret_is_bytes {
-                // call-<g>: own<t_g> (ti) + list<u8> (ti+1) + `(self, args…) -> list<u8>` functype (ti+2).
-                items.extend_from_slice(&own_item(rty));
+                // call-<g>: own/borrow<t_g> (ti) + list<u8> (ti+1) + `(self, args…) -> list<u8>` functype.
+                items.extend_from_slice(&call_handle(rty));
                 let own_ty = ti;
                 let list_ty = ti + 1;
                 items.extend_from_slice(&list_u8_defined_type());
@@ -3150,8 +3182,8 @@ pub fn assemble_distinct_sig_resource_mixed(
                 fn_functype.push(ti + 2);
                 ti += 3;
             } else {
-                // call-<g>: own<t_g> + scalar call functype.
-                items.extend_from_slice(&own_item(rty));
+                // call-<g>: own/borrow<t_g> + scalar call functype.
+                items.extend_from_slice(&call_handle(rty));
                 items.extend_from_slice(&closure_call_functype(ti, &gr.arg_bytes, gr.result_byte));
                 fn_functype.push(ti + 1);
                 ti += 2;
@@ -3191,9 +3223,9 @@ pub fn assemble_distinct_sig_resource_mixed(
         section(sec::CANON, &wasm_vec(total_fns + np, &items))
     });
     // sec 4/5/11: nested re-export component; instantiate (G resources + total_fns comp funcs); export.
-    out.extend_from_slice(&component_section(&resource_inner_component_distinct_sig(
-        groups,
-    )));
+    out.extend_from_slice(&component_section(
+        &resource_inner_component_distinct_sig_borrow(groups, call_borrow),
+    ));
     out.extend_from_slice(&section(
         sec::COMPONENT_INSTANCE,
         &wasm_vec(
@@ -4194,7 +4226,26 @@ fn resource_inner_component_multi_closure_borrow(
 /// `own<t_g>` + functype (2 types); a BYTE-ROPE call adds `own<t_g>` + `list<u8>` + `(…) -> list<u8>`
 /// functype (3 types). Uses a running type counter (byte-rope calls break the fixed `g + 2f` formula).
 /// Export phase re-exports the G resources then re-ascribes every fn against its group's exported resource.
+#[allow(dead_code)]
 fn resource_inner_component_distinct_sig(groups: &[SigGroupAbi]) -> Vec<u8> {
+    resource_inner_component_distinct_sig_borrow(groups, false)
+}
+
+/// [`resource_inner_component_distinct_sig`] with a `call_borrow` switch (C-HOST-6, distinct-sig per-group
+/// `call-g<n>`). When TRUE each group's `call-g<n>` self handle is `borrow<t_g>` (repeatable) on both the
+/// import side and the re-exported side; `make`s stay `own<t_g>`. Matches the outer lift's per-group `call`
+/// typing in `assemble_distinct_sig_resource_mixed`.
+fn resource_inner_component_distinct_sig_borrow(
+    groups: &[SigGroupAbi],
+    call_borrow: bool,
+) -> Vec<u8> {
+    let call_handle = |idx: u32| -> Vec<u8> {
+        if call_borrow {
+            borrow_item(idx)
+        } else {
+            own_item(idx)
+        }
+    };
     let g = groups.len();
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
@@ -4233,7 +4284,7 @@ fn resource_inner_component_distinct_sig(groups: &[SigGroupAbi]) -> Vec<u8> {
             let list_ty = ty + 1;
             let ft_ty = ty + 2;
             out.extend_from_slice(&{
-                let mut items = own_item(gi as u32);
+                let mut items = call_handle(gi as u32);
                 items.extend_from_slice(&list_u8_defined_type());
                 items.extend_from_slice(&closure_call_list_functype(
                     own_ty,
@@ -4248,11 +4299,11 @@ fn resource_inner_component_distinct_sig(groups: &[SigGroupAbi]) -> Vec<u8> {
             ));
             ty += 3;
         } else {
-            // call-<gi> : (self: own<t_gi>, args…) -> R  → own<t_gi> + functype.
+            // call-<gi> : (self: own/borrow<t_gi>, args…) -> R  → handle<t_gi> + functype.
             let own_ty = ty;
             let ft_ty = ty + 1;
             out.extend_from_slice(&{
-                let mut items = own_item(gi as u32);
+                let mut items = call_handle(gi as u32);
                 items.extend_from_slice(&closure_call_functype(
                     own_ty,
                     &gr.arg_bytes,
@@ -4301,7 +4352,7 @@ fn resource_inner_component_distinct_sig(groups: &[SigGroupAbi]) -> Vec<u8> {
         }
         if gr.ret_is_bytes {
             out.extend_from_slice(&{
-                let mut items = own_item(exp_rty);
+                let mut items = call_handle(exp_rty);
                 items.extend_from_slice(&list_u8_defined_type());
                 items.extend_from_slice(&closure_call_list_functype(ti, &gr.arg_bytes, ti + 1));
                 section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
@@ -4316,7 +4367,7 @@ fn resource_inner_component_distinct_sig(groups: &[SigGroupAbi]) -> Vec<u8> {
             ti += 3;
         } else {
             out.extend_from_slice(&{
-                let mut items = own_item(exp_rty);
+                let mut items = call_handle(exp_rty);
                 items.extend_from_slice(&closure_call_functype(ti, &gr.arg_bytes, gr.result_byte));
                 section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
             });

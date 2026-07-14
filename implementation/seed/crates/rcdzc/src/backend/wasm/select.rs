@@ -180,6 +180,7 @@ const OP_BIGINT_ADD: &str = "bigint-add";
 const OP_BIGINT_SUB: &str = "bigint-sub";
 const OP_BIGINT_MUL: &str = "bigint-mul";
 const OP_BIGINT_DIV: &str = "bigint-div";
+const OP_BIGINT_REM: &str = "bigint-rem";
 /// `bigint-cmp(a, b) -> s64` — the three-way compare (`-1`/`0`/`1` for `a<b`/`a=b`/`a>b`), which the
 /// BigInt comparison operators `<`/`>`/`<=`/`>=`/`=` lower to + a fixed signed compare-with-zero (B3c).
 const OP_BIGINT_CMP: &str = "bigint-cmp";
@@ -1116,10 +1117,14 @@ pub fn collect_used_ops(
             collect_used_ops(db, value, out);
         }
         // The borrowing BigInt ops also import `drop` (to reclaim an OWNED-temporary handle operand after
-        // the borrowing call — see the `emit_bigint_borrow_*` helpers).
+        // the borrowing call — see the `emit_bigint_borrow_*` helpers), plus `bigint-of-i64` when an
+        // operand is a CONSTANT BigInt materialized inline (`const_bigint_materializes`).
         Core::BigIntToI64 { operand } => {
             out.insert(OP_BIGINT_TO_I64_CHECKED);
             out.insert(OP_DROP);
+            if const_bigint_materializes(db, operand) {
+                out.insert(OP_BIGINT_OF_I64);
+            }
             collect_used_ops(db, operand, out);
         }
         Core::BigIntBinOp { op, lhs, rhs } => {
@@ -1128,16 +1133,24 @@ pub fn collect_used_ops(
                 crate::core::BigIntOp::Sub => OP_BIGINT_SUB,
                 crate::core::BigIntOp::Mul => OP_BIGINT_MUL,
                 crate::core::BigIntOp::Div => OP_BIGINT_DIV,
+                crate::core::BigIntOp::Rem => OP_BIGINT_REM,
             });
             out.insert(OP_DROP);
+            if const_bigint_materializes(db, lhs) || const_bigint_materializes(db, rhs) {
+                out.insert(OP_BIGINT_OF_I64);
+            }
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
         }
         // A BigInt comparison imports `bigint-cmp` (the three-way primitive) AND `drop` (to reclaim an
-        // owned-temporary operand after the borrowing compare — the `emit_bigint_borrow_binary` helper).
+        // owned-temporary operand after the borrowing compare — the `emit_bigint_borrow_binary` helper),
+        // plus `bigint-of-i64` for an inline-materialized constant operand.
         Core::BigIntCmp { lhs, rhs, .. } => {
             out.insert(OP_BIGINT_CMP);
             out.insert(OP_DROP);
+            if const_bigint_materializes(db, lhs) || const_bigint_materializes(db, rhs) {
+                out.insert(OP_BIGINT_OF_I64);
+            }
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
         }
@@ -3780,6 +3793,7 @@ fn emit(
                 crate::core::BigIntOp::Sub => OP_BIGINT_SUB,
                 crate::core::BigIntOp::Mul => OP_BIGINT_MUL,
                 crate::core::BigIntOp::Div => OP_BIGINT_DIV,
+                crate::core::BigIntOp::Rem => OP_BIGINT_REM,
             };
             emit_bigint_borrow_binary(db, lhs, rhs, import, high, slots, scratch_ty, layout, out)
         }
@@ -5400,6 +5414,53 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
 /// possible drop), call the op (which pops the borrowed handle and pushes the scalar), then drop the
 /// remembered handle if it was owned. Declines (via `heap_operand_ownership`) an operand whose ownership
 /// cannot be proved — reject, never a leak or double-free.
+/// Whether a BigInt operand is a CONSTANT BigInt (`Core::ConstInt` typed `Ty::BigInt` — a folded
+/// `(BigInt.of <const>)`) that FITS `i64`, so it materializes inline via `bigint-of-i64` at a use site (a
+/// runtime arithmetic/comparison operand). A constant BigInt has no heap leaf of its own (`BigInt.of` on a
+/// constant folds to a `Core::ConstInt` that only knows how to emit as a scalar), so an op that needs a
+/// heap HANDLE materializes it here. A constant BEYOND `i64` range is not covered (an arbitrary-magnitude
+/// constant leaf is a B4 concern) — reported separately as a decline. `collect_used_ops` uses this to
+/// declare the `bigint-of-i64` import when an operand needs it.
+fn const_bigint_materializes(db: &mut Db, id: StructId) -> bool {
+    matches!(core_of(db, id), Core::ConstInt(v) if v.to_i64().is_some())
+        && matches!(type_of(db, id), Ty::BigInt)
+}
+
+/// Emit ONE BigInt operand as a heap HANDLE on the stack and return its ownership (for a possible post-op
+/// drop). A CONSTANT BigInt that fits `i64` has no heap leaf yet, so materialize it: push its `i64` value
+/// then `bigint-of-i64` → a FRESH OWNED handle (the borrowing op drops it after). A constant BEYOND `i64`
+/// range DECLINES (the arbitrary-magnitude constant leaf is a B4 concern — the sign-magnitude byte
+/// builder). Any other operand emits via `emit` and is classified by `heap_operand_ownership`.
+#[allow(clippy::too_many_arguments)]
+fn emit_bigint_operand(
+    db: &mut Db,
+    operand: StructId,
+    high: &mut u32,
+    slots: &HashMap<StructId, u32>,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<HandleOwnership, Reject> {
+    if let Core::ConstInt(v) = core_of(db, operand)
+        && matches!(type_of(db, operand), Ty::BigInt)
+    {
+        return match v.to_i64() {
+            Some(x) => {
+                out.push(Lir::ConstI64(x));
+                out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // → [fresh owned BigInt handle : i32]
+                Ok(HandleOwnership::Owned)
+            }
+            None => Err(Reject::decline(
+                "a constant BigInt beyond i64 range is not yet materialized as a heap leaf (B4)",
+            )),
+        };
+    }
+    let o = heap_operand_ownership(db, operand)?;
+    let op_base = *high;
+    emit(db, operand, slots, op_base, high, scratch_ty, layout, out)?; // [h : i32]
+    Ok(o)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_bigint_borrow_unary(
     db: &mut Db,
@@ -5411,12 +5472,10 @@ fn emit_bigint_borrow_unary(
     layout: &Layout,
     out: &mut Emit,
 ) -> Result<(), Reject> {
-    let o = heap_operand_ownership(db, operand)?;
     let slot = *high;
     *high = slot + 1;
     scratch_ty.insert(slot, ValType::I32);
-    let op_base = *high;
-    emit(db, operand, slots, op_base, high, scratch_ty, layout, out)?; // [h : i32]
+    let o = emit_bigint_operand(db, operand, high, slots, scratch_ty, layout, out)?; // [h : i32]
     out.push(Lir::LocalTee(slot));
     out.push(Lir::CallImport(import)); // pops the borrowed handle → [scalar]
     if o == HandleOwnership::Owned {
@@ -5445,17 +5504,14 @@ fn emit_bigint_borrow_binary(
     layout: &Layout,
     out: &mut Emit,
 ) -> Result<(), Reject> {
-    let lo = heap_operand_ownership(db, lhs)?;
-    let ro = heap_operand_ownership(db, rhs)?;
     let slot_l = *high;
     let slot_r = *high + 1;
     *high = slot_r + 1;
     scratch_ty.insert(slot_l, ValType::I32);
     scratch_ty.insert(slot_r, ValType::I32);
-    let op_base = *high;
-    emit(db, lhs, slots, op_base, high, scratch_ty, layout, out)?; // [a : i32]
+    let lo = emit_bigint_operand(db, lhs, high, slots, scratch_ty, layout, out)?; // [a : i32]
     out.push(Lir::LocalTee(slot_l));
-    emit(db, rhs, slots, op_base, high, scratch_ty, layout, out)?; // [a, b : i32]
+    let ro = emit_bigint_operand(db, rhs, high, slots, scratch_ty, layout, out)?; // [a, b : i32]
     out.push(Lir::LocalTee(slot_r));
     out.push(Lir::CallImport(import)); // pops both borrowed handles → [result]
     if lo == HandleOwnership::Owned {
@@ -7219,6 +7275,28 @@ fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {
                 path: py,
             },
         ) => px == py && core_eq(db, sx, sy),
+        // A boolean negation: equal iff the negated operands are. `not` is `i32.eqz` — pure and total.
+        (Core::Not { operand: ox }, Core::Not { operand: oy }) => core_eq(db, ox, oy),
+        // A conditional `select`/`if`: equal iff the condition AND both branches are recursively equal —
+        // then the two `if`s compute the identical value, so the arith-CSE can compute the whole `if` ONCE
+        // and read it twice (`(+ (if (< a b) a b) (if (< a b) a b))` = min(a,b) computed once). `core_eq`
+        // returns true here ONLY when cond/then/else all match its PURE set (a leaf, arith, compare,
+        // convert, proj, payload, not, or a nested pure `if`), so a branch with a call/effect never
+        // qualifies — the shared `if` is pure and deterministic, safe to compute once. Both arms are
+        // evaluated in neither the original nor the shared form (an `if` runs one branch), so no trap is
+        // added or dropped by sharing.
+        (
+            Core::If {
+                cond: cx,
+                then_: tx,
+                else_: ex,
+            },
+            Core::If {
+                cond: cy,
+                then_: ty,
+                else_: ey,
+            },
+        ) => core_eq(db, cx, cy) && core_eq(db, tx, ty) && core_eq(db, ex, ey),
         _ => false,
     }
 }
