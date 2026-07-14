@@ -1413,6 +1413,7 @@ pass	an abortive perform deep in a call chain unwinds every intervening frame to
 pass	an abortive perform in a conditional let binding abandons the computation
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation
 pass	an abortive perform in an if condition abandons the computation before branching
+pass	an abortive perform in the NON-taken if branch is never evaluated (no speculation)
 pass	an abortive perform in the tail of an if branch abandons only that branch
 pass	an abortive perform in the tail of an if branch inside a let body abandons only that branch
 pass	an abortive perform under THREE nested handlers abandons the two resumptive frames above it
