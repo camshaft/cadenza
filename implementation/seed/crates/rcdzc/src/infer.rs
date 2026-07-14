@@ -5295,18 +5295,31 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             // advice (fix the typo vs. genuinely a new field).
                             let near = nearest_record_field(db, &fields, &label.name);
                             let did = near
+                                .as_ref()
                                 .map(|n| format!(" (did you mean `{n}`?)"))
                                 .unwrap_or_default();
-                            out.push(
-                                Reject::coded(
-                                    Code::AbsentField,
-                                    format!(
-                                        "record has no field `{}` to update{did} (use `Record.extend` to add)",
-                                        label.name
-                                    ),
-                                )
-                                .at(args[1]),
-                            );
+                            let mut reject = Reject::coded(
+                                Code::AbsentField,
+                                format!(
+                                    "record has no field `{}` to update{did} (use `Record.extend` to add)",
+                                    label.name
+                                ),
+                            )
+                            .at(args[1]);
+                            // The near-miss carries a REPLACE fix on the label occurrence — the `(z v)`
+                            // pair's FIRST child is the field name `z` (`args[1]` is the pair list), so a
+                            // mistyped `(alpa 2)` rewrites just `alpa`→`alpha`, the same fix `without`/
+                            // `project` labels get (M63). No near → message only.
+                            if let (Some(near), crate::ast::Struct::List(items)) =
+                                (&near, db.ast.get(args[1]))
+                                && let Some(&label_node) = items.first()
+                            {
+                                reject = reject.with_fix(crate::diag::Fix::replace_heuristic(
+                                    label_node,
+                                    near.clone(),
+                                ));
+                            }
+                            out.push(reject);
                         }
                     }
                     (_, None) => out.push(Reject::coded(
@@ -5331,15 +5344,24 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         // `without`/`project`/`with` — a mistyped popped field should point at the real one).
                         let near = nearest_record_field(db, &fields, &label.name);
                         let did = near
+                            .as_ref()
                             .map(|n| format!(" (did you mean `{n}`?)"))
                             .unwrap_or_default();
-                        out.push(
-                            Reject::coded(
-                                Code::AbsentField,
-                                format!("record has no field `{}` to pop{did}", label.name),
-                            )
-                            .at(args[1]),
-                        );
+                        let mut reject = Reject::coded(
+                            Code::AbsentField,
+                            format!("record has no field `{}` to pop{did}", label.name),
+                        )
+                        .at(args[1]);
+                        // `Record.pop`'s field operand is a BARE name (`args[1]` itself), so the near-miss
+                        // replace fix rewrites `args[1]` directly — the same closed-set fix `without`/
+                        // `project`/`with` labels get (M63). No near → message only.
+                        if let Some(near) = &near {
+                            reject = reject.with_fix(crate::diag::Fix::replace_heuristic(
+                                args[1],
+                                near.clone(),
+                            ));
+                        }
+                        out.push(reject);
                     }
                     (_, None) => out.push(Reject::coded(
                         Code::Malformed,

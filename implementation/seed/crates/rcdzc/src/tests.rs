@@ -11931,6 +11931,30 @@ mod match_engine {
             "a mistyped `with` field suggests the near one AND keeps the extend hint; got {}",
             dw.message
         );
+        // Both near-misses also carry an APPLICABLE replace fix on the field occurrence (`alpa`→`alpha`),
+        // the same closed-set fix `without`/`project` labels get (M63/M64) — not just the message hint.
+        assert_eq!(
+            dp.fix.as_ref().map(|f| (f.kind, f.replacement.as_str())),
+            Some((crate::abi::FixKind::Replace, "alpha")),
+            "pop near-miss carries a replace fix: {:?}",
+            dp.fix
+        );
+        assert_eq!(
+            dw.fix.as_ref().map(|f| (f.kind, f.replacement.as_str())),
+            Some((crate::abi::FixKind::Replace, "alpha")),
+            "with near-miss carries a replace fix: {:?}",
+            dw.fix
+        );
+        // NO OVERREACH: a far-miss field keeps the message but carries no fix.
+        let far = reject_full(
+            "(module m (def (main) (Record.pop (record (alpha 1)) zzzzzz)) (export main))",
+        )
+        .expect("pop of an absent field is CDZ0212");
+        assert!(
+            far.fix.is_none(),
+            "no fix without a plausible near field: {:?}",
+            far.fix
+        );
     }
 
     #[test]
