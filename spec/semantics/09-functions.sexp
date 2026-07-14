@@ -2683,6 +2683,31 @@
   (call   main (: -5 Int64))
   (output (: -5 Int64)))
 
+(case "a nested conditional (the sign idiom) folds to branchless nested selects — negative"
+  (doc    "`(def (main (: x Int64)) (if (< x 0) -1 (if (> x 0) 1 0)))` — the three-way sign function —
+           called with -42. The else arm is itself a conditional over trap-free parts (a comparison and
+           constants), so the whole thing compiles to fully BRANCHLESS nested `select`s (no `if`/`else`
+           block). x = -42 < 0 → -1. Pins the nested-conditional widening of the if→select conversion.")
+  (input  (do (def (main (: x Int64)) (if (< x 0) -1 (if (> x 0) 1 0))) (export main)))
+  (call   main (: -42 Int64))
+  (output (: -1 Int64)))
+
+(case "a nested conditional (the sign idiom) folds to branchless nested selects — zero"
+  (doc    "The zero case of the sign function `(if (< x 0) -1 (if (> x 0) 1 0))`: called with 0, neither
+           `< 0` nor `> 0` holds, so the innermost else `0` is selected. Confirms the branchless nested
+           selects reproduce the middle arm's value exactly.")
+  (input  (do (def (main (: x Int64)) (if (< x 0) -1 (if (> x 0) 1 0))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64)))
+
+(case "a nested conditional (the sign idiom) folds to branchless nested selects — positive"
+  (doc    "The positive case of the sign function `(if (< x 0) -1 (if (> x 0) 1 0))`: called with 42
+           (> 0, not < 0) → 1. Together with the negative and zero cases this pins value parity of the
+           branchless nested selects with the structured nested `if` across all three sign regions.")
+  (input  (do (def (main (: x Int64)) (if (< x 0) -1 (if (> x 0) 1 0))) (export main)))
+  (call   main (: 42 Int64))
+  (output (: 1 Int64)))
+
 ; --- Narrow-width runtime arguments cross as their FAITHFUL component primitive -------------------
 ; The eight aliased widths (Int8/16/32, UInt8/16/32/64 and their `(Int N)` expansions) each have a
 ; component boundary representation: they cross as `s8`/`u8`/`s16`/`u16`/`s32`/`u32`/`s64`/`u64`, NOT as
