@@ -162,6 +162,33 @@ pub fn resolved_of(db: &mut Db, id: StructId) -> Resolved {
     r
 }
 
+/// The resolved form of `id` as a BORROW into the memo column — the zero-clone companion of
+/// [`resolved_of`]. `resolved_of` returns by VALUE, so a caller that only needs to READ the resolved
+/// form (dispatch on its variant, read a Copy field) pays a full `Resolved` clone per call — and on the
+/// hot reducer path (`reduce_to_record_id`/`project_meta`, the `resolved_of` memo-hit clone is ~5% of a
+/// realistic compile). This fills the memo on a miss (via `compute`, exactly as `resolved_of` does — same
+/// origin-anchoring), then hands back a borrow of the filled slot, so a read-only caller clones nothing.
+/// Only for callers that do NOT need `&mut db` while holding the borrow (the borrow ties up `db`).
+pub fn resolved_ref(db: &mut Db, id: StructId) -> &Resolved {
+    if matches!(db.resolved.get(id), Slot::Filled(_)) {
+        // Already memoized — borrow it directly (the common case; no clone, unlike `resolved_of`).
+        let Slot::Filled(r) = db.resolved.get(id) else {
+            unreachable!("just checked Filled")
+        };
+        return r;
+    }
+    // Miss: compute + fill (identical to `resolved_of`'s miss path), then borrow the freshly-filled slot.
+    let mut r = compute(db, id);
+    if let Resolved::Poison(reject) = &mut r {
+        reject.set_origin_if_absent(id);
+    }
+    db.resolved.fill(id, r);
+    let Slot::Filled(r) = db.resolved.get(id) else {
+        unreachable!("just filled")
+    };
+    r
+}
+
 /// Eagerly resolve an ENTIRE subtree, memoizing every node against its CURRENT lexical position. Used
 /// to PIN a call-site argument's meaning before β-reduction splices it into a copied callee body: the
 /// splice re-parents the argument's root (so the copied body's own names resolve against the copy —
@@ -3634,6 +3661,46 @@ mod tests {
             .map(StructId)
             .find(|&id| db.ast.head_name(id) == Some("|>"))
             .expect("a |> node")
+    }
+
+    #[test]
+    fn resolved_ref_agrees_with_resolved_of_on_every_node() {
+        // `resolved_ref` is the zero-clone borrow companion of `resolved_of` (used on the hot reducer
+        // path). It MUST return exactly what `resolved_of` does for every node — same variant, same
+        // payload — whether the memo is cold (first touch) or warm. Pin that invariant over a program
+        // exercising several resolved shapes (Ref, Apply, Record via a module, Member, Let), reading each
+        // node COLD through `resolved_ref` first (so it drives the compute+fill path), then confirming
+        // `resolved_of` returns an equal value.
+        let ast = parse(
+            "(module m (def (main) (do (module inner (def (answer) 42)) \
+               (let ((v (. inner answer))) (+ (v unit) 1)))) (export main))",
+        );
+        // Two DBs from the same source so the two queries run against independent memo columns: one driven
+        // ref-first, one of-first — and cross-check they agree node-for-node.
+        let mut db_ref = Db::load(ast.clone());
+        let mut db_of = Db::load(ast);
+        for i in 0..db_ref.ast.structure.len() as u32 {
+            let id = StructId(i);
+            // COLD ref read (fills db_ref's memo), cloned to compare after releasing the borrow.
+            let via_ref = resolved_ref(&mut db_ref, id).clone();
+            let via_of = resolved_of(&mut db_of, id);
+            assert_eq!(
+                format!("{via_ref:?}"),
+                format!("{via_of:?}"),
+                "resolved_ref and resolved_of disagree at node {i}"
+            );
+        }
+        // And a WARM ref read (memo already filled) must still equal the of-value — the hot path.
+        for i in 0..db_ref.ast.structure.len() as u32 {
+            let id = StructId(i);
+            let warm = resolved_ref(&mut db_ref, id).clone();
+            let of = resolved_of(&mut db_ref, id);
+            assert_eq!(
+                format!("{warm:?}"),
+                format!("{of:?}"),
+                "warm ref disagrees at {i}"
+            );
+        }
     }
 
     #[test]

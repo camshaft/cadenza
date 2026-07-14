@@ -1488,7 +1488,21 @@ pub fn project_field(db: &mut Db, id: StructId, key: &Symbol) -> Option<StructId
 /// projection (a nested record). Returns the record's occurrence, or `None` if it does not reduce to a
 /// record. This is the single "reduce to a record" step both projection and its checks use.
 fn reduce_to_record_id(db: &mut Db, id: StructId) -> Option<StructId> {
+    // The two hot cases — a `Record` (return `id`; fields unused) and a `Ref` (recurse on the Copy
+    // `value`) — need no owned payload, so dispatch them through `resolved_ref` (a BORROW, no clone).
+    // `reduce_to_record_id` is the recursion behind `project_meta` (the hottest reducer) and most steps
+    // are exactly these, so the per-step `resolved_of` clone was ~5% of a realistic compile. `Apply`/
+    // `Member` cross a `&mut db` boundary (β-reduction / `member_value`), so they fall to the owned path.
+    match crate::resolve::resolved_ref(db, id) {
+        Resolved::Record { .. } => return Some(id),
+        Resolved::Ref { value } => {
+            let value = *value;
+            return reduce_to_record_id(db, value);
+        }
+        _ => {}
+    }
     match resolved_of(db, id) {
+        // The `Record`/`Ref` cases are handled above via the borrow; a hit here would be harmless.
         Resolved::Record { .. } => Some(id),
         Resolved::Ref { value } => reduce_to_record_id(db, value),
         Resolved::Apply { head, args } => {
