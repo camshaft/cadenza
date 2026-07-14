@@ -807,13 +807,27 @@ the component type. The new work:
   resource_inner_component_closure_borrow}` (`call` self = `borrow<t>`, `make` stays `own<t>`);
   `emit_closure_resource`'s scalar tail routes to borrow. PROVEN e2e under wasmtime 37 by
   `a_borrow_closure_handle_is_repeatable` (one `adder(10)` handle → `call(5)`=15 then `call(7)`=17 on the SAME
-  handle). +1 corpus witness. This RESOLVES the design's "single biggest known hazard". (Compound/collection
-  `call` results keep own/self-drop — a later borrow widening.)
+  handle). +1 corpus witness. This RESOLVES the design's "single biggest known hazard".
+- **✅ C-HOST-6, VALUE-FORM results — the repeatable `borrow<t>` `call` extends to the byte-rope / compound /
+  collection result closures `@c982ea22`.** The scalar `call` became repeatable last increment; this extends
+  the SAME borrow posture to the single-export closures whose `call` returns a `list<u8>` value form — a
+  byte-rope (`Bytes`/`String`), a fixed-shape compound (tuple/record/sum), and a variable-length collection
+  (List/Map/Set value-encode). The host keeps ANY such handle across calls; the `t-dtor` reclaims the cell on
+  drop; the transient result handle is still released each call (guest-owned scratch, separate from the cell).
+  Pieces: a `call_borrow` flag on `serialize::{closure_bytes_resource_core_module,
+  closure_value_resource_core_module, closure_value_encode_resource_core_module}` (via `_borrow` siblings —
+  each branches the cell rep-recovery + release; `false` byte-identical to own); `envelope::
+  {assemble_closure_bytes_resource_borrow, resource_inner_component_closure_bytes_borrow}` (`call` self =
+  `borrow<t>` on the outer lift + the nested re-export re-typing); the three single-export value-form tails of
+  `emit_closure_resource` route to borrow. PROVEN e2e by `a_borrow_compound_result_closure_handle_is_repeatable`
+  (one `pair(100)` handle → two `call(5)`s → the SAME `(tuple 5 105)` value form). +1 corpus witness. **The
+  SINGLE-EXPORT closure `call` is now a repeatable `borrow<t>` handle for EVERY result shape (scalar +
+  value-form). The multi-export/mixed/distinct-sig `call`s keep own/self-drop for now — a later borrow widening.**
 - **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG on the DIRECT-CALL path
   (the HOST supplies it over the boundary — a compound needs a `value-decode` runtime op that does not exist;
   a closure needs a closure-resource passed INTO a call); a closure TRANSFORMER (`own<t>` both directions —
-  cleanly declined); a borrow<t> `call` for the COMPOUND/COLLECTION-result closures (the scalar `call` is
-  done; the value-form paths keep own/self-drop for now). **The entire byte-rope
+  cleanly declined); a borrow<t> `call` for the MULTI-EXPORT/MIXED/DISTINCT-SIG closures (the single-export
+  `call` is done for every result shape; the shared-`call` variants keep own/self-drop for now). **The entire byte-rope
   (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND
   the variable-length collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape —
   single-export + multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete
