@@ -5288,21 +5288,32 @@ fn pattern_constraints(
                 let elem_tys: Vec<crate::ty::Ty> = match &inner {
                     crate::ty::Ty::Tuple(ts) if ts.len() == args.len() => ts.to_vec(),
                     crate::ty::Ty::Tuple(ts) => {
+                        // NAME the constructor + count ELEMENTS (not "payload(s)"/"newtype" — internal
+                        // terms leaking to the author), the constructor twin of the tuple-pattern arity
+                        // message: `(Mk a b c)` against a `Mk` carrying 2.
+                        let ctor = ctor_pattern_name(db, pat);
+                        let plural = |k: usize| if k == 1 { "" } else { "s" };
                         return Err(Reject::coded(
                             Code::Malformed,
                             format!(
-                                "this constructor pattern binds {} payload(s), but the newtype carries {}",
+                                "this pattern binds {} element{} for `{ctor}`, but `{ctor}` carries {} \
+                                 field{} — a constructor pattern must bind exactly as many as the \
+                                 constructor has",
                                 args.len(),
-                                ts.len()
+                                plural(args.len()),
+                                ts.len(),
+                                plural(ts.len()),
                             ),
                         )
                         .at(pat));
                     }
                     _ => {
+                        let ctor = ctor_pattern_name(db, pat);
                         return Err(Reject::coded(
                             Code::Malformed,
                             format!(
-                                "this constructor pattern binds {} payloads, but the newtype's payload is {}",
+                                "this pattern binds {} fields for `{ctor}`, but `{ctor}` carries a single \
+                                 value of type {} — bind it with one sub-pattern `({ctor} x)`",
                                 args.len(),
                                 inner.render_name()
                             ),
@@ -5409,27 +5420,39 @@ fn pattern_constraints(
             let elem_tys: Vec<crate::ty::Ty> = match &payload_ty {
                 crate::ty::Ty::Tuple(ts) if ts.len() == args.len() => ts.to_vec(),
                 crate::ty::Ty::Tuple(ts) => {
+                    // NAME the constructor + count ELEMENTS/fields (not "payload(s)" — the internal term),
+                    // the boxed-sum twin of the newtype message above and the tuple-pattern message.
+                    let ctor = ctor_pattern_name(db, pat);
+                    let plural = |k: usize| if k == 1 { "" } else { "s" };
                     return Err(Reject::coded(
                         Code::Malformed,
                         format!(
-                            "this variant pattern binds {} payload(s), but the variant carries {}",
+                            "this pattern binds {} element{} for `{ctor}`, but `{ctor}` carries {} \
+                             field{} — a constructor pattern must bind exactly as many as the \
+                             constructor has",
                             args.len(),
-                            ts.len()
+                            plural(args.len()),
+                            ts.len(),
+                            plural(ts.len()),
                         ),
-                    ));
+                    )
+                    .at(pat));
                 }
                 crate::ty::Ty::Any => vec![crate::ty::Ty::Any; args.len()],
-                // A non-tuple payload type under a multi-arg pattern is an arity error too (a single-payload
+                // A non-tuple payload type under a multi-arg pattern is an arity error too (a single-value
                 // variant matched with several binders).
                 _ => {
+                    let ctor = ctor_pattern_name(db, pat);
                     return Err(Reject::coded(
                         Code::Malformed,
                         format!(
-                            "this variant pattern binds {} payloads, but the variant's payload is {}",
+                            "this pattern binds {} fields for `{ctor}`, but `{ctor}` carries a single \
+                             value of type {} — bind it with one sub-pattern `({ctor} x)`",
                             args.len(),
                             payload_ty.render_name()
                         ),
-                    ));
+                    )
+                    .at(pat));
                 }
             };
             let mut payload_path = path;
@@ -5457,6 +5480,28 @@ fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
 /// element descent (`pattern_constraints`'s list arm), the list analogue of [`is_tuple_pattern`].
 fn is_list_pattern(db: &Db, id: StructId) -> bool {
     db.ast.as_form(id, "list").is_some() || db.ast.head_ctor(id) == Some("list")
+}
+
+/// The DISPLAY name of the constructor a `(Ctor arg…)` pattern applies — read from the pattern's SOURCE
+/// spelling (its first child), so it works whether the head was written bare (`(Mk a b)`) or qualified
+/// (`(P.Mk a b)` → the member key `Mk`). The head occurrence itself may have been remapped to a
+/// synthesized cached-ctor node (not a name atom), so this reads `pat`'s first child, not the resolved
+/// head. `"this constructor"` when the spelling is unreadable — a safe fallback for a message subject.
+fn ctor_pattern_name(db: &Db, pat: StructId) -> String {
+    let first = match db.ast.get(pat) {
+        crate::ast::Struct::List(cs) => cs.first().copied(),
+        _ => None,
+    };
+    first
+        .and_then(|h| {
+            db.ast
+                .as_form(h, ".")
+                .and_then(|t| t.get(1).copied())
+                .or(Some(h))
+        })
+        .and_then(|k| db.ast.as_name(k))
+        .unwrap_or("this constructor")
+        .to_string()
 }
 
 /// The element occurrences of `id` when it is a tuple CONSTRUCTOR expression — the symbol-headed

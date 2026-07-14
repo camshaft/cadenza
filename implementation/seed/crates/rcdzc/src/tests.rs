@@ -12168,17 +12168,42 @@ mod match_engine {
 
     #[test]
     fn a_multi_payload_pattern_of_wrong_arity_is_rejected() {
-        // A payload-arity mismatch — `(Mk a b c)` against a 2-payload `Mk` — names a nonexistent third
-        // element; it must REJECT (CDZ0201), never bind `c` past the payload tuple (a wrong value / invalid
+        // A constructor-arity mismatch — `(Mk a b c)` against a 2-field `Mk` — names a nonexistent third
+        // element; it must REJECT (CDZ0201), never bind `c` past the field tuple (a wrong value / invalid
         // wasm). The correct-arity sibling compiles; only the over-arity pattern faults.
+        let over = reject_full(
+            "(module m (type Pair (Mk Int64 Int64)) \
+               (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a b c) (+ a b)))) (export main))",
+        )
+        .expect("an over-arity multi-payload pattern is a malformed destructure");
         assert_eq!(
-            reject_code(
-                "(module m (type Pair (Mk Int64 Int64)) \
-                   (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a b c) (+ a b)))) (export main))"
-            )
-            .as_deref(),
+            over.code.as_deref(),
             Some("CDZ0201"),
-            "an over-arity multi-payload pattern is a malformed destructure"
+            "got: {}",
+            over.message
+        );
+        // The message NAMES the constructor + counts ELEMENTS/fields — not the internal "payload(s)" /
+        // "newtype" / "variant carries" terms it leaked before (the constructor twin of the tuple-pattern
+        // shape message).
+        assert!(
+            over.message
+                .contains("this pattern binds 3 elements for `Mk`, but `Mk` carries 2 fields")
+                && !over.message.contains("payload"),
+            "names the ctor + counts fields, no internal 'payload' term: {}",
+            over.message
+        );
+        // The single-value-carrier variant matched with several binders points at the one-sub-pattern form.
+        let single = reject_full(
+            "(module m (type P (Mk Int64) (Other)) \
+               (def (f (: p P)) (match p ((Mk x y) x) ((Other) 0))) (export f))",
+        )
+        .expect("a multi-binder pattern on a single-value ctor rejects");
+        assert!(
+            single.message.contains(
+                "`Mk` carries a single value of type Int64 — bind it with one sub-pattern `(Mk x)`"
+            ),
+            "a single-value ctor points at the one-sub-pattern form: {}",
+            single.message
         );
     }
 
