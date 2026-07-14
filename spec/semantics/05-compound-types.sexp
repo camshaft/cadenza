@@ -4093,6 +4093,40 @@
             (export main)))
   (output (: 42 Int64)))
 
+(case "a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant"
+  (doc    "A variant whose name collides with a prelude DATA constructor (`Some`/`None`/`Ok`/`Err`) — as
+           distinct from a prelude TYPE/MODULE name (`Int`/`List`) — is reachable BARE in BOTH construct
+           and match position, resolving to the LOCAL variant, not the built-in Option/Result ctor. The
+           built-in sums inject their data-ctor names into the prelude AFTER the `variant_ctor_index`
+           snapshot is taken, so a user variant of the same name is indexed (unlike a type/module name,
+           which is deliberately skipped to keep bare `Int` the width constructor). Here `(type T (Some
+           Int64) (Other Int64))` reuses `Some`: `(Some 5)` builds T's `Some` (not the generic Option's),
+           and `(match t ((Some n) (+ n 100)) ((Other n) n))` arms it — the discriminant is T's, so the
+           `Some` arm (not `Other`) fires → 105. Pins that a data-ctor-colliding variant is NOT shadowed
+           by the built-in — the shape a self-hosted AST sum reusing `Some`/`Ok` for its own variants
+           relies on. (Contrast the sibling case above: a TYPE-name collision like `Int` stays qualified
+           in construct position, per the deliberate variant-shadows-prelude design.)")
+  (input  (do
+            (type T (Some Int64) (Other Int64))
+            (def (f (: t T)) (match t ((Some n) (+ n 100)) ((Other n) n)))
+            (def (main) (f (Some 5)))
+            (export main)))
+  (output (: 105 Int64)))
+
+(case "a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant"
+  (doc    "The discriminant control for the case above: on the SAME `(type T (Some Int64) (Other Int64))`
+           reusing the prelude `Some`, constructing `(Other 5)` bare and matching must fire the `Other`
+           arm (return 5), NOT the `Some` arm (+ 100). Together the two cases prove the bare `Some`
+           construct+match is genuinely T's own two-variant discriminant, not the built-in Option (which
+           has no `Other`) — a regression in the prelude-data-ctor injection order that re-shadowed the
+           user variant would flip one of these to the wrong value.")
+  (input  (do
+            (type T (Some Int64) (Other Int64))
+            (def (f (: t T)) (match t ((Some n) (+ n 100)) ((Other n) n)))
+            (def (main) (f (Other 5)))
+            (export main)))
+  (output (: 5 Int64)))
+
 (case "a bare nullary constructor is the nullary sum value"
   (doc    "A nullary variant used as a VALUE may be written BARE — `NNil`, not `(Node.NNil unit)`. A
            bare nullary constructor IS the nullary sum value (core-semantics.md #A Sum Type Constructor
