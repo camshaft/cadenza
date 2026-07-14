@@ -16360,11 +16360,17 @@ mod match_engine {
         // the deliberate variant-shadows-prelude design.)
         let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
         // Single-variant nominal newtype, bare `Int` pattern (qualified construct).
-        ok("(module m (type T (Int Int64)) (def (f (: t T)) (match t ((Int n) n))) (def (main) (f (T.Int 42))) (export main))");
+        ok(
+            "(module m (type T (Int Int64)) (def (f (: t T)) (match t ((Int n) n))) (def (main) (f (T.Int 42))) (export main))",
+        );
         // Multi-variant sum, bare `Int` pattern beside a nullary arm.
-        ok("(module m (type T (Int Int64) (Nil)) (def (f (: t T)) (match t ((Int n) n) ((Nil) 0))) (def (main) (f (T.Int 42))) (export main))");
+        ok(
+            "(module m (type T (Int Int64) (Nil)) (def (f (: t T)) (match t ((Int n) n) ((Nil) 0))) (def (main) (f (T.Int 42))) (export main))",
+        );
         // `Some`-colliding variant, bare pattern.
-        ok("(module m (type T (Some Int64) (Nada)) (def (f (: t T)) (match t ((Some n) n) ((Nada) 0))) (def (main) (f (T.Some 42))) (export main))");
+        ok(
+            "(module m (type T (Some Int64) (Nada)) (def (f (: t T)) (match t ((Some n) n) ((Nada) 0))) (def (main) (f (T.Some 42))) (export main))",
+        );
         // NO OVER-ACCEPTANCE: a bare variant of a DIFFERENT sum (`Bar` of `U`) over a `T` scrutinee still
         // rejects CDZ0203 (the remap only reaches T's OWN variants; a foreign name is left to the check).
         assert_eq!(
