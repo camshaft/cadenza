@@ -458,10 +458,10 @@ impl<'a, 'b> Reader<'a, 'b> {
             // (named), `#\u+HHHH` (code point). A literal naming a NON-scalar (`#\u+D800`) becomes a
             // `BadChar` marker → CDZ0002 at the compiler.
             Some(b'#') if self.src.get(self.pos + 1) == Some(&b'\\') => self.read_char(),
-            // A symbol literal `#"metre"` — an interned name value (`symbol-interning-direction`). Only
+            // A symbol literal `#"meter"` — an interned name value (`symbol-interning-direction`). Only
             // the exact `#"` prefix opens one; a bare `#` reads as an ordinary token. Reuses string
             // lexing/escapes, producing a `Leaf::Sym` (distinct from `Leaf::Str`). A base dimension in the
-            // units layer is named this way (`(Unit.base #"metre")`).
+            // units layer is named this way (`(Unit.base #"meter")`).
             Some(b'#') if self.src.get(self.pos + 1) == Some(&b'"') => self.read_symbol(),
             // `` ` `` / `,` / `,@` sigils, matching the corpus quasiquote display. The inner form is
             // built BEFORE the synthetic head (preserving structure-id order — the reader is the
@@ -623,11 +623,11 @@ impl<'a, 'b> Reader<'a, 'b> {
         Ok(self.mk_atom_leaf(Leaf::Str(s), Span::new(start, self.pos)))
     }
 
-    /// Read a symbol literal `#"metre"` into a `Leaf::Sym` — the interned-name value form. The `#` is
+    /// Read a symbol literal `#"meter"` into a `Leaf::Sym` — the interned-name value form. The `#` is
     /// consumed here; the body reuses the SAME string lexing (escapes `\n \t \r \\ \"`, NFC-normalized
     /// contents) as `read_string`, differing only in the leaf produced (`Sym` not `Str`) and the span
     /// (which includes the leading `#`). Its identity is its content (`symbol-interning-direction`); a
-    /// base dimension is named this way (`(Unit.base #"metre")`).
+    /// base dimension is named this way (`(Unit.base #"meter")`).
     fn read_symbol(&mut self) -> Result<StructId, ReadError> {
         let start = self.pos;
         self.bump(); // '#'
@@ -1319,7 +1319,7 @@ mod tests {
 
     #[test]
     fn reads_symbol_literals() {
-        // `#"metre"` is a symbol literal → `Leaf::Sym` (distinct from `Leaf::Str` and `Leaf::Name`);
+        // `#"meter"` is a symbol literal → `Leaf::Sym` (distinct from `Leaf::Str` and `Leaf::Name`);
         // its content is NFC-normalized and the string escape set applies.
         let leaf_of = |src: &str| {
             let a = read(src).unwrap();
@@ -1328,23 +1328,23 @@ mod tests {
             };
             a.leaf(*l).clone()
         };
-        assert_eq!(leaf_of("#\"metre\""), Leaf::Sym("metre".to_string()));
+        assert_eq!(leaf_of("#\"meter\""), Leaf::Sym("meter".to_string()));
         assert_eq!(leaf_of("#\"\""), Leaf::Sym(String::new())); // the empty symbol
         assert_eq!(
             leaf_of("#\"a b\""),
             Leaf::Sym("a b".to_string()) // a symbol may carry spaces (it is not an identifier)
         );
         // A symbol is NOT a string and NOT a name.
-        assert_ne!(leaf_of("#\"metre\""), Leaf::Str("metre".to_string()));
-        assert_ne!(leaf_of("#\"metre\""), Leaf::Name("metre".to_string()));
+        assert_ne!(leaf_of("#\"meter\""), Leaf::Str("meter".to_string()));
+        assert_ne!(leaf_of("#\"meter\""), Leaf::Name("meter".to_string()));
     }
 
     #[test]
     fn symbol_leaves_round_trip_through_codec_and_printer() {
         // A `Sym` must survive BOTH the binary AST codec (the compiler reads the binary AST) and the
         // printer (`read(print(x)) == x`) — the two gates the `#"…"` literal must hold for the units
-        // corpus surface (`(Unit.base #"metre")`).
-        for src in ["#\"metre\"", "#\"second\"", "#\"\""] {
+        // corpus surface (`(Unit.base #"meter")`).
+        for src in ["#\"meter\"", "#\"second\"", "#\"\""] {
             let a = read(src).unwrap();
             // Codec round-trip.
             let bytes = crate::codec::encode(&a);

@@ -231,11 +231,11 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // A string literal — its text is already unescaped to canonical form by the reader. A
             // `Ty::String` constant (folds to `Core::ConstStr`, escapes as its baked UTF-8 bytes).
             Leaf::Str(s) => Resolved::Str(s.clone()),
-            // A SYMBOL literal (`#"metre"`) — the reader-sugar equivalent of `(Symbol.of "metre")`
+            // A SYMBOL literal (`#"meter"`) — the reader-sugar equivalent of `(Symbol.of "meter")`
             // (17-symbols). Resolves to a `SymbolConst` typed `Ty::Symbol` (DISTINCT from `Ty::String`, so
             // `(= #"x" "x")` is the nominal-boundary type error CDZ0202 and `(= #"x" (Symbol.of "x"))` is
             // true). Its identity is its text, so it shares the `Core::ConstStr` rep + constant-string
-            // equality. `Unit.base #"metre"` still reads its text (a base-dimension name — `unit_of`
+            // equality. `Unit.base #"meter"` still reads its text (a base-dimension name — `unit_of`
             // accepts this form). (Was a `Str` in the Layer-1 units simplification, before `Ty::Symbol`.)
             Leaf::Sym(s) => Resolved::SymbolConst(s.clone()),
             // A byte-string literal `b"…"` — the reader unescaped it to raw bytes. A `Ty::Bytes`

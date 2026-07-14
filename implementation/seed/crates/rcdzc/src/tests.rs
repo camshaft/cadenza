@@ -18683,20 +18683,20 @@ mod match_engine {
                 inner: Box::new(Ty::int64()),
                 unit: Unit::one(),
             },
-            // A base-unit quantity over Float64 — `{metre: 1}`.
+            // A base-unit quantity over Float64 — `{meter: 1}`.
             Ty::Qty {
                 inner: Box::new(Ty::float64()),
-                unit: Unit::base("metre"),
+                unit: Unit::base("meter"),
             },
-            // A DERIVED unit (velocity) over Float64 — metre·second⁻¹, `{metre: 1, second: -1}`.
+            // A DERIVED unit (velocity) over Float64 — meter·second⁻¹, `{meter: 1, second: -1}`.
             Ty::Qty {
                 inner: Box::new(Ty::float64()),
-                unit: Unit::base("metre").div(&Unit::base("second")),
+                unit: Unit::base("meter").div(&Unit::base("second")),
             },
-            // A SQUARED unit (area) over Float64 — `{metre: 2}`.
+            // A SQUARED unit (area) over Float64 — `{meter: 2}`.
             Ty::Qty {
                 inner: Box::new(Ty::float64()),
-                unit: Unit::base("metre").pow(2),
+                unit: Unit::base("meter").pow(2),
             },
         ];
         for ty in cases {
@@ -18771,24 +18771,24 @@ mod match_engine {
     #[test]
     fn a_unit_scale_distinguishes_type_identity_from_dimensional_compatibility() {
         // F2-0: a unit carries a compile-time SCALE (num/den) alongside its dimension (exponent map).
-        // `same_dimension` compares the MAP alone (gates `+`/`compare` compatibility — `metre` and
-        // `kilometre` are the SAME dimension, so combinable); `==` compares MAP + SCALE (type identity —
-        // `metre` and `kilometre` are DISTINCT types). `scaled` applies a prefix; the scales multiply
+        // `same_dimension` compares the MAP alone (gates `+`/`compare` compatibility — `meter` and
+        // `kilometer` are the SAME dimension, so combinable); `==` compares MAP + SCALE (type identity —
+        // `meter` and `kilometer` are DISTINCT types). `scaled` applies a prefix; the scales multiply
         // under `mul`/`pow`.
         use crate::ty::Unit;
-        let metre = Unit::base("metre");
-        let km = metre.scaled(1000, 1).expect("kilo scales");
+        let meter = Unit::base("meter");
+        let km = meter.scaled(1000, 1).expect("kilo scales");
         // Same dimension (both length), different type identity (different scale).
         assert!(
-            metre.same_dimension(&km),
-            "metre and kilometre share the length dimension"
+            meter.same_dimension(&km),
+            "meter and kilometer share the length dimension"
         );
         assert_ne!(
-            metre, km,
-            "metre and kilometre are DISTINCT units (different scale)"
+            meter, km,
+            "meter and kilometer are DISTINCT units (different scale)"
         );
         assert_eq!(
-            metre.scale(),
+            meter.scale(),
             (1, 1),
             "a base unit is the scale-1 reference"
         );
@@ -18800,36 +18800,36 @@ mod match_engine {
         // A different DIMENSION is not compatible.
         let second = Unit::base("second");
         assert!(
-            !metre.same_dimension(&second),
-            "metre and second are different dimensions"
+            !meter.same_dimension(&second),
+            "meter and second are different dimensions"
         );
         // `at_reference` drops the scale (the common unit a conversion lands at).
         assert_eq!(
             km.at_reference(),
-            metre,
-            "km at its reference scale IS metre"
+            meter,
+            "km at its reference scale IS meter"
         );
         // Prefix scales MULTIPLY under `pow`: (km)² has scale 10⁶.
         assert_eq!(km.pow(2).scale(), (1_000_000, 1), "(km)² scales by 10^6");
         // A milli prefix is an exact rational scale 1/1000 (a machine-int ratio, no bignum).
-        let mm = metre.scaled(1, 1000).expect("milli scales");
+        let mm = meter.scaled(1, 1000).expect("milli scales");
         assert_eq!(
             mm.scale(),
             (1, 1000),
-            "millimetre scales the reference by 1/1000"
+            "millimeter scales the reference by 1/1000"
         );
         assert!(
-            metre.same_dimension(&mm) && metre != mm,
+            meter.same_dimension(&mm) && meter != mm,
             "mm: same dimension, distinct unit"
         );
     }
 
     #[test]
     fn a_quantity_erases_to_its_inner_numeric_value() {
-        // L1-1b: `Qty.value (Qty.of 5.0 metre)` recovers the erased inner `5.0` — a quantity is CHECKED
+        // L1-1b: `Qty.value (Qty.of 5.0 meter)` recovers the erased inner `5.0` — a quantity is CHECKED
         // THEN ERASED, so `Qty.of`/`Qty.value` are runtime no-ops and the compiled program is plain
         // Float64 (byte-identical to the bare `5.0`). Compiles + runs to the recovered value.
-        let src = "(do (def (main) ((. Qty value) ((. Qty of) 5.0 ((. Unit base) #\"metre\")))) \
+        let src = "(do (def (main) ((. Qty value) ((. Qty of) 5.0 ((. Unit base) #\"meter\")))) \
                    (export main))";
         assert_eq!(
             run_returns::<f64>(
@@ -18846,7 +18846,7 @@ mod match_engine {
         // L1-2: adding a length to a time is a DIMENSIONAL mismatch — CDZ0501 (units-of-measure.md §A
         // Dimensional Mismatch Is An Error), the code that opens the CDZ05xx verification-layer band. It
         // is a compile-time rejection (units erase before the program runs), never a runtime trap.
-        let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit base) #\"metre\")) \
+        let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit base) #\"meter\")) \
                    ((. Qty of) 1.0 ((. Unit base) #\"second\")))) (export main))";
         let err = compile_component(&crate::codec::encode(&parse(src)))
             .expect_err("a length + a time must reject CDZ0501 (dimensional mismatch)");
@@ -18855,7 +18855,7 @@ mod match_engine {
         // the equal-dimensions rule — the rustc-gold form, not a bare type dump.
         assert!(
             err.message.contains("adding")
-                && err.message.contains("metre")
+                && err.message.contains("meter")
                 && err.message.contains("second")
                 && !err.message.contains("(Qty"),
             "names the op + bare units + rule, no full-type dump: {}",
@@ -18865,10 +18865,10 @@ mod match_engine {
 
     #[test]
     fn dividing_quantities_composes_their_dimensions_to_a_velocity() {
-        // L1-2: `(/ (Qty 6.0 metre) (Qty 2.0 second))` derives metre/second (the classic velocity) with
+        // L1-2: `(/ (Qty 6.0 meter) (Qty 2.0 second))` derives meter/second (the classic velocity) with
         // value 3.0 — the dimensions divide by the free-abelian-group quotient, the magnitudes by the
         // (float) division. `Qty.value` recovers the erased magnitude; this pins that it COMPILES + RUNS.
-        let src = "(do (def (main) ((. Qty value) (/ ((. Qty of) 6.0 ((. Unit base) #\"metre\")) \
+        let src = "(do (def (main) ((. Qty value) (/ ((. Qty of) 6.0 ((. Unit base) #\"meter\")) \
                    ((. Qty of) 2.0 ((. Unit base) #\"second\"))))) (export main))";
         assert_eq!(
             run_returns::<f64>(
@@ -18904,12 +18904,12 @@ mod match_engine {
     #[test]
     fn a_family_unit_auto_converts_to_the_reference_over_float() {
         // F2-2: `1 inch + 1 mm` over Float64 — two named FAMILY units of `length` (inch = 127/5000 m, mm
-        // = 1/1000 m) — each converts to the reference `metre` and sums to 127/5000 + 1/1000 = 33/1250 =
+        // = 1/1000 m) — each converts to the reference `meter` and sums to 127/5000 + 1/1000 = 33/1250 =
         // 0.0264 m. The family vocabulary is prelude DATA (`Db::unit_families`); the scales are machine-
         // int metadata, so `Unit.of` families convert over Float with NO bignum. Compiles + RUNS.
         let src = "(do (def (main) ((. Qty value) \
                    (+ ((. Qty of) 1.0 ((. Unit of) #\"inch\")) \
-                      ((. Qty of) 1.0 ((. Unit of) #\"millimetre\"))))) (export main))";
+                      ((. Qty of) 1.0 ((. Unit of) #\"millimeter\"))))) (export main))";
         assert_eq!(
             run_returns::<f64>(
                 &compile_component(&crate::codec::encode(&parse(src)))
@@ -18946,11 +18946,11 @@ mod match_engine {
 
     #[test]
     fn a_named_rate_unit_combined_with_a_length_is_cdz0501() {
-        // F2-5: `(+ (Qty.of 1.0 mbps) (Qty.of 1.0 metre))` — a rate (`information/time`) plus a length —
+        // F2-5: `(+ (Qty.of 1.0 mbps) (Qty.of 1.0 meter))` — a rate (`information/time`) plus a length —
         // different dimensions → CDZ0501. A named DERIVED-dimension unit obeys the same dimensional
-        // safety as an atomic one (its dimension is `{byte:1, second:-1}`, incompatible with `{metre:1}`).
+        // safety as an atomic one (its dimension is `{byte:1, second:-1}`, incompatible with `{meter:1}`).
         let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit of) #\"mbps\")) \
-                   ((. Qty of) 1.0 ((. Unit of) #\"metre\")))) (export main))";
+                   ((. Qty of) 1.0 ((. Unit of) #\"meter\")))) (export main))";
         assert_eq!(
             compile_component(&crate::codec::encode(&parse(src)))
                 .err()
@@ -18968,7 +18968,7 @@ mod match_engine {
         // The user family-declaration surface, RUNS.
         let src = "(do \
                    ((. Unit define) #\"furlong\" ((. Unit of) #\"foot\") 660 1) \
-                   (def (main) ((. Qty value) ((. Unit in) ((. Unit of) #\"metre\") \
+                   (def (main) ((. Qty value) ((. Unit in) ((. Unit of) #\"meter\") \
                      ((. Qty of) 1.0 ((. Unit of) #\"furlong\"))))) \
                    (export main))";
         assert_eq!(
@@ -18983,11 +18983,11 @@ mod match_engine {
 
     #[test]
     fn redeclaring_a_builtin_unit_with_a_conflicting_conversion_is_cdz0502() {
-        // F2-6: `(Unit.define #"foot" (Unit.of #"metre") 2 1)` redeclares the built-in `foot` (381/1250 m)
+        // F2-6: `(Unit.define #"foot" (Unit.of #"meter") 2 1)` redeclares the built-in `foot` (381/1250 m)
         // as 2 m — a conflicting conversion → CDZ0502 (units-of-measure.md §A Named Unit's Conversion Is
         // Unique). CDZ0502 is now REACHABLE by a program (was previously only a reserved code). An
         // AGREEING redeclaration would be admissible.
-        let src = "(do ((. Unit define) #\"foot\" ((. Unit of) #\"metre\") 2 1) \
+        let src = "(do ((. Unit define) #\"foot\" ((. Unit of) #\"meter\") 2 1) \
                    (def (main) 0) (export main))";
         assert_eq!(
             compile_component(&crate::codec::encode(&parse(src)))
@@ -19004,7 +19004,7 @@ mod match_engine {
         // CDZ0502 must carry a source location, not print an unanchored `cdz:` prefix. The unit-conflict
         // rejects (built-in redecl + duplicate declaration) now `.at()` the offending declaration's
         // base-unit occurrence, so the error maps to `file:line:col`.
-        let src = "(module m (Unit.define #\"foot\" (Unit.of #\"metre\") 2 1) \
+        let src = "(module m (Unit.define #\"foot\" (Unit.of #\"meter\") 2 1) \
                    (def (main) 0) (export main))";
         let mut db = crate::db::Db::load(parse(src));
         let d = crate::diagnostics(&mut db)
@@ -19022,11 +19022,11 @@ mod match_engine {
 
     #[test]
     fn unit_in_converts_a_quantity_to_a_chosen_unit_exactly_over_int() {
-        // F2-3: `(Unit.in kilometre (Qty.of 2000 metre))` explicitly converts 2000 m to km: 2000/1000 =
+        // F2-3: `(Unit.in kilometer (Qty.of 2000 meter))` explicitly converts 2000 m to km: 2000/1000 =
         // 2 km, exact integer arithmetic (the source→target scale ratio divides). Unit.in pins the RESULT
         // unit; the magnitude is `value * (source.scale / target.scale)` in the inner T. Compiles + RUNS.
         let src = "(do (def (main) ((. Qty value) \
-                   ((. Unit in) ((. Unit of) #\"kilometre\") ((. Qty of) 2000 ((. Unit of) #\"metre\"))))) \
+                   ((. Unit in) ((. Unit of) #\"kilometer\") ((. Qty of) 2000 ((. Unit of) #\"meter\"))))) \
                    (export main))";
         assert_eq!(
             run_returns::<i64>(
@@ -19046,8 +19046,8 @@ mod match_engine {
         // (`lower_runtime_combine` synthesizes `(+ (* v 1000) 500)` and lowers it).
         use wasmtime::component::Val;
         let src = "(do (def (main (: v Int64)) \
-                   ((. Qty value) (+ ((. Qty of) v ((. Unit prefix) kilo ((. Unit base) #\"metre\"))) \
-                                     ((. Qty of) 500 ((. Unit base) #\"metre\"))))) \
+                   ((. Qty value) (+ ((. Qty of) v ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
+                                     ((. Qty of) 500 ((. Unit base) #\"meter\"))))) \
                    (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src)))
             .expect("a runtime mixed-unit sum compiles");
@@ -19060,9 +19060,9 @@ mod match_engine {
 
     #[test]
     fn unit_in_across_dimensions_is_cdz0501() {
-        // F2-3: `(Unit.in metre (Qty.of 3.0 second))` asks to convert a time to a length — different
+        // F2-3: `(Unit.in meter (Qty.of 3.0 second))` asks to convert a time to a length — different
         // dimensions — CDZ0501. Unit.in converts WITHIN a dimension, never across one.
-        let src = "(do (def (main) ((. Unit in) ((. Unit of) #\"metre\") \
+        let src = "(do (def (main) ((. Unit in) ((. Unit of) #\"meter\") \
                    ((. Qty of) 3.0 ((. Unit of) #\"second\")))) (export main))";
         assert_eq!(
             compile_component(&crate::codec::encode(&parse(src)))
@@ -19084,8 +19084,8 @@ mod match_engine {
         // A conflict: `foot` twice with different scales (dimension is the `(base, exponent)` list).
         let conflict = register_families(
             [
-                ("foot", &[("metre", 1i64)][..], 381i128, 1250i128),
-                ("foot", &[("metre", 1)][..], 1, 3), // a bogus, disagreeing scale
+                ("foot", &[("meter", 1i64)][..], 381i128, 1250i128),
+                ("foot", &[("meter", 1)][..], 1, 3), // a bogus, disagreeing scale
             ]
             .into_iter(),
         );
@@ -19098,7 +19098,7 @@ mod match_engine {
         assert!(
             register_families(
                 [
-                    ("x", &[("metre", 1i64)][..], 1i128, 1i128),
+                    ("x", &[("meter", 1i64)][..], 1i128, 1i128),
                     ("x", &[("second", 1)][..], 1, 1)
                 ]
                 .into_iter()
@@ -19109,14 +19109,14 @@ mod match_engine {
         // An AGREEING duplicate is idempotent (harmless), not an error.
         let ok = register_families(
             [
-                ("inch", &[("metre", 1i64)][..], 127i128, 5000i128),
-                ("inch", &[("metre", 1)][..], 127, 5000),
+                ("inch", &[("meter", 1i64)][..], 127i128, 5000i128),
+                ("inch", &[("meter", 1)][..], 127, 5000),
             ]
             .into_iter(),
         );
         assert_eq!(
             ok.ok().and_then(|m| m.get("inch").cloned()),
-            Some((vec![("metre".to_string(), 1)], 127, 5000)),
+            Some((vec![("meter".to_string(), 1)], 127, 5000)),
             "an agreeing re-registration is idempotent"
         );
         // A DERIVED-dimension unit (a rate) registers with a multi-entry dimension.
@@ -19149,7 +19149,7 @@ mod match_engine {
         // F2-1: a prefix scales WITHIN a dimension, never across — `km + second` is still CDZ0501. Pins
         // that the family/prefix relaxation (auto-convert within a dimension) does not weaken the
         // dimensional safety the layer exists for.
-        let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit prefix) kilo ((. Unit base) #\"metre\"))) \
+        let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
                    ((. Qty of) 1.0 ((. Unit base) #\"second\")))) (export main))";
         assert_eq!(
             compile_component(&crate::codec::encode(&parse(src)))
@@ -19164,14 +19164,14 @@ mod match_engine {
     #[test]
     fn a_quantity_over_a_wrong_inner_numeric_type_is_rejected_not_miscompiled() {
         // L1-1b: the unit layer sits OVER the numeric core and does not relax it — adding an Int64
-        // quantity to a Float64 quantity (SAME dimension `metre`, DIFFERENT inner type) must be REFUSED,
+        // quantity to a Float64 quantity (SAME dimension `meter`, DIFFERENT inner type) must be REFUSED,
         // never miscompiled to a running value (the honest decline-don't-miscompile signal). It rejects
         // via the inner-type conflict; the code is CDZ0203 today and ALIGNS to the numeric no-promotion
         // CDZ0301 when the operator unit rules land (L1-2 — the `+`/`-`/comparison dimensional check that
         // reads the operands' units and dispatches the numeric mismatch as CDZ0301). Either way the
         // ill-typed program is a compile-time REJECTION, not a run.
-        let src = "(do (def (main) (+ ((. Qty of) 2 ((. Unit base) #\"metre\")) \
-                   ((. Qty of) 3.0 ((. Unit base) #\"metre\")))) (export main))";
+        let src = "(do (def (main) (+ ((. Qty of) 2 ((. Unit base) #\"meter\")) \
+                   ((. Qty of) 3.0 ((. Unit base) #\"meter\")))) (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "an Int64 quantity + a Float64 quantity must be REJECTED (a numeric mismatch under a unit), not compiled"

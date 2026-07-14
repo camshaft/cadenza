@@ -373,7 +373,7 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // time never reaches a slot; only one that survives as a runtime value does — via `call_indirect`.)
         Ty::Fn(_, _) => Some(ValType::I32),
         // A quantity ERASES to its inner numeric type before emission (`lower` strips the `Qty`), so its
-        // machine slot IS the inner type's — a `(Qty Float64 metre)` occupies an f64 slot, byte-identical
+        // machine slot IS the inner type's — a `(Qty Float64 meter)` occupies an f64 slot, byte-identical
         // to a bare `Float64`. A `Ty::Qty` should not survive to selection, but classify it by its inner
         // type defensively (never inventing a slot the erased value would not have).
         Ty::Qty { inner, .. } => valtype_of(inner),
@@ -505,7 +505,7 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         Ty::Fn(_, _) => None,
         // A quantity ERASES to its inner numeric type — it crosses the boundary as that inner type
         // (`units-of-measure.md` §A quantity crossing a signature crosses as its underlying `T`). A
-        // `(Qty Float64 metre)` export crosses as `f64`, byte-identical to a bare `Float64`.
+        // `(Qty Float64 meter)` export crosses as `f64`, byte-identical to a bare `Float64`.
         Ty::Qty { inner, .. } => comp_valtype_of(inner),
         // A type value is compile-time-only — it never crosses the boundary.
         Ty::Type => None,

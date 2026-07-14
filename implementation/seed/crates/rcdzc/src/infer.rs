@@ -89,7 +89,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::Bytes(_) => Ty::Bytes,
         // A char literal (`#\a`) is the monomorphic `Ty::Char`.
         Resolved::Char(_) => Ty::Char,
-        // A symbol literal (`#"metre"`) is the monomorphic `Ty::Symbol` (DISTINCT from `Ty::String`).
+        // A symbol literal (`#"meter"`) is the monomorphic `Ty::Symbol` (DISTINCT from `Ty::String`).
         Resolved::SymbolConst(_) => Ty::Symbol,
         // A `(bin …)` in value position CONSTRUCTS a byte sequence → `Ty::Bytes`.
         Resolved::Bin { .. } => Ty::Bytes,
@@ -1963,7 +1963,7 @@ fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId
 /// stack frame — that function is on the deep `type_of`↔`apply_type` recursion.
 ///
 /// This is a dimension-DERIVING operation: `Qty.pow` produces the dimension its rule defines (the unit
-/// raised to `n`, e.g. `metre` → `metre²`) carried on the result `Ty::Qty`, rather than discarding the
+/// raised to `n`, e.g. `meter` → `meter²`) carried on the result `Ty::Qty`, rather than discarding the
 /// dimensional information to a bare numeric.
 //= spec/capabilities/units-of-measure.md#dimensional-mismatch-is-an-error
 //# An operation that derives a dimension MUST produce the dimension the operation's rule defines rather than discard dimensional information.
@@ -2308,8 +2308,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         return ty;
     }
     // `Unit.in target q` — explicit conversion. The result is a quantity at the TARGET unit (read from
-    // arg0 by `unit_of`), carrying q's inner numeric type: `(Unit.in metre (Qty.of 3.0 km))` :
-    // `(Qty Float64 metre)`. A dimensional mismatch (target dimension ≠ q's) is reported by
+    // arg0 by `unit_of`), carrying q's inner numeric type: `(Unit.in meter (Qty.of 3.0 km))` :
+    // `(Qty Float64 meter)`. A dimensional mismatch (target dimension ≠ q's) is reported by
     // `check_application` (CDZ0501); here we fill the value-column type. If the target unit doesn't
     // reduce, or q isn't a quantity, fall through (→ Any, faulted elsewhere).
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::UnitIn)
@@ -2344,7 +2344,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                     crate::resolved::Prim::Add | crate::resolved::Prim::Sub => {
                         // The result unit: when both operands are at the SAME unit (scale), keep it (the
                         // common Layer-1 case — no conversion); when they share a dimension but DIFFER in
-                        // scale (`metre` + `kilometre`), the result is the dimension's REFERENCE unit (the
+                        // scale (`meter` + `kilometer`), the result is the dimension's REFERENCE unit (the
                         // deterministic common unit each operand converts to — units-of-measure.md
                         // §Combining Units Of One Dimension Is Well-Formed). The inner numeric type is the
                         // lhs quantity's (both share it; the fault check enforces agreement). The choice is
@@ -2380,7 +2380,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                     }
                     crate::resolved::Prim::Mul | crate::resolved::Prim::Div => {
                         // Compose the units. A bare-number operand contributes `Unit.one` (scaling keeps
-                        // the other's dimension — `(* (Qty 2 metre) 3)` stays metre).
+                        // the other's dimension — `(* (Qty 2 meter) 3)` stays meter).
                         let ua = match &a {
                             Ty::Qty { unit, .. } => unit.clone(),
                             _ => crate::ty::Unit::one(),
@@ -3390,8 +3390,8 @@ fn check_application(
         collect(db, args[0], out);
         return;
     }
-    // `Unit.in target q` — the TARGET unit must share q's DIMENSION (you can convert metres to
-    // kilometres, not metres to seconds). A cross-dimension conversion is CDZ0501 (units-of-measure.md
+    // `Unit.in target q` — the TARGET unit must share q's DIMENSION (you can convert meters to
+    // kilometers, not meters to seconds). A cross-dimension conversion is CDZ0501 (units-of-measure.md
     // §A Dimensional Mismatch Is An Error). Read the target unit + q's unit; descend into q for its own
     // faults, then return (skip the generic scheme-unify — `Unit.in` has no HM scheme).
     if args.len() == 2
@@ -3617,7 +3617,7 @@ fn check_application(
     //  - `+`/`-`/comparison/`=`: the two operands' DIMENSIONS must be EQUAL (Layer 1 = same unit exactly;
     //    conversion between different units of one dimension is Layer 2). A length + a time, or a quantity
     //    + a bare number (no implicit dimensionless coercion), is CDZ0501. The inner numeric types must
-    //    ALSO agree (the numeric core is unchanged under a unit — an Int64 metre + a Float64 metre is the
+    //    ALSO agree (the numeric core is unchanged under a unit — an Int64 meter + a Float64 meter is the
     //    numeric mismatch CDZ0301, reported here so it is not masked).
     //  - `*`/`/`: ALWAYS well-formed on quantities — the dimensions COMPOSE (they are not required equal),
     //    so no dimensional fault; the result unit is computed in `apply_type`. (A quantity × a bare number
@@ -3672,8 +3672,8 @@ fn check_application(
                         },
                     ) => {
                         // COMPATIBILITY is DIMENSIONAL, not by-unit: two units of one dimension at
-                        // DIFFERENT scales (`metre` + `kilometre`) are well-formed and auto-convert; only
-                        // a DIMENSION mismatch (`metre` + `second`) is CDZ0501 (units-of-measure.md §A
+                        // DIFFERENT scales (`meter` + `kilometer`) are well-formed and auto-convert; only
+                        // a DIMENSION mismatch (`meter` + `second`) is CDZ0501 (units-of-measure.md §A
                         // Dimensional Mismatch Is An Error / §Combining Units Of One Dimension Is
                         // Well-Formed). So gate on `same_dimension` (the exponent map), NOT `==` (which
                         // also compares scale — that distinction is TYPE identity, checked at annotation).
@@ -5706,8 +5706,8 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     && au != eu
                 {
                     // A DIMENSIONAL annotation conflict — the value derives one dimension but the
-                    // annotation asserts another (`(: (* (Qty 2 metre) (Qty 3 metre)) (Qty Float64
-                    // metre))` — the product is metre², annotated metre). This is the dimensional
+                    // annotation asserts another (`(: (* (Qty 2 meter) (Qty 3 meter)) (Qty Float64
+                    // meter))` — the product is meter², annotated meter). This is the dimensional
                     // specialization of the annotation conflict: CDZ0501, not the CDZ0203 the generic
                     // unify below would give (units-of-measure.md §A Dimensional Mismatch Is An Error;
                     // the erasure fence's dimensional case). The inner types are irrelevant when the

@@ -215,7 +215,7 @@ impl FloatTy {
 /// render order deterministic) and cloning is cheap for the small maps units are.
 ///
 /// The base-dimension name is a `String` in Layer 1 (the erasure-only dimensional core): the corpus
-/// names base dimensions with a symbol literal `#"metre"`, read as its text. When the `Symbol` type
+/// names base dimensions with a symbol literal `#"meter"`, read as its text. When the `Symbol` type
 /// lands (Layer 2, families/prefixes), this key becomes a `resolved::Symbol`; nothing else about the
 /// group algebra changes. A unit is a COMPILE-TIME value: it indexes `Ty::Qty` and is ERASED before
 /// emission, so it never reaches the backend (`units-of-measure.md` §Dimensions Are Checked Then Erased).
@@ -224,20 +224,20 @@ impl FloatTy {
 /// concepts, kept distinct on purpose:
 ///   - the DIMENSION `exp` — the free-abelian-group element (base name → signed exponent, zero-exponent
 ///     bases dropped). This alone gates COMPATIBILITY: `+`/`-`/comparison require EQUAL dimensions
-///     (`same_dimension`), and `*`/`/` compose them. `metre` and `kilometre` are the SAME dimension.
+///     (`same_dimension`), and `*`/`/` compose them. `meter` and `kilometer` are the SAME dimension.
 ///   - the SCALE `scale_num`/`scale_den` — a machine-integer ratio to the dimension's reference unit
-///     (`metre`=1/1, `kilometre`=1000/1, `millimetre`=1/1000, `mebibyte`=2²⁰/1). This is what makes
-///     `metre` and `kilometre` DISTINCT units (distinct types) of one dimension, and what a conversion
+///     (`meter`=1/1, `kilometer`=1000/1, `millimeter`=1/1000, `mebibyte`=2²⁰/1). This is what makes
+///     `meter` and `kilometer` DISTINCT units (distinct types) of one dimension, and what a conversion
 ///     multiplies by. The scale is COMPILE-TIME METADATA, not a runtime `Rational`: a conversion emits
 ///     `value * num / den` in the quantity's OWN inner numeric type T (spec §48: it "los[es] precision
 ///     only where the underlying numeric type is itself inexact" — exact over `Int`/`Rational`, rounding
 ///     over `Float`), so NO arbitrary-precision value is needed. Every real unit scale fits `i128` with
 ///     enormous headroom (the largest, `tera`=10¹² / `tebi`=2⁴⁰ / `mile`=201168/125).
 ///
-/// TYPE IDENTITY (`==`, `Ord`, `Hash`) compares BOTH map and scale, so `(Qty T metre)` and `(Qty T
-/// kilometre)` are distinct static types (crossing needs an explicit conversion); DIMENSIONAL
+/// TYPE IDENTITY (`==`, `Ord`, `Hash`) compares BOTH map and scale, so `(Qty T meter)` and `(Qty T
+/// kilometer)` are distinct static types (crossing needs an explicit conversion); DIMENSIONAL
 /// compatibility (`same_dimension`) compares the map ALONE. A base-dimension name is a `String` in
-/// Layer 1 (the corpus writes `#"metre"`); it becomes a `resolved::Symbol` when Symbols land. A unit is
+/// Layer 1 (the corpus writes `#"meter"`); it becomes a `resolved::Symbol` when Symbols land. A unit is
 /// COMPILE-TIME: it indexes `Ty::Qty` and is ERASED before emission (§Dimensions Are Checked Then
 /// Erased) — only the scale MULTIPLY a mixed-unit combine denotes may survive, as ordinary T arithmetic.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -268,7 +268,7 @@ impl Unit {
     }
 
     /// A base dimension named `name`, to the first power, at the REFERENCE scale 1/1 — the single-entry
-    /// map `{name: 1}`. `(Unit.base #"metre")`. A base unit IS the scale-1 reference of its dimension.
+    /// map `{name: 1}`. `(Unit.base #"meter")`. A base unit IS the scale-1 reference of its dimension.
     pub fn base(name: impl Into<String>) -> Unit {
         let mut m = std::collections::BTreeMap::new();
         m.insert(name.into(), 1);
@@ -287,7 +287,7 @@ impl Unit {
     }
 
     /// Whether two units share a DIMENSION — their exponent maps are equal, IGNORING scale. This gates
-    /// combine/compare compatibility (`metre` + `kilometre` is well-formed; `metre` + `second` is
+    /// combine/compare compatibility (`meter` + `kilometer` is well-formed; `meter` + `second` is
     /// CDZ0501) and is the relation `units-of-measure.md` §Combining Units Of One Dimension Is
     /// Well-Formed rests on. Distinct from `==` (type identity), which also requires equal scale.
     pub fn same_dimension(&self, other: &Unit) -> bool {
@@ -315,7 +315,7 @@ impl Unit {
     /// This unit SCALED by a compile-time ratio `num/den` — a prefix (`kilo` = 1000/1, `milli` = 1/1000,
     /// `mebi` = 2²⁰/1) applied to a unit produces another unit of the SAME dimension differing only by
     /// that exact factor (`units-of-measure.md` §A Scaled Unit Is A Unit Scaled By An Exact Factor). The
-    /// scales MULTIPLY (a `(Unit.prefix kilo metre)` squared is km², scale 10⁶). Normalizes the result
+    /// scales MULTIPLY (a `(Unit.prefix kilo meter)` squared is km², scale 10⁶). Normalizes the result
     /// ratio (lowest terms, positive denominator). `None` if `den == 0` or an intermediate overflows
     /// `i128` (no real prefix comes close).
     pub fn scaled(&self, num: i128, den: i128) -> Option<Unit> {
@@ -330,7 +330,7 @@ impl Unit {
     }
 
     /// The PRODUCT of two units — pointwise exponent ADD, dropping any base whose combined exponent is
-    /// zero (the drop-zeros canonicalization). `(Unit.* metre metre)` = `{metre: 2}`; a base times its
+    /// zero (the drop-zeros canonicalization). `(Unit.* meter meter)` = `{meter: 2}`; a base times its
     /// inverse cancels to `Unit.one`. The `*`/`/` dimensional rule (`units-of-measure.md` §An Operation
     /// That Derives A Dimension).
     pub fn mul(&self, other: &Unit) -> Unit {
@@ -356,8 +356,8 @@ impl Unit {
         }
     }
 
-    /// The QUOTIENT of two units — pointwise exponent SUBTRACT, dropping zeros. `(Unit./ metre second)` =
-    /// `{metre: 1, second: -1}` (a velocity); `(Unit./ metre metre)` = `Unit.one` (a ratio of like
+    /// The QUOTIENT of two units — pointwise exponent SUBTRACT, dropping zeros. `(Unit./ meter second)` =
+    /// `{meter: 1, second: -1}` (a velocity); `(Unit./ meter meter)` = `Unit.one` (a ratio of like
     /// quantities is dimensionless, decided by the exponent map going to all-zero).
     pub fn div(&self, other: &Unit) -> Unit {
         let mut m = self.exp.clone();
@@ -384,7 +384,7 @@ impl Unit {
 
     /// This unit raised to a compile-time integer power `n` (may be negative) — each exponent scaled by
     /// `n`, dropping zeros. `n = 0` yields `Unit.one` (any dimension to the zeroth power is dimensionless).
-    /// `(Unit.^ metre 2)` = `{metre: 2}` (area), `(Unit.^ second -1)` = `{second: -1}` (frequency).
+    /// `(Unit.^ meter 2)` = `{meter: 2}` (area), `(Unit.^ second -1)` = `{second: -1}` (frequency).
     pub fn pow(&self, n: i64) -> Unit {
         if n == 0 {
             return Unit::one();
@@ -465,7 +465,7 @@ impl Unit {
     }
 
     /// A compact, HUMAN-readable rendering of the unit for a DIAGNOSTIC — the base names joined by `·`
-    /// with `^n` exponents (`metre`, `metre^2`, `metre·second^-1`), and `dimensionless` for the empty
+    /// with `^n` exponents (`meter`, `meter^2`, `meter·second^-1`), and `dimensionless` for the empty
     /// unit. Unlike [`render`] (the round-tripping `(Unit.base …)` surface form), this is for a message
     /// where naming just the units — not the whole `(Qty T <unit>)` type — is what the reader needs.
     /// The `exp` map is a `BTreeMap`, so iteration is in sorted base-name order → deterministic.
@@ -681,10 +681,10 @@ pub enum Ty {
     /// comparison require equal units; `*`/`/` compose them by the free-abelian-group operation); the
     /// numeric core is untouched — `inner` keeps its width/overflow/no-promotion rules and the running
     /// arithmetic is the plain `inner` operation. Two quantities are the SAME type iff their `inner`
-    /// types unify AND their units are EQUAL (a metre never unifies with a bare number nor with a
+    /// types unify AND their units are EQUAL (a meter never unifies with a bare number nor with a
     /// second). The whole apparatus is CHECKED THEN ERASED before emission (`§Dimensions Are Checked
     /// Then Erased`): a `Ty::Qty` lowers to its `inner` (`lower` strips it), so it NEVER reaches the
-    /// backend and `(Qty.of 5.0 metre)` is byte-identical to the bare `5.0`. The one piece of earlier
+    /// backend and `(Qty.of 5.0 meter)` is byte-identical to the bare `5.0`. The one piece of earlier
     /// Cadenza's identity that survives the clean room, buying verified dimensional correctness for zero
     /// runtime cost.
     Qty { inner: Box<Ty>, unit: Unit },
@@ -1148,7 +1148,7 @@ impl Ty {
                 _ => true,
             },
             // Two quantities agree iff their INNER numeric types agree AND their UNITS are EQUAL — a
-            // metre and a second (same inner `Float64`, different dimension) do NOT agree, and a metre and
+            // meter and a second (same inner `Float64`, different dimension) do NOT agree, and a meter and
             // a bare `Float64` do not agree (no implicit dimensionless coercion). A quantity never agrees
             // with a non-quantity; that falls to the `_ => false` below.
             (
@@ -1355,8 +1355,8 @@ impl Ty {
             // as a sum's variant set is not.
             Ty::Nominal { name, .. } => name.clone(),
             Ty::Fn(p, r) => format!("(-> {} {})", p.render_name(), r.render_name()),
-            // A quantity renders as `(Qty <inner> <unit>)` — the corpus form `(: (Qty.of 5.0 metre) (Qty
-            // Float64 (Unit.base #"metre")))`. The inner type renders as its ordinary name; the unit
+            // A quantity renders as `(Qty <inner> <unit>)` — the corpus form `(: (Qty.of 5.0 meter) (Qty
+            // Float64 (Unit.base #"meter")))`. The inner type renders as its ordinary name; the unit
             // renders via `Unit::render` (the canonical written form so the type re-reads to the same
             // unit).
             Ty::Qty { inner, unit } => format!("(Qty {} {})", inner.render_name(), unit.render()),

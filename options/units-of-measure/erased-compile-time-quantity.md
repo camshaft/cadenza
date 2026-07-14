@@ -29,10 +29,10 @@ dimensions**. The group operations are the whole surface a program uses to build
 | Form | Meaning | Example |
 |---|---|---|
 | `Unit.one` | the dimensionless unit (the group identity) | a plain count, a ratio |
-| `(Unit.base name)` | a base dimension named by a `Symbol` | `(Unit.base #"metre")`, `(Unit.base #"second")` |
-| `(Unit.* a b)` | the product of two units | `(Unit.* metre metre)` = area |
-| `(Unit./ a b)` | the quotient of two units | `(Unit./ metre second)` = velocity |
-| `(Unit.^ a n)` | a unit raised to a compile-time **integer** power `n` (may be negative) | `(Unit.^ metre 2)` = area, `(Unit.^ second -1)` = frequency |
+| `(Unit.base name)` | a base dimension named by a `Symbol` | `(Unit.base #"meter")`, `(Unit.base #"second")` |
+| `(Unit.* a b)` | the product of two units | `(Unit.* meter meter)` = area |
+| `(Unit./ a b)` | the quotient of two units | `(Unit./ meter second)` = velocity |
+| `(Unit.^ a n)` | a unit raised to a compile-time **integer** power `n` (may be negative) | `(Unit.^ meter 2)` = area, `(Unit.^ second -1)` = frequency |
 
 Because the group is **abelian and free**, two units are the **same dimension** exactly when every
 base dimension appears to the same integer exponent — order of multiplication does not matter,
@@ -52,10 +52,10 @@ ordinary definitions, exactly as `Int8` is an ordinary alias for `(Int 8)`.
 ## Dimension vs. unit — a family of interconvertible units per dimension
 
 The group element above is the **dimension** — `length`, `time`, `information` — and it is what the
-type tracks and what gates compatibility. A **unit** is a *named measure of a dimension*: `metre`,
-`millimetre`, and `inch` are three units of the one dimension `length`, and `byte`, `kibibyte`, and
+type tracks and what gates compatibility. A **unit** is a *named measure of a dimension*: `meter`,
+`millimeter`, and `inch` are three units of the one dimension `length`, and `byte`, `kibibyte`, and
 `kilobyte` are three units of `information`. This split — dimension for compatibility, unit for the
-concrete scale — is what lets a program **mix units of one dimension** (add inches to millimetres)
+concrete scale — is what lets a program **mix units of one dimension** (add inches to millimeters)
 while still rejecting a mix of *dimensions* (add a length to a time). The committed base-unit model is
 the degenerate case of one unit per dimension; this generalizes it additively — a base unit is simply
 the scale-1 reference unit of its dimension, so every earlier case stays valid.
@@ -66,11 +66,11 @@ dimension's designated **reference unit** (the unit of scale 1). The scale is an
 
 | Family (dimension) | Reference | Units and their exact scales to the reference |
 |---|---|---|
-| `length` | `metre` | `metre` 1, `millimetre` 1/1000, `centimetre` 1/100, `kilometre` 1000, `inch` 127/5000, `foot` 381/1250, `mile` 201168/125 |
+| `length` | `meter` | `meter` 1, `millimeter` 1/1000, `centimeter` 1/100, `kilometer` 1000, `inch` 127/5000, `foot` 381/1250, `mile` 201168/125 |
 | `time` | `second` | `second` 1, `millisecond` 1/1000, `minute` 60, `hour` 3600 |
 | `information` | `byte` | `byte` 1, `kilobyte` 1000, `megabyte` 10⁶, `kibibyte` 1024, `mebibyte` 2²⁰, `gibibyte` 2³⁰ |
 
-A unit is written `(Unit.of #"metre")` — a unit within the dimension the prelude declares it under —
+A unit is written `(Unit.of #"meter")` — a unit within the dimension the prelude declares it under —
 and a program's prelude defines its families as ordinary data (a dimension `Symbol` plus a map of
 unit-name ↦ exact-scale `Rational`), so the layer fixes the *mechanism* (a family is a dimension +
 scaled units), not a privileged vocabulary. A build's prelude MAY supply the SI families and the common
@@ -79,7 +79,7 @@ imperial and information units; a program MAY declare its own.
 ### Prefixes are structured exact scales — SI decimal and IEC binary
 
 A **prefix** applies an exact scale factor to a unit, producing another unit of the **same dimension**:
-`(Unit.prefix kilo metre)` is the kilometre (scale 1000·1 = 1000), `(Unit.prefix milli second)` the
+`(Unit.prefix kilo meter)` is the kilometer (scale 1000·1 = 1000), `(Unit.prefix milli second)` the
 millisecond (1/1000), `(Unit.prefix mebi byte)` the mebibyte (2²⁰). Two prefix systems are first-class,
 because both matter and they are genuinely different scales:
 
@@ -92,7 +92,7 @@ because both matter and they are genuinely different scales:
   (1 KiB + 1 kB = 2024 byte, not 2000), never silently equated.
 
 A prefix is itself an exact scale value, so `(Unit.prefix p u)` is the unit whose scale is
-`p · scale(u)`; prefixing composes with the group operations exactly (a `(Unit.prefix kilo metre)`
+`p · scale(u)`; prefixing composes with the group operations exactly (a `(Unit.prefix kilo meter)`
 squared is `km²`, scale 10⁶ m²).
 
 ## Mixing units of one dimension — automatic exact conversion at a common unit
@@ -103,11 +103,11 @@ combines there. The common unit is the operands' dimension's **reference unit**,
 is a deterministic function of the operand units (not of evaluation order):
 
 ```
-(+ (Qty.of 1 (Unit.of #"inch")) (Qty.of 1 (Unit.of #"millimetre")))
+(+ (Qty.of 1 (Unit.of #"inch")) (Qty.of 1 (Unit.of #"millimeter")))
   ; both are dimension `length`
-  ; convert each to the reference `metre` by its exact scale:
+  ; convert each to the reference `meter` by its exact scale:
   ;   1 inch = 127/5000 m,  1 mm = 1/1000 m
-  ; -> (Qty Rational metre) = 127/5000 + 1/1000 = 129/5000 m   (exact)
+  ; -> (Qty Rational meter) = 127/5000 + 1/1000 = 129/5000 m   (exact)
 ```
 
 The conversion is **automatic when the dimensions match**, and this is a deliberate, principled
@@ -133,7 +133,7 @@ does not want the reference (`(Unit.in (Unit.of #"inch") (+ a b))`).
 ## Constructing and observing a quantity
 
 - `(Qty.of x u)` attaches unit `u` to a numeric value `x : T`, producing a `(Qty T u)`. The unit `u`
-  is a compile-time value; `(Qty.of 5.0 metre)` is a `(Qty Float64 metre)` whose erased value is
+  is a compile-time value; `(Qty.of 5.0 meter)` is a `(Qty Float64 meter)` whose erased value is
   `5.0`.
 - `(Qty.value q)` recovers the underlying numeric value, **discarding the unit** — the explicit exit
   from the dimensional layer, the analogue of widening a refinement to its base type
@@ -159,7 +159,7 @@ rather than discard dimensional information"):
 | `(Qty.pow p n)` (`n` a compile-time integer) | dimension raised to `n` | `(Qty T (Unit.^ a n))` |
 
 When both operands are already in the **same unit** (`a` = `b`, the committed case), no conversion
-happens and the result carries that unit: `(+ (Qty 2 metre) (Qty 3 metre))` = `(Qty 5 metre)`, and the
+happens and the result carries that unit: `(+ (Qty 2 meter) (Qty 3 meter))` = `(Qty 5 meter)`, and the
 unit layer contributes **nothing** to the emitted arithmetic. When the units *differ but share a
 dimension*, each operand is scaled to the reference unit — that scale multiply is real arithmetic (see
 §"Erasure" below), the exact `Rational` conversion the source denotes by naming two different units.
@@ -173,8 +173,8 @@ common unit by their exact scales — and it introduces no arithmetic beyond tha
 already means.
 
 Multiplying by a bare (dimensionless) numeric scalar is the ordinary product with `Unit.one`, so
-scaling a quantity by a constant keeps its dimension: `(* (Qty.of 2.0 metre) (Qty.of 3.0 Unit.one))`
-is `(Qty Float64 metre)` with value `6.0`.
+scaling a quantity by a constant keeps its dimension: `(* (Qty.of 2.0 meter) (Qty.of 3.0 Unit.one))`
+is `(Qty Float64 meter)` with value `6.0`.
 
 ## The dimensional mismatch is CDZ0501, at compile time
 
@@ -183,10 +183,10 @@ Combining quantities of incompatible dimension is rejected at compile time with 
 covers:
 
 - adding, subtracting, or comparing quantities of unlike dimension —
-  `(+ (Qty.of 1.0 metre) (Qty.of 1.0 second))`;
+  `(+ (Qty.of 1.0 meter) (Qty.of 1.0 second))`;
 - annotating a quantity at a dimension the expression does not derive —
-  `(: (* (Qty.of 2.0 metre) (Qty.of 3.0 metre)) (Qty Float64 metre))` (the product is `metre²`, not
-  `metre`), which is the dimensional specialization of the annotation-conflicts rejection
+  `(: (* (Qty.of 2.0 meter) (Qty.of 3.0 meter)) (Qty Float64 meter))` (the product is `meter²`, not
+  `meter`), which is the dimensional specialization of the annotation-conflicts rejection
   (`CDZ0203` names the general case; `CDZ0501` names it when the conflict is dimensional).
 
 There is **no runtime trap** for a dimensional error: units are erased before the program runs, so a
@@ -199,7 +199,7 @@ verification-layer band (`CDZ05xx`), not among the numeric traps.
 Erased; the refinement-erases-to-its-base-type discipline, verification-layers.md). Concretely:
 
 - The emitted value of a `(Qty T u)` is exactly the emitted value of its underlying `T` — same
-  canonical byte form, same boundary representation. `(Qty.of 5.0 metre)` and the bare `5.0` are
+  canonical byte form, same boundary representation. `(Qty.of 5.0 meter)` and the bare `5.0` are
   **byte-identical** in the emitted component (they differ only in the erased static type the corpus
   records in `(: … Type)`).
 - No unit, base-dimension name, or exponent map appears anywhere in the emitted component; the group
@@ -227,10 +227,10 @@ Arithmetic The Source Denotes):
   the conversion is the meaning of naming two different length units, not an overhead the checker adds
   on top. Erasing units does not erase arithmetic the program asked for by writing it.
 - When the operands are **compile-time constants**, the conversion is **const-folded** — `1 inch + 1 mm`
-  becomes the literal `129/5000 metre` at compile time, contributing no runtime arithmetic. The scale
+  becomes the literal `129/5000 meter` at compile time, contributing no runtime arithmetic. The scale
   multiply reaches the emitted component only when a magnitude is a *runtime* value (a value from a
   parameter, a call, an `if`), exactly like any other arithmetic on runtime operands.
-- **Same-unit combination stays free.** `(+ (Qty 2 metre) (Qty 3 metre))` needs no conversion, so it
+- **Same-unit combination stays free.** `(+ (Qty 2 meter) (Qty 3 meter))` needs no conversion, so it
   emits the plain `T` addition and nothing else — the committed "zero runtime cost" story holds
   unchanged for the common case where a program stays in one unit. The cost appears exactly and only
   where a program mixes units, and it is the cost of the conversion the program requested.

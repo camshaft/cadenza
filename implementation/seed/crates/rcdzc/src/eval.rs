@@ -2134,7 +2134,7 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
 
 /// Reduce an occurrence to the compile-time UNIT it denotes, or `None` if it is not a unit expression.
 /// A unit is a value in the free abelian group over base dimensions (`ty::Unit`), BUILT by the unit
-/// prims: `Unit.one` (empty map), `(Unit.base #"metre")` (a single base), `(Unit.* a b)` / `(Unit./ a
+/// prims: `Unit.one` (empty map), `(Unit.base #"meter")` (a single base), `(Unit.* a b)` / `(Unit./ a
 /// b)` / `(Unit.^ u n)` (the group operations). This is the units analogue of `read_width` — it reads a
 /// compile-time value off the argument, since a unit is not an HM-typed value the scheme machinery
 /// tracks. Recurses through `Ref` (a binding) and the applied unit prims. The base-dimension NAME comes
@@ -2157,7 +2157,7 @@ pub fn unit_of(db: &mut Db, id: StructId) -> Option<crate::ty::Unit> {
             match prim {
                 Prim::UnitOne => Some(Unit::one()),
                 Prim::UnitBase => {
-                    // `(Unit.base #"metre")` — the base-dimension name is the symbol's TEXT, read directly
+                    // `(Unit.base #"meter")` — the base-dimension name is the symbol's TEXT, read directly
                     // off the `#"…"` literal (a `SymbolConst`; also accept a plain `Str` for a string-keyed
                     // caller). A non-symbol/string argument is not a well-formed base unit.
                     let name = match resolved_of(db, *args.first()?) {
@@ -2186,7 +2186,7 @@ pub fn unit_of(db: &mut Db, id: StructId) -> Option<crate::ty::Unit> {
                     Some(a.pow(n))
                 }
                 // The ORDINARY arithmetic operators used on UNITS compose them, so unit composition reads
-                // as ordinary math on both surfaces (`metre * second`, `metre / second`, `metre ^ 2`) —
+                // as ordinary math on both surfaces (`meter * second`, `meter / second`, `meter ^ 2`) —
                 // no backtick-escaped `Unit.*` name. `*`/`/` fire only when BOTH operands reduce to units
                 // (a `(* 2 3)` numeric multiply has non-unit operands → falls through to `None` here and
                 // is handled as arithmetic elsewhere); `^` (arena `BitXor`) is unit-power when the base is

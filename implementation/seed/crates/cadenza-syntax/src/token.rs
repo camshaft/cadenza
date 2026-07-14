@@ -24,7 +24,7 @@ pub enum Kind {
     Str,
     ByteStr, // `b"…"` — a byte-string literal (arbitrary bytes), the surface form of a `Bytes` value
     CharLit, // `#\a` / `#\newline` / `#\u+00E9` — a char literal (one Unicode scalar)
-    SymLit,  // `#"metre"` — a symbol literal (an interned name value); reuses string lexing
+    SymLit,  // `#"meter"` — a symbol literal (an interned name value); reuses string lexing
 
     // ---- identifiers (keywords are NOT lexed; the parser recognizes them from Ident text) ----
     Ident, // words: kebab-case (`byte-at`), `true`/`false`, `let`/`if`/…, `and`/`or` — all Ident
@@ -133,7 +133,7 @@ pub fn infix_glyph(op: &str) -> &str {
         "=" => "==",
         // Unit COMPOSITION heads render as their mathematical infix glyph — `(Unit.* a b)` → `a * b`,
         // `(Unit./ a b)` → `a / b`, `(Unit.^ u n)` → `u ^ n` — so a unit reads like the math it denotes
-        // (`metre / second`, `metre ^ 2`) instead of the backtick-escaped `` `Unit.*` `` call. Re-reading
+        // (`meter / second`, `meter ^ 2`) instead of the backtick-escaped `` `Unit.*` `` call. Re-reading
         // `a * b` yields the ordinary `*`/`/`/`^` arena head, which the units layer treats as unit
         // composition (`eval::unit_of`) — an idempotent ML round-trip (`ml(ml(x)) == ml(x)`), the surface
         // canonicalizing the legacy `Unit.*` spelling to `*` exactly as it canonicalizes name-alias ctors.
@@ -166,6 +166,11 @@ pub enum Keyword {
     Effect,
     Handle,
     Host,
+    /// The unit-conversion operator `q as meter`. Contextual: it is only meaningful in infix position
+    /// after an expression (the parser's `expr` loop), so a bare `as` in prefix position is the usual
+    /// "keyword outside its form" error. Reserved so it can never be a bare name (the printer
+    /// backtick-escapes a name `as`).
+    As,
 }
 
 /// The keyword an identifier's text denotes, if any.
@@ -187,6 +192,7 @@ pub fn keyword(text: &str) -> Option<Keyword> {
         "effect" => Keyword::Effect,
         "handle" => Keyword::Handle,
         "host" => Keyword::Host,
+        "as" => Keyword::As,
         _ => return None,
     })
 }
@@ -232,6 +238,14 @@ pub const PREC_ARROW: u8 = 2;
 /// the value threaded into the right — matching the F#/Elm/OCaml convention. Left-associative like
 /// every operator, so `a |> f |> g` is `(|> (|> a f) g)` — a left-to-right pipeline.
 pub const PREC_PIPELINE: u8 = 3;
+
+/// The unit-conversion operator `q as meter` -> `(Unit.in meter q)`. It binds just above the pipeline
+/// and below every arithmetic operator, so a whole arithmetic expression converts as a unit
+/// (`240 meter / 8 second as (meter / hour)` groups as `((240 meter / 8 second) as (meter / hour))`)
+/// while it still threads into a pipeline as one value (`q as meter |> f`). The parser handles its
+/// right operand specially (a UNIT denotation, not an ordinary expression), so it is not in
+/// [`infix_prec`]; this constant only names the binding power the special arm compares against.
+pub const PREC_AS: u8 = 4;
 
 /// True for the one RIGHT-associative infix operator, the type arrow `->`: `A -> B -> C` groups as
 /// `A -> (B -> C)`. Every other operator is left-associative. The parser recurses at `prec` (not
@@ -353,7 +367,7 @@ mod tests {
 
     #[test]
     fn unit_composition_heads_render_infix() {
-        // Unit composition renders as its math glyph so a unit reads like `metre / second` / `metre ^ 2`
+        // Unit composition renders as its math glyph so a unit reads like `meter / second` / `meter ^ 2`
         // instead of the backtick-escaped `` `Unit.*` `` call. The glyph re-reads to the ordinary numeric
         // head (the units layer treats it as composition), an idempotent ML round-trip.
         assert_eq!(infix_glyph("Unit.*"), "*");

@@ -27,7 +27,7 @@ use crate::lexer::{Lexer, Token};
 use crate::literal;
 use crate::span::Span;
 use crate::spans::{FileId, SpanTable};
-use crate::token::{Keyword, Kind, infix_prec, is_right_assoc, keyword, word_op};
+use crate::token::{Keyword, Kind, PREC_AS, infix_prec, is_right_assoc, keyword, word_op};
 
 /// A parse error: a message anchored to a source span.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -515,7 +515,21 @@ impl<'a> Parser<'a> {
         self.depth += 1;
         let mut left = self.prefix();
         left = self.postfix(left, start);
-        while let Some(op_name) = self.infix_op() {
+        loop {
+            // `expr as UNIT` — the unit-conversion operator, handled here rather than via `infix_op`
+            // because its right operand is a UNIT denotation (a bare name reads as `(Unit.of #"name")`,
+            // and `*`/`/`/`^` compose units), not an ordinary expression. It binds at `PREC_AS` (above
+            // the pipeline, below arithmetic), so `a / b as u` converts the quotient `(a / b)` and
+            // `q as u |> f` threads the conversion into the pipeline. Left-associative — the loop
+            // re-checks, so `q as m as m` chains left. Checked inside the shared loop so it interleaves
+            // with the arithmetic operators (`/` binds tighter, so it is consumed first).
+            if self.at_keyword(Keyword::As) && PREC_AS >= min_prec {
+                left = self.as_conversion(left, start);
+                continue;
+            }
+            let Some(op_name) = self.infix_op() else {
+                break;
+            };
             let prec = infix_prec(op_name).expect("infix_op returns only infix names");
             if prec < min_prec {
                 break;
@@ -769,6 +783,48 @@ impl<'a> Parser<'a> {
         let obj = self.name(obj, span);
         let key = self.name(key, span);
         self.list(vec![dot, obj, key], span)
+    }
+
+    /// Parse the tail of a unit conversion `value as UNIT` (the cursor is at the `as` keyword), returning
+    /// `(Unit.in UNIT value)` — the same arena `(Unit.in target q)` an explicit `Unit.in(target, q)` call
+    /// builds, so the conversion carries no new semantics. The target UNIT is a denotation, read by
+    /// [`Self::unit_denotation`]: a bare name `meter` becomes `(Unit.of #"meter")`, and a parenthesized
+    /// compound (`(meter / hour)`) composes via the ordinary `*`/`/`/`^` the units layer reads as unit
+    /// composition. The printer renders the bare-name case back to `value as name`.
+    fn as_conversion(&mut self, value: StructId, start: Span) -> StructId {
+        let as_span = self.cur_span();
+        self.bump(); // `as`
+        let target = self.unit_denotation(as_span);
+        let span = start.merge(self.prev_span());
+        let in_head = self.member_head("Unit", "in", as_span);
+        self.list(vec![in_head, target, value], span)
+    }
+
+    /// The UNIT denotation on the right of an `as`. A bare identifier `meter` reads as the family unit
+    /// `(Unit.of #"meter")` — the same shape the `<num> unit` quantity literal builds. Any other unit
+    /// expression (a compound `(meter / hour)`, a `Unit.prefix …`, a `Unit.of(…)` call) is written
+    /// parenthesized and parsed as an ordinary expression, which the units layer already interprets as a
+    /// unit (`eval::unit_of` reads `Unit.of`/`Unit.*`/`Unit./`/`Unit.^` and the bare `*`/`/`/`^`).
+    fn unit_denotation(&mut self, at: Span) -> StructId {
+        if self.at(Kind::Ident)
+            && keyword(self.cur_text()).is_none()
+            && word_op(self.cur_text()).is_none()
+        {
+            let span = self.cur_span();
+            let name = self.cur_text().to_string();
+            self.bump(); // the unit name
+            // (Unit.of #"name")
+            let unit_head = self.member_head("Unit", "of", span);
+            let sym = self.atom(Leaf::Sym(name), span);
+            return self.list(vec![unit_head, sym], span);
+        }
+        // A parenthesized / computed unit expression — parsed as an ordinary expression the units layer
+        // reduces to a unit. A bare non-name here (an operator, EOF) is a conversion target error.
+        if self.at(Kind::LParen) {
+            return self.bracketed_bars(Self::paren);
+        }
+        self.error("expected a unit name after `as`");
+        self.error_node(at)
     }
 
     /// Postfix chain: `.member` and `(args…)` application, tightest, left-nested.
@@ -2266,10 +2322,10 @@ mod tests {
         let a = parse_ok("5 feet");
         assert_eq!(sexpr::print(&a), r#"((. Qty of) 5 ((. Unit of) #"feet"))"#);
         // A float value works the same way.
-        let f = parse_ok("5.0 metre");
+        let f = parse_ok("5.0 meter");
         assert_eq!(
             sexpr::print(&f),
-            r#"((. Qty of) 5.0 ((. Unit of) #"metre"))"#
+            r#"((. Qty of) 5.0 ((. Unit of) #"meter"))"#
         );
         // The literal binds TIGHTER than every operator, so `5 feet / 1 second` is a rate — the
         // division of two quantity literals — the reading the surface is designed to give.

@@ -49,11 +49,11 @@ pub enum Leaf {
     /// back — the canonical value-form leaf for a byte sequence, the companion of `Str` for text.
     Bytes(Vec<u8>),
     Bool(bool),
-    /// A SYMBOL literal (`#"metre"`) — an interned name value whose identity is its CONTENT, distinct
+    /// A SYMBOL literal (`#"meter"`) — an interned name value whose identity is its CONTENT, distinct
     /// from `Str` (a text value) and `Name` (an identifier reference). Written `#"…"` (reusing string
     /// lexing/escapes); its only observations are equality and `to-string`
     /// (`symbol-interning-direction`). Holds the symbol's text; rendered back `#"…"`. In the
-    /// units-of-measure layer a base dimension is named by such a symbol (`(Unit.base #"metre")`) — this
+    /// units-of-measure layer a base dimension is named by such a symbol (`(Unit.base #"meter")`) — this
     /// is the minimal symbol-literal slice that unblocks the units corpus surface; the full `Symbol`
     /// TYPE + intern table arrive with the symbols vertical.
     Sym(String),
@@ -602,7 +602,7 @@ impl Arenas {
         }
     }
 
-    /// If `id` is an `Atom` of a SYMBOL literal (`#"metre"`), its text. Distinct from [`as_name`] (an
+    /// If `id` is an `Atom` of a SYMBOL literal (`#"meter"`), its text. Distinct from [`as_name`] (an
     /// identifier) — a symbol is a `#"…"` name-value. Used to read a `Unit.define`/`Unit.of` family-unit
     /// name off its symbol argument.
     pub fn as_sym(&self, id: StructId) -> Option<&str> {

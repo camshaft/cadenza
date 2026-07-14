@@ -544,7 +544,7 @@ pub struct Db {
     /// The FAMILY-OF-MEASURE registry — maps each named family unit to its `(dimension, scale
     /// numerator, scale denominator)`, where the DIMENSION is a list of `(base-name, exponent)` pairs (an
     /// exponent map). An ATOMIC-dimension unit has a one-entry dimension: `"foot"` →
-    /// `([("metre", 1)], 381, 1250)`, `"minute"` → `([("second", 1)], 60, 1)`. A DERIVED-dimension unit
+    /// `([("meter", 1)], 381, 1250)`, `"minute"` → `([("second", 1)], 60, 1)`. A DERIVED-dimension unit
     /// has a multi-entry one: `"mbps"` (megabit/second) → `([("byte", 1), ("second", -1)], 1_000_000, 8)`
     /// — a unit of the `information/time` dimension whose scale to the reference `byte/second` is a
     /// megabit over 8 bits-per-byte (`units-of-measure.md` §A Dimension Groups Interconvertible Units).

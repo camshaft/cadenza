@@ -177,7 +177,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         Resolved::Int(v) => Core::ConstInt(v),
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Str(s) => Core::ConstStr(s),
-        // A symbol literal (`#"metre"`) shares the constant-string REP — its identity is its text — so it
+        // A symbol literal (`#"meter"`) shares the constant-string REP — its identity is its text — so it
         // lowers to `Core::ConstStr` exactly like a `Symbol.of` on a constant string. Only the static type
         // (`Ty::Symbol`) differs, so `=` folds via the shared constant-string equality.
         Resolved::SymbolConst(s) => Core::ConstStr(s),
@@ -1097,7 +1097,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 }
                 // `Qty.of x u` — attach a compile-time unit. The unit is CHECKED THEN ERASED
                 // (units-of-measure.md §Dimensions Are Checked Then Erased), so lowering is the value
-                // argument's lowering UNCHANGED — `(Qty.of 5.0 metre)` and the bare `5.0` produce the
+                // argument's lowering UNCHANGED — `(Qty.of 5.0 meter)` and the bare `5.0` produce the
                 // identical core (byte-identical emitted value). The unit lives only in the solved type.
                 Some(Prim::QtyOf) if args.len() == 2 => {
                     trace!(target: "rcdzc::lower", node = id.0, "apply: Qty.of erases to its value argument");
@@ -6051,7 +6051,7 @@ fn const_value_ast_at(
 /// a single base to the first power renders `((. Unit base) #"name")`; a base to a power `(Unit.^ …
 /// k)`; a product of positive factors a left-nested `(Unit.* …)`; and — crucially — a unit with
 /// NEGATIVE exponents renders as a QUOTIENT `(Unit./ <numerator> <denominator>)`, the surface the corpus
-/// records for a derived unit (`(Unit./ metre second)` for a velocity, NOT `(Unit.* metre (Unit.^ second
+/// records for a derived unit (`(Unit./ meter second)` for a velocity, NOT `(Unit.* meter (Unit.^ second
 /// -1))`). The numerator is the positive-exponent factors (`Unit.one` if none); the denominator the
 /// negative-exponent factors with their exponents made positive. Uses the `#"name"` SYMBOL leaf per base
 /// so the rendered unit re-reads to the same `Unit`. `Unit.base` is member access; `Unit.^`/`Unit.*`/
@@ -6210,7 +6210,7 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         // built recursively; the unit is built as REAL structure by `unit_value_ast` (`Unit.one`,
         // `(Unit.base #"n")`, `(Unit.^ (Unit.base #"n") k)`, left-nested `(Unit.* …)`), so the rendered
         // type re-reads to the same unit (a name atom carrying parens would not round-trip). The corpus
-        // surface `(Qty Float64 (Unit.base #"metre"))`.
+        // surface `(Qty Float64 (Unit.base #"meter"))`.
         Ty::Qty { inner, unit } => {
             let head = b.name("Qty");
             let ity = type_ast(b, inner)?;

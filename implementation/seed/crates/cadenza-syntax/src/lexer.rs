@@ -686,10 +686,10 @@ mod tests {
         // `#` through the identifier, kebab included). `#{`/`#[`/bare `#` stay the sigil (`{`/`[`
         // are not ident-starts); a `#` before a non-ident (`#1`, `#+`) is a bare `Hash`.
         assert_eq!(
-            spanned_text("#\"metre\""),
-            vec![("#\"metre\"", Kind::SymLit)]
+            spanned_text("#\"meter\""),
+            vec![("#\"meter\"", Kind::SymLit)]
         );
-        assert_eq!(spanned_text("#metre"), vec![("#metre", Kind::SymLit)]);
+        assert_eq!(spanned_text("#meter"), vec![("#meter", Kind::SymLit)]);
         assert_eq!(
             spanned_text("#map-insert"),
             vec![("#map-insert", Kind::SymLit)]

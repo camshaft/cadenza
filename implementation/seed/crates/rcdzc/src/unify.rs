@@ -335,7 +335,7 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
         // declared unit against the derived one) an unequal unit is the general `mismatch`. Unifying the
         // inner types keeps the numeric core's no-promotion rule (an `Int64`-quantity vs a `Float64`-
         // quantity conflicts CDZ0301 through the inner `unify`). A quantity never unifies with a
-        // non-quantity (a metre vs a bare number) — that falls to the `mismatch` below.
+        // non-quantity (a meter vs a bare number) — that falls to the `mismatch` below.
         (
             Ty::Qty {
                 inner: ia,
