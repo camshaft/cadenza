@@ -1489,13 +1489,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::RationalOf) if args.len() == 2 => {
                     lower_rational_of(db, args[0], args[1])
                 }
-                // `Rational.of-int n` — the whole rational `n/1`. A constant folds; runtime declines.
+                // `Rational.of-int n` — the whole rational `n/1`. A constant folds; a RUNTIME int emits
+                // `Core::RationalOfIntWiden` (widen n + the constant 1 to BigInt, then `rational-of`, R3b).
                 Some(Prim::RationalOfInt) if args.len() == 1 => match core_of(db, args[0]) {
                     Core::ConstInt(n) => normalized_rational(n, crate::ast::IntValue::from_i64(1)),
                     Core::Poison(r) => Core::Poison(r),
-                    _ => Core::Poison(Reject::decline(
-                        "Rational.of-int on a runtime integer is not yet built (constants only)",
-                    )),
+                    _ => Core::RationalOfIntWiden { value: args[0] },
                 },
                 // `Rational.value r` — the identity that just names `r`'s type. Folds to its operand.
                 Some(Prim::RationalValue) if args.len() == 1 => core_of(db, args[0]),
@@ -7853,15 +7852,14 @@ fn normalized_rational(num: crate::ast::IntValue, den: crate::ast::IntValue) -> 
 }
 
 /// Lower `Rational.of n d` — fold a constant numerator/denominator pair to a normalized
-/// `Core::ConstRational` (or a zero-denominator trap). A runtime operand declines (the runtime rational
-/// compound is a later B4 slice). A poison operand propagates.
+/// `Core::ConstRational` (or a zero-denominator trap), else emit the RUNTIME `Core::RationalOfInts`
+/// (widen each int to a BigInt + `rational-of`, which normalizes + traps on a zero denominator at run
+/// time — R3b). A poison operand propagates.
 fn lower_rational_of(db: &mut Db, num: StructId, den: StructId) -> Core {
     match (core_of(db, num), core_of(db, den)) {
         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
         (Core::ConstInt(n), Core::ConstInt(d)) => normalized_rational(n, d),
-        _ => Core::Poison(Reject::decline(
-            "Rational.of on a runtime integer is not yet built (constants only)",
-        )),
+        _ => Core::RationalOfInts { num, den },
     }
 }
 
@@ -7897,9 +7895,20 @@ fn lower_rational_arith(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> 
     }
     let (Some((a, b)), Some((c, d))) = (const_rational_of(db, lhs), const_rational_of(db, rhs))
     else {
-        return Core::Poison(Reject::decline(
-            "runtime Rational arithmetic is not yet built (constant rationals only)",
-        ));
+        // A RUNTIME operand — emit the runtime `rational-*` op (R3b). The op computes + normalizes on the
+        // runtime limb library; a poison operand already returned above.
+        let rat_op = match op {
+            Prim::Add => crate::core::RationalOp::Add,
+            Prim::Sub => crate::core::RationalOp::Sub,
+            Prim::Mul => crate::core::RationalOp::Mul,
+            Prim::Div => crate::core::RationalOp::Div,
+            _ => return Core::Poison(Reject::decline("not a Rational arithmetic op")),
+        };
+        return Core::RationalBinOp {
+            op: rat_op,
+            lhs,
+            rhs,
+        };
     };
     let (num, den) = match op {
         Prim::Add => (a.mul(&d).add(&c.mul(&b)), b.mul(&d)),
@@ -7924,9 +7933,8 @@ fn lower_rational_cmp(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Co
     }
     let (Some((a, b)), Some((c, d))) = (const_rational_of(db, lhs), const_rational_of(db, rhs))
     else {
-        return Core::Poison(Reject::decline(
-            "runtime Rational comparison is not yet built (constant rationals only)",
-        ));
+        // A RUNTIME operand — emit `Core::RationalCmp` (`rational-cmp` + a fixed compare-with-zero, R3b).
+        return Core::RationalCmp { op, lhs, rhs };
     };
     let ord = a.mul(&d).cmp(&c.mul(&b));
     Core::ConstBool(compare_ord(op, ord))

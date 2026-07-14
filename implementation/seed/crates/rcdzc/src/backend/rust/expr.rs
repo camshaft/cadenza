@@ -874,8 +874,13 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::BigIntCmp { .. }
         // A constant `Rational` (a normalized `IntValue` pair) has no native Rust value rendering yet —
         // the rust backend would need a rational runtime type. Declines cleanly (a Rational-valued program
-        // runs on the wasm path; the rust backend is a differential oracle for the scalar surface).
+        // runs on the wasm path; the rust backend is a differential oracle for the scalar surface). The
+        // RUNTIME Rational ops likewise have no Rust rendering (they call the runtime `rational-*`).
         | Core::ConstRational(_, _)
+        | Core::RationalOfInts { .. }
+        | Core::RationalOfIntWiden { .. }
+        | Core::RationalBinOp { .. }
+        | Core::RationalCmp { .. }
         | Core::MapNew { .. }
         | Core::MapInsert { .. }
         | Core::MapLookup { .. }

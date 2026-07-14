@@ -49,6 +49,17 @@ export default function MapsSets() {
         <C>{`{1,2}`}</C> ∪ <C>{`{2,3,4}`}</C> = <C>{`{1,2,3,4}`}</C>, so four distinct elements. Try{" "}
         <C>Set.intersection</C> in its place — you'll get <C>1</C> (just the shared <C>2</C>).
       </P>
+      <P>
+        <C>Set.difference</C> is the one where <em>order matters</em>: it keeps what's in the first set and
+        not the second. Return the set itself and you can see it — <C>{`{1,2,3}`}</C> minus{" "}
+        <C>{`{2,3,4}`}</C> leaves just <C>{`{1}`}</C>:
+      </P>
+      <Runnable source={`(Set.difference (Set.of (list 1 2 3)) (Set.of (list 2 3 4)))`} />
+      <P>
+        Swap the two sets and Run again: <C>{`{2,3,4}`}</C> minus <C>{`{1,2,3}`}</C> is <C>{`{4}`}</C>{" "}
+        instead — a different answer, because "in the first but not the second" isn't symmetric. Union and
+        intersection don't care which side is which; difference does.
+      </P>
 
       <H2>Maps: values under keys</H2>
       <P>
@@ -130,24 +141,22 @@ export default function MapsSets() {
         id="maps-sets:2"
         prompt={
           <>
-            A map stores key <C>5</C> twice: first <C>5 → 11</C>, then <C>5 → 88</C>. Since a re-insert
-            replaces, looking up <C>5</C> should give the <em>later</em> value, <C>88</C>. Fill in the
-            replacement value.
+            This map holds two keys, <C>1</C> and <C>2</C>. Every "update" is a new map, so removing a key
+            builds one without it — <C>Map.remove</C> does that. Take one key away, then ask{" "}
+            <C>Map.size</C> how many remain: the answer should be <C>1</C>. Fill in the operation.
           </>
         }
         starter={`(def (main)
-  (Option.expect
-    (Map.lookup (Map.insert (Map.insert (Map.empty) 5 11) 5 ?) 5)
-    "missing"))`}
+  (Map.size
+    (Map.? (Map.insert (Map.insert (Map.empty) 1 10) 2 20) 1)))`}
         solution={`(def (main)
-  (Option.expect
-    (Map.lookup (Map.insert (Map.insert (Map.empty) 5 11) 5 88) 5)
-    "missing"))`}
-        expected="88"
+  (Map.size
+    (Map.remove (Map.insert (Map.insert (Map.empty) 1 10) 2 20) 1)))`}
+        expected="1"
         hint={
           <>
-            The second insert at key <C>5</C> wins, so the value you put there — <C>88</C> — is what the
-            lookup returns.
+            The op that deletes a key is <C>Map.remove</C>; it takes the map and the key. Two keys minus
+            one leaves <C>1</C> — and the original map, as ever, is untouched.
           </>
         }
       />

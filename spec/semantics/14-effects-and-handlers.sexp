@@ -546,6 +546,38 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (dbl (Amb.flip)))) (export main)))
   (output (: 21 Int64)))
 
+(case "a let-bound lambda whose body performs is applied in the handle body"
+  (doc    "A LAMBDA VALUE is pure at CONSTRUCTION — its body's effects fire only when it is APPLIED. So a
+           `let` binding a performing lambda is a pure binding, and the discharged op surfaces at the
+           APPLICATION `(f 10)`, which the fold inlines: `f = (fn (x) (+ x (Ask.get)))` inlines to
+           `(+ 10 (Ask.get))`, a single perform in a pure one-hole context `C = (+ 10 [])`. The handler
+           resumes 5 (a countdown seed 0 read once), so `(f 10)` = `(+ 10 5)` = 15. Pins that the fold's
+           effect-reachability walk does NOT descend into a lambda body when deciding a subterm is pure —
+           constructing the closure performs nothing, and its one application is where the op is handled.
+           Before the fix, the pure binding was misclassified as effectful and the case declined.")
+  (input  (do
+            (effect Ask (op get (-> Unit Int64)))
+            (def (main)
+              (handle Ask 0 ((get (u) s (resume 5 s)))
+                (let ((f (fn (x) (+ x (Ask.get))))) (f 10)))) (export main)))
+  (output (: 15 Int64)))
+
+(case "a pure let-bound lambda and a performing one are both applied in the handle body"
+  (doc    "Composes the preceding case with a SIBLING pure lambda binding — two let-bound lambdas, one
+           effect-free (`g x = x*2`) and one performing (`f x = x + (Ask.get)`), both applied in a strict
+           sum. Neither binding performs at construction; the pure `g` is spliced verbatim into the
+           continuation and the performing `f`'s application `(f 10)` inlines to `(+ 10 (Ask.get))` — the
+           single hole. `C = (+ (g 3) (+ 10 []))`; the handler resumes 5, so the body is `(+ 6 (+ 10 5))`
+           = 21. Pins that skipping a lambda body in the purity walk still admits a genuinely pure
+           sibling-lambda continuation (the fix does not over-admit — a lambda that were APPLIED to a
+           performing argument would still surface that perform at the application node).")
+  (input  (do
+            (effect Ask (op get (-> Unit Int64)))
+            (def (main)
+              (handle Ask 0 ((get (u) s (resume 5 s)))
+                (let ((g (fn (y) (* y 2))) (f (fn (x) (+ x (Ask.get))))) (+ (g 3) (f 10))))) (export main)))
+  (output (: 21 Int64)))
+
 (case "a handler arm that resumes NON-tail folds a perform in an if branch by handler distribution"
   (doc    "A perform in an `if` BRANCH (a CONDITIONALLY-run position) folds when the CONDITION is pure, by
            HANDLER DISTRIBUTION — a commuting conversion: `(handle E s arms (if c t e))` is equivalent to

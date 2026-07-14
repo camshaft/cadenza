@@ -2116,3 +2116,38 @@
             (def (main) (Int64.of (loop 10 (BigInt.of 0) (BigInt.of 1))))
             (export main)))
   (output (: 55 Int64)))
+
+(case "a runtime Rational built from a parameter compares by its exact value"
+  (doc    "`(< (Rational.of a 3) (Rational.of 1 2))` with runtime `a` builds a Rational from a runtime
+           numerator (`Rational.of a 3` → widen `a` + `3` to BigInt, `rational-of` normalizes) and compares
+           it exactly via the runtime `rational-cmp`: a=1 → 1/3 < 1/2 → true → 1. THE runtime-Rational path
+           (R3b): the constant fold does not apply (the numerator is a parameter), so the compiler emits
+           `bigint-of-i64` + `rational-of` + `rational-cmp` on the runtime limb library. The a=2 companion
+           (2/3 < 1/2 → false) pins the other direction.")
+  (input  (do
+            (def (main (: a Int64)) (if (< (Rational.of a 3) (Rational.of 1 2)) 1 0))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64)))
+
+(case "a runtime Rational comparison of a parameter is false when it should be"
+  (doc    "The false-direction companion of the runtime-Rational compare: `(< (Rational.of a 3) (Rational.of
+           1 2))` with a=2 → 2/3 < 1/2 → false → 0. Same runtime `rational-cmp` path, the greater operand.")
+  (input  (do
+            (def (main (: a Int64)) (if (< (Rational.of a 3) (Rational.of 1 2)) 1 0))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 0 Int64)))
+
+(case "runtime Rational arithmetic adds two parameter-built fractions exactly"
+  (doc    "`(< (+ (Rational.of a b) (Rational.of 1 2)) (Rational.of 1 1))` with a=1,b=3: the sum
+           1/3 + 1/2 = 5/6 is computed by the runtime `rational-add` (both operands built from runtime ints
+           via `rational-of`, so the constant fold does not apply), then compared `< 1` → 5/6 < 1 → true →
+           1. Pins runtime rational ADDITION on the limb library (the emitted ops are `bigint-of-i64` +
+           `rational-of` + `rational-add` + `rational-cmp`) — exact, no rounding.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (if (< (+ (Rational.of a b) (Rational.of 1 2)) (Rational.of 1 1)) 1 0))
+            (export main)))
+  (call   main (: 1 Int64) (: 3 Int64))
+  (output (: 1 Int64)))

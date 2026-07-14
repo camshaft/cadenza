@@ -1864,6 +1864,21 @@ fn emit_closure_resource(
                 used.insert(op);
             }
         }
+        // A DIRECT-CALL fixed-shape scalar tuple/record ARG: the `call` body rebuilds the flattened fields
+        // into a heap cell (`emit_tuple_rebuild`: `arr-alloc`, then per field its box op + `arr-set`). Those
+        // ops appear ONLY in the synthesized rebuild, not in any reachable body — so register EXACTLY what
+        // the rebuild emits: `arr-alloc`/`arr-set` plus each field's box op. All-int tuples happened to work
+        // because `box-int` is pulled in elsewhere, but a Bool field needs `box-bool`, a Float `box-float`/
+        // `box-float32` — absent from the import index without this, so `emit_tuple_rebuild`'s `imp(bop)`
+        // panicked ("rebuild op imported"). Keying off `field_box_ops` keeps imports consistent with the
+        // codegen for every field-type mix.
+        if let Some((_, _, _, _, rebuild)) = &tuple_arg {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for bop in rebuild.field_box_ops.iter().flatten() {
+                used.insert(bop);
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     let export_abs = layout
@@ -2450,6 +2465,17 @@ fn emit_multi_closure_resource(
                 used.insert(op);
             }
         }
+        // A DIRECT-CALL fixed-shape scalar tuple/record ARG rebuilds its cell in the `call` body
+        // (`emit_tuple_rebuild`): register the ops it emits — `arr-alloc`/`arr-set` + each field's box op
+        // (`box-int`/`box-bool`/`box-float`/`box-float32`), which appear only in the synthesized rebuild.
+        // Without the box op a Bool/Float field panicked ("rebuild op imported"); see `emit_closure_resource`.
+        if let Some((_, _, _, _, rebuild)) = &tuple_arg {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for bop in rebuild.field_box_ops.iter().flatten() {
+                used.insert(bop);
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -2499,9 +2525,10 @@ fn emit_multi_closure_resource(
     // the flattened fields, the shared list<u8> envelope emits the `tuple<…>` type. `None` on the scalar path.
     let rebuild = tuple_arg.as_ref().map(|(_, _, _, _, rb)| rb);
     let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _, _, _)| fb.as_slice());
-    // Prefix/suffix scalar bytes when the tuple sits among scalars; empty for a sole tuple. The multi
-    // LIST-result cores do not yet interleave prefix/suffix, so an among-scalars tuple with a list result
-    // declines below; only the SCALAR-result multi tail consumes these.
+    // Prefix/suffix scalar bytes when the tuple sits among scalars; empty for a sole tuple. Both the SCALAR
+    // and the three LIST-result multi cores now interleave these around the rebuilt tuple (via the shared
+    // `serialize::emit_closure_call_args`); the shared `call` functype interleaves the scalar boundary bytes
+    // around the `tuple<…>` type (`assemble_multi_closure_bytes_resource_borrow_tuple` threads prefix/suffix).
     let tpre = tuple_arg
         .as_ref()
         .map(|(_, _, pre, _, _)| pre.as_slice())
@@ -2510,18 +2537,6 @@ fn emit_multi_closure_resource(
         .as_ref()
         .map(|(_, _, _, suf, _)| suf.as_slice())
         .unwrap_or(&[]);
-    let among_scalars = !tpre.is_empty() || !tsuf.is_empty();
-    // A multi-export AMONG-SCALARS tuple with a list<u8>-crossing result declines: the multi LIST-result cores
-    // push `for a in 0..arity` and don't yet interleave prefix/suffix scalars around the rebuilt tuple (a
-    // follow-on). A SOLE tuple with a list result works (the shared list cores rebuild it); a scalar result
-    // with an among-scalars tuple works (the scalar tail interleaves).
-    if among_scalars && (ret_is_bytes || ret_is_compound || ret_is_collection) {
-        return Err(Reject::decline(
-            "a multi-export closure with a fixed-shape compound arg ALONGSIDE other args AND a byte-rope/\
-             compound/collection result is not yet emitted (the list-result cores do not yet interleave \
-             prefix/suffix scalars — a later widening; a scalar result works)",
-        ));
-    }
     // A COMPOUND shared result → the N-makes-one-list-`call` VALUE-FORM core (walks each closure's returned
     // handle into the value-form template) + the SAME memory/realloc envelope as the bytes path. cdz-run
     // try-decodes the `list<u8>` result to the typed `(: value T)` form.
@@ -2551,6 +2566,8 @@ fn emit_multi_closure_resource(
                 &[],
                 true,
                 tuple_bytes,
+                tpre,
+                tsuf,
             ),
         );
     }
@@ -2582,6 +2599,8 @@ fn emit_multi_closure_resource(
                 &[],
                 true,
                 tuple_bytes,
+                tpre,
+                tsuf,
             ),
         );
     }
@@ -2612,6 +2631,8 @@ fn emit_multi_closure_resource(
                 &[],
                 true,
                 tuple_bytes,
+                tpre,
+                tsuf,
             ),
         );
     }
@@ -2934,6 +2955,18 @@ fn emit_mixed_closure_resource(
                 used.insert(op);
             }
         }
+        // A DIRECT-CALL fixed-shape scalar tuple/record ARG rebuilds its cell in the `call` body
+        // (`emit_tuple_rebuild`): register the ops it emits — `arr-alloc`/`arr-set` + each field's box op
+        // (`box-int`/`box-bool`/`box-float`/`box-float32`), which appear only in the synthesized rebuild.
+        // Without the box op a Bool/Float field panicked ("rebuild op imported"); see `emit_closure_resource`.
+        // (This function's `tuple_arg` is the 3-tuple `(bytes, vts, rebuild)` shape.)
+        if let Some((_, _, rebuild)) = &tuple_arg {
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for bop in rebuild.field_box_ops.iter().flatten() {
+                used.insert(bop);
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -3032,6 +3065,8 @@ fn emit_mixed_closure_resource(
                 &abi_plain,
                 true,
                 tuple_bytes,
+                &[], // the MIXED path detects a SOLE tuple only (no among-scalars prefix/suffix yet)
+                &[],
             ),
         );
     }
@@ -3063,6 +3098,8 @@ fn emit_mixed_closure_resource(
                 &abi_plain,
                 true,
                 tuple_bytes,
+                &[], // the MIXED path detects a SOLE tuple only (no among-scalars prefix/suffix yet)
+                &[],
             ),
         );
     }
@@ -3093,6 +3130,8 @@ fn emit_mixed_closure_resource(
                 &abi_plain,
                 true,
                 tuple_bytes,
+                &[], // the MIXED path detects a SOLE tuple only (no among-scalars prefix/suffix yet)
+                &[],
             ),
         );
     }
