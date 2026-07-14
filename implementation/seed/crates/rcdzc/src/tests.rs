@@ -35509,6 +35509,58 @@ mod stage1 {
     }
 
     #[test]
+    fn a_lowercase_name_in_a_type_position_points_at_the_unannotated_generic_route() {
+        // A bare LOWERCASE name in a type-annotation position that resolves to nothing — `(: x a)`. An ML/
+        // Haskell user reads `a` as a TYPE VARIABLE (and it IS one in a VARIANT PAYLOAD `(type Box (B a))`),
+        // but an annotation has no `∀`-binder to scope a fresh variable, so `a` is genuinely unbound. The
+        // bare "unbound name `a`" is right but unhelpful; the message now points at the real route to
+        // polymorphism — an UNANNOTATED parameter. Still CDZ0101 (unbound), across all three annotation sites.
+        let unbound_hint = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0101"))
+                .unwrap_or_else(|| panic!("expected CDZ0101 for {src}"))
+                .message
+        };
+        for src in [
+            "(module m (def (id (: x a)) x) (def (main) (id 1)) (export main))",
+            "(module m (def (main) (: 5 a)) (export main))",
+            "(module m (def (main) (let (((: y a) 5)) y)) (export main))",
+        ] {
+            let m = unbound_hint(src);
+            assert!(
+                m.contains("unbound name `a`")
+                    && m.contains("not a type variable")
+                    && m.contains("UNANNOTATED"),
+                "the lowercase-type-var hint points at the unannotated-generic route: {m}"
+            );
+        }
+        // A lowercase name in a VARIANT PAYLOAD is still a genuine type variable — NOT this fault. And an
+        // UPPERCASE unbound type name (`Widget`) is a plain missing-type, keeping the bare message (it is
+        // not a would-be type variable).
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (type Box (B a)) (def (main) 1) (export main))"
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a lowercase name in a variant payload is a type variable, not an unbound-name fault"
+        );
+        let widget = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: x Widget)) x) (def (main) (f 1)) (export main))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0101"))
+        .expect("Widget is unbound");
+        assert!(
+            widget.message.contains("unbound name `Widget`")
+                && !widget.message.contains("not a type variable"),
+            "an uppercase missing type keeps the plain unbound message: {}",
+            widget.message
+        );
+    }
+
+    #[test]
     fn a_bare_type_constructor_in_type_position_names_the_missing_argument() {
         // A bare type-CONSTRUCTOR name used as a type with no argument — `(: xs List)`, `(: m Map)`, `(: q
         // Qty)` — is CDZ0203, but `List`/`Map`/`Qty` ARE types (constructors), so the generic "`List` is a
