@@ -255,6 +255,13 @@ pub struct Peer {
 /// EVERY component that imports it (X5), so a `value` handle one produces is meaningful to another (they
 /// index the same heap — component-abi.md §A Cross-Component Handle Is Meaningful Only In The Shared
 /// Runtime Instance). SCOPE: scalar peer ops today; a `value`-handle op rides this shared instance.
+///
+/// This is the host binding every composed component's value-heap runtime import to the ONE shared
+/// instance: the consumer and each peer all pin the same runtime (same content hash → same import name),
+/// so their handles index one heap and none is handed a handle into a heap it does not share. (The
+/// `value`-handle crossing that USES this shared heap is X5b; X5a establishes the shared instance.)
+//= spec/contracts/component-abi.md#a-cross-component-handle-is-meaningful-only-in-the-shared-runtime-instance
+//# A host that composes Cadenza components which exchange values by handle MUST bind every such component's value-heap runtime import to the one shared runtime instance, so that the components' handles index one heap and a component cannot be handed a handle into a heap it does not share.
 pub fn run_with_peers(consumer_bytes: &[u8], peers: &[Peer], opts: &RunOpts) -> Result<Outcome> {
     use std::sync::{Arc, Mutex};
     let engine = engine();
