@@ -631,3 +631,24 @@
             (def (main) (match (mk) ((Box.W n) n) ((Box.E) 0)))
             (export main)))
   (output (: 42 Int64)))
+
+(case "a sum TYPE and its constructors are imported by name and constructed in the entry"
+  (doc    "Beyond exporting a sum VALUE (the cases above, where the entry RE-DECLARES a structurally-
+           identical type), here `lib` EXPORTS the nominal sum TYPE `Color` itself plus a consumer `to-int`,
+           and the entry `(import \"lib\" (Color to-int))` brings the TYPE + its constructors into scope and
+           CONSTRUCTS `(Color.Green)` locally. The imported type's identity crosses the link, so a value the
+           entry builds with the imported constructor dispatches correctly in the lib's `to-int` match →
+           `Green` = 2. Pins that a nominal sum type + its constructors compose across an explicit import
+           (not only sum VALUES with a re-declared type) — the value built against the imported type is the
+           SAME nominal type the lib's consumer expects.")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (to-int (: c Color)) (match c ((Color.Red) 1) ((Color.Green) 2) ((Color.Blue) 3)))
+      (export Color)
+      (export to-int)))
+  (input  (do
+            (import "lib" (Color to-int))
+            (def (main) (to-int (Color.Green)))
+            (export main)))
+  (output (: 2 Int64)))
