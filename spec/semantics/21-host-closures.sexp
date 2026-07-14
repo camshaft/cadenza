@@ -2246,6 +2246,91 @@
   (call   appb (: 6 Int64))
   (output (: 36 Int64)))
 
+; The in-guest-argument relaxation reaches every MACHINE-representable argument, not just fixed-shape
+; compounds: a SUM (Option/Result), a NESTED compound, a String/Bytes, and — most notably — a closure-TYPED
+; argument all cross the round trip, because each is built in the guest and only the outer closure HANDLE
+; travels. A HIGHER-ORDER closure (`(-> (-> A B) R)`) handed back and applied to a guest-built inner closure
+; needs NO extra resource machinery: the inner closure is an ordinary in-guest funcref-table value (an i32
+; slot, `valtype_of(Ty::Fn)`), applied by the outer via the usual `call_indirect`.
+
+(case "round-trip: a closure taking a SUM (Option) arg built in-guest"
+  (doc    "`mk : () -> (-> (Option Int64) Int64)` unwraps with a default; `app` applies it to a guest-built
+           `(Some x)`. `app(handle, 7)` → `g((Some 7))` = 7. A SUM closure argument crosses the round trip (an
+           i32 sum handle in-guest).")
+  (input  (do (def (mk) (fn ((: o (Option Int64))) (match o ((Some v) v) (None 0))))
+              (def (app (: g (-> (Option Int64) Int64)) (: x Int64)) (g (Some x)))
+              (export mk) (export app)))
+  (call   app (: 7 Int64))
+  (output (: 7 Int64)))
+
+(case "round-trip: a closure taking a NESTED compound (Tuple of Tuples) arg"
+  (doc    "`mk`'s closure reads `(. (. p 0) 0) + (. p 1)`; `app` applies it to a guest-built
+           `(tuple (tuple x x) x)`. `app(handle, 5)` → `g((tuple (tuple 5 5) 5))` = 5 + 5 = 10. A NESTED
+           compound argument crosses (still one i32 handle at the top).")
+  (input  (do (def (mk) (fn ((: p (Tuple (Tuple Int64 Int64) Int64))) (+ (. (. p 0) 0) (. p 1))))
+              (def (app (: g (-> (Tuple (Tuple Int64 Int64) Int64) Int64)) (: x Int64))
+                (g (tuple (tuple x x) x)))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: 10 Int64)))
+
+(case "round-trip: a closure taking a String arg built in-guest"
+  (doc    "`mk`'s closure takes the byte length of a String; `app` applies it to a guest-built literal
+           `\"hello\"`. `app(handle, 0)` → `g(\"hello\")` = 5. A byte-rope (String) closure argument crosses the
+           round trip (an i32 rope handle in-guest).")
+  (input  (do (def (mk) (fn ((: s String)) ((. String byte-len) s)))
+              (def (app (: g (-> String Int64)) (: x Int64)) (g "hello"))
+              (export mk) (export app)))
+  (call   app (: 0 Int64))
+  (output (: 5 Int64)))
+
+(case "round-trip: a HIGHER-ORDER closure — its argument is itself a closure built in-guest"
+  (doc    "`mk : () -> (-> (-> Int64 Int64) Int64)` applies its function argument to 10; `app` hands it a
+           guest-built capturing closure `(fn (y) (+ y x))`. `app(handle, 5)` → `g((fn y -> y+5))` = 15. A
+           CLOSURE-TYPED argument crosses the round trip with NO extra resource machinery: the inner closure
+           is an ordinary in-guest funcref-table value (an i32 slot), applied by the outer via
+           `call_indirect`. Only the OUTER closure handle crosses the host boundary.")
+  (input  (do (def (mk) (fn ((: f (-> Int64 Int64))) (f 10)))
+              (def (app (: g (-> (-> Int64 Int64) Int64)) (: x Int64)) (g (fn (y) (+ y x))))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: 15 Int64)))
+
+(case "round-trip: a higher-order closure whose inner closure CAPTURES and is applied twice"
+  (doc    "`mk`'s closure applies its function arg to BOTH 10 and 20 and sums; `app` hands in a guest-built
+           capturing `(fn (y) (* y x))`. `app(handle, 3)` → `g((fn y -> y*3))` = 3*10 + 3*20 = 90. Stresses a
+           captured, MULTIPLY-APPLIED inner closure — a wrong funcref slot would give a wrong value.")
+  (input  (do (def (mk) (fn ((: f (-> Int64 Int64))) (+ (f 10) (f 20))))
+              (def (app (: g (-> (-> Int64 Int64) Int64)) (: x Int64)) (g (fn (y) (* y x))))
+              (export mk) (export app)))
+  (call   app (: 3 Int64))
+  (output (: 90 Int64)))
+
+(case "round-trip: a higher-order closure applied to TWO distinct inner closures"
+  (doc    "`mk`'s closure applies its function arg to 100; `app` calls the handed-back `g` on TWO different
+           guest-built inner closures — `(fn y -> y+x)` and `(fn y -> y*x)` — and sums the results.
+           `app(handle, 4)` → `g((fn y->y+4)) + g((fn y->y*4))` = (100+4) + (100*4) = 104 + 400 = 504. Confirms
+           two distinct inner closures are NOT crossed (each resolves its own funcref slot).")
+  (input  (do (def (mk) (fn ((: f (-> Int64 Int64))) (f 100)))
+              (def (app (: g (-> (-> Int64 Int64) Int64)) (: x Int64))
+                (+ (g (fn (y) (+ y x))) (g (fn (y) (* y x)))))
+              (export mk) (export app)))
+  (call   app (: 4 Int64))
+  (output (: 504 Int64)))
+
+(case "distinct-sig round-trip: a higher-order closure + a scalar closure of another sig — the higher-order one"
+  (doc    "`mka : () -> (-> (-> Int64 Int64) Int64)` (applies its function arg to 1 and 2, sums) and
+           `mkb : () -> (-> Bool Int64)` are distinct sigs → two resource types. `appa` hands `g` a guest-built
+           `(fn (y) (* y x))`. `appa(handle, 5)` → `g((fn y->y*5))` = 5*1 + 5*2 = 15. A closure-typed argument
+           on the DISTINCT-SIG round-trip path.")
+  (input  (do (def (mka) (fn ((: f (-> Int64 Int64))) (+ (f 1) (f 2))))
+              (def (mkb) (fn ((: b Bool)) (: (if b 100 200) Int64)))
+              (def (appa (: g (-> (-> Int64 Int64) Int64)) (: x Int64)) (g (fn (y) (* y x))))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 5 Int64))
+  (output (: 15 Int64)))
+
 (case "a compound closure ARG on the DIRECT-CALL path is declined — host would supply the compound"
   (doc    "A single closure export whose closure takes a Tuple, called DIRECTLY by the host (no consumer to
            apply it in-guest): the host would have to supply the `(Tuple Int64 Int64)` argument OVER the
@@ -2256,3 +2341,13 @@
               (export mk)))
   (call   mk (: 3 Int64))
   (output (: 5 Int64)))
+
+(case "a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure"
+  (doc    "A single higher-order closure export called DIRECTLY by the host: the host would have to supply the
+           `(-> Int64 Int64)` function argument OVER the boundary (itself a closure resource passed INTO a
+           call), which the current envelope does not accept. Declines (a `todo`); contrast the round-trip
+           cases above, where the inner closure is built in-guest.")
+  (input  (do (def (mk) (fn ((: f (-> Int64 Int64))) (f 10)))
+              (export mk)))
+  (call   mk (: 0 Int64))
+  (output (: 10 Int64)))
