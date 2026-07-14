@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 199 tests total across 22 modules):
+top. Current `src/` modules (each with same-file `@test`s — 208 tests total across 23 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -149,6 +149,10 @@ top. Current `src/` modules (each with same-file `@test`s — 199 tests total ac
   threaded through recursion). The eval half of a REPL/compiler. 10 `@test`s (arith, nested let, correct
   lexical shadowing, rhs-sees-outer-scope, unbound). The `interp-shadow-restores` case is WITHHELD — it
   exposed the `Map.insert`-mutates-shared-recursive-param miscompile above.
+- `src/hash.cdz` — a STRUCTURAL HASH over an `Ast` (rolling polynomial hash mixing tag + payload + child
+  hashes), the core of hash-consing / CSE. Key property: CONGRUENCE (structurally-equal ASTs hash equal),
+  with order/shape/arity sensitivity. All-scalar recursion (dodges the collection-mutation bug). 9
+  `@test`s. Confirmed WORKING.
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -239,6 +243,13 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   a GENERAL persistent-collection operand-consumption bug, not Map-specific. Borrow/Perceus family — the
   cross-call ownership seam: a borrowed collection param passed to a consuming call needs a `dup`. Blocks
   a scope-threading interpreter/type-checker; `src/interp.cdz`'s `interp-shadow-restores` is withheld.
+  🔬 SHARPENED (iter 29) to a 6-line non-interpreter repro
+  `repros/miscompile-selfcall-plus-consuming-op-share-param.sexp`: the trigger is a param used by a
+  consuming op in one operand AND passed to a SELF-CALL of the same fn in a sibling operand — the WAT
+  shows the guest emits `local.get 1 … vec-push … local.get 1 (self-call)` with NO `dup` before the
+  consuming `vec-push`, so the self-call reads the mutated handle. An ordinary call to a SEPARATE fn dups
+  correctly; only the self-call arg path omits the dup. Fix locus: the self-call arg emit in
+  `backend/wasm/select.rs`.
 
 - **OPEN (seed `rcdzc` — RESOLVER, both surfaces; RE-DIAGNOSED iter 25): a NULLARY variant DOTTED pattern
   (`Ty.TInt`) in a NESTED match resolves as member ACCESS.**

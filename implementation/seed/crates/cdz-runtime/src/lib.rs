@@ -18560,6 +18560,36 @@ mod tests {
                 "key {k} matches reference"
             );
         }
+        // (1b) CURSOR completeness: walk `op_map_iter` to exhaustion and collect every (key,value) it
+        // visits. The cursor walks CHAMP HASH order (NOT the reference's sorted order), so compare as a
+        // MAP/set — it must visit EXACTLY the reference's entries, each once. This is the property a future
+        // `Map.fold`/`keys` rests on, over a CHAMP shaped by the RANDOM insert/remove/fork churn above
+        // (collapsed collision nodes, sparse bitmaps, in-place-drained-then-refilled subtrees) — states the
+        // fixed-shape cursor tests don't reach. The cursor BORROWS each key/value (no consume), so the
+        // collected handles are only read (`op_get_int`), never dropped; the cursor itself is dropped when
+        // exhausted. A duplicate/missing/extra key or a wrong value would diverge from the reference here.
+        let mut visited: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+        let mut cur = op_map_iter(m);
+        loop {
+            let k = op_map_iter_key(cur);
+            if k == Handle::NULL {
+                break; // exhausted
+            }
+            let v = op_map_iter_val(cur);
+            let prev = visited.insert(op_get_int(k), op_get_int(v));
+            assert!(
+                prev.is_none(),
+                "the cursor visits key {} at most once (no duplicate emission)",
+                op_get_int(k)
+            );
+            cur = op_map_iter_next(cur);
+        }
+        op_drop(cur);
+        assert_eq!(
+            visited, reference,
+            "the cursor visits EXACTLY the reference's (key,value) entries — complete + correct enumeration \
+             over a churned CHAMP (the Map.fold/keys property; hash order, compared as a map)"
+        );
         // (2) canonical shape: same contents ⇒ byte-identical to a freshly-built twin, regardless of the
         // insert/remove/fork history that produced `m`.
         let twin = map_of_reference(&reference);

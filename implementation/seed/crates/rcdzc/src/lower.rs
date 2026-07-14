@@ -3034,6 +3034,73 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             "matching a compound value needs a heap walk (not yet built)",
         ));
     }
+    // GUARDED SCALAR MATCH → nested `if`-chain (the scalar analogue of the string desugar above). A match
+    // with ANY guard cannot use the `br_table` jump (both `try_emit_*_br_table` bail on a guard) and its
+    // `Core::Match` emit lowers a guarded arm to `if guard body else <rest>` — which does NOT get the
+    // `if`→select / bool-materialization the plain `Core::If` does. So `(match x ((guard n (> n 100)) 1)
+    // (_ 0))` emitted a structured `if/else` block where the equivalent `(if (> x 100) 1 0)` branchlessly
+    // materializes to `gt_s ; extend`. Desugar to `(if (= scrutinee lit) (if guard body <else>) <else>)`
+    // (a literal-probe arm) / `(if guard body <else>)` (a guarded WILDCARD, no `=` test) and re-lower —
+    // the ordinary `Resolved::If` path then applies every branchless conversion. Built from the AST
+    // pattern/guard/body nodes exactly as the string path, so a binder resolves through its arm as before.
+    // Only for a match that HAS a guard (an unguarded scalar match keeps its `Core::Match` → `br_table`/
+    // probe-chain, unchanged); the arms must be Int/Bool literal or wildcard probes (the type check above
+    // rejected a mismatch, and a guarded compound-pattern arm went to the sum path).
+    if probes.iter().any(|(_, guard, _)| guard.is_some())
+        && probes.iter().all(|(p, _, _)| {
+            matches!(
+                p,
+                crate::core::Probe::Int(_) | crate::core::Probe::Bool(_) | crate::core::Probe::Wild
+            )
+        })
+    {
+        // The unconditional tail = the first UNGUARDED wildcard arm's body (exhaustiveness guarantees one;
+        // a guarded arm never covers unconditionally). Arms after it are unreachable and dropped.
+        let tail_ix = arms.iter().position(|&(pat, _)| {
+            let inner = match db.ast.as_form(pat, "guard") {
+                Some(g) if g.len() == 2 => g[0],
+                _ => pat,
+            };
+            db.ast.as_form(pat, "guard").is_none() && db.ast.as_name(inner).is_some()
+        });
+        let Some(tail_ix) = tail_ix else {
+            return Core::Poison(Reject::decline(
+                "a guarded scalar match needs an unguarded wildcard tail",
+            ));
+        };
+        let mut else_node = arms[tail_ix].1;
+        // Fold the leading arms (0..tail_ix) from LAST backward into nested `if`s.
+        for &(pat, body) in arms[..tail_ix].iter().rev() {
+            let (inner_pat, guard) = match db.ast.as_form(pat, "guard") {
+                Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+                _ => (pat, None),
+            };
+            // A LITERAL probe adds a `(= scrutinee <literal>)` test (scalar `=` → `i*.eq`); a WILDCARD
+            // inner pattern (a bare name / `_`) has NO literal test — the guard alone gates it.
+            let is_wild = db.ast.as_name(inner_pat).is_some();
+            // A guarded arm nests its guard INSIDE the matched branch: `(if guard body <else>)`, so a false
+            // guard falls through to the same `else` as a non-matching literal.
+            let then_branch = match guard {
+                Some(g) => {
+                    let if_head = db.push_name("if");
+                    db.push_list(vec![if_head, g, body, else_node])
+                }
+                None => body,
+            };
+            else_node = if is_wild {
+                // A guarded wildcard: the guard IS the whole test — `(if guard body <else>)` (already built
+                // as `then_branch`; an UNguarded wildcard before the tail is unreachable but harmless).
+                then_branch
+            } else {
+                let eq_head = db.push_name("=");
+                let eq = db.push_list(vec![eq_head, scrutinee, inner_pat]);
+                let if_head = db.push_name("if");
+                db.push_list(vec![if_head, eq, then_branch, else_node])
+            };
+        }
+        trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "guarded scalar match → if-chain (unlocks branchless if→select)");
+        return core_of(db, else_node);
+    }
     // ALL-SAME-BODY COLLAPSE: if every arm is UNGUARDED and all their bodies lower to the SAME core, the
     // match computes that value for every scrutinee — so it collapses to the body, dropping the probe
     // chain (the match analogue of `(if c x x)` → `x`). Guarded arms are excluded: a guard may fail, so
@@ -3449,6 +3516,200 @@ fn refutable_ctor_element_head(db: &mut Db, elem_pat: StructId) -> Option<Struct
     let decl = crate::eval::variant_owner_decl(db, resolve_head)?;
     let variant_count = db.type_decl_by_occ(decl).map(|d| d.variants.len())?;
     (variant_count > 1).then_some(head)
+}
+
+/// PRE-PASS for `lower_match_list` (the CONSTRUCTOR analogue of Inc-23's `desugar_saturating_bool_list_
+/// elements`): a set of `(list <ctor-elem> .. rest)` arms whose position-0 constructors SATURATE the element
+/// sum's variant set (EVERY variant present) JOINTLY covers every NON-EMPTY list — the first element is one
+/// of the sum's variants, nothing else — so together with a `(list)` arm the match is total WITHOUT a `_`.
+//= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
+//# A set of list-element arms MUST be treated as exhaustive when it covers both the empty list and every non-empty list.
+///
+/// The bool case (Inc-23) replaces the last saturating arm's literal with `_` (a bool literal is a pure
+/// test, binds nothing). A CTOR element binds a PAYLOAD, so it cannot be dropped — instead the LAST
+/// saturating arm becomes UNCONDITIONAL by moving the payload-binding into its BODY (the ctor desugar's
+/// body-rematch shape, minus the guard):
+///   `((list (C.V p…) rest… .. r) body)`  [as the last saturating arm]  ≡
+///   `((list __ls rest… .. r) (match __ls ((C.V p…) body) (_ (trap …))))`
+/// The list pattern `(list __ls .. rest)` is now an UNGUARDED lead-1 rest — an unconditional cover the
+/// length matcher counts (closing the non-empty tail). The body re-match binds `C.V`'s payload; its
+/// `_ → trap` arm is UNREACHABLE by saturation + first-match-wins (reaching this arm means every OTHER
+/// variant's earlier arm failed its discriminant, so — the sum's variants being exhausted — the element IS
+/// `C.V`). The earlier saturating arms keep their ctor element → the ctor desugar makes them guarded
+/// (discriminant-tested), so routing is unchanged. Fixes BOTH the exhaustiveness check and runtime totality.
+///
+/// Fires ONLY when (a) the element type is a `Ty::Sum` (or newtype) with a known variant set, (b) EVERY
+/// variant appears at position 0 among BARE (unguarded) lead-1 `(list <ctor> .. rest)` arms — exactly one
+/// leading element (a ctor of that sum) followed by a rest binder, and (c) there is NO existing unguarded
+/// whole-tail cover (a bare `_`/name arm or a lead-0 `(list .. rest)`), else the match is already total and
+/// the rewrite would only add a redundant arm (CDZ0213). A single-variant sum is irrefutable (handled
+/// inline, never reaches here). Returns `Some(Core)` iff it fired (rebuilds the match, re-resolves, recurses).
+/// Whether the list-element pattern `elem` is a BARE-MEMBER ctor `(. Sum V)` used whole (a nullary variant
+/// written `C.R`) — as opposed to an applied ctor `(C.V p…)` or a paren-nullary `(R)`. The saturating-ctor
+/// pass excludes this form: reusing a bare-member node as a synthesized inner-match pattern head re-lowers
+/// as member ACCESS in the emit path (a synthesized-member-pattern resolve gap), so the pass declines it and
+/// the honest CDZ0210 stands instead.
+fn bare_member_ctor_element(db: &Db, elem: StructId) -> bool {
+    matches!(
+        db.ast.get(elem),
+        crate::ast::Struct::List(children)
+            if children.first().is_some_and(|&h| db.ast.as_name(h) == Some("."))
+    )
+}
+
+fn desugar_saturating_ctor_list_elements(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    // The element sum's declaration + its FULL variant-name set. Bail unless the element type resolves to a
+    // sum (or newtype) with a known decl — a non-sum element (or an unsolved `Any`) is not this case.
+    let elem_ty = match crate::infer::type_of(db, scrutinee) {
+        crate::ty::Ty::List(e) => (*e).clone(),
+        _ => return None,
+    };
+    let decl = match elem_ty {
+        crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => decl,
+        _ => return None,
+    };
+    let all_variants: std::collections::BTreeSet<String> = db
+        .type_decl_by_occ(decl)?
+        .variants
+        .iter()
+        .map(|v| v.name.clone())
+        .collect();
+    // A single-variant sum's element is irrefutable (no discriminant to test), handled by the inline
+    // binding path — not a saturation case.
+    if all_variants.len() < 2 {
+        return None;
+    }
+    // Classify each SOURCE arm. `ctor_lead[i]` = Some(variant-name) iff arm i is a BARE (unguarded)
+    // `(list <ctor of this sum> .. <name>)` — exactly one leading element (a ctor) followed by a rest
+    // binder. `has_tail_cover` = some UNGUARDED arm already covers the whole non-empty tail.
+    let mut ctor_lead: Vec<Option<String>> = Vec::with_capacity(arms.len());
+    let mut has_tail_cover = false;
+    for &(pat, _) in arms {
+        if db.ast.as_form(pat, "guard").is_some() {
+            ctor_lead.push(None);
+            continue;
+        }
+        if db.ast.as_name(pat).is_some() {
+            has_tail_cover = true;
+            ctor_lead.push(None);
+            continue;
+        }
+        let Some(es) = db
+            .ast
+            .as_ctor_form(pat, "list")
+            .or_else(|| db.ast.as_form(pat, "list"))
+            .map(<[_]>::to_vec)
+        else {
+            ctor_lead.push(None);
+            continue;
+        };
+        match es.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
+            Some(0) => {
+                has_tail_cover = true;
+                ctor_lead.push(None);
+            }
+            // A single leading element + rest, that element a refutable ctor of the element sum → a
+            // saturating candidate; record the variant it names. A BARE-MEMBER element `(. C R)` (a nullary
+            // variant written `C.R`) is EXCLUDED: reusing it as a synthesized inner-match pattern head
+            // re-lowers as member ACCESS (CDZ0201) in the emit path — a synthesized-member-pattern resolve
+            // gap this pass does not attempt to fix; the paren-nullary `(R)` and applied `(C.V p…)` forms
+            // work. Excluding it → the member-form case simply does not saturate here → the honest CDZ0210
+            // (add a `_`) stands. See `bare_member_ctor_element`.
+            Some(i) if i == 1 && i + 2 == es.len() => {
+                if bare_member_ctor_element(db, es[0]) {
+                    ctor_lead.push(None);
+                } else {
+                    match refutable_ctor_element_head(db, es[0]) {
+                        Some(head) => ctor_lead.push(ctor_head_display_name(db, head)),
+                        None => ctor_lead.push(None),
+                    }
+                }
+            }
+            _ => ctor_lead.push(None),
+        }
+    }
+    if has_tail_cover {
+        return None;
+    }
+    // Saturation: EVERY variant of the element sum appears among the candidate arms.
+    let covered: std::collections::BTreeSet<String> = ctor_lead.iter().flatten().cloned().collect();
+    if covered != all_variants {
+        return None;
+    }
+    // The LAST saturating candidate (source order) — reaching it means every OTHER variant's earlier arm
+    // failed its discriminant, so (the variants being exhausted) its element IS this arm's variant.
+    let last = ctor_lead.iter().rposition(Option::is_some)?;
+    // Rewrite that arm: `(list <ctor> .. rest)` → `(list __ls .. rest)` (unconditional lead-1 cover), and
+    // wrap its body in `(match __ls (<ctor> body) (_ (trap)))` to bind the ctor's payload sub-patterns.
+    let mut new_arms: Vec<StructId> = Vec::with_capacity(arms.len());
+    for (ai, &(pat, body)) in arms.iter().enumerate() {
+        if ai != last {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        }
+        let es = db
+            .ast
+            .as_ctor_form(pat, "list")
+            .or_else(|| db.ast.as_form(pat, "list"))
+            .map(<[_]>::to_vec)
+            .expect("the saturating arm is a bare list pattern");
+        let list_head = match db.ast.get(pat) {
+            crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+            _ => db.push_name("list"),
+        };
+        let ctor_pat = es[0]; // the leading ctor element (es = [<ctor>, "..", rest])
+        // Rebuild the ctor pattern with a FRESH head (via `clone_ctor_head`) — the original `(. C R)` /
+        // `C.V` head was resolved in list-ELEMENT position (INERT), and reusing it as an inner MATCH-arm
+        // pattern head leaves `(. C R)` mis-resolved as member ACCESS (CDZ0201) even after `forget_subtree`
+        // (the member form needs to re-resolve as a variant reference from scratch — exactly what
+        // `refutable_ctor_element_head` does to read the element's variant). Payload sub-patterns are reused
+        // (they re-resolve cleanly against the fresh binder scrutinee once forgotten).
+        let body_ctor_pat = clone_ctor_pattern_head(db, ctor_pat);
+        // The new list pattern: a fresh bare binder in place of the ctor element, keeping `.. rest`.
+        let binder_name = format!("__ls{ai}");
+        let binder = db.push_name(&binder_name);
+        let mut list_children = vec![list_head, binder];
+        list_children.extend(es[1..].iter().copied());
+        let new_list = db.push_list(list_children);
+        // The body re-match binds the ctor's payload: `(match __ls (<ctor> body) (_ (trap …)))`. The
+        // `_ → trap` is dead by saturation but keeps the inner match exhaustive (mirrors the ctor desugar).
+        let body_scrut = db.push_name(&binder_name);
+        let body_true_arm = db.push_list(vec![body_ctor_pat, body]);
+        let trap_head = db.push_name("trap");
+        let trap_msg =
+            db.push_str("unreachable: list-ctor-element variant set exhausted by earlier arms");
+        let trap = db.push_list(vec![trap_head, trap_msg]);
+        let wild_b = db.push_name("_");
+        let body_false_arm = db.push_list(vec![wild_b, trap]);
+        let body_match_head = db.push_name("match");
+        let new_body = db.push_list(vec![
+            body_match_head,
+            body_scrut,
+            body_true_arm,
+            body_false_arm,
+        ]);
+        // The last arm's new body RE-PARENTS the original arm `body` (and its rest binder into `new_list`)
+        // from a list-arm position into a fresh inner match. `resolved_of` is memoized and
+        // `resolve_subtree`'s walk-guard skips an already-resolved node, so those re-parented nodes would
+        // keep a stale resolution unless forgotten. Forget JUST this arm's new list + body (NOT the whole
+        // match — the EARLIER arms are untouched originals whose member heads `(. C R)` are already
+        // correctly resolved in element position, and blanket-forgetting them would break their
+        // re-resolution). `resolve_subtree` below then recomputes the forgotten + fresh nodes in context.
+        crate::resolve::forget_subtree(db, new_list);
+        crate::resolve::forget_subtree(db, new_body);
+        new_arms.push(db.push_list(vec![new_list, new_body]));
+    }
+    let match_head = db.push_name("match");
+    let mut items = vec![match_head, scrutinee];
+    items.extend(new_arms);
+    let rewritten = db.push_list(items);
+    crate::resolve::resolve_subtree(db, rewritten);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with saturating ctor first-elements → last arm unconditional + body re-match");
+    Some(core_of(db, rewritten))
 }
 
 /// PRE-PASS for `lower_match_list` (the CONSTRUCTOR twin of `desugar_refutable_literal_list_elements`):
@@ -4088,6 +4349,14 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
     // binding the values (the direct map matcher). Run alongside the ctor pass (a map element is neither a
     // ctor nor a literal, so the other passes skip it); it rebuilds the match and recurses through `core_of`.
     if let Some(core) = desugar_refutable_map_list_elements(db, scrutinee, arms) {
+        return core;
+    }
+    // PRE-PASS (ctor saturation): `(list) + (list (Some x) .. r) + (list (None) .. r)` covers every length —
+    // the ctor-lead arms saturate the element sum's variant set, so the match is total without a `_`. Run
+    // BEFORE the ctor desugar so it sees the un-desugared ctor arms: it turns the LAST saturating arm into an
+    // unconditional `(list __ls .. r)` cover (payload-binding moved to the body), while the earlier ctor arms
+    // still desugar to their discriminant guards on the recursion. The bool analogue of Inc-23.
+    if let Some(core) = desugar_saturating_ctor_list_elements(db, scrutinee, arms) {
         return core;
     }
     // PRE-PASS (ctor): a refutable MULTI-VARIANT CONSTRUCTOR leading element (`(list (Op.Add x) .. r)`) —
@@ -15255,6 +15524,34 @@ fn synth_value_path_read(
 /// name — for reuse as a ctor pattern head in a synthesized value-path read. A `.`-member form is rebuilt
 /// from fresh copies of its segments; a bare name is re-pushed. Falls back to reusing `h` for any other
 /// shape (never happens for a real ctor head).
+/// A copy of a whole constructor PATTERN `(C.V p…)` / `(. Sum V)` / bare-name with its HEAD rebuilt fresh
+/// (via [`clone_ctor_head`]) while REUSING its payload sub-patterns. Used when re-parenting a ctor element
+/// pattern into a synthesized inner match arm: the original head was resolved in list-element position
+/// (inert), so it must re-resolve as a variant reference from scratch, but the payload sub-patterns
+/// (`x` in `(Some x)`) re-resolve cleanly on their own once the subtree is forgotten. A bare member
+/// `(. Sum V)` used whole, or a bare name, has no payloads — just clone the head.
+fn clone_ctor_pattern_head(db: &mut Db, ctor_pat: StructId) -> StructId {
+    match db.ast.get(ctor_pat) {
+        crate::ast::Struct::List(children) => {
+            let children = children.clone();
+            match children.first().copied() {
+                // A bare member `(. Sum V)` used whole — the whole thing IS the head; clone it.
+                Some(first) if db.ast.as_name(first) == Some(".") => clone_ctor_head(db, ctor_pat),
+                // An applied ctor `(head p…)` — fresh head, reused payload sub-patterns.
+                Some(head) => {
+                    let fresh_head = clone_ctor_head(db, head);
+                    let mut new_children = vec![fresh_head];
+                    new_children.extend(children[1..].iter().copied());
+                    db.push_list(new_children)
+                }
+                None => ctor_pat,
+            }
+        }
+        // A bare-name nullary ctor — clone it fresh.
+        crate::ast::Struct::Atom(_) => clone_ctor_head(db, ctor_pat),
+    }
+}
+
 fn clone_ctor_head(db: &mut Db, h: StructId) -> StructId {
     if let Some(seg) = db.ast.as_form(h, ".").map(<[_]>::to_vec) {
         let dot = db.push_name(".");

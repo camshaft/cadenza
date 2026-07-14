@@ -2811,7 +2811,15 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             {
                 return false;
             }
-            if (has_malformed_handler_reject || has_resume_result_reject || has_arm_arity_reject)
+            // An OVER-APPLIED operation performed inside a handle (`(E.set 1 2)` for a 1-arg op) ALSO makes
+            // the handler unfoldable — the same relationship the malformed-handler / resume-result /
+            // arm-arity rejects have with the "not yet reducible" decline. The member-op over-application
+            // CDZ0203 (with its delete fix) is the primary; drop the consequent fold-decline so a mistyped
+            // perform reports ONE actionable error, not a coded reject shadowed by an unbuilt-feature decline.
+            if (has_malformed_handler_reject
+                || has_resume_result_reject
+                || has_arm_arity_reject
+                || has_member_over_application_reject)
                 && r.is_decline()
                 && r.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE
             {
