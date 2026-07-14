@@ -12208,6 +12208,64 @@ mod match_engine {
     }
 
     #[test]
+    fn a_record_field_set_mismatch_names_the_specific_missing_or_extra_fields() {
+        // Two records that differ in their FIELD SET — the value is missing a field the type requires, or
+        // carries one it has no place for. Naming both full record types buries the difference; the
+        // message names the specific fields (rustc's "missing field `y`" / "no field `z`").
+        let missing = reject_full(
+            "(module m (def (h (: p (Record (x Int64) (y Int64)))) (. p x)) \
+               (def (g) (h (record (x 1)))) (export g))",
+        )
+        .expect("a record missing a field rejects");
+        assert_eq!(
+            missing.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            missing.message
+        );
+        assert!(
+            missing.message.contains("missing field `y`"),
+            "names the missing field: {}",
+            missing.message
+        );
+        // An EXTRA field the expected record has no place for.
+        let extra = reject_full(
+            "(module m (def (h (: p (Record (x Int64) (y Int64)))) (. p x)) \
+               (def (g) (h (record (x 1) (y 2) (z 3)))) (export g))",
+        )
+        .expect("a record with an extra field rejects");
+        assert!(
+            extra.message.contains("no such field `z`"),
+            "names the extra field: {}",
+            extra.message
+        );
+        // Two missing fields → plural, sorted (deterministic, order-independent).
+        let two = reject_full(
+            "(module m (def (h (: p (Record (x Int64) (y Int64) (w Int64)))) (. p x)) \
+               (def (g) (h (record (x 1)))) (export g))",
+        )
+        .expect("a record missing two fields rejects");
+        assert!(
+            two.message.contains("missing fields `w`, `y`"),
+            "names both missing fields, sorted: {}",
+            two.message
+        );
+        // NO field-diff hint when the field NAMES match but a field's TYPE differs — that is a per-field
+        // type mismatch the full render already shows, not a set difference.
+        let type_diff = reject_full(
+            "(module m (def (h (: p (Record (x Int64)))) (. p x)) \
+               (def (g) (h (record (x true)))) (export g))",
+        )
+        .expect("a same-fields different-type record rejects");
+        assert!(
+            !type_diff.message.contains("missing field")
+                && !type_diff.message.contains("no such field"),
+            "a same-field-set type mismatch gets no field-diff hint: {}",
+            type_diff.message
+        );
+    }
+
+    #[test]
     fn a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix() {
         // A `String` supplied where `Bytes` is required — `(Bytes.len "hi")`, or `(f "hi")` for a
         // `(: b Bytes)` parameter — has a TOTAL prelude conversion: wrap in `(String.to-bytes …)` (the

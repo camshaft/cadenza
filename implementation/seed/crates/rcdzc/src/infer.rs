@@ -3089,6 +3089,53 @@ fn option_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     None
 }
 
+/// An actionable message TAIL when `expected` and `actual` are BOTH records that differ in their FIELD
+/// SET — the value is MISSING a field the type requires, and/or carries an EXTRA one the type has no
+/// place for. Naming both full record types (`(Record (x Int64) (y Int64))` vs `(Record (x Int64))`)
+/// buries the actual difference; this names the specific fields instead (rustc's "missing field `y`" /
+/// "no field `z`"). `None` unless both are records AND their field-name sets differ (a same-fields
+/// different-field-TYPE mismatch — `(x Int64)` vs `(x Bool)` — is a per-field type error the full render
+/// already shows clearly, not a set difference, so it is left alone). Field names are compared as SETS
+/// (the `BTreeMap` keys), so the hint is deterministic (sorted) and order-independent.
+fn record_field_diff_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+    let (Ty::Record(want), Ty::Record(got)) = (expected, actual) else {
+        return None;
+    };
+    let missing: Vec<&str> = want
+        .keys()
+        .filter(|k| !got.contains_key(*k))
+        .map(|k| k.name.as_str())
+        .collect();
+    let extra: Vec<&str> = got
+        .keys()
+        .filter(|k| !want.contains_key(*k))
+        .map(|k| k.name.as_str())
+        .collect();
+    if missing.is_empty() && extra.is_empty() {
+        return None; // same field names — a per-field type mismatch, not a set difference
+    }
+    let quote = |names: &[&str]| {
+        names
+            .iter()
+            .map(|n| format!("`{n}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut parts = Vec::new();
+    if !missing.is_empty() {
+        let plural = if missing.len() == 1 { "" } else { "s" };
+        parts.push(format!("missing field{plural} {}", quote(&missing)));
+    }
+    if !extra.is_empty() {
+        let plural = if extra.len() == 1 { "" } else { "s" };
+        parts.push(format!(
+            "no such field{plural} {} on the expected record",
+            quote(&extra)
+        ));
+    }
+    Some(format!(" — {}", parts.join("; ")))
+}
+
 /// The `(prefix, suffix, verb)` of a prelude CONVERSION that turns a value of type `actual` into the
 /// `expected` type in ONE shot — the coercion-wrap repair for a mismatch the numeric model / text model
 /// has a total conversion for. Today: `String` where `Bytes` is wanted → `(String.to-bytes …)` (the total
@@ -6621,10 +6668,21 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             } else {
                                 None
                             };
+                            // Two RECORDS that differ only in their FIELD SET — the value is missing a
+                            // field the type requires, or carries one the type has no place for. Naming
+                            // both full record types (`(Record (x Int64) (y Int64))` vs `(Record (x
+                            // Int64))`) buries the actual difference; name the specific missing/extra
+                            // fields instead (rustc's "missing field `y`" / "no field `z`"). Tail only.
+                            let record_tail = if wrap.is_none() && option_tail.is_none() {
+                                record_field_diff_hint(&annot_ty, &expr_ty)
+                            } else {
+                                None
+                            };
                             let tail = wrap
                                 .as_ref()
                                 .map(|w| w.3.clone())
                                 .or(option_tail)
+                                .or(record_tail)
                                 .unwrap_or_default();
                             let mut reject = Reject::coded(
                                 Code::TypeMismatch,
