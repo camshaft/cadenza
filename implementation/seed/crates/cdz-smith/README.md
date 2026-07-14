@@ -33,25 +33,48 @@ A decline or a coded rejection is expected output and is never filed.
 | `src/generator.rs` | byte-seed → canonical s-expr program (depth/node-budgeted, always parseable) |
 | `src/oracle.rs` | `compile_catching` — the crash oracle (panic hook + `catch_unwind`) |
 | `src/finding.rs` | shrink to a minimal reproducer, dedup by crash **site**, write to the queue |
-| `src/driver.rs` | the continuous loop + the hang watchdog + the run PRNG |
-| `src/bin/cdz-smith.rs` | the CLI (`fuzz` / `once` / `gen` / `verify`) |
-| `tests/fuzz.rs` | a `bolero` property target (shrinking + coverage-guided, `#[ignore]` by default) |
-| `fuzz-cycle.sh` | one cron cycle: sync spec → rebuild → time-boxed batch → findings to the queue |
+| `src/triage.rs` | convert libFuzzer crash/timeout artifacts → deduped findings |
+| `src/driver.rs` | the PRNG-fallback loop + the hang watchdog |
+| `src/bin/cdz-smith.rs` | the CLI (`fuzz` / `once` / `gen` / `verify` / `triage-artifacts`) |
+| `tests/fuzz.rs` | the `bolero` property target — the coverage-guided engine's entry point |
+| `fuzz-cycle.sh` | one cron cycle: sync spec → libFuzzer campaign → triage artifacts → findings |
+
+cdz-smith is its **own workspace** (excluded from the seed workspace) so its `bolero` dependency
+chain resolves independently and so `cargo bolero` can build it in isolation. Run cargo commands
+from the crate directory, not with `-p` from the repo root.
+
+## Engines
+
+* **Coverage-guided libFuzzer (primary).** libFuzzer mutates a byte seed; `generate()` decodes it
+  into a structured, always-parseable program; SanitizerCoverage feedback keeps inputs that reach
+  **new compiler edges** and mutates them — so it climbs past the type-checker into the backend where
+  the dense panic clusters live, and a **persistent corpus** accumulates that reach across runs.
+  `-fork=1` isolates a crash/hang/OOM to one child and saves an artifact **without stopping** the
+  campaign. Needs nightly + `cargo install cargo-bolero`.
+* **PRNG driver (fallback).** `cdz-smith fuzz` — blind (no coverage), watchdog aborts on the first
+  hang. No extra toolchain; same findings format. Used automatically when nightly/cargo-bolero
+  are absent.
 
 ## Use
 
 ```sh
-# Fuzz a batch; findings land in spec/semantics/failures/ (auto-discovered).
-cargo run -p cdz-smith --profile release-debug -- fuzz --iterations 50000
+cd implementation/seed/crates/cdz-smith    # it's its own workspace
+
+# Coverage-guided campaign (the real thing): persistent corpus, fork-isolated, per-input timeout.
+rustup run nightly cargo bolero test cdz_smith_never_panics \
+    --engine libfuzzer -T 10m --timeout 10s \
+    --corpus-dir /path/to/corpus --crashes-dir ./target/smith-crashes \
+    -E-fork=1 -E-ignore_timeouts=1 -E-ignore_crashes=1 -E-ignore_ooms=1
+# then turn the artifacts into findings:
+cargo run -- triage-artifacts ./target/smith-crashes --findings <repo>/spec/semantics/failures
+
+# PRNG fallback batch (no nightly needed).
+cargo run --release -- fuzz --iterations 50000
 
 # Inspect / reproduce a single seed (deterministic).
-cargo run -p cdz-smith -- gen  1234        # print the generated program
-cargo run -p cdz-smith -- once 1234        # generate + compile, print the verdict
-cargo run -p cdz-smith -- verify a-finding.smith.sexp   # recompile a filed reproducer
-
-# The bolero property (explicit; no in-process hang guard — see the test's comment):
-cargo test  -p cdz-smith --test fuzz -- --ignored          # bounded random
-cargo bolero test cdz_smith_never_panics -p cdz-smith      # coverage-guided (nightly)
+cargo run -- gen  1234        # print the generated program
+cargo run -- once 1234        # generate + compile, print the verdict
+cargo run -- verify a-finding.smith.sexp   # recompile a filed reproducer
 ```
 
 ## Findings
@@ -65,10 +88,11 @@ and fixes; on resolution a note is renamed `.RESOLVED.md` / `.REJECTED.md` like 
 
 ## Continuous operation
 
-`fuzz-cycle.sh` is one cron cycle: it syncs a dedicated worktree to the latest `spec`, rebuilds
-`cdz-smith` against that compiler, and runs a wall-clock-bounded batch, writing findings to the main
-checkout's `spec/semantics/failures/`. Point a 10-minute cron at it and the compiler is fuzzed
-continuously against HEAD, always picking up new compiler builds.
+`fuzz-cycle.sh` is one cron cycle: it syncs a dedicated worktree to the latest `spec`, runs a
+wall-clock-bounded **coverage-guided campaign** against a persistent corpus (falling back to the PRNG
+driver when nightly/cargo-bolero are absent), then triages the artifacts into
+`spec/semantics/failures/`. Point a 10-minute cron at it and the compiler is fuzzed continuously
+against HEAD, always picking up new compiler builds, with coverage progress carried across cycles.
 
 ## Roadmap
 
