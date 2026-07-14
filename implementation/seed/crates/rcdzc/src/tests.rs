@@ -32566,6 +32566,51 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_duplicate_or_shadowed_list_length_arm_is_redundant() {
+        // LIST-match redundancy — the list-length analogue of the variant/literal duplicate & shadowing
+        // checks. A list arm covers a length (exact `(list a)` = len 1, or a `≥ k` ray `(list a .. r)`); a
+        // later arm whose lengths are all already covered is unreachable (`ArmCover::ListExact`/`ListFrom`
+        // + the `min_list_from` subsumption). Each emits exactly one CDZ0213.
+        for src in [
+            // A duplicate exact length (both match length-1 lists).
+            "(module m (def (f (: xs (List Int64))) (match xs ((list a) a) ((list b) 9) (_ 0))) (def (main) (f (list 1))) (export main))",
+            // A duplicate empty-list arm.
+            "(module m (def (f (: xs (List Int64))) (match xs ((list) 0) ((list) 9) (_ 1))) (def (main) (f (list))) (export main))",
+            // A rest arm `(list a .. r)` [len ≥ 1] shadows a later exact `(list a b)` [len 2 ≥ 1].
+            "(module m (def (f (: xs (List Int64))) (match xs ((list a .. r) a) ((list a b) 9) (_ 0))) (def (main) (f (list 1))) (export main))",
+            // A zero-lead rest `(list .. r)` [every length] shadows a later `(list a)`.
+            "(module m (def (f (: xs (List Int64))) (match xs ((list .. r) 0) ((list a) 9))) (def (main) (f (list))) (export main))",
+        ] {
+            let redundant = redundant_arms_of(src);
+            assert_eq!(
+                redundant.len(),
+                1,
+                "a duplicate/shadowed list-length arm is redundant (CDZ0213): `{src}`, got {redundant:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn distinct_or_partly_covered_list_length_arms_do_not_warn() {
+        // Negatives — no list arm's lengths are fully covered by an earlier one, so none is flagged.
+        for src in [
+            // Distinct lengths + a rest for the remainder: 0, 1, then ≥ 1 — the rest is NOT redundant (it
+            // covers ≥ 2, which no earlier arm did) and neither exact arm shadows another.
+            "(module m (def (f (: xs (List Int64))) (match xs ((list) 0) ((list a) a) ((list a .. r) 9))) (def (main) (f (list))) (export main))",
+            // Distinct exact lengths.
+            "(module m (def (f (: xs (List Int64))) (match xs ((list a) a) ((list a b) 9) (_ 0))) (def (main) (f (list 1))) (export main))",
+            // A rest of lead 2 [len ≥ 2] does NOT cover a later exact len-1 `(list a)` — length 1 ∉ [2, ∞).
+            "(module m (def (f (: xs (List Int64))) (match xs ((list a b .. r) a) ((list a) 7) (_ 0))) (def (main) (f (list 1))) (export main))",
+        ] {
+            assert!(
+                redundant_arms_of(src).is_empty(),
+                "a match whose list arms cover distinct lengths must not warn CDZ0213: `{src}` got {:?}",
+                redundant_arms_of(src)
+            );
+        }
+    }
+
+    #[test]
     fn an_exhaustive_finite_match_without_a_trailing_catch_all_does_not_warn() {
         // The boundary: coverage closes AFTER the last covering arm, so an EXHAUSTIVE finite match with no
         // trailing arm has nothing to flag (no false positive). A wildcard that is REACHABLE (the specific
