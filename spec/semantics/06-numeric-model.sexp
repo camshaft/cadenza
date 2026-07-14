@@ -247,8 +247,9 @@
 ; constant `(BigInt.of x)` widens (exact, never traps — every fixed-width value fits the unbounded type),
 ; and `(Int64.of b)` / `((UInt N).of b)` narrow it back CHECKED (range-checked at compile time on the
 ; constant). Because `IntValue` is already arbitrary-precision, the widening carries any magnitude and the
-; narrowing's range check is exact. (Runtime-valued BigInt arithmetic — the unbounded product above —
-; awaits the runtime limb ops; a bare BigInt crossing the boundary awaits the two's-complement encoding.)
+; narrowing's range check is exact. (A bare CONSTANT BigInt now crosses the host boundary as `(: N BigInt)`
+; via the value-form escape — `Shape::BigInt` reuses the arbitrary-width KIND_INT leaf, no two's-complement
+; needed; the runtime-valued escape awaits the general runtime-heap-return path, like a computed list/map.)
 
 (case "a constant integer widens to BigInt and narrows back through Int64 unchanged"
   (doc    "`(Int64.of (BigInt.of 42))` widens the Int64 42 to a BigInt then narrows it back — the exact
@@ -265,6 +266,22 @@
            unbounded), so a value up to the target's range survives the round-trip.")
   (input  (Int64.of (BigInt.of 9223372036854775807)))
   (output (: 9223372036854775807 Int64)))
+
+(case "a constant BigInt crosses the host boundary as its value form"
+  (doc    "A `main` returning a constant `BigInt` escapes to the host as the value form `(: N BigInt)` —
+           the value-encode walker renders it via `Shape::BigInt` (descriptor tag 17), which reuses the
+           codec's arbitrary-width `KIND_INT` leaf (sign + big-endian magnitude), so NO new wire kind and
+           NO two's-complement form is needed. `(BigInt.of 42)` folds to a constant BigInt and crosses as
+           `(: 42 BigInt)`. This is the bare-BigInt boundary the earlier note said 'awaits' — it is now
+           the same value-form escape a Bytes/String/collection result uses.")
+  (input  (do (def (main) ((. BigInt of) 42)) (export main)))
+  (output (: 42 BigInt)))
+
+(case "a negative constant BigInt crosses the boundary with its sign"
+  (doc    "`(BigInt.of -7)` crosses as `(: -7 BigInt)` — the KIND_INT leaf carries the sign (the canonical
+           form has no negative zero), so a negative BigInt renders correctly at the host boundary.")
+  (input  (do (def (main) ((. BigInt of) -7)) (export main)))
+  (output (: -7 BigInt)))
 
 (case "narrowing a constant BigInt out of the target range is rejected at compile time"
   (doc    "`((UInt 8).of (BigInt.of 300))` narrows a BigInt to `(UInt 8)` (range 0..=255) where 300 does
@@ -318,6 +335,47 @@
             (def (main (: a Int64) (: b Int64)) (Int64.of (+ (BigInt.of a) b)))
             (export main)))
   (error  CDZ0301))
+
+(case "a runtime BigInt ordering compares by the arbitrary-precision value"
+  (doc    "`(< (BigInt.of a) (BigInt.of b))` with runtime a,b widens each to a BigInt and orders by the
+           true value via the runtime three-way `bigint-cmp` + a signed compare-with-zero (B3c): a=2,b=5 →
+           `<` true → 1. A BigInt has no fixed machine slot, so the comparison cannot ride the scalar path;
+           it routes through the runtime primitive. Pins the runtime comparison wiring.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (if (< (BigInt.of a) (BigInt.of b)) 1 0))
+            (export main)))
+  (call   main (: 2 Int64) (: 5 Int64))
+  (output (: 1 Int64)))
+
+(case "a runtime BigInt comparison sees an intermediate that overflows Int64"
+  (doc    "`(> (* big big) big)` with `big = BigInt.of 5000000000`: the product 2.5e19 OVERFLOWS Int64 but
+           is a valid BigInt, and `bigint-cmp` orders it against `big` by the TRUE unbounded value → the
+           product is far larger → `>` true → 1. Pins that the comparison, like the arithmetic, sees the
+           full arbitrary-precision magnitude rather than a wrapped/trapped machine value.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((big (BigInt.of a)))
+                (if (> (* big big) big) 1 0)))
+            (export main)))
+  (call   main (: 5000000000 Int64))
+  (output (: 1 Int64)))
+
+(case "runtime BigInt equality holds for values reached by different arithmetic"
+  (doc    "`(= (+ big big) (* big two))` with `big = BigInt.of a`, `two = BigInt.of t` (t=2): `big+big` and
+           `big*2` are the SAME value reached two ways; `bigint-cmp` returns 0 → `=` (`i64.eqz`) true → 1.
+           Confirms BigInt `=` compares by value (each op returns a normalized leaf, so equal values are
+           byte-identical) rather than by handle identity. (`two` is a runtime widening `BigInt.of t`
+           rather than a constant `BigInt.of 2` — a CONSTANT BigInt used as a runtime arithmetic operand
+           does not yet materialize as a heap leaf, a B4 boundary/const-heap concern; here both operands
+           are runtime, exercising the comparison itself.)")
+  (input  (do
+            (def (main (: a Int64) (: t Int64))
+              (let ((big (BigInt.of a)) (two (BigInt.of t)))
+                (if (= (+ big big) (* big two)) 1 0)))
+            (export main)))
+  (call   main (: 123456789 Int64) (: 2 Int64))
+  (output (: 1 Int64)))
 
 ; --- Module pragma `default-integer`: fixes a literal's TYPE, never a conversion ----------
 ; A module MAY declare `(pragma default-integer <T>)` so a bare integer literal with no other constraint

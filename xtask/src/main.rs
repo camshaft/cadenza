@@ -1163,10 +1163,15 @@ fn cdz_render_at(
             .collect();
         return format!("format!(\"(tuple {placeholders})\", {})", args.join(", "));
     }
-    // `(record (a T0) (b T1) …)` → `(record (a …) (b …) …)`. Each element is a `(name Type)` pair; the
-    // fields are in sorted order (matching the emitted tuple), so field `i` reads `.i`. (`Ty::render_name`
-    // writes the record head LOWERCASE — `(record …)` — vs the tuple's capital `(Tuple …)`.)
-    if let Some(fields) = parse_head_type(ty, "record") {
+    // A record TYPE `(Record (a T0) (b T1) …)` → the VALUE form `(record (a …) (b …) …)`. Each element is
+    // a `(name Type)` pair; the fields are in sorted order (matching the emitted tuple), so field `i` reads
+    // `.i`. The head is matched CAPITALIZED — `Ty::render_name` writes a record type `(Record …)` (a1c9bc09,
+    // matching its annotation spelling, distinct from the lowercase value constructor `(record …)`); the
+    // EMITTED value form stays lowercase `(record …)`, cdz-run's canonical value spelling. (Was matched
+    // lowercase `record`, which stopped matching after a1c9bc09 → a record return type fell through to the
+    // scalar `Display` path and the emitted `(i64, i64)` tuple failed rustc E0277 "doesn't implement
+    // Display", failing every record-escape case on the rust gate.)
+    if let Some(fields) = parse_head_type(ty, "Record") {
         // Each field renders as `(<name> <value>)` — the name is a literal, the value is `.i` rendered
         // as its own type. The `format!` gets one `({} {})` group per field, args = name, value, ….
         let mut args = Vec::with_capacity(fields.len() * 2);
@@ -2874,6 +2879,32 @@ mod trap_grading_tests {
         assert!(
             s.contains("fn __render_Sign(") && s.contains("(Pos unit)"),
             "{s}"
+        );
+    }
+
+    #[test]
+    fn record_type_renders_structurally_not_via_display() {
+        // A record TYPE's `render_name` is CAPITALIZED `(Record …)` (a1c9bc09). The renderer must match that
+        // capitalized head and render the record STRUCTURALLY — a `format!("(record (a {}) (b {}))", …)`
+        // reading each field positionally — NOT fall through to the scalar `format!("{}", __r)`, which would
+        // ask the emitted Rust tuple `(i64, i64)` (a record erases to a positional tuple) to `Display` and
+        // fail rustc E0277. (Regression: the head was matched lowercase `record`, which stopped matching a
+        // `(Record …)` note after a1c9bc09, failing every record-escape case on the rust gate.)
+        let sums = std::collections::HashMap::new();
+        let expr = cdz_render_expr("(Record (a Int64) (b Int64))", &sums);
+        assert!(
+            expr.contains("(record (") && expr.contains("(__r).0") && expr.contains("(__r).1"),
+            "a record type must render structurally by field position, not Display the whole tuple: {expr}"
+        );
+        assert!(
+            !expr.trim_start().starts_with("format!(\"{}\""),
+            "must not fall through to the scalar Display path: {expr}"
+        );
+        // A record whose field is itself a tuple composes — the inner `(Tuple …)` renders `(tuple …)`.
+        let nested = cdz_render_expr("(Record (x Int64) (y (Tuple Int64 Int64)))", &sums);
+        assert!(
+            nested.contains("(record (") && nested.contains("(tuple "),
+            "a record field that is a tuple renders structurally: {nested}"
         );
     }
 }

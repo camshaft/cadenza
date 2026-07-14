@@ -2003,6 +2003,71 @@ impl ComposedRuntime {
         (out1[0].clone(), out2[0].clone())
     }
 
+    /// Like [`closure_make_call_named_twice`] but for a NAMED make whose shared `call` returns a `list<u8>`
+    /// value form (a multi-export byte-rope/compound/collection closure): mint the named handle, `call` it
+    /// twice via the shared `call`, return both results as raw byte vectors. Proves the multi-export
+    /// VALUE-FORM shared `call` is a repeatable `borrow<t>` method — the same handle yields the same value
+    /// form on repeated calls.
+    fn closure_make_call_named_list_twice(
+        &mut self,
+        make_name: &str,
+        make_args: &[wasmtime::component::Val],
+        call_args: &[wasmtime::component::Val],
+    ) -> (Vec<u8>, Vec<u8>) {
+        use wasmtime::component::Val;
+        let iface = self
+            .program
+            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
+            .expect("closure interface exported");
+        let make_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), make_name)
+            .unwrap_or_else(|| panic!("closure `{make_name}` exported"));
+        let call_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "call")
+            .expect("closure `call` exported");
+        let make = self
+            .program
+            .get_func(&mut self.store, make_idx)
+            .expect("make func");
+        let call = self
+            .program
+            .get_func(&mut self.store, call_idx)
+            .expect("call func");
+        let bytes = |v: &Val| -> Vec<u8> {
+            match v {
+                Val::List(items) => items
+                    .iter()
+                    .map(|it| match it {
+                        Val::U8(b) => *b,
+                        other => panic!("expected u8 list element, got {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("expected a list<u8> call result, got {other:?}"),
+            }
+        };
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut self.store, make_args, &mut handle)
+            .expect("make call");
+        make.post_return(&mut self.store).expect("make post_return");
+        let mut args = vec![handle[0].clone()];
+        args.extend_from_slice(call_args);
+        let mut out1 = [Val::Bool(false)];
+        call.call(&mut self.store, &args, &mut out1)
+            .expect("first shared list call");
+        call.post_return(&mut self.store)
+            .expect("first post_return");
+        let first = bytes(&out1[0]);
+        let mut out2 = [Val::Bool(false)];
+        call.call(&mut self.store, &args, &mut out2)
+            .expect("second shared list call on the SAME handle (borrow<t> keeps it live)");
+        call.post_return(&mut self.store)
+            .expect("second post_return");
+        let second = bytes(&out2[0]);
+        (first, second)
+    }
+
     /// ROUND-TRIP driver (C-HOST-4): call a PRODUCER export by name (`producer(make_args…)` → a closure
     /// resource handle the host holds), then thread that handle BACK into a CONSUMER export
     /// (`consumer(handle, consume_args…)` → the result). Both are plain funcs in `cadenza:closure/exports`.
@@ -2273,6 +2338,21 @@ fn runtime_bigint_arithmetic_leaves_no_live_objects() {
         0,
         "bigint borrow leak/double-free: `big` (borrowed by `*`/`/`, dropped by the `let`) plus the owned \
          `(* big big)` temporary (dropped by `/`) must net to 0 live cells"
+    );
+
+    // (c) a COMPARISON (`bigint-cmp` + compare-with-zero, B3c) — also borrows both operands and returns a
+    // scalar (a Bool), so each owned `BigInt.of` operand must be dropped. `(< (BigInt.of a) (BigInt.of b))`
+    // leaves no cell live.
+    let src3 = "(module m \
+                  (def (main (: a Int64) (: b Int64)) \
+                     (if (< (BigInt.of a) (BigInt.of b)) 1 0)) (export main))";
+    let program3 = compile_component(&crate::codec::encode(&parse(src3))).expect("compile");
+    let mut rt3 = ComposedRuntime::new(&program3, &runtime_bytes);
+    assert_eq!(rt3.call("main", &[Val::S64(2), Val::S64(5)]), Val::S64(1));
+    assert_eq!(
+        rt3.live_objects(),
+        0,
+        "bigint-cmp leak: the two owned `BigInt.of` operands must be dropped after the borrowing compare"
     );
 }
 
@@ -3946,6 +4026,95 @@ mod runtime_ops {
             "(= (if (< x 0) 1 0) 5)",
             &[Val::S64(-1)]
         ));
+    }
+
+    #[test]
+    fn comparing_two_bool_materialized_ints_folds_to_a_boolean_equality() {
+        // `(= (if c 1 0) (if d 1 0))` compares two booleans coerced to ints — it IS `(= c d)`, a direct
+        // bool `i32.eq`, dropping the two `extend_i32_u`s and the i64 compare. Each `(if _ 1 0)`/`(if _ 0
+        // 1)` maps to its bool (or negation); opposite net polarities give `(= c (not d))`.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // Same polarity → `(= c d)`: a direct `i32.eq`, NO `extend_i32_u` and NO i64 compare.
+        let same = lir("(: c Bool) (: d Bool)", "(= (if c 1 0) (if d 1 0))");
+        assert!(
+            same.iter().any(|i| matches!(i, Lir::I32Eq))
+                && !same
+                    .iter()
+                    .any(|i| matches!(i, Lir::I64ExtendI32U | Lir::I64Eq | Lir::I32Eqz)),
+            "(= (if c 1 0) (if d 1 0)) → (= c d), got: {same:?}"
+        );
+        // Opposite polarity → `(= c (not d))`: one `i32.eqz` (the negation) + the `i32.eq`, still no extend.
+        let opp = lir("(: c Bool) (: d Bool)", "(= (if c 0 1) (if d 1 0))");
+        assert!(
+            opp.iter().filter(|i| matches!(i, Lir::I32Eqz)).count() == 1
+                && opp.iter().any(|i| matches!(i, Lir::I32Eq))
+                && !opp
+                    .iter()
+                    .any(|i| matches!(i, Lir::I64ExtendI32U | Lir::I64Eq)),
+            "(= (if c 0 1) (if d 1 0)) → (= (not c) d), got: {opp:?}"
+        );
+        // Both negated → `(= c d)` again (the two negations cancel).
+        let both = lir("(: c Bool) (: d Bool)", "(= (if c 0 1) (if d 0 1))");
+        assert!(
+            both.iter().any(|i| matches!(i, Lir::I32Eq))
+                && !both
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32Eqz | Lir::I64ExtendI32U)),
+            "(= (if c 0 1) (if d 0 1)) → (= c d), got: {both:?}"
+        );
+
+        // VALUE PARITY: every polarity over the full truth table.
+        for (body, f) in [
+            ("(= (if c 1 0) (if d 1 0))", 0u8), // c == d
+            ("(= (if c 0 1) (if d 1 0))", 1),   // (not c) == d
+            ("(= (if c 0 1) (if d 0 1))", 0),   // c == d
+            ("(= (if c 1 0) (if d 0 1))", 1),   // c == (not d)
+        ] {
+            for c in [true, false] {
+                for d in [true, false] {
+                    let want = if f == 0 { c == d } else { c != d };
+                    assert_eq!(
+                        run::<bool>("(: c Bool) (: d Bool)", body, &[Val::Bool(c), Val::Bool(d)]),
+                        want,
+                        "{body} @c={c},d={d}"
+                    );
+                }
+            }
+        }
+        // NON-fold guards: a non-0/1 branch pair keeps a real `if`/`select` (both compares run); a bool-int
+        // vs a genuine runtime int is not this fold.
+        let kept = lir(
+            "(: c Bool) (: d Bool)",
+            "(: (= (if c 5 7) (if d 5 7)) Bool)",
+        );
+        assert!(
+            kept.iter().any(|i| matches!(i, Lir::Select | Lir::If(_))),
+            "non-0/1 branches are not folded, got: {kept:?}"
+        );
     }
 
     #[test]
@@ -13230,6 +13399,61 @@ mod match_engine {
     }
 
     #[test]
+    fn a_map_or_set_heterogeneity_names_the_types_and_offers_the_retype_fix() {
+        // The map/set twins of the list-homogeneity message+fix: a map's key/value or a set's element
+        // clash now NAMES the two differing types (was a generic "do not share a type") and, for an
+        // int-literal-vs-float clash, carries the SAME `n.0` retype fix the list/if/match sites give.
+        // A map VALUE clash: Int64 vs String — names both types, no fix (cross-kind).
+        let kv = reject_full("(module m (def x (map (1 1) (2 \"b\"))) (export x))")
+            .expect("a map value-heterogeneity violation must reject");
+        assert_eq!(kv.code.as_deref(), Some("CDZ0201"), "got: {}", kv.message);
+        assert!(
+            kv.message.contains("Int64") && kv.message.contains("String"),
+            "names the two differing value types: {}",
+            kv.message
+        );
+        assert!(
+            kv.fix.is_none(),
+            "int-vs-String is not coercible: {:?}",
+            kv.fix
+        );
+        // A map VALUE int-vs-float clash → the retype fix (on the FIRST value, like the list check's
+        // first-operand preference — retyping `1`→`1.0` unifies the values at Float64 in one shot).
+        let mv = reject_full("(module m (def x (map (1 1) (2 2.0))) (export x))").expect("reject");
+        assert_eq!(
+            mv.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("1.0"),
+            "map int-vs-float value offers the float-literal retype: {}",
+            mv.message
+        );
+        // A map KEY int-vs-float clash → the retype fix on the first key.
+        let mk =
+            reject_full("(module m (def x (map (1 10) (2.0 20))) (export x))").expect("reject");
+        assert_eq!(
+            mk.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("1.0"),
+            "map int-vs-float key offers the retype: {}",
+            mk.message
+        );
+        // A SET element int-vs-float clash → the retype fix; a cross-kind set clash names types, no fix.
+        let sf =
+            reject_full("(module m (def x (Set.of (list 1 2.0))) (export x))").expect("reject");
+        assert_eq!(
+            sf.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("1.0"),
+            "set int-vs-float element offers the retype: {}",
+            sf.message
+        );
+        let ss =
+            reject_full("(module m (def x (Set.of (list 1 \"a\"))) (export x))").expect("reject");
+        assert!(
+            ss.message.contains("Int64") && ss.message.contains("String") && ss.fix.is_none(),
+            "set cross-kind names both types, no fix: {}",
+            ss.message
+        );
+    }
+
+    #[test]
     fn if_and_match_int_literal_vs_float_offer_a_float_literal_retype_fix() {
         // An `if`-branch / match-arm clash between an INTEGER LITERAL and a FLOAT branch has the SAME
         // one-shot repair the list-element and annotation sites give: rewrite the integer literal `n` as a
@@ -19022,13 +19246,15 @@ mod match_engine {
             .is_none(),
             "a nested quasiquote evaluates only the inner unquote"
         );
-        // An ACTIVE splice (`,@`) is DEFERRED this increment — the quasiquote bails un-reified, so the
-        // existing splice-non-list check still fires: splicing a non-list (Int64 `5`) is CDZ0201.
+        // An ACTIVE splice (`,@`) of a NON-LIST is still CDZ0201. The active splice now reifies (see
+        // `active_unquote_splicing_flattens_a_list`), so the pre-desugar `collect_quote_body_syntax` walk
+        // no longer sees the splice; the reject is preserved by the `ast-splice-lift` operand check in
+        // `check_application` — a `provably_not_list` operand (Int64 `5`) has no elements to splice.
         assert_eq!(
             reject_code("(module m (def (main) (let ((x 5)) (quasiquote (f (unquote-splicing x))))) (export main))")
                 .as_deref(),
             Some("CDZ0201"),
-            "splicing a non-list is CDZ0201 (active splice deferred, not miscompiled)"
+            "splicing a non-list is CDZ0201 (the ast-splice-lift operand check, not a miscompile)"
         );
         // An active unquote of a NON-INTEGER LITERAL (`,2.0`, `,"s"`, `,true`) cannot lift — the only
         // value-carrying `Ast` variant this increment builds is `Ast.Int`. It DECLINES honestly (a Todo:
@@ -19059,6 +19285,39 @@ mod match_engine {
             .is_none(),
             "an active unquote of a let-bound NAME building an Ast result must reify (not bail as a literal)"
         );
+    }
+
+    #[test]
+    fn active_unquote_splicing_flattens_a_list() {
+        // 12-metaprogramming §Unquote-Splicing: an active `,@e` in a quasiquote splices the ELEMENTS of the
+        // list `e` into the surrounding form (vs `,e`, which inserts `e` as one element). `reify_active`
+        // rewrites `` `(f ,@xs) `` to `(Ast.List (List.concat (list (Ast.Name "f")) (ast-splice-lift xs)))`
+        // where the compiler-internal `ast-splice-lift : (List Int64) → (List Ast)` constant-folds each Int
+        // element into an `(Ast.Int e)` node. The splice run is const-folded, so a let-bound constant list
+        // flows through. Builds the SAME AST as writing the elements out longhand.
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (let ((xs (list 1 2 3))) (= (quasiquote (f (unquote-splicing xs))) \
+                                               (quote (f 1 2 3))))) \
+                 (export main))"
+            )
+            .is_none(),
+            "an active splice of a constant Int list flattens its elements into the surrounding form"
+        );
+        // The operand of `,@` MUST be a list: `provably_not_list` types (an Int64 literal or a let-bound
+        // Int64) have no elements to splice → CDZ0201, matching the pre-desugar reject. The message is the
+        // `ast-splice-lift` operand check, not the generic apply-arity path.
+        for src in [
+            "(module m (def (main) (quasiquote (f (unquote-splicing 5)))) (export main))",
+            "(module m (def (main) (let ((x 5)) (quasiquote (f (unquote-splicing x))))) (export main))",
+        ] {
+            assert_eq!(
+                reject_code(src).as_deref(),
+                Some("CDZ0201"),
+                "splicing a non-list operand is CDZ0201: {src}"
+            );
+        }
     }
 
     #[test]
@@ -21561,6 +21820,58 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_mistyped_variant_pattern_on_a_function_param_surfaces_in_the_diagnostics_query() {
+        // The pattern-fault TWIN of the non-exhaustiveness case above. A MISTYPED variant pattern head
+        // (`((C.Gren) …)` on `(type C Red Green)`) is a CODED CDZ0201 carrying a "did you mean `Green`?"
+        // REPLACE fix — but it was produced ONLY by the emit-path lowering walk, which runs on nullary
+        // EXPORTED bodies alone. So a variant typo in ANY parameterized function's match silently PASSED
+        // `cdz check` (exit 0, no diagnostic) while `compile` rejected it — hiding the very fix from the
+        // fast check path. `collect`'s match arm now surfaces it whether the def takes parameters or not.
+        let src = "(module m (type C Red Green) \
+             (def (g (: c C)) (match c ((C.Red) 1) ((C.Gren) 2))) (export g))";
+        let d: Vec<_> = crate::diagnostics(&mut Db::load(parse(src)))
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0201"))
+            .collect();
+        assert_eq!(
+            d.len(),
+            1,
+            "one mistyped-variant fault on the parameterized body, reported exactly once: {d:?}"
+        );
+        assert!(
+            d[0].message.contains("`Gren`") && d[0].message.contains("did you mean `Green`?"),
+            "names the mistyped variant AND the near one: {}",
+            d[0].message
+        );
+        let fix = d[0]
+            .fix
+            .as_ref()
+            .expect("carries the did-you-mean replace fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(fix.replacement, "Green");
+
+        // The nullary-EXPORTED case (already reached by the lowering walk) still reports EXACTLY ONE — the
+        // infer-side and emit-side copies anchor at the same key node and `dedup_faults` collapses them.
+        let src_nullary = "(module m (type C Red Green) \
+             (def (g) (match (C.Red) ((C.Red) 1) ((C.Gren) 2))) (export g))";
+        let dn: Vec<_> = crate::diagnostics(&mut Db::load(parse(src_nullary)))
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0201"))
+            .collect();
+        assert_eq!(dn.len(), 1, "nullary body: one fault, not a double: {dn:?}");
+
+        // A CORRECT variant pattern on a parameterized body stays clean — no false positive.
+        let src_ok = "(module m (type C Red Green) \
+             (def (g (: c C)) (match c ((C.Red) 1) ((C.Green) 2))) (export g))";
+        assert!(
+            crate::diagnostics(&mut Db::load(parse(src_ok)))
+                .iter()
+                .all(|d| d.code.as_deref() != Some("CDZ0201")),
+            "a correct variant match produces no field fault"
+        );
+    }
+
+    #[test]
     fn an_unbound_name_anchors_to_a_user_node() {
         // The diagnostic for an unbound name carries a node index, and it is a genuine USER node (below
         // the program's node count) — the front-end can map it to the `nope` occurrence.
@@ -22418,6 +22729,94 @@ mod stage1 {
         assert!(
             msg.contains("condition must be Bool"),
             "an ill-typed do-local value declaration must be caught though unused; got: {msg}"
+        );
+    }
+
+    /// The CDZ0307 discarded-value warnings from `src` — the `diagnostics()` query set (what `cdz check`
+    /// drives) filtered to the discarded-value code. Used rather than `warnings_of` so a body that does
+    /// not emit a component (e.g. one taking a parameter) still yields its diagnostics.
+    fn discarded_of(src: &str) -> Vec<crate::abi::Diagnostic> {
+        crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0307"))
+            .collect()
+    }
+
+    #[test]
+    fn a_pure_non_final_do_form_that_discards_a_value_warns() {
+        // The user-reported shape: `(do (inc 8) (* n 2))` — the first form computes a value that is thrown
+        // away (a non-final form is evaluated only for its effect, and a pure one has none). In a pure
+        // language that is almost always a bug (a call whose result the author forgot to use), so warn
+        // CDZ0307 anchored at the discarded form, with a delete fix.
+        let src = "(module m (def (inc n) (+ n 1)) \
+             (def (dbl n) (do (inc 8) (* n 2))) (export dbl))";
+        let ws = discarded_of(src);
+        assert_eq!(ws.len(), 1, "one discarded-value warning: {ws:?}");
+        assert!(
+            ws[0].message.contains("computed but discarded"),
+            "message names the defect: {}",
+            ws[0].message
+        );
+        let node = ws[0].node.expect("carries the discarded form's node");
+        assert!(
+            crate::db::Db::load(parse(src)).is_user_node(crate::ast::StructId(node)),
+            "node {node} must be a user node"
+        );
+        // The repair DELETES the dead statement.
+        let fix = ws[0].fix.as_ref().expect("carries a delete fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+    }
+
+    #[test]
+    fn a_unit_typed_or_final_do_form_does_not_warn() {
+        // The LAST form is the block's value — never discarded, so it never warns (`(do (inc 8) (* n 2))`
+        // warns on `(inc 8)` only, not `(* n 2)`; the exactly-one assertion above already pins that). A
+        // Unit-typed non-final form discards nothing (there is no value to use), so it does not warn: the
+        // empty list `()` IS the unit value.
+        assert!(
+            discarded_of("(module m (def (main) (do () 42)) (export main))").is_empty(),
+            "a Unit-typed non-final form discards no value"
+        );
+        // A block with a single form has no non-final form at all — nothing to warn about.
+        assert!(
+            discarded_of("(module m (def (main) (do 42)) (export main))").is_empty(),
+            "a one-form block has no discarded intermediate"
+        );
+    }
+
+    #[test]
+    fn multiple_discarded_intermediates_each_warn() {
+        // `(do 1 2 3)`: BOTH non-final forms (`1`, `2`) discard a value; the last (`3`) is the block value.
+        // A pure scalar intermediate is exactly the corpus-blessed `(do 1 2 3)` shape — well-formed and it
+        // still compiles (CDZ0307 is a WARNING), but each dropped value is surfaced.
+        let ws = discarded_of("(module m (def (main) (do 1 2 3)) (export main))");
+        assert_eq!(ws.len(), 2, "two discarded scalars warn: {ws:?}");
+    }
+
+    #[test]
+    fn an_effectful_non_final_do_form_does_not_warn() {
+        // A non-final statement that reaches a HOST CALL is KEPT by the `Core::Seq` lowering — its call
+        // crosses the boundary and must run, so sequencing it for effect is exactly why a non-final form
+        // is allowed to have a value. It is NOT a discarded-value defect. `(do (log.emit "x") unit)`: the
+        // `log.emit` statement is effectful (and Unit-typed), so no CDZ0307. Uses the same
+        // `subtree_reaches_host_call` the lowering uses, so the diagnostic tracks exactly what DCE keeps.
+        let src = "(do (effect log (op emit (-> String Unit))) \
+                   (def (main) (host (log) (do (log.emit \"x\") unit))) (export main))";
+        assert!(
+            discarded_of(src).is_empty(),
+            "an effectful (kept) non-final form is not a discarded value: {:?}",
+            discarded_of(src)
+        );
+    }
+
+    #[test]
+    fn a_do_local_declaration_is_not_a_discarded_value() {
+        // A `(def …)` form of a `do` is a DECLARATION (it binds a name for the following forms), not an
+        // evaluated statement — its value flows to a reference, not thrown away. So a leading do-local def
+        // never warns CDZ0307, even though it is a non-final form.
+        assert!(
+            discarded_of("(module m (def (main) (do (def x 5) (+ x 1))) (export main))").is_empty(),
+            "a do-local declaration is not a discarded statement"
         );
     }
 
@@ -26685,6 +27084,62 @@ mod stage1 {
     }
 
     #[test]
+    fn an_e5_pure_one_hole_continuation_admits_an_effect_free_user_call() {
+        // E5 EXTENSION: the pure one-hole continuation `C` may now contain a NON-RECURSIVE user call whose
+        // body reaches NO effect — not only primitive operators. `C = (dbl □)` where `dbl x = x*2` is
+        // effect-free, so `(resume 10 s)` folds to `C[10] = (dbl 10)` and the arm `(+ 1 (resume 10 s))` →
+        // `(+ 1 (dbl 10))` = `(+ 1 20)` = 21. Splicing the pure call (once, or many times for a multi-shot
+        // arm) re-runs an effect-free computation — observationally identical to running it once — so NO
+        // frame machinery is needed. Previously declined ("a call in `C`" → the frame vertical).
+        let one_shot = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (dbl (: x Int64)) (* x 2)) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (dbl (Amb.flip)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(one_shot)))
+                    .expect("an effect-free user call in C folds"),
+                "main"
+            ),
+            21
+        );
+        // MULTI-shot over the same pure call duplicates `C = (dbl □)` safely (dbl is effect-free):
+        //   `(+ (resume 1 s) (resume 2 s))` → `(+ (dbl 1) (dbl 2))` = `(+ 2 4)` = 6.
+        let multi = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (dbl (: x Int64)) (* x 2)) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (dbl (Amb.flip)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(multi)))
+                    .expect("a multi-shot effect-free user call in C folds"),
+                "main"
+            ),
+            6
+        );
+        // NESTED effect-free calls compose: `C = (dbl (inc □))` → `(+ 1 (dbl (inc 10)))` = `(+ 1 22)` = 23.
+        let nested = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (dbl (: x Int64)) (* x 2)) (def (inc (: y Int64)) (+ y 1)) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (dbl (inc (Amb.flip))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(nested)))
+                    .expect("nested effect-free user calls in C fold"),
+                "main"
+            ),
+            23
+        );
+        // GUARD: a user call whose body ITSELF performs the discharged effect is NOT effect-free — the
+        // continuation is not pure (a second effect on the spine), so it must DECLINE (a clean todo, not a
+        // miscompile). `bad x = (+ x (Amb.flip))` performs, so `(bad (Amb.flip))` has two performs.
+        let effectful = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (bad (: x Int64)) (+ x (Amb.flip))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (bad (Amb.flip)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(effectful))).is_err(),
+            "a user call whose body performs is not effect-free — the continuation is not pure, must decline"
+        );
+    }
+
+    #[test]
     fn a_pure_one_hole_match_scrutinee_re_resolves_a_binder_arm_and_nests_in_an_operator() {
         // ADVERSARIAL: (1) a match scrutinee hole whose selected arm BINDS the scrutinee and USES the binder
         // — the whole match is copied per resume by `splice_context`, so the pattern binder `k` must
@@ -28936,12 +29391,13 @@ mod stage1 {
 
     #[test]
     fn an_all_nullary_enum_derives_partial_eq_on_the_rust_backend() {
-        // RUST-BACKEND / CROSS-BACKEND: the `=` intrinsic on an all-nullary enum lowers (rust backend) to a
-        // native `x == y`, which needs `PartialEq` — so an all-nullary enum MUST be emitted with
-        // `#[derive(Clone, PartialEq, Eq)]`, else the generated Rust fails to build (E0369) even though the
-        // SAME program runs on wasm (where the enum is a bare i32 discriminant and `=` is `i32.eq`). A
-        // payload-carrying sum, on which the seed defines no structural `=`, stays `#[derive(Clone)]` only —
-        // deriving `PartialEq` there could fail to compile if a payload type is not itself `PartialEq`.
+        // RUST-BACKEND / CROSS-BACKEND: the `=` intrinsic lowers (rust backend) to a native `x == y`, which
+        // needs `PartialEq`/`Eq` — so a sum MUST be emitted with `#[derive(Clone, PartialEq, Eq)]` whenever
+        // its payloads are themselves `Eq`-derivable, else the generated Rust fails to build even though the
+        // SAME program runs on wasm (a value-heap equality walk). An all-nullary enum trivially qualifies; a
+        // payload sum of Int/Bool/nested comparable payloads does too. A sum whose payload is NOT `Eq` (a
+        // float — `PartialEq` but not `Eq`) stays `#[derive(Clone)]` only (its runtime `=` then declines,
+        // decline-don't-miscompile).
         use crate::testkit::parse;
 
         // An all-nullary enum compared with `=` → its emitted Rust enum derives PartialEq/Eq and builds.
@@ -28959,8 +29415,8 @@ mod stage1 {
             "an all-nullary enum must derive PartialEq/Eq so native `==` builds; got:\n{rs}"
         );
 
-        // A payload-carrying sum stays Clone-only (no `=` defined on it; deriving PartialEq is not gated by
-        // its payloads' capabilities, so it would be unsound to add unconditionally).
+        // A payload-carrying sum whose payloads are Eq-derivable (Int64) NOW derives PartialEq/Eq too, so a
+        // runtime `(= a b)` over it emits a native `==` (was Clone-only + a decline).
         let payload = "(module m (type Box (Mk Int64) (Nil)) \
                          (def (unbox (: b Box)) (match b ((Mk n) n) ((Nil) 0))) \
                          (def (main) (unbox (Mk 42))) \
@@ -28972,8 +29428,26 @@ mod stage1 {
                 .expect("rust artifact");
         let rs2 = String::from_utf8(rs2).expect("utf8");
         assert!(
-            rs2.contains("#[derive(Clone)]\n#[allow(dead_code)]\npub enum Box"),
-            "a payload-carrying sum stays Clone-only; got:\n{rs2}"
+            rs2.contains("#[derive(Clone, PartialEq, Eq)]\n#[allow(dead_code)]\npub enum Box"),
+            "a payload sum with Eq-derivable payloads now derives PartialEq/Eq; got:\n{rs2}"
+        );
+
+        // A FLOAT-carrying sum stays Clone-only — `f64` is `PartialEq` but NOT `Eq`, so `#[derive(Eq)]`
+        // would fail to compile; its runtime `=` declines (the wasm heap-walk path also declines a float
+        // compound `=` in the seed).
+        let float_sum = "(module m (type FBox (Mk Float64) (Nil)) \
+                           (def (unbox (: b FBox)) (match b ((Mk n) n) ((Nil) 0.0))) \
+                           (def (main) (unbox (Mk 4.0))) \
+                           (export main))";
+        let mut db3 = crate::db::Db::load(parse(float_sum));
+        let layout3 = crate::layout::compute(&mut db3).expect("layout");
+        let rs3 =
+            crate::backend::emit(crate::backend::Target::Rust, &mut db3, &layout3, None, None)
+                .expect("rust artifact");
+        let rs3 = String::from_utf8(rs3).expect("utf8");
+        assert!(
+            rs3.contains("#[derive(Clone)]\n#[allow(dead_code)]\npub enum FBox"),
+            "a float-carrying sum stays Clone-only (f64 is not Eq); got:\n{rs3}"
         );
     }
 
@@ -33733,6 +34207,24 @@ mod sidecar_driven {
         assert_eq!(hover_at(src, "(def (inc"), "inc : (-> Int64 Int64)");
         // A nullary def reads `name : T`.
         assert_eq!(hover_at(src, "(g)"), "g : Int64");
+    }
+
+    #[test]
+    fn hover_on_a_def_in_a_wide_module_finds_the_right_def_via_the_ident_index() {
+        // `def_identified_by` (which def does a hovered header node identify?) reads a header→index INDEX
+        // (`Db::def_index_by_ident`), not a linear `defs.iter().enumerate()` scan — the O(N²) `cdz query
+        // --where`'s per-match `TypeAt` hit (each query scanned all defs). This locks in that the index
+        // resolves a hovered def name to the CORRECT def at width: in a 60-def module, hovering `d30`'s
+        // name must show `d30`'s own signature (a wrong index would show a neighbour's or none).
+        let n = 60;
+        let defs = (0..n)
+            .map(|i| format!("(def (d{i} (: p Int64)) (+ p {i}))"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let src = format!("(module m {defs} (def (main) (d0 1)) (export main))");
+        // Hover a def NAME deep in the list — must resolve to that def's own signature.
+        assert_eq!(hover_at(&src, "(d30 "), "d30 : (-> Int64 Int64)");
+        assert_eq!(hover_at(&src, "(d59 "), "d59 : (-> Int64 Int64)");
     }
 
     #[test]
@@ -38906,6 +39398,38 @@ mod closure_host_resource {
             second,
             Val::S64(41),
             "the SAME make-inc handle, shared call(40) = 41 — borrow<t> keeps it live (repeatable)"
+        );
+    }
+
+    /// C-HOST-6, multi-export VALUE-FORM: the shared LIST-`call` of a multi-export closure program whose
+    /// exports return a value form (here a COMPOUND tuple) is ALSO a repeatable `borrow<t>` method — one
+    /// `make-<name>` handle yields the SAME value-form bytes on repeated shared calls. Two same-signature
+    /// tuple-returning exports share the one list-`call`. `#[ignore]` — needs the runtime wasm in the store.
+    #[test]
+    #[ignore]
+    fn a_multi_export_value_form_shared_borrow_call_is_repeatable() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
+            return;
+        };
+        // Two same-signature closure exports returning a COMPOUND (tuple): `lo`/`hi` pair x with a derived
+        // value. Both share the one value-form list-`call`.
+        let src = "(do (def (lo) (fn ((: x Int64)) (tuple x (+ x 1)))) \
+                   (def (hi) (fn ((: x Int64)) (tuple x (* x 10)))) (export lo) (export hi))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // ONE make-lo handle, the shared list-`call` twice on it → the SAME value form of `(tuple 5 6)`.
+        let (first, second) = rt.closure_make_call_named_list_twice("make-lo", &[], &[Val::S64(5)]);
+        assert!(
+            !first.is_empty(),
+            "the first shared value-form call returns a non-empty document"
+        );
+        assert_eq!(
+            first, second,
+            "the SAME make-lo handle yields the SAME value form on a repeated shared call — borrow<t> keeps it live"
         );
     }
 

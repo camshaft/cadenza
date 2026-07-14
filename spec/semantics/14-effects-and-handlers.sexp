@@ -386,6 +386,22 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip))) (+ x x)))) (export main)))
   (output (: 21 Int64)))
 
+(case "a handler arm that resumes NON-tail folds through a pure continuation containing an effect-free call"
+  (doc    "The pure one-hole continuation `C` may contain a NON-RECURSIVE user CALL whose body reaches no
+           effect — not only primitive operators. Cadenza is strict, so the call evaluates its argument
+           exactly once before running, and an effect-free callee adds no effect of its own: `C = (dbl [])`
+           where `dbl x = x*2` is a uniform, effect-free continuation. `(resume 10 s)` returns into it:
+           `C[10] = (dbl 10)` = 20, and the arm `(+ 1 (resume 10 s))` evaluates to `(+ 1 20)` = 21. Splicing
+           the pure call (once here, or many times for a multi-shot resume) re-runs an effect-free
+           computation — observationally identical to running it once — so no reified continuation is
+           needed. A call whose body ITSELF performs makes the continuation non-uniform and still declines.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (dbl (: x Int64)) (* x 2))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (dbl (Amb.flip)))) (export main)))
+  (output (: 21 Int64)))
+
 (case "a handler arm that resumes NON-tail folds a perform in an if branch by handler distribution"
   (doc    "A perform in an `if` BRANCH (a CONDITIONALLY-run position) folds when the CONDITION is pure, by
            HANDLER DISTRIBUTION — a commuting conversion: `(handle E s arms (if c t e))` is equivalent to

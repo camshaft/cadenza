@@ -128,7 +128,10 @@ pub fn core_of(db: &mut Db, id: StructId) -> Core {
 /// Whether the core form at `id` reaches a `Core::HostCall` (directly or nested) — a bounded structural
 /// walk over the core tree. Used by the `do`-sequencing lowering to decide whether a non-final statement
 /// has a host-call side effect that must be emitted (rather than dropped by the ordinary `Ref{last}` fold).
-fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
+/// Also read by `compile::collect_discarded_value_warnings` so the CDZ0307 "discarded value" warning fires
+/// on EXACTLY the pure non-final statements this lowering drops — one predicate, no drift between the DCE
+/// decision and the diagnostic that explains it.
+pub(crate) fn subtree_reaches_host_call(db: &mut Db, id: StructId) -> bool {
     if matches!(core_of(db, id), Core::HostCall { .. }) {
         return true;
     }
@@ -1027,7 +1030,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: zero-argument application is its head value");
                 return core_of(db, head);
             }
-            match crate::eval::meta_apply_of(db, head) {
+            // The applied operation: a value record's `(meta apply)` prim (the usual `List.len`/`+`/…
+            // path), OR — for a COMPILER-INTERNAL intrinsic emitted directly as a prim head (no module
+            // record), e.g. `(intrinsic "ast-splice-lift")` from the quasiquote-splice desugar — the
+            // head's own directly-resolved prim. (A bare prim used as a VALUE, not applied, still declines
+            // at the non-Apply `Resolved::Prim` arm; here it is genuinely applied to `args`.)
+            match crate::eval::meta_apply_of(db, head).or_else(|| crate::eval::prim_of(db, head)) {
                 // MIXED-UNIT COMBINE: `+`/`-`/comparison on two quantities of the SAME dimension but
                 // DIFFERENT scale (`1 km + 500 m`, `1 KiB + 1 kB`). Each operand converts to the
                 // dimension's REFERENCE unit by its exact scale (`value * num / den` in the inner type T),
@@ -1237,6 +1245,25 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         },
                     }
                 }
+                // `ast-splice-lift` — the quasiquote-splice lift `(List Int64) → (List Ast)`: wrap each
+                // element in an `Ast.Int` node. FOLD a constant list literal into a `Core::ListNew` of
+                // `(Ast.Int e)` `Core::SumNew` nodes (the Ast sum's `Int` variant is disc 0, one payload).
+                // A runtime list operand (no visible `ListNew`) declines — the runtime map is a later
+                // increment. A non-Int element declines (a wrong lift would corrupt the value).
+                Some(Prim::AstSpliceLift) if args.len() == 1 => match core_of(db, args[0]) {
+                    Core::Poison(r) => Core::Poison(r),
+                    Core::ListNew { elems } => match lower_ast_splice_lift(db, id, &elems) {
+                        Some(core) => core,
+                        None => Core::Poison(Reject::decline(
+                            "an active `,@` splice needs a compile-time-constant Int64 list \
+                                 (the runtime splice map is not yet built)",
+                        )),
+                    },
+                    _ => Core::Poison(Reject::decline(
+                        "an active `,@` splice needs a compile-time-constant list (the runtime \
+                         splice map is not yet built)",
+                    )),
+                },
                 Some(Prim::ListConcat) if args.len() == 2 => {
                     match (core_of(db, args[0]), core_of(db, args[1])) {
                         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
@@ -1731,6 +1758,41 @@ fn compute(db: &mut Db, id: StructId) -> Core {
 /// reference resolves to) BEFORE the body is lowered, so a `Resolved::Ref` to a kept binding lowers
 /// to a `Core::LocalRef` reading the shared slot. The result is a `Core::Let { bindings, body }` when
 /// any binding is kept, or just the body's core when none is (no residual `let`).
+/// Fold `ast-splice-lift` over a CONSTANT list's element cores: wrap each in an `(Ast.Int e)` node — a
+/// `Core::SumNew` at the `Ast` sum's `Int` variant disc (one payload). Returns a `Core::ListNew` of the
+/// wrapped nodes (the lifted `(List Ast)`), or `None` if the `Ast` sum / its `Int` variant is somehow
+/// absent OR an element is not an Int (a non-Int element cannot lift — the splice declines rather than
+/// building a wrong `Ast.Int`). `id` seeds nothing structural; the synthesized nodes carry their own
+/// `Ty::Sum{Ast}`. The splice companion of the active-unquote `(Ast.Int e)` wrap (Int-only this increment).
+fn lower_ast_splice_lift(db: &mut Db, id: StructId, elems: &[StructId]) -> Option<Core> {
+    // The `Ast` sum type + its `Int` variant discriminant (the decl's variant order pins Int = disc 0;
+    // read it by name so a reordering does not silently mis-tag).
+    let ast_ty = {
+        let occ = db.type_decls.iter().find(|t| t.name == "Ast")?.occ;
+        db.normalize_sum(occ, "Ast".to_string(), Vec::new())
+    };
+    let int_disc = variant_disc_by_name(db, &ast_ty, "Int")?;
+    let _ = id;
+    let mut wrapped = Vec::with_capacity(elems.len());
+    for &e in elems {
+        // Every element must be a constant Int (the list's element type is Int64; a non-Int constant —
+        // e.g. a nested list — has no `Ast.Int` lift this increment). Confirm it folds to a `ConstInt`.
+        if !matches!(core_of(db, e), Core::ConstInt(_)) {
+            return None;
+        }
+        let node = synth_core(
+            db,
+            Core::SumNew {
+                disc: int_disc,
+                payloads: vec![e],
+            },
+            ast_ty.clone(),
+        );
+        wrapped.push(node);
+    }
+    Some(Core::ListNew { elems: wrapped })
+}
+
 fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> Core {
     // The `(binder-name-occ, init-occ)` pairs; a reference resolves to the INIT occurrence, so that is
     // what the body's `Ref`s point at and what a kept binding is keyed by.
@@ -1781,6 +1843,29 @@ fn lower_let(db: &mut Db, bindings: &[(StructId, StructId)], body: StructId) -> 
 pub fn match_nonexhaustive_fault(db: &mut Db, id: StructId) -> Option<Reject> {
     match core_of(db, id) {
         Core::Poison(r) if r.code == Some(Code::NonExhaustive) => Some(r),
+        _ => None,
+    }
+}
+
+/// The CODED pattern-well-formedness fault of a `(match …)` — a mistyped variant pattern head
+/// (`((C.Gren) …)` on `(type C Red Green)` → CDZ0201 "record has no field `Gren` — did you mean `Green`?"
+/// carrying a replace fix on the key), a foreign-sum variant (CDZ0203), a payload-arity mismatch, or a
+/// non-linear binder (CDZ0102). Surfaced for `type_errors` so `cdz check` catches it in EVERY body, not
+/// only the nullary-EXPORTED ones the emit-path lowering walk (`collect_reached_poisons`) reaches — the
+/// same "check missed what only lowering produced" hole `match_nonexhaustive_fault` closes for
+/// exhaustiveness. Like a mistyped variant in VALUE position, a variant typo in a pattern is a
+/// well-formedness fault independent of the function's parameter values, so surfacing it over an
+/// unreached parameterized body is not a false alarm (the scrutinee's TYPE — the source of the variant
+/// set — comes from its annotation, not a runtime value).
+///
+/// Returns the poison ONLY when it is a CODED pattern fault that is NOT the non-exhaustiveness CDZ0210
+/// (which `match_nonexhaustive_fault` already reports — filter it here to avoid a double report). A
+/// not-yet-lowerable DECLINE (an unbuilt compound scrutinee, an unsolved-`Any` scrutinee type) is
+/// UNCODED, so it yields `None` and this adds no false alarm — the exact conservatism the exhaustiveness
+/// accessor uses.
+pub fn match_pattern_fault(db: &mut Db, id: StructId) -> Option<Reject> {
+    match core_of(db, id) {
+        Core::Poison(r) if r.code.is_some() && r.code != Some(Code::NonExhaustive) => Some(r),
         _ => None,
     }
 }
@@ -5364,6 +5449,10 @@ fn type_node_of(ty: &crate::ty::Ty) -> Option<TypeNode> {
 /// A shape-table entry (indices reference other entries — recursion closes via `Ref`).
 enum ShapeNode {
     Int,
+    /// An arbitrary-precision integer (a runtime `BigInt`). The runtime (descriptor tag 17) reads it via
+    /// `unbox_bigint` and renders the SAME `KIND_INT` leaf as `Int` — the codec leaf is already
+    /// arbitrary-width (sign + big-endian magnitude), so no new wire KIND is needed, only the shape tag.
+    BigInt,
     Bool,
     Float,
     Float32,
@@ -5420,6 +5509,9 @@ impl ShapeTableBuilder {
         use crate::ty::Ty;
         Some(match ty {
             Ty::Int(_) => self.push(ShapeNode::Int),
+            // A runtime BigInt (arbitrary precision) escapes as `ShapeNode::BigInt` — the runtime reads it
+            // via `unbox_bigint` and renders the same arbitrary-width `KIND_INT` leaf as a fixed-width int.
+            Ty::BigInt => self.push(ShapeNode::BigInt),
             Ty::Bool => self.push(ShapeNode::Bool),
             // A FLOAT payload is renderable at BOTH widths: `box_op_ty`/`get_op_ty` box it via its width's
             // leaf (`box-float`/`box-float32`), and the runtime `value-encode` renders a KIND_FLOAT decimal
@@ -5564,6 +5656,7 @@ impl ShapeTableBuilder {
         for node in &self.table {
             match node {
                 ShapeNode::Int => d.push(0),
+                ShapeNode::BigInt => d.push(17), // matches the runtime `decode_shape` tag 17 = BigInt
                 ShapeNode::Bool => d.push(1),
                 ShapeNode::Float => d.push(2), // matches the runtime `decode_shape` tag 2 = Float
                 ShapeNode::Float32 => d.push(14), // matches the runtime `decode_shape` tag 14 = Float32
@@ -7069,6 +7162,32 @@ fn lower_bigint_arith(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Co
         op: big_op,
         lhs,
         rhs,
+    }
+}
+
+/// Lower a BigInt comparison `<`/`>`/`<=`/`>=`/`=` to either a constant `Bool` fold or a runtime
+/// `Core::BigIntCmp` (the runtime `bigint-cmp` op + a fixed compare-with-zero). A CONSTANT pair (both
+/// operands `Core::ConstInt` — the shape a folded `(BigInt.of <constant>)` leaves) folds when both values
+/// fit `i128` (`to_i128` reads the exact value; every constant a program is likely to compare fits, and
+/// the runtime op covers the rest), comparing at 128-bit precision. A poison operand propagates. Otherwise
+/// (a runtime operand) emit `Core::BigIntCmp`; the emit borrows both operands and applies the operator's
+/// signed compare against the three-way `-1`/`0`/`1` result.
+fn lower_bigint_cmp(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Core {
+    let lc = core_of(db, lhs);
+    let rc = core_of(db, rhs);
+    match (lc, rc) {
+        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
+        // A constant BigInt pair — both carry the exact `IntValue`. Fold at 128-bit precision when both
+        // fit; a value beyond i128 (astronomically large) falls through to the runtime op.
+        (Core::ConstInt(a), Core::ConstInt(b)) => match (a.to_i128(), b.to_i128()) {
+            (Some(x), Some(y)) => {
+                let r = compare_ord(op, x.cmp(&y));
+                trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant BigInt comparison (i128)");
+                Core::ConstBool(r)
+            }
+            _ => Core::BigIntCmp { op, lhs, rhs },
+        },
+        _ => Core::BigIntCmp { op, lhs, rhs },
     }
 }
 
@@ -8829,6 +8948,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::ListConcat
         | Prim::ListUpdate
         | Prim::ListAt
+        | Prim::AstSpliceLift
         | Prim::ListCtor
         | Prim::BytesOf
         | Prim::BytesLen
@@ -9075,6 +9195,16 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
         return Core::Poison(binop_arity_reject(op, args));
     }
+    // A comparison over BIGINT operands routes through the runtime `bigint-cmp` (B3c) — a `BigInt` has no
+    // fixed machine slot, so `is_scalar` is false and the plain scalar-compare path below never fires. A
+    // CONSTANT pair still folds (both reach as `Core::ConstInt` carrying the exact `IntValue`, compared by
+    // `lower_bigint_cmp` at 128-bit precision where it fits, else the runtime op); a runtime operand emits
+    // `Core::BigIntCmp` (`bigint-cmp` + a fixed compare-with-zero). A `BigInt`/fixed mix was rejected
+    // CDZ0301 in `check_application`, so if one operand is BigInt the other is too. Checked before the
+    // constant folds below (a BigInt `ConstInt`'s value can exceed i64, so the `to_i64` fold would decline).
+    if bigint_operand(db, args) {
+        return lower_bigint_cmp(db, op, args[0], args[1]);
+    }
     let lhs = core_of(db, args[0]);
     let rhs = core_of(db, args[1]);
     match (lhs, rhs) {
@@ -9306,9 +9436,31 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     }
 }
 
+/// If `id` is a boolean coerced to an integer — a `(if cond 1 0)` (the bool itself) or `(if cond 0 1)`
+/// (its negation) — return `(cond, negated)`: the underlying boolean condition occurrence and whether the
+/// materialized int is the NEGATION of it. `None` otherwise. The shared shape-recognizer for the bool-int
+/// folds (a `Core::If` whose two branches are the constants `1` and `0`).
+fn materialized_bool(db: &mut Db, id: StructId) -> Option<(StructId, bool)> {
+    let Core::If { cond, then_, else_ } = core_of(db, id) else {
+        return None;
+    };
+    let branch_val = |db: &mut Db, b: StructId| -> Option<i64> {
+        match core_of(db, b) {
+            Core::ConstInt(v) => v.to_i64().filter(|&x| x == 0 || x == 1),
+            _ => None,
+        }
+    };
+    match (branch_val(db, then_)?, branch_val(db, else_)?) {
+        (1, 0) => Some((cond, false)), // `(if c 1 0)` — c itself
+        (0, 1) => Some((cond, true)),  // `(if c 0 1)` — !c
+        _ => None,
+    }
+}
+
 /// Fold `(= <bool-int-if> K)` where `K` ∈ {0,1} and the other operand is a `(if c 1 0)` / `(if c 0 1)`
 /// (a boolean coerced to an integer). Returns `c` when the `if`-value equals `K`, `!c` (`Core::Not`) when
-/// it is the complement — dropping the materialize-then-compare. `None` when neither operand is a 0/1
+/// it is the complement — dropping the materialize-then-compare. Also folds `(= <bool-int> <bool-int>)`
+/// (BOTH operands materialized bools) to `(= c d)` / `(= c (not d))`. `None` when neither operand is a 0/1
 /// constant, or the other is not a `(if c <one> <zero>)`-shaped bool-int, so the caller keeps the runtime
 /// compare. Value-identical: `(if c 1 0)` is `1` iff `c` (so `== 1` is `c`, `== 0` is `!c`); `(if c 0 1)`
 /// is the mirror. `c` is trap-free by construction (it was an `if` condition, a Bool) and is REUSED, so
@@ -9322,6 +9474,29 @@ fn fold_bool_int_eq(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<Core> {
             _ => None,
         }
     };
+    // BOTH operands bool-materialized ints — `(= (if c 1 0) (if d 1 0))` is `(= c d)`, dropping two
+    // `extend_i32_u`s and the i64 compare for a direct bool `i32.eq`. Each `(if _ 1 0)`/`(if _ 0 1)` maps
+    // to its underlying bool (or its negation); the equality of two 0/1 values is the equality of the
+    // bools, XOR-adjusted for each negation: `(= biᶜ biᵈ)` = `c == d` when neither/both negated, else `c
+    // != d` (i.e. `= c (not d)`). Built as a `Core::Compare{Eq}` on the two bool operands, one wrapped in
+    // `Core::Not` when the polarities differ (synth so the negation folds — `(not (< …))` → the complement
+    // op). Tried before the const-K path since a bool-int is not a 0/1 constant.
+    if let Some((cc, cneg)) = materialized_bool(db, lhs)
+        && let Some((dd, dneg)) = materialized_bool(db, rhs)
+    {
+        // Equal iff the bools agree after accounting for each side's negation. Same net polarity → `(= c
+        // d)`; opposite → `(= c (not d))`. Reuse `cc` as the left bool; the right is `dd` or `(not dd)`.
+        let right = if cneg == dneg {
+            dd
+        } else {
+            synth_core(db, Core::Not { operand: dd }, crate::ty::Ty::Bool)
+        };
+        return Some(Core::Compare {
+            op: Prim::Eq,
+            lhs: cc,
+            rhs: right,
+        });
+    }
     let (if_node, k) = if let Some(k) = as_const01(db, rhs) {
         (lhs, k)
     } else if let Some(k) = as_const01(db, lhs) {
@@ -12893,6 +13068,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::ListConcat => "list-concat",
         Prim::ListUpdate => "list-update",
         Prim::ListAt => "list-at",
+        Prim::AstSpliceLift => "ast-splice-lift",
         Prim::ListCtor => "List",
         Prim::BytesOf => "bytes-of",
         Prim::BytesLen => "bytes-len",
