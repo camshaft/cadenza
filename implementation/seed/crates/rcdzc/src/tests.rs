@@ -41520,6 +41520,308 @@ mod closure_host_resource {
         );
     }
 
+    /// NESTED-COMPOUND oracle core: a closure `(fn (p) (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))` whose ONE
+    /// argument is a NESTED fixed-shape tuple `(Tuple Int64 (Tuple Int64 Int64))`. The HYPOTHESIS: the canonical
+    /// ABI flattens a nested `tuple<s64, tuple<s64,s64>>` RECURSIVELY into THREE leaf core params `(i64, i64,
+    /// i64)` (depth-first), so the guest `call` receives `(i32 self, i64 a, i64 b, i64 c)` — NO memory, NO
+    /// realloc, NO runtime decode. If this validates + runs, a nested fixed-shape compound arg is an
+    /// implementation gap (recursive rebuild), NOT an ABI wall. Standalone (no heap): the lifted closure is
+    /// `lifted(a,b,c) = a + b + c` (the body once the nested tuple is flattened to its 3 leaves).
+    fn closure_nested_tuple_arg_call_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+
+        // Types: 0 = resource-new/rep (i32)->i32; 1 = lifted (i64,i64,i64)->i64 (call_indirect);
+        // 2 = make ()->i32; 3 = call (i32 self, i64 a, i64 b, i64 c)->i64 (self + the 3 FLATTENED leaf fields).
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types.ty().function(
+            vec![ValType::I64, ValType::I64, ValType::I64],
+            vec![ValType::I64],
+        ); // 1 lifted / indirect
+        types.ty().function(vec![], vec![ValType::I32]); // 2 make
+        types.ty().function(
+            vec![ValType::I32, ValType::I64, ValType::I64, ValType::I64],
+            vec![ValType::I64],
+        ); // 3 call
+        m.section(&types);
+
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew = 0u32;
+        let f_rrep = 1u32;
+
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // lifted
+        funcs.function(2); // make
+        funcs.function(3); // call
+        m.section(&funcs);
+        let f_lifted = 2u32;
+        let f_make = 3u32;
+        let f_call = 4u32;
+
+        let mut tables = TableSection::new();
+        tables.table(TableType {
+            element_type: RefType::FUNCREF,
+            minimum: 1,
+            maximum: Some(1),
+            table64: false,
+            shared: false,
+        });
+        m.section(&tables);
+
+        let mut exports = ExportSection::new();
+        exports.export("make", ExportKind::Func, f_make);
+        exports.export("call", ExportKind::Func, f_call);
+        m.section(&exports);
+
+        let mut elems = ElementSection::new();
+        elems.active(
+            Some(0),
+            &ConstExpr::i32_const(0),
+            Elements::Functions(std::borrow::Cow::Borrowed(&[f_lifted])),
+        );
+        m.section(&elems);
+
+        let mut code = CodeSection::new();
+        // lifted(a, b, c) = a + b + c
+        let mut lifted = Function::new(vec![]);
+        lifted.instruction(&Instruction::LocalGet(0));
+        lifted.instruction(&Instruction::LocalGet(1));
+        lifted.instruction(&Instruction::I64Add);
+        lifted.instruction(&Instruction::LocalGet(2));
+        lifted.instruction(&Instruction::I64Add);
+        lifted.instruction(&Instruction::End);
+        code.function(&lifted);
+        // make() = resource.new(0)
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(0));
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+        code.function(&make);
+        // call(self, a, b, c) = call_indirect[type 1](a, b, c, slot = resource.rep(self))
+        let mut call = Function::new(vec![]);
+        call.instruction(&Instruction::LocalGet(1)); // a
+        call.instruction(&Instruction::LocalGet(2)); // b
+        call.instruction(&Instruction::LocalGet(3)); // c
+        call.instruction(&Instruction::LocalGet(0)); // self handle
+        call.instruction(&Instruction::Call(f_rrep)); // → rep (table slot)
+        call.instruction(&Instruction::CallIndirect {
+            type_index: 1,
+            table_index: 0,
+        });
+        call.instruction(&Instruction::End);
+        code.function(&call);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The inner re-export component for the NESTED-tuple-ARG closure: `call`'s argument is a
+    /// `tuple<s64, tuple<s64,s64>>` DEFINED TYPE (a nested tuple). Proves a nested fixed-shape-scalar compound
+    /// argument's component type is expressible + re-exportable (the inner tuple is its own defined type,
+    /// referenced by index from the outer tuple).
+    fn inner_reexport_component_nested_tuple_arg() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        // make : () -> own<0>
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty));
+        // the nested tuple<s64, tuple<s64,s64>> argument (import side): mint the INNER tuple first, then the
+        // outer tuple referencing it by index.
+        let (inner_imp, itd) = c.type_defined();
+        itd.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (tup_imp, td) = c.type_defined();
+        td.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Type(inner_imp),
+        ]);
+        // call : (self: own<0>, p: tuple<s64, tuple<s64,s64>>) -> s64
+        let (own_imp2, od2) = c.type_defined();
+        od2.own(imp_t);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_imp2)),
+            ("p", ComponentValType::Type(tup_imp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_fn = c.import("import-func-call", ComponentTypeRef::Func(call_ty));
+        // RE-EXPORT the resource type + funcs.
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        let (own_exp, od3) = c.type_defined();
+        od3.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        let (inner_exp, itd2) = c.type_defined();
+        itd2.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (tup_exp, td2) = c.type_defined();
+        td2.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Type(inner_exp),
+        ]);
+        let (own_exp2, od4) = c.type_defined();
+        od4.own(exp_t);
+        let (call_exp_ty, mut cf2) = c.type_function();
+        cf2.params([
+            ("self", ComponentValType::Type(own_exp2)),
+            ("p", ComponentValType::Type(tup_exp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        c.export(
+            "call",
+            ComponentExportKind::Func,
+            call_fn,
+            Some(ComponentTypeRef::Func(call_exp_ty)),
+        );
+        c
+    }
+
+    /// The outer oracle component for the NESTED-tuple-ARG closure: `call` is lifted against `(self: own<t>,
+    /// p: tuple<s64, tuple<s64,s64>>) -> s64` with NO Memory/Realloc canon options — the HYPOTHESIS is that
+    /// wasmtime RECURSIVELY flattens the nested tuple into THREE scalar core params, so the core `call`
+    /// receives `(i32 self, i64 a, i64 b, i64 c)`. If the lift required indirect (memory) passing, this fails
+    /// to instantiate — the test IS the refutation attempt.
+    fn oracle_closure_nested_tuple_arg_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew_core),
+            ("resource-rep", ExportKind::Func, rrep_core),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let call_core = c.core_alias_export(prog_inst, "call", ExportKind::Func);
+        // lift make : () -> own<t>
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        // lift call : (self: own<t>, p: tuple<s64, tuple<s64,s64>>) -> s64 — NO canon options (flatten hyp).
+        let (own_t2, odef2) = c.type_defined();
+        odef2.own(res_ty);
+        let (inner_t, itdef) = c.type_defined();
+        itdef.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Primitive(PrimitiveValType::S64),
+        ]);
+        let (tup_t, tdef) = c.type_defined();
+        tdef.tuple([
+            ComponentValType::Primitive(PrimitiveValType::S64),
+            ComponentValType::Type(inner_t),
+        ]);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_t2)),
+            ("p", ComponentValType::Type(tup_t)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_comp = c.lift_func(call_core, call_ty, []);
+        let inner_idx = c.component(inner_reexport_component_nested_tuple_arg());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-call", ComponentExportKind::Func, call_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// THE REFUTATION ATTEMPT for a NESTED fixed-shape compound arg: does `tuple<s64, tuple<s64,s64>>` cross
+    /// the direct-call boundary by RECURSIVE native flattening (no runtime decode)? `make()` the handle, then
+    /// `call(handle, (100, (10, 3)))` supplying the nested tuple as a `Val::Tuple` containing a `Val::Tuple` —
+    /// expect 113. If this validates + runs, the nested-compound-ARG decline is an implementation gap (a
+    /// recursive rebuild), NOT an ABI wall requiring `value-decode`.
+    #[test]
+    fn a_nested_fixed_shape_tuple_closure_arg_crosses_by_recursive_flattening() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_closure_nested_tuple_arg_component(&closure_nested_tuple_arg_call_core());
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("nested-tuple-arg closure component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make export");
+        let call_idx = instance
+            .get_export_index(&mut store, Some(&iface), "call")
+            .expect("call export");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let call = instance.get_func(&mut store, call_idx).expect("call func");
+
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle).expect("make call");
+        make.post_return(&mut store).expect("make post_return");
+        assert!(matches!(handle[0], Val::Resource(_)), "make → resource");
+
+        // call(handle, (100, (10, 3))) → 100 + 10 + 3 = 113. The nested tuple crosses as a Val::Tuple of a
+        // Val::Tuple; wasmtime RECURSIVELY flattens it to three core i64 params for the guest `call`.
+        let nested_arg = Val::Tuple(vec![
+            Val::S64(100),
+            Val::Tuple(vec![Val::S64(10), Val::S64(3)]),
+        ]);
+        let mut out = [Val::Bool(false)];
+        call.call(&mut store, &[handle[0].clone(), nested_arg], &mut out)
+            .expect("call(handle, (100, (10, 3)))");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(
+            out[0],
+            Val::S64(113),
+            "closure (fn (p) (+ p.0 (+ p.1.0 p.1.1))) applied to (100, (10, 3)) = 113"
+        );
+    }
+
     /// COMPOUND-RESULT oracle core (the byte anchor for a closure whose result is a `list<u8>` / a compound
     /// rendered as the canonical value form): a closure `call : (self: own<t>, x: s64) -> list<u8>`. The
     /// core carries a MEMORY + `cabi_realloc` (which a scalar `call` does not need) so the canonical ABI can
