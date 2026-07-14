@@ -180,6 +180,16 @@ boundary envelope) → **U3** (compile-request override) → **U4** (remove `ext
   (peer-effect projection emits `drop`, borrowed-param projection does not); full rcdzc suite 1448/0, gate
   2152/0/0, all cross-component runs correct under wasmtime (no use-after-free).
 
+- **U14 — reclaim across a NESTED-COMPOUND projection. ✅ DONE (`spec`).** Extends U13 to the case U13 left
+  as a deferred leak: projecting a COMPOUND field out of an owned peer-returned aggregate. The `arr-get`
+  result IS the borrowed child, so the `Core::Proj` emit now `dup`s the returned child (rc++) so it survives,
+  THEN `drop`s the parent — the parent's storage + every other child is reclaimed and the returned child
+  stays live under its own retained reference. `collect_used_ops` imports `dup` for a nested-compound
+  reclaim. Test `u14_*`: a peer returns `((x,x+1), x+2)`, the consumer `(. (. (P.nest x) 0) 1)` projects the
+  inner tuple (nested → dup+drop-parent) then reads its scalar (→ drop-inner) → `main(9)=10`, verified under
+  wasmtime (the inner tuple stays live across the outer's drop — no use-after-free). The `u13_*` unit test
+  also asserts the nested case emits both `dup` and `drop`. Full rcdzc 1453/0, gate 2157/0/0.
+
 🎉 **THE UNIFICATION IS COMPLETE.** Cross-component interop IS the effect system: a contract is an
 `(effect …)`, a peer dependency is that effect `(bind …)`-ed to a peer interface, a test overrides with a
 `(handle …)` or a compile-request `--bind`. ONE concept — an escaping effect the manifest records — for

@@ -909,16 +909,18 @@ pub fn collect_used_ops(
         }
         Core::Proj { operand, .. } => {
             out.insert(OP_ARR_GET);
-            if let Ok(Some(op)) = get_op(db, id) {
+            let scalar_elem = get_op(db, id);
+            if let Ok(Some(op)) = scalar_elem {
                 out.insert(op);
-                // RECLAMATION (U13): a scalar projection off an OWNED-temporary aggregate `drop`s the
-                // aggregate after the borrowing read — mirror the emit's reclaim condition so `drop` is
-                // imported. (A borrowed-operand projection reclaims nothing, matching the emit.)
-                if matches!(
-                    heap_operand_ownership(db, operand),
-                    Ok(HandleOwnership::Owned)
-                ) {
-                    out.insert(OP_DROP);
+            }
+            // RECLAMATION (U13/U14): a projection off an OWNED-temporary aggregate reclaims it after the
+            // borrowing read — mirror the emit's reclaim condition so the ops are imported. A SCALAR element
+            // `drop`s the parent; a NESTED-COMPOUND element `dup`s the returned child then `drop`s the parent.
+            // (A borrowed-operand projection reclaims nothing, matching the emit.)
+            if matches!(heap_operand_ownership(db, operand), Ok(HandleOwnership::Owned)) {
+                out.insert(OP_DROP);
+                if matches!(scalar_elem, Ok(None)) {
+                    out.insert(OP_DUP);
                 }
             }
             collect_used_ops(db, operand, out);
@@ -5102,23 +5104,21 @@ fn emit(
         // to its scalar: `<operand handle> ; i32.const i ; arr-get ; get-<T>`. The result type (this
         // node's solved type) chooses the unbox op.
         Core::Proj { operand, index } => {
-            // RECLAMATION (U13): if the projected `operand` is a fresh OWNED temporary (a peer/host call
+            // RECLAMATION (U13/U14): if the projected `operand` is a fresh OWNED temporary (a peer/host call
             // result, a constructor — `heap_operand_ownership` == Owned) rather than a BORROW of a live
             // binding (a `Param`/`LocalRef`, reclaimed by its owner), the aggregate would otherwise LEAK —
-            // `arr-get` borrows it to read the element but nothing releases it. Reclaim it, but ONLY when
-            // the element is SCALAR (`get_op` Some): `get-int`/`get-bool` COPY the value out, so the parent
-            // can be dropped safely. A NESTED-COMPOUND element is the child handle itself (an `arr-get`
-            // borrow INTO the parent), so dropping the parent could cascade-reclaim the returned child —
-            // that case is left as-is (a deferred leak, never a use-after-free). Stash the aggregate in a
-            // scratch i32 slot so it survives the read for the post-read drop. `heap_operand_ownership`
-            // declines an operand whose ownership it cannot prove, so an unhandled shape rejects (Owned only
-            // on a proven-fresh producer), never leaks wrongly or double-frees.
+            // `arr-get` borrows it to read the element but nothing releases it. Two element cases:
+            //   • SCALAR element (`get_op` Some): `get-int`/`get-bool` COPY the value out, so after the read
+            //     the parent can be dropped directly (U13).
+            //   • NESTED-COMPOUND element (`get_op` None): the `arr-get` result IS the child handle, a BORROW
+            //     into the parent. `dup` the child (rc++) so it survives the parent's drop, THEN drop the
+            //     parent — the parent's storage + every OTHER child is reclaimed, and the returned child
+            //     stays live under its own retained reference (U14).
+            // Stash the aggregate in a scratch i32 slot so it survives the read for the post-read drop.
+            // `heap_operand_ownership` declines an operand whose ownership it cannot prove, so an unhandled
+            // shape rejects (Owned only on a proven-fresh producer), never leaks wrongly or double-frees.
             let scalar_elem = get_op(db, id)?;
-            let reclaim = scalar_elem.is_some()
-                && matches!(
-                    heap_operand_ownership(db, operand),
-                    Ok(HandleOwnership::Owned)
-                );
+            let reclaim = matches!(heap_operand_ownership(db, operand), Ok(HandleOwnership::Owned));
             if reclaim {
                 let agg_slot = base;
                 if agg_slot + 1 > *high {
@@ -5129,14 +5129,32 @@ fn emit(
                 out.push(Lir::LocalTee(agg_slot)); // [handle], agg_slot = the owned aggregate
                 out.push(Lir::ConstI32(index as i32)); // [handle, i]
                 out.push(Lir::CallImport(OP_ARR_GET)); // → [elem-handle] (BORROWS the aggregate)
-                let op = scalar_elem.expect("reclaim implies a scalar element");
-                out.push(Lir::CallImport(op)); // → [scalar (i64 for an int, i32 for a bool)]
-                if needs_get_int_narrow(db, id) {
-                    out.push(Lir::I32WrapI64);
+                match scalar_elem {
+                    Some(op) => {
+                        out.push(Lir::CallImport(op)); // → [scalar (i64 for an int, i32 for a bool)]
+                        if needs_get_int_narrow(db, id) {
+                            out.push(Lir::I32WrapI64);
+                        }
+                        // The scalar is now a COPY on the stack; release the owned aggregate (rc--, cascades).
+                        out.push(Lir::LocalGet(agg_slot));
+                        out.push(Lir::CallImport(OP_DROP)); // [scalar] (unchanged; aggregate reclaimed)
+                    }
+                    None => {
+                        // A NESTED-COMPOUND element: retain the returned child (rc++) so it outlives the
+                        // parent, then drop the parent. `dup` POPS its handle, so re-read the child from a
+                        // scratch slot for the dup and leave the original copy on the stack as the result.
+                        let child_slot = base + 1;
+                        if child_slot + 1 > *high {
+                            *high = child_slot + 1;
+                        }
+                        scratch_ty.insert(child_slot, ValType::I32);
+                        out.push(Lir::LocalTee(child_slot)); // [child], child_slot = child
+                        out.push(Lir::LocalGet(child_slot)); // [child, child]
+                        out.push(Lir::CallImport(OP_DUP)); // pops the 2nd copy, rc++ → [child]
+                        out.push(Lir::LocalGet(agg_slot));
+                        out.push(Lir::CallImport(OP_DROP)); // drop the parent; the dup'd child survives → [child]
+                    }
                 }
-                // The scalar is now a COPY on the stack; release the owned aggregate (rc--, cascades).
-                out.push(Lir::LocalGet(agg_slot));
-                out.push(Lir::CallImport(OP_DROP)); // [scalar] (unchanged; aggregate reclaimed)
                 return Ok(());
             }
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [handle]
