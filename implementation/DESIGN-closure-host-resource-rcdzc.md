@@ -1067,15 +1067,19 @@ the component type. The new work:
   `TupleFieldShape` + `mint_tuple_type_nested` (inner tuples first, referenced by sleb128 type-index) +
   `nested_tuple_type_count`; `assemble_closure_resource_borrow_tuple` + its inner component gained a
   `tuple_shape` param; `mod.rs::nested_fixed_shape_tuple_arg` recurses. e2e: tuple-in-tuple/record-in-record/
-  tuple-in-record/3-deep/nested-Bool-leaf, all → correct under wasmtime. SCOPE: single-export, scalar result
-  (a nested arg with a list<u8>-crossing result, or on multi/mixed/distinct-sig, still declines — a widening
-  that reuses the same `TupleFieldShape` machinery).
+  tuple-in-record/3-deep/nested-Bool-leaf, all → correct under wasmtime. SCOPE: single-export, scalar result.
+- **✅ NESTED compound ARG × list<u8>-crossing RESULTS (single-export)** (`39da0d6a`). Widened the nested arg
+  to EVERY result shape on the single-export path: byte-rope, fixed-shape compound value-form, and
+  variable-length collection. `assemble_closure_bytes_resource_borrow_tuple` + its inner component gained the
+  same `tuple_shape` param + recursive mint; the 3 list-result routings thread a shared `list_rebuild`/
+  `list_shape` (falling back from flat `tuple_arg` to `nested_tuple`). e2e: nested tuple/record arg ×
+  List/Bytes/compound. The single-export nested-compound-arg surface is now COMPLETE across all result shapes.
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (1) **N
   compound args** (two tuple args) — `single_compound_among_scalars` rejects >1 tuple; `TupleArgRebuild` + ~65
   envelope sites + 16 `tuple_defined_type` mint sites assume EXACTLY ONE tuple; a `Vec<TupleArgRebuild>`
-  generalization is a large multi-tick vertical. (2) **NESTED compound fields on the OTHER shapes/results** —
-  single-export scalar-result DONE (above); the multi/mixed/distinct-sig + list-result paths thread the same
+  generalization is a large multi-tick vertical. (2) **NESTED compound fields on the MULTI/MIXED/DISTINCT-SIG
+  paths** — single-export (scalar + list result) DONE; the multi/mixed/distinct-sig envelopes thread the same
   `tuple_shape` (a mechanical widening). (3) a **SUM (Option) direct-call arg** (needs host→guest decode of
   the discriminant+payload). (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
   does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works for all of
