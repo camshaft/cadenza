@@ -16781,6 +16781,136 @@ mod match_engine {
     }
 
     #[test]
+    fn a_comparison_pair_split_across_a_nested_connective_reassociates_and_folds() {
+        // REASSOCIATION: the pairwise comparison folds see only the TWO DIRECT operands, so a pair split
+        // across a same-connective nested subtree is missed — `(and (and (> x 0) (< x 100)) (> x 5))` should
+        // notice `(> x 5)` subsumes the buried `(> x 0)`. When one operand is a same-connective `(op P Q)`
+        // and the other is a comparison `C`, folding `C` against `P`/`Q` (all trap-free) rebuilds the tree
+        // with the collapsed pair: subsumption → drop the redundant compare; complement/disjoint → `false`.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS))
+                .count()
+        };
+        // Nested subsumption: `(> x 5)` subsumes the buried `(> x 0)` → 2 compares (`> x 5`, `< x 100`), not
+        // 3. Both outer nesting orders.
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64)",
+                "(: (and (and (> x 0) (< x 100)) (> x 5)) Bool)"
+            )),
+            2,
+            "nested subsumption (nested on left)"
+        );
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64)",
+                "(: (and (> x 5) (and (> x 0) (< x 100))) Bool)"
+            )),
+            2,
+            "nested subsumption (nested on right)"
+        );
+        // A deep chain fully collapses to the single tightest bound.
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64)",
+                "(: (and (and (and (> x 0) (> x 1)) (> x 2)) (> x 3)) Bool)"
+            )),
+            1,
+            "deep same-op chain → tightest bound"
+        );
+        // Nested COMPLEMENT and nested DISJOINT collapse to the constant `false` — no compares.
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (and (and (< x y) (> x 0)) (>= x y)) Bool)"
+            )),
+            0,
+            "nested complement → false"
+        );
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64)",
+                "(: (and (and (< x 5) (> x 0)) (> x 10)) Bool)"
+            )),
+            0,
+            "nested disjoint → false"
+        );
+        // A NON-related third comparison does NOT collapse (distinct variable): all three kept.
+        assert_eq!(
+            cmps(&lir(
+                "(: x Int64) (: y Int64)",
+                "(: (and (and (> x 0) (< x 100)) (> y 5)) Bool)"
+            )),
+            3,
+            "unrelated comparison kept"
+        );
+
+        // VALUE PARITY: the nested-subsumption form equals `5 < x < 100`.
+        use wasmtime::component::Val;
+        let f = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (if (and (and (> x 0) (< x 100)) (> x 5)) 1 0)) (export f))",
+        )))
+        .expect("compile");
+        for (x, want) in [(-5, 0), (0, 0), (5, 0), (6, 1), (99, 1), (100, 0), (150, 0)] {
+            assert_eq!(
+                run_returns_with::<i64>(&f, "f", &[Val::S64(x)]),
+                want,
+                "nested subsumption value @{x}"
+            );
+        }
+        // The nested-complement form is always false.
+        let cf = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: x Int64) (: y Int64)) (if (and (and (< x y) (> x 0)) (>= x y)) 1 0)) (export f))",
+        )))
+        .expect("compile");
+        for (x, y) in [(3, 5), (5, 3), (0, 0), (10, 2)] {
+            assert_eq!(
+                run_returns_with::<i64>(&cf, "f", &[Val::S64(x), Val::S64(y)]),
+                0,
+                "nested complement @{x},{y}"
+            );
+        }
+        // TRAP SAFETY: a trapping leaf DECLINES the reassociation (it needs all leaves trap-free), so the
+        // runtime form is kept and the trap fires. `(/ 10 n)` traps at n=0.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: n Int64) (: x Int64)) (if (and (and (> (/ 10 n) 0) (< x 100)) (> (/ 10 n) 5)) 1 0)) (export f))",
+        )))
+        .expect("compile");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0), Val::S64(50)]),
+            "a trapping leaf keeps the runtime form and traps"
+        );
+    }
+
+    #[test]
     fn two_equalities_to_different_constants_do_not_subsume() {
         // ⚠ MISCOMPILE REGRESSION: the same-direction subsumption fold keyed on "same operator", which
         // wrongly included `Eq` — so `(and (= x 5) (= x 6))` was "subsumed" to `(= x 6)` (returns 1 at x=6),

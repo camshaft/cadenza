@@ -7331,9 +7331,90 @@ fn fold_short_circuit(db: &mut Db, lhs: StructId, rhs: StructId, is_and: bool) -
                     Core::And { lhs, rhs, is_and }
                 }
             }
+            // REASSOCIATE TO EXPOSE A COMPARISON PAIR across a same-connective nested tree. The pairwise
+            // comparison folds above only see the TWO DIRECT operands, so `(and (and (> x 0) (< x 100)) (> x
+            // 5))` misses that `(> x 5)` subsumes the buried `(> x 0)`. When one operand is a same-connective
+            // `(op P Q)` and the other is a comparison `C`, try folding `C` against `P` (and against `Q`) via
+            // `fold_short_circuit`: if that pair COLLAPSES (to a constant or a single kept comparison — i.e.
+            // NOT a plain two-operand `Core::And`), rebuild the tree with the collapsed result and the
+            // remaining leaf. `(and (and (> x 0) (< x 100)) (> x 5))` → `(and (> x 5) (< x 100))`; a nested
+            // COMPLEMENT `(and (and (< x y) …) (>= x y))` → false. SOUND only when every involved leaf (`C`,
+            // `P`, `Q`) is TRAP-FREE: `and`/`or` is associative+commutative over pure booleans, so regrouping
+            // and reordering is unobservable (no trap/effect order to preserve). `reassociate_comparison_pair`
+            // returns the rebuilt `Core` or `None`.
+            _ if let Some(folded) = reassociate_comparison_pair(db, lhs, rhs, is_and) => folded,
             _ => Core::And { lhs, rhs, is_and },
         },
     }
+}
+
+/// Reassociate a short-circuit `(op lhs rhs)` (connective `is_and`) to expose a COMPARISON PAIR that the
+/// direct pairwise folds miss because it is split across a same-connective nested subtree. When one operand
+/// is a nested `(op P Q)` (SAME connective) and the OTHER operand `C` is a comparison, this folds `C`
+/// against `P` and against `Q` (via `fold_short_circuit`); if either pair COLLAPSES — the recursive fold
+/// returns something OTHER than a plain two-operand `Core::And` of those same two nodes (a constant, or a
+/// single subsuming comparison) — the whole tree is rebuilt as `(op collapsed remaining_leaf)`, dropping the
+/// redundant comparison. `(and (and (> x 0) (< x 100)) (> x 5))` → `(and (> x 5) (< x 100))` (subsumption);
+/// `(and (and (< x y) p) (>= x y))` → `false` (complement). Returns `None` when nothing collapses.
+///
+/// SOUNDNESS: fires ONLY when `C`, `P`, and `Q` are all TRAP-FREE. A short-circuit `and`/`or` over pure
+/// (trap-free, effect-free) boolean operands is fully associative AND commutative — there is no evaluation
+/// order or trap to preserve — so regrouping `(op (op P Q) C)` as `(op (op C P) Q)` and folding the exposed
+/// `(op C P)` pair is behavior-identical. (A non-trap-free leaf could change WHICH branch's trap fires or
+/// its order, so it is excluded — the tree stays as-is.) Both outer operand orders and both nested-operand
+/// positions are tried.
+fn reassociate_comparison_pair(
+    db: &mut Db,
+    lhs: StructId,
+    rhs: StructId,
+    is_and: bool,
+) -> Option<Core> {
+    // Try: `nested` = a same-connective `(op P Q)`, `c` = the other operand (a comparison). Fold `c`
+    // against each nested leaf; on a genuine collapse, rebuild `(op collapsed other_leaf)`.
+    let try_side = |db: &mut Db, nested: StructId, c: StructId| -> Option<Core> {
+        // `c` must be a comparison, and trap-free (a discarding/regrouping fold requires purity).
+        if !matches!(core_of(db, c), Core::Compare { .. }) || !is_trap_free(db, c) {
+            return None;
+        }
+        let Core::And {
+            lhs: p,
+            rhs: q,
+            is_and: nested_is_and,
+        } = core_of(db, nested)
+        else {
+            return None;
+        };
+        if nested_is_and != is_and {
+            return None; // must be the SAME connective to reassociate
+        }
+        // Every leaf must be trap-free so the reassociation is unobservable.
+        if !is_trap_free(db, p) || !is_trap_free(db, q) {
+            return None;
+        }
+        // Fold `c` against P, keeping Q; then against Q, keeping P. A genuine collapse = the recursive fold
+        // did NOT return a plain `Core::And` re-pairing the same two nodes (that would be no progress).
+        let collapsed = |db: &mut Db, pair_a: StructId, pair_b: StructId| -> Option<Core> {
+            let folded = fold_short_circuit(db, pair_a, pair_b, is_and);
+            match folded {
+                // No progress: the pair stayed a two-operand `and`/`or`. (Any other shape — ConstBool, a
+                // single Compare, a Not, an Eq — is a real collapse.)
+                Core::And { .. } => None,
+                other => Some(other),
+            }
+        };
+        if let Some(folded) = collapsed(db, c, p) {
+            // `(op (op P Q) C)` → `(op folded(C,P) Q)`.
+            let fid = synth_core(db, folded, crate::ty::Ty::Bool);
+            return Some(fold_short_circuit(db, fid, q, is_and));
+        }
+        if let Some(folded) = collapsed(db, c, q) {
+            // → `(op folded(C,Q) P)`.
+            let fid = synth_core(db, folded, crate::ty::Ty::Bool);
+            return Some(fold_short_circuit(db, fid, p, is_and));
+        }
+        None
+    };
+    try_side(db, lhs, rhs).or_else(|| try_side(db, rhs, lhs))
 }
 
 /// NESTED IDEMPOTENCE for a short-circuit `and`/`or`: when one outer operand is a nested `Core::And` of the
