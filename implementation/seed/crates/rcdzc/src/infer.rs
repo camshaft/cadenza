@@ -672,6 +672,13 @@ fn bits_to_byte_boundary_hint(bits: u32) -> String {
 /// is annotated when its name sits in a `(: name T)` binder (the name's parent is that form); the type
 /// is `T` reduced to a `Ty` by the evaluator (`typeval_of`). `None` for a bare (unannotated) parameter
 /// or an unreducible annotation type — in which case the parameter's type is left open (`Any`).
+///
+/// This binder is the BIDIRECTIONAL boundary where first-class types meet inference: the parameter's type
+/// is SYNTHESIZED by reducing the annotation type-value (`typeval_of` — monomorphization from the concrete
+/// type supplied, e.g. `(: t Type)` → `Ty::Type` for a type-valued parameter), not solved by unification —
+/// so a first-class computable type is reconciled with principal-type inference rather than contradicting it.
+//= spec/capabilities/type-system.md#inference-and-first-class-types-meet-at-a-bidirectional-boundary
+//# A position that binds a type-valued parameter MUST be a bidirectional-checking boundary, at which a type is either synthesized by monomorphization from the concrete type-value supplied or checked against an explicit annotation, rather than solved by unification, so that first-class computable types are reconciled with principal-type inference instead of contradicting it.
 fn param_annot_ty(db: &mut Db, binder: StructId) -> Option<Ty> {
     let parent = db.parent_of(binder)?;
     let tail = db.ast.as_form(parent, ":")?;
