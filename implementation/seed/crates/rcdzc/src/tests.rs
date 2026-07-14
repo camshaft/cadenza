@@ -35434,6 +35434,7 @@ mod closure_host_resource {
                 lifted_slot: 0, // lifted-inc is table slot 0
                 ret_is_bytes: false,
                 ret_template: None,
+                ret_descriptor: None,
             },
             SigGroup {
                 makes: vec![ClosureMake {
@@ -35446,6 +35447,7 @@ mod closure_host_resource {
                 lifted_slot: 1,       // lifted-isz is table slot 1
                 ret_is_bytes: false,
                 ret_template: None,
+                ret_descriptor: None,
             },
         ];
 

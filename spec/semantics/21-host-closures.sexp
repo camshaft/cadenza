@@ -1929,3 +1929,74 @@
               (export mk) (export inc)))
   (call   inc (: 41 Int64))
   (output (: 42 Int64)))
+
+; A VARIABLE-LENGTH collection (List/Map/Set) result on the DISTINCT-SIG path — closures of DIFFERENT
+; signatures each returning a List/Map/Set cross as G distinct resource types, each `call-g<n>` value-encoding
+; the returned handle against THAT group's shape descriptor. A collection group, a compound group, a byte-rope
+; group, and a scalar group can all coexist in one component (compound templates in the data section;
+; collection + byte-rope payloads written past them; scalars by value — none collide).
+
+(case "distinct-sig collection result — the Int64→List closure"
+  (doc    "`mki : () -> (-> Int64 (List Int64))` returns `(list n n+1)`, `mkb : () -> (-> Bool (List Int64))`
+           returns `(list (if b 1 0))` — distinct arg types → two resource types, each `call-g<n>` value-
+           encoding its own result. `call(mki-handle, 5)` → `(: (list 5 6) (List Int64))`.")
+  (input  (do (def (mki) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) (list (if b 1 0))))
+              (export mki) (export mkb)))
+  (call   mki (: 5 Int64))
+  (output (: (list 5 6) (List Int64))))
+
+(case "distinct-sig collection result — the Bool→List closure"
+  (doc    "The SAME two-resource program, driving the OTHER signature: `call(mkb-handle, true)` → `(: (list
+           1) (List Int64))`. Confirms each distinct-sig group value-encodes its own result.")
+  (input  (do (def (mki) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (mkb) (fn ((: b Bool)) (list (if b 1 0))))
+              (export mki) (export mkb)))
+  (call   mkb (: true Bool))
+  (output (: (list 1) (List Int64))))
+
+(case "distinct-sig: a collection + a compound + a byte-rope + a scalar group all coexist — the collection"
+  (doc    "FOUR distinct signatures, FOUR result MODES in one component: `lst` a List (value-encode), `pr` a
+           tuple (fixed template), `byt` a Bytes (raw byte-rope), `inc` an Int64 (by value). `call(lst-handle,
+           7)` → `(: (list 7 8) (List Int64))`. Pins the full disjoint-memory layout (compound template region
+           + value-encode/byte-rope payloads past it + scalar-by-value all coexisting).")
+  (input  (do (def (lst) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (pr) (fn ((: b Bool)) (tuple b (if b 1 0))))
+              (def (byt) (fn ((: x Int64)) (bin (u8 (UInt8.wrap x)))))
+              (def (inc) (fn ((: y Int64)) (+ y 1)))
+              (export lst) (export pr) (export byt) (export inc)))
+  (call   lst (: 7 Int64))
+  (output (: (list 7 8) (List Int64))))
+
+(case "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the compound"
+  (doc    "The SAME 4-mode program, driving the COMPOUND group: `call(pr-handle, false)` → `(: (tuple false
+           0) (Tuple Bool Int64))` (a fixed-shape template, distinct from the value-encoded collection).")
+  (input  (do (def (lst) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (pr) (fn ((: b Bool)) (tuple b (if b 1 0))))
+              (def (byt) (fn ((: x Int64)) (bin (u8 (UInt8.wrap x)))))
+              (def (inc) (fn ((: y Int64)) (+ y 1)))
+              (export lst) (export pr) (export byt) (export inc)))
+  (call   pr (: false Bool))
+  (output (: (tuple false 0) (Tuple Bool Int64))))
+
+(case "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the byte-rope"
+  (doc    "The SAME program's byte-rope group: `call(byt-handle, 65)` → `(65)` (a raw byte list, written past
+           the compound template region).")
+  (input  (do (def (lst) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (pr) (fn ((: b Bool)) (tuple b (if b 1 0))))
+              (def (byt) (fn ((: x Int64)) (bin (u8 (UInt8.wrap x)))))
+              (def (inc) (fn ((: y Int64)) (+ y 1)))
+              (export lst) (export pr) (export byt) (export inc)))
+  (call   byt (: 65 Int64))
+  (output (65)))
+
+(case "distinct-sig: a collection + a compound + a byte-rope + a scalar group — the scalar"
+  (doc    "The SAME program's scalar group: `call(inc-handle, 41)` → 42 (by value, NOT list<u8>). Confirms
+           the scalar `call-<g>` is unaffected by the three sibling list-returning groups.")
+  (input  (do (def (lst) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (pr) (fn ((: b Bool)) (tuple b (if b 1 0))))
+              (def (byt) (fn ((: x Int64)) (bin (u8 (UInt8.wrap x)))))
+              (def (inc) (fn ((: y Int64)) (+ y 1)))
+              (export lst) (export pr) (export byt) (export inc)))
+  (call   inc (: 41 Int64))
+  (output (: 42 Int64)))
