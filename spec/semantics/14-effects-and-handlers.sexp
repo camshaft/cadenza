@@ -1077,6 +1077,28 @@
               (handle Diag (list) ((emit (v) s (resume unit (List.push s v))) (collect (u) s (resume s s))) (List.len (walk 3)))) (export main)))
   (output (: 3 Int64)))
 
+(case "a recursive effectful walk BUILDS a list as its return value, one fresh element per step"
+  (doc    "The list is the recursion's RETURN VALUE (not handler state, unlike the accumulator case above):
+           a recursive `build` reads a fresh index and CONSES it onto the list the rest of the walk returns.
+           The perform is bound in a `let` BEFORE the self-call — `(let ((v (Idx.next))) ((. List push)
+           (build (- n 1)) v))` — so `v` reads PRE-recursion state (the sound ordering; a perform AFTER the
+           self-call would read the recursion's out-state, which the single-return specialization cannot
+           carry and correctly declines). `Idx` seeded 1 threads `s + 1`, so the three steps read 1, 2, 3 —
+           three fresh elements — and `(List.len (build 3))` = 3. Pins that effect-context specialization
+           lowers a list-BUILDING recursive walk (the shape of a compiler pass collecting fresh names into a
+           list as it descends), with the built list crossing to a `List.len` readout via the value heap.")
+  (input  (do
+            (effect Idx (op next (-> Unit Int64)))
+            (def (build (: n Int64))
+              (if (= n 0)
+                  (list)
+                  (let ((v (Idx.next)))
+                    ((. List push) (build (- n 1)) v))))
+            (def (main)
+              (handle Idx 1 ((next (u) s (resume s (+ s 1))))
+                ((. List len) (build 3)))) (export main)))
+  (output (: 3 Int64)))
+
 ; A RECURSIVE effectful walk whose handler arm resumes WITH THE STATE ITSELF and threads a CHANGED state
 ; `(resume s (+ s 1))` — the exact combination (recursion × a state-threading arm whose resume VALUE is
 ; the state) that leaked a compiler-internal specialization name. The recursive-def specialization
