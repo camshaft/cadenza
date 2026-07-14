@@ -1,0 +1,43 @@
+# cdz-calc — the native Cadenza calculator REPL.
+#
+# A read-eval-print loop over the ACTUAL language: you type an expression (ML by default) and it
+# compiles + runs it, printing the value — scalar or compound (a Rational renders `1/2`, a quantity
+# `1500 m`). Variables accumulate (`x = 5`, then `x * x`), and `ans` recalls the last result.
+#
+# It reuses the whole existing pipeline rather than reimplementing evaluation: `cadenza-syntax` parses
+# the input and (via `cadenza_syntax::repl`) assembles "the buffer of definitions + one expression"
+# into a runnable program; `rcdzc` compiles it to a component; `cdz-run` runs it and renders the value.
+# So this crate is the FIRST place all three sit in one process — which is why it is its OWN binary
+# crate: `cdz` holds the compiler but not wasmtime, `cdz-run` holds wasmtime but not the compiler, and
+# a REPL needs BOTH compile and run. (Same reason `cdz-run` stays separate: wasmtime lives at the edge.)
+#
+# A member of the seed workspace (picked up by the `crates/*` glob).
+[package]
+name = "cdz-calc"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "cdz-calc"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# The front-end: parse a surface into the arena, assemble the REPL program (shared `repl` module), and
+# re-render a value form into the reader's surface (ML vs s-expr).
+cadenza-syntax = { path = "../cadenza-syntax" }
+# The compiler: assembled program → wasm component.
+rcdzc = { path = "../rcdzc" }
+# The runner: instantiate the component, compose the value-heap runtime by content address, invoke the
+# entry, render the value. wasmtime lives HERE (transitively), never in the compiler.
+cdz-run = { path = "../cdz-run" }
+# Typed CLI + generated --help — the same parser the rest of the workspace uses.
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+# NOTE: no line-editor dep (rustyline/reedline). The interactive loop reads plain lines from stdin —
+# arrow-key history is a nicety the GUI (C4) already provides, and keeping the native REPL dependency-
+# free avoids adding a large new tree to the workspace lockfile (the workspace is deliberately careful
+# about deps — see the root Cargo.toml's cdz-smith exclusion note).
