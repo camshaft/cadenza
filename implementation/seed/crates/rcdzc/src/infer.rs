@@ -4313,6 +4313,60 @@ fn record_field_delete_fix(db: &mut Db, expected: &Ty, actual: &Ty, arg: StructI
     None
 }
 
+/// The WRITTEN tuple-literal FORM node of `expr` (the `(tuple …)` list itself), if `expr` is an inline
+/// tuple literal in the RAW AST — the node an `InsertArms` fix appends new element forms to. `None` for a
+/// name-bound / call-result tuple (no source form to edit). Mirrors [`record_literal_form`]; a tuple is
+/// spelled by either the `tuple` NAME alias or the `"tuple"` string-literal primitive head.
+fn tuple_literal_form(db: &Db, expr: StructId) -> Option<StructId> {
+    if db.ast.as_form(expr, "tuple").is_some() || db.ast.head_ctor(expr) == Some("tuple") {
+        Some(expr)
+    } else {
+        None
+    }
+}
+
+/// A one-shot ADD-MISSING-ELEMENTS fix for a tuple literal with too FEW elements: append a `(trap "TODO")`
+/// placeholder per missing trailing position to the written `(tuple …)` form (`(tuple 1 2)` against
+/// `(Tuple Int64 Int64 Int64)` → `(tuple 1 2 (trap "TODO"))`). The tuple analogue of `record_field_add_fix`:
+/// `trap : ∀a. String → a` inhabits any element type, so the placeholder clears the arity fault in one shot
+/// (`--verify-fixes` upgrades it). Requires BOTH tuples, the value written inline, and the value having
+/// STRICTLY FEWER elements — a value with MORE is the delete case; equal arity is a per-position type
+/// mismatch (its own message), not an arity fix.
+fn tuple_element_add_fix(db: &mut Db, expected: &Ty, actual: &Ty, arg: StructId) -> Option<Fix> {
+    let (Ty::Tuple(want), Ty::Tuple(got)) = (expected, actual) else {
+        return None;
+    };
+    if got.len() >= want.len() {
+        return None;
+    }
+    let form = tuple_literal_form(db, arg)?;
+    let arms: Vec<String> = (got.len()..want.len())
+        .map(|_| "(trap \"TODO\")".to_string())
+        .collect();
+    Some(Fix::insert_arms_heuristic(form, arms))
+}
+
+/// A one-shot DELETE-SURPLUS-ELEMENT fix for a tuple literal with EXACTLY ONE too many elements: remove the
+/// trailing surplus element from the written `(tuple …)` form (`(tuple 1 2 3)` against `(Tuple Int64
+/// Int64)` → `(tuple 1 2)`). The tuple analogue of `record_field_delete_fix`. Gated to a SINGLE surplus
+/// (exactly one over) — one clean mechanical delete; two-or-more surplus is not one edit (the message still
+/// names the arity), and a value with FEWER elements is the add case.
+fn tuple_element_delete_fix(db: &mut Db, expected: &Ty, actual: &Ty, arg: StructId) -> Option<Fix> {
+    let (Ty::Tuple(want), Ty::Tuple(got)) = (expected, actual) else {
+        return None;
+    };
+    if got.len() != want.len() + 1 {
+        return None;
+    }
+    let elems = positional_value_nodes(db, arg, crate::resolved::Prim::TupleNew)?;
+    // The surplus is the trailing element (position `want.len()`), the one past the expected arity.
+    let surplus = *elems.get(want.len())?;
+    Some(Fix::delete_heuristic(
+        surplus,
+        "remove the extra tuple element — the expected tuple has fewer positions",
+    ))
+}
+
 /// The VALUE occurrence (`v` in a `(k v)` entry) of the field named `field` in a WRITTEN record literal
 /// `expr` — the companion of [`record_field_key_occ`] that returns the field's value node, so a nested
 /// typo fix can recurse into a sub-record literal. `None` if `expr` is not an inline record literal or has
@@ -6745,11 +6799,15 @@ fn check_application(
                     } else if let Some(fix) = record_field_typo_fix(db, &pt, &at, arg)
                         .or_else(|| record_field_add_fix(db, &pt, &at, arg))
                         .or_else(|| record_field_delete_fix(db, &pt, &at, arg))
+                        .or_else(|| tuple_element_add_fix(db, &pt, &at, arg))
+                        .or_else(|| tuple_element_delete_fix(db, &pt, &at, arg))
                     {
                         // A RECORD-literal field-set repair: a misspelled field is RENAMED (first — a rename
                         // is the minimal edit); a pure OMISSION gets the missing fields ADDED with `(trap
                         // "TODO")` placeholders; a lone SURPLUS field is DELETED. The construction analogue of
-                        // rustc's "missing field `y`" / "no field `z`" with an applicable edit.
+                        // rustc's "missing field `y`" / "no field `z`" with an applicable edit. The TUPLE
+                        // analogue does the same by POSITION — too few elements get `(trap "TODO")` appended,
+                        // one too many gets the trailing element deleted.
                         reject.with_fix(fix)
                     } else {
                         reject
@@ -9528,6 +9586,14 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                         })
                                         .or_else(|| {
                                             record_field_delete_fix(db, &annot_ty, &expr_ty, expr)
+                                        })
+                                        // The TUPLE-arity analogue: too few elements get `(trap "TODO")`
+                                        // appended, one too many gets the trailing element deleted.
+                                        .or_else(|| {
+                                            tuple_element_add_fix(db, &annot_ty, &expr_ty, expr)
+                                        })
+                                        .or_else(|| {
+                                            tuple_element_delete_fix(db, &annot_ty, &expr_ty, expr)
                                         })
                                 {
                                     reject = reject.with_fix(fix);
