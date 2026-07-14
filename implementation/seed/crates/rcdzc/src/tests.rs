@@ -26294,6 +26294,42 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wide_record_argument_unifies_across_many_calls_in_bounded_time() {
+        // REGRESSION (perf): `unify` applies the substitution to BOTH operands on entry, and `Subst::apply`
+        // REBUILT a `Ty::Record`'s whole field map (`.iter().map(apply).collect()` into a fresh `Arc`) even
+        // when the type held no substitutable variable. So passing a WIDE (W-field) GROUND record argument
+        // to a function called N times rebuilt the W-field map at every call site → O(W × calls). FIX: a
+        // GROUND fast-path in `apply` (`Ty::is_ground` → return the input's cheap Arc clone), turning the
+        // per-call cost from an allocate-and-rebuild into a read-only check. This binds one wide record and
+        // passes it through a function W=N=200 times — well into the old quadratic regime; it must type,
+        // compile, and RETURN the projected field (k0 = 0), in bounded time.
+        let w = 200;
+        let fields = (0..w)
+            .map(|i| format!("(k{i} {i})"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut calls = String::from("0");
+        for _ in 0..w {
+            calls = format!("(+ {calls} (f r))");
+        }
+        let src = format!(
+            "(module m (def (f x) (. x k0)) (def (main) (let ((r (record {fields}))) {calls})) (export main))"
+        );
+        // Every `(f r)` projects k0 = 0, so the sum is 0 — a well-typed program. The perf-relevant part is
+        // that type-checking (the per-call `unify` → `apply` over the wide record) and full compilation
+        // both COMPLETE in bounded time; the record's runtime value is covered by the record-read tests.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&src)));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide record passed through many calls type-checks cleanly: {diags:?}"
+        );
+        compile_component(&crate::codec::encode(&parse(&src)))
+            .expect("wide-record-arg program compiles in bounded time");
+    }
+
+    #[test]
     fn a_function_typed_parameter_annotation_is_checked_against_the_argument() {
         // The HIGHER-ORDER analogue of the scalar arg-vs-param check: a parameter annotated with a
         // FUNCTION type `(-> A B)` must be checked against the passed function's type — RESULT included.

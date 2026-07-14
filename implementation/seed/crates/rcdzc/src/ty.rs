@@ -1012,6 +1012,46 @@ impl Ty {
         }
     }
 
+    /// Whether this type is fully GROUND — contains NO substitutable variable of ANY kind (a type `Var`,
+    /// an integer/float `Width::Var`, or a `Sign::Var`). A ground type is a FIXPOINT of `Subst::apply`
+    /// (applying any substitution returns it unchanged), so `apply` short-circuits on it — cloning the
+    /// (Arc-shared) type is then a refcount bump, not a deep rebuild of a wide `Record`/`Tuple`/`Sum`.
+    /// STRONGER than `!has_free_var()`: that ignores width/sign vars (a `Ty::Int` with a `Width::Var` has
+    /// no free TYPE var yet is not ground), which would make an `apply` fast-path keyed on it INCORRECT.
+    pub fn is_ground(&self) -> bool {
+        match self {
+            Ty::Var(_) => false,
+            Ty::Int(it) => {
+                !matches!(it.width, crate::ty::Width::Var(_))
+                    && !matches!(it.sign, crate::ty::Sign::Var(_))
+            }
+            Ty::Float(ft) => !matches!(ft.width, crate::ty::Width::Var(_)),
+            Ty::Fn(p, r) => p.is_ground() && r.is_ground(),
+            Ty::Tuple(elems) => elems.iter().all(|t| t.is_ground()),
+            Ty::List(elem) => elem.is_ground(),
+            Ty::Map(k, v) => k.is_ground() && v.is_ground(),
+            Ty::Set(elem) => elem.is_ground(),
+            Ty::Record(fields) => fields.values().all(|t| t.is_ground()),
+            Ty::Sum { args, .. } => args.iter().all(|t| t.is_ground()),
+            Ty::Qty { inner, .. } => inner.is_ground(),
+            // `Nominal` mirrors `Subst::apply`: it substitutes into BOTH `args` and the `inner` machine-rep
+            // hint, so both must be ground for the type to be an `apply` fixpoint.
+            Ty::Nominal { args, inner, .. } => {
+                args.iter().all(|t| t.is_ground()) && inner.is_ground()
+            }
+            Ty::Bool
+            | Ty::Unit
+            | Ty::Type
+            | Ty::Any
+            | Ty::Bytes
+            | Ty::String
+            | Ty::Char
+            | Ty::Symbol
+            | Ty::BigInt
+            | Ty::Rational => true,
+        }
+    }
+
     pub fn has_free_var(&self) -> bool {
         match self {
             Ty::Var(_) => true,
