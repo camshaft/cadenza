@@ -128,6 +128,15 @@ pub enum Code {
     /// variant name, a copy-paste, a misordered wildcard). The pattern analogue of the `DeadTrap` /
     /// `UnusedBinding` warnings — dead code the build surfaces rather than silently keeping.
     RedundantArm,
+    /// A CONSTRUCTION or MATCH of a variant of an ABSTRACT type — a type whose HANDLE another module
+    /// exported but whose CONSTRUCTORS it withheld (opaque/abstract types — `modules-and-namespaces.md`
+    /// §Visibility Is Explicit). The importing file can NAME the type (annotate, hold, pass its values)
+    /// but MUST NOT construct or take apart its variants; it builds and reads such a value only through
+    /// the module's exported functions ("smart constructors"). DISTINCT from a plain unbound name
+    /// (CDZ0101): the constructor is not merely absent, it is HIDDEN ON PURPOSE — so the diagnostic names
+    /// the type, notes its handle is exported but its constructors are not, and (when the module exports a
+    /// function returning the type) points at that function as the way in.
+    AbstractCtor,
     /// A computation the compiler PROVES would trap (`ConstTrap`'s outcome) was ELIMINATED because its
     /// value is unobserved — an unprojected tuple/record element, an unreferenced `let` binding, an
     /// argument bound to an unused parameter. NOT a rejection: the build succeeds (the dead computation
@@ -309,6 +318,7 @@ impl Code {
             Code::PresentField => "CDZ0211",
             Code::AbsentField => "CDZ0212",
             Code::RedundantArm => "CDZ0213",
+            Code::AbstractCtor => "CDZ0214",
             Code::EffectNoHome => "CDZ0401",
             Code::HandlerUndeclaredOp => "CDZ0403",
             Code::HandlerNotExhaustive => "CDZ0405",

@@ -1093,6 +1093,7 @@ pass	a slice whose end is beyond the string length yields None
 pass	a slice whose end precedes its start yields None
 pass	a slice whose start equals its end is Some of the empty string
 pass	a slice with a negative start yields None
+pass	a specific constructor export exposes one variant and keeps the rest private
 pass	a stateful handler threads its counter across a function boundary
 pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strict greater-than of equal operands is false
@@ -1103,7 +1104,7 @@ pass	a string literal
 pass	a string literal is normalized to the canonical text form
 pass	a string passed to a function as a runtime argument is measured by its byte length
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
-pass	a sum TYPE and its constructors are imported by name and constructed in the entry
+pass	a sum TYPE and its constructors are imported by a wildcard and constructed in the entry
 pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
 pass	a sum type NAMED after a primitive scalar does not collide with the primitive
@@ -1259,6 +1260,8 @@ pass	an abortive perform in an if condition abandons the computation before bran
 pass	an abortive perform in the tail of an if branch abandons only that branch
 pass	an abortive perform in the tail of an if branch inside a let body abandons only that branch
 pass	an abortive perform under a non-tail conditional abandons the enclosing computation
+pass	an abstract type is used through the module's exported constructor and accessor
+pass	an abstract type's constructor is not reachable outside its module
 pass	an absurd runtime width is rejected, not silently ignored
 pass	an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes

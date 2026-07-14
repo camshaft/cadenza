@@ -3960,6 +3960,47 @@ pub(crate) fn read_record_fields(
 /// (or `(meta …)`) key is a named record/module member (`Member`). This is the "tuple access is just
 /// an integer" surface (simpler than a `tuple.N` sigil; the one `.` form serves both). A key that is
 /// neither an integer nor a label is a computed key, not yet supported (declines).
+/// Build the CDZ0214 reject for `(. ty key)` when `ty`'s HANDLE is visible in `id`'s file but the
+/// specific constructor `key` is NOT — an abstract import (no constructors) or a partially-concrete
+/// import that did not name this constructor. Returns `None` (no reject; leave the member access alone)
+/// when: not a linked package; `ty` is not a file-scoped type handle here; `key` is not a genuine variant
+/// of `ty` (a later-phase method like `T.expect`); or the constructor IS visible in this file (own type,
+/// wildcard `T.*`, or a `(. T key)` that named it). The message names the type + constructor, states the
+/// handle-exported-but-this-constructor-withheld reason, and steers to the module's exported functions —
+/// the machine-actionable "use the door" fix (Amendment 0.5.0 / `diagnostics.md`).
+//= spec/capabilities/modules-and-namespaces.md#a-types-handle-and-its-constructors-are-independently-visible
+//# A module that makes a type's handle visible without making a constructor visible MUST render that constructor unreachable outside the module — a construction or a match through that constructor in another module MUST be a compile-time rejection carrying the machine-readable code for a withheld constructor — so that a value of such a type is built and deconstructed outside the module only through the functions the module exports, and an invariant the module's constructor establishes cannot be bypassed by another module fabricating a value directly.
+fn withheld_ctor_reject(db: &Db, id: StructId, ty: &str, key: &Symbol) -> Option<Reject> {
+    if !db.is_linked_package() {
+        return None;
+    }
+    // `ty` must be a type handle VISIBLE in this file (an imported or own type). Its synth record → decl
+    // (via `type_decl_by_synth`, so a renamed alias still finds the right variant set).
+    let synth = db.file_scoped_type(id, ty).and_then(Result::ok)?;
+    let decl = db.type_decl_by_synth(synth)?;
+    // Only a genuine variant is a withheld CONSTRUCTOR; a non-variant member declines as a later phase.
+    if !decl.variants.iter().any(|v| v.name == key.name) {
+        return None;
+    }
+    // If this constructor IS visible in the file, the access is legitimate — no reject.
+    if matches!(db.file_scoped_variant_ctor(id, &key.name), Some(Ok(_))) {
+        return None;
+    }
+    Some(
+        Reject::coded(
+            Code::AbstractCtor,
+            format!(
+                "`{ty}`'s constructor `{ctor}` is not exported to this file: `{ty}`'s handle is visible \
+                 but `{ctor}` is withheld, so a value of `{ty}` cannot be constructed or matched through \
+                 `{ctor}` here — obtain and inspect one through the functions the module that declares \
+                 `{ty}` exports (or export `{ty}.*` to make every constructor public)",
+                ctor = key.name
+            ),
+        )
+        .at(id),
+    )
+}
+
 fn resolve_member(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, ".").unwrap_or(&[]);
     if tail.len() != 2 {
@@ -3988,6 +4029,17 @@ fn resolve_member(db: &Db, id: StructId) -> Resolved {
             ));
         }
     };
+    // WITHHELD-CONSTRUCTOR ACCESS: `(. T A)` where `T`'s handle is visible in this file but constructor
+    // `A` is NOT (an abstract import — no ctors — or a partially-concrete import that did not name `A`)
+    // is a CDZ0214. The constructor is hidden on purpose, so it is unreachable even through the qualified
+    // member path (the bare path is already blocked by file-scoped ctor resolution). Distinguished from a
+    // plain unbound name: the type IS visible, this constructor is not. Only fires for a genuine variant
+    // of `T`; a non-variant member (a later-phase method like `T.expect`) declines as before.
+    if let Some(ty) = db.ast.as_name(operand)
+        && let Some(reject) = withheld_ctor_reject(db, id, ty, &key)
+    {
+        return Resolved::Poison(reject);
+    }
     Resolved::Member { operand, key }
 }
 

@@ -121,9 +121,12 @@ pub(crate) struct FileScopeTable {
     /// global index let any file name any sibling's type + construct its variants with no import.
     visible_types: Vec<crate::fxhash::FxHashMap<String, StructId>>,
     /// Per file, the visible bare VARIANT-CONSTRUCTOR names → the ctor record occurrence
-    /// (`Variant::ctor`). Populated from the SAME set of type declarations as `visible_types` (a file
-    /// that can name a type can construct/match its variants) — so importing a type brings its handle
-    /// AND its constructors. A ctor name absent here is not a visible bare variant in that file.
+    /// (`Variant::ctor`). Populated from `visible_types` gated by each import's constructor visibility:
+    /// a file's OWN types + CONCRETELY-imported types bring their ctors; an ABSTRACTLY-imported type
+    /// (handle only) brings none; a PARTIALLY-concrete import brings only its named ctors. A ctor name
+    /// absent here is not a visible bare variant in that file. This is also the surface the CDZ0214 check
+    /// consults for a QUALIFIED `(. T A)`: `T`'s handle visible + `A` a genuine variant of `T` but `A`
+    /// NOT here = a withheld constructor (an abstract or partially-concrete import).
     visible_ctors: Vec<crate::fxhash::FxHashMap<String, StructId>>,
 }
 
@@ -178,6 +181,7 @@ fn build_file_scope(
         |fi: usize,
          decl: &TypeDecl,
          local_name: &str,
+         ctor_vis: Option<&crate::link::CtorVis>,
          visible_types: &mut Vec<crate::fxhash::FxHashMap<String, StructId>>,
          visible_ctors: &mut Vec<crate::fxhash::FxHashMap<String, StructId>>| {
             if let Some(synth) = decl.synth {
@@ -189,14 +193,32 @@ fn build_file_scope(
                 if prelude_type_module_names.contains(&v.name) {
                     continue;
                 }
-                if let Some(ctor) = v.ctor {
+                // Bring this variant's ctor into the file only if `ctor_vis` admits it. `All` (own
+                // decl, or a wildcard `T.*` import) brings every ctor; `Named(set)` brings only the
+                // explicitly-exported ctors; a `None` `ctor_vis` (an ABSTRACT import — handle only)
+                // brings none, so the importer cannot construct or bare-match the type.
+                let admit = match &ctor_vis {
+                    None => false,
+                    Some(crate::link::CtorVis::All) => true,
+                    Some(crate::link::CtorVis::Named(set)) => set.iter().any(|n| n == &v.name),
+                };
+                if admit && let Some(ctor) = v.ctor {
                     visible_ctors[fi].entry(v.name.clone()).or_insert(ctor);
                 }
             }
         };
+    // Own types: a file sees its OWN declarations concretely (handle + all constructors) — opacity is a
+    // BOUNDARY property, never restricting a type within its declaring file.
     for decl in type_decls {
         if let Some(fi) = files.iter().position(|f| f.contains(decl.occ)) {
-            add_type_to_file(fi, decl, &decl.name, &mut visible_types, &mut visible_ctors);
+            add_type_to_file(
+                fi,
+                decl,
+                &decl.name,
+                Some(&crate::link::CtorVis::All),
+                &mut visible_types,
+                &mut visible_ctors,
+            );
         }
     }
 
@@ -218,7 +240,23 @@ fn build_file_scope(
                 d.name == imp.exported
                     && files.get(imp.from_file).is_some_and(|f| f.contains(d.occ))
             }) {
-                add_type_to_file(fi, decl, &imp.local, &mut visible_types, &mut visible_ctors);
+                // The exporting file's constructor visibility for this type decides which ctors cross.
+                // `None` (the type is exported but NOT in `type_ctor_exports`) = ABSTRACT: bring the
+                // handle only, so a `(. T A)` construction / bare-ctor use in this file is a CDZ0214 (the
+                // ctor is hidden on purpose, `withheld_ctor_reject` — a visible handle but no visible
+                // ctor), distinct from an unbound name. `Named`/`All` bring the named / all ctors.
+                let ctor_vis = linkage
+                    .scopes
+                    .get(imp.from_file)
+                    .and_then(|s| s.type_ctor_exports.get(&imp.exported));
+                add_type_to_file(
+                    fi,
+                    decl,
+                    &imp.local,
+                    ctor_vis,
+                    &mut visible_types,
+                    &mut visible_ctors,
+                );
             }
             // Value import: the exporting file's def under the exported name.
             let idx = visible
@@ -2434,6 +2472,14 @@ impl Db {
             return self.type_decls.get(i);
         }
         self.type_decls.iter().find(|t| t.occ == occ)
+    }
+
+    /// The `TypeDecl` whose SYNTHESIZED record occurrence is `synth` — the reverse of `TypeDecl::synth`.
+    /// Used to recover a type's variants from the handle a name resolves to (`type_decl_by_name` /
+    /// `file_scoped_type` return the synth record, not the decl), e.g. to list an abstract type's
+    /// constructors for a CDZ0214 diagnostic. `None` if no declaration synthesized that record.
+    pub fn type_decl_by_synth(&self, synth: StructId) -> Option<&TypeDecl> {
+        self.type_decls.iter().find(|t| t.synth == Some(synth))
     }
 
     /// The SYNTHESIZED record occurrence an effect NAME resolves to — the effect analogue of
