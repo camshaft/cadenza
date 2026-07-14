@@ -46942,7 +46942,7 @@ mod closure_host_resource {
             lifted_type_idx,
             &layout,
             false,
-            Some(&rebuild),
+            std::slice::from_ref(&rebuild),
         )
         .expect("tuple-arg closure-resource core serializes");
 
