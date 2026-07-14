@@ -747,18 +747,30 @@ the component type. The new work:
   `valtype_of(Ty::Fn)`), applied by the outer via the usual `call_indirect`; only the OUTER handle crosses the
   host boundary. Verified sound (a captured + twice-applied inner closure → 90; two distinct inner closures
   kept distinct → 504) on BOTH round-trip paths. +7 corpus (sum/nested/String arg; higher-order single-sig +
-  distinct-sig; captured-twice; two-distinct-inner) + a closure-typed-arg DIRECT-CALL decline. (An inner
-  closure whose OWN parameter is a compound still declines — a separate lifted-lambda-param fence, orthogonal.)
+  distinct-sig; captured-twice; two-distinct-inner) + a closure-typed-arg DIRECT-CALL decline.
+- **✅ UNANNOTATED inner-closure compound param via the context arrow COMPLETE `@e44f25d1`.** An inner closure
+  `(fn (p) …)` whose own param `p` is a COMPOUND used to decline "a closure's parameter type has no machine
+  representation" when UNANNOTATED — `p` solved `Any` bottom-up. Root cause: `infer::expected_arrow_for_lambda`
+  recovered a lambda's expected arrow only when the application head was a lambda/def (`lambda_params_of`); a
+  higher-order closure PARAMETER `g : (-> (-> A B) R)` applied `(g (fn (p) …))` has a function-VALUED head that
+  is a VARIABLE. New path (3b): peel `type_of(head)` by the argument index for any function-valued head and
+  take that domain as the lambda's expected arrow. So an unannotated inner compound/collection param recovers
+  its type from the higher-order parameter's declared arrow — matching the explicit `(: p (Tuple …))` form
+  (which already worked). A pure inference widening (an ordinary scalar-arg HOF is unaffected; a
+  HOF-passed-as-value CDZ0203 decline is unchanged). +2 corpus (an unannotated Tuple inner param; an
+  unannotated List inner param). **Every closure ARGUMENT — annotated OR not, scalar/compound/sum/nested/
+  String/collection/closure-typed — is now supported on both round-trip paths.**
 - **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG on the DIRECT-CALL path
   (the HOST supplies it over the boundary — a compound needs a `value-decode` runtime op that does not exist;
-  a closure needs a closure-resource passed INTO a call); an inner closure whose OWN param is a compound (a
-  lifted-lambda-param fence); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the
-  wasmtime-blocked `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`) result
-  surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND the variable-length
-  collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape — single-export +
-  multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete closure-RESULT
-  matrix is closed. Every MACHINE-REPRESENTABLE closure ARGUMENT (scalar, compound, sum, nested, String,
-  closure-typed) is now supported on BOTH round-trip paths (built in-guest).**
+  a closure needs a closure-resource passed INTO a call); a closure TRANSFORMER (`own<t>` both directions —
+  cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call handle. **The entire byte-rope
+  (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND
+  the variable-length collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape —
+  single-export + multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete
+  closure-RESULT matrix is closed. Every MACHINE-REPRESENTABLE closure ARGUMENT (scalar, compound, sum,
+  nested, String, collection, closure-typed — annotated or not) is now supported on BOTH round-trip paths
+  (built in-guest). The remaining gaps are all DIRECT-CALL host→guest transfer + the `borrow<t>`/transformer
+  frontier.**
 
 ## Risks / open questions
 
