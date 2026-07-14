@@ -1662,6 +1662,9 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         // (only the matching arm runs), so a trap inside an arm is NOT a build failure — same as `Match`
         // and `if`. Do not descend into arm bodies. A sum-payload read evaluates the scrutinee.
         Core::MatchSum { scrutinee, .. } => collect_reached_poisons(db, scrutinee, out),
+        // A list match: like `MatchSum`, the scrutinee is unconditionally evaluated (descend) but each arm
+        // body is guarded by its length condition, so a trap in an arm is not a build failure.
+        Core::MatchList { scrutinee, .. } => collect_reached_poisons(db, scrutinee, out),
         Core::SumPayload { scrutinee, .. } => collect_reached_poisons(db, scrutinee, out),
         // `expect` unconditionally evaluates its scrutinee (descend); the absent-variant trap is a RUNTIME
         // trap on a runtime discriminant, not a compile-time provable poison — nothing to collect there.

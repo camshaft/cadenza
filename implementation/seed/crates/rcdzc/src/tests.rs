@@ -15004,6 +15004,41 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_list_is_matched_by_element_and_rest_patterns() {
+        // L4: a match over a RUNTIME `List` scrutinee dispatches by LENGTH (`Core::MatchList` → `vec-len`),
+        // binds leading elements via `vec-get` (`SumPayload{Elem(i)}`), and the REST binder via `vec-drop`
+        // (`SumPayload{RestFrom(k)}`). `sum` recurses `(list x .. rest)` → x + sum(rest) — the head-plus-
+        // tail fold, the shape a list-consuming reader takes. `(list 10 20 30)` → 60. Before, a runtime
+        // list match declined "constant lists only" and the `rest` binder was `unbound name`.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (sum xs) (match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))) \
+               (def (main) (sum (list 10 20 30))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime list-rest match run");
+            return;
+        };
+        assert_eq!(v, "60", "runtime list head-plus-rest fold");
+
+        // A FIXED-ARITY arm on a runtime list dispatches by exact length: `(list a b)` matches length 2.
+        // `(build 0 2 (list))` pushes [0 1]; the two-element arm sums them → 1; a longer/shorter list hits
+        // the catch-all → -1. Exercises `LenEq` dispatch + two leading `vec-get` binders.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                   (def (pair xs) (match xs ((list a b) (+ a b)) (_ -1))) \
+                   (def (main) (pair (build 0 2 (list)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "runtime fixed-arity list match binds two elements"
+        );
+    }
+
+    #[test]
     fn a_recursive_list_consumer_infers_its_element_via_list_at() {
         // A recursive function whose list PARAMETER is touched ONLY through `List.at` (never a direct
         // operator on the list itself) now infers its element type — before, the `(Some x)` payload binder
@@ -24064,6 +24099,63 @@ mod stage1 {
             Some("CDZ0403"),
             "expected CDZ0403 (handler arm names an undeclared op), got: {}",
             err.message
+        );
+    }
+
+    #[test]
+    fn a_handler_binding_the_same_operation_twice_is_rejected_with_a_delete_fix() {
+        // A handler's arms ARE its effect's operation set (a FIXED set, like a record's fields or an
+        // effect's op declarations), so binding one operation twice — `(handle E s ((emit …) (emit …)) …)`
+        // — is the same closed-set ill-formedness a duplicate record field / effect-op declaration is: the
+        // second arm is dead. Rejected CDZ0201 with a DELETE fix on the redundant arm (the handler analogue
+        // of the duplicate-field/op/export family). `emit` declared once, bound twice → rejected.
+        let src = "(do (effect E (op emit (-> Int64 Unit))) \
+                   (def (main) (handle E 0 ((emit (n) s (resume unit s)) (emit (m) s (resume unit s))) \
+                     (E.emit 5))) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let d = crate::diagnostics(&mut db)
+            .into_iter()
+            .find(|d| {
+                d.code.as_deref() == Some("CDZ0201") && d.message.contains("handled more than once")
+            })
+            .expect("a duplicate handler arm is CDZ0201");
+        assert!(
+            d.message.contains("`emit`"),
+            "names the duplicated operation: {}",
+            d.message
+        );
+        let fix = d
+            .fix
+            .as_ref()
+            .expect("carries a delete-the-duplicate-arm fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+        // The anchor is a real USER node (the op-key occurrence), so the error carries file:line:col.
+        assert!(
+            db.is_user_node(crate::ast::StructId(
+                d.node.expect("CDZ0201 must carry a node")
+            )),
+            "the duplicate-arm fault anchors at a user node"
+        );
+
+        // NO false positive: two DISTINCT operations, and two SEPARATE effects each declaring `emit`
+        // (nested handlers) — neither is a duplicate (keyed by (effect-decl, op-name), not name alone).
+        let ok_distinct = "(do (effect E (op emit (-> Int64 Unit)) (op tick (-> Unit Unit))) \
+                   (def (main) (handle E 0 ((emit (n) s (resume unit s)) (tick () s (resume unit s))) \
+                     (E.emit 5))) (export main))";
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(ok_distinct)))
+                .iter()
+                .any(|d| d.message.contains("handled more than once")),
+            "two distinct ops in one handler is not a duplicate"
+        );
+        let ok_two_effects = "(do (effect E (op emit (-> Int64 Unit))) (effect F (op emit (-> Int64 Unit))) \
+                   (def (main) (handle E 0 ((emit (n) s (resume unit s))) \
+                     (handle F 0 ((emit (n) s (resume unit s))) (do (E.emit 1) (F.emit 2))))) (export main))";
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(ok_two_effects)))
+                .iter()
+                .any(|d| d.message.contains("handled more than once")),
+            "two effects each with their own `emit` handler is not a duplicate"
         );
     }
 
@@ -35880,6 +35972,124 @@ mod closure_host_resource {
         validator
             .validate_all(&core)
             .expect("closure-resource core module validates");
+    }
+
+    /// HOST-COMPOSED closure-resource core (`multi_closure_resource_core_module_with_host`): the build-time-
+    /// delegated closure-capture shape — a closure export whose `make` body performs a host call
+    /// (`(host (ask) (let ((v (ask.ask))) (fn (x) (+ x v))))`). Host ops are laid FIRST (core funcs `0..h`),
+    /// so a `Lir::CallHostImport(0)` in the export body resolves to core func 0 verbatim (the same invariant
+    /// the plain `emit` path relies on) with NO index recomputation; the runtime cell ops shift to `h..h+k`
+    /// and the resource intrinsics to `h+k`,`h+k+1`. Pins that the host-threaded layout emits a
+    /// STRUCTURALLY VALID core (the `CallHostImport` index, the shifted runtime-op `CallImport` indices, the
+    /// resource intrinsics, and the `call_indirect` functype are all consistent). This is brick 1 of the
+    /// closure-capture feature — the envelope (importing the `host` interface) + `emit_closure_resource`
+    /// wiring are the following bricks.
+    #[test]
+    fn closure_resource_core_with_host_is_structurally_valid() {
+        use crate::backend::wasm::host::{HostImport, HostParam};
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        // ONE host op `log.emit : () -> ()` (no params, UNIT result — leaves nothing on the stack, so the
+        // minimal make body needs no drop) laid at core func 0. The point of this test is the LAYOUT/index
+        // consistency of a `CallHostImport` in a closure-make body, not a specific op signature.
+        let host_fns = vec![HostImport {
+            effect: "log".to_string(),
+            op: "emit".to_string(),
+            params: Vec::<HostParam>::new(),
+            result: None,
+        }];
+        // The runtime cell ops (make builds the capturing cell; call recovers it). Shift to h..h+k.
+        let imports = vec![
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.drop,
+            OPS.get_int,
+        ];
+        let h = host_fns.len();
+        // Export body `main : () -> own<closure>`: call the host op (`CallHostImport(0)` → the captured v),
+        // then build a 1-slot cell holding box-int(0) — a minimal make that both performs a host call AND
+        // builds the closure cell. (The host result is dropped here; the real body captures it — this test
+        // only pins the LAYOUT/index consistency, not the capture dataflow.)
+        let fn_ty = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone()));
+        let export_body = SelectedFunc {
+            params: vec![],
+            ret: fn_ty.clone(),
+            code: vec![
+                Lir::CallHostImport(0), // log.emit() → () (host func 0; leaves nothing on the stack)
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0),
+                Lir::ConstI64(0),
+                Lir::CallImport("box-int"),
+                Lir::CallImport("arr-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let lifted_body = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: s64.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(1), Lir::I64Add],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let funcs = vec![export_body, lifted_body];
+        let export = ExportPlan {
+            name: "main".to_string(),
+            def: 0,
+            body: crate::ast::StructId(0),
+            params: vec![],
+            result: fn_ty.clone(),
+        };
+        let lifted = LiftedLambda {
+            body: crate::ast::StructId(0),
+            params: vec![(crate::ast::StructId(0), s64.clone())],
+            ret_ty: s64.clone(),
+            captures: vec![],
+        };
+        // import_base = h host + k runtime + 2 resource intrinsics.
+        let import_base = (h + imports.len() + 2) as u32;
+        let layout =
+            Layout::with_lifted(vec![export], vec![0], import_base, vec![lifted], vec![true]);
+        let export_abs = import_base;
+        let lifted_type_idx = layout.lifted_type_index(0, import_base);
+
+        let core = crate::backend::wasm::serialize::multi_closure_resource_core_module_with_host(
+            &funcs,
+            &imports,
+            &host_fns,
+            &[crate::backend::wasm::serialize::ClosureMake {
+                export_name: "make".to_string(),
+                export_abs,
+                param_vts: vec![],
+            }],
+            &[],
+            &[ValType::I64],
+            ValType::I64,
+            lifted_type_idx,
+            &layout,
+        )
+        .expect("host-composed closure-resource core serializes");
+
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&core)
+            .expect("host-composed closure-resource core module validates");
     }
 
     /// COMPOUND-RESULT compiler serializer: `serialize::closure_bytes_resource_core_module` — the production

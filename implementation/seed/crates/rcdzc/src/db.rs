@@ -453,6 +453,15 @@ pub struct Db {
     /// first-wins matches the old scan. A pure accelerator over `type_decls`, never a source of truth.
     type_decl_index: crate::fxhash::FxHashMap<String, StructId>,
 
+    /// For each sum's DECLARATION OCCURRENCE, its index in [`type_decls`] — the O(1) reverse of the nominal
+    /// identity a `Ty::Sum { decl }` carries, backing [`type_decl_by_occ`]. That was a linear
+    /// `type_decls.iter().find(|t| t.occ == occ)`; the Rust backend's recursive-sum boxing walk calls it
+    /// once per sum-graph node per query, so for N mutually-recursive sums it compounded an O(N²) reach
+    /// walk into O(N³) (N=3200 cycle = 39s on the rust target). Built once at load ([`type_decls`] is not
+    /// mutated after construction). `type_decl_by_occ` reads it, falling back to the scan for an occ minted
+    /// after load (there is none today, but the fallback keeps it total).
+    type_decl_by_occ_index: crate::fxhash::FxHashMap<StructId, usize>,
+
     /// For each EFFECT NAME, its synthesized record occurrence (first-declared wins) — the effect analogue
     /// of [`type_decl_index`], for `effect_decl_by_name`'s step-3b resolve lookup (was a linear
     /// `effect_decls.iter().find`). Built once at load.
@@ -740,6 +749,25 @@ pub struct Db {
     /// with `lifted` (an entry is inserted exactly when a new lambda is pushed).
     pub(crate) lifted_by_body: crate::fxhash::FxHashMap<StructId, usize>,
 
+    /// `sum-decl occ → the set of sum decls its payloads TRANSITIVELY reach` — the memo behind the Rust
+    /// backend's recursive-variant boxing cycle detector (`backend::rust::enums`). Deciding whether a
+    /// variant is recursive asks "does this payload type reach the sum's own decl?", a graph reachability
+    /// over the sum-reference edges. Computed per variant with a FRESH DFS, it was O(cycle) per call ×
+    /// O(variants) per enum × O(enums) = O(N³) for N mutually-recursive sums (N=3200 cycle = 39s on the
+    /// rust target, ~97% in `reaches_decl`). Memoizing the TARGET-INDEPENDENT forward-reachable set per
+    /// decl (computed once, iteratively — no `visited`-clipped partial to mis-cache) makes each "does `s`
+    /// reach `t`?" an O(1) set lookup. `None` until first materialized; a pure function of the type graph.
+    pub(crate) sum_reachable:
+        crate::fxhash::FxHashMap<StructId, std::rc::Rc<crate::fxhash::FxHashSet<StructId>>>,
+
+    /// `sum-decl occ → the sum decls its payloads DIRECTLY mention` (the out-edges of the sum-reference
+    /// graph) — the reusable half of [`sum_reachable`]. Each decl's out-edges need a `typeval_of` per
+    /// payload (the profile's `project_meta`/`resolved_of` cost); computing them fresh inside every
+    /// `sum_reachable_from(start)` re-did that per decl per start = O(N²) `typeval_of` for N sums in one
+    /// cycle. Cached per decl (computed once → O(N) total), so the reachability closure is pure graph
+    /// traversal over cached edges. `None` until first materialized; a pure function of the type graph.
+    pub(crate) sum_out_edges: crate::fxhash::FxHashMap<StructId, std::rc::Rc<Vec<StructId>>>,
+
     /// CAPTURED-reference occurrences: a body reference inside a lifted lambda that names a FREE VARIABLE
     /// (a binding from the lambda's creation scope), mapped to `(capture index, solved type)`. Recorded
     /// by `lower::lower_lambda_value` when the lambda is lifted; read when the LIFTED body is lowered so
@@ -983,6 +1011,14 @@ impl Db {
                 type_decl_index.entry(decl.name.clone()).or_insert(synth);
             }
         }
+        // Sum DECLARATION OCCURRENCE → its index in `type_decls` — `type_decl_by_occ`'s O(1) reverse (was
+        // a linear scan; the rust-backend recursive-sum boxing walk calls it per sum-graph node → O(N³)
+        // for N mutually-recursive sums). An occ is unique to one declaration, so no collision.
+        let mut type_decl_by_occ_index: crate::fxhash::FxHashMap<StructId, usize> =
+            crate::fxhash::FxHashMap::default();
+        for (i, decl) in type_decls.iter().enumerate() {
+            type_decl_by_occ_index.insert(decl.occ, i);
+        }
         // Effect NAME → synthesized record (first-declared wins) — `effect_decl_by_name`'s O(1) lookup.
         let mut effect_decl_index: crate::fxhash::FxHashMap<String, StructId> =
             crate::fxhash::FxHashMap::default();
@@ -1016,6 +1052,7 @@ impl Db {
             def_name_index: def_by_name,
             variant_ctor_index,
             type_decl_index,
+            type_decl_by_occ_index,
             effect_decl_index,
             scope_binders,
             let_binder_index,
@@ -1041,6 +1078,8 @@ impl Db {
             kept_bindings: crate::fxhash::FxHashSet::default(),
             lifted: Vec::new(),
             lifted_by_body: crate::fxhash::FxHashMap::default(),
+            sum_reachable: crate::fxhash::FxHashMap::default(),
+            sum_out_edges: crate::fxhash::FxHashMap::default(),
             captured_ref: crate::fxhash::FxHashMap::default(),
             resolved_subtrees: crate::fxhash::FxHashSet::default(),
             def_schemes: crate::fxhash::FxHashMap::default(),
@@ -1655,6 +1694,11 @@ impl Db {
     /// nominal identity a `Ty::Sum { decl }` carries. Used by the escape renderer to recover a sum's
     /// variant names + payload types from its type-value. `None` if `occ` names no declaration.
     pub fn type_decl_by_occ(&self, occ: StructId) -> Option<&TypeDecl> {
+        // O(1) via the load-time occ→index map; fall back to the scan for an occ minted after load (none
+        // today — `type_decls` is not mutated post-construction — but the fallback keeps this total).
+        if let Some(&i) = self.type_decl_by_occ_index.get(&occ) {
+            return self.type_decls.get(i);
+        }
         self.type_decls.iter().find(|t| t.occ == occ)
     }
 

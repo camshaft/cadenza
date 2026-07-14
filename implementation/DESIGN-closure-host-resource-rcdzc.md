@@ -731,13 +731,22 @@ the component type. The new work:
   declines a compound closure arg (the HOST supplies it over the boundary → needs host→guest decode). +5
   corpus (Tuple/Record/List arg applied round-trip; compound arg + compound consumer result; the direct-call
   compound-arg decline).
+- **✅ COMPOUND closure ARGUMENT on the DISTINCT-SIG ROUND-TRIP path COMPLETE `@4e8df79f`.** The same
+  in-guest reasoning + the same pure fence-relaxation, applied to the per-group distinct-signature core:
+  `emit_distinct_sig_roundtrip_resource` widens its per-group closure-signature arg + result checks from
+  `closure_boundary_byte` to `valtype_of`. A distinct-sig program mixing `(-> (Tuple …) Int64)` and
+  `(-> (Record …) Int64)` closures — each applied to a guest-built compound through its own resource type —
+  now compiles + runs. +4 corpus (a compound-arg + a scalar-arg closure of distinct sigs; two compound-arg
+  closures of distinct sigs — a Tuple-arg + a Record-arg). **A compound closure ARGUMENT is now supported on
+  BOTH round-trip paths (single-sig + distinct-sig).**
 - **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path (host→guest
-  decode — harder); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked
-  `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`) result surface, the entire
-  fixed-shape compound (tuple/record/sum) result surface, AND the variable-length collection (List/Map/Set)
-  result surface are ALL DONE across EVERY closure shape — single-export + multi-export + mixed + distinct-sig
-  + round-trip + distinct-sig-round-trip; the complete closure-RESULT matrix is closed. A COMPOUND closure
-  ARGUMENT is now supported on the round-trip path (built in-guest).**
+  decode — harder, needs a `value-decode` runtime op that does not exist); a closure-TYPED arg (recursion
+  into the resource machinery); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the
+  wasmtime-blocked `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`) result
+  surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND the variable-length
+  collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape — single-export +
+  multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete closure-RESULT
+  matrix is closed. A COMPOUND closure ARGUMENT is now supported on BOTH round-trip paths.**
 
 ## Risks / open questions
 

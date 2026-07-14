@@ -1183,6 +1183,8 @@ fn unit_op_ctor(ast: &mut Arenas, prim: &str) -> StructId {
 //# A unit or dimension MUST NOT appear in the emitted component, being erased after checking.
 //= spec/capabilities/units-of-measure.md#dimensional-analysis-does-not-alter-the-numeric-core
 //# Attaching a unit to a numeric value MUST NOT change the value's numeric byte form.
+//= spec/capabilities/units-of-measure.md#dimensional-analysis-does-not-alter-the-numeric-core
+//# Attaching a unit to a numeric value, or combining values that already share a unit, MUST NOT change the value's runtime behavior.
 fn qty_module(ast: &mut Arenas) -> StructId {
     let head = push_atom(ast, Leaf::Str("record".to_string()));
     // `(meta apply) = Qty` — the quantity-TYPE constructor, so `(Qty Float64 u)` in TYPE position builds

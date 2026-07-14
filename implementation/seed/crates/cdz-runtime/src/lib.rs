@@ -3937,6 +3937,12 @@ impl Guest for Component {
         let (l, r) = op_vec_split(Handle::from_u32(v), index);
         (l.to_u32(), r.to_u32())
     }
+    fn vec_drop(v: u32, index: u32) -> u32 {
+        // The tail `[index, len)` — split and keep only the RIGHT half, reclaiming the LEFT prefix.
+        let (l, r) = op_vec_split(Handle::from_u32(v), index);
+        op_drop(l); // reclaim the dropped prefix
+        r.to_u32()
+    }
     fn vec_of_arr(arr: u32) -> u32 {
         op_vec_of_arr(Handle::from_u32(arr)).to_u32()
     }
@@ -9533,6 +9539,117 @@ mod tests {
         op_drop(hb);
         op_drop(big);
         assert_eq!(live_object_count(), 0, "no BigInt leak");
+    }
+
+    /// A BigInt is a RAW-ONLY leaf compared by its `raw` bytes (`champ_eq`) and hashed over them
+    /// (`champ_hash`) — exactly like Bytes/String. So two BigInts that are EQUAL BY VALUE but reached by
+    /// DIFFERENT arithmetic MUST produce byte-IDENTICAL leaves, else they'd be distinct map/set keys and
+    /// `=` would wrongly return false. This holds only if every op returns a NORMALIZED `Big` (no trailing
+    /// zero limbs, no `-0`) and `to_sign_magnitude_bytes` is canonical. `bigint.rs` differential-tests
+    /// VALUES vs num-bigint but NOT this heap-leaf byte form — the property BigInt-as-map-key depends on.
+    #[test]
+    fn bigint_value_equal_leaves_are_byte_identical_champ_eq_and_hash() {
+        reset();
+        let before = live_object_count();
+        // Same value, three different computations: 8 = of(8) = 6+2 = 10-2 = 2*4.
+        let direct = op_bigint_of_i64(8);
+        let via_add = {
+            let (a, b) = (op_bigint_of_i64(6), op_bigint_of_i64(2));
+            let r = op_bigint_add(a, b);
+            op_drop(a);
+            op_drop(b);
+            r
+        };
+        let via_sub = {
+            let (a, b) = (op_bigint_of_i64(10), op_bigint_of_i64(2));
+            let r = op_bigint_sub(a, b);
+            op_drop(a);
+            op_drop(b);
+            r
+        };
+        let via_mul = {
+            let (a, b) = (op_bigint_of_i64(2), op_bigint_of_i64(4));
+            let r = op_bigint_mul(a, b);
+            op_drop(a);
+            op_drop(b);
+            r
+        };
+        for (name, h) in [("add", via_add), ("sub", via_sub), ("mul", via_mul)] {
+            assert!(champ_eq(direct, h), "8-via-{name} is champ_eq to of(8) (same map key)");
+            assert_eq!(champ_hash(direct), champ_hash(h), "8-via-{name} hashes identically");
+            assert_eq!(op_bigint_cmp(direct, h), 0, "…and cmp == 0");
+            op_drop(h);
+        }
+        op_drop(direct);
+
+        // The ZERO canonicality trap: `x - x`, `0 * x`, and `of(0)` must ALL be the SAME canonical zero
+        // leaf (no `-0`, empty magnitude) — else a computed zero key wouldn't match a literal zero key.
+        let zero_of = op_bigint_of_i64(0);
+        let x = op_bigint_of_i64(-12345);
+        let zero_sub = {
+            let x2 = op_bigint_of_i64(-12345);
+            let r = op_bigint_sub(x, x2);
+            op_drop(x2);
+            r
+        };
+        let zero_mul = {
+            let z = op_bigint_of_i64(0);
+            let r = op_bigint_mul(x, z);
+            op_drop(z);
+            r
+        };
+        assert!(champ_eq(zero_of, zero_sub), "x - x is the canonical zero (no -0)");
+        assert!(champ_eq(zero_of, zero_mul), "0 * x is the canonical zero");
+        assert_eq!(champ_hash(zero_of), champ_hash(zero_sub), "zero hashes identically (sub)");
+        assert_eq!(champ_hash(zero_of), champ_hash(zero_mul), "zero hashes identically (mul)");
+        // A negative and its positive counterpart must DIFFER (sign is part of the canonical form).
+        let neg = op_bigint_of_i64(-7);
+        let pos = op_bigint_of_i64(7);
+        assert!(!champ_eq(neg, pos), "-7 and 7 are distinct leaves (sign in the canonical bytes)");
+        op_drop(zero_of);
+        op_drop(x);
+        op_drop(zero_sub);
+        op_drop(zero_mul);
+        op_drop(neg);
+        op_drop(pos);
+        assert_eq!(live_object_count(), before, "no leak");
+    }
+
+    /// `bigint-to-i64-checked` traps EXACTLY at the i64 range boundary: `i64::MAX`/`MIN` fit, one beyond
+    /// each traps. The op-glue test skipped the trap path ("a compiler/gate concern"), but the boundary is
+    /// the whole point of the CHECKED narrow (`Int64.of` an out-of-range BigInt must trap, not wrap). Build
+    /// `i64::MAX + 1` = `bigint-add(of(MAX), of(1))` and assert it panics (→ a wasm trap under abort).
+    #[test]
+    fn bigint_to_i64_checked_traps_just_past_the_boundary() {
+        reset();
+        // In range: the extremes narrow back exactly (also covered above, re-pinned here beside the trap).
+        for v in [i64::MAX, i64::MIN, 0, -1] {
+            let h = op_bigint_of_i64(v);
+            assert_eq!(op_bigint_to_i64_checked(h), v, "in-range {v} narrows back");
+            op_drop(h);
+        }
+        // i64::MAX + 1 is a valid BigInt but does NOT fit i64 → to-i64-checked traps.
+        let over = {
+            let (m, one) = (op_bigint_of_i64(i64::MAX), op_bigint_of_i64(1));
+            let r = op_bigint_add(m, one);
+            op_drop(m);
+            op_drop(one);
+            r
+        };
+        let result = std::panic::catch_unwind(|| op_bigint_to_i64_checked(over));
+        assert!(result.is_err(), "i64::MAX + 1 must TRAP the checked narrow, not wrap");
+        op_drop(over);
+        // i64::MIN - 1 (the other side).
+        let under = {
+            let (m, one) = (op_bigint_of_i64(i64::MIN), op_bigint_of_i64(1));
+            let r = op_bigint_sub(m, one);
+            op_drop(m);
+            op_drop(one);
+            r
+        };
+        let result = std::panic::catch_unwind(|| op_bigint_to_i64_checked(under));
+        assert!(result.is_err(), "i64::MIN - 1 must TRAP the checked narrow");
+        op_drop(under);
     }
 
     #[test]

@@ -3298,14 +3298,21 @@ fn emit_distinct_sig_roundtrip_resource(
             ));
         }
     }
-    // Validate every group's signature crosses as scalars (arg + result).
+    // Validate every group's signature is MACHINE-representable (arg + result). Like the single-sig
+    // round-trip, a distinct-sig round-trip applies its handed-back closures ENTIRELY IN-GUEST (each `(g …)`
+    // in a consumer body), so a closure ARGUMENT is built guest-side and never crosses the host boundary —
+    // only the closure HANDLE (an `own<t_g>` resource, i32) + the consumer's own scalar params cross. So a
+    // closure arg/result need only have a machine valtype (a value-heap compound is an i32 handle in-guest),
+    // NOT a scalar host-boundary byte. The signature's ABI bytes are not used directly here (a make functype
+    // takes the export's own params, a consumer's its own; the signature only shapes the in-guest
+    // `call_indirect`). A compound closure arg on the DIRECT-CALL path still declines (host→guest decode).
     for s in &sigs {
         let mut cur = s.clone();
         while let crate::ty::Ty::Fn(dom, rng) = cur {
-            closure_boundary_byte(&dom).ok_or_else(|| closure_boundary_reject("argument", &dom))?;
+            valtype_of(&dom).ok_or_else(|| closure_boundary_reject("argument", &dom))?;
             cur = *rng;
         }
-        closure_boundary_byte(&cur).ok_or_else(|| closure_boundary_reject("result", &cur))?;
+        valtype_of(&cur).ok_or_else(|| closure_boundary_reject("result", &cur))?;
     }
 
     // Per export: its make/consume spec + which group. Collected before the build moves the layout.

@@ -219,6 +219,8 @@ pub enum Code {
     /// the dimensional mismatch. (The built-in family table can't hit this — a conflict there is a
     /// compiler bug that panics at construction; this codes the future USER family-declaration conflict.)
     //= spec/capabilities/units-of-measure.md#a-named-unit-s-conversion-is-unique
+    //# A named unit MUST resolve to a single dimension and a single scale, so that its conversion to and from its dimension's reference is a well-defined function rather than dependent on which of several declarations is consulted.
+    //= spec/capabilities/units-of-measure.md#a-named-unit-s-conversion-is-unique
     //# Declaring a named unit more than once with conflicting conversions — a differing dimension or a differing scale — MUST be a compile-time error, while a redeclaration that agrees is admissible.
     UnitConflict,
     /// A module DIRECTIVE `(pragma <key> …)` names a key NOT in the fixed registry the specification

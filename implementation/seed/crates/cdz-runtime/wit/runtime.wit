@@ -331,6 +331,14 @@ interface heap {
   bigint-mul: func(a: u32, b: u32) -> u32;        // 69 — a * b
   bigint-div: func(a: u32, b: u32) -> u32;        // 70 — a / b truncating (traps on zero divisor)
   bigint-cmp: func(a: u32, b: u32) -> s64;        // 71 — three-way compare: -1 / 0 / 1
+
+  // ── Vector drop-prefix (index 72) — `vec-drop(v, index)` returns the TAIL `[index, len)` as one
+  //    vector, dropping the prefix `[0, index)`. It is `vec-split` keeping only the right half (the left
+  //    is reclaimed), so a SINGLE-u32 result (no tuple retarea) — the shape a list REST pattern binder
+  //    `(list p… .. rest)` needs (`rest` = the tail after the leading count). CONSUMES `v`. `index == 0`
+  //    → `v` unchanged; `index >= len` → the empty vector. APPENDED after the bigint ops (frozen-contract
+  //    APPEND-only rule — a new op goes at the end so no existing op's index shifts).
+  vec-drop: func(v: u32, index: u32) -> u32;           // 72 — tail [index, len) (consumes v)
 }
 
 world runtime {
