@@ -925,22 +925,20 @@ fn program_suggest_pool(
     }
     // Tier 4 — the prelude's built-in names. In a NON-VALUE position drop the prelude's VARIANT
     // CONSTRUCTORS (`None`/`Some`/`Ok`/`Err`): a variant is a value, member-inaccessible AND not a type, so
-    // suggesting `Nope`→`None` in `(. Nope op)` / `(: x Nope)` position would fail the one-shot rule. A
-    // variant name is one some sum declares; collect that set and skip it. (A prelude MODULE/TYPE like
-    // `Bytes`/`Int64` — the valid target in both non-value positions — is not a variant name, so it stays.)
-    let variant_names: std::collections::HashSet<&str> = if non_value_position {
-        db.type_decls
-            .iter()
-            .flat_map(|t| t.variants.iter().map(|v| v.name.as_str()))
-            .collect()
-    } else {
-        std::collections::HashSet::new()
-    };
-    for key in db.prelude.keys() {
-        if non_value_position && variant_names.contains(key.as_str()) {
+    // suggesting `Nope`→`None` in `(. Nope op)` / `(: x Nope)` position would fail the one-shot rule. The
+    // discriminant is the prelude BINDING's own shape — `variant_disc_of` on the entry's value node
+    // (a `(meta variant)` channel) — NOT a name-set membership: a name can be BOTH a member-accessible
+    // MODULE and some sum's variant (`List` is the collection module AND the `Ast.List` node kind), and a
+    // name-collision filter wrongly dropped such a module from a member-operand pool (so `Lst.len` could
+    // not suggest `List`). Testing the prelude value directly keeps a module that merely shares a name with
+    // a variant, and still drops a genuine prelude variant constructor.
+    let prelude_keys: Vec<(String, StructId)> =
+        db.prelude.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    for (key, value) in prelude_keys {
+        if non_value_position && crate::eval::variant_disc_of(db, value).is_some() {
             continue;
         }
-        pool.push(key.clone());
+        pool.push(key);
     }
     let rc = std::rc::Rc::new(pool);
     db.suggest_pool[class] = Some(rc.clone());
