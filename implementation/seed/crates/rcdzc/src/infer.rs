@@ -6261,14 +6261,33 @@ fn no_field_reject(
     operand: StructId,
     key: &crate::resolved::Symbol,
 ) -> Reject {
-    let fields = crate::eval::record_field_names(db, operand);
-    // The CONFIDENT single (tier 1) drives the FIX; the two-tier message adds the closest-matches list
-    // when there is none. `nearest` and `did_you_mean`'s tier-1 branch use the same cutoff, so a Some here
+    // The CONFIDENT single (tier 1) drives the FIX; the two-tier message adds the closest-matches list when
+    // there is none. `nearest` and `did_you_mean`'s tier-1 branch use the same cutoff, so a `Some` winner
     // ⟺ the message says "did you mean `field`?" — the fix targets the very field the message names.
-    let suggestion = crate::diag::suggest::nearest(&key.name, &fields);
+    //
+    // MEMOIZE per `(reduced-record occ, key)`: building the record's O(fields) name list + edit-distance-
+    // scanning it (twice — `nearest` then `did_you_mean`) per access made a WIDE record with a renamed field
+    // accessed from N sites O(N²). N sites over one record share its reduced occurrence, so the (winner,
+    // hint) pair caches. A type-only operand (no concrete record occ) falls through to a fresh compute — the
+    // rare non-repeating case. (The record-field twin of `variant_suggest_winner`, fix-26/45.)
+    let cache_key =
+        crate::eval::reduce_to_record_id(db, operand).map(|rec| (rec, key.name.clone()));
+    let (suggestion, hint) = if let Some(k) = &cache_key
+        && let Some(hit) = db.no_field_suggestion.get(k)
+    {
+        hit.clone()
+    } else {
+        let fields = crate::eval::record_field_names(db, operand);
+        let suggestion = crate::diag::suggest::nearest(&key.name, &fields);
+        let hint = crate::diag::suggest::did_you_mean(&key.name, &fields, 3);
+        if let Some(k) = &cache_key {
+            db.no_field_suggestion
+                .insert(k.clone(), (suggestion.clone(), hint.clone()));
+        }
+        (suggestion, hint)
+    };
     // The key occurrence is the second child of the `(. operand key)` form — the node the fix rewrites.
     let key_occ = db.ast.as_form(member, ".").and_then(|t| t.get(1).copied());
-    let hint = crate::diag::suggest::did_you_mean(&key.name, &fields, 3);
     let reject = Reject::coded(
         Code::Malformed,
         format!("{}`{}`{hint}", crate::diag::NO_FIELD_PREFIX, key.name),

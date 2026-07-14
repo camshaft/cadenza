@@ -1498,7 +1498,7 @@ pub fn project_field(db: &mut Db, id: StructId, key: &Symbol) -> Option<StructId
 /// reducing a type-constructor application (`(Int 64)` → its module), and following a member
 /// projection (a nested record). Returns the record's occurrence, or `None` if it does not reduce to a
 /// record. This is the single "reduce to a record" step both projection and its checks use.
-fn reduce_to_record_id(db: &mut Db, id: StructId) -> Option<StructId> {
+pub(crate) fn reduce_to_record_id(db: &mut Db, id: StructId) -> Option<StructId> {
     // The two hot cases — a `Record` (return `id`; fields unused) and a `Ref` (recurse on the Copy
     // `value`) — need no owned payload, so dispatch them through `resolved_ref` (a BORROW, no clone).
     // `reduce_to_record_id` is the recursion behind `project_meta` (the hottest reducer) and most steps

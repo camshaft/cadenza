@@ -492,6 +492,11 @@ pub struct BuildKey {
 /// occurrences) of every application calling that callee`. Named to keep the field type legible.
 pub(crate) type CallSiteIndex = crate::fxhash::FxHashMap<usize, Vec<(StructId, Vec<StructId>)>>;
 
+/// A cached record-field "did you mean?" result (`Db::no_field_suggestion`): the confident single winner
+/// (drives the fix, `None` when the typo is too far) and the full hint-message suffix (`— did you mean …`
+/// or `— closest matches: …`).
+pub(crate) type NoFieldSuggestion = (Option<String>, String);
+
 /// The compiler's whole state for one program: the AST, the top-level index, and the lazily-filled
 /// columns. Constructed once per subject program; every query is a free function in a query module
 /// that takes `&mut Db`. The columns are `pub(crate)` so a query module can fill its own and read the
@@ -1112,6 +1117,16 @@ pub struct Db {
     /// computed once per distinct query. A pure function of the sum declaration + the mistyped key.
     pub(crate) variant_closest_matches: crate::fxhash::FxHashMap<(StructId, String), Vec<String>>,
 
+    /// Memo of the RECORD-FIELD "no field `k` — did you mean?" enrichment (`infer::no_field_reject`), keyed
+    /// by `(reduced-record occ, mistyped-key)` → the `(confident-winner, hint-message)` pair. The enricher
+    /// builds the record's O(fields) name list and edit-distance-scans it TWICE (`nearest` for the fix, then
+    /// `did_you_mean` for the message), so a WIDE record with a renamed/typo'd field accessed from N sites
+    /// re-ran that per access → O(N²). Keyed by `(record occ, key)`, computed once per distinct query — the
+    /// record-field twin of `variant_suggest_winner`; a pure function of the record's field set and the
+    /// mistyped key. Populated only when the operand reduces to a concrete record occurrence (the shared
+    /// case that repeats); a type-only fallback re-scans (rare, not the hot repeat).
+    pub(crate) no_field_suggestion: crate::fxhash::FxHashMap<(StructId, String), NoFieldSuggestion>,
+
     /// CAPTURED-reference occurrences: a body reference inside a lifted lambda that names a FREE VARIABLE
     /// (a binding from the lambda's creation scope), mapped to `(capture index, solved type)`. Recorded
     /// by `lower::lower_lambda_value` when the lambda is lifted; read when the LIFTED body is lowered so
@@ -1586,6 +1601,7 @@ impl Db {
             suggest_pool_winner: crate::fxhash::FxHashMap::default(),
             variant_suggest_winner: crate::fxhash::FxHashMap::default(),
             variant_closest_matches: crate::fxhash::FxHashMap::default(),
+            no_field_suggestion: crate::fxhash::FxHashMap::default(),
             captured_ref: crate::fxhash::FxHashMap::default(),
             resolved_subtrees: crate::fxhash::FxHashSet::default(),
             def_schemes: crate::fxhash::FxHashMap::default(),

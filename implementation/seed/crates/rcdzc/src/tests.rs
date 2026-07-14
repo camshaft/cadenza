@@ -26516,6 +26516,67 @@ mod diagnostics {
     }
 
     #[test]
+    fn many_typod_field_accesses_of_one_wide_record_suggest_in_bounded_time() {
+        // REGRESSION (perf): a `(. r k)` on a field `k` the record lacks reports "no field `k` — did you
+        // mean?" via `infer::no_field_reject`, which builds the record's O(fields) name list and
+        // edit-distance-scans it TWICE (`nearest` for the fix + `did_you_mean` for the message). A WIDE
+        // record (N fields) with a typo'd field accessed from N sites re-ran that per access → O(N²)
+        // (cdz check 400/800/1600 = 111/402/1135ms, ~3.4×/doubling). This is the record-field twin of the
+        // variant did-you-mean (fix-26/45), which was memoized but this site was not. FIX: memoize the
+        // (winner, hint) pair per `(reduced-record occ, key)` in `db.no_field_suggestion` — N accesses over
+        // ONE record share its reduced occurrence, so the suggestion computes once.
+        //
+        // Correctness: the enrichment still names the nearest field (`— did you mean` / `— closest
+        // matches:`), just computed once per distinct query.
+        fn wide_record_typos(n: usize) -> String {
+            let rec: String = format!(
+                "(record {})",
+                (0..n)
+                    .map(|i| format!("(k{i} {i})"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            let accesses: String = (0..n)
+                .map(|i| format!("(v{i} (. rr k0x))"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("(module m (def (main) (let ((rr {rec}) {accesses}) v0)) (export main))")
+        }
+        // The enrichment still suggests the nearest field for the typo'd `k0x` access.
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_record_typos(8))));
+        assert!(
+            diags.iter().any(|d| {
+                d.code.as_deref() == Some("CDZ0201")
+                    && d.message.contains("no field")
+                    && (d.message.contains("did you mean") || d.message.contains("closest matches"))
+            }),
+            "a typo'd field access is enriched with a suggestion: {diags:?}"
+        );
+        // Growth guard: `cdz check` at N vs 2N typo'd accesses of an N-field record. The per-access
+        // name-list build + double scan drove a 400→800 ratio of ~3.4× (O(N²)); the memo makes it ~1.7×
+        // (linear). Paired back-to-back timings, MIN ratio, so transient contention cancels. Threshold 2.5.
+        fn check_ms(src: &str) -> f64 {
+            let start = std::time::Instant::now();
+            let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            start.elapsed().as_secs_f64() * 1000.0
+        }
+        let (narrow, wide) = (wide_record_typos(400), wide_record_typos(800));
+        check_ms(&narrow); // warm lazy one-time init before the first timed pair
+        let mut best = f64::INFINITY;
+        for _ in 0..6 {
+            let t400 = check_ms(&narrow);
+            let t800 = check_ms(&wide);
+            best = best.min(t800 / t400.max(0.1));
+        }
+        assert!(
+            best < 2.5,
+            "N typo'd field accesses of a wide record must scale linearly (was O(N²) via a per-access \
+             field-name build + double edit-distance scan in `no_field_reject`; now memoized per \
+             (record occ, key)): width 400→800 grew {best:.1}× (min paired ratio); linear ~2×, was ~3.4×"
+        );
+    }
+
+    #[test]
     fn an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix() {
         // The THIRD site of the same int coercion (arg + value-annotation + here): an annotated let-binder
         // whose annotation is a different int width than its INIT — `(let (((: x Int64) n)) …)` with
