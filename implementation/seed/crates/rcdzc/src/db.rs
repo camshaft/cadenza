@@ -42,6 +42,16 @@ use crate::resolved::Resolved;
 use crate::ty::Ty;
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only: total node-visits by [`Db::collect_reduced_callables`] since the last reset. A
+    /// deeply-nested inlining re-walked its growing reduced term per β-reduction = O(N²); the
+    /// `reduced_callable_walked` visited set makes it O(N). This counter is the noise-free regression signal
+    /// (a wall-clock ratio is diluted by the rest of `check`) — see the lock-in test.
+    pub(crate) static COLLECT_REDUCED_CALLABLES_VISITS: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
 /// occurrences (empty = nullary), and its body occurrence (absent = malformed). The body is LOCATED,
 /// never entered by the scan — entering it is a later per-node demand.
@@ -1035,6 +1045,16 @@ pub struct Db {
     /// so a node reused under a different discharged-op set is not conflated.
     pub(crate) subtree_performs_cache: crate::fxhash::FxHashMap<(StructId, String), bool>,
 
+    /// Nodes already fully walked by [`Db::collect_reduced_callables`]. `register_reduced_callables` runs
+    /// after EVERY `apply_lambda` β-reduction to discover do-local recursive defs in the reduced term; the
+    /// walk descends the WHOLE reduced subtree. A deeply-nested reduction (each `apply_lambda` returns a
+    /// progressively-larger term — e.g. a `((. d op0) ((. d op1) … acc))` dictionary-projection chain) had
+    /// each of N reductions re-walk an O(N)-deep term = O(N²). A node's structure is immutable once built,
+    /// so once walked it yields no new candidates on a re-walk — skip an already-visited node. (A node id is
+    /// never reused with a different meaning; a synthesized node gets a fresh id, so the memo cannot
+    /// mislead. This is the fix-30 `reached_visited` pattern applied to the reduced-callable scan.)
+    pub(crate) reduced_callable_walked: crate::fxhash::FxHashSet<StructId>,
+
     /// Memo of TYPE MONOMORPHIZATIONS (`crate::lower`, recursive-generic monomorphization): a recursive
     /// GENERIC function called at concrete argument types is emitted ONCE per `(def-body-occ,
     /// instantiation-key)` as a synthesized copy whose parameters are re-annotated with the concrete
@@ -1396,6 +1416,7 @@ impl Db {
             core: Column::new(),
             effect_specializations: crate::fxhash::FxHashMap::default(),
             subtree_performs_cache: crate::fxhash::FxHashMap::default(),
+            reduced_callable_walked: crate::fxhash::FxHashSet::default(),
             type_specializations: crate::fxhash::FxHashMap::default(),
             const_params,
             range_refinements: Vec::new(),
@@ -2029,10 +2050,20 @@ impl Db {
     /// same shape the load-time scan registers), so a `(def …)` in any other position is not mistaken for
     /// one. Descends every child to reach a do-block nested at any depth in the copied body.
     fn collect_reduced_callables(
-        &self,
+        &mut self,
         node: StructId,
         out: &mut Vec<(StructId, Vec<StructId>, StructId)>,
     ) {
+        #[cfg(test)]
+        COLLECT_REDUCED_CALLABLES_VISITS.with(|c| c.set(c.get() + 1));
+        // Already fully walked (by an earlier `register_reduced_callables` on an overlapping reduced term)?
+        // A node's structure is immutable once built, so a re-walk yields exactly the same candidates — skip
+        // it. Without this, N β-reductions of a progressively-larger nested term each re-walked the whole
+        // O(N)-deep subtree = O(N²) (a `((. d op0) ((. d op1) … acc))` dictionary-projection chain: a
+        // depth-800 chain's callable scan alone was ~2.5M node-visits). `insert` returns false if present.
+        if !self.reduced_callable_walked.insert(node) {
+            return;
+        }
         // Is `node` a do-block? If so, register each direct `(def (f p…) BODY)` child with params.
         if let Some(forms) = self.ast.as_form(node, "do") {
             for &form in forms {

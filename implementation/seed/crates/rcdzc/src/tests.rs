@@ -33805,6 +33805,79 @@ mod stage1 {
     }
 
     #[test]
+    fn a_deeply_nested_inlined_projection_chain_registers_callables_linearly() {
+        // REGRESSION (perf): `Db::register_reduced_callables` runs after EVERY `apply_lambda` β-reduction to
+        // discover do-local recursive defs in the reduced term, and its `collect_reduced_callables` helper
+        // walked the WHOLE reduced subtree each call. A deeply-nested inlining — e.g. a dictionary-projection
+        // chain `((. d op0) ((. d op1) … acc))` where each `(. d opi)` projects a lambda and applies it —
+        // produces N β-reductions each returning a progressively-larger O(N)-deep term, so the repeated
+        // whole-subtree walks were O(N²) (a depth-800 chain's callable scan alone was ~2.5M node-visits,
+        // 4×/doubling). FIX: a `db.reduced_callable_walked` visited set — a node's structure is immutable
+        // once built, so an already-walked node yields no new candidates; skip it (the fix-30 pattern). This
+        // drops the scan to O(N), so `cdz check` on the chain scales linearly.
+        //
+        // Correctness: `apply-all` threads `acc` through N ops `op_i = (+ · i)`, so the result is
+        // `acc + (0+1+…+(N-1))`. Pin the fold value at a small N.
+        fn chain_src(n: usize) -> String {
+            let dtype: String = format!(
+                "(Record {})",
+                (0..n)
+                    .map(|i| format!("(op{i} (-> Int64 Int64))"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            let mut body = String::from("acc");
+            for i in 0..n {
+                body = format!("((. d op{i}) {body})");
+            }
+            let dval: String = format!(
+                "(record {})",
+                (0..n)
+                    .map(|i| format!("(op{i} (fn (x) (+ x {i})))"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            format!(
+                "(module m (def (apply-all (: d {dtype}) (: acc Int64)) {body}) \
+                   (def (main) (apply-all {dval} 0)) (export main))"
+            )
+        }
+        // Compiles cleanly (the record value uses the value heap, so RUNNING would need the runtime store;
+        // the perf property is compile-time, so a clean compile is the correctness signal here — the
+        // dictionary erasure's runtime value is pinned by `a_recursive_dictionary_consumer_…`).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&chain_src(5))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a nested dictionary-projection chain compiles with no error diagnostics: {diags:?}"
+        );
+        // Growth guard — the NOISE-FREE signal: total `collect_reduced_callables` node-visits (a wall-clock
+        // ratio is diluted by the rest of `check`, which is linear and dominates). Before the visited set, N
+        // β-reductions each re-walked the growing O(N)-deep reduced term → the visit count was O(N²)
+        // (~4×/doubling); with the set it is O(N) (~2×/doubling). Measure at width N and 2N and assert the
+        // count grows sub-quadratically. Deterministic (a pure function of the program), so no min-of-runs
+        // needed — the count is identical every run.
+        fn crc_visits(src: &str) -> u64 {
+            crate::db::COLLECT_REDUCED_CALLABLES_VISITS.with(|c| c.set(0));
+            let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            crate::db::COLLECT_REDUCED_CALLABLES_VISITS.with(|c| c.get())
+        }
+        let v300 = crc_visits(&chain_src(300));
+        let v600 = crc_visits(&chain_src(600));
+        // Linear ⇒ ~2× for a 2× width; the old O(N²) re-walk was ~4×. Threshold 3× separates them with
+        // margin (and guards against a partial regression). Guard the denominator against a degenerate 0.
+        let ratio = v600 as f64 / (v300.max(1)) as f64;
+        assert!(
+            ratio < 3.0,
+            "a deeply-nested inlined projection chain's callable scan must grow LINEARLY (was O(N²) via a \
+             per-β-reduction whole-subtree re-walk in `collect_reduced_callables`; the \
+             `reduced_callable_walked` visited set fixes it): width 300→600 grew the visit count {ratio:.1}× \
+             (v300={v300}, v600={v600}); linear is ~2×, the O(N²) re-walk was ~4×"
+        );
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the
