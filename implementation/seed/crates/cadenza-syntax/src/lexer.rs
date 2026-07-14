@@ -419,6 +419,17 @@ impl<'a> Lexer<'a> {
             while matches!(self.peek(), Some(c) if c.is_ascii_hexdigit() || c == '_') {
                 end = self.bump().unwrap().span;
             }
+            // A glued TYPE SUFFIX (`0xFFN`, `0b1010R`) on a RADIX literal — the same single-`N`/`R` peel the
+            // decimal path does below. Without it a glued `N`/`R` (never a hex digit, so the loop above
+            // stops before it) re-lexes as a bare word, which the ML quantity sugar reads as `(Qty.of 0xFF
+            // (Unit.of "N"))` → CDZ0201 "unknown unit N", while the equivalent `255N` suffixes correctly.
+            // Take it only when what follows cannot CONTINUE an identifier, exactly as the decimal peel does
+            // (`0xFFNx` is not a suffix — the whole token then fails the numeric parse and falls to a Name).
+            if matches!(self.peek(), Some('N' | 'R'))
+                && !self.peek2().is_some_and(is_ident_continue)
+            {
+                end = self.bump().unwrap().span; // consume the N/R suffix
+            }
             return Token {
                 kind: Kind::Int,
                 span: a.span.merge(end),
@@ -657,6 +668,33 @@ mod tests {
         assert_eq!(spanned_text("1.5e10"), vec![("1.5e10", Kind::Float)]);
         assert_eq!(spanned_text("1e-9"), vec![("1e-9", Kind::Float)]);
         assert_eq!(spanned_text("-42"), vec![("-42", Kind::Int)]);
+    }
+
+    #[test]
+    fn type_suffix_spans_over_the_number_on_every_radix() {
+        // A glued `N`/`R` TYPE SUFFIX is part of the number token so `classify_word` sees the whole
+        // `<body><suffix>` and builds a `Suffixed` leaf. This must fire on the RADIX path (`0x…`/`0b…`) too,
+        // not just decimal — the radix scan used to `return` before the suffix peel, so `0xFFN` lexed as
+        // `0xFF` + a bare `N` word, which the ML quantity sugar mis-read as `(Qty.of 0xFF (Unit.of "N"))`
+        // → CDZ0201, while `255N` suffixed correctly (a surface inconsistency; `f91a9001` advertised `0xFFN`).
+        // DECIMAL (already worked):
+        assert_eq!(spanned_text("255N"), vec![("255N", Kind::Int)]);
+        assert_eq!(spanned_text("1.25R"), vec![("1.25R", Kind::Float)]);
+        // RADIX (the fix): the suffix is glued into the one token.
+        assert_eq!(spanned_text("0xFFN"), vec![("0xFFN", Kind::Int)]);
+        assert_eq!(spanned_text("0b1010N"), vec![("0b1010N", Kind::Int)]);
+        assert_eq!(spanned_text("0xFFR"), vec![("0xFFR", Kind::Int)]);
+        assert_eq!(spanned_text("0xFF_FFN"), vec![("0xFF_FFN", Kind::Int)]);
+        // A trailing letter that CONTINUES an identifier is NOT a suffix — `0xFFNx` keeps the whole
+        // ident-continuation glued to the number so the token fails the numeric parse and is rejected
+        // downstream (never silently a suffix + a stray `x`). The radix body absorbs the hex `F`s; the
+        // `Nx` follows. `0xFFN` alone suffixes, but `0xFFNx` must not peel just the `N`.
+        assert_eq!(spanned_text("0xFFNx"), vec![("0xFF", Kind::Int), ("Nx", Kind::Ident)]);
+        // A SPACE before the letter stays a separate token (the ML `5 R` quantity-unit sugar), unaffected.
+        assert_eq!(
+            spanned_text("0xFF N"),
+            vec![("0xFF", Kind::Int), ("N", Kind::Ident)]
+        );
     }
 
     #[test]

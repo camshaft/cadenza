@@ -202,6 +202,30 @@
   (input  (+ 100N 1N))
   (output (: 101 BigInt)))
 
+(case "a RADIX literal carries the N type suffix"
+  (doc    "The `N` (BigInt) / `R` (Rational) type suffix applies to a RADIX body (`0x…`/`0b…`) exactly as
+           to a decimal one — `0xFFN` is the BigInt 255, `0b1010N` the BigInt 10 — matching the documented
+           `f91a9001` example (`100N`, `0xFFN`, `1_000N`). The suffix peel reads the radix body then the
+           glued suffix letter, so a hex/binary literal opts into BigInt with the same terse spelling as a
+           decimal one. (This was an ML-surface lexer gap: `0xFFN` there mis-lexed as a quantity `(Qty.of
+           0xFF (Unit.of \"N\"))` → CDZ0201 'unknown unit N', while the s-expr reader — and now the ML
+           lexer too — reads it as the suffixed BigInt. These s-expr cases guard the VALUE on both surfaces.)")
+  (input  0xFFN)
+  (output (: 255 BigInt)))
+
+(case "a binary-radix literal carries the N suffix and an underscore group"
+  (doc    "`0b1010N` is the BigInt 10; a hex literal with an underscore group + suffix `0xFF_FFN` is the
+           BigInt 65535 — the radix suffix peel composes with `_` digit separators, as the decimal path
+           does. Pins that the whole `<radix-body-with-underscores><suffix>` is one suffixed literal.")
+  (input  (+ 0b1010N 0xFF_FFN))
+  (output (: 65545 BigInt)))
+
+(case "a radix literal carries the R (Rational) suffix"
+  (doc    "The `R` suffix over a radix body: `0xFFR` is the Rational 255/1 (an integer body grounds to
+           `n/1`), the radix twin of `5R`. Confirms both suffix kinds reach the radix path.")
+  (input  0xFFR)
+  (output (: 255/1 Rational)))
+
 (case "an R-suffixed integer literal is that integer over one"
   (doc    "The `R` type suffix (`5R`) selects `Rational`: an integer body grounds to `5/1`, the terse
            form of `(: 5 Rational)`.")
