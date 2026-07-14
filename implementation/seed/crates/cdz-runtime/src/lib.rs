@@ -17672,6 +17672,146 @@ mod tests {
             .for_each(|ops| run_tuplekey_op_sequence(ops));
     }
 
+    // STRING-KEY variant — the JSON-object / symbol-table shape (a self-hosting compiler's environment
+    // maps are string-keyed). A string key is a DISTINCT champ path from int (immediate) and tuple
+    // (shallow-compound) keys: an arity-0 HEAP-BYTE leaf, so `champ_hash` takes the arity-0 raw-byte FNV
+    // fast path and a slot-hit `champ_eq` compares raw bytes — neither exercised through insert/remove/
+    // fork/overwrite/canonical-twin by the int or tuple fuzzers. Keys are built FLAT (`op_str_new`), the
+    // same leaf the compiler emits for a String key (a rope key is the compiler's to `bytes-compact`
+    // before insert — champ_eq is physical-bytes by contract, so a raw rope would mis-dedup; not this
+    // test's concern). A small keyspace (8 short names) forces real overwrites, removes, and node splits.
+    #[derive(Debug, bolero::TypeGenerator)]
+    enum StrKeyOp {
+        Insert { key: u8, val: u8 },
+        Remove { key: u8 },
+        Fork,
+        DropForked,
+    }
+
+    // The 8 fixed string keys the small keyspace draws from (varied lengths, some sharing a leading byte
+    // to drive shared-prefix hash slots; all flat leaves).
+    fn strkey_name(k: u8) -> String {
+        match k % 8 {
+            0 => "a".to_string(),
+            1 => "bb".to_string(),
+            2 => "ccc".to_string(),
+            3 => "key".to_string(),
+            4 => "keyword".to_string(), // shares "key" prefix with #3 (distinct hashes, exercises slots)
+            5 => "".to_string(),        // the empty string is a valid key (zero-length byte leaf)
+            6 => "a-longer-identifier".to_string(),
+            _ => "z".to_string(),
+        }
+    }
+
+    fn run_strkey_op_sequence(ops: &[StrKeyOp]) {
+        let before = live_nodes();
+        let mut m = op_map_empty();
+        let mut reference: std::collections::BTreeMap<String, i64> =
+            std::collections::BTreeMap::new();
+        let mut forks: Vec<(Handle, std::collections::BTreeMap<String, i64>)> = Vec::new();
+        for op in ops {
+            match *op {
+                StrKeyOp::Insert { key, val } => {
+                    let name = strkey_name(key);
+                    let v = val as i64;
+                    m = op_map_insert(m, op_str_new(name.clone()), op_box_int(v)); // consumes key+val
+                    reference.insert(name, v);
+                }
+                StrKeyOp::Remove { key } => {
+                    let name = strkey_name(key);
+                    let probe = op_str_new(name.clone());
+                    m = op_map_remove(m, probe); // BORROWS the key
+                    op_drop(probe); // we own the probe
+                    reference.remove(&name);
+                }
+                StrKeyOp::Fork => {
+                    op_dup(m); // rc>1: the next mutation path-copies, leaving this snapshot intact
+                    forks.push((m, reference.clone()));
+                }
+                StrKeyOp::DropForked => {
+                    if let Some((h, _)) = forks.pop() {
+                        op_drop(h);
+                    }
+                }
+            }
+        }
+        // (1) size + per-key lookup vs the reference (probe every key in the small keyspace, present + absent).
+        assert_eq!(
+            op_map_size(m) as usize,
+            reference.len(),
+            "string-key map size matches reference"
+        );
+        for k in 0..8u8 {
+            let name = strkey_name(k);
+            let probe = op_str_new(name.clone());
+            let got = op_map_lookup(m, probe); // borrows
+            op_drop(probe);
+            let want = reference.get(&name).copied();
+            assert_eq!(
+                if got == Handle::NULL {
+                    None
+                } else {
+                    Some(op_get_int(got))
+                },
+                want,
+                "string key {name:?} matches reference"
+            );
+        }
+        // (2) canonical shape: same contents ⇒ byte-identical to a fresh twin (what string-key dedup rests on).
+        let twin = {
+            let mut t = op_map_empty();
+            for (name, &v) in &reference {
+                t = op_map_insert(t, op_str_new(name.clone()), op_box_int(v));
+            }
+            t
+        };
+        assert!(
+            champ_eq(m, twin),
+            "string-key map equals a fresh twin of the same contents (canonical)"
+        );
+        assert_eq!(champ_hash(m), champ_hash(twin), "…and hashes identically");
+        op_drop(twin);
+        // (3) forked snapshots undisturbed by later mutation of `m` (aliasing safety on the string-key path).
+        for (h, snap) in &forks {
+            assert_eq!(
+                op_map_size(*h) as usize,
+                snap.len(),
+                "forked string-key snapshot size intact"
+            );
+            for (name, &v) in snap {
+                let probe = op_str_new(name.clone());
+                let got = op_map_lookup(*h, probe);
+                op_drop(probe);
+                assert_eq!(
+                    if got == Handle::NULL {
+                        None
+                    } else {
+                        Some(op_get_int(got))
+                    },
+                    Some(v),
+                    "forked snapshot string key {name:?} intact"
+                );
+            }
+        }
+        // (4) no leak / no double-free across the whole sequence.
+        op_drop(m);
+        for (h, _) in forks {
+            op_drop(h);
+        }
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak / no double-free across the whole string-key sequence"
+        );
+    }
+
+    #[test]
+    fn prop_strkey_map_matches_reference_under_random_op_sequences() {
+        bolero::check!()
+            .with_type::<Vec<StrKeyOp>>()
+            .for_each(|ops| run_strkey_op_sequence(ops));
+    }
+
     // ── RRB persistent VECTOR randomized differential vs `Vec<i64>` ─────────────────────────────
     // The map/set already have `prop_*_matches_reference` fuzz tests, but the RRB vector — the most
     // structurally intricate collection (relaxed-radix rebalancing on concat/split, path-copy on a
