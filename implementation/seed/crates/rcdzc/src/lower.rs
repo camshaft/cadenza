@@ -6514,6 +6514,17 @@ fn int_of_core(c: &Core) -> Option<i128> {
 /// when the scales are equal. Folds the constant case; a runtime magnitude declines (the emitted runtime
 /// scale-multiply is a later increment). The dimensional check (target vs q dimension) is
 /// `check_application`'s (CDZ0501); here q is assumed same-dimension.
+///
+/// The conversion is exactly the SCALE ARITHMETIC the source denotes by naming the two units — the ratio
+/// of the operand's scale to the target's, nothing the dimensional layer adds. A constant magnitude is
+/// converted at compile time (folded to a `ConstFloat`/`ConstInt`, no runtime arithmetic), and the result
+/// is a BARE numeric core — the `Ty::Qty` dimension is erased whether or not the scale multiply survives.
+//= spec/capabilities/units-of-measure.md#a-unit-conversion-is-the-arithmetic-the-source-denotes
+//# A conversion between two units of one dimension MUST be the scale arithmetic the source denotes by naming those units, not additional arithmetic the dimensional layer introduces, so that the emitted arithmetic is what the program means rather than an overhead the check imposes.
+//= spec/capabilities/units-of-measure.md#a-unit-conversion-is-the-arithmetic-the-source-denotes
+//# A unit conversion whose operands are compile-time constants MUST be computed at compile time, so that a conversion between constant quantities contributes no runtime arithmetic.
+//= spec/capabilities/units-of-measure.md#a-unit-conversion-is-the-arithmetic-the-source-denotes
+//# The dimension a quantity carries MUST be erased whether or not a scale conversion is emitted, so that the type-level dimensional information never survives into the component even when the scale arithmetic does.
 fn lower_unit_in(db: &mut Db, target: StructId, q: StructId) -> Core {
     // q's scale to the reference (read off its solved unit); the target's from `unit_of`.
     let (qn, qd) = match crate::infer::type_of(db, q) {

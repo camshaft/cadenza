@@ -2283,7 +2283,11 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                         // scale (`metre` + `kilometre`), the result is the dimension's REFERENCE unit (the
                         // deterministic common unit each operand converts to — units-of-measure.md
                         // §Combining Units Of One Dimension Is Well-Formed). The inner numeric type is the
-                        // lhs quantity's (both share it; the fault check enforces agreement).
+                        // lhs quantity's (both share it; the fault check enforces agreement). The choice is
+                        // a pure function of the two operand units (equal → that unit; differ → the
+                        // reference), independent of evaluation order, so the result is reproducible.
+                        //= spec/capabilities/units-of-measure.md#combining-units-of-one-dimension-is-well-formed
+                        //# The result unit of a combination of same-dimension quantities MUST be a deterministic function of the operands' units, so that the result is reproducible rather than dependent on evaluation order.
                         if let (
                             Ty::Qty {
                                 inner: ia,
@@ -3609,6 +3613,8 @@ fn check_application(
                         // Dimensional Mismatch Is An Error / §Combining Units Of One Dimension Is
                         // Well-Formed). So gate on `same_dimension` (the exponent map), NOT `==` (which
                         // also compares scale — that distinction is TYPE identity, checked at annotation).
+                        //= spec/capabilities/units-of-measure.md#combining-units-of-one-dimension-is-well-formed
+                        //# Combining two quantities whose units share a dimension MUST be well-formed even when the units differ, the combination being taken at a common unit of that dimension reached by each operand's exact scale.
                         if !ua.same_dimension(ub) {
                             trace!(target: "rcdzc::infer", head = head.0, "fault: combining quantities of incompatible dimension (CDZ0501)");
                             out.push(Reject::coded(
