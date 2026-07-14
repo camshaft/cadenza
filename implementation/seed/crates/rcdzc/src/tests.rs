@@ -16653,6 +16653,45 @@ mod match_engine {
             "set cross-kind names both types, no fix: {}",
             ss.message
         );
+        // STRUCTURAL-DELTA HINT (the peer-join hint the list/if/match sites carry, now at set/map too):
+        // when the two clashing types are SAME-KIND compounds, name the SPECIFIC differing sub-part instead
+        // of leaving two full renders. A set of records differing in one field's TYPE.
+        let sr = reject_full(
+            "(module m (def x (Set.of (list (record (x 1)) (record (x true))))) (export x))",
+        )
+        .expect("reject");
+        assert!(
+            sr.message
+                .contains("field `x` should be Int64, but this one is Bool"),
+            "set names the differing record field: {}",
+            sr.message
+        );
+        // A map KEY delta (records differing in a field) and a map VALUE delta (sum payload axis).
+        let mkd = reject_full(
+            "(module m (def x (map ((record (x 1)) 0) ((record (x true)) 1))) (export x))",
+        )
+        .expect("reject");
+        assert!(
+            mkd.message
+                .contains("field `x` should be Int64, but this one is Bool"),
+            "map key names the differing record field: {}",
+            mkd.message
+        );
+        let mvd = reject_full("(module m (def x (map (0 (Some 5)) (1 (Some 2.0)))) (export x))")
+            .expect("reject");
+        assert!(
+            mvd.message
+                .contains("its payload should be Int64, but this one is Float64"),
+            "map value names the differing sum payload axis: {}",
+            mvd.message
+        );
+        // NO regression: a plain SCALAR clash gets NO structural-delta tail (only the type names), while
+        // still carrying its retype fix — the delta only fires for same-kind compounds that differ inside.
+        assert!(
+            !sf.message.contains("should be") && !sf.message.contains("field"),
+            "a scalar set clash gets no structural-delta tail: {}",
+            sf.message
+        );
     }
 
     #[test]

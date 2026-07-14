@@ -5654,10 +5654,11 @@ fn check_application(
         }
         if let (Some((first, first_ty)), Some((e, et))) = (&first_pair, &clash) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: Set.of elements do not share one type (CDZ0201)");
+            let delta = peer_type_delta_hint(first_ty, et).unwrap_or_default();
             let mut reject = Reject::coded(
                 Code::Malformed,
                 format!(
-                    "a set contains elements of one type, but the elements differ: {} and {}",
+                    "a set contains elements of one type, but the elements differ: {} and {}{delta}",
                     first_ty.render_name(),
                     et.render_name()
                 ),
@@ -5761,11 +5762,15 @@ fn check_application(
                 if crate::unify::unify(&mut ksubst, &fkt, &kt).is_err() {
                     // Name the two clashing key types (like the list-homogeneity message) and, for an
                     // int-literal-vs-float clash, offer the same `3.0` retype fix — the map-key twin of the
-                    // list/if/match "same repair wherever the same mismatch surfaces" (M57).
+                    // list/if/match "same repair wherever the same mismatch surfaces" (M57). The
+                    // structural-delta hint names the SPECIFIC differing sub-part when the two key types are
+                    // same-kind compounds (a record field / tuple position / sum payload) — the peer-join
+                    // hint the list/if/match/set sites carry.
+                    let delta = peer_type_delta_hint(&fkt, &kt).unwrap_or_default();
                     let mut reject = Reject::coded(
                         Code::Malformed,
                         format!(
-                            "a map associates keys of one type, but the keys differ: {} and {}",
+                            "a map associates keys of one type, but the keys differ: {} and {}{delta}",
                             fkt.render_name(),
                             kt.render_name()
                         ),
@@ -5779,10 +5784,11 @@ fn check_application(
                 }
                 let vt = type_of(db, v);
                 if crate::unify::unify(&mut vsubst, &fvt, &vt).is_err() {
+                    let delta = peer_type_delta_hint(&fvt, &vt).unwrap_or_default();
                     let mut reject = Reject::coded(
                         Code::Malformed,
                         format!(
-                            "a map associates values of one type, but the values differ: {} and {}",
+                            "a map associates values of one type, but the values differ: {} and {}{delta}",
                             fvt.render_name(),
                             vt.render_name()
                         ),
