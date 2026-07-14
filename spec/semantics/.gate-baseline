@@ -451,6 +451,7 @@ pass	a let shadowing a parameter whose initializer references that parameter com
 pass	a let shadowing a parameter with a differently-typed value is not an invalid component
 pass	a let shadowing a parameter with a same-typed value runs, not miscompiles
 pass	a let-bound lambda passed to a returned-closure factory
+pass	a let-bound lambda whose body performs is applied in the handle body
 pass	a let-bound returned closure applied twice folds each application independently
 pass	a let-bound runtime-if list is length-measured with valid wasm
 pass	a let-bound variable derived from a runtime parameter passed as a call argument
@@ -688,6 +689,7 @@ pass	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
 pass	a projected tuple element IS observed, so its trap occurs (the anchor)
+pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
 pass	a quantity over an exact rational magnitude divides exactly and derives its dimension
