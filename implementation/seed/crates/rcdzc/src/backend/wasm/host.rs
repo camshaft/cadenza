@@ -220,6 +220,16 @@ pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>
             // as its opaque `u32` heap handle over the shared runtime (U5), not by-value like a host op —
             // so a peer-bound op uses `extern_abi_val_type` (compound → `U32` handle). A genuine HOST op
             // keeps the scalar/string mapping (a compound has no host boundary form). `Unit` is elided.
+            //
+            // A SCALAR crossing to/from a peer still crosses by its component-model scalar representation
+            // (`abi_val_type`), NOT as a handle — only a runtime-owned compound carries a handle. And the
+            // peer op's boundary signature is the concrete `(-> P… R)` the effect operation declares
+            // (monomorphic — no on-demand instantiation), the effects-unified successor of the removed
+            // `(extern …)` surface (U4).
+            //= spec/contracts/component-abi.md#cadenza-components-composed-against-a-shared-runtime-exchange-values-as-handles
+            //# A scalar value that crosses between such components MUST cross by its component-model scalar representation and not as a handle, so that only a value the runtime owns is carried by handle and a scalar carries no runtime dependency.
+            //= spec/contracts/component-abi.md#the-exchanged-signature-is-monomorphic
+            //# A cross-component imported or exported signature by which components exchange values MUST be monomorphic, per §Generics Do Not Cross The Boundary, so that the exchanged interface names concrete types and a component binds a peer's export at a fixed instantiation the peer emitted rather than requesting an instantiation on demand.
             let peer_bound = db.effect_bindings.contains_key(&effect);
             let mut params = Vec::new();
             for &a in &args {
