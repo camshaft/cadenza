@@ -4781,6 +4781,10 @@ fn op_comp_functype(op: &RtOp) -> Vec<u8> {
 //# The entry's exported signature MUST be a plain function from the program's input type to its result type, carrying no additional outcome arm — no suspension outcome and no injected trap outcome — so that a run either returns its result value or halts out-of-band, and the interface declares nothing beyond `input -> output`.
 //= spec/contracts/component-abi.md#the-entry-is-a-plain-function
 //# The entry MUST NOT carry a resume parameter and its result MUST NOT encode a pending host call or a position in the program's execution, so that how a host call suspends and resumes is host runtime policy the ABI does not represent (capabilities-and-effects.md §A Host Call Returns A Response) and the same emitted bytes serve a host that answers inline, one that suspends a fiber and resumes in place, and one that tears down and replays from a log.
+//= spec/contracts/component-abi.md#the-entry-is-a-plain-function
+//# A trap MUST be an out-of-band halt the embedder observes when it invokes the entry — the wasm-level failure a partial operation or an aborting host function raises — rather than a variant the entry's result type declares, so that the internal trap mechanism (core-semantics.md §A Trap Halts Execution At A Defined Point) stays a run's terminal behavior and is not duplicated as a redundant arm of the interface.
+//= spec/contracts/component-abi.md#the-entry-is-a-plain-function
+//# The host MUST NOT require the component to encode any resume state, so that whichever resumption strategy a host chooses is invisible to the emitted component and constrained only by the run's determinism (capabilities-and-effects.md §A Run Is A Deterministic Function Of Its Input And Responses).
 //= spec/contracts/component-abi.md#the-entry-signature-crosses-the-boundary-by-the-same-rules
 //# The entry's parameter and result types MUST each have a boundary representation fixed by this contract.
 //= spec/contracts/component-abi.md#the-entry-signature-crosses-the-boundary-by-the-same-rules
