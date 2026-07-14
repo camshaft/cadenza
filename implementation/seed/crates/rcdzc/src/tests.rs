@@ -18673,24 +18673,29 @@ mod match_engine {
     fn applying_a_type_name_names_it_a_type_and_points_at_annotation_position() {
         // `(Option 5)` / `(Int64 5)` apply a TYPE name where a function was expected. The head reduces to
         // a type-value, so the generic `typeval_of(head)` discriminator recognizes it (no hard-coded name
-        // list — the no-keys-outside-the-prelude rule) and the message names the CATEGORY + where a type
-        // belongs: "`Option` is a type, not a function — a type appears in an annotation `(: value Option)`,
-        // not in call position". `Option` (a GENERIC type, params > 0) and `Int64` (a prelude type with no
-        // sum/nominal decl) both take this generic message. A MONOMORPHIC USER SUM applied to arguments
-        // takes the more precise "takes no type parameters" message — see the sibling test below.
-        for (src, name) in [
-            ("(module m (def (main) (Option 5)) (export main))", "Option"),
-            ("(module m (def (main) (Int64 5)) (export main))", "Int64"),
-        ] {
-            let d = reject_full(src).unwrap_or_else(|| panic!("applying {name} is rejected"));
-            assert!(
-                d.message
-                    .contains(&format!("`{name}` is a type, not a function"))
-                    && d.message.contains("appears in an annotation"),
-                "names the type category + annotation position for {name}: {}",
-                d.message
-            );
-        }
+        // list — the no-keys-outside-the-prelude rule). The message DIVERGES by whether the type is GENERIC:
+        //  • `Int64` — a prelude type with NO sum/nominal decl (no declared params) — takes the generic
+        //    "`Int64` is a type, not a function — a type appears in an annotation `(: value Int64)`" message.
+        //  • `Option` — a GENERIC type (≥1 declared param) whose type-ARGUMENT position wants a type — takes
+        //    the more precise "`Option` is a type constructor — its type argument must be a type, but a value
+        //    appears here" (the sum twin of List/Set's "the element type must be a type"; `(Option 5)` writes
+        //    a value `5` where a type belongs).
+        let int_msg = reject_full("(module m (def (main) (Int64 5)) (export main))")
+            .expect("applying Int64 is rejected")
+            .message;
+        assert!(
+            int_msg.contains("`Int64` is a type, not a function")
+                && int_msg.contains("appears in an annotation"),
+            "a non-generic prelude type keeps the category message: {int_msg}"
+        );
+        let opt_msg = reject_full("(module m (def (main) (Option 5)) (export main))")
+            .expect("applying Option is rejected")
+            .message;
+        assert!(
+            opt_msg.contains("`Option` is a type constructor")
+                && opt_msg.contains("its type argument must be a type"),
+            "a generic type applied to a value names the type-argument position: {opt_msg}"
+        );
     }
 
     #[test]
@@ -32746,6 +32751,34 @@ mod stage1 {
             !d.message.contains("None"),
             "a variant ctor is not suggested for a member operand: {}",
             d.message
+        );
+    }
+
+    #[test]
+    fn a_member_accessible_module_sharing_a_variant_name_is_still_suggested() {
+        // A prelude name can be BOTH a member-accessible MODULE and some sum's variant — `List` is the
+        // collection-operations module AND the `Ast.List` node kind. The member-operand candidate pool
+        // drops prelude VARIANT CONSTRUCTORS (no members → a fix wouldn't resolve), but that filter must
+        // key on the prelude BINDING's own shape (its `(meta variant)` channel), NOT a name-set collision:
+        // the earlier name-collision filter wrongly dropped the `List` MODULE, so `(. Lst len)` suggested
+        // the equidistant `Ast` (`Lst`→`Ast` and `Lst`→`List` are both 1 edit) instead of the intended
+        // `List`. The module is a real member target, so it must stay in the pool.
+        let src = "(do (def (main) (Lst.len (list 1 2))) (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a member operand typo rejects");
+        assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("List"),
+            "the `List` MODULE (a member target) is suggested over the equidistant `Ast`: {}",
+            d.message
+        );
+        // The tie-break itself: on equal edit distance, a shared FIRST CHARACTER wins (a typo rarely
+        // changes the leading letter). `Lst` shares `L` with `List`, not `Ast`.
+        assert_eq!(
+            crate::diag::suggest::nearest("Lst", ["Ast", "List"]),
+            Some("List".into()),
+            "a shared first character breaks an edit-distance tie"
         );
     }
 

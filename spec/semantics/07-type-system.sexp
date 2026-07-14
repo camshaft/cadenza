@@ -69,6 +69,39 @@
             (export main)))
   (error  CDZ0203))
 
+; The two cases above over-apply a NON-generic type to a TYPE argument (arity is wrong). The dual slip
+; is a legitimately GENERIC type constructor — one that DOES take a type parameter — applied to a VALUE
+; where a type belongs: `(Option 5)`, `(List 5)`. Here the arity is right (Option/List take one
+; parameter) but the argument's KIND is wrong (a value, not a type). This is a distinct diagnostic
+; (CDZ0203) that names the type-argument position — "the type argument must be a type, but a value
+; appears here" — rather than the "not a type constructor" / "takes no type parameters" arity messages,
+; so an author who wrote a value where the element/payload TYPE goes is told to write a type.
+
+(case "a generic sum type constructor applied to a value is rejected"
+  (doc    "`(: 1 (Option 5))` uses the generic type constructor `Option` — which correctly takes one type
+           parameter — but supplies the VALUE `5` where a TYPE belongs. Unlike the `(Int64 Int64)` and `(T
+           Int64)` cases above (a NON-generic type over-applied), the arity is right; the fault is the
+           argument's kind. Rejected (CDZ0203), the diagnostic naming the type-argument position (`(Option
+           <Type>)`, e.g. `(Option Int64)`). Pins that a generic type's argument must itself be a type,
+           not a value.")
+  (input  (do (def (main) (: 1 (Option 5))) (export main)))
+  (error  CDZ0203))
+
+(case "a list type whose element position holds a value is rejected"
+  (doc    "`(: 1 (List 5))` puts the value `5` in `List`'s element-TYPE position. `List` is a generic type
+           constructor whose one argument is the element TYPE — a value there is ill-formed (CDZ0203, 'the
+           element type must be a type, but this is a value'). The built-in-collection companion of the
+           `(Option 5)` case: a value where a type is required in a generic type's argument.")
+  (input  (do (def (main) (: 1 (List 5))) (export main)))
+  (error  CDZ0203))
+
+(case "a set type whose element position holds a value is rejected"
+  (doc    "`(: 1 (Set 5))` — the `Set` sibling of the list case: the element-TYPE position holds the value
+           `5`, rejected (CDZ0203). Pins that the generic-argument-must-be-a-type check covers `Set` as
+           well as `List`, so no built-in generic collection accepts a value in its type-argument slot.")
+  (input  (do (def (main) (: 1 (Set 5))) (export main)))
+  (error  CDZ0203))
+
 (case "an unbound name as a parameter's annotation type is rejected"
   (doc    "The PARAMETER-annotation companion: `(def (f (: x foo)) x)` annotates the parameter `x` with
            the unbound `foo` in type position. A parameter's type operand must denote a type exactly as a

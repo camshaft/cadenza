@@ -7387,6 +7387,19 @@ fn check_application(
                             // heuristic — right in the common case, harmless (error→clearer-error) otherwise.
                             Some(crate::diag::Fix::replace_heuristic(app, name.clone())),
                         ),
+                        // A GENERIC type (≥1 declared parameter) applied with a NON-TYPE argument —
+                        // `(Option 5)`, `(Box 5)`. Its type-argument position wants a TYPE, not a value; the
+                        // generic "not a function" reads as if `Option` were being called, missing that this
+                        // is a type constructor whose argument is wrong. Name that — the sum twin of List/Set's
+                        // "the element type must be a type" (`non_type_argument_message`, which only covers the
+                        // prim ctors). No forced fix (the author supplies the intended type argument).
+                        (Some(name), Some(p)) if p >= 1 => (
+                            format!(
+                                "`{name}` is a type constructor — its type argument must be a type, but a \
+                                 value appears here (write `({name} <Type>)`, e.g. `({name} Int64)`)"
+                            ),
+                            None,
+                        ),
                         (Some(name), _) => (
                             format!(
                                 "`{name}` is a type, not a function — a type appears in an annotation \

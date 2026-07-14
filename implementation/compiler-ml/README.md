@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 208 tests total across 23 modules):
+top. Current `src/` modules (each with same-file `@test`s — 218 tests total across 24 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -153,6 +153,11 @@ top. Current `src/` modules (each with same-file `@test`s — 208 tests total ac
   hashes), the core of hash-consing / CSE. Key property: CONGRUENCE (structurally-equal ASTs hash equal),
   with order/shape/arity sensitivity. All-scalar recursion (dodges the collection-mutation bug). 9
   `@test`s. Confirmed WORKING.
+- `src/quote-build.cdz` — METAPROGRAMMING with the built-in `Ast`: `quote(expr)` reifies a program
+  fragment into an `Ast` value (the `Int`/`Name`/`List` prelude sum), and `quasiquote` with an Int-valued
+  `unquote` splices a computed number into a template. Walks the reified tree (node count, Int-leaf sum)
+  and compares quoted forms by structural `==`. 10 `@test`s. (`unquote` of an already-`Ast` value is not
+  yet supported — see the log — so `wrap` splices an `Int64`.) Confirmed WORKING.
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP

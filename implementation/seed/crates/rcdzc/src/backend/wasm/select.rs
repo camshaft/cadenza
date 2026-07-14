@@ -7911,6 +7911,47 @@ fn emit_sum_match_arms(
         ),
         Some((arm, rest)) => {
             let disc = arm.disc.expect("non-None handled above");
+            // BRANCHLESS 2-ARM SUM SELECT: a switch of exactly TWO arms — this disc-arm then a single
+            // unconditional cover (a `disc: None` default, or the last arm of an exhaustive switch) — is
+            // `(if (disc == d) then else)`, the sum-discriminant twin of the scalar 2-arm select
+            // (`emit_match_dispatch`). When both arms are `Leaf` bodies that are cheap trap-free
+            // `is_select_arm`s and the result is a scalar (a value `block_ty`), emit `then ; else ;
+            // (disc == d) ; select` instead of an `if`/`else` block — so a 2-variant enum match
+            // `(match f (On 1) (Off 0))` goes branchless (`disc eqz ; select`) exactly as the equivalent
+            // `if` would. Only for NON-self-loop position (`select` cannot carry a loop `br`; a `Leaf`
+            // select-arm is never a tail call anyway) and when both continuations are plain leaves — a
+            // guarded / nested-switch / lit-test continuation keeps the structured `if` below.
+            if !matches!(tail, TailPos::Tail(Some(_)))
+                && matches!(block_ty, BlockType::Val(_))
+                && let [cover] = rest
+                && let crate::core::SumCont::Leaf(then_body) = &arm.cont
+                && let crate::core::SumCont::Leaf(else_body) = &cover.cont
+                && is_select_arm(db, *then_body)
+                && is_select_arm(db, *else_body)
+            {
+                let (then_body, else_body) = (*then_body, *else_body);
+                let res_ty = match result_it {
+                    Some(rit) => Ty::Int(rit),
+                    None => type_of(db, then_body),
+                };
+                emit_branch(
+                    db, then_body, &res_ty, slots, base, high, scratch_ty, layout, out,
+                )?;
+                emit_branch(
+                    db, else_body, &res_ty, slots, base, high, scratch_ty, layout, out,
+                )?;
+                push_discriminant(
+                    db, scrutinee, path, slots, base, high, scratch_ty, layout, out,
+                )?;
+                if disc == 0 {
+                    out.push(Lir::I32Eqz);
+                } else {
+                    out.push(Lir::ConstI32(disc as i32));
+                    out.push(Lir::I32Eq);
+                }
+                out.push(Lir::Select);
+                return Ok(());
+            }
             // discriminant(<scrutinee walked down `path`>) == disc — `sum-disc` for a boxed sum, the raw
             // i32 / unboxed int for an enum-disc value (see `push_discriminant`).
             push_discriminant(
@@ -12273,6 +12314,54 @@ mod tests {
         assert!(
             !f.code.iter().any(|i| matches!(i, Lir::Unreachable)),
             "no dead-default unreachable, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_two_variant_sum_match_with_leaf_bodies_selects_branchlessly() {
+        // A 2-variant sum (enum) match with cheap trap-free LEAF arm bodies is `(if (disc == d) A B)` — the
+        // sum-discriminant twin of the scalar 2-arm select. `(match f (On 1) (Off 0))` → `1 ; 0 ;
+        // <disc> ; i32.eqz ; select`, NOT an `if`/`else` block. Sound: a `Leaf` body is trap-free
+        // (`is_select_arm`); a payload-reading arm (`SumPayload`) is NOT trap-free and keeps the `if` — see
+        // `an_option_match_with_a_payload_reading_arm_keeps_its_if`.
+        let ast = crate::testkit::parse(
+            "(module m (type Flag On Off) \
+               (def (rank (: f Flag)) (match f (Flag.On 1) (Flag.Off 0))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("rank").expect("rank");
+        let (params, body) = function_of(&mut db, "rank");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            f.code.contains(&Lir::Select)
+                && !f.code.iter().any(|i| matches!(i, Lir::If(_) | Lir::Else)),
+            "a 2-variant enum match with leaf bodies selects branchlessly (no if/else): {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn an_option_match_with_a_payload_reading_arm_keeps_its_if() {
+        // A 2-arm sum match whose arm READS the payload — `(match o ((Some v) (+ v 1)) ((None) 0))` — must
+        // NOT become a branchless `select`: `select` evaluates BOTH arms, so it would read the `Some`
+        // payload even when the value is `None` (a `SumPayload` on the wrong variant). `is_select_arm`
+        // (via `is_trap_free`) excludes a `SumPayload` read, so the `if`/`else` decision-tree survives.
+        let ast = crate::testkit::parse(
+            "(module m \
+               (def (f (: o (Option Int64))) (match o ((Some v) (+ v 1)) ((None) 0))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let d = db.def_by_name("f").expect("f");
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function_of(&mut db, body, &params, &layout, Some(d)).expect("select");
+        assert!(
+            !f.code.contains(&Lir::Select),
+            "a payload-reading Option arm keeps the if (no speculative select): {:?}",
             f.code
         );
     }

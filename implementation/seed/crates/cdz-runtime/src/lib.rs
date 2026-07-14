@@ -12668,6 +12668,39 @@ mod tests {
         );
         op_drop(real_empty);
         op_drop(empty);
+        // (6) a SHARED (rc==2) ROPE input: `op_str_from_bytes` flattens the rope IN PLACE (content-
+        // preserving, so unobservable) and, on valid UTF-8, returns the SAME handle as the String —
+        // touching NO refcount. The scenario the compiler can hit: `String.from-bytes` on a rope still
+        // referenced by another owner. Verify that (a) the result IS that handle (a valid rope-turned-leaf
+        // String), (b) the refcount is CONSERVED (still 2 — one logical ref consumed by the return, the
+        // other owner's intact), (c) the OTHER owner still reads the correct content (the in-place flatten
+        // didn't corrupt its view), (d) both refs drop cleanly with no leak/double-free. A rope String and
+        // a flat String of the same content are champ_eq (a String IS a byte leaf).
+        let shared = op_bytes_concat(bytes_leaf(b"caf"), bytes_leaf("é".as_bytes())); // valid UTF-8 rope
+        op_dup(shared); // rc == 2: two owners
+        let as_str = op_str_from_bytes(shared); // owner A's call
+        assert_eq!(
+            as_str, shared,
+            "valid rope → returned AS the same handle (a String IS the byte leaf)"
+        );
+        assert_eq!(
+            node_rc(shared),
+            2,
+            "refcount conserved — the other owner's reference is intact"
+        );
+        assert_eq!(
+            op_str_get(shared),
+            "café",
+            "the OTHER owner still reads the correct content (in-place flatten is unobservable)"
+        );
+        let flat_twin = op_str_new(String::from("café"));
+        assert!(
+            champ_eq(as_str, flat_twin),
+            "the from-bytes rope String == a flat String of the same content"
+        );
+        op_drop(flat_twin);
+        op_drop(as_str); // owner A's ref (== shared)
+        op_drop(shared); // owner B's ref
         // (5) balance: every buffer consumed (valid ones dropped, invalid ones released internally). The
         // immediate `from_imm` needs no drop (an immediate holds no node — dropping it is a no-op).
         assert_eq!(
