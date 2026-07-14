@@ -823,6 +823,38 @@ fn non_type_annotation_message(db: &Db, ty_expr: StructId, lead: &str) -> String
     }
 }
 
+/// Validate a NON-type-denoting annotation type expression `ty_expr` (one `typeval_of` rejected), pushing
+/// each fault. The SHARED core of the three annotation sites — a parameter annotation, a value annotation
+/// `(: value T)`, and a let-binder annotation — so all three name a bad type the same way. A RECORD-bearing
+/// type (`(Record (name Type)…)`, or a container carrying one) uses the record-aware position split
+/// (`push_payload_type_positions` skips field LABELS + descends into each field's TYPE; `validate_type_position`
+/// keeps only a genuinely-unknown type name), so a `(Record (x Nonesuch))` names only `Nonesuch`, not the
+/// label `x` (the naive value-`collect` mis-resolves labels as unbound names — M125). Otherwise: collect the
+/// operand's own faults (an unbound name → CDZ0101), and if none surfaced (a well-formed non-type — a
+/// literal, a compound), add the "expected a type" CDZ0203 with `lead` naming the site.
+fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out: &mut Vec<Reject>) {
+    if crate::compile::is_record_bearing(db, ty_expr) || db.ast.head_name(ty_expr) == Some("Record")
+    {
+        let mut positions: Vec<(StructId, Vec<String>)> = Vec::new();
+        crate::compile::push_payload_type_positions(db, ty_expr, &[], &mut positions);
+        for (pos, params) in &positions {
+            crate::compile::validate_type_position(db, *pos, params, lead, out);
+        }
+        return;
+    }
+    let before = out.len();
+    collect(db, ty_expr, out);
+    if out.len() == before {
+        out.push(
+            Reject::coded(
+                Code::TypeMismatch,
+                non_type_annotation_message(db, ty_expr, lead),
+            )
+            .at(ty_expr),
+        );
+    }
+}
+
 /// An ARITY-specific message when the annotation type is a prelude type CONSTRUCTOR applied to the WRONG
 /// number of arguments — `(List Int64 Int64)` (List takes 1), `(Map Int64)` (Map takes 2), `(Set Int64
 /// Bool)` (Set takes 1). Such a form reduces to NO type-value (`reduce_ctor` rejects the arity), so the
@@ -1052,34 +1084,8 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
     // payload / effect-op type checks use — so a record-type annotation validates its field TYPES exactly
     // as a variant payload's do, without a spurious label fault.
     if crate::eval::typeval_of(db, ty_expr).is_none() {
-        if crate::compile::is_record_bearing(db, ty_expr)
-            || db.ast.head_name(ty_expr) == Some("Record")
-        {
-            let mut positions: Vec<(StructId, Vec<String>)> = Vec::new();
-            crate::compile::push_payload_type_positions(db, ty_expr, &[], &mut positions);
-            for (pos, params) in &positions {
-                crate::compile::validate_type_position(
-                    db,
-                    *pos,
-                    params,
-                    "a parameter's annotation",
-                    out,
-                );
-            }
-            return;
-        }
-        let before = out.len();
-        collect(db, ty_expr, out);
-        if out.len() == before {
-            trace!(target: "rcdzc::infer", param = param.0, "fault: parameter annotation type is not a type (CDZ0203)");
-            out.push(
-                Reject::coded(
-                    Code::TypeMismatch,
-                    non_type_annotation_message(db, ty_expr, "a parameter's annotation"),
-                )
-                .at(ty_expr),
-            );
-        }
+        trace!(target: "rcdzc::infer", param = param.0, "fault: parameter annotation type is not a type");
+        validate_non_type_annotation(db, ty_expr, "a parameter's annotation", out);
     }
 }
 
@@ -7449,22 +7455,12 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     && ann.len() == 2
                     && crate::eval::typeval_of(db, ann[1]).is_none()
                 {
-                    let before = out.len();
-                    collect(db, ann[1], out);
-                    if out.len() == before {
-                        // Name a bound VALUE misused as a type (`(: x helper)` where `helper` is a value)
-                        // — the SHARED `non_type_annotation_message` the parameter + value annotation sites
-                        // use (M77), so the let-binder is not the odd one out with a generic "found a
-                        // non-type". (Parallel producers drift — the sibling's `@5fc3bc85` unknown-type
-                        // check landed here without the category message the other two sites already had.)
-                        out.push(
-                            Reject::coded(
-                                Code::TypeMismatch,
-                                non_type_annotation_message(db, ann[1], "a binder's annotation"),
-                            )
-                            .at(ann[1]),
-                        );
-                    }
+                    // The SHARED annotation-type validator (M125): a record-bearing binder type
+                    // (`(: r (Record (x Nonesuch)))`) names only the bad field TYPE, not the label `x`
+                    // (the naive value-`collect` mis-resolved labels), and a bound-value-misused-as-a-type
+                    // gets the category message the parameter + value sites use — the let-binder is not the
+                    // odd one out.
+                    validate_non_type_annotation(db, ann[1], "a binder's annotation", out);
                 }
                 collect(db, value, out);
             }
@@ -8474,29 +8470,19 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             } else if !runtime_width {
                 // The TYPE OPERAND does not denote a type — an unbound name, an integer/compound VALUE,
                 // an arbitrary expression, or a non-constructor type applied to arguments (`(Int64 Int64)`).
-                // The type position REQUIRES a type, so this is REJECTED, not dropped-and-ignored (the
-                // drop-instead-of-reject gap: `typeval_of` → None was treated as "no constraint"). First
-                // collect the operand's OWN faults — an UNBOUND NAME surfaces as CDZ0101 there (the same
-                // code it gets in value position, `(+ foo 1)`), so a typo in a type is not swallowed. If
-                // the operand is well-formed but simply not a type (a literal, a compound, `(Int64 Int64)`),
-                // no fault surfaces from that collect, so add an "expected a type" TypeMismatch (CDZ0203).
+                // The type position REQUIRES a type, so this is REJECTED, not dropped-and-ignored. The
+                // SHARED validator (M125): a record-bearing annotation type (`(: v (Record (x Nonesuch)))`)
+                // names only the bad field TYPE, not the label `x` (the naive value-`collect` mis-resolved
+                // labels); an unbound name → CDZ0101; a well-formed non-type → the "expected a type" CDZ0203.
                 // (A RUNTIME WIDTH also makes `typeval_of` return None but is already reported CDZ0302
                 // above — excluded here so it is not double-faulted.)
-                let before = out.len();
-                collect(db, ty_expr, out);
-                if out.len() == before {
-                    trace!(target: "rcdzc::infer", node = id.0, "fault: annotation type position is not a type (CDZ0203)");
-                    // A wrong-arity type constructor was already caught above (before the `typeval_of`
-                    // use), so here it is a genuine non-type — the generic "requires a type" message.
-                    out.push(Reject::coded(
-                        Code::TypeMismatch,
-                        non_type_annotation_message(
-                            db,
-                            ty_expr,
-                            "the type position of an annotation",
-                        ),
-                    ));
-                }
+                trace!(target: "rcdzc::infer", node = id.0, "fault: annotation type position is not a type");
+                validate_non_type_annotation(
+                    db,
+                    ty_expr,
+                    "the type position of an annotation",
+                    out,
+                );
             }
             // A FLOAT LITERAL annotated `Float32` that OVERFLOWS the Float32 range — `(: 1.0e300 Float32)`
             // — is finite as the literal's default `Float64` but rounds to `±inf` in `Float32`, a value

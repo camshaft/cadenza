@@ -25303,10 +25303,19 @@ mod match_engine {
     #[test]
     fn an_unknown_type_in_a_record_parameter_annotation_names_only_the_type_not_the_field_label() {
         use crate::testkit::parse;
+        // All THREE annotation sites — a PARAMETER annotation, a VALUE annotation `(: value T)`, and a
+        // LET-BINDER annotation — share the record-aware validator, so a record-type annotation with a bad
+        // field TYPE names only the type (`Nonesuch`), never the field LABEL (`x`/`a`/`b`). Before, each
+        // site's naive value-`collect` fallback mis-resolved the label as an unbound value name.
         for src in [
+            // parameter annotation
             "(module m (def (g (: r (Record (x Nonesuch)))) r) (export g))",
             // nested: the deep field type is the only fault, no labels flagged.
             "(module m (def (g (: r (Record (a (Record (b Nonesuch)))))) r) (export g))",
+            // value annotation `(: value T)`
+            "(module m (def (main) (: 5 (Record (x Nonesuch)))) (export main))",
+            // let-binder annotation
+            "(module m (def (main) (let (((: r (Record (x Nonesuch))) (record (x 5)))) r)) (export main))",
         ] {
             let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
             assert!(
