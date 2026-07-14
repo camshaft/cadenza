@@ -14746,6 +14746,90 @@ mod match_engine {
     }
 
     #[test]
+    fn a_default_fraction_pragma_naming_a_non_rational_type_is_cdz0303() {
+        // `numeric-model.md` §A Module May Declare Its Default Fraction Literal Type: the directive names
+        // the EXACT RATIONAL type an otherwise-unconstrained numeric literal grounds to, so it MUST name a
+        // rational type. A well-formed directive whose argument reduces to a non-rational type-value
+        // (`Int64`/`Float64`) fails the rational-domain predicate → CDZ0303 (the fraction twin of the
+        // integer domain reject).
+        for bad in ["Int64", "Float64"] {
+            assert_eq!(
+                reject_code(&format!(
+                    "(module top (def (main) (do (module m (pragma default-fraction {bad}) (def (x) 5)) ((. m x) unit))) (export main))"
+                ))
+                .as_deref(),
+                Some("CDZ0303"),
+                "default-fraction {bad} must be the rational-domain reject"
+            );
+        }
+        // `Rational` names the exact rational type — ACCEPTED (the module registers, `x` returns 5/1 via
+        // the fraction default, the projection resolves, the whole program compiles clean).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-fraction Rational) (def (x) 5)) ((. m x) unit))) (export main))"
+            ),
+            None,
+            "default-fraction Rational is accepted"
+        );
+    }
+
+    #[test]
+    fn a_default_fraction_pragma_grounds_a_bare_numeric_literal_to_rational() {
+        // THE EFFECT: a bare, otherwise-unconstrained numeric literal in a `(pragma default-fraction
+        // Rational)` module is a `Rational` — so `(/ 1 3)` is EXACT rational division (not integer
+        // truncation), and a bare `1` mixed with an explicit `(: 5 Int64)` is a CDZ0301 numeric-mismatch
+        // (proving the bare literal's type CHANGED to Rational — no silent promotion). An explicit
+        // annotation still wins.
+        // (1) `(/ 1 3)` type-checks clean as rational division (both operands defaulted Rational).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-fraction Rational) (def (third) (/ 1 3))) ((. m third) unit))) (export main))"
+            ),
+            None,
+            "bare 1 and 3 default to Rational, so (/ 1 3) is homogeneous rational division"
+        );
+        // (2) A bare literal (now Rational) mixed with an explicit Int64 is CDZ0301 — the no-promotion
+        //     proof that the default fixed the literal's TYPE, not merely a width.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-fraction Rational) (def (mix) (+ 1 (: 5 Int64)))) ((. m mix) unit))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0301"),
+            "a Rational-defaulted literal + an explicit Int64 is a numeric-type mismatch"
+        );
+        // (3) An explicit annotation OVERRIDES the fraction default: `(: 5 Int64)` is Int64, so `(+ x 2)`
+        //     with both Int64 is clean (the `Annot` fixes its type; the bare `2` also defaults Rational —
+        //     wait, that WOULD mix; so annotate both to keep it a pure-Int64 check of override precedence).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-fraction Rational) (def (pinned) (+ (: 5 Int64) (: 2 Int64)))) ((. m pinned) unit))) (export main))"
+            ),
+            None,
+            "explicit Int64 annotations override the fraction default without a mismatch"
+        );
+        // (4) A literal OUTSIDE any pragma module is unaffected — `(/ 1 3)` is ordinary integer division.
+        assert_eq!(
+            reject_code("(module m (def (main) (/ 1 3)) (export main))"),
+            None,
+            "a literal outside a default-fraction module keeps the ordinary integer default"
+        );
+    }
+
+    #[test]
+    fn a_default_fraction_pragma_with_wrong_arity_is_cdz0602() {
+        // A recognized key with its required type argument OMITTED → the structural CDZ0602 (malformed),
+        // distinct from the numeric-domain CDZ0303 — the fraction twin of the default-integer arity check.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-fraction) (def (x) 5)) ((. m x) unit))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0602")
+        );
+    }
+
+    #[test]
     fn a_default_integer_pragma_runs_the_narrow_literal_fit_check() {
         // SOUNDNESS: a `(pragma default-integer <NarrowT>)` grounds a bare literal to `<NarrowT>`, so the
         // SAME literal-fit range check an explicit `(: v <NarrowT>)` runs must apply — else an out-of-range

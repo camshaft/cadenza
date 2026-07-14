@@ -672,6 +672,77 @@
 ;  witnessed by the module-pragma cases in 11-modules.sexp; here we pin only the numeric-domain
 ;  behavior of the `default-integer` key.)
 
+; --- Module pragma `default-fraction`: exact-by-default ------------------------------------
+; The exactness sibling of `default-integer`. A module MAY declare `(pragma default-fraction Rational)`
+; so a bare NUMERIC literal (integer OR decimal) with no other constraint grounds to the exact rational
+; it denotes within that module (numeric-model.md #A Module May Declare Its Default Fraction Literal
+; Type) — making ordinary arithmetic exact by default: `(/ 1 3)` is 1/3, not integer-truncated 0. Same
+; discipline as default-integer: definition-site scoped, fixes a TYPE not a conversion (no-promotion
+; holds), an explicit annotation wins, and the directive MUST name an exact rational type (a non-rational
+; is the numeric-domain CDZ0303).
+
+(case "a default-fraction pragma makes a bare literal exact — 1/3 not 0"
+  (doc    "`m` declares `(pragma default-fraction Rational)`, so the bare literals 1 and 3 in `third`'s
+           body are Rationals — `(/ 1 3)` is EXACT rational division = 1/3, not the integer-truncated 0 a
+           default-Int64 module gives. THE load-bearing effect: exact-by-default, the calculator's reason
+           for the directive (numeric-model.md #A Module May Declare Its Default Fraction Literal Type).")
+  (input  (do
+            (module m
+              (pragma default-fraction Rational)
+              (def (third) (/ 1 3)))
+            ((. m third) unit)))
+  (output (: 1/3 Rational)))
+
+(case "a default-fraction pragma grounds a bare DECIMAL literal to its exact fraction"
+  (doc    "The default applies to a decimal-written literal too: bare `0.5` in a `(pragma default-fraction
+           Rational)` module is the EXACT fraction its digits denote, 1/2 — no float rounding
+           (numeric-model.md #A declared default fraction literal type MUST apply to both an integer- and a
+           decimal-written literal). So `0.5` is 1/2 : Rational, not 0.5 : Float64.")
+  (input  (do
+            (module m
+              (pragma default-fraction Rational)
+              (def (half) 0.5))
+            ((. m half) unit)))
+  (output (: 1/2 Rational)))
+
+(case "a default-fraction pragma fixes a type but adds no conversion — no-promotion still holds"
+  (doc    "In a `(pragma default-fraction Rational)` module, `(mix)` writes `(+ 1 (Int64.of 1))`: the bare
+           1 is a Rational (the module default), `(Int64.of 1)` is an Int64, so the mix is rejected
+           (CDZ0301) exactly as any Rational/Int64 mix is (numeric-model.md #A declared default fraction …
+           introduces no implicit conversion). The default changed what type the literal STARTS as, it did
+           NOT add a coercion — exactness ergonomics without weakening no-promotion.")
+  (input  (do
+            (module m
+              (pragma default-fraction Rational)
+              (def (mix) (+ 1 (Int64.of 1))))
+            ((. m mix) unit)))
+  (error  CDZ0301))
+
+(case "an explicit annotation overrides the default-fraction pragma"
+  (doc    "In a `(pragma default-fraction Rational)` module, `(: 5 Int64)` is still Int64 — an explicit
+           annotation takes precedence over the module default (numeric-model.md, the fraction default
+           inherits the integer default's override rule). Pins that the default only decides the
+           OTHERWISE-UNCONSTRAINED case; a constrained literal keeps its constrained type.")
+  (input  (do
+            (module m
+              (pragma default-fraction Rational)
+              (def (pinned) (: 5 Int64)))
+            ((. m pinned) unit)))
+  (output (: 5 Int64)))
+
+(case "a default-fraction pragma naming a non-rational type is rejected"
+  (doc    "`(pragma default-fraction Int64)` names a type that is not an exact rational, so the module is
+           rejected (CDZ0303, numeric-model.md #A Module May Declare Its Default Fraction Literal Type).
+           The KEY is recognized and the argument is a valid type — it just fails the rational-domain
+           predicate — so this is the numeric CDZ0303, the fraction twin of the default-integer domain
+           reject, distinct from the structural CDZ0602/CDZ0601.")
+  (input  (do
+            (module m
+              (pragma default-fraction Int64)
+              (def (x) 5))
+            ((. m x) unit)))
+  (error  CDZ0303))
+
 (case "floating-point uses the fixed rounding mode"
   (doc    "The round-to-nearest-even sum under the pinned deterministic float mode
            (contracts/determinism-and-fuel.md); byte-identical on every conforming runtime. Written with

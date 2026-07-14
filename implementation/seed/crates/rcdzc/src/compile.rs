@@ -400,9 +400,9 @@ pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
 /// The FIXED registry of module-directive keys the specification defines (`modules-and-namespaces.md` §A
 /// Module Directive Is Drawn From A Fixed Set). The single source of truth for BOTH the `(pragma …)`
 /// validation (a key not here is CDZ0601) and the "did you mean?" suggestion an unknown key gets — so the
-/// suggestion can never drift from the accepted set. Small and closed today (`default-integer`); a new
-/// spec directive adds its key here.
-const PRAGMA_REGISTRY: &[&str] = &["default-integer"];
+/// suggestion can never drift from the accepted set. Small and closed today (`default-integer`,
+/// `default-fraction`); a new spec directive adds its key here.
+const PRAGMA_REGISTRY: &[&str] = &["default-integer", "default-fraction"];
 
 /// The numeric-domain check for a well-formed `(pragma default-integer <T>)`: the directive names the
 /// type OTHERWISE-UNCONSTRAINED integer literals default to, so `<T>` MUST be an integer type
@@ -450,6 +450,37 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
             format!(
                 "`default-integer` must name an integer type, but `{}` is not an integer type \
                  (the default fixes the type otherwise-unconstrained integer literals take)",
+                ty.render_name()
+            ),
+        )
+        .at(form),
+    )
+}
+
+/// The numeric-domain check for a well-formed `(pragma default-fraction <T>)`: `<T>` MUST be an exact
+/// rational type (`numeric-model.md` §A Module May Declare Its Default Fraction Literal Type). The
+/// fraction analogue of [`non_integer_default_fault`] — same conservatism (an unbound name surfaces its
+/// CDZ0101; a type that does not reduce to a concrete `Ty` returns `None`, no false reject), the domain
+/// predicate is `Ty::Rational`. A non-rational type-value (`Int64`, `Float64`, a record, …) is CDZ0303.
+fn non_rational_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> Option<Reject> {
+    // An UNBOUND type name is the same CDZ0101 an annotation gives — surface it (see the integer twin's
+    // note for the bound-unmodeled vs unbound distinction this turns on).
+    if let crate::resolved::Resolved::Poison(reject) = crate::resolve::resolved_of(db, ty_expr)
+        && reject.code == Some(Code::Unbound)
+    {
+        return Some(reject);
+    }
+    let ty = crate::eval::typeval_of(db, ty_expr)?;
+    // The exact-fraction domain is `Ty::Rational` — the one exact rational type the numeric model admits.
+    if matches!(ty, crate::ty::Ty::Rational) {
+        return None;
+    }
+    Some(
+        Reject::coded(
+            Code::NonIntegerDefault,
+            format!(
+                "`default-fraction` must name an exact rational type (Rational), but `{}` is not \
+                 (the default grounds otherwise-unconstrained numeric literals to an exact fraction)",
                 ty.render_name()
             ),
         )
@@ -794,6 +825,21 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                         .at(form),
                     );
                 } else if let Some(reject) = non_integer_default_fault(db, form, ptail[1]) {
+                    faults.push(reject);
+                }
+            }
+            // `default-fraction <T>` — exactly one argument; a well-formed one whose type is not an exact
+            // rational type → the numeric-domain CDZ0303 (the fraction twin of `default-integer`).
+            Some("default-fraction") => {
+                if ptail.len() != 2 {
+                    faults.push(
+                        Reject::coded(
+                            Code::MalformedDirective,
+                            "`default-fraction` takes exactly one type argument (e.g. `(pragma default-fraction Rational)`)",
+                        )
+                        .at(form),
+                    );
+                } else if let Some(reject) = non_rational_default_fault(db, form, ptail[1]) {
                     faults.push(reject);
                 }
             }

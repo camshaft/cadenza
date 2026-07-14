@@ -118,7 +118,12 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         //# Declaring a default integer literal type MUST only determine the type an otherwise-unconstrained integer literal takes, and MUST NOT introduce any implicit conversion between numeric types, so that every no-silent-promotion rule applies unchanged to a literal whatever its declared default type.
         //= spec/capabilities/numeric-model.md#a-declared-default-fixes-a-type-not-a-conversion
         //# An explicit type annotation or other constraint on an integer literal MUST take precedence over the module's declared default integer literal type.
-        Resolved::Int(_) => module_default_int_ty(db, id).unwrap_or_else(Ty::int),
+        // A bare integer literal: a `(pragma default-fraction Rational)` module grounds it to `Rational`
+        // (exact-by-default) — checked FIRST since an exact-fraction default is a stronger statement than
+        // an integer-width default; then a `default-integer` width; else the deferred integer default.
+        Resolved::Int(_) => module_default_fraction_ty(db, id)
+            .or_else(|| module_default_int_ty(db, id))
+            .unwrap_or_else(Ty::int),
         Resolved::Bool(_) => Ty::Bool,
         Resolved::Str(_) => Ty::String,
         Resolved::Bytes(_) => Ty::Bytes,
@@ -161,7 +166,9 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         },
         // A float literal's width is DEFERRED — it grounds to `Float64` unless an annotation or a float
         // operator's signature fixes it (`(: 3.5 Float32)`), mirroring a bare integer literal's width.
-        Resolved::Float(_) => Ty::float(),
+        // A bare decimal literal: normally the default float; but a `(pragma default-fraction Rational)`
+        // module grounds it to the EXACT rational its digits denote (`0.5` → `1/2`) — exact-by-default.
+        Resolved::Float(_) => module_default_fraction_ty(db, id).unwrap_or_else(Ty::float),
         Resolved::Unit => Ty::Unit,
         // A name IS its bound value's type — follow the ref (a lazy `type_of` on the value occurrence).
         Resolved::Ref { value } => type_of(db, value),
@@ -1530,6 +1537,35 @@ fn module_default_int_ty(db: &mut Db, id: StructId) -> Option<Ty> {
     let ty_expr = *db.default_int_literals.get(&id)?;
     let ty = crate::eval::typeval_of(db, ty_expr)?;
     matches!(ty, Ty::Int(_) | Ty::BigInt).then_some(ty)
+}
+
+/// The EXACT-RATIONAL type a bare numeric literal (integer OR decimal) grounds to when it is WRITTEN in a
+/// `(pragma default-fraction <T>)` module. Reads the load-time `default_fraction_literals` map (keyed by
+/// the literal's ORIGINAL node, β-copy-robust) and reduces the recorded `<T>` occurrence to a `Ty`. Only
+/// `Ty::Rational` is honored (a non-rational `<T>` is separately the CDZ0303 domain reject); anything that
+/// does not reduce to `Rational` is `None` (the literal keeps its ordinary default). This fixes a TYPE,
+/// not a conversion: no-silent-promotion still holds, and an explicit annotation on the literal wins (the
+/// `Annot` node fixes its own type, so a literal inside an annotation never reaches this arm of `compute`).
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-fraction-literal-type
+//# A module MAY declare, through a module directive (modules-and-namespaces.md §"A Module Directive Is Drawn From A Fixed Set"), that a numeric literal with no other constraint takes an exact fraction type within that module, so that ordinary arithmetic in that module is exact by default.
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-fraction-literal-type
+//# A declared default fraction literal type MUST apply to both an integer-written literal and a decimal-written literal with no other constraint: an integer literal takes the whole value (a denominator of one) and a decimal literal takes the exact fraction its written digits denote, with no rounding.
+fn module_default_fraction_ty(db: &mut Db, id: StructId) -> Option<Ty> {
+    // An EXPLICIT ANNOTATION WINS: a literal that is the expression of a `(: <lit> T)` annotation is
+    // governed by `T`, not the module default — so DON'T apply the fraction default to it (else the
+    // literal would type `Rational` while its `Annot` types `T`, and `lower` would emit a rational value
+    // for a `T`-typed node — a miscompile). The `default-integer` twin needs no such guard: it keeps the
+    // literal `Ty::Int`, so an annotated literal has no VALUE-representation conflict. Here the default
+    // changes the value form, so the annotated-literal case must be excluded at the source.
+    if let Some(parent) = db.parent_of(id)
+        && let Some(tail) = db.ast.as_form(parent, ":")
+        && tail.first() == Some(&id)
+    {
+        return None;
+    }
+    let ty_expr = *db.default_fraction_literals.get(&id)?;
+    let ty = crate::eval::typeval_of(db, ty_expr)?;
+    matches!(ty, Ty::Rational).then_some(ty)
 }
 
 /// Ground a solved parameter type: a still-unsolved variable that a numeric use constrained becomes the

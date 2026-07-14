@@ -311,6 +311,13 @@ pub struct ModuleDecl {
     /// before the evaluator exists); the load-time `default_int_literals` map records which literals it
     /// applies to (a per-node map, robust to the β-copy reparenting a parent-walk cannot follow).
     pub default_int: Option<StructId>,
+    /// The TYPE-EXPRESSION occurrence of a `(pragma default-fraction <T>)` member, if the module declares
+    /// one — the exact-rational type an otherwise-unconstrained NUMERIC literal (integer OR decimal)
+    /// WRITTEN in this module grounds to, so arithmetic in the module is exact by default
+    /// (`numeric-model.md` §A Module May Declare Its Default Fraction Literal Type). `None` for a module
+    /// with no such pragma. Like `default_int`, kept as the un-reduced occurrence; the load-time
+    /// `default_fraction_literals` map records which literals it applies to.
+    pub default_fraction: Option<StructId>,
 }
 
 /// The bound on β-reduction nesting depth — a backstop. A recursive function is caught STATICALLY
@@ -455,6 +462,18 @@ pub struct Db {
     /// compute` consults it to give the literal its starting type; an explicit annotation still wins (the
     /// `Annot` node fixes its own type) and no-promotion still holds (the default is a type, not a coercion).
     pub default_int_literals: crate::fxhash::FxHashMap<StructId, StructId>,
+
+    /// Each bare NUMERIC-LITERAL node (integer OR decimal) WRITTEN inside a `(module … (pragma
+    /// default-fraction <T>) …)` → the pragma's `<T>` type-expression occurrence. A literal in this map
+    /// grounds to the exact rational `<T>` instead of Int64/Float64 (`numeric-model.md` §A Module May
+    /// Declare Its Default Fraction Literal Type). Built ONCE at load by an ARENA walk
+    /// (`collect_default_fraction_literals`), keyed by the ORIGINAL source-literal node so it survives the
+    /// β-copy an inlined body performs. DEFINITION-SITE scoped. Unlike `default_int_literals` (integer
+    /// literals only), this marks DECIMAL literals too — an exact default applies to `0.5` as `1/2`.
+    /// `infer::compute` consults it to type the literal `Ty::Rational`; `lower` folds it to a
+    /// `Core::ConstRational` (via `rational_from_literal`); an explicit annotation still wins, and
+    /// no-promotion still holds (the default fixes a type, not a coercion).
+    pub default_fraction_literals: crate::fxhash::FxHashMap<StructId, StructId>,
 
     /// The declaration occurrences of sums that are C-style ENUMS — MORE than one variant, EVERY variant
     /// nullary (no payloads). Such a value carries no data beyond WHICH variant it is, so it needs no heap
@@ -1351,6 +1370,19 @@ impl Db {
                 collect_default_int_literals(&ast, m.occ, ty_expr, &mut default_int_literals);
             }
         }
+        // Map each bare NUMERIC literal (integer OR decimal) written inside a `(pragma default-fraction
+        // <T>)` module to its rational default type-expr — the exactness analogue of the integer map.
+        let mut default_fraction_literals = crate::fxhash::FxHashMap::default();
+        for m in &modules {
+            if let Some(ty_expr) = m.default_fraction {
+                collect_default_fraction_literals(
+                    &ast,
+                    m.occ,
+                    ty_expr,
+                    &mut default_fraction_literals,
+                );
+            }
+        }
         let mut db = Db {
             ast,
             defs,
@@ -1362,6 +1394,7 @@ impl Db {
             modules,
             newtype_inner: crate::fxhash::FxHashMap::default(),
             default_int_literals,
+            default_fraction_literals,
             enum_disc: crate::fxhash::FxHashSet::default(),
             parent,
             child_ix,
@@ -3264,26 +3297,37 @@ fn collect_module_decl(
     // realized via `ModuleDecl::default_int` + the load-time literal map, so it is not an unmodeled
     // obligation blocking registration. A `(pragma …)` with any OTHER key is still unmodeled (blocks) —
     // the modeled set is exactly the keys whose meaning the compiler realizes.
-    let is_default_int_pragma = |member: StructId| {
-        ast.as_form(member, "pragma")
-            .is_some_and(|t| t.first().and_then(|&k| ast.as_name(k)) == Some("default-integer"))
+    // A `(pragma <key> …)` member is MODELED for a key whose EFFECT the compiler realizes: `default-integer`
+    // (a bare literal defaults to `<T>`) and `default-fraction` (a bare numeric literal grounds to the
+    // exact rational `<T>`). Both are realized via a `ModuleDecl` field + a load-time literal map, so they
+    // don't block registration; any OTHER pragma key stays unmodeled (blocks).
+    let is_modeled_pragma = |member: StructId| {
+        ast.as_form(member, "pragma").is_some_and(|t| {
+            matches!(
+                t.first().and_then(|&k| ast.as_name(k)),
+                Some("default-integer" | "default-fraction")
+            )
+        })
     };
     let modeled = |member: StructId| {
         matches!(
             ast.head_name(member),
             Some("def" | "effect" | "op" | "type" | "module" | "doc")
-        ) || is_default_int_pragma(member)
+        ) || is_modeled_pragma(member)
     };
     let all_modeled = members.iter().all(|&m| modeled(m));
-    // The type-expression of a well-formed `(pragma default-integer <T>)` member (the 2nd operand after
-    // the key). A malformed pragma (wrong arity) is caught by the CDZ0602 validation; here take the type
-    // occ when present.
-    let default_int = members.iter().find_map(|&m| {
-        let t = ast.as_form(m, "pragma")?;
-        (t.first().and_then(|&k| ast.as_name(k)) == Some("default-integer"))
-            .then(|| t.get(1).copied())
-            .flatten()
-    });
+    // The type-expression (2nd operand) of a well-formed `(pragma <key> <T>)` member for `key`. A malformed
+    // pragma (wrong arity) is caught by the CDZ0602 validation; here take the type occ when present.
+    let pragma_ty = |key: &str| {
+        members.iter().find_map(|&m| {
+            let t = ast.as_form(m, "pragma")?;
+            (t.first().and_then(|&k| ast.as_name(k)) == Some(key))
+                .then(|| t.get(1).copied())
+                .flatten()
+        })
+    };
+    let default_int = pragma_ty("default-integer");
+    let default_fraction = pragma_ty("default-fraction");
     if all_modeled
         && let Some(&name) = mod_tail.first()
         && let Some(name_str) = ast.as_name(name)
@@ -3293,6 +3337,7 @@ fn collect_module_decl(
             occ: form,
             synth: None,
             default_int,
+            default_fraction,
         });
     }
     for &member in &members {
@@ -3355,6 +3400,52 @@ fn mark_int_literals(
     if let Struct::List(children) = ast.get(node) {
         for &c in children {
             mark_int_literals(ast, c, ty_expr, out);
+        }
+    }
+}
+
+/// The `default-fraction` analogue of [`collect_default_int_literals`]: record every bare NUMERIC literal
+/// (integer OR decimal) in the DEF-BODY subtrees of a `(pragma default-fraction <T>)` module → the
+/// pragma's `<T>` occurrence. DEFINITION-SITE scoped (own `(def …)` bodies only; a nested module has its
+/// own scope). Keyed by the ORIGINAL literal node (β-copy-robust).
+fn collect_default_fraction_literals(
+    ast: &Arenas,
+    mod_form: StructId,
+    ty_expr: StructId,
+    out: &mut crate::fxhash::FxHashMap<StructId, StructId>,
+) {
+    let Some(mod_tail) = ast.as_form(mod_form, "module") else {
+        return;
+    };
+    for &member in mod_tail.get(1..).unwrap_or(&[]) {
+        if let Some(def_tail) = ast.as_form(member, "def")
+            && let Some(&def_body) = def_tail.get(1)
+        {
+            mark_numeric_literals(ast, def_body, ty_expr, out);
+        }
+    }
+}
+
+/// Mark every NUMERIC-literal node (integer via `as_int` OR decimal via `as_float`) reachable from `node`
+/// (recursively) with `ty_expr`, WITHOUT descending into a nested `(module …)`. The fraction analogue of
+/// [`mark_int_literals`] — an exact default applies to a decimal `0.5` (grounding to `1/2`) as well as an
+/// integer, so both leaf kinds are marked. A literal already recorded is left as-is.
+fn mark_numeric_literals(
+    ast: &Arenas,
+    node: StructId,
+    ty_expr: StructId,
+    out: &mut crate::fxhash::FxHashMap<StructId, StructId>,
+) {
+    if ast.as_int(node).is_some() || ast.as_float(node).is_some() {
+        out.entry(node).or_insert(ty_expr);
+        return;
+    }
+    if ast.as_form(node, "module").is_some() {
+        return;
+    }
+    if let Struct::List(children) = ast.get(node) {
+        for &c in children {
+            mark_numeric_literals(ast, c, ty_expr, out);
         }
     }
 }

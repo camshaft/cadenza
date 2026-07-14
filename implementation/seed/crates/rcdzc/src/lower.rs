@@ -206,7 +206,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         }
     }
     match resolved_of(db, id) {
-        Resolved::Int(v) => Core::ConstInt(v),
+        // A bare integer literal in a `(pragma default-fraction Rational)` module grounds to the exact
+        // rational `v/1` (matching the `Ty::Rational` `infer` gave it) — the lowering analogue of the
+        // `default-fraction` default. Reuses `rational_from_literal` (the annotation path's grounder), so
+        // `default-fraction` and an explicit `(: v Rational)` fold identically. A literal not in the map
+        // (no pragma, or `<T>` not Rational) stays `ConstInt`.
+        Resolved::Int(v) => default_fraction_rational(db, id).unwrap_or(Core::ConstInt(v)),
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Str(s) => Core::ConstStr(s),
         // A symbol literal (`#"meter"`) shares the constant-string REP — its identity is its text — so it
@@ -260,7 +265,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where
         // they consume it; the CONSTANT itself is now a real core value.
-        Resolved::Float(d) => Core::ConstFloat(d),
+        Resolved::Float(d) => default_fraction_rational(db, id).unwrap_or(Core::ConstFloat(d)),
         Resolved::Unit => Core::Unit,
         // A name is its bound value's core. If that value is a KEPT `let` binding (a multi-use runtime
         // computation the enclosing `let` named once — see `lower_let`), this reference reads the
@@ -8421,6 +8426,29 @@ fn normalized_rational(num: crate::ast::IntValue, den: crate::ast::IntValue) -> 
 /// `0.5`). `normalized_rational` reduces to lowest terms + puts the sign on the numerator. Returns
 /// `None` for a non-literal expression (the annotation then erases normally). Only reached when the
 /// annotation type is `Rational` (checked by the `Annot` arm).
+/// If `id` is a numeric literal WRITTEN in a `(pragma default-fraction Rational)` module (recorded in the
+/// load-time `default_fraction_literals` map, keyed by the ORIGINAL node so it survives β-copy), ground it
+/// to a `Core::ConstRational` — the lowering side of the fraction default, reusing the annotation path's
+/// [`rational_from_literal`]. `None` for a literal with no fraction default, so the caller keeps the
+/// ordinary `ConstInt`/`ConstFloat`. The map only holds a `<T>` that reduced to `Rational` at load; we
+/// re-check nothing here (the map's presence IS the "this literal defaults to Rational" fact — the same
+/// map `infer` consulted to type it `Ty::Rational`, so the type and value stay in lockstep).
+fn default_fraction_rational(db: &mut Db, id: StructId) -> Option<Core> {
+    if !db.default_fraction_literals.contains_key(&id) {
+        return None;
+    }
+    // GUARD against an annotation override: the map records every numeric literal WRITTEN in the module,
+    // including one inside `(: 5 Int64)`. For an annotated literal the `Annot` node fixes the type to
+    // Int64, so grounding the inner literal to a `ConstRational` here would emit a rational VALUE for an
+    // Int64-typed node — a miscompile (an invalid component). Fold to a rational ONLY when the literal's
+    // SOLVED type is actually `Rational` (the unconstrained case the default governs); an annotation that
+    // constrained it away from Rational leaves `type_of` ≠ Rational, so we keep the ordinary const.
+    if !matches!(crate::infer::type_of(db, id), crate::ty::Ty::Rational) {
+        return None;
+    }
+    rational_from_literal(db, id)
+}
+
 fn rational_from_literal(db: &mut Db, expr: StructId) -> Option<Core> {
     use crate::ast::IntValue;
     // 10^k as an IntValue (k ≥ 0), by repeated multiply — no bignum dep, and `k` is a literal's decimal
