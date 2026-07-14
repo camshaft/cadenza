@@ -574,6 +574,8 @@ pub enum Ty {
     /// program (a list is only ever an i32 handle, inspected through the runtime's `vec-*` ops).
     //= spec/capabilities/collections-and-text.md#a-list-is-an-ordered-homogeneous-sequence
     //# A list MUST be an ordered sequence whose elements share one type.
+    //= spec/capabilities/collections-and-text.md#a-list-is-an-ordered-homogeneous-sequence
+    //# Two lists MUST be equal exactly when they have equal elements in the same order.
     //= spec/capabilities/collections-and-text.md#a-list-s-representation-is-unspecified-and-unobservable
     //# A conforming implementation MAY back a list with any internal representation — a contiguous array, a persistent tree, or a structure it selects and changes by size or usage — and MUST NOT let that choice be observable, so that two lists with equal elements in the same order are indistinguishable by every operation, including equality, length, indexing, and the list's canonical byte form, regardless of how each is stored.
     List(Box<Ty>),

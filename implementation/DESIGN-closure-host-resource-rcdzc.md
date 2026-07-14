@@ -633,15 +633,51 @@ the component type. The new work:
   returned handle via `emit_hole_fill`. (2) `envelope::ClosureConsumeAbi.ret_is_bytes` now means "crosses as
   `list<u8>`" (byte-rope OR compound) → the round-trip envelope's Memory/Realloc lift is unchanged. (3)
   `emit_roundtrip_resource` per-consumer `ret_template`; imports `get-bool`. `cdz-run` already try-decodes.
-  +7 corpus. (Distinct-sig ROUND-TRIP compound is the one remaining compound sub-shape, `ret_template: None`
-  on that path today.)
-- **REMAINING (all optional, none blocking):** a compound result on the DISTINCT-SIG round-trip path (the
-  single-resource round-trip + all producer-side shapes are done); a VARIABLE-LENGTH list/map/set closure
-  result (needs a runtime looping value-form walker, like the runtime-Bytes escape but recursing over
-  elements); a compound closure ARG (host→guest decode — harder); a closure TRANSFORMER (`own<t>` both
-  directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call handle. **The entire
-  byte-rope (`Bytes`/`String`) result surface is DONE across all shapes; a fixed-shape compound result is
-  DONE on single/multi/mixed/distinct-sig/round-trip.**
+  +7 corpus.
+- **✅ COMPOUND result on the DISTINCT-SIG ROUND-TRIP path COMPLETE `@679a1f4d` — the FIXED-SHAPE
+  compound-result surface is CLOSED.** Producers/consumers of DIFFERENT signatures where a consumer RETURNS a
+  fixed-shape compound now cross: each such consumer returns `list<u8>` carrying the value form (its own
+  per-consumer template). This was the last fixed-shape compound-result gap — the compound result now works
+  across EVERY closure shape (single/multi/mixed/distinct-sig/round-trip/distinct-sig-round-trip). A compound
+  consumer coexists with a scalar consumer, another compound consumer of a different sig, and a byte-rope
+  consumer. Pieces: (1) `serialize::distinct_sig_roundtrip_core_module` — each compound consumer's template
+  gets its own 4-aligned data-section region; byte-rope consumers write PAST all compound data
+  (`bytes_out_off`); shared memory + `cabi_realloc` whenever any consumer crosses as `list<u8>`; a `flat_cons`
+  counter indexes the per-consumer data placement in group order; a compound consumer wrapper walks the body's
+  returned handle via `emit_hole_fill`. (2) `emit_distinct_sig_roundtrip_resource` — per-consumer
+  `ret_template`; `ClosureConsumeAbi.ret_is_bytes` now = "crosses as `list<u8>`" (byte-rope OR compound). (3)
+  `cdz-run` already try-decodes. +5 corpus (compound + scalar consumer of another sig; two compound consumers
+  of different sigs — tuple + record; compound + byte-rope consumer of different sigs).
+- **✅ VARIABLE-LENGTH collection (List/Map/Set) closure RESULT COMPLETE `@0beb35d6` (single-export).** A
+  closure returning a `List`/`Map`/`Set` now crosses: the `call` returns `list<u8>` carrying the canonical
+  value form, rendered at RUN TIME by the runtime `value-encode(rep, desc)` op (the recursive-sum escape's
+  approach C) walking the returned collection handle against a compiler-baked shape DESCRIPTOR. Unlike a
+  fixed-shape tuple/record (a static template), a collection is variable-length, so the runtime assembles the
+  document. Pieces: (1) `serialize::closure_value_encode_resource_core_module` — the `call` body dispatches →
+  the collection handle, drops the cell, builds the descriptor Bytes (`bytes-alloc` + literal `bytes-set`),
+  calls `value-encode(rep, desc)` → the document, copies it out, releases rep/desc/doc; NO data section (the
+  descriptor bytes are baked into the code). (2) `emit_closure_resource` — a non-bytes, non-scalar,
+  non-fixed-template List/Map/Set result consults `lower::sum_shape_descriptor` (its List/Map/Set arm builds a
+  parametric `Framed` descriptor so element/key/value types are observable — a NESTED collection crosses too);
+  `Some(desc)` routes to the value-encode core reusing `assemble_closure_bytes_resource`. `cdz-run` already
+  try-decodes. +6 corpus (List, Set canonical order, Map canonical key order, nested List, capturing→List,
+  empty List). 🔑 SCOPE: single-export.
+- **✅ VARIABLE-LENGTH collection closure RESULT on the MULTI-EXPORT path COMPLETE `@1258fdfc`.** N
+  same-signature closures each returning a List/Map/Set now share ONE `call` that value-encodes the returned
+  handle against the ONE shared shape descriptor (all exports share the result type). Pieces: (1)
+  `serialize::multi_closure_value_encode_resource_core_module` — combines the multi-bytes core (N makes +
+  shared `list<u8>` `call` + memory/`cabi_realloc` + plain slots) with the single-export value-encode body
+  (build the descriptor Bytes, value-encode the dispatched collection handle, copy the doc out); no data
+  section (the descriptor is baked into the shared `call`). (2) `emit_multi_closure_resource` — a
+  non-bytes/scalar/fixed-template List/Map/Set shared result routes to the value-encode core reusing
+  `assemble_multi_closure_bytes_resource`. `cdz-run` already try-decodes. +4 corpus (two list closures both
+  driven; three Set-returning closures sharing one `call`, two driven).
+- **REMAINING (all optional, none blocking):** a variable-length collection result on the mixed/distinct-sig/
+  round-trip paths (single-export + multi-export List/Map/Set are done); a compound closure ARG (host→guest
+  decode — harder); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked
+  `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`) result surface AND the entire
+  fixed-shape compound (tuple/record/sum) result surface are DONE across ALL closure shapes; a variable-length
+  collection result is DONE on single-export + multi-export.**
 
 ## Risks / open questions
 

@@ -246,6 +246,13 @@ impl Diagnostic {
 /// mutually-exclusive arms: the derived component is one artifact (kind `"component"`) in the list, a
 /// debug sidecar another, and a warning rides alongside a produced component. Success/failure is READ
 /// from the outputs (`artifact("component")` present + no error) rather than an in-band sentinel.
+/// On success the produced artifacts carry the content-addressed component (its runtime import name
+/// embeds the content address) alongside the manifest its imports are bound against; on failure the
+/// output carries machine-readable `Diagnostic`s (code + span + message), never an opaque error.
+//= spec/contracts/build-tool-interface.md#the-tool-produces-a-component-a-manifest-and-diagnostics
+//# The build tool MUST produce, on success, a content-addressed component together with the capability manifest against which its imports are bound.
+//= spec/contracts/build-tool-interface.md#the-tool-produces-a-component-a-manifest-and-diagnostics
+//# The build tool MUST produce, on failure, machine-readable diagnostics rather than an opaque error.
 //= spec/contracts/build-tool-interface.md#the-tool-produces-a-component-a-manifest-and-diagnostics
 //# The build tool's derivation entry MUST return a record pairing a list of kinded output artifacts with a list of diagnostics, so that the byte outputs and the diagnostics are distinct channels rather than mutually exclusive arms of one result.
 //= spec/contracts/build-tool-interface.md#the-tool-produces-a-component-a-manifest-and-diagnostics

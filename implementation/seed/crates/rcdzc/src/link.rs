@@ -946,6 +946,31 @@ mod tests {
         assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
     }
 
+    /// TYPE NAMES ARE FILE-SCOPED: the entry and an imported lib may EACH declare a structurally-identical
+    /// `type L`. A package splices its files into one merged `(do …)`, but a sibling's `type` is file-local
+    /// (`DESIGN-package-linking.md` §Imports Are Explicit), so the two same-named declarations are NOT a
+    /// duplicate — the duplicate-type check keys on `(file, name)` via `Db::file_of`, not `name` alone.
+    /// Regression guard: the check once keyed on `name` alone and rejected this legitimate cross-module
+    /// case CDZ0201, regressing "a recursive user sum built in a lib is folded by the entry's structural
+    /// copy" (pass→todo). The behavior is covered by that corpus case; this pins the file-scoping at the
+    /// link level so a future duplicate-check change cannot silently reintroduce the global scan.
+    #[test]
+    fn a_same_type_name_in_a_lib_and_the_entry_is_not_a_duplicate() {
+        let out = compile_package(
+            "(do (type L (Nil) (Cons Int64 L)) \
+                 (def (mk) (L.Cons 5 (L.Cons 6 (L.Nil)))) (export mk))",
+            "(do (import \"lib\" (mk)) (type L (Nil) (Cons Int64 L)) \
+                 (def (sm l) (match l ((L.Nil) 0) ((L.Cons h t) (+ h (sm t))))) \
+                 (def (main) (sm (mk))) (export main))",
+        );
+        assert!(
+            !out.has_error(),
+            "a structurally-identical `type L` in a lib and the entry is file-scoped, not a duplicate; got {:?}",
+            out.diagnostics
+        );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
     /// Compile an N-file package: `files` is `(name, source)` pairs, `entry` names the entry file.
     fn compile_files(files: &[(&str, &str)], entry: &str) -> crate::abi::CompileOutput {
         let mut inputs: Vec<Artifact> = files

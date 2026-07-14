@@ -1813,41 +1813,43 @@ fn check_surfaces_a_non_exhaustive_match_on_a_param_with_the_add_arm_fix() {
         "surfaces the missing variant: {stdout}"
     );
     assert!(
-        stdout.contains("add `(D unit)`"),
-        "offers the add-arm fix: {stdout}"
+        stdout.contains("add `(D (trap \"TODO: D\"))`"),
+        "offers the add-arm fix with a diverging placeholder body: {stdout}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn fix_all_declines_an_add_arm_fix_whose_placeholder_body_would_not_type_check() {
-    // HONESTY of `--verify-fixes`/`--all`: a fix upgrades/applies only if it clears its code AND
-    // introduces NO NEW error. The add-arm insert `(D unit)` clears the CDZ0210 but its `unit`
-    // placeholder body mismatches the other arms (`Int64`) — a fresh CDZ0203 — so it stays HEURISTIC
-    // and `fix --all` leaves the file untouched rather than writing a broken program.
-    let dir = scratch_dir("fix_nx_decline");
+fn fix_all_applies_an_add_arm_fix_whose_trap_placeholder_type_checks() {
+    // The add-arm insert bodies its placeholder with a diverging `(trap "TODO: …")`, NOT `unit`: a trap
+    // has type `∀a. a` (it never returns a value), so it unifies with whatever type the other arms have
+    // and the completed match type-checks in ONE shot. So `--verify-fixes` UPGRADES the fix to verified
+    // and `fix --all` APPLIES it, writing the covering arm — the author then replaces the `trap` with the
+    // real body. (The earlier `unit` placeholder mismatched an `Int64` match and stayed declined; the
+    // trap body is the one-shot-correct choice.)
+    let dir = scratch_dir("fix_nx_apply");
     let f = dir.join("prog.sexp");
     let original =
         "(module m (type C (A) (B) (D)) (def (f (: c C)) (match c ((A) 1) ((B) 2))) (export f))\n";
     std::fs::write(&f, original).unwrap();
-    // `--verify-fixes` does NOT upgrade it: the help line keeps the `(heuristic)` marker.
+    // `--verify-fixes` UPGRADES it: the help line drops the `(heuristic)` marker (the trap body clears
+    // the CDZ0210 and introduces no new error).
     let (_, stdout, _) = run(&["check", "--verify-fixes", f.to_str().unwrap()], "");
     assert!(
-        stdout.contains("help (heuristic): add `(D unit)`"),
-        "the placeholder-body insert stays heuristic under --verify-fixes: {stdout}"
+        stdout.contains("help: add `(D (trap \"TODO: D\"))`")
+            && !stdout.contains("help (heuristic): add `(D"),
+        "the trap-bodied insert verifies (no heuristic marker): {stdout}"
     );
-    // `fix --all` declines it (would leave a CDZ0203) and leaves the file untouched.
+    // `fix --all` applies it — the repaired file has the covering arm and re-checks clean.
     let (ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
-    assert!(ok);
+    assert!(ok, "fix succeeds: {stderr}");
+    let repaired = std::fs::read_to_string(&f).unwrap();
     assert!(
-        stderr.contains("no applicable fixes"),
-        "the broken-placeholder insert is not applied: {stderr}"
+        repaired.contains("(D (trap \"TODO: D\"))"),
+        "the covering arm was inserted: {repaired}"
     );
-    assert_eq!(
-        std::fs::read_to_string(&f).unwrap(),
-        original,
-        "the file is untouched"
-    );
+    let (ok2, _, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(ok2, "the repaired file has no errors: {repaired}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

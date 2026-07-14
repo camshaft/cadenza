@@ -546,6 +546,36 @@ pub fn emit(
         // is a `crosses_as_resource_escape` type but ERASES to a scalar boundary valtype, so it crosses
         // fine on this multi-export path — `export_result_valtype` returns `Ok(Some)` for it, and it must
         // NOT be diagnosed as an arity decline. Only a type with NO scalar valtype reaches the arity case.)
+        // A DIVERGING export — its body provably traps (`Core::Trap`: a bare `(trap …)`, a zero-arm match
+        // on a `Never` scrutinee, or a call to such a function) — has a `Never` result type (a fresh var /
+        // `Any`) with no boundary representation, but NO value ever crosses: the guest traps. Cross it as a
+        // UNIT (no-result) export — the core function is already emitted 0-result (`select_function` maps a
+        // diverging `ret` to `Ty::Unit`), and the host observes the trap. Checked BEFORE the escape/valtype
+        // declines so a diverging `Any`/`Var` result is not misdiagnosed as an undetermined-type fault.
+        if serialize::export_result_valtype(&e.result).is_err()
+            && matches!(crate::lower::core_of(db, e.body), crate::core::Core::Trap)
+        {
+            boundary.push(BoundaryExport {
+                name: e.name.clone(),
+                params: {
+                    let mut params = Vec::new();
+                    for (_, ty) in &e.params {
+                        let vt = serialize::export_result_valtype(ty)
+                            .map_err(Reject::decline)?
+                            .ok_or_else(|| {
+                                Reject::decline(format!(
+                                    "a diverging export's parameter `{}` has no boundary representation",
+                                    ty.render_name()
+                                ))
+                            })?;
+                        params.push(vt);
+                    }
+                    params
+                },
+                result: crate::backend::wasm::envelope::BoundaryResult::None,
+            });
+            continue;
+        }
         if crosses_as_resource_escape(&e.result)
             && serialize::export_result_valtype(&e.result).is_err()
         {
@@ -1401,7 +1431,23 @@ fn emit_closure_resource(
         crate::lower::runtime_value_form_template(ret_ty.strip_nominal())
     };
     let ret_is_compound = ret_template.is_some();
-    let result_byte = if ret_is_bytes || ret_is_compound {
+    // A VARIABLE-LENGTH collection result (`List`/`Map`/`Set`) has no static template — it crosses as
+    // `list<u8>` too, but the value form is rendered at run time by the runtime `value-encode(rep, desc)` op
+    // walking the returned handle against a compiler-baked shape DESCRIPTOR (the recursive-sum escape's
+    // approach C). `sum_shape_descriptor`'s List/Map/Set arm builds a parametric `Framed` descriptor.
+    let ret_descriptor =
+        if ret_is_bytes || ret_is_compound || closure_boundary_byte(&ret_ty).is_some() {
+            None
+        } else if matches!(
+            ret_ty.strip_nominal(),
+            crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
+        ) {
+            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
+        } else {
+            None
+        };
+    let ret_is_collection = ret_descriptor.is_some();
+    let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
         0 // unused by the list-returning paths; `call` returns list<u8>, not a scalar byte
     } else {
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
@@ -1469,6 +1515,20 @@ fn emit_closure_resource(
         if ret_is_compound {
             used.insert("get-bool");
         }
+        // A VARIABLE-LENGTH collection result `call` renders the value form via `value-encode(rep, desc)`:
+        // build the descriptor Bytes (`bytes-alloc`/`bytes-set`), encode, copy the doc out (`bytes-len`/
+        // `bytes-get`). Same op set as the recursive-sum escape walker.
+        if ret_is_collection {
+            for op in [
+                "value-encode",
+                "bytes-alloc",
+                "bytes-set",
+                "bytes-len",
+                "bytes-get",
+            ] {
+                used.insert(op);
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     let export_abs = layout
@@ -1531,6 +1591,30 @@ fn emit_closure_resource(
             &make_param_vts,
             lifted_type_idx,
             template,
+            &layout,
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_closure_bytes_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &make_param_bytes,
+            &arg_bytes,
+        ));
+    }
+    // A VARIABLE-LENGTH collection result → the value-encode core (dispatch → the collection handle, build
+    // the descriptor Bytes, `value-encode(rep, desc)` → the value-form document, copy out). Same `list<u8>`
+    // envelope as the bytes/compound paths; cdz-run try-decodes to `(: (list …) (List <e>))` etc.
+    if let Some(descriptor) = &ret_descriptor {
+        let main_core = serialize::closure_value_encode_resource_core_module(
+            &funcs,
+            &imports,
+            export_abs,
+            &arg_vts,
+            &make_param_vts,
+            lifted_type_idx,
+            descriptor,
             &layout,
         )
         .map_err(Reject::decline)?;
@@ -1626,7 +1710,21 @@ fn emit_multi_closure_resource(
         crate::lower::runtime_value_form_template(ret_ty.strip_nominal())
     };
     let ret_is_compound = ret_template.is_some();
-    let result_byte = if ret_is_bytes || ret_is_compound {
+    // A VARIABLE-LENGTH collection (List/Map/Set) shared result → the value-encode core (all exports share
+    // the result type → the ONE shape descriptor). `None` for bytes/scalar/fixed-template.
+    let ret_descriptor =
+        if ret_is_bytes || ret_is_compound || closure_boundary_byte(&ret_ty).is_some() {
+            None
+        } else if matches!(
+            ret_ty.strip_nominal(),
+            crate::ty::Ty::List(_) | crate::ty::Ty::Map(_, _) | crate::ty::Ty::Set(_)
+        ) {
+            crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
+        } else {
+            None
+        };
+    let ret_is_collection = ret_descriptor.is_some();
+    let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
         0 // unused by the list-returning paths; `call` returns list<u8>
     } else {
         closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
@@ -1702,6 +1800,19 @@ fn emit_multi_closure_resource(
         if ret_is_compound {
             used.insert("get-bool");
         }
+        // A collection-result shared `call` renders via `value-encode(rep, desc)` (build the descriptor
+        // Bytes + copy the doc out).
+        if ret_is_collection {
+            for op in [
+                "value-encode",
+                "bytes-alloc",
+                "bytes-set",
+                "bytes-len",
+                "bytes-get",
+            ] {
+                used.insert(op);
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -1759,6 +1870,30 @@ fn emit_multi_closure_resource(
             &arg_vts,
             lifted_type_idx,
             template,
+            &layout,
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_multi_closure_bytes_resource(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &abi_makes,
+            &arg_bytes,
+            &[],
+        ));
+    }
+    // A VARIABLE-LENGTH collection shared result → the N-makes-one-list-`call` VALUE-ENCODE core (each `call`
+    // dispatches, then value-encodes the returned collection handle) + the SAME memory/realloc envelope.
+    if let Some(descriptor) = &ret_descriptor {
+        let main_core = serialize::multi_closure_value_encode_resource_core_module(
+            &funcs,
+            &imports,
+            &ser_makes,
+            &[],
+            &arg_vts,
+            lifted_type_idx,
+            descriptor,
             &layout,
         )
         .map_err(Reject::decline)?;
@@ -3016,6 +3151,7 @@ fn emit_distinct_sig_roundtrip_resource(
         ret_vt: crate::backend::wasm::lir::ValType,
         result_byte: u8,
         ret_is_bytes: bool,
+        ret_template: Option<crate::lower::ValueFormTemplate>,
     }
     struct PlainS {
         def: usize,
@@ -3093,14 +3229,19 @@ fn emit_distinct_sig_roundtrip_resource(
             }
             let ret_vt = valtype_of(&e.result)
                 .ok_or_else(|| Reject::decline("consumer result has no valtype"))?;
-            // A byte-rope (`Bytes`/`String`) consumer result crosses as `list<u8>` (the compound consumer);
-            // a scalar takes its inline byte.
+            // A byte-rope (`Bytes`/`String`) consumer result crosses as `list<u8>` (raw payload); a scalar
+            // takes its inline byte; a fixed-shape COMPOUND crosses as `list<u8>` carrying the value form.
             let ret_is_bytes = matches!(
                 e.result.strip_nominal(),
                 crate::ty::Ty::Bytes | crate::ty::Ty::String
             );
-            let result_byte = if ret_is_bytes {
-                0 // unused by the byte-rope path; the consumer returns list<u8>
+            let ret_template = if ret_is_bytes || closure_boundary_byte(&e.result).is_some() {
+                None
+            } else {
+                crate::lower::runtime_value_form_template(e.result.strip_nominal())
+            };
+            let result_byte = if ret_is_bytes || ret_template.is_some() {
+                0 // unused by the list-returning paths; the consumer returns list<u8>
             } else {
                 closure_boundary_byte(&e.result)
                     .ok_or_else(|| closure_boundary_reject("result", &e.result))?
@@ -3114,6 +3255,7 @@ fn emit_distinct_sig_roundtrip_resource(
                 ret_vt,
                 result_byte,
                 ret_is_bytes,
+                ret_template,
             });
         }
     }
@@ -3143,6 +3285,7 @@ fn emit_distinct_sig_roundtrip_resource(
     }
     let intrinsics = (2 * sigs.len()) as u32;
     let any_bytes = cons.iter().any(|c| c.ret_is_bytes);
+    let any_compound = cons.iter().any(|c| c.ret_template.is_some());
     let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
         used.insert("arr-get");
         used.insert("get-int");
@@ -3151,6 +3294,11 @@ fn emit_distinct_sig_roundtrip_resource(
             // A byte-rope consumer copies its returned Bytes/String out via a `bytes-len`/`bytes-get` loop.
             used.insert("bytes-len");
             used.insert("bytes-get");
+        }
+        if any_compound {
+            // A compound consumer walks its returned handle to fill the value form — a Bool leaf reads
+            // `get-bool` (int + nested `arr-get` already covered).
+            used.insert("get-bool");
         }
         used.extend(lifted_ops.iter().copied());
     })?;
@@ -3202,15 +3350,14 @@ fn emit_distinct_sig_roundtrip_resource(
                 params: c.params.clone(),
                 ret_vt: c.ret_vt,
                 ret_is_bytes: c.ret_is_bytes,
-                // A COMPOUND result on the DISTINCT-SIG round-trip is a later widening; that path's consumer
-                // result stays scalar/byte-rope (its classification never builds a template).
-                ret_template: None,
+                ret_template: c.ret_template.clone(),
             });
             abi_cons.push(envelope::ClosureConsumeAbi {
                 name: c.name.clone(),
                 params: c.abi_params.clone(),
                 result_byte: c.result_byte,
-                ret_is_bytes: c.ret_is_bytes,
+                // The envelope's `ret_is_bytes` means "crosses as list<u8>" — byte-rope OR compound.
+                ret_is_bytes: c.ret_is_bytes || c.ret_template.is_some(),
             });
         }
         ser_groups.push(serialize::RtSigGroup {

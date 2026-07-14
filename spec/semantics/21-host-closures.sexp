@@ -1720,3 +1720,167 @@
               (export mk) (export app) (export five)))
   (call   five)
   (output (: 5 Int64)))
+
+; A COMPOUND (tuple/record) result on the DISTINCT-SIG ROUND-TRIP path — the LAST fixed-shape compound-result
+; gap. Producers/consumers of DIFFERENT signatures where a consumer RETURNS a fixed-shape compound: each
+; consumer crosses as `(own<t_g>, args…) -> list<u8>` carrying the value form (its own per-consumer template).
+; Fixed-shape compound results now work across EVERY closure shape. A compound consumer coexists with a
+; scalar consumer, another compound consumer of a different sig, and a byte-rope consumer (disjoint memory:
+; each compound template its own data region, byte-rope payloads written past them).
+
+(case "distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the compound"
+  (doc    "`mka : () -> (-> Int64 Int64)`, `mkb : () -> (-> Bool Int64)` are distinct sigs → two resource
+           types. `appa : (own<t0>, Int64) -> (Tuple Int64 Int64)` returns `(tuple x (g x))`. Host produces
+           via `mka`, hands to `appa(handle, 5)` → `(: (tuple 5 6) (Tuple Int64 Int64))`. Pins the compound
+           consumer result on the distinct-sig round-trip path.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 5 Int64))
+  (output (: (tuple 5 6) (Tuple Int64 Int64))))
+
+(case "distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the scalar"
+  (doc    "The SAME two-resource-type program, driving the SCALAR consumer of the OTHER signature: `appb :
+           (own<t1>, Bool) -> Int64` → `appb(handle, true)` = 10 (by value). Confirms the scalar consumer is
+           unaffected by the sibling compound consumer's memory/template.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appb (: true Bool))
+  (output (: 10 Int64)))
+
+(case "distinct-sig round-trip: TWO compound consumers of different sigs — the tuple one"
+  (doc    "Both consumers return a compound of DIFFERENT shape: `appa` a tuple, `appb` a record.
+           `appa(mka-handle, 40)` → `(: (tuple 40 41) (Tuple Int64 Int64))`. Each consumer walks its OWN
+           per-consumer value-form template.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (record (flag y) (val (h y))))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 40 Int64))
+  (output (: (tuple 40 41) (Tuple Int64 Int64))))
+
+(case "distinct-sig round-trip: TWO compound consumers of different sigs — the record one"
+  (doc    "The SAME program's OTHER consumer: `appb(mkb-handle, true)` → `(: (record (flag true) (val 7))
+           (Record (flag Bool) (val Int64)))`. Confirms each distinct-sig consumer decodes its own template.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (record (flag y) (val (h y))))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appb (: true Bool))
+  (output (: (record (flag true) (val 7)) (Record (flag Bool) (val Int64)))))
+
+(case "distinct-sig round-trip: a compound consumer + a byte-rope consumer of different sigs — the byte-rope"
+  (doc    "A COMPOUND consumer (`appa` → tuple value form) AND a BYTE-ROPE consumer (`appb` → raw list<u8>)
+           of DISTINCT signatures. `appb(mkb-handle, false)` → `(8)` — its payload written PAST the compound
+           template region (disjoint memory).")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (bin (u8 (UInt8.wrap (h y)))))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appb (: false Bool))
+  (output (8)))
+
+; A VARIABLE-LENGTH collection (List/Map/Set) closure RESULT — the closure's `call` returns the canonical
+; value form as `list<u8>`, rendered at RUN TIME by the runtime `value-encode(rep, desc)` op (the recursive-
+; sum escape's "approach C") walking the returned collection handle against a compiler-baked shape
+; DESCRIPTOR. Unlike a fixed-shape tuple/record (a static template), a collection is variable-length, so the
+; runtime assembles the document; `lower::sum_shape_descriptor`'s List/Map/Set arm builds a parametric
+; `Framed` descriptor so the element/key/value types are observable. The host decodes to `(: (list …) (List
+; <e>))` / `(: (map (k v) …) (Map <k> <v>))` / `(: ((. Set of) (list …)) (Set <e>))`.
+
+(case "a closure returning a List crosses as the value form"
+  (doc    "`mk : () -> (-> Int64 (List Int64))` returns `(list n n+1 n+2)`. `call(handle, 10)` dispatches the
+           closure → the list handle, then `value-encode` renders `(: (list 10 11 12) (List Int64))`. Pins a
+           VARIABLE-LENGTH collection result (no static template — the runtime walks the handle).")
+  (input  (do (def (mk) (fn ((: n Int64)) (list n (+ n 1) (+ n 2)))) (export mk)))
+  (call   mk (: 10 Int64))
+  (output (: (list 10 11 12) (List Int64))))
+
+(case "a closure returning a Set — canonical member order"
+  (doc    "`(Set.of (list n n+1 n))` dedups to `{n, n+1}`; `call(handle, 5)` → `(: ((. Set of) (list 5 6))
+           (Set Int64))`, members in canonical order (the runtime CHAMP set encode sorts).")
+  (input  (do (def (mk) (fn ((: n Int64)) (Set.of (list n (+ n 1) n)))) (export mk)))
+  (call   mk (: 5 Int64))
+  (output (: ((. Set of) (list 5 6)) (Set Int64))))
+
+(case "a closure returning a Map — canonical key order"
+  (doc    "`(map (1 n) (2 n+1))` → `call(handle, 100)` → `(: (map (1 100) (2 101)) (Map Int64 Int64))`,
+           entries in canonical key order.")
+  (input  (do (def (mk) (fn ((: n Int64)) (map (1 n) (2 (+ n 1))))) (export mk)))
+  (call   mk (: 100 Int64))
+  (output (: (map (1 100) (2 101)) (Map Int64 Int64))))
+
+(case "a closure returning a NESTED List"
+  (doc    "`(list (list n) (list n+1 n+2))` → `(: (list (list 7) (list 8 9)) (List (List Int64)))`. The shape
+           descriptor's type node is recursive, so a nested collection element crosses; `value-encode`
+           recurses over the inner lists.")
+  (input  (do (def (mk) (fn ((: n Int64)) (list (list n) (list (+ n 1) (+ n 2))))) (export mk)))
+  (call   mk (: 7 Int64))
+  (output (: (list (list 7) (list 8 9)) (List (List Int64)))))
+
+(case "a CAPTURING closure returning a List"
+  (doc    "`mk : (Int64) -> (-> Int64 (List Int64))` — `make(100)` captures `k=100`, then `call(handle, 5)` →
+           `(: (list 100 5 105) (List Int64))`. Confirms a captured value flows into the collection result.")
+  (input  (do (def (mk (: k Int64)) (fn ((: n Int64)) (list k n (+ k n)))) (export mk)))
+  (call   mk (: 100 Int64) (: 5 Int64))
+  (output (: (list 100 5 105) (List Int64))))
+
+(case "a closure returning an EMPTY List"
+  (doc    "`(: (list) (List Int64))` → `call(handle, 0)` → `(: (list) (List Int64))` — the value-encode
+           walker handles a zero-length collection (the empty document).")
+  (input  (do (def (mk) (fn ((: n Int64)) (: (list) (List Int64)))) (export mk)))
+  (call   mk (: 0 Int64))
+  (output (: (list) (List Int64))))
+
+; A VARIABLE-LENGTH collection (List/Map/Set) closure RESULT on the MULTI-EXPORT path — N same-signature
+; closures each returning a List/Map/Set share ONE `call` that value-encodes the returned handle against the
+; ONE shared shape descriptor (all exports share the result type). The shared `call` recovers each closure's
+; code slot from the resource rep, dispatches it, and `value-encode`s its collection result.
+
+(case "multi-export collection result — the first list closure"
+  (doc    "Two same-signature closures — `up : () -> (-> Int64 (List Int64))` returns `(list n n+1)`, `dn`
+           returns `(list n n-1)`. `call(up-handle, 5)` dispatches then value-encodes → `(: (list 5 6) (List
+           Int64))`. Pins the variable-length collection result on the shared-`call` multi-export path.")
+  (input  (do (def (up) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (dn) (fn ((: n Int64)) (list n (- n 1))))
+              (export up) (export dn)))
+  (call   up (: 5 Int64))
+  (output (: (list 5 6) (List Int64))))
+
+(case "multi-export collection result — the second list closure"
+  (doc    "The SAME two-closure program, driving the OTHER export: `call(dn-handle, 5)` → `(: (list 5 4)
+           (List Int64))`. Confirms the shared `call` value-encodes whichever closure a handle names (the
+           code slot rides in the rep, the descriptor is shared since the type is).")
+  (input  (do (def (up) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (dn) (fn ((: n Int64)) (list n (- n 1))))
+              (export up) (export dn)))
+  (call   dn (: 5 Int64))
+  (output (: (list 5 4) (List Int64))))
+
+(case "multi-export Set-result closures — three sharing one call"
+  (doc    "THREE same-signature Set-returning closures share ONE value-encode `call`. `b(3)` builds `{3, 6}`;
+           `call(b-handle, 3)` → `(: ((. Set of) (list 3 6)) (Set Int64))` in canonical member order.")
+  (input  (do (def (a) (fn ((: n Int64)) (Set.of (list n n (+ n 1)))))
+              (def (b) (fn ((: n Int64)) (Set.of (list n (* n 2)))))
+              (def (c) (fn ((: n Int64)) (Set.of (list n))))
+              (export a) (export b) (export c)))
+  (call   b (: 3 Int64))
+  (output (: ((. Set of) (list 3 6)) (Set Int64))))
+
+(case "multi-export Set-result closures — the singleton one"
+  (doc    "The SAME three-closure program, driving `c`: `call(c-handle, 9)` → `(: ((. Set of) (list 9)) (Set
+           Int64))`. Confirms each of the three shares the one descriptor + value-encodes its own result.")
+  (input  (do (def (a) (fn ((: n Int64)) (Set.of (list n n (+ n 1)))))
+              (def (b) (fn ((: n Int64)) (Set.of (list n (* n 2)))))
+              (def (c) (fn ((: n Int64)) (Set.of (list n))))
+              (export a) (export b) (export c)))
+  (call   c (: 9 Int64))
+  (output (: ((. Set of) (list 9)) (Set Int64))))

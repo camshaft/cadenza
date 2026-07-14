@@ -3625,6 +3625,119 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_boolean_compared_to_a_literal_folds_to_the_boolean_or_its_negation() {
+        // `(= c true)` → `c` (a bare `local.get`), `(= c false)` → `!c` (`i32.eqz`) — either operand order.
+        // The redundant `i32.const K ; i32.eq` the runtime compare would emit is dropped. A derived bool
+        // operand composes: `(= (< x 0) false)` → `(>= x 0)` (the `not` folds into the complementary op).
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(= c true)` and `(= true c)` → just `c`: NO `i32.eq`, NO `i32.const`, NO `i32.eqz`.
+        for body in ["(= c true)", "(= true c)"] {
+            let code = lir("(: c Bool)", body);
+            assert!(
+                !code
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32Eq | Lir::I32Eqz | Lir::ConstI32(_))),
+                "{body} folds to the bare condition, got: {code:?}"
+            );
+        }
+        // `(= c false)` and `(= false c)` → `!c`: one `i32.eqz`, NO `i32.eq`, NO `i32.const`.
+        for body in ["(= c false)", "(= false c)"] {
+            let code = lir("(: c Bool)", body);
+            assert_eq!(
+                code.iter().filter(|i| matches!(i, Lir::I32Eqz)).count(),
+                1,
+                "{body} is one eqz, got: {code:?}"
+            );
+            assert!(
+                !code
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32Eq | Lir::ConstI32(_))),
+                "{body} drops the const+eq, got: {code:?}"
+            );
+        }
+        // VALUE PARITY: the full truth table, all four operand orders, c ∈ {true, false}.
+        for (body, at_true, at_false) in [
+            ("(= c true)", true, false),
+            ("(= true c)", true, false),
+            ("(= c false)", false, true),
+            ("(= false c)", false, true),
+        ] {
+            assert_eq!(
+                run::<bool>("(: c Bool)", body, &[Val::Bool(true)]),
+                at_true,
+                "{body} @true"
+            );
+            assert_eq!(
+                run::<bool>("(: c Bool)", body, &[Val::Bool(false)]),
+                at_false,
+                "{body} @false"
+            );
+        }
+        // A DERIVED bool operand composes: `(= (< x 0) true)` → `(< x 0)`, `(= (< x 0) false)` → `(>= x 0)`
+        // (the negation folds into the complementary comparison — one compare, no eq/eqz).
+        let dt = lir("(: x Int64)", "(= (< x 0) true)");
+        assert!(
+            dt.iter().filter(|i| matches!(i, Lir::I64LtS)).count() == 1
+                && !dt
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32Eq | Lir::I32Eqz | Lir::ConstI32(_))),
+            "(= (< x 0) true) → (< x 0), got: {dt:?}"
+        );
+        let df = lir("(: x Int64)", "(= (< x 0) false)");
+        assert!(
+            df.iter().filter(|i| matches!(i, Lir::I64GeS)).count() == 1
+                && !df
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32Eq | Lir::I32Eqz | Lir::ConstI32(_))),
+            "(= (< x 0) false) → (>= x 0), got: {df:?}"
+        );
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(= (< x 0) true)",
+            &[Val::S64(-5)]
+        ));
+        assert!(!run::<bool>(
+            "(: x Int64)",
+            "(= (< x 0) true)",
+            &[Val::S64(5)]
+        ));
+        assert!(!run::<bool>(
+            "(: x Int64)",
+            "(= (< x 0) false)",
+            &[Val::S64(-5)]
+        ));
+        assert!(run::<bool>(
+            "(: x Int64)",
+            "(= (< x 0) false)",
+            &[Val::S64(5)]
+        ));
+    }
+
+    #[test]
     fn a_comparison_against_a_derived_range_bound_is_simplified() {
         use crate::backend::wasm::lir::Lir;
         use crate::backend::wasm::select::select_function;
@@ -10189,8 +10302,10 @@ mod match_engine {
     #[test]
     fn a_non_exhaustive_scalar_match_offers_a_wildcard_arm_fix() {
         // An open Int scalar match with no wildcard is CDZ0210; it now carries an INSERT fix that appends
-        // a `(_ unit)` wildcard arm (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
-        // A Fix — the scalar twin of the sum add-arms fix).
+        // a `(_ (trap "TODO"))` wildcard arm (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A
+        // Route To A Fix — the scalar twin of the sum add-arms fix). The body is a `trap` (∀a. String → a),
+        // NOT `unit`, so the added arm type-checks against sibling arms of ANY result type (a bare `unit`
+        // cascaded to a CDZ0203 "match arms differ" — a fix must resolve in ONE shot).
         let d = reject_full("(module m (def (f (: n Int64)) (match n (0 1) (1 2))) (export f))")
             .expect("non-exhaustive must reject");
         assert_eq!(d.code.as_deref(), Some("CDZ0210"), "got: {}", d.message);
@@ -10201,14 +10316,18 @@ mod match_engine {
         );
         let fix = d.fix.expect("a wildcard-arm fix is carried");
         assert_eq!(fix.kind, crate::abi::FixKind::InsertInto);
-        assert_eq!(fix.replacement, "(_ unit)", "appends a wildcard arm");
+        assert_eq!(
+            fix.replacement, "(_ (trap \"TODO\"))",
+            "appends a wildcard arm with a diverging placeholder body"
+        );
         assert!(!fix.verified, "the arm body is a placeholder → heuristic");
     }
 
     #[test]
     fn a_bool_match_missing_a_literal_offers_the_specific_missing_arm() {
-        // A Bool scrutinee is a FINITE gap: missing `false` → name it AND insert exactly `(false unit)`
-        // (not a generic wildcard), the same precision as a missing sum variant.
+        // A Bool scrutinee is a FINITE gap: missing `false` → name it AND insert exactly
+        // `(false (trap "TODO: false"))` (not a generic wildcard), the same precision as a missing sum
+        // variant. The `trap` body type-checks against the sibling `Int64` arm (a `unit` body would clash).
         let d = reject_full("(module m (def (main (: b Bool)) (match b (true 1))) (export main))")
             .expect("non-exhaustive must reject");
         assert_eq!(d.code.as_deref(), Some("CDZ0210"), "got: {}", d.message);
@@ -10219,19 +10338,60 @@ mod match_engine {
         );
         assert_eq!(
             d.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("(false unit)"),
+            Some("(false (trap \"TODO: false\"))"),
             "inserts the specific missing arm: {}",
             d.message
         );
-        // Symmetric: missing `true` → `(true unit)`.
+        // Symmetric: missing `true` → `(true (trap "TODO: true"))`.
         let d2 =
             reject_full("(module m (def (main (: b Bool)) (match b (false 2))) (export main))")
                 .expect("reject");
         assert_eq!(
             d2.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("(true unit)"),
+            Some("(true (trap \"TODO: true\"))"),
             "message: {}",
             d2.message
+        );
+    }
+
+    #[test]
+    fn the_exhaustiveness_add_arm_fix_type_checks_in_one_shot_against_int_arms() {
+        // The key property of the `trap`-bodied add-arm fix over the old `unit` body: the covering arm it
+        // suggests type-checks in ONE shot even when the sibling arms return a non-Unit type. A `unit` body
+        // traded the CDZ0210 for a fresh CDZ0203 "match arms differ: Int64 vs Unit" (a cascade — the fix
+        // did not verify); the diverging `trap` (∀a. String → a) unifies with the `Int64` arms, so the
+        // repaired program compiles clean. These are the exact arm shapes the fix inserts (verified by the
+        // `fix.replacement` assertions in the sibling tests) — here we confirm the RESULT compiles.
+        fn compiles_clean(src: &str) {
+            assert!(
+                reject_full(src).is_none(),
+                "the add-arm fix's covering arm must type-check against the Int64 sibling arms (no cascade): \
+                 {:?}\nsrc: {src}",
+                reject_full(src).map(|d| (d.code, d.message))
+            );
+        }
+        // Each is the ORIGINAL non-exhaustive match with the fix's exact covering arm spliced in. Sibling
+        // arms return Int64 — the old `unit` body clashed (CDZ0203); the `trap` body does not.
+        compiles_clean(
+            "(module m (type C (A) (B) (Cc)) (def (main) (match (C.A) ((A) 1) ((B) 2) (Cc (trap \"TODO: Cc\")))) (export main))",
+        );
+        compiles_clean(
+            "(module m (def (main) (match true (true 1) (false (trap \"TODO: false\")))) (export main))",
+        );
+        compiles_clean(
+            "(module m (def (main) (match (Some 1) ((None) 0) ((Some _p0) (trap \"TODO: Some\")))) (export main))",
+        );
+        compiles_clean(
+            "(module m (def (main) (match 5 (1 10) (2 20) (_ (trap \"TODO\")))) (export main))",
+        );
+        // And the OLD `unit` body genuinely DID cascade — pin the regression so a revert is caught.
+        let with_unit = reject_full(
+            "(module m (type C (A) (B) (Cc)) (def (main) (match (C.A) ((A) 1) ((B) 2) (Cc unit))) (export main))",
+        );
+        assert_eq!(
+            with_unit.and_then(|d| d.code).as_deref(),
+            Some("CDZ0203"),
+            "a `unit` arm body among Int64 arms is the cascade the trap body avoids"
         );
     }
 
@@ -11405,18 +11565,56 @@ mod match_engine {
         // MALFORMED — quote requires exactly one operand, the form it denotes. It rejects CDZ0201 (a
         // well-formedness defect), NOT the CDZ0101 unbound-name error a non-grammar `quote` head produced,
         // and never panics reaching for the absent quoted node. `quote` is a grammar head now, so this is
-        // an arity check; a well-formed `(quote FORM)` still DECLINES (real quotation is the
-        // metaprogramming vertical), a Todo — a codeless decline, verified below.
+        // an arity check.
         assert_eq!(
             reject_code("(module m (def (main) (quote)) (export main))").as_deref(),
             Some("CDZ0201")
         );
-        // A one-operand `(quote FORM)` is well-formed but not yet built → a codeless DECLINE (not CDZ0201,
-        // and no longer the CDZ0101 unbound-name error).
+        // A one-operand `(quote FORM)` is well-formed and now REIFIES to the `Ast` value it denotes
+        // (`(quote 5)` -> `(Ast.Int 5)`, via `crate::quote::reify_quotes`), so it compiles clean — no
+        // rejection, no longer the CDZ0101 unbound-name error nor a Todo decline.
         assert_eq!(
             reject_code("(module m (def (main) (quote 5)) (export main))"),
             None,
-            "a well-formed (quote FORM) declines (a Todo), it is not a coded rejection"
+            "a well-formed (quote FORM) reifies to an Ast value, it is not a coded rejection"
+        );
+    }
+
+    #[test]
+    fn a_quote_with_too_many_operands_offers_a_delete_the_surplus_fix() {
+        // `(quote 1 2)` has too many operands — quote takes exactly one. The mechanical repair is to
+        // DELETE the surplus operand (the second), the same surplus-arg delete fix an over-applied
+        // operator gets (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
+        // Shared across the quasiquote family (`quote`/`quasiquote`/`unquote`).
+        let find = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("takes exactly one operand"))
+                .unwrap_or_else(|| panic!("an arity fault is reported for {src}"))
+        };
+        let d = find("(module m (def (main) (quote 1 2)) (export main))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "a too-many-operands quote carries a delete fix: {:?}",
+            d.fix
+        );
+        // `quasiquote` shares the shape.
+        let qq = find("(module m (def (main) (quasiquote 1 2)) (export main))");
+        assert_eq!(
+            qq.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "quasiquote too-many-operands carries a delete fix: {:?}",
+            qq.fix
+        );
+        // NO fix for a ZERO-operand `(quote)` — there is nothing to delete, and supplying the form is not
+        // a mechanical edit.
+        let empty = find("(module m (def (main) (quote)) (export main))");
+        assert!(
+            empty.fix.is_none(),
+            "an empty quote has no surplus to delete: {:?}",
+            empty.fix
         );
     }
 
@@ -11542,6 +11740,24 @@ mod match_engine {
             d.message.contains("did you mean `alpha`?"),
             "the absent-field message must suggest the near field; got {}",
             d.message
+        );
+        // The near-miss also carries an APPLICABLE replace fix on the label occurrence (`alpa` → `alpha`)
+        // — the same fix a member-access `(. r k)` near-miss gets, not just the message hint.
+        assert_eq!(
+            d.fix.as_ref().map(|f| (f.kind, f.replacement.as_str())),
+            Some((crate::abi::FixKind::Replace, "alpha")),
+            "the absent-field near-miss carries a replace fix: {:?}",
+            d.fix
+        );
+        // NO OVERREACH: an absent field with no near candidate carries the message but NO fix.
+        let far = reject_full(
+            "(module m (def (main) (Record.without (record (alpha 1)) (zzzzzz))) (export main))",
+        )
+        .expect("an absent-field CDZ0212");
+        assert!(
+            far.fix.is_none(),
+            "no fix without a plausible near field: {:?}",
+            far.fix
         );
         // `Record` is STILL the record-TYPE constructor in type position — the module dual-shape did not
         // break `(: r (Record (a Int64)))`. A one-field record annotated with its own type compiles.
@@ -11714,6 +11930,30 @@ mod match_engine {
                 && dw.message.contains("use `Record.extend`"),
             "a mistyped `with` field suggests the near one AND keeps the extend hint; got {}",
             dw.message
+        );
+        // Both near-misses also carry an APPLICABLE replace fix on the field occurrence (`alpa`→`alpha`),
+        // the same closed-set fix `without`/`project` labels get (M63/M64) — not just the message hint.
+        assert_eq!(
+            dp.fix.as_ref().map(|f| (f.kind, f.replacement.as_str())),
+            Some((crate::abi::FixKind::Replace, "alpha")),
+            "pop near-miss carries a replace fix: {:?}",
+            dp.fix
+        );
+        assert_eq!(
+            dw.fix.as_ref().map(|f| (f.kind, f.replacement.as_str())),
+            Some((crate::abi::FixKind::Replace, "alpha")),
+            "with near-miss carries a replace fix: {:?}",
+            dw.fix
+        );
+        // NO OVERREACH: a far-miss field keeps the message but carries no fix.
+        let far = reject_full(
+            "(module m (def (main) (Record.pop (record (alpha 1)) zzzzzz)) (export main))",
+        )
+        .expect("pop of an absent field is CDZ0212");
+        assert!(
+            far.fix.is_none(),
+            "no fix without a plausible near field: {:?}",
+            far.fix
         );
     }
 
@@ -14386,6 +14626,69 @@ mod match_engine {
     }
 
     #[test]
+    fn a_match_on_a_tuple_of_recursive_calls_types_from_the_constructor() {
+        // A bottom-up fold matches a TUPLE OF RECURSIVE CALLS against constructor patterns: `(match (tuple
+        // (fold a) (fold b)) ((tuple (E.Lit x) (E.Lit y)) …) ((tuple fa fb) …))`. Two gaps closed: (1) the
+        // switch resolves the tuple element's SUM type from the constructor (`type_at_path` peels a leading
+        // `Elem` over a tuple constructor) rather than the aggregate `type_of((tuple (fold a) (fold b)))`
+        // which reads a recursive-call element as `Any` during `fold`'s own solve → a non-sum decline; (2)
+        // the fall-through arm's binders `fa`/`fb` (reading the tuple's elements) type via the constructor
+        // (`tuple_constructor_ty` in `type_of`'s SumPayload arm) → `E`, not `Any`, so the value-heap emit
+        // does not decline. Typing each element occurrence on its own reaches `fold`'s cached `def_scheme`
+        // (`E → E`). `fold` normalizes `(Add (Lit 3) (Add (Lit 4) (Lit 5)))` bottom-up; `ev` sums → 12.
+        let Some(v) = run_heap_value(
+            "(module m (type E (Lit Int64) (Add (Tuple E E))) \
+               (def (fold e) (match e (((. E Lit) n) ((. E Lit) n)) \
+                   (((. E Add) (tuple a b)) \
+                     (match (tuple (fold a) (fold b)) \
+                       ((tuple ((. E Lit) x) ((. E Lit) y)) ((. E Lit) (+ x y))) \
+                       ((tuple fa fb) ((. E Add) (tuple fa fb))))))) \
+               (def (ev e) (match e (((. E Lit) n) n) (((. E Add) (tuple a b)) (+ (ev a) (ev b))))) \
+               (def (main) (ev (fold ((. E Add) (tuple ((. E Lit) 3) \
+                                                       ((. E Add) (tuple ((. E Lit) 4) ((. E Lit) 5)))))))) \
+               (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping bottom-up-fold run");
+            return;
+        };
+        assert_eq!(v, "12", "bottom-up fold over a tuple of recursive results");
+    }
+
+    #[test]
+    fn a_diverging_export_emits_a_trapping_function_not_a_decline() {
+        // An export whose body PROVABLY DIVERGES has a `Never` result type (a fresh var / `Any`) with no
+        // machine/boundary representation — but NO value ever crosses: the guest traps. Before, such an
+        // export DECLINED "function return type has no machine representation"; now it emits a UNIT
+        // (0-result) function ending in `unreachable` (`select_function` maps a diverging `ret` to
+        // `Ty::Unit`; the boundary export crosses as `BoundaryResult::None`). The host observes the trap.
+        // THREE diverging shapes all compile + trap: a ZERO-ARM match on a `Never` scrutinee, a bare
+        // `(trap …)`, and a call to a diverging callee.
+        for (label, src) in [
+            (
+                "zero-arm-match",
+                "(module m (def (never-returns) (trap \"unreachable\")) \
+                   (def (main) (match (never-returns))) (export main))",
+            ),
+            (
+                "bare-trap",
+                "(module m (def (main) (trap \"unreachable\")) (export main))",
+            ),
+            (
+                "diverging-callee",
+                "(module m (def (never-returns) (trap \"unreachable\")) \
+                   (def (main) (never-returns)) (export main))",
+            ),
+        ] {
+            let bytes = component(src);
+            assert!(
+                call_traps(&bytes, "main", &[]),
+                "{label}: a diverging export must emit a function that TRAPS"
+            );
+        }
+    }
+
+    #[test]
     fn a_runtime_built_map_and_set_escape_via_value_encode() {
         // A RUNTIME `(Map Int64 Int64)` / `(Set Int64)` (insert-built, not constant-foldable) now crosses
         // the host boundary, where before they declined "needs a value-form walker". Both escape via the
@@ -15649,6 +15952,113 @@ mod match_engine {
     }
 
     #[test]
+    fn a_short_circuit_connective_absorbs_the_dual_connective_of_itself() {
+        // ABSORPTION LAW: `(and a (or a b))` → `a` and `(or a (and a b))` → `a` — a boolean combined with the
+        // DUAL connective of itself-with-anything absorbs to itself (short-circuit analogue of the bitwise
+        // `x & (x|y)`→x fold). Result is `a`, DISCARDING the inner op's other operand `b` (gated
+        // `is_trap_free(b)`). A DISTINCT operand does not absorb; the SAME connective is the idempotent fold.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let conn = |c: &[Lir]| {
+            c.iter()
+                .filter(|i| matches!(i, Lir::I32And | Lir::I32Or))
+                .count()
+        };
+        // Every absorption order collapses to ZERO connective ops (the whole thing is just `a`), both outer
+        // orders, both inner-operand positions, both outer connectives.
+        for body in [
+            "(: (or (and a b) a) Bool)",
+            "(: (or a (and a b)) Bool)",
+            "(: (and (or a b) a) Bool)",
+            "(: (and a (or a b)) Bool)",
+            "(: (or (and b a) a) Bool)", // a on the RIGHT of the inner op
+        ] {
+            assert_eq!(
+                conn(&lir("(: a Bool) (: b Bool)", body)),
+                0,
+                "absorbs to a: {body}"
+            );
+        }
+        // A DISTINCT inner operand does NOT absorb (nothing shared with the outer operand): kept as 2 ops.
+        assert_eq!(
+            conn(&lir(
+                "(: a Bool) (: b Bool) (: c Bool)",
+                "(: (or (and c b) a) Bool)"
+            )),
+            2,
+            "distinct inner kept"
+        );
+
+        // VALUE PARITY: each absorption form equals `a` over all truth combinations.
+        use wasmtime::component::Val;
+        let f = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: a Bool) (: b Bool)) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
+        for body in [
+            "(or (and a b) a)",
+            "(or a (and a b))",
+            "(and (or a b) a)",
+            "(and a (or a b))",
+            "(or (and b a) a)",
+        ] {
+            let comp = f(body);
+            for (a, b) in [(true, true), (true, false), (false, true), (false, false)] {
+                assert_eq!(
+                    run_returns_with::<bool>(&comp, "f", &[Val::Bool(a), Val::Bool(b)]),
+                    a,
+                    "{body} @{a},{b} must equal a"
+                );
+            }
+        }
+        // TRAP SAFETY: when `b` carries a trap, the gate keeps the runtime form rather than dropping `b`, so
+        // no trap is added or dropped. `(and (or a b) a)` evaluates `b` only when `a` is false; the fold's
+        // `is_trap_free(b)` guard declines here (b is a trapping `/`), leaving the real short-circuit form.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: a Bool) (: n Int64)) (if (and (or a (> (/ 10 n) 0)) a) 1 0)) (export f))"
+        ))).expect("compile");
+        // a=false forces evaluation of `(or a (> (/ 10 n) 0))` → the trapping `/` fires at n=0.
+        assert!(
+            call_traps(&tb, "f", &[Val::Bool(false), Val::S64(0)]),
+            "a trapping inner operand keeps its trap (fold declined)"
+        );
+        // a=true short-circuits before the trap → runs to 1 (the outer `and` needs `a`, which is true, and
+        // `(or a …)` short-circuits true without touching the `/`).
+        assert_eq!(
+            run_returns_with::<i64>(&tb, "f", &[Val::Bool(true), Val::S64(0)]),
+            1,
+            "a=true short-circuits the trap"
+        );
+    }
+
+    #[test]
     fn a_short_circuit_connective_with_a_value_and_its_negation_folds_to_a_constant() {
         // BOOLEAN COMPLEMENT LAWS: `(and a (not a))` → false, `(or a (not a))` → true — a boolean and its
         // negation are exclusive+exhaustive. The `and`/`or` analogue of the bitwise `x & ~x`/`x | ~x` fold.
@@ -16078,8 +16488,7 @@ mod match_engine {
             0,
             "empty and → false"
         );
-        // NON-fold: non-empty ∩ (`< 10` / `> 5`) and gapped ∪ (`< 3` / `> 10`) keep both compares; a
-        // singleton ∩ (`<= 6` / `>= 6`, non-empty at 6) is kept.
+        // NON-fold: non-empty ∩ (`< 10` / `> 5`) and gapped ∪ (`< 3` / `> 10`) keep both compares.
         assert_eq!(
             cmps(&lir("(: x Int64)", "(: (and (< x 10) (> x 5)) Bool)")),
             2,
@@ -16090,10 +16499,13 @@ mod match_engine {
             2,
             "gapped or kept"
         );
+        // The singleton ∩ (`<= 6` / `>= 6`, non-empty only at 6) is NOT a disjoint/covering verdict but the
+        // COINCIDENT POINT — the sibling `coincident_point_eq` fold collapses it to `(= x 6)` (0 ordering
+        // compares, one `i64.eq`). See `two_inclusive_bounds_at_the_same_point_collapse_to_equality`.
         assert_eq!(
             cmps(&lir("(: x Int64)", "(: (and (<= x 6) (>= x 6)) Bool)")),
-            2,
-            "singleton and kept"
+            0,
+            "singleton and collapses to equality"
         );
 
         // VALUE PARITY across the boundary.
@@ -16139,6 +16551,117 @@ mod match_engine {
         assert!(
             call_traps(&tb, "f", &[Val::S64(0)]),
             "a trapping operand keeps its trap"
+        );
+    }
+
+    #[test]
+    fn two_inclusive_bounds_at_the_same_point_collapse_to_equality() {
+        // COINCIDENT-POINT COLLAPSE: `(and (>= v c) (<= v c))` pins `v` to the single point `c` — that IS
+        // `(= v c)`. Three ops (`ge` + `le` + `and`) collapse to one `eq`. Sound for signed AND unsigned
+        // (a pure total-order fact). Reuses the existing (in-type) constant node, so no synthesis / range
+        // guard. NOT the exclusive width-2 `(and (> v (c-1)) (< v (c+1)))` (left un-folded, conservative).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let counts = |c: &[Lir]| -> (usize, usize) {
+            let eqs = c.iter().filter(|i| matches!(i, Lir::I64Eq)).count();
+            let ords = c
+                .iter()
+                .filter(|i| matches!(i, Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS))
+                .count();
+            (eqs, ords)
+        };
+        // Collapses: exactly one `i64.eq`, zero ordering compares — in all operand orders + the mirrored
+        // (constant-on-the-left) form.
+        for body in [
+            "(: (and (>= x 5) (<= x 5)) Bool)",
+            "(: (and (<= x 5) (>= x 5)) Bool)",
+            "(: (and (>= 5 x) (<= 5 x)) Bool)",
+        ] {
+            assert_eq!(
+                counts(&lir("(: x Int64)", body)),
+                (1, 0),
+                "collapse: {body}"
+            );
+        }
+        // NON-collapse (kept as 2 ordering compares, 0 eq): different constants (a real range), and the
+        // exclusive width-2 point (deliberately conservative — needs a synthesized `c` + range guard).
+        assert_eq!(
+            counts(&lir("(: x Int64)", "(: (and (>= x 5) (<= x 6)) Bool)")),
+            (0, 2),
+            "different constants stay a range"
+        );
+        assert_eq!(
+            counts(&lir("(: x Int64)", "(: (and (> x 4) (< x 6)) Bool)")),
+            (0, 2),
+            "exclusive width-2 left un-folded"
+        );
+
+        // VALUE PARITY: the collapsed form equals `(= v c)` at, below, and above the point — signed AND
+        // unsigned, and at a negative constant.
+        use wasmtime::component::Val;
+        let f = |ty: &str, body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: x {ty})) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
+        let sgn = f("Int64", "(if (and (>= x 5) (<= x 5)) 1 0)");
+        for (x, want) in [(4, 0), (5, 1), (6, 0)] {
+            assert_eq!(
+                run_returns_with::<i64>(&sgn, "f", &[Val::S64(x)]),
+                want,
+                "signed @{x}"
+            );
+        }
+        let uns = f("UInt64", "(if (and (>= x 5) (<= x 5)) 1 0)");
+        for (x, want) in [(4u64, 0), (5, 1), (6, 0)] {
+            assert_eq!(
+                run_returns_with::<i64>(&uns, "f", &[Val::U64(x)]),
+                want,
+                "unsigned @{x}"
+            );
+        }
+        let neg = f("Int64", "(if (and (>= x -3) (<= x -3)) 1 0)");
+        for (x, want) in [(-2, 0), (-3, 1), (-4, 0)] {
+            assert_eq!(
+                run_returns_with::<i64>(&neg, "f", &[Val::S64(x)]),
+                want,
+                "negative @{x}"
+            );
+        }
+        // TRAP SAFETY: a trapping operand in the collapsed pair still traps (the DISCARDED second bound's
+        // trap is preserved by the `is_trap_free` gate — here both bounds share the trapping `/`).
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: z Int64)) (if (and (>= (/ 100 z) 5) (<= (/ 100 z) 5)) 1 0)) (export f))"
+        ))).expect("compile");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0)]),
+            "trapping operand keeps its trap"
         );
     }
 
@@ -16592,6 +17115,52 @@ mod match_engine {
         assert!(
             reject_code("(module m (def (main) (Ast.Name \"x\")) (export main))").is_none(),
             "Ast.Name applied to String is well-typed"
+        );
+    }
+
+    #[test]
+    fn quote_reifies_to_the_ast_value_it_denotes() {
+        // 12-metaprogramming §Quote Produces An AST Value: `(quote FORM)` evaluates to the `Ast` sum value
+        // representing FORM's structure. `crate::quote::reify_quotes` rewrites each quote into the
+        // constructor application that BUILDS that value, so a quote result and a hand-built `Ast.*` value
+        // are ONE value — structural equality (`=`) between them holds. The reification maps by SHAPE:
+        // integer -> `(Ast.Int n)`, bare name -> `(Ast.Name "n")`, compound `(a …)` -> `(Ast.List (list
+        // …))`. Each equality below compiles clean (the two sides denote the same value); the gate checks
+        // they actually run to `true`.
+        assert!(
+            reject_code("(module m (def (main) (= (quote 42) (Ast.Int 42))) (export main))")
+                .is_none(),
+            "a quoted integer equals the same Ast.Int node"
+        );
+        assert!(
+            reject_code("(module m (def (main) (= (quote foo) (Ast.Name \"foo\"))) (export main))")
+                .is_none(),
+            "a quoted name equals the same Ast.Name node"
+        );
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (= (quote (+ 1 2)) \
+                      (Ast.List (list (Ast.Name \"+\") (Ast.Int 1) (Ast.Int 2))))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a quoted compound form equals the same Ast.List node"
+        );
+        // A quote is INERT: a stray `,x` (unquote NOT under a quasiquote) is a syntax error — the quote is
+        // NOT reified around it; `resolve::resolve_unquote` fires CDZ0003 (metaprogramming.md §Quasiquote
+        // Constructs AST With Selective Evaluation, a plain quote body is inert data, not a template).
+        assert_eq!(
+            reject_code("(module m (def (main) (quote (g (unquote x)))) (export main))").as_deref(),
+            Some("CDZ0003"),
+            "a stray unquote under a plain quote is CDZ0003, not silently reified"
+        );
+        // A quote whose body mentions a leaf the `Ast` sum can't carry yet (a String literal — no
+        // `Ast.Str` variant this increment) is NOT reified: it DECLINES (a Todo), never a miscompile.
+        assert_eq!(
+            reject_code("(module m (def (main) (quote \"hi\")) (export main))"),
+            None,
+            "an un-reifiable quote body declines cleanly (no artifact, no coded rejection)"
         );
     }
 
@@ -18117,6 +18686,43 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_duplicate_type_declaration_is_rejected_and_carries_a_delete_fix() {
+        // A module's TYPE names are a fixed set exactly as its def / export / variant / operation names are
+        // (the sixth closed name-set). `(type T (A)) (type T (B))` declared `T` twice — silently accepted,
+        // with `T` resolving to the FIRST so a `T.B` reference failed confusingly ("record has no field
+        // `B`"). Now the second declaration is CDZ0201 with a DELETE fix removing the redundant `(type …)`
+        // form (the same repair the duplicate export/variant/op gets).
+        let d = crate::diagnostics(&mut Db::load(parse(
+            "(module m (type T (A)) (type T (B)) (def (f (: x T)) x) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("type `T`"))
+        .expect("a duplicate type declaration is reported");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("declared more than once"),
+            "names the fault: {}",
+            d.message
+        );
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "dup type carries a delete fix: {:?}",
+            d.fix
+        );
+        // NO OVERREACH: two DIFFERENT type names are not a duplicate — a clean program stays clean.
+        let clean = crate::diagnostics(&mut Db::load(parse(
+            "(module m (type T (A)) (type U (B)) (def (main) (T.A)) (export main))",
+        )));
+        assert!(
+            !clean
+                .iter()
+                .any(|d| d.message.contains("declared more than once")),
+            "two distinct type names are not a duplicate: {clean:?}"
+        );
+    }
+
+    #[test]
     fn an_integer_operand_to_a_float_operator_offers_an_of_int_coercion_fix() {
         // The numeric-mismatch fix (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
         // A Fix): `(+. x 2.0)` with `x : Int64` is CDZ0301 (no silent promotion), but the repair is the
@@ -18182,6 +18788,35 @@ mod diagnostics {
             ignored.iter().map(|d| &d.code).collect::<Vec<_>>()
         );
         assert_eq!(ignored[0].code.as_deref(), Some("CDZ0301"));
+    }
+
+    #[test]
+    fn a_partial_application_of_a_builtin_operation_declines_honestly_naming_the_op() {
+        // A built-in operation applied to too FEW arguments — `(. List at) (list 1)`, missing the index —
+        // is a partial application: a genuine not-yet-built construct (it would need a runtime closure). It
+        // used to leak the INTERNAL `reduce_ctor` sentinel `error: not a type constructor` (the op fell
+        // through lower's full-arity arms into the constructor catch-all). Now it declines HONESTLY, naming
+        // the operation from its `Operand.key` surface spelling and stating the real limitation.
+        let d = first_error("(module m (def (main) ((. List at) (list 1))) (export main))");
+        assert!(
+            !d.message.contains("not a type constructor"),
+            "the internal reduce_ctor sentinel must not surface: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("`List.at`")
+                && d.message.contains("wrong arity")
+                && d.message.contains("runtime closure"),
+            "names the op + the real limitation: {}",
+            d.message
+        );
+        // A FULL application of the same op still compiles (the honest decline did not over-fire).
+        let full = all_errors("(module m (def (main) ((. List at) (list 1) 0)) (export main))");
+        assert!(
+            full.is_empty(),
+            "a fully-applied operation is not declined: {:?}",
+            full.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -18592,7 +19227,7 @@ mod diagnostics {
         );
         let fix = d[0].fix.as_ref().expect("carries the add-arm fix");
         assert_eq!(fix.kind, crate::abi::FixKind::InsertInto);
-        assert_eq!(fix.replacement, "(D unit)");
+        assert_eq!(fix.replacement, "(D (trap \"TODO: D\"))");
 
         // A NON-exported function's non-exhaustive match is caught too — it escapes emission entirely
         // (dead, never laid out), so this is the only place it is reported.
@@ -18711,10 +19346,16 @@ mod diagnostics {
     /// component WAS produced (a warning must ride alongside a success, never a denial).
     fn warnings_of(src: &str) -> Vec<crate::abi::Diagnostic> {
         let bytes = crate::codec::encode(&parse(src));
-        let out = compile(
-            &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
-            &[Target::Wasm],
-        );
+        // Through the SAME host-stack guard the bin uses (`host.rs`) — a dead NON-NORMALIZING binding
+        // (`((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))`) recurses deep during the fold before the reduction
+        // work-budget declines, and would SIGABRT a default `cargo test` worker's ≈2 MB stack. Sizing the
+        // stack from `DESCENT_DEPTH_LIMIT` lets the budget guard — not the native stack — bound it.
+        let out = crate::host::run_with_compiler_stack(|| {
+            compile(
+                &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+                &[Target::Wasm],
+            )
+        });
         assert!(
             out.artifact(Target::Wasm.artifact_kind()).is_some(),
             "a warning must accompany a PRODUCED component, but compilation failed: {:?}",
@@ -18750,6 +19391,64 @@ mod diagnostics {
                 "expected exactly one dead-trap (CDZ0305) warning for `{src}`, got {dead:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_unused_non_normalizing_let_init_warns_but_still_compiles() {
+        // The dead-computation warning (CDZ0305) covers a computation with NO VALUE, not only a trapping
+        // one: a non-normalizing self-application `((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))` (no normal
+        // form) bound to an UNUSED let-binder is dead code — the fold eliminates it, the program compiles
+        // (`main => 0`), and a CDZ0305 warning flags the likely bug. This is DCE consistency: an
+        // un-observed non-normalizing binding is elided exactly as an un-observed trap is (rather than
+        // reducing dead code), while the SAME term USED is the hard CDZ0999 error.
+        // `warnings_of` asserts the component WAS produced (dead code elided → it compiles) and returns
+        // the warnings; exactly one CDZ0305 dead-computation warning (CDZ0306 unused-`y` rides alongside).
+        let src = "(module m (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) 0)) (export main))";
+        let dead: Vec<_> = warnings_of(src)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0305"))
+            .collect();
+        assert_eq!(
+            dead.len(),
+            1,
+            "expected one CDZ0305 warning for the dead non-normalizing binding, got {dead:?}"
+        );
+        assert!(
+            dead[0].message.contains("does not reduce to a value"),
+            "the warning names the non-normalizing reason: {}",
+            dead[0].message
+        );
+        // The SAME term USED is a hard CDZ0999 error (the component is DENIED, not merely warned).
+        let used = "(module m (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) y)) (export main))";
+        // Same host-stack guard as `warnings_of` above — the USED non-normalizing term recurses just as
+        // deep during the fold, so this direct `compile` must not run on the default test stack either.
+        let out = crate::host::run_with_compiler_stack(|| {
+            compile(
+                &[Artifact::new(
+                    Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(used)),
+                )],
+                &[Target::Wasm],
+            )
+        });
+        assert!(
+            out.artifact(Target::Wasm.artifact_kind()).is_none()
+                && out
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code.as_deref() == Some("CDZ0999")),
+            "a USED non-normalizing binding is rejected CDZ0999, not just warned: {:?}",
+            out.diagnostics
+        );
+        // NO FALSE POSITIVE: a NORMAL unused let-init gets no dead-computation warning.
+        let normal = "(module m (def (main) (let ((y (+ 1 2))) 0)) (export main))";
+        assert!(
+            warnings_of(normal)
+                .into_iter()
+                .all(|d| d.code.as_deref() != Some("CDZ0305")),
+            "a normal unused let-init must not get a dead-computation warning"
+        );
     }
 
     #[test]
@@ -22599,20 +23298,70 @@ mod stage1 {
         );
         // The message NAMES the omitted operation AND spells the arm to add inline; AND a machine-
         // applicable "add the missing arm" fix carries the same template arm (`collect` is nullary → empty
-        // params, a `(resume unit s)` placeholder body the author fills). The structural fix is possible
-        // because the in-place desugar preserved the arms-list's source span.
+        // params, a `(resume (trap "TODO: collect") s)` placeholder body the author fills). The resume
+        // VALUE is a diverging `trap`, NOT `unit`: `collect`'s result type is `(List Int64)`, so a bare
+        // `unit` resume value would cascade to a CDZ0201 "a handler resumes with a value of type Unit but
+        // the operation's result type is (List Int64)"; `trap : ∀a. String → a` type-checks whatever the
+        // op returns, so the fix resolves in ONE shot. The structural fix is possible because the in-place
+        // desugar preserved the arms-list's source span.
         assert!(
             err.message.contains("`collect`")
-                && err.message.contains("add (collect () s (resume unit s))"),
+                && err
+                    .message
+                    .contains("add (collect () s (resume (trap \"TODO: collect\") s))"),
             "names the omitted op AND spells the arm to add: {}",
             err.message
         );
         let fix = err.fix.expect("a missing-arm fix is carried");
         assert_eq!(
-            fix.replacement, "(collect () s (resume unit s))",
+            fix.replacement, "(collect () s (resume (trap \"TODO: collect\") s))",
             "the fix appends a template arm for the missing op"
         );
         assert!(!fix.verified, "a template-body arm is heuristic");
+    }
+
+    #[test]
+    fn the_handler_add_arm_fix_resume_value_type_checks_in_one_shot() {
+        // The `trap`-resume-value add-arm fix (M61's match-arm lesson applied to CDZ0405): the covering arm
+        // the fix inserts must CLEAR the fault in ONE shot even when the missing op's RESULT type is
+        // non-Unit. The old `(resume unit s)` body cascaded to a CDZ0201 "a handler resumes with a value of
+        // type Unit but the operation's result type is <T>" the moment the op returned non-Unit; the
+        // diverging `(resume (trap …) s)` resumes with a ∀a value that unifies with any result type, so the
+        // repaired handler type-checks. Verified against the `diagnostics()` walk (`cdz check` / what
+        // `fix --verify` runs), not full emit — this handler shape's emission is a separate effects gap.
+        // These are the exact arms the fix inserts (asserted in the sibling test).
+        fn no_type_error(src: &str) {
+            let errs: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .filter(|d| {
+                    d.severity == crate::abi::Severity::Error
+                        && matches!(d.code.as_deref(), Some("CDZ0201" | "CDZ0203" | "CDZ0405"))
+                })
+                .map(|d| (d.code, d.message))
+                .collect();
+            assert!(
+                errs.is_empty(),
+                "the handler add-arm fix's resume value must type-check against the op's result type \
+                 (no CDZ0201/0203/0405 cascade): {errs:?}\nsrc: {src}"
+            );
+        }
+        // `get : Unit → Int64` — the missing op returns Int64; the fix's `(resume (trap …) s)` type-checks.
+        no_type_error(
+            "(module m (effect E (op tick (-> Unit Unit)) (op get (-> Unit Int64))) \
+             (def (main) (handle E 0 ((tick () s (resume unit s)) (get () s (resume (trap \"TODO: get\") s))) (E.get))) (export main))",
+        );
+        // And the OLD `unit` resume value genuinely DID cascade — pin the regression.
+        let with_unit: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (effect E (op tick (-> Unit Unit)) (op get (-> Unit Int64))) \
+             (def (main) (handle E 0 ((tick () s (resume unit s)) (get () s (resume unit s))) (E.get))) (export main))",
+        )))
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0201"))
+        .collect();
+        assert!(
+            !with_unit.is_empty(),
+            "a `unit` resume value where the op returns Int64 is the CDZ0201 cascade the trap value avoids"
+        );
     }
 
     #[test]
@@ -25478,16 +26227,21 @@ mod stage1 {
         );
         let fix = err.fix.expect("an add-arms fix is carried");
         assert_eq!(fix.kind, crate::abi::FixKind::InsertInto, "it INSERTS arms");
-        // `None` is nullary → the synthesized arm is `(None unit)`.
-        assert_eq!(fix.replacement, "(None unit)", "the covering arm");
+        // `None` is nullary → the synthesized arm is `(None (trap "TODO: None"))`. The body is a diverging
+        // `trap` (∀a. String → a), NOT `unit`, so it type-checks against the sibling `Int64` arm (a bare
+        // `unit` cascaded to a CDZ0203 "match arms differ: Int64 vs Unit").
+        assert_eq!(
+            fix.replacement, "(None (trap \"TODO: None\"))",
+            "the covering arm"
+        );
         assert!(!fix.verified, "the arm body is a placeholder → heuristic");
     }
 
     #[test]
     fn a_non_exhaustive_match_synthesizes_payload_binders_and_lists_multiple_missing() {
         // Two missing variants, one with a PAYLOAD: the fix synthesizes a `_`-prefixed binder per payload
-        // (`(Some _p0) unit`) so the arm is well-formed and does not itself warn unused, and the message
-        // lists both missing variants.
+        // (`(Some _p0) (trap …)`) so the arm is well-formed and does not itself warn unused, and the
+        // message lists both missing variants.
         use crate::testkit::parse;
         let src = "(module m (type T (A Int64) B C) \
                      (def (f (: t T)) (match t ((A x) x))) (export f))";
@@ -25500,8 +26254,11 @@ mod stage1 {
             err.message
         );
         let fix = err.fix.expect("an add-arms fix is carried");
-        // B and C are nullary; the fix appends both arms, space-joined.
-        assert_eq!(fix.replacement, "(B unit) (C unit)", "both covering arms");
+        // B and C are nullary; the fix appends both arms, space-joined, each with a `trap` placeholder body.
+        assert_eq!(
+            fix.replacement, "(B (trap \"TODO: B\")) (C (trap \"TODO: C\"))",
+            "both covering arms"
+        );
     }
 
     #[test]
@@ -27002,6 +27759,38 @@ mod stage1 {
                 }
             }
         }
+    }
+
+    #[test]
+    fn lambda_lifting_dedups_by_body_and_gives_distinct_lambdas_distinct_slots() {
+        // `Db::lift_lambda` dedups by the lambda's `body` occurrence via an O(1) index (was a linear scan
+        // of `db.lifted` per lift → O(N²) for a program lifting N distinct closures). This locks in the two
+        // invariants the index must preserve: (a) N DISTINCT escaping lambdas get N distinct table slots
+        // (no false dedup — a fresh body → a new slot), and (b) the SAME lambda body reached twice keeps ONE
+        // slot (real dedup — the memo the index replaces). Read `db.lifted` after lowering.
+        use crate::testkit::parse;
+        // (a) A list of 8 DISTINCT escaping closures → 8 lifted entries, each a distinct body occurrence.
+        let lams = (0..8)
+            .map(|i| format!("(fn (a{i}) (+ a{i} {i}))"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let src = format!("(module m (def (main) (let ((fs (list {lams}))) 0)) (export main))");
+        let mut db = crate::db::Db::load(parse(&src));
+        // Drive lowering (fills `db.lifted`) — `diagnostics` runs the full pipeline over the program.
+        let _ = crate::diagnostics(&mut db);
+        assert_eq!(
+            db.lifted.len(),
+            8,
+            "8 distinct escaping closures lift to 8 distinct slots (no false dedup)"
+        );
+        let mut bodies: Vec<u32> = db.lifted.iter().map(|l| l.body.0).collect();
+        bodies.sort_unstable();
+        bodies.dedup();
+        assert_eq!(
+            bodies.len(),
+            8,
+            "each lifted slot has a distinct body occurrence"
+        );
     }
 
     #[test]
