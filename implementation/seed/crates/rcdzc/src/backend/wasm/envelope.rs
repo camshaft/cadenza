@@ -2763,6 +2763,8 @@ pub fn assemble_multi_closure_bytes_resource_borrow(
         plain,
         call_borrow,
         None,
+        &[],
+        &[],
     )
 }
 
@@ -2782,6 +2784,8 @@ pub fn assemble_multi_closure_bytes_resource_borrow_tuple(
     plain: &[PlainExportAbi],
     call_borrow: bool,
     tuple_arg_bytes: Option<&[u8]>,
+    tuple_prefix_bytes: &[u8],
+    tuple_suffix_bytes: &[u8],
 ) -> Vec<u8> {
     let k = imports.len();
     let nmk = makes.len();
@@ -2916,9 +2920,11 @@ pub fn assemble_multi_closure_bytes_resource_borrow_tuple(
             let list_ty = (4 + 2 * nmk) as u32;
             items.extend_from_slice(&tuple_defined_type(fields));
             items.extend_from_slice(&list_u8_defined_type());
-            items.extend_from_slice(&closure_call_list_tuple_arg_functype(
+            items.extend_from_slice(&closure_call_list_tuple_arg_functype_interleaved(
                 call_own_ty,
+                tuple_prefix_bytes,
                 tup_ty,
+                tuple_suffix_bytes,
                 list_ty,
             ));
         } else {
@@ -2971,6 +2977,8 @@ pub fn assemble_multi_closure_bytes_resource_borrow_tuple(
             arg_bytes,
             call_borrow,
             tuple_arg_bytes,
+            tuple_prefix_bytes,
+            tuple_suffix_bytes,
         ),
     ));
     out.extend_from_slice(&section(
@@ -3012,7 +3020,14 @@ fn resource_inner_component_multi_closure_bytes_borrow(
     arg_bytes: &[u8],
     call_borrow: bool,
 ) -> Vec<u8> {
-    resource_inner_component_multi_closure_bytes_borrow_tuple(makes, arg_bytes, call_borrow, None)
+    resource_inner_component_multi_closure_bytes_borrow_tuple(
+        makes,
+        arg_bytes,
+        call_borrow,
+        None,
+        &[],
+        &[],
+    )
 }
 
 /// [`resource_inner_component_multi_closure_bytes_borrow`] with an optional fixed-shape scalar tuple ARGUMENT:
@@ -3026,6 +3041,8 @@ fn resource_inner_component_multi_closure_bytes_borrow_tuple(
     arg_bytes: &[u8],
     call_borrow: bool,
     tuple_arg_bytes: Option<&[u8]>,
+    tuple_prefix_bytes: &[u8],
+    tuple_suffix_bytes: &[u8],
 ) -> Vec<u8> {
     let call_handle = |idx: u32| -> Vec<u8> {
         if call_borrow {
@@ -3036,7 +3053,7 @@ fn resource_inner_component_multi_closure_bytes_borrow_tuple(
     };
     // Emit the shared `call` type block (self handle wrapping `resource_ty`, [tuple], list<u8>, functype) at
     // `block_base`. Returns the emitted items + the CALL FUNCTYPE index + how many types the block added
-    // (3 scalar / 4 tuple).
+    // (3 scalar / 4 tuple). Prefix/suffix scalar bytes surround the tuple when it sits AMONG scalar args.
     let call_type_block = |resource_ty: u32, block_base: u32| -> (Vec<u8>, u32, u32) {
         let handle_ty = block_base;
         let mut items = call_handle(resource_ty);
@@ -3046,8 +3063,12 @@ fn resource_inner_component_multi_closure_bytes_borrow_tuple(
             let ft_ty = block_base + 3;
             items.extend_from_slice(&tuple_defined_type(fields));
             items.extend_from_slice(&list_u8_defined_type());
-            items.extend_from_slice(&closure_call_list_tuple_arg_functype(
-                handle_ty, tup_ty, list_ty,
+            items.extend_from_slice(&closure_call_list_tuple_arg_functype_interleaved(
+                handle_ty,
+                tuple_prefix_bytes,
+                tup_ty,
+                tuple_suffix_bytes,
+                list_ty,
             ));
             (items, ft_ty, 4)
         } else {

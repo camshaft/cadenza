@@ -2893,10 +2893,11 @@
   (call   mk (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
   (output (: (list 10 3 100) (List Int64))))
 
-; The tuple-among-scalars arg shape extends to the MULTI-EXPORT scalar-result path: N same-sig closures each
-; taking `(-> Int64 (Tuple Int64 Int64) Int64)` share one `call` that interleaves the prefix scalar with the
-; rebuilt tuple. (An among-scalars tuple with a LIST result on the mixed/distinct-sig paths still declines —
-; those cores don't yet interleave prefix/suffix; the SINGLE-export list-result path is covered above.)
+; The tuple-among-scalars arg shape extends to the MULTI-EXPORT path — for EVERY result shape: N same-sig
+; closures share one `call` that interleaves the prefix scalar with the rebuilt tuple, then produces a scalar,
+; a byte-rope, a fixed-shape compound value-form, or a collection value-encode result. (An among-scalars tuple
+; with a LIST result on the MIXED/distinct-sig paths still declines — those emit fns don't yet interleave
+; prefix/suffix; the SINGLE + MULTI-export list-result paths are covered here + above.)
 
 (case "MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg"
   (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 Int64) Int64)` — a scalar `n` then a tuple `p`, shared across
@@ -2917,6 +2918,48 @@
               (export mk-a) (export mk-b)))
   (call   mk-b (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: 87 Int64)))
+
+(case "MULTI-EXPORT: among-scalars tuple arg with a LIST result (shared interleaving list-`call`)"
+  (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 Int64) (List Int64))` — a scalar `n` then a tuple `p`, sharing
+           ONE list-returning `call`. The shared value-encode `call` interleaves `n` around the rebuilt tuple,
+           dispatches, then value-encodes the returned List. Driving `mk-a`: `call(handle, 100, (10, 3))` →
+           `(list 100 10 3)`. The among-scalars interleaving now reaches the multi-export list-result core.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list n (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list (. p 0) (. p 1) n)))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (list 100 10 3) (List Int64))))
+
+(case "MULTI-EXPORT: driving the second among-scalars LIST closure (tuple then suffix scalar)"
+  (doc    "The SAME multi-export List component, driving `mk-b` — the tuple fields FIRST then the suffix scalar
+           `n`: `call(handle, 100, (10, 3))` → `(list p.0 p.1 n)` = `(list 10 3 100)`. Confirms both same-sig
+           among-scalars List closures share the one interleaving list-`call`, prefix AND suffix.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list n (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list (. p 0) (. p 1) n)))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (list 10 3 100) (List Int64))))
+
+(case "MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result"
+  (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 Int64) Bytes)` sharing one bytes-returning `call`. The shared
+           bytes `call` interleaves `n` around the rebuilt tuple, dispatches, copies the returned Bytes out as
+           `list<u8>`. Driving `mk-a`: `call(handle, 100, (10, 3))` → the bytes `(100 10 3)`.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 n) (u8 (. p 0)) (u8 (. p 1)))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 (. p 0)))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (100 10 3) Bytes)))
+
+(case "MULTI-EXPORT: among-scalars tuple arg with a fixed-shape COMPOUND result"
+  (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 Int64) (Tuple Int64 Int64 Int64))` sharing one value-form
+           `call`. The shared `call` interleaves `n` around the rebuilt arg tuple, dispatches, walks the
+           returned handle into the value-form template. Driving `mk-a`: `call(handle, 100, (10, 3))` →
+           `(tuple 100 10 3)`, decoded by the host to the typed document.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (tuple n (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (tuple (. p 0) n (. p 1))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64))))
 
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
