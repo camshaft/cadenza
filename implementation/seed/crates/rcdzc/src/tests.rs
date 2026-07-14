@@ -20975,6 +20975,27 @@ mod match_engine {
             Some("CDZ0203"),
             "a Bool/Int mix stays the generic type mismatch"
         );
+        // The mix now carries a total-conversion fix on the FIXED-int operand: `(BigInt.of …)` wraps it so
+        // both sides are BigInt in one shot — the BigInt twin of the int-width `.of` coercion. `Rational`
+        // mirrors it with `(Rational.of-int …)`.
+        let big = reject_full("(module m (def (f (: n Int64)) (+ (BigInt.of n) 1)) (export f))")
+            .expect("the BigInt/int mix rejects");
+        assert!(
+            big.fix
+                .as_ref()
+                .is_some_and(|f| f.replacement.contains("BigInt.of")),
+            "the BigInt mix offers a `BigInt.of` wrap fix: {:?}",
+            big.fix
+        );
+        let rat = reject_full("(module m (def (f (: r Rational)) (+ r 1)) (export f))")
+            .expect("the Rational/int mix rejects");
+        assert!(
+            rat.fix
+                .as_ref()
+                .is_some_and(|f| f.replacement.contains("Rational.of-int")),
+            "the Rational mix offers a `Rational.of-int` wrap fix: {:?}",
+            rat.fix
+        );
     }
 
     #[test]
