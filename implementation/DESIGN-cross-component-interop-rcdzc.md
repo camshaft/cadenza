@@ -333,8 +333,14 @@ composition; no wasmparser in the compile path, no external interface artifact n
   + a consumer `(extern "cadenza:pairs/api" (pair (-> Int64 (Tuple Int64 Int64)))) … (. (pair x) 0)` →
   main(9) = 9.** 🪤 byte bug fixed by `wasm-tools print`: the bundled instance is component-instance 1 (the
   imported runtime instance is 0), so export index 1, not 0. Byte-neutral (provider paths fire only when
-  `component_name` set — gate 1953/0/0). REMAINING (follow-up): widen the value matrix
-  (String/Bytes/Map/Set/Sum/BigInt/Rational/nested) + own/borrow reclamation across the boundary.
+  `component_name` set — gate 1953/0/0).
+- **X5d — value-matrix widening coverage. ✅ DONE (`spec`, test-only).** `extern_abi_val_type` maps every
+  runtime-owned type to the u32 handle uniformly, so String/List/Record (and by construction Map/Set/Sum/
+  nested) cross the SAME shared-handle way with no new machinery. Locked in by `x5d_*` (all two-source):
+  a `(List Int64)` (consumer reads `List.len` → 2), a runtime `String` (consumer reads `String.byte-len`),
+  a `(Record (a …) (b …))` (consumer reads field `b`). REMAINING (follow-up, non-blocking): own/borrow
+  RECLAMATION across the boundary (a handle a peer produces + the consumer drops — leak-free discipline,
+  the `heap_operand_ownership` analogue), and Map/Set/Sum/nested explicit coverage.
 
 **X6+ — widenings (optional, non-blocking):** own-vs-borrow policy corners; N-component graphs (a diamond
 import); a value's lifetime across a multi-hop call chain (A→B→C sharing one heap); the outermost

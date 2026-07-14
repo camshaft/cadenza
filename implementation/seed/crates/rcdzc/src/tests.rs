@@ -49753,4 +49753,91 @@ mod cross_component_oracle {
             cdz_run::Outcome::Trap(t) => panic!("two-source compound run trapped: {t}"),
         }
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // X5d — VALUE-MATRIX widening coverage: String / List / Sum / nested compounds all cross the same
+    // shared-handle way between two source components (extern_abi_val_type maps every runtime-owned type
+    // to the u32 handle). Each is a small coverage brick, no new machinery.
+    // ------------------------------------------------------------------------------------------------
+
+    /// Compile a provider `provider_src` (published under `iface`) + a consumer `consumer_src`, compose via
+    /// run_with_peers with the shared runtime, and assert `main(arg)` renders to `expect`. Skips if the
+    /// runtime wasm is not in the store.
+    fn run_two_source_peers(
+        provider_src: &str,
+        iface: &str,
+        consumer_src: &str,
+        arg: &str,
+        expect: &str,
+    ) {
+        use crate::testkit::parse;
+        let provider = compile_provider(provider_src, iface);
+        let consumer =
+            crate::compile::compile_component(&crate::codec::encode(&parse(consumer_src)))
+                .unwrap_or_else(|d| panic!("consumer compiles: {}", d.message));
+        for (b, who) in [(&provider, "provider"), (&consumer, "consumer")] {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(b)
+                .unwrap_or_else(|e| panic!("{who} validates: {e}"));
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[X5d] runtime wasm not found; skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: iface.to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![arg.to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts).expect("two source peers run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, expect, "{iface}: {consumer_src}"),
+            cdz_run::Outcome::Trap(t) => panic!("{iface} run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn x5d_a_list_value_crosses_between_source_components() {
+        // Provider builds a runtime `(List Int64)` of length 2; consumer reads its length → 2.
+        run_two_source_peers(
+            "(do (def (mk (: x Int64)) (List.push (List.push (list) x) x)) (export mk))",
+            "cadenza:lists/api",
+            "(do (extern \"cadenza:lists/api\" (mk (-> Int64 (List Int64)))) \
+               (def (main (: x Int64)) (List.len (mk x))) (export main))",
+            "5",
+            "2",
+        );
+    }
+
+    #[test]
+    fn x5d_a_string_value_crosses_between_source_components() {
+        // Provider returns a runtime String — a param-selected `if` defeats constant folding, so the
+        // String is built at run time and crosses as a handle. x>0 → "abc" (byte-len 3); consumer reads it.
+        run_two_source_peers(
+            "(do (def (mk (: x Int64)) (if (> x 0) (String.concat \"ab\" \"c\") \"\")) (export mk))",
+            "cadenza:strs/api",
+            "(do (extern \"cadenza:strs/api\" (mk (-> Int64 String))) \
+               (def (main (: x Int64)) (String.byte-len (mk x))) (export main))",
+            "3",
+            "3",
+        );
+    }
+
+    #[test]
+    fn x5d_a_record_value_crosses_and_a_field_is_read() {
+        // Provider returns a runtime record `{a: x, b: x+1}`; consumer reads field `b`.
+        run_two_source_peers(
+            "(do (def (mk (: x Int64)) (record (a x) (b (+ x 1)))) (export mk))",
+            "cadenza:recs/api",
+            "(do (extern \"cadenza:recs/api\" (mk (-> Int64 (Record (a Int64) (b Int64))))) \
+               (def (main (: x Int64)) (. (mk x) b)) (export main))",
+            "10",
+            "11",
+        );
+    }
 }
