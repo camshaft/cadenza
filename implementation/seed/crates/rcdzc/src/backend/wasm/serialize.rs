@@ -4607,45 +4607,10 @@ pub fn distinct_sig_resource_core_module(
             }
             inner.push(op::LOCAL_SET);
             uleb128(cell_local as u64, &mut inner);
+            // push env (the cell) then the closure's args (prefix scalars, rebuilt tuple, suffix scalars).
             inner.push(op::LOCAL_GET);
             uleb128(cell_local as u64, &mut inner);
-            if let Some(rebuild) = &gr.tuple_arg {
-                // Direct-call compound arg: the tuple crossed FLATTENED into its N fields (core params
-                // `1..1+N`). Rebuild the cell (`arr-alloc N` + per field: index, param, box, `arr-set`; FBIP
-                // array threaded on the stack) and push the single handle — the exact single-export tuple-arg
-                // shape. Stash it in `tuple_local` for the post-dispatch drop (an owned per-call temporary).
-                let nfields = rebuild.field_box_ops.len();
-                inner.push(op::I32_CONST);
-                crate::backend::wasm::encode::sleb128(nfields as i64, &mut inner);
-                inner.push(op::CALL);
-                uleb128(imp("arr-alloc"), &mut inner); // [env, arr]
-                for (i, box_op) in rebuild.field_box_ops.iter().enumerate() {
-                    inner.push(op::I32_CONST);
-                    crate::backend::wasm::encode::sleb128(i as i64, &mut inner); // [env, arr, i]
-                    inner.push(op::LOCAL_GET);
-                    uleb128((1 + i) as u64, &mut inner); // the flattened field → [env, arr, i, field]
-                    if let Some(bop) = box_op {
-                        if let Some(signed) = rebuild.field_extend_signed[i] {
-                            inner.push(if signed {
-                                op::I64_EXTEND_I32_S
-                            } else {
-                                op::I64_EXTEND_I32_U
-                            });
-                        }
-                        inner.push(op::CALL);
-                        uleb128(imp(bop), &mut inner);
-                    }
-                    inner.push(op::CALL);
-                    uleb128(imp("arr-set"), &mut inner); // → [env, arr]
-                }
-                inner.push(op::LOCAL_TEE);
-                uleb128(tuple_local as u64, &mut inner); // [env, arr]
-            } else {
-                for a in 0..arity {
-                    inner.push(op::LOCAL_GET);
-                    uleb128((1 + a) as u64, &mut inner);
-                }
-            }
+            emit_closure_call_args(gr.tuple_arg.as_ref(), tuple_local, arity, &imp, &mut inner);
             inner.push(op::LOCAL_GET);
             uleb128(cell_local as u64, &mut inner);
             inner.push(op::I32_CONST);

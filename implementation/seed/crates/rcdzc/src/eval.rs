@@ -394,7 +394,12 @@ fn ref_binder(db: &mut Db, id: StructId) -> Option<StructId> {
 /// LEXICAL do-scope, not the global name index — became unbound in the re-parented copy (a spurious
 /// CDZ0101); a top-level/module callee re-resolved by name regardless, so it only bit the do-local path.
 /// Mirrors `apply_lambda`'s `pin_free_vars` before `beta_reduce`.
-pub fn copy_structural_pub(db: &mut Db, body: StructId, own_params: &[StructId]) -> StructId {
+pub fn copy_structural_pub(
+    db: &mut Db,
+    body: StructId,
+    own_params: &[StructId],
+    arg_of: &HashMap<StructId, StructId>,
+) -> StructId {
     pin_free_vars(db, body, body, own_params);
     // Additionally PIN every SELF-CALL occurrence — a name resolving to the def whose body IS `body`
     // (`is_within(body, body)` is true, so `pin_free_vars` treats it as body-internal and skips it). A
@@ -403,7 +408,10 @@ pub fn copy_structural_pub(db: &mut Db, body: StructId, own_params: &[StructId])
     // a DO-LOCAL one resolves by LEXICAL do-scope, which the orphan copy escapes → unbound. Sharing the
     // occurrence closes both uniformly.
     pin_self_calls(db, body, body);
-    beta_reduce(db, body, &HashMap::default())
+    // `arg_of` SUBSTITUTES a param's references with a replacement node — used to bind a TYPE-VALUED
+    // parameter to its CONCRETE type expression at monomorphization (`(Lst t)` → `(Lst Int64)`), so the
+    // erased type param needs no binder in the specialized copy (empty for the ordinary value-param case).
+    beta_reduce(db, body, arg_of)
 }
 
 /// Pin (memoize the resolution of) every SELF-CALL name occurrence in `node` — a reference resolving to a

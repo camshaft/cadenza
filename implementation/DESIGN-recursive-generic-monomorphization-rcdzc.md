@@ -362,15 +362,19 @@ constructor … applied by ordinary application"; `:250` monomorphized before th
   folds away — so `unbox` at Int64+String → 42 with no runtime type arg. The spurious CDZ0306 "unused
   param `t`" (used only in a sibling annotation) is fixed: `used_param_names` now also scans each param's
   annotation type-expression.
-- ⏭ **T3 (RECURSIVE) — NEXT.** A RECURSIVE generic with a type-valued param (`(def (len (: t Type) (: l
-  (Lst t))) … (len t tl))`) does NOT inline → lowers to a `Core::Call`, and the type-valued arg `t` must
-  be ERASED from that call + from the emitted signature (it has no runtime slot, `valtype_of(Ty::Type) =
-  None`). TODAY this hits `CDZ0203: Type and Unit` at the recursive self-call (the type arg is threaded as
-  a runtime value). FIX: in `lower`'s `Core::Call` + `type_specialize`, DROP a `Ty::Type`-typed argument
-  (specialize on its type-VALUE, emit no runtime arg for it). Gate target: `len` over `Lst Int64`+`Lst
-  String` with explicit `(: t Type)` → 5.
-- **T4** — a type-value arg that is NOT compile-time-resolvable (flows from runtime data) → CDZ0302
-  (`:226` "a type-value never flows from runtime data into a position that determines a type").
+- ✅ **T3 (RECURSIVE) — LANDED (this increment).** A RECURSIVE generic with a type-valued param
+  (`(def (len (: t Type) (: l (Lst t))) … (len t tl))`) lowers to a `Core::Call`, and the type-valued arg
+  is now ERASED from both the call and the emitted signature. `type_specialize` classifies each arg: a
+  `Ty::Type`-typed arg is a TYPE ARG — its concrete type-VALUE (`typeval_of`) is substituted into the
+  copy's body (`(Lst t)` → `(Lst Int64)`, via `copy_structural_pub`'s new `arg_of`), and the param is
+  OMITTED from the specialized signature; `lower`'s `Core::Call` drops the type-arg positions from the
+  runtime args. So each specialized `len` takes just the list handle (`(i32)->i64`), no type arg. The memo
+  key includes each type arg's VALUE (`@Int64`) so distinct instantiations stay distinct. Verified: `len`
+  over `Lst Int64`+`Lst String` → 5, two specializations with the type param erased.
+- **T4 — NEXT.** A type-value arg that is NOT compile-time-resolvable (flows from runtime data) → CDZ0302
+  (`:226` "a type-value never flows from runtime data into a position that determines a type"). Today
+  `typeval_of` returns `None` for a non-constant type expression → the specialization declines (a clean
+  reject, not a miscompile); T4 makes it the CODED CDZ0302 with the actionable message.
 
 ## Not doing (out of scope, distinct features)
 Implicit ML-style quantification `(: l (Lst a))` with a bare `a` (the operator chose type-valued params

@@ -212,25 +212,25 @@ export default function Effects() {
       <Exercise
         id="effects:3"
         prompt={<>
-          <C>helper</C> performs <C>Ask.ask</C> and adds <C>10</C>; the handler lives up in <C>main</C>.
-          Resume <C>ask</C> so the whole thing is <C>42</C>.
+          Now the state. This <C>next</C> hands each caller the current count, so summing three
+          performances should give <C>0 + 1 + 2 = 3</C>. It only counts up if each arm resumes with the{" "}
+          <em>next</em> state — fill in the second <C>resume</C> argument so the counter advances by one.
         </>}
-        starter={`(effect Ask (op ask (-> Unit Int64)))
-(def (helper) (+ (Ask.ask) 10))
+        starter={`(effect Counter (op next (-> Unit Int64)))
 (def (main)
-  (handle Ask unit
-    ((ask () s (resume ? s)))
-    (helper)))`}
-        solution={`(effect Ask (op ask (-> Unit Int64)))
-(def (helper) (+ (Ask.ask) 10))
+  (handle Counter 0
+    ((next (u) s (resume s ?)))
+    (+ (Counter.next) (+ (Counter.next) (Counter.next)))))`}
+        solution={`(effect Counter (op next (-> Unit Int64)))
 (def (main)
-  (handle Ask unit
-    ((ask () s (resume 32 s)))
-    (helper)))`}
-        expected="42"
+  (handle Counter 0
+    ((next (u) s (resume s (+ s 1))))
+    (+ (Counter.next) (+ (Counter.next) (Counter.next)))))`}
+        expected="3"
         hint={<>
-          The performance is in <C>helper</C>, but <C>main</C>'s handler answers it. You need{" "}
-          <C>helper</C> to see <C>32</C>, so it computes <C>32 + 10</C>.
+          <C>resume</C> takes two things: the value handed back (here <C>s</C>, the current count) and
+          the state the <em>next</em> performance will see. Advance it by one — <C>(+ s 1)</C>. (Leave it
+          as plain <C>s</C> and every call sees <C>0</C>, summing to <C>0</C>.)
         </>}
       />
     </article>

@@ -3178,10 +3178,16 @@ pub struct SigGroupAbi {
     /// shared memory + `cabi_realloc` alias.
     pub ret_is_bytes: bool,
     /// `Some(field_bytes)` when this group's closure takes a single FIXED-SHAPE SCALAR tuple/record ARGUMENT
-    /// (the direct-call compound-arg path): its `call-<g>` functype's single argument is a native component
-    /// `tuple<field_bytes…>` (minted just before the functype on both import + export sides), NOT `arg_bytes`'s
-    /// inline scalars. `None` = the scalar-arg path (byte-identical). Only on a SCALAR-result group this cut.
+    /// (the direct-call compound-arg path, SOLE or among scalar args): its `call-<g>` functype's tuple argument
+    /// is a native component `tuple<field_bytes…>` (minted just before the functype on both import + export
+    /// sides). `None` = the scalar-arg path (byte-identical). Composes with EVERY result shape.
     pub tuple_arg_bytes: Option<Vec<u8>>,
+    /// The PREFIX scalar boundary bytes before the tuple (when it sits among scalar args), interleaved into the
+    /// `call-<g>` functype. Empty for a SOLE tuple (or a scalar-arg group).
+    pub tuple_prefix_bytes: Vec<u8>,
+    /// The SUFFIX scalar boundary bytes after the tuple, interleaved into the `call-<g>` functype. Empty for a
+    /// SOLE tuple (or a scalar-arg group).
+    pub tuple_suffix_bytes: Vec<u8>,
 }
 
 /// One SIGNATURE GROUP's boundary shape for the distinct-signature ROUND-TRIP envelope: its producers
@@ -3486,8 +3492,12 @@ pub fn assemble_distinct_sig_resource_mixed_borrow(
                     let list_ty = ti + 2;
                     items.extend_from_slice(&tuple_defined_type(fields));
                     items.extend_from_slice(&list_u8_defined_type());
-                    items.extend_from_slice(&closure_call_list_tuple_arg_functype(
-                        own_ty, tup_ty, list_ty,
+                    items.extend_from_slice(&closure_call_list_tuple_arg_functype_interleaved(
+                        own_ty,
+                        &gr.tuple_prefix_bytes,
+                        tup_ty,
+                        &gr.tuple_suffix_bytes,
+                        list_ty,
                     ));
                     fn_functype.push(ti + 3);
                     ti += 4;
@@ -3503,14 +3513,16 @@ pub fn assemble_distinct_sig_resource_mixed_borrow(
                     ti += 3;
                 }
             } else if let Some(fields) = &gr.tuple_arg_bytes {
-                // call-<g>: own/borrow<t_g> (ti) + tuple<…> (ti+1) + `(self, tuple) -> R` functype.
+                // call-<g>: own/borrow<t_g> (ti) + tuple<…> (ti+1) + `(self, <prefix…>, tuple, <suffix…>) -> R`.
                 items.extend_from_slice(&call_handle(rty));
                 let own_ty = ti;
                 let tup_ty = ti + 1;
                 items.extend_from_slice(&tuple_defined_type(fields));
-                items.extend_from_slice(&closure_call_tuple_arg_functype(
+                items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
                     own_ty,
+                    &gr.tuple_prefix_bytes,
                     tup_ty,
+                    &gr.tuple_suffix_bytes,
                     gr.result_byte,
                 ));
                 fn_functype.push(ti + 2);
@@ -4812,8 +4824,12 @@ fn resource_inner_component_distinct_sig_borrow(
                     let mut items = call_handle(gi as u32);
                     items.extend_from_slice(&tuple_defined_type(fields));
                     items.extend_from_slice(&list_u8_defined_type());
-                    items.extend_from_slice(&closure_call_list_tuple_arg_functype(
-                        own_ty, tup_ty, list_ty,
+                    items.extend_from_slice(&closure_call_list_tuple_arg_functype_interleaved(
+                        own_ty,
+                        &gr.tuple_prefix_bytes,
+                        tup_ty,
+                        &gr.tuple_suffix_bytes,
+                        list_ty,
                     ));
                     section(sec::COMPONENT_TYPE, &wasm_vec(4, &items))
                 });
@@ -4842,16 +4858,18 @@ fn resource_inner_component_distinct_sig_borrow(
                 ty += 3;
             }
         } else if let Some(fields) = &gr.tuple_arg_bytes {
-            // call-<gi> : (self: handle<t_gi>, p: tuple<…>) -> R  → handle + tuple + functype.
+            // call-<gi> : (self: handle<t_gi>, <prefix…>, p: tuple<…>, <suffix…>) -> R  → handle + tuple + ft.
             let own_ty = ty;
             let tup_ty = ty + 1;
             let ft_ty = ty + 2;
             out.extend_from_slice(&{
                 let mut items = call_handle(gi as u32);
                 items.extend_from_slice(&tuple_defined_type(fields));
-                items.extend_from_slice(&closure_call_tuple_arg_functype(
+                items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
                     own_ty,
+                    &gr.tuple_prefix_bytes,
                     tup_ty,
+                    &gr.tuple_suffix_bytes,
                     gr.result_byte,
                 ));
                 section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
@@ -4921,9 +4939,11 @@ fn resource_inner_component_distinct_sig_borrow(
                     let mut items = call_handle(exp_rty);
                     items.extend_from_slice(&tuple_defined_type(fields));
                     items.extend_from_slice(&list_u8_defined_type());
-                    items.extend_from_slice(&closure_call_list_tuple_arg_functype(
+                    items.extend_from_slice(&closure_call_list_tuple_arg_functype_interleaved(
                         ti,
+                        &gr.tuple_prefix_bytes,
                         ti + 1,
+                        &gr.tuple_suffix_bytes,
                         ti + 2,
                     ));
                     section(sec::COMPONENT_TYPE, &wasm_vec(4, &items))
@@ -4956,9 +4976,11 @@ fn resource_inner_component_distinct_sig_borrow(
             out.extend_from_slice(&{
                 let mut items = call_handle(exp_rty);
                 items.extend_from_slice(&tuple_defined_type(fields));
-                items.extend_from_slice(&closure_call_tuple_arg_functype(
+                items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
                     ti,
+                    &gr.tuple_prefix_bytes,
                     ti + 1,
+                    &gr.tuple_suffix_bytes,
                     gr.result_byte,
                 ));
                 section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
@@ -6266,26 +6288,6 @@ fn tuple_defined_type(field_bytes: &[u8]) -> Vec<u8> {
     item
 }
 
-/// The `call` functype for a closure whose single ARGUMENT is a fixed-shape scalar `tuple<…>` (the direct-
-/// call compound-arg path): `(self: <handle<t>>, p: tuple<…>) -> R` — like [`closure_call_functype`] but the
-/// one argument references a `tuple` DEFINED type by index (laid just before this functype) instead of an
-/// inline scalar byte. `result_byte` is a scalar boundary byte (a compound RESULT is a separate list-typed
-/// path). No Memory/Realloc canon options — a small tuple flattens into scalar core params on lift.
-fn closure_call_tuple_arg_functype(
-    self_handle_type_idx: u32,
-    tuple_type_idx: u32,
-    result_byte: u8,
-) -> Vec<u8> {
-    // The tuple is the SOLE closure argument (no prefix/suffix scalars).
-    closure_call_tuple_arg_functype_interleaved(
-        self_handle_type_idx,
-        &[],
-        tuple_type_idx,
-        &[],
-        result_byte,
-    )
-}
-
 /// A `call` functype for a closure taking ONE fixed-shape scalar tuple arg AMONG scalar args: `(self:
 /// <handle<t>>, <prefix scalars…>, p: tuple<…>, <suffix scalars…>) -> R`. `prefix_bytes`/`suffix_bytes` are
 /// the scalar boundary bytes BEFORE/AFTER the tuple (in the closure's original arg order); `tuple_type_idx`
@@ -6333,26 +6335,6 @@ fn closure_call_tuple_arg_functype_interleaved(
     // One result — the closure's return valtype (a scalar boundary byte).
     item.extend_from_slice(&[0x00, result_byte]);
     item
-}
-
-/// A `call` functype for a closure that takes a fixed-shape scalar tuple ARGUMENT AND returns a `list<u8>`
-/// (a byte-rope / compound / collection RESULT crossing through linear memory): `(self: <handle<t>>, p:
-/// tuple<…>) -> list<u8>`. Combines [`closure_call_tuple_arg_functype`] (the `tuple<…>` arg by index) with
-/// [`closure_call_list_functype`] (the `list<u8>` result by index). Both `tuple_type_idx` + `list_type_idx`
-/// are defined types laid just before this functype. Its lift carries Memory/Realloc (`canon_lift_list_item`).
-fn closure_call_list_tuple_arg_functype(
-    self_handle_type_idx: u32,
-    tuple_type_idx: u32,
-    list_type_idx: u32,
-) -> Vec<u8> {
-    // The tuple is the SOLE closure argument (no prefix/suffix scalars).
-    closure_call_list_tuple_arg_functype_interleaved(
-        self_handle_type_idx,
-        &[],
-        tuple_type_idx,
-        &[],
-        list_type_idx,
-    )
 }
 
 /// A `call` functype for a closure taking ONE fixed-shape scalar tuple arg AMONG scalar args AND returning a

@@ -10416,6 +10416,47 @@ mod recursion {
     }
 
     #[test]
+    fn a_lowercase_named_type_is_referenceable_in_a_field() {
+        // A type is a VALUE, referenceable by name regardless of case. A lowercase-named sum
+        // `(type mylist (Nil) (Cons Int64 mylist))` SELF-references `mylist` in its field, and a lowercase
+        // `(type wrap (W num))` cross-references a declared `(type num …)`. The implicit-type-parameter scan
+        // (`db::scan_top_level`) captures a free lowercase payload name as a tyvar (`a` in `(type Box (W a))`),
+        // but a name that names a DECLARED type is dropped from the params after the full type-name gather —
+        // so it resolves to the type (step 3), not a fresh variable. Before this the reference re-lexed as a
+        // tyvar, the sum silently became generic, and its variants failed to resolve (a confusing CDZ0203).
+        let ok = |src: &str| {
+            assert!(
+                compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+                "must compile: {src}"
+            )
+        };
+        // Self-referential lowercase recursive sum — the field `mylist` resolves to the type, so its
+        // variants (`Nil`/`Cons`) resolve and the match type-checks + emits (was CDZ0203). A recursive
+        // `len` fold over it (self-referential recursion through the field) also compiles.
+        ok(
+            "(module m (type mylist (Nil) (Cons Int64 mylist)) (def (f (: l mylist)) (match l ((Nil) 0) ((Cons h t) 1))) (def (main) (f (mylist.Nil))) (export main))",
+        );
+        ok(
+            "(module m (type mylist (Nil) (Cons Int64 mylist)) (def (len (: l mylist)) (match l ((Nil) 0) ((Cons h t) (+ 1 (len t))))) (def (main) (len (mylist.Nil))) (export main))",
+        );
+        // Cross-referencing lowercase types (`wrap` references declared `num`).
+        ok(
+            "(module m (type num (Z)) (type wrap (W num)) (def (g (: w wrap)) (match w ((W n) 1))) (def (main) (g (wrap.W (num.Z)))) (export main))",
+        );
+        // NO REGRESSION: a genuine tyvar (`a`, matching no declared type) stays a real type variable — the
+        // generic sum still compiles + instantiates.
+        ok(
+            "(module m (type Box (W a) (E)) (def (main) (match (Box.W 5) ((W n) n) ((E) 0))) (export main))",
+        );
+        // The Capitalized spelling is unaffected.
+        ok(
+            "(module m (type Mylist (Nil) (Cons Int64 Mylist)) (def (f (: l Mylist)) (match l ((Nil) 0) ((Cons h t) 1))) (def (main) (f (Mylist.Nil))) (export main))",
+        );
+        // (The end-to-end RUN — a recursive `len` over a lowercase `mylist` → 3 — is covered by the corpus
+        // gate, which composes the value-heap runtime `run_returns` here does not.)
+    }
+
+    #[test]
     fn a_recursive_newtype_traversal_recurses_on_its_projected_field() {
         // OVER-REJECTION regression: a recursive NEWTYPE `(type Lst (Mk (Option (Tuple Int64 Lst))))` whose
         // recursive field is PROJECTED out (`(. p 1) : Lst`) and passed to a same-typed recursive call was
@@ -11924,21 +11965,25 @@ mod match_engine {
         // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param
         // type for the runtime path, but the body's CONST-FOLD ran on the still-`Any` param → a const arg
         // folded at Int64, MISSING the Int8 overflow. `(app (fn (n) (+ n 1)))` @ (g 127) yielded 128 (Int64)
-        // instead of the CDZ0302 the explicit `(fn ((: n Int8)) …)` gives. Fixed by recovering the param's
+        // instead of the CDZ0304 the explicit `(fn ((: n Int8)) …)` gives. Fixed by recovering the param's
         // context arrow at `type_of` (so the body types narrow) AND wrapping the substituted arg in the
         // recovered `(: arg (Int N))` at β-reduction (so the fit-check fires + travels through copies).
+        // A constant arithmetic OPERATION that overflows the recovered narrow width is a provable trap →
+        // CDZ0304 (ConstTrap), like the wide `(+ Int64.max 1)`. (The context-typing fix — carrying the
+        // arrow's Int8 into the body const-fold — is what makes the overflow VISIBLE at compile time; the
+        // CODE is CDZ0304 because it is an operation with no value, not a literal that fails to fit.)
         let overflows = "(module m (def (app (: g (-> Int8 Int8))) (g 127)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
         assert_eq!(
             reject_code(overflows).as_deref(),
-            Some("CDZ0302"),
+            Some("CDZ0304"),
             "an unannotated context-Int8 param overflows a const arg like an explicit Int8 param"
         );
         // The `*` variant: 12*12 = 144 > Int8.max 127.
         let mul = "(module m (def (app (: g (-> Int8 Int8))) (g 12)) (def (main) (app (fn (n) (* n n)))) (export main))";
-        assert_eq!(reject_code(mul).as_deref(), Some("CDZ0302"));
+        assert_eq!(reject_code(mul).as_deref(), Some("CDZ0304"));
         // UInt8: 255 + 1 = 256 overflows.
         let uint = "(module m (def (app (: g (-> UInt8 UInt8))) (g 255)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
-        assert_eq!(reject_code(uint).as_deref(), Some("CDZ0302"));
+        assert_eq!(reject_code(uint).as_deref(), Some("CDZ0304"));
         // NO OVER-REJECTION: an IN-RANGE const still compiles + runs (g 5 → 5+1 = 6, fits Int8).
         let in_range = "(module m (def (app (: g (-> Int8 Int8))) (g 5)) (def (main) (app (fn (n) (+ n 1)))) (export main))";
         assert_eq!(
@@ -13399,21 +13444,28 @@ mod match_engine {
                 .as_deref(),
             Some("CDZ0302")
         );
-        // Arithmetic on an in-range constant arg that OVERFLOWS the width folds and is proven CDZ0302.
+        // Arithmetic on an in-range constant arg that OVERFLOWS the width folds and is proven a constant
+        // OPERATION with no value → CDZ0304 (ConstTrap), like the wide `(+ Int64.max 1)` — NOT CDZ0302
+        // (which is a LITERAL that doesn't fit; here 100 fits Int8, it is `100 + 100` that overflows).
         assert_eq!(
             reject_code(
                 "(module m (def (f (: a Int8)) (+ a a)) (def (main) (f 100)) (export main))"
             )
             .as_deref(),
-            Some("CDZ0302")
+            Some("CDZ0304")
         );
-        // The annotated LET BINDER path range-checks its bound value the same way.
+        // The annotated LET BINDER path range-checks its bound value the same way — a bare out-of-range
+        // LITERAL bound value is still CDZ0302 (a literal that doesn't fit the annotated width).
         assert_eq!(
             reject_code("(module m (def (main) (let (((: a Int8) 200)) a)) (export main))")
                 .as_deref(),
             Some("CDZ0302")
         );
-        // A COMPUTED out-of-range value under a binder annotation folds and is caught too.
+        // A COMPUTED out-of-range value under a binder annotation folds and is caught too — here the
+        // operands `100`/`100` are UNANNOTATED (Int64), so `(+ 100 100)` folds to 200 at Int64 and the
+        // BINDER ANNOTATION `(: a Int8)` rejects the folded VALUE as not fitting Int8 → CDZ0302 (a
+        // value-fit at the annotation, exactly like `(: 200 Int8)`). This is DISTINCT from `(+ (: 100
+        // Int8) (: 100 Int8))`, whose `+` node is itself typed Int8 so the operation overflow is CDZ0304.
         assert_eq!(
             reject_code("(module m (def (main) (let (((: a Int8) (+ 100 100))) a)) (export main))")
                 .as_deref(),
@@ -17913,6 +17965,57 @@ mod match_engine {
             .unwrap(),
             "1",
             "runtime fixed-arity list match binds two elements"
+        );
+    }
+
+    #[test]
+    fn a_list_arm_head_survives_a_sibling_rest_binders_consuming_slice() {
+        // ⚠ MISCOMPILE REGRESSION: a `(list x .. rest)` arm binds the head `x` via `vec-get` (BORROWS the
+        // shared arm handle) AND the tail `rest` via `vec-drop` (CONSUMES it). If the `vec-drop` runs while
+        // the handle still has a live head read pending — as in a TAIL fold `(f rest (+ acc x))`, where the
+        // recursive call's arg 0 (`rest`, the consuming slice) is emitted before arg 1 reads `x` — the
+        // vector is reclaimed and the head read returns GARBAGE (0). The `vec-drop` now `dup`s the handle
+        // first (rc++), so the arm handle stays live for every co-binder. Before: `sum-acc([a],0)` → 0.
+        let tail_sum = run_heap_value(
+            "(module m \
+               (def (sa xs acc) (match xs ((list) acc) ((list x .. rest) (sa rest (+ acc x))))) \
+               (def (main) (sa (list 10 20 30) 0)) (export main))",
+            vec![],
+        );
+        let Some(tail_sum) = tail_sum else {
+            eprintln!("runtime wasm not found; skipping tail list-fold run");
+            return;
+        };
+        assert_eq!(
+            tail_sum, "60",
+            "tail-accumulator list fold reads each head element"
+        );
+        // A head read AND the tail sliced in the SAME arm, head used after the slice arg: the head must
+        // still read its real value, not 0. `(sa (list 7) 1000)` → 1000 + 7 = 1007.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (sa xs acc) (match xs ((list) acc) ((list x .. rest) (sa rest (+ acc x))))) \
+                   (def (main) (sa (list 7) 1000)) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1007",
+            "single-element tail fold reads the head (not 0)"
+        );
+        // A MULTI-binder cons `(list a b .. rest)` (two head reads + a consuming rest) must emit valid wasm
+        // and read both heads — the `dup` uses no fresh scratch slot (re-reads the scrutinee), so it never
+        // aliases a sibling element binder's i64 slot. `(g (list 1 2 3 4) 0)` sums pairs (1+2)+(3+4) = 10.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (g xs acc) (match xs ((list) acc) ((list a b .. rest) (g rest (+ acc (+ a b)))) ((list z) (+ acc z)))) \
+                   (def (main) (g (list 1 2 3 4) 0)) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "10",
+            "multi-binder cons arm reads both heads across the consuming rest slice"
         );
     }
 
@@ -30089,6 +30192,38 @@ mod stage1 {
             !td.iter().any(|d| d.message.contains("not yet reducible")),
             "the misleading fold-decline is dropped: {td:?}"
         );
+        // A PRELUDE TYPE head — `(handle Int64 …)` / `(handle Option …)` — is the same root cause but a
+        // prelude type has NO user decl (neither `def_by_name` nor `type_decl_by_name`), so it slipped
+        // through to the leaky "not yet reducible" fold-decline while a USER type was named. `typeval_of`
+        // now classifies it as a type-value generically, so it reads the same "is a type" message.
+        for (src, head) in [
+            (
+                "(module m (def (main) (handle Int64 0 ((x (u) s (resume 1 s))) 5)) (export main))",
+                "Int64",
+            ),
+            (
+                "(module m (def (main) (handle Option 0 ((x (u) s (resume 1 s))) 5)) (export main))",
+                "Option",
+            ),
+        ] {
+            let mut prelude_head = crate::db::Db::load(parse(src));
+            let pd = crate::diagnostics(&mut prelude_head);
+            let d = pd
+                .iter()
+                .find(|d| d.message.contains("head must name an EFFECT"))
+                .unwrap_or_else(|| {
+                    panic!("a prelude-type handle head `{head}` names the real problem: {pd:?}")
+                });
+            assert!(
+                d.message.contains(&format!("`{head}`")) && d.message.contains("is a type"),
+                "names the prelude-type head `{head}` as a type: {}",
+                d.message
+            );
+            assert!(
+                !pd.iter().any(|d| d.message.contains("not yet reducible")),
+                "the misleading fold-decline is dropped for `{head}`: {pd:?}"
+            );
+        }
     }
 
     #[test]
@@ -31699,6 +31834,45 @@ mod stage1 {
             cdz_run::Outcome::Value(v) => assert_eq!(
                 v, "42",
                 "unbox monomorphized at Int64 (40) + String (byte-len 2)"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_recursive_generic_with_a_type_valued_parameter_erases_the_type_argument() {
+        // Type-valued-parameter vertical, T3 RECURSIVE (09-functions "a recursive generic with a
+        // type-valued parameter monomorphizes per type, erasing the type argument"): `len` takes `(: t
+        // Type)` and `(: l (Lst t))`, recursing `(len t tl)`. Unlike the non-recursive `unbox` (which
+        // inlines), a recursive `len` lowers to a `Core::Call` — so the compile-time-only `Ty::Type`
+        // argument must be ERASED from the specialized signature AND the self-call (each `len` takes only
+        // the list handle). `type_specialize` substitutes the concrete type-value into the copy's `(Lst
+        // t)` annotation and drops the type param; `lower` drops the type arg from the `Core::Call`.
+        // `(len Int64 …)` over a 2-elem list = 2, `(len String …)` over a 3-elem list = 3; 2 + 3 = 5.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (type Lst Nil (Cons a (Lst a))) \
+               (def (len (: t Type) (: l (Lst t))) \
+                 (match l ((Lst.Nil) 0) ((Lst.Cons h tl) (+ 1 (len t tl))))) \
+               (def (main) (+ (len Int64 (Lst.Cons 1 (Lst.Cons 2 Lst.Nil))) \
+                              (len String (Lst.Cons \"a\" (Lst.Cons \"b\" (Lst.Cons \"c\" Lst.Nil)))))) \
+               (export main))",
+        )))
+        .expect("a recursive generic with a type-valued parameter compiles");
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping recursive type-valued-parameter run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(v) => assert_eq!(
+                v, "5",
+                "len monomorphized over Lst Int64 (2) + Lst String (3), type arg erased"
             ),
             cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
         }
