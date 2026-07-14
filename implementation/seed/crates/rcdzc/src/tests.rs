@@ -29770,6 +29770,26 @@ mod stage1 {
                 .any(|d| d.code.as_deref() == Some("CDZ0101")),
             "an unbound handle head keeps its CDZ0101"
         );
+        // A TYPE head — `(handle C …)` where `C` is a sum type — is the same "head is not an effect" root
+        // cause (it leaked "record has no field `op`" + the fold-decline before). It now names the head as
+        // `a type`, not the misleading "not yet reducible by the tail-resumptive fold".
+        let mut ty_head = crate::db::Db::load(parse(
+            "(module m (type C (Red)) (def (main) (handle C 0 ((x (u) s (resume 1 s))) 5)) (export main))",
+        ));
+        let td = crate::diagnostics(&mut ty_head);
+        let d = td
+            .iter()
+            .find(|d| d.message.contains("head must name an EFFECT"))
+            .expect("a type handle head names the real problem");
+        assert!(
+            d.message.contains("`C`") && d.message.contains("is a type"),
+            "names the head as a type: {}",
+            d.message
+        );
+        assert!(
+            !td.iter().any(|d| d.message.contains("not yet reducible")),
+            "the misleading fold-decline is dropped: {td:?}"
+        );
     }
 
     #[test]

@@ -1169,7 +1169,7 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             continue;
         };
         for op in arm_ops {
-            if let Some(head_occ) = crate::effects::arm_op_head_names_a_value(db, op) {
+            if let Some((head_occ, category)) = crate::effects::arm_op_head_names_a_value(db, op) {
                 let named = db
                     .ast
                     .as_name(head_occ)
@@ -1178,8 +1178,8 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 bad_handle_heads.push((
                     head_occ,
                     format!(
-                        "a handle's head must name an EFFECT, but this head{named} is a value \
-                         definition — write `(handle <effect> <seed> (arms…) <body>)` over a declared \
+                        "a handle's head must name an EFFECT, but this head{named} is {category} \
+                         — write `(handle <effect> <seed> (arms…) <body>)` over a declared \
                          `(effect …)`"
                     ),
                 ));
