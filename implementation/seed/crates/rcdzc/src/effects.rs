@@ -1800,7 +1800,11 @@ fn is_irrefutable_pattern(db: &mut Db, pat: StructId) -> bool {
 /// guarded arms sequence state per arm-test, which this narrow rewrite does not model). Walks structurally
 /// so the match may be nested in the body. Does NOT descend into an inner `handle` (its guards are that
 /// handle's concern).
-fn desugar_performing_guard_match(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId> {
+fn desugar_performing_guard_match(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+) -> Option<StructId> {
     if matches!(resolved_of(db, node), Resolved::Handle { .. }) {
         return None;
     }
