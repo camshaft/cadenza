@@ -29074,6 +29074,52 @@ mod diagnostics {
         );
     }
 
+    /// The SCALAR-match well-formedness rejects (a pattern-type mismatch, a malformed guard) anchor at the
+    /// offending ARM PATTERN, not the enclosing `(match …)`. These fire in the scalar-probe path
+    /// (`lower_match_scalar` / the list-arm classifier), a DIFFERENT code path from the sum decision-tree
+    /// `pattern_constraints`, so they need their own `.at(pat)`. The anchor node must NOT be the match.
+    #[test]
+    fn a_scalar_match_pattern_fault_anchors_at_the_pattern_not_the_match() {
+        // Whether the CDZ0201's anchor node is NOT the enclosing `(match …)` (its head is not `match`).
+        fn anchors_off_the_match(src: &str) -> bool {
+            let ast = parse(src);
+            let bytes = crate::codec::encode(&ast);
+            let out = compile(
+                &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+                &[Target::Wasm],
+            );
+            let d = out
+                .diagnostics
+                .iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0201"))
+                .expect("a CDZ0201");
+            let node = d.node.expect("the CDZ0201 carries an anchor node");
+            let db = Db::load(parse(src));
+            db.ast.head_name(StructId(node)) != Some("match")
+        }
+        // A Bool literal pattern against an Int64 scrutinee → the reject anchors at the `true` pattern.
+        assert!(
+            anchors_off_the_match(
+                "(module m (def (f (: n Int64)) (match n (true 1) (_ 0))) (export f))"
+            ),
+            "the pattern-type-mismatch CDZ0201 anchors at the literal pattern, not the match"
+        );
+        // A malformed guard `(guard <pat> <cond> extra)` in a SCALAR match → anchors at the guard pattern.
+        assert!(
+            anchors_off_the_match(
+                "(module m (def (f (: n Int64)) (match n ((guard 0 (> n 1) extra) 1) (_ 0))) (export f))"
+            ),
+            "the scalar-path malformed-guard CDZ0201 anchors at the guard pattern, not the match"
+        );
+        // A malformed guard in a LIST match (the list-arm classifier path) → anchors at the guard pattern.
+        assert!(
+            anchors_off_the_match(
+                "(module m (def (f (: xs (List Int64))) (match xs ((guard (list a) (> a 1) extra) a) (_ 0))) (export f))"
+            ),
+            "the list-path malformed-guard CDZ0201 anchors at the guard pattern, not the match"
+        );
+    }
+
     /// An ANONYMOUS-lambda `(fn (x) …)` parameter never referenced in the body is unused — like an unused
     /// DEF parameter (CDZ0306 + `_`-prefix fix). A lambda is not in `db.defs`, so the def-param loop missed
     /// it; a dedicated `head_name == "fn"` pass (using the same name-based `used_param_names` check) covers

@@ -2094,6 +2094,64 @@
             (def (main) (sum-firsts (build 1 4 (list)))) (export main)))
   (output (: 6 Int64)))
 
+; The list-element cases above bind an IRREFUTABLE element (a tuple, always matches once the length holds)
+; or refine on a LITERAL. A list arm's element MAY also be a refutable sum-CONSTRUCTOR pattern `(A.I x)`,
+; which adds a runtime DISCRIMINANT test on that element (does it carry the `I` tag?) on top of the length
+; dispatch — the head-plus-typed-args shape a compiler pass destructures. A list arm may carry AT MOST ONE
+; such refutable constructor element today (with the other positions bare binders); two or more decline
+; (a later increment). These pin the ONE-constructor-element form: at the head, at a non-head position, its
+; fall-through when the tag differs, and over a runtime-built list.
+
+(case "a list arm with one constructor element binds its payload and its bare siblings"
+  (doc    "A list arm whose FIRST element is a refutable constructor pattern `(A.I x)` plus bare binders
+           `b c`: `((list (A.I x) b c) x)` matches a length-3 list whose head is an `A.I`, binding its
+           payload `x` (and `b`/`c` positionally). `(list (A.I 5) (A.N \"y\") (A.I 9))` → x=5. Pins that a
+           list element MAY be a refutable sum-constructor pattern — a runtime discriminant test on that
+           element atop the length dispatch — the head-plus-args shape a compiler pass destructures, distinct
+           from the irrefutable tuple element above.")
+  (input  (do
+            (type A (I Int64) (N String))
+            (def (f (: xs (List A))) (match xs ((list (A.I x) b c) x) (_ -1)))
+            (def (main) (f (list (A.I 5) (A.N "y") (A.I 9)))) (export main)))
+  (output (: 5 Int64)))
+
+(case "a list arm's constructor element at a non-head position"
+  (doc    "The constructor element need not be the head: `((list a (A.I x) c) x)` tests the SECOND element's
+           tag and binds its payload, with `a`/`c` bare. `(list (A.N \"h\") (A.I 7) (A.I 9))` → x=7. Pins
+           that the single refutable element may sit at any position in the arm, the sibling binders reading
+           the other positions.")
+  (input  (do
+            (type A (I Int64) (N String))
+            (def (f (: xs (List A))) (match xs ((list a (A.I x) c) x) (_ -1)))
+            (def (main) (f (list (A.N "h") (A.I 7) (A.I 9)))) (export main)))
+  (output (: 7 Int64)))
+
+(case "a list arm's constructor element that does not match the tag falls through"
+  (doc    "The refutability of the constructor element: the same `((list (A.I x) b c) x)` arm against a list
+           whose HEAD is an `A.N` (not `A.I`) does NOT match — the length holds but the discriminant test on
+           the head fails — so it falls through to the wildcard → -1. Pins that a constructor list element is
+           genuinely REFUTABLE (a runtime tag test), not an irrefutable binder that always matches on length,
+           so an arm that names the wrong tag is skipped rather than mis-binding.")
+  (input  (do
+            (type A (I Int64) (N String))
+            (def (f (: xs (List A))) (match xs ((list (A.I x) b c) x) (_ -1)))
+            (def (main) (f (list (A.N "h") (A.I 7) (A.I 9)))) (export main)))
+  (output (: -1 Int64)))
+
+(case "a list-arm constructor element over a runtime-built list"
+  (doc    "The runtime-scrutinee form: `((list (A.I x) .. rest) x)` reads the head of a list built by a
+           push-loop (a genuine heap vector, not a folded constant), testing the head's tag and binding its
+           payload while a rest binder captures the tail. `build` pushes `(A.I 10) (A.I 20)` → the head is
+           `(A.I 10)`, x=10. Pins that a refutable constructor list element composes with the length-dispatch
+           RUNTIME list matcher and a rest binder — the exact head-of-a-tagged-sequence idiom a self-hosted
+           pass walks.")
+  (input  (do
+            (type A (I Int64) (N String))
+            (def (f (: xs (List A))) (match xs ((list (A.I x) .. rest) x) (_ -1)))
+            (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (A.I (* i 10)))) out))
+            (def (main) (f (build 1 3 (list)))) (export main)))
+  (output (: 10 Int64)))
+
 (case "a literal list element dispatches a runtime list by its value"
   (doc    "A list element position MAY be a refutable SCALAR/STRING LITERAL — `((list 0 a .. rest) …)` matches
            only a list whose FIRST element is 0, binding the SECOND to `a`. This is the opcode/keyword

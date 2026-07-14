@@ -52,8 +52,8 @@ export default function Floats() {
       </P>
       <Note>
         This example is <strong>meant to be refused</strong>. Run it and read the diagnostic: the
-        compiler declines with <C>CDZ0301</C> rather than inventing a conversion — and it offers to
-        rewrite the integer <C>2</C> as the float <C>2.0</C>.
+        compiler declines with <C>CDZ0301</C> rather than inventing a conversion — and it suggests a
+        one-token fix to make the two operands agree (here, dropping the <C>.0</C> so both are integers).
       </Note>
       <Runnable source={`(+ 2 2.0)`} expect="error" />
 

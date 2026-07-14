@@ -67,6 +67,10 @@ top. Current `src/` modules (each with same-file `@test`s — 29 tests total):
 - `src/free-vars.cdz` — collect an `Ast`'s `Name`s into a `Set String` (a resolve-lite pass).
 - `src/fold.cdz` — a constant-folder: reduces `(op Int Int)` forms (`+`/`-`/`*`) to an `Int`, bottom-up
   (so `(+ (* 2 3) 4)` → `7`); leaves unknown-op / non-constant forms untouched.
+- `src/subst.cdz` — substitution (β-reduction / macro-expansion core): replaces each `Name` found in a
+  `Map String Ast` environment with its `Ast`, recursively. Stresses a compound-VALUED `Map`.
+- `src/check.cdz` — an arity checker: counts call-forms `(Name op arg…)` whose arg count differs from
+  `op`'s declared arity in a `Map String Int64` arity table (recursing into every child).
 
 Planned, following the rcdzc pipeline: decode (binary AST → `Ast`) · resolve · infer (Hindley-Milner)
 · lower (→ core) · encode/emit. The compiler is fundamentally bytes → bytes.
@@ -224,3 +228,13 @@ are the sharp edges.
   fixed-shape destructure a compiler pass wants (`[Name op, Int x, Int y]`). WORKAROUND (used by
   `src/fold.cdz`): bind every element as a plain binder, then nested-`match` each. Ask: N refutable
   elements per list arm. Clean REJECT (not a miscompile) → a Todo, but a common shape.
+
+- **OPEN (seed `rcdzc` — DECLINE + a context-dependent WRONG-VALUE sibling): `String ==` on a value
+  returned from `Map.lookup`.** `repros/decline-borrow-ownership-returned-map-string-eq.sexp`. When a
+  `String` originates from a `Map.lookup`, is RETURNED from a function, then used as a `String ==`
+  operand in the caller → "borrowing op operand has an ownership this backend cannot yet prove" (`cdz
+  check` clean, `cdz compile`/`cdz test` decline). Doing the `==` INSIDE the lookup's match arm is fine.
+  A related WRONG-VALUE variant (a `String ==` on a value from a MISSED lookup's `None → node` return)
+  miscompiles only past a per-module def/test-count THRESHOLD (passes standalone). Surfaced building
+  `src/subst.cdz`; both sidestepped by checking a result's SHAPE (`match … ((Ast.Name _) …)`) instead
+  of `String ==`-ing an extracted payload.
