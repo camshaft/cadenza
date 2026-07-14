@@ -5549,6 +5549,22 @@ fn lower_recursive_call_or_decline(
     // DICTIONARY of functions — to inline + drop). Both go through `type_specialize`, which substitutes
     // the erased args into a specialized copy and returns the dropped positions. A monomorphic callee
     // called with only plain runtime args takes the byte-identical `Core::Call { callee }` path below.
+    //
+    // AD-HOC POLYMORPHISM with NO trait machinery: a "trait" is an ordinary record type whose fields are
+    // its operations, an "instance" is an ordinary value of that record, and a def polymorphic over it
+    // receives that dictionary as an ordinary EXPLICIT parameter (resolved by ordinary lexical binding —
+    // there is no ambient/global trait-resolution engine, so which implementation a use site gets is the
+    // explicit argument, visible at the call). A const-known dictionary is MONOMORPHIZED into the use site
+    // here (inlined by `type_specialize`, the argument erased from the runtime call) — no runtime
+    // dictionary lookup, no dispatch the manifest did not declare.
+    //= spec/capabilities/type-system.md#ad-hoc-polymorphism-is-an-explicitly-passed-dictionary
+    //# A trait MUST be an ordinary record type whose fields are the operations it declares, and an instance MUST be an ordinary value of that record type, so that ad-hoc polymorphism reuses records and first-class values rather than a separate trait construct.
+    //= spec/capabilities/type-system.md#ad-hoc-polymorphism-is-an-explicitly-passed-dictionary
+    //# A definition that is polymorphic over a trait MUST receive the instance as an ordinary explicit parameter, so that ad-hoc polymorphism is the existing type-valued-and-value-valued parameter mechanism rather than a separate resolution engine.
+    //= spec/capabilities/type-system.md#ad-hoc-polymorphism-is-an-explicitly-passed-dictionary
+    //# The compiler MUST NOT resolve a trait instance from ambient or global scope, so that which implementation a use site gets is visible at the call and no orphan rule or global-coherence assumption is needed for ad-hoc polymorphism to compose with content-addressed modules.
+    //= spec/capabilities/type-system.md#ad-hoc-polymorphism-is-an-explicitly-passed-dictionary
+    //# An explicitly passed instance MUST be monomorphized into the use site, so that a component carries no runtime dictionary lookup and no dispatch the manifest did not declare.
     let own_param_occs: Vec<StructId> = db.defs[callee]
         .params
         .clone()
