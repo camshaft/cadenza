@@ -3350,6 +3350,46 @@
   (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (list 100 10 3) (List Int64))))
 
+; The NESTED-arg-AMONG-scalars shape extends to the MULTI-EXPORT + MIXED paths too (via the shared
+; `nested_sole_or_among_scalars` classifier + the interleaved envelope functype): a nested tuple at its own
+; position among aliased-width scalars, shared across N exports or beside a plain export. (Distinct-sig
+; nested-among-scalars still declines — its per-group detector doesn't yet take the among-scalars variant.)
+
+(case "MULTI-EXPORT: two closures each taking a scalar arg THEN a NESTED tuple"
+  (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 (Tuple Int64 Int64)) Int64)` — a scalar `n` then a NESTED
+           tuple, shared across two exports. The shared `call` interleaves `n` around the recursively-rebuilt
+           nested cell. Driving `mk-a`: `call(handle, 1000, (100, (10, 3)))` → `n + p.0 + p.1.0 + p.1.1` =
+           1113.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 (Tuple Int64 Int64))))
+                           (+ n (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 (Tuple Int64 Int64))))
+                           (- n (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (output (: 1113 Int64)))
+
+(case "MULTI-EXPORT: driving the second scalar-then-NESTED closure (subtract)"
+  (doc    "The SAME multi-export component, driving `mk-b` (subtract): `call(handle, 1000, (100, (10, 3)))` →
+           `n - (p.0 + p.1.0 + p.1.1)` = 887.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 (Tuple Int64 Int64))))
+                           (+ n (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 (Tuple Int64 Int64))))
+                           (- n (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (output (: 887 Int64)))
+
+(case "MIXED: a scalar-then-NESTED-tuple closure with a LIST result ALONGSIDE a plain export"
+  (doc    "`mk : (-> Int64 (Tuple Int64 (Tuple Int64 Int64)) (List Int64))` beside a plain `two`. The shared
+           value-encode `call` interleaves the prefix scalar around the recursively-rebuilt nested cell, then
+           value-encodes the returned List. `call(handle, 1000, (100, (10, 3)))` → `(list 1000 100 10 3)`.")
+  (input  (do (def (mk) (fn ((: n Int64) (: p (Tuple Int64 (Tuple Int64 Int64))))
+                         (list n (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   mk (: 1000 Int64) (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (output (: (list 1000 100 10 3) (List Int64))))
+
 ; The NESTED compound ARG completes the export-shape matrix on the DISTINCT-SIGNATURE path: closures of
 ; DIFFERENT signatures each taking a sole nested tuple/record arg cross as G distinct resource types, each
 ; per-group `call-g<n>` rebuilding ITS nested cell recursively + minting ITS inner `tuple<…>` types by index

@@ -1829,6 +1829,38 @@ fn nested_compound_among_scalars(arg_tys: &[crate::ty::Ty]) -> Option<NestedAmon
     ))
 }
 
+/// A fixed-shape compound closure argument with a NESTED compound field — the SOLE arg OR among aliased-width
+/// scalars — as a [`NestedCompoundArgBoundary`]. The SOLE case (arity 1) has empty prefix/suffix + `base_param`
+/// 1 and `leaf_bytes` == the flattened leaves; the AMONG-SCALARS case (arity > 1) carries prefix/suffix + a
+/// shifted `base_param` (and empty `leaf_bytes` — the shape drives the mint). `None` unless exactly one
+/// compound (with a nested field) among scalars. Shared by every closure emit path's `nested_tuple` binding.
+fn nested_sole_or_among_scalars(arg_tys: &[crate::ty::Ty]) -> Option<NestedCompoundArgBoundary> {
+    if arg_tys.len() == 1 {
+        let (lb, lv, rf, shape) = nested_fixed_shape_tuple_arg(&arg_tys[0])?;
+        // Only this path when there IS a nested field (else the all-scalar case is a flat `tuple_arg`).
+        let has_nested = shape.iter().any(|f| {
+            matches!(
+                f,
+                crate::backend::wasm::envelope::TupleFieldShape::Nested(_)
+            )
+        });
+        has_nested.then_some((
+            lb,
+            lv,
+            crate::backend::wasm::serialize::TupleArgRebuild {
+                fields: rf,
+                base_param: 1,
+            },
+            shape,
+            Vec::new(),
+            Vec::new(),
+        ))
+    } else {
+        nested_compound_among_scalars(arg_tys)
+            .map(|(all_vts, pre, suf, rb, shape)| (Vec::new(), all_vts, rb, shape, pre, suf))
+    }
+}
+
 fn emit_closure_resource(
     db: &mut Db,
     layout: &Layout,
@@ -1919,38 +1951,12 @@ fn emit_closure_resource(
     // recursive `TupleArgRebuild`, and the envelope mints the inner `tuple<…>` types (`TupleFieldShape`). The
     // sole case has empty prefix/suffix + `base_param=1`; the among-scalars case carries prefix/suffix + a
     // shifted `base_param`.
-    let nested_tuple: Option<NestedCompoundArgBoundary> = if host_imports.is_empty()
-        && tuple_arg.is_none()
-    {
-        if arg_tys.len() == 1 {
-            nested_fixed_shape_tuple_arg(&arg_tys[0]).and_then(|(lb, lv, rf, shape)| {
-                // Only this path when there IS a nested field (else the all-scalar case = `tuple_arg`).
-                let has_nested = shape.iter().any(|f| {
-                    matches!(
-                        f,
-                        crate::backend::wasm::envelope::TupleFieldShape::Nested(_)
-                    )
-                });
-                has_nested.then_some((
-                    lb,
-                    lv,
-                    serialize::TupleArgRebuild {
-                        fields: rf,
-                        base_param: 1,
-                    },
-                    shape,
-                    Vec::new(),
-                    Vec::new(),
-                ))
-            })
+    let nested_tuple: Option<NestedCompoundArgBoundary> =
+        if host_imports.is_empty() && tuple_arg.is_none() {
+            nested_sole_or_among_scalars(arg_tys.as_slice())
         } else {
-            // A nested compound AMONG scalar args: prefix/suffix scalars surround it, `base_param` shifted.
-            nested_compound_among_scalars(arg_tys.as_slice())
-                .map(|(all_vts, pre, suf, rb, shape)| (Vec::new(), all_vts, rb, shape, pre, suf))
-        }
-    } else {
-        None
-    };
+            None
+        };
     // Boundary bytes (component valtypes) for the `call` method's ARGS — aliased scalar widths (a compound
     // closure arg on the direct-call path is handled by `tuple_arg` above, when it is a fixed-shape scalar
     // tuple/record; any other compound arg declines here — host→guest decode is not supported).
@@ -2658,33 +2664,13 @@ fn emit_multi_closure_resource(
     } else {
         single_compound_among_scalars(arg_tys.as_slice())
     };
-    // A SOLE fixed-shape compound arg with a NESTED compound field (all exports share it): the shared `call`
-    // rebuilds the nested cell recursively, the envelope mints the inner `tuple<…>` types by index. Detected
-    // when `tuple_arg` (all-scalar-field) is None. Scoped: SOLE nested arg (empty prefix/suffix), any result.
-    let nested_tuple: Option<NestedCompoundArgBoundary> =
-        if tuple_arg.is_none() && arg_tys.len() == 1 {
-            nested_fixed_shape_tuple_arg(&arg_tys[0]).and_then(|(lb, lv, rf, shape)| {
-                let has_nested = shape.iter().any(|f| {
-                    matches!(
-                        f,
-                        crate::backend::wasm::envelope::TupleFieldShape::Nested(_)
-                    )
-                });
-                has_nested.then_some((
-                    lb,
-                    lv,
-                    serialize::TupleArgRebuild {
-                        fields: rf,
-                        base_param: 1,
-                    },
-                    shape,
-                    Vec::new(),
-                    Vec::new(),
-                ))
-            })
-        } else {
-            None
-        };
+    // A fixed-shape compound arg with a NESTED compound field (shared by all closure exports) — SOLE or among
+    // scalars. Detected when the flat `tuple_arg` is None.
+    let nested_tuple: Option<NestedCompoundArgBoundary> = if tuple_arg.is_some() {
+        None
+    } else {
+        nested_sole_or_among_scalars(arg_tys.as_slice())
+    };
     let arg_bytes: Vec<u8> = if tuple_arg.is_some() || nested_tuple.is_some() {
         Vec::new() // the flattened tuple fields are carried by `tuple_arg`/`nested_tuple`, not `arg_bytes`
     } else {
@@ -2916,10 +2902,20 @@ fn emit_multi_closure_resource(
     let tpre = tuple_arg
         .as_ref()
         .map(|(_, _, pre, _, _)| pre.as_slice())
+        .or_else(|| {
+            nested_tuple
+                .as_ref()
+                .map(|(_, _, _, _, pre, _)| pre.as_slice())
+        })
         .unwrap_or(&[]);
     let tsuf = tuple_arg
         .as_ref()
         .map(|(_, _, _, suf, _)| suf.as_slice())
+        .or_else(|| {
+            nested_tuple
+                .as_ref()
+                .map(|(_, _, _, _, _, suf)| suf.as_slice())
+        })
         .unwrap_or(&[]);
     // A COMPOUND shared result → the N-makes-one-list-`call` VALUE-FORM core (walks each closure's returned
     // handle into the value-form template) + the SAME memory/realloc envelope as the bytes path. cdz-run
@@ -3062,7 +3058,7 @@ fn emit_multi_closure_resource(
     // whose sole arg is a NESTED fixed-shape compound. The shared `call` rebuilds the nested cell recursively;
     // the envelope mints the inner `tuple<…>` types by index (`tuple_shape`). (A nested arg with a list result
     // was handled by the list-result routings above.)
-    if let Some((_leaf_bytes, _leaf_vts, rebuild, shape, _npre, _nsuf)) = &nested_tuple {
+    if let Some((_leaf_bytes, _leaf_vts, rebuild, shape, npre, nsuf)) = &nested_tuple {
         let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
             &funcs,
             &imports,
@@ -3088,8 +3084,8 @@ fn emit_multi_closure_resource(
             &[], // no plain exports
             false,
             None, // the flat all-scalar path is unused; the shape drives the mint
-            &[],  // sole nested tuple → no prefix/suffix scalars
-            &[],
+            npre, // prefix/suffix scalar bytes (empty for a sole nested arg, non-empty among scalars)
+            nsuf,
             Some(shape),
         ));
     }
@@ -3203,34 +3199,13 @@ fn emit_mixed_closure_resource(
     } else {
         single_compound_among_scalars(arg_tys.as_slice())
     };
-    // A SOLE fixed-shape compound arg with a NESTED compound field (shared by all closure exports; the plain
-    // exports ride alongside): the shared `call` rebuilds the nested cell recursively, the envelope mints the
-    // inner `tuple<…>` types by index. Detected when `tuple_arg` (all-scalar-field) is None. Scoped: sole
-    // nested arg, any result.
-    let nested_tuple: Option<NestedCompoundArgBoundary> =
-        if tuple_arg.is_none() && arg_tys.len() == 1 {
-            nested_fixed_shape_tuple_arg(&arg_tys[0]).and_then(|(lb, lv, rf, shape)| {
-                let has_nested = shape.iter().any(|f| {
-                    matches!(
-                        f,
-                        crate::backend::wasm::envelope::TupleFieldShape::Nested(_)
-                    )
-                });
-                has_nested.then_some((
-                    lb,
-                    lv,
-                    serialize::TupleArgRebuild {
-                        fields: rf,
-                        base_param: 1,
-                    },
-                    shape,
-                    Vec::new(),
-                    Vec::new(),
-                ))
-            })
-        } else {
-            None
-        };
+    // A fixed-shape compound arg with a NESTED compound field (shared by all closure exports; the plain
+    // exports ride alongside) — SOLE or among scalars. Detected when the flat `tuple_arg` is None.
+    let nested_tuple: Option<NestedCompoundArgBoundary> = if tuple_arg.is_some() {
+        None
+    } else {
+        nested_sole_or_among_scalars(arg_tys.as_slice())
+    };
     let arg_bytes: Vec<u8> = if tuple_arg.is_some() || nested_tuple.is_some() {
         Vec::new() // the flattened tuple fields are carried by `tuple_arg`/`nested_tuple`, not `arg_bytes`
     } else {
@@ -3511,10 +3486,20 @@ fn emit_mixed_closure_resource(
     let tpre = tuple_arg
         .as_ref()
         .map(|(_, _, pre, _, _)| pre.as_slice())
+        .or_else(|| {
+            nested_tuple
+                .as_ref()
+                .map(|(_, _, _, _, pre, _)| pre.as_slice())
+        })
         .unwrap_or(&[]);
     let tsuf = tuple_arg
         .as_ref()
         .map(|(_, _, _, suf, _)| suf.as_slice())
+        .or_else(|| {
+            nested_tuple
+                .as_ref()
+                .map(|(_, _, _, _, _, suf)| suf.as_slice())
+        })
         .unwrap_or(&[]);
     // A COMPOUND shared closure result → the VALUE-FORM mixed core (N makes + shared list-`call` walking each
     // closure's returned handle into the value-form template + the plain exports as top-level funcs), same
@@ -3657,7 +3642,7 @@ fn emit_mixed_closure_resource(
     // the closure exports, with plain exports alongside. The shared `call` rebuilds the nested cell recursively;
     // the envelope mints the inner `tuple<…>` types by index (`tuple_shape`). (A nested arg with a list result
     // was handled by the list-result routings above.)
-    if let Some((_leaf_bytes, _leaf_vts, rebuild, shape, _npre, _nsuf)) = &nested_tuple {
+    if let Some((_leaf_bytes, _leaf_vts, rebuild, shape, npre, nsuf)) = &nested_tuple {
         let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
             &funcs,
             &imports,
@@ -3683,8 +3668,8 @@ fn emit_mixed_closure_resource(
             &abi_plain,
             false,
             None, // the flat all-scalar path is unused; the shape drives the mint
-            &[],  // sole nested tuple → no prefix/suffix scalars
-            &[],
+            npre, // prefix/suffix scalar bytes (empty for a sole nested arg, non-empty among scalars)
+            nsuf,
             Some(shape),
         ));
     }
