@@ -5992,10 +5992,11 @@ fn check_application(
         // SCOPED to text + compound (not the scalar-ish LEAVES Bool/Unit/Symbol): the corpus pins a
         // Bool-in-integer-addition — a body-inferred `(+ true true)` — at CDZ0203 (an argument checked
         // against a body-inferred param type, `09-functions.sexp`), so a leaf scalar stays on that path.
-        // EXCLUDES too (each has its own correct path): numeric types (valid arithmetic); `Char`
-        // (`Char.to-int` coercion wrap fix, below); `Qty` (the dimensional path below); `Nominal`/`Sum` (a
-        // user newtype over a number may define arithmetic — unknown intent, stay conservative); `Var`/`Any`
-        // (unsolved — never a false reject).
+        // EXCLUDES (each has its own correct path): numeric types (valid arithmetic); `Char` (`Char.to-int`
+        // coercion wrap fix, below); `Qty` (the dimensional path below); `Bool` (corpus-pinned CDZ0203,
+        // above); `Var`/`Any` (unsolved — never a false reject). A user `Sum`/`Nominal` is INCLUDED (see the
+        // predicate below): Cadenza has no operator overloading, so arithmetic on one is always a type
+        // error, not a possible user-defined `+`.
         let is_arith = matches!(
             crate::eval::meta_apply_of(db, head),
             Some(
@@ -6010,6 +6011,16 @@ fn check_application(
         // grounded-to-Int64 first param) is the same leak the text/compound message fixes. Bool is STILL
         // excluded — the corpus pins a body-inferred `(+ true true)` at CDZ0203 (`09-functions.sexp`), so a
         // Bool leaf stays on that path; Symbol/Unit carry no such corpus constraint.
+        //
+        // A USER SUM / NOMINAL operand joins too: Cadenza has NO operator overloading — the arithmetic
+        // prims carry the fixed `∀a. (Int a) → …` scheme, so a `(+ c d)` on two `Color`s (or two `UserId`
+        // newtypes) is ALWAYS a type error, never a user-defined `+`. The generic scheme-unify grounds the
+        // first param to `Int64` and reports "type mismatch: Int64 and Color" — the SAME phantom leak. Name
+        // the real type. (A `Ty::Nominal` over a NUMBER — `UserId` over `Int64` — still gets the honest
+        // "arithmetic is not defined on UserId"; unwrapping-then-adding is the author's call, no forced
+        // fix.) Comparison (`= < >`) on two same sums/nominals is VALID (structural equality / a derived
+        // order), so this stays arithmetic-only, and the earlier `nominal_inner_vs` guard already handles a
+        // nominal-vs-its-INNER comparison — this is the two-SAME-framing arithmetic case that leaks past.
         let text_or_compound_ty = |t: &Ty| {
             matches!(
                 t,
@@ -6022,6 +6033,8 @@ fn check_application(
                     | Ty::Set(_)
                     | Ty::Symbol
                     | Ty::Unit
+                    | Ty::Sum { .. }
+                    | Ty::Nominal { .. }
             )
         };
         if is_arith && text_or_compound_ty(&a) && text_or_compound_ty(&b) {

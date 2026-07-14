@@ -2006,6 +2006,28 @@
               (handle Fresh 0 ((next () s (resume s (+ s 1)))) (node 5))) (export main)))
   (output (: 3 Int64)))
 
+(case "a mutual walk where BOTH partners perform threads one shared counter across the cycle"
+  (doc    "The fresh-id-walk case above reaches the effect through ONE partner (`node` performs, `children`
+           only dispatches). Here BOTH cycle defs perform the same effect — each reads a fresh id before
+           recursing into the other — so the shared handler counter is advanced by BOTH specializations
+           (`node#ctx` AND `children#ctx`), and the reads interleave along the cycle. `Fresh` seeded 0, arm
+           `(next () s (resume s (+ s 1)))`. `(node 3)`: `node` reads id 0 then `+ children 2`; `children 2`
+           reads id 1 then `+ node 1`; `node 1` reads id 2 then `+ children 0`; `children 0` = 0. So `node 1`
+           = `2 + 0` = 2, `children 2` = `1 + 2` = 3, `node 3` = `0 + 3` = 3. Pins that effect-context
+           specialization threads ONE shared state slot correctly when BOTH members of a mutual group
+           perform (not only when the effect is reached through a single partner) — each partner's
+           specialization carries the threaded counter and the interleaved reads advance it in cycle order.
+           Both backends agree.")
+  (input  (do
+            (effect Fresh (op next (-> Int64)))
+            (def (node (: n Int64))
+              (if (= n 0) (Fresh.next) (let ((v (Fresh.next))) (+ v (children (- n 1))))))
+            (def (children (: n Int64))
+              (if (= n 0) 0 (let ((w (Fresh.next))) (+ w (node (- n 1))))))
+            (def (main)
+              (handle Fresh 0 ((next () s (resume s (+ s 1)))) (node 3))) (export main)))
+  (output (: 3 Int64)))
+
 (case "a recursive function sums a range it walks by performing a fresh-index effect"
   (doc    "Witnesses the recursive-effect idiom folding a real accumulator across a self-recursive
            walk: `Idx` supplies a descending index (seeded 3, each `next` hands back `s` and threads

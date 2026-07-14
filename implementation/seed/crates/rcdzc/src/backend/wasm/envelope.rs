@@ -7145,10 +7145,10 @@ fn make_functype_slots(
         param_items.extend_from_slice(name.as_bytes());
         match (slot, tup_idx) {
             (ArgSlot::Scalar(vt), _) => param_items.push(*vt),
-            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), Some(idx)) => {
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_) | ArgSlot::Result(_, _), Some(idx)) => {
                 param_items.extend_from_slice(&owned_valtype(*idx))
             }
-            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), None) => {
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_) | ArgSlot::Result(_, _), None) => {
                 unreachable!("a Tuple/Option make param must carry a minted defined-type index")
             }
         }
@@ -7729,6 +7729,17 @@ fn option_defined_type(payload_byte: u8) -> Vec<u8> {
     vec![0x6b, payload_byte]
 }
 
+/// A component `result<ok, err>` DEFINED TYPE: `0x6a <ok-valtype-opt> <err-valtype-opt>` — the `result`
+/// former tag then each side's OPTIONAL valtype (`0x01 <byte>` for a present scalar payload, `0x00` for a
+/// nullary side). A general `variant` must be NAMED, but `result`/`option` are anonymous-allowed, so a
+/// `(Result scalar scalar)` arg crosses as this native type. Flattened by the canonical ABI to `(disc: i32,
+/// payload)` (Ok=0, Err=1). Pinned runnable by the `a_result_scalar_closure_arg_crosses_by_native_flattening`
+/// oracle (`wasm_encoder`'s `.result(Some, Some)`).
+fn result_defined_type(ok_byte: u8, err_byte: u8) -> Vec<u8> {
+    // `0x01 <byte>` is the `Some(primitive)` valtype encoding (an inline primitive, not a type-index ref).
+    vec![0x6a, 0x01, ok_byte, 0x01, err_byte]
+}
+
 /// The boundary component-TYPE shape of a fixed-shape compound closure argument, recursively: each field is
 /// either a PRIMITIVE valtype byte (an aliased-width scalar leaf) or a NESTED tuple (its own field shapes).
 /// A `Scalar` field is one flattened core param; a `Nested` field is its own `tuple<…>` DEFINED type the
@@ -7812,6 +7823,11 @@ pub enum ArgSlot {
     /// `option<payload>` DEFINED type (minted by [`mint_call_arg_tuple_types`], flattened by the canonical ABI
     /// to `(disc: i32, payload)`; the guest rebuilds the sum cell via `serialize::SumArgRebuild`).
     OptionScalar(u8),
+    /// A `(Result ok-scalar err-scalar)` arg carrying its ok + err payload component primitive valtype bytes —
+    /// crosses as a native `result<ok, err>` DEFINED type (the `0x6a` former; anonymous-allowed, unlike a
+    /// general `variant`). Flattened by the canonical ABI to `(disc: i32, payload)`; the guest rebuilds the
+    /// sum cell via `serialize::SumArgRebuild`.
+    Result(u8, u8),
 }
 
 /// The number of component TYPES [`mint_call_arg_tuple_types`] emits for `slots`: the sum of
@@ -7823,7 +7839,7 @@ fn call_arg_tuple_type_count(slots: &[ArgSlot]) -> u32 {
         .map(|s| match s {
             ArgSlot::Scalar(_) => 0,
             ArgSlot::Tuple(shape) => nested_tuple_type_count(shape),
-            ArgSlot::OptionScalar(_) => 1,
+            ArgSlot::OptionScalar(_) | ArgSlot::Result(_, _) => 1,
         })
         .sum()
 }
@@ -7845,6 +7861,12 @@ fn mint_call_arg_tuple_types(
             ArgSlot::Tuple(shape) => Some(mint_tuple_type_nested(shape, next_type, items)),
             ArgSlot::OptionScalar(payload_byte) => {
                 items.extend_from_slice(&option_defined_type(*payload_byte));
+                let idx = *next_type;
+                *next_type += 1;
+                Some(idx)
+            }
+            ArgSlot::Result(ok_byte, err_byte) => {
+                items.extend_from_slice(&result_defined_type(*ok_byte, *err_byte));
                 let idx = *next_type;
                 *next_type += 1;
                 Some(idx)
@@ -7877,10 +7899,10 @@ fn closure_call_functype_slots(
         param_items.extend_from_slice(name.as_bytes());
         match (slot, tup_idx) {
             (ArgSlot::Scalar(vt), _) => param_items.push(*vt),
-            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), Some(idx)) => {
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_) | ArgSlot::Result(_, _), Some(idx)) => {
                 param_items.extend_from_slice(&owned_valtype(*idx))
             }
-            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), None) => {
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_) | ArgSlot::Result(_, _), None) => {
                 unreachable!("a Tuple/Option slot must carry a minted defined-type index")
             }
         }
@@ -7913,10 +7935,10 @@ fn closure_call_list_functype_slots(
         param_items.extend_from_slice(name.as_bytes());
         match (slot, tup_idx) {
             (ArgSlot::Scalar(vt), _) => param_items.push(*vt),
-            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), Some(idx)) => {
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_) | ArgSlot::Result(_, _), Some(idx)) => {
                 param_items.extend_from_slice(&owned_valtype(*idx))
             }
-            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), None) => {
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_) | ArgSlot::Result(_, _), None) => {
                 unreachable!("a Tuple/Option slot must carry a minted defined-type index")
             }
         }
