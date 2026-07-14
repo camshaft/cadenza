@@ -1448,19 +1448,26 @@ pub fn variant_owner_decl(db: &mut Db, id: StructId) -> Option<crate::ast::Struc
 /// same match); only the transient key object is gone.
 pub fn project_meta(db: &mut Db, id: StructId, key: &str) -> Option<StructId> {
     let rec = reduce_to_record_id(db, id)?;
-    match resolved_of(db, rec) {
-        // O(log N) `BTreeMap::get` on the `(meta, key)` Symbol — NOT an O(N) `.iter().find` over the
-        // record's fields. A wide record (e.g. an N-op effect record, whose `(meta t)` this reads) made a
-        // per-field-scan O(N) per lookup, and a per-arm handler check calls this per arm → O(N²). The
-        // fields are a `BTreeMap` keyed by `Symbol`, so the meta field is a direct keyed lookup.
-        Resolved::Record { fields } => fields
+    // `reduce_to_record_id` has already resolved `rec` (it dispatches on its `resolved_of`), so the
+    // resolved column is FILLED — BORROW it rather than `resolved_of(db, rec)` again, which would CLONE
+    // the whole `Resolved` (for a `Resolved::Record`, an `Arc<BTreeMap>` refcount bump + drop = two atomic
+    // ops per call). `project_meta` is on the hot per-node path (`meta_apply_of`/`variant_disc_of` during
+    // `collect`/`type_errors` — ~42% inclusive on a realistic module), so avoiding the per-call clone is a
+    // broad win. `Column::get` returns a borrow, so the fields map is read in place.
+    if let crate::arena::Slot::Filled(crate::resolved::Resolved::Record { fields }) =
+        db.resolved.get(rec)
+    {
+        // O(log N) `BTreeMap::get` on the `(meta, key)` Symbol — NOT an O(N) `.iter().find`. A wide record
+        // (an N-op effect record, whose `(meta t)` this reads) made a per-field-scan O(N) per lookup, and
+        // a per-arm handler check calls this per arm → O(N²). Keyed lookup keeps it O(log N).
+        return fields
             .get(&crate::resolved::Symbol {
                 namespace: Some("meta".to_string()),
                 name: key.to_string(),
             })
-            .copied(),
-        _ => None,
+            .copied();
     }
+    None
 }
 
 /// Project a field `key` from the record value at `id`, returning its value occurrence. The generic
