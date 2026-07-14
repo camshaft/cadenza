@@ -589,6 +589,51 @@
             (export main)))
   (output (: 1 Int64)))
 
+; A recursion that CARRIES a heap collection (Bytes / List) as a parameter and, at its BASE arm, performs
+; a FALLIBLE INDEXED READ (`Bytes.at` / `List.at`, which materializes an Option HANDLE in a scratch slot)
+; must keep that i32 handle scratch DISJOINT from the loop's i64 arithmetic temps — otherwise the loop
+; function is invalid wasm (the same i32/i64 slot-typing family as the decode loop above, at its simplest).
+; These pin that shape directly — a reader recursing over its input and reading one element fallibly at the
+; base — across a Bytes operand, a List operand, and a non-tail `(+ 0 (recurse …))` spine.
+
+(case "a recursion carrying a Bytes parameter does a fallible read in its base arm"
+  (doc    "A self-recursive `loop` carries a `Bytes` parameter and at its base (n=0) reads byte `p` fallibly
+           `(Option.expect (Bytes.at b p) …)` — byte 0 of `b\"\\x05\"` = 5. Pins that the recursion's i64
+           arithmetic temps (`(- n 1)`, the bound check) stay disjoint from the i32 Option handle the base
+           arm's fallible read materializes — the simplest form of the reader-recurses-over-Bytes shape a
+           self-hosted front end takes.")
+  (input  (do
+            (def (loop (: b Bytes) (: p Int64) (: n Int64))
+              (if (= n 0) (Option.expect (Bytes.at b p) "v") (loop b p (- n 1))))
+            (def (main (: p Int64)) (loop b"\x05" p 0))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 5 Int64)))
+
+(case "a recursion carrying a List parameter does a fallible read in its base arm"
+  (doc    "The List companion — the shape is not Bytes-specific. `loop` carries a `(List Int64)` and reads
+           element `i` fallibly at the base `(Option.expect (List.at xs i) …)`: i=0 → 10, i=2 → 30. Pins the
+           same i32-handle/i64-temp scratch disjointness for a `List.at` read in a collection-carrying
+           recursion.")
+  (input  (do
+            (def (loop (: xs (List Int64)) (: i Int64) (: n Int64))
+              (if (= n 0) (Option.expect (List.at xs i) "v") (loop xs i (- n 1))))
+            (def (main (: i Int64)) (loop (list 10 20 30) i 0))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: 2 Int64)) (output (: 30 Int64)))
+
+(case "a non-tail recursion with a fallible read in its base arm composes"
+  (doc    "The non-tail spine: the recursive call is under `(+ 0 …)` (not a tail call), and the base arm
+           still does the fallible read `(Option.expect (Bytes.at b p) …)` = 7 for `b\"\\x07\"` at p=0. Pins
+           that the scratch disjointness holds for the accumulable non-tail shape too — the loop transform
+           covers both the tail and the `1 + recurse`-style spine carrying a fallible-read base.")
+  (input  (do
+            (def (loop (: b Bytes) (: p Int64) (: n Int64))
+              (if (= n 0) (Option.expect (Bytes.at b p) "v") (+ 0 (loop b p (- n 1)))))
+            (def (main (: p Int64)) (loop b"\x07" p 0))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64)))
+
 (case "a chained access through an if-of-records composes and shields the untaken branch's trap"
   (doc    "The access-into-if fold COMPOSES through a chain: `(. (. (if b R1 R2) a) x)` reads field `a`
            (itself a record) from the if-selected record, then field `x` from that — the projection sinks
