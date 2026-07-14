@@ -14142,6 +14142,41 @@ mod match_engine {
     }
 
     #[test]
+    fn a_float_operator_on_two_ints_offers_the_integer_sibling_operator_swap() {
+        // The MIRROR of the two-floats case: `(+. n m)` — a FLOAT arithmetic operator applied to two
+        // INTEGER operands. The whole-operation repair is to SWAP the operator to its INTEGER sibling
+        // (`+`), NOT to wrap an operand: wrapping one in `Float64.of-int` leaves the OTHER an int (so the
+        // fix never converges), and two integer operands mean integer math. The fix rewrites the OPERATOR
+        // NAME node. Each of `+.`/`-.`/`*.`/`/.` maps to `+`/`-`/`*`/`/`.
+        for (op, sibling) in [("+.", "+"), ("-.", "-"), ("*.", "*"), ("/.", "/")] {
+            let src = format!("(module m (def (g (: n Int64) (: m Int64)) ({op} n m)) (export g))");
+            let d = reject_full(&src).unwrap_or_else(|| panic!("`{op}` on two ints must reject"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0301"), "got: {}", d.message);
+            assert!(
+                d.message.contains("floating-point arithmetic") && d.message.contains(sibling),
+                "names the integer sibling `{sibling}`: {}",
+                d.message
+            );
+            assert_eq!(
+                d.fix.as_ref().map(|f| f.replacement.as_str()),
+                Some(sibling),
+                "swaps the operator to `{sibling}`: {}",
+                d.message
+            );
+        }
+        // A genuine int/float MIX (`(+. n 1.0)`) is NOT the both-int case — it keeps the per-operand
+        // `of-int` coercion fix (one operand is already a float), NOT the operator swap.
+        let mix =
+            reject_full("(module m (def (g (: n Int64)) (+. n 1.0)) (export g))").expect("reject");
+        assert!(
+            !mix.message
+                .contains("floating-point arithmetic, but both operands"),
+            "an int/float mix keeps per-operand coercion, not the operator swap: {}",
+            mix.message
+        );
+    }
+
+    #[test]
     fn a_text_operand_against_a_scalar_in_a_builtin_op_is_cdz0201() {
         // 07-type-system "an operation on mismatched types is rejected" + "ordering a string against an
         // integer is a type error": a built-in arithmetic/comparison/equality operator with ONE text

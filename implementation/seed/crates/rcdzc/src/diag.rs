@@ -188,6 +188,10 @@ pub enum Code {
     //# A handler MUST bind every operation its effect declares, so that installing a handler for an effect discharges the whole of that effect's closed operation set — the effect analogue of a match covering every variant of its scrutinee's sum — and no operation of the effect a handler claims to discharge is left without a discharger under that handler.
     //= spec/capabilities/capabilities-and-effects.md#a-handler-discharges-its-effect
     //# A handler that omits an operation its effect declares MUST be rejected at compile time, so that a partially-handled effect is a compile-time error rather than an operation that silently escapes the handler that appears to discharge it, and the rejection SHOULD identify the omitted operations so the gap is mechanically repairable.
+    //= spec/capabilities/capabilities-and-effects.md#a-handler-discharges-exactly-one-effect
+    //# A handler MUST discharge exactly one effect — every arm of a single handler names an operation of the same declaring effect — so that a handler installs one effect's context and the effect a handler discharges is unambiguous, mirroring that an operation is reached through its declaring effect.
+    //= spec/capabilities/capabilities-and-effects.md#a-handler-discharges-exactly-one-effect
+    //# Discharging several effects over one sub-computation MUST be expressed by nesting a handler per effect, so that each handler in the nest discharges its own single effect and no handler mixes the operations of two effects, keeping the discharged effect a property of the handler rather than an open collection its arms enumerate.
     HandlerNotExhaustive,
     /// A host delegation names an effect the delegated computation never reaches — latent authority. The
     /// manifest must be exactly the effects that escape, no more and no fewer, so a granted-but-unexercised
