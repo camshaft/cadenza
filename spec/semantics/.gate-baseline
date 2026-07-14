@@ -494,6 +494,8 @@ pass	a literal segment matches a magic-number header by equality
 pass	a literal subterm in a quote pattern matches by equality
 pass	a literal-refined recursive-sum arm folds under a statically-known discriminant
 pass	a literal-refined variant arm does not satisfy exhaustiveness
+pass	a lowercase-named type cross-references another lowercase-named type in a field
+pass	a lowercase-named type is referenceable in a field (types are values, not gated by case)
 pass	a magic header and a length-prefixed chunk parse together
 pass	a map KEYED by a user sum looks up by the variant
 pass	a map built at run time escapes to the host as its value form
