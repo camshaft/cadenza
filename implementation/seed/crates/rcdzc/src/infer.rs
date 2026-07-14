@@ -6200,6 +6200,19 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         collect_quote_body_syntax(db, id, out);
         return;
     }
+    // A bare integer literal defaulted to a NARROW fixed-width type by a `(pragma default-integer <T>)`
+    // must satisfy the SAME literal-fit range check an explicit `(: v T)` annotation runs — else the pragma
+    // silently admits an out-of-range value into a narrow-typed slot (`(pragma default-integer Int8) (def
+    // (x) 300)` gave `x : Int8 = 300`, a soundness hole the explicit `(: 300 Int8)` correctly rejects
+    // CDZ0302). The pragma records each such literal → its `<T>` type-expression occurrence in
+    // `default_int_literals` — the exact `(value, ty_expr)` pair `literal_width_fault` checks — so reuse it,
+    // giving the pragma default the annotation path's fit-check. A WIDENING default (Int64/BigInt) never
+    // faults (every literal fits); only a narrowing one (Int8/UInt8/…) rejects an out-of-range literal.
+    if let Some(&ty_expr) = db.default_int_literals.get(&id)
+        && let Some(reject) = literal_width_fault(db, id, ty_expr)
+    {
+        out.push(reject);
+    }
     match resolved_of(db, id) {
         Resolved::If { cond, then_, else_ } => {
             let cond_ty = type_of(db, cond);

@@ -586,6 +586,23 @@
             ((. m x) unit)))
   (error  CDZ0303))
 
+(case "a bare literal exceeding the default-integer pragma's narrow type is rejected"
+  (doc    "`(pragma default-integer Int8)` makes bare literals Int8. A bare `300` is out of Int8's range
+           (-128..=127), so it must be REJECTED with the SAME literal-fit check an explicit `(: 300 Int8)`
+           runs (CDZ0302) — not silently accepted at its full value. Without this, the pragma applied the
+           type TAG (`x : Int8`, it feeds an Int8 param) but SKIPPED the fit-check, so `(Int64.of x)` read
+           back 300: an Int8 holding an out-of-range value, a soundness hole the explicit annotation
+           correctly rejects (numeric-model.md #A Bare Integer Literal Is Grounded By Its Annotation,
+           Subject To A Range Check — the pragma default is a grounding, so the same range check applies).
+           A WIDENING default (BigInt/Int64) never faults (every literal fits); only a narrowing one
+           (Int8/UInt8/…) catches an out-of-range literal.")
+  (input  (do
+            (module m
+              (pragma default-integer Int8)
+              (def (x) 300))
+            (Int64.of ((. m x) unit))))
+  (error  CDZ0302))
+
 (case "a default-integer pragma naming an unbound type is rejected as unbound, like an annotation"
   (doc    "`(pragma default-integer Nope)` names a type `Nope` that does not exist — no prelude type, no
            declared type. The SAME name in a type-annotation position (`(: x Nope)`) is CDZ0101 'unbound
