@@ -1947,6 +1947,26 @@
               (handle Ctr 7 ((tick (u) s (resume s (- s 1)))) (ev 4))) (export main)))
   (output (: 13 Int64)))
 
+(case "a mutually-recursive group with the perform in a DIFFERENT branch from the mutual call folds"
+  (doc    "The mutual-group shape where the perform and the mutual call sit in SEPARATE branches of a
+           conditional — distinct from the cases above where they share one strict expression `(+ (Ctr.tick)
+           (od …))`. `ev`'s base-case branch performs `(Fresh.next)` while its recursive branch calls the
+           partner `(od …)`: `(def (ev n) (if (= n 0) (Fresh.next) (od (- n 1))))`, `(def (od n) (if (= n 0)
+           0 (ev (- n 1))))`. Under the state-threading handler this recurses `ev 2 -> od 1 -> ev 0`, where
+           the base case fires `Fresh.next`: seeded 42, the arm resumes `s + 1` = 43. Pins that effect-context
+           specialization ties the `ev#ctx`/`od#ctx` memo knot even when each branch of a cycle def EMBEDS
+           the threaded state independently (the performing branch substitutes it into the resume value, the
+           mutual-call branch appends it as a trailing state argument) — each branch needs its own copy of
+           the state reference, not a shared one. Was a compile-time leak of the internal `ev#eff…$s0`
+           specialization name (a `cdz check`-clean / `compile`-fail gap); now folds to 43.")
+  (input  (do
+            (effect Fresh (op next (-> Int64)))
+            (def (ev (: n Int64)) (if (= n 0) (Fresh.next) (od (- n 1))))
+            (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1))))
+            (def (main)
+              (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main)))
+  (output (: 43 Int64)))
+
 (case "a recursive function sums a range it walks by performing a fresh-index effect"
   (doc    "Witnesses the recursive-effect idiom folding a real accumulator across a self-recursive
            walk: `Idx` supplies a descending index (seeded 3, each `next` hands back `s` and threads

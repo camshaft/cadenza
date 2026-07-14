@@ -3075,8 +3075,17 @@ fn thread_bounded(
             // handle) are not collapsed. (Sound when the `if` is in the handle's tail position — a NON-tail
             // conditional abort is declined by `body_has_unsound_abortive_perform` in `reduce_handle`
             // before threading, so an `if` reached here is safe to fold per-branch.)
-            let rthen = thread_branch_local_abort(db, then_, cur.clone(), ctx, inline_depth)?;
-            let relse = thread_branch_local_abort(db, else_, cur.clone(), ctx, inline_depth)?;
+            //
+            // Each branch gets its OWN FRESH COPY of the incoming state-ref nodes. Both branches EMBED the
+            // state (a perform substitutes it into a resume value; a recursive/mutual call appends it as a
+            // trailing state arg), and the arena is single-parent — so sharing one state-ref node across
+            // both branches orphans whichever is parented second, leaking the internal `f#ctx$s0` name in a
+            // CDZ0101 (the mutually-recursive-effect case where the perform is in one branch and the mutual
+            // call in the other). Copying per branch gives each its own node.
+            let then_states: Vec<StructId> = cur.iter().map(|&s| copy_pure(db, s)).collect();
+            let else_states: Vec<StructId> = cur.iter().map(|&s| copy_pure(db, s)).collect();
+            let rthen = thread_branch_local_abort(db, then_, then_states, ctx, inline_depth)?;
+            let relse = thread_branch_local_abort(db, else_, else_states, ctx, inline_depth)?;
             let if_head = db.push_atom(Leaf::Name("if".to_string()));
             Some((db.push_list(vec![if_head, rcond, rthen, relse]), cur))
         }

@@ -37209,6 +37209,22 @@ mod stage1 {
             compile_component(&crate::codec::encode(&parse(abort_mutual))).is_err(),
             "an abortive handler over a non-tail mutual recursion must decline, not miscompile to 103"
         );
+        // SEPARATE-BRANCH mutual perform: the perform and the mutual call sit in DIFFERENT branches of a
+        // conditional (`ev` performs in its base case, calls `od` in its recursive branch), not the same
+        // strict expression. This leaked the internal `ev#eff…$s0` specialization name (a compile-time
+        // CDZ0101, `check`-clean) because the `if` threading shared ONE state-ref node across both branches
+        // and the arena is single-parent — the second-parented branch orphaned the first. Copying the
+        // state-refs per branch fixes it; the group now specializes and RUNS. `ev 2 -> od 1 -> ev 0` fires
+        // `Fresh.next` at the base, seed 42, arm resumes `s + 1` = 43 (gate verifies the value).
+        let sep_branch = "(module m (effect Fresh (op next (-> Int64))) \
+                   (def (ev (: n Int64)) (if (= n 0) (Fresh.next) (od (- n 1)))) \
+                   (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1)))) \
+                   (def (main) (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(sep_branch))).is_ok(),
+            "a mutual group with the perform in a different branch from the mutual call must specialize, \
+             not leak an internal ev#eff…$s0 name"
+        );
     }
 
     #[test]
