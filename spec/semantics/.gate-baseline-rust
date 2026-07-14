@@ -320,6 +320,7 @@ pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
 pass	a pipeline chain applies its stages left to right
+pass	a plain number def is unaffected by a following statement (the `as` sugar stays in its statement)
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a program that delegates no effect is pure and never suspends
 pass	a radix literal with a bad digit is a malformed literal, not an unbound name

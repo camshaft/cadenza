@@ -761,3 +761,16 @@
             (def (main) (Qty.value (Unit.in (Unit.of #"meter") (Qty.of 2.0 (Unit.of #"span")))))
             (export main)))
   (output (: 6.0 Float64)))
+
+(case "a plain number def is unaffected by a following statement (the `as` sugar stays in its statement)"
+  (doc    "`def a() = 5.0` is a number, full stop. On the ML surface the `as` unit-conversion postfix
+           (`value as meter` → `(Unit.in (Unit.of \"meter\") value)`) must apply only WITHIN one statement:
+           a bare `as` beginning the NEXT line must not reach back across the newline and absorb this def's
+           RHS, silently turning `def a() = 5.0` into `def a() = (5.0 as meter)` — changing a's type from a
+           number to Qty(meter) on a mere line break. The `as` operator landed (8e73fdce) without the
+           statement-boundary guard the quantity sugar got (f57c4a53); this pins the intended value. The
+           s-expr surface has no `as` sugar, so this reads `a`'s RHS as the plain 5.0 it is; the ML
+           printer->reader round-trip (which emits `as` for a `Unit.in` conversion) exercises the boundary.")
+  (input  (do (def (a) 5.0) (def (main) (a)) (export main)))
+  (call   main)
+  (output (: 5.0 Float64)))

@@ -523,7 +523,18 @@ impl<'a> Parser<'a> {
             // `q as u |> f` threads the conversion into the pipeline. Left-associative — the loop
             // re-checks, so `q as m as m` chains left. Checked inside the shared loop so it interleaves
             // with the arithmetic operators (`/` binds tighter, so it is consumed first).
-            if self.at_keyword(Keyword::As) && PREC_AS >= min_prec {
+            // The `as` conversion must not cross a STATEMENT/NEWLINE boundary: a leading `as` on a new line
+            // would reach BACK across the newline and absorb the previous statement's (or a def RHS's)
+            // trailing expression — `def a() = 5.0 <newline> as meter` silently becoming `def a() = (5.0 as
+            // meter)`, changing a's type from a number to Qty(meter) on a mere line break. Statement
+            // sequencing (`539f7712`: forms juxtapose across lines) takes precedence, so an `as` separated
+            // from its left operand by a newline is a SEPARATE statement, not a continuation. Same
+            // boundary the quantity sugar draws (`f57c4a53`); the `as` operator landed alongside it without
+            // the guard. A genuine same-line `q as u` has no intervening newline and still converts.
+            if self.at_keyword(Keyword::As)
+                && PREC_AS >= min_prec
+                && !self.src[self.prev_span().end..self.cur_span().start].contains('\n')
+            {
                 left = self.as_conversion(left, start);
                 continue;
             }
@@ -2377,6 +2388,39 @@ mod tests {
         assert_eq!(
             sexpr::print(&parse_ok("5 feet\nx")),
             r#"(do ((. Qty of) 5 ((. Unit of) #"feet")) x)"#
+        );
+    }
+
+    #[test]
+    fn as_conversion_does_not_cross_a_newline() {
+        use crate::sexpr;
+        // The `as` unit-conversion postfix (`value as meter` → `(Unit.in (Unit.of "meter") value)`) must
+        // apply only WITHIN one statement. Statement sequencing juxtaposes forms across lines, so an `as`
+        // beginning a new line must NOT reach back across the newline and absorb the previous statement's
+        // trailing expression — `x as meter` split over two lines is a value `x` then a separate (erroring)
+        // `as meter`, NOT `(x as meter)`. Same boundary the quantity sugar draws; the `as` operator landed
+        // without it, so `def a() = 5.0 <newline> as meter` silently became `def a() = (5.0 as meter)`.
+        //
+        // `x <newline> as meter`: `x` is a complete statement; the leading `as` on the next line does not
+        // continue it. (`read_ml` tolerates the stray `as`-with-no-left-operand error and still yields a
+        // tree; the stray `as`/`meter` land as their own error-recovered forms — the point is `x` is NOT
+        // folded into a `(Unit.in … x)` conversion.)
+        let parsed = read_ml("x\nas meter");
+        let printed = sexpr::print(&parsed.arenas);
+        assert!(
+            !printed.contains("Unit in"),
+            "a leading `as` on a new line must not absorb the previous statement into a conversion: {printed}"
+        );
+        // A genuine SAME-LINE conversion is unchanged — `x as meter` (no intervening newline) still converts.
+        assert_eq!(
+            sexpr::print(&parse_ok("x as meter")),
+            r#"((. Unit in) ((. Unit of) #"meter") x)"#
+        );
+        // Same-line `as` even when a statement follows on the NEXT line: the conversion is `5.0 as meter`,
+        // `x` is the next statement — the newline after the conversion ends it, it does not chain into `x`.
+        assert_eq!(
+            sexpr::print(&parse_ok("5.0 as meter\nx")),
+            r#"(do ((. Unit in) ((. Unit of) #"meter") 5.0) x)"#
         );
     }
 

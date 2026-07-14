@@ -571,6 +571,7 @@ pass	a perform in a taken match-arm threads its state to the continuation after 
 pass	a performed operation composes under a projection and a negation
 pass	a performed operation is the scrutinee of a match that dispatches on its result
 pass	a pipeline chain applies its stages left to right
+pass	a plain number def is unaffected by a following statement (the `as` sugar stays in its statement)
 pass	a plain quote does not evaluate a quasiquote's unquote nested inside it
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
