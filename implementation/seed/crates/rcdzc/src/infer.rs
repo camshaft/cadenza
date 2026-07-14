@@ -6731,6 +6731,24 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             if r.code == Some(Code::Unbound) {
                 trace!(target: "rcdzc::infer", node = id.0, "fault: unbound name reported (CDZ0101)");
                 out.push(enrich_unbound(db, id, r));
+            } else if matches!(
+                r.code,
+                // A LEXICAL well-formedness poison a bare LEAF resolves to — a malformed numeric literal
+                // (`0o17`, `12abc`, an over-i64 bare literal), a float outside the Float64 range, an
+                // unrecognized string escape (CDZ0001), or a char naming a non-scalar (CDZ0002). Like an
+                // unbound name these are UNCONDITIONAL well-formedness (a defect of the token itself,
+                // independent of whether the definition is reached), but `collect_node`'s poison arm only
+                // surfaced `Unbound` — so a malformed literal in a PARAMETERIZED or non-exported body PASSED
+                // `cdz check` while `compile` (on a reachable body) rejected it, the same "check misses a
+                // resolve-only reject on an unreached body" hole M81's pattern accessor / the `(do)`-block
+                // poison close. Surface the coded poison here, anchored at the leaf; `dedup_faults`
+                // collapses it against any copy the emit walk produces at the same node on a reached body.
+                Some(Code::Malformed | Code::BadEscape | Code::BadChar)
+            ) {
+                trace!(target: "rcdzc::infer", node = id.0, code = ?r.code, "fault: lexical well-formedness poison reported");
+                let mut r = r;
+                r.set_origin_if_absent(id);
+                out.push(r);
             }
         }
         // A ref's target-node fault is reported when that node is collected on its own. A bare

@@ -24582,6 +24582,64 @@ mod stage1 {
     }
 
     #[test]
+    fn a_lexical_well_formedness_fault_surfaces_in_an_unreached_body() {
+        // A LEXICAL well-formedness poison a bare leaf resolves to — a malformed numeric literal
+        // (CDZ0201), an out-of-range float (CDZ0201), an unrecognized string escape (CDZ0001), a char
+        // naming a non-scalar (CDZ0002) — is a defect of the TOKEN, independent of reachability, like an
+        // unbound name. But `collect_node`'s poison arm surfaced ONLY `Unbound`, so a malformed literal in
+        // a PARAMETERIZED or non-exported body PASSED `cdz check` (the resolve poison reached only the
+        // emit-path walk, which runs on nullary-exported bodies) while `compile` rejected it on a reached
+        // body — the same "check misses a resolve/lower-only reject on an unreached body" hole M81's
+        // pattern accessor and the `(do)`-block poison close. Now `check` (the Diagnostics query) surfaces
+        // it in EVERY body.
+        let find = |src: &str, code: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some(code))
+                .unwrap_or_else(|| panic!("no {code} for {src}"))
+        };
+        // In a PARAMETERIZED body (never lowered standalone by the emit walk):
+        find(
+            "(module m (def (g (: n Int64)) (+ n 0o17)) (export g))",
+            "CDZ0201",
+        );
+        find(
+            "(module m (def (g (: n Int64)) (+. 1.0e400 2.0)) (export g))",
+            "CDZ0201",
+        );
+        find(
+            "(module m (def (g (: n Int64)) (if (= n 0) #\\u+D800 #\\a)) (export g))",
+            "CDZ0002",
+        );
+        // In a NON-EXPORTED nullary def body (also not reached by the standalone emit walk):
+        find(
+            "(module m (def (f) 0o17) (def (main) 1) (export main))",
+            "CDZ0201",
+        );
+        // NO false positive: a well-formed literal in a parameterized body stays clean.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (g (: n Int64)) (+ n 42)) (export g))"
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a valid literal in a parameterized body produces no fault"
+        );
+        // Reachable-body case still reports EXACTLY ONCE (the infer copy + any emit copy dedup).
+        let reached: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) 0o17) (export main))",
+        )))
+        .into_iter()
+        .filter(|d| d.code.as_deref() == Some("CDZ0201"))
+        .collect();
+        assert_eq!(
+            reached.len(),
+            1,
+            "reachable body reports once, not doubled: {reached:?}"
+        );
+    }
+
+    #[test]
     fn if_condition_must_be_bool() {
         // A non-boolean condition is a type error (CDZ0203) — `(if 5 1 2)` has an Int64 condition.
         let msg = expect_decline("(if 5 1 2)");
