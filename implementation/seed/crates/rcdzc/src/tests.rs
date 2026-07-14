@@ -48833,4 +48833,160 @@ mod cross_component_oracle {
             cdz_run::Outcome::Trap(t) => panic!("shared-runtime cross-component run trapped: {t}"),
         }
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // X5b — a COMPOUND value crosses between two SOURCE Cadenza components as an opaque handle over the
+    // shared runtime (the payoff). A peer builds a runtime `(Tuple Int64 Int64)` and returns it; a
+    // consumer receives the handle (typed `(Tuple Int64 Int64)` by its `(extern …)` decl) and projects
+    // element 0 — reading the peer's value through the shared heap, NO serialization.
+    // ------------------------------------------------------------------------------------------------
+
+    /// A hand-built PROVIDER that exports `pair : func(x: s64) -> u32` (the value HANDLE of a runtime
+    /// `(tuple x x)` built on the shared heap) under interface `cadenza:pairs/api`, importing the runtime.
+    /// (The PROVIDER-side compound-result emit from SOURCE is X5c; this proves the CONSUMER-side compound
+    /// crossing now with a hand-built peer, the oracle-first move.)
+    fn pairs_peer_component(import_name: &str) -> Vec<u8> {
+        use wasm_encoder::*;
+        // Core: import heap ops; `pair(x:i64)->i32` builds `[x, x]` and returns the array handle.
+        let core = {
+            let mut m = Module::new();
+            let mut types = TypeSection::new();
+            let mut imports = ImportSection::new();
+            let base = heap_import_prologue(&mut types, &mut imports);
+            let pair_ty = base;
+            types.ty().function(vec![ValType::I64], vec![ValType::I32]);
+            m.section(&types);
+            m.section(&imports);
+            let mut funcs = FunctionSection::new();
+            funcs.function(pair_ty);
+            m.section(&funcs);
+            let mut exports = ExportSection::new();
+            exports.export("pair", ExportKind::Func, base);
+            m.section(&exports);
+            let mut code = CodeSection::new();
+            let mut f = Function::new(vec![(1, ValType::I32)]); // local 1 = array handle
+            // a = arr-alloc(2)
+            f.instruction(&Instruction::I32Const(2));
+            f.instruction(&Instruction::Call(H_ARR_ALLOC));
+            f.instruction(&Instruction::LocalSet(1));
+            // a = arr-set(a, 0, box-int(x))
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::Call(H_BOX_INT));
+            f.instruction(&Instruction::Call(H_ARR_SET));
+            f.instruction(&Instruction::LocalSet(1));
+            // a = arr-set(a, 1, box-int(x))
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::Call(H_BOX_INT));
+            f.instruction(&Instruction::Call(H_ARR_SET));
+            f.instruction(&Instruction::LocalSet(1));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::End);
+            code.function(&f);
+            m.section(&code);
+            m.finish()
+        };
+        let mut c = ComponentBuilder::default();
+        let (lowered, _) = import_and_lower_heap(&mut c, import_name);
+        let heap_inst = c.core_instantiate_exports(
+            lowered
+                .iter()
+                .map(|(n, f)| (*n, ExportKind::Func, *f))
+                .collect::<Vec<_>>(),
+        );
+        let core_idx = c.core_module_raw(&core);
+        let prog_inst = c.core_instantiate(core_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let pair_core = c.core_alias_export(prog_inst, "pair", ExportKind::Func);
+        // `pair : func(p0: s64) -> u32` — the result u32 is the value HANDLE (the extern boundary form of
+        // a compound crossing over the shared runtime). Param name p0 matches the consumer's import decl.
+        let (pair_ty, mut pf) = c.type_function();
+        pf.params([("p0", ComponentValType::Primitive(PrimitiveValType::S64))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        let pair_comp = c.lift_func(pair_core, pair_ty, []);
+        let inner = pairs_interface_wrapper();
+        let ic = c.component(inner);
+        let iinst = c.instantiate(ic, [("pair", ComponentExportKind::Func, pair_comp)]);
+        c.export(
+            "cadenza:pairs/api",
+            ComponentExportKind::Instance,
+            iinst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// Inner import-and-re-export wrapper publishing `pair : func(s64) -> u32` as an interface member.
+    fn pairs_interface_wrapper() -> ComponentBuilder {
+        let mut c = ComponentBuilder::default();
+        let (ft, mut f) = c.type_function();
+        f.params([("p0", ComponentValType::Primitive(PrimitiveValType::S64))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        let imported = c.import("pair", ComponentTypeRef::Func(ft));
+        let (et, mut ef) = c.type_function();
+        ef.params([("p0", ComponentValType::Primitive(PrimitiveValType::S64))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::U32)));
+        c.export(
+            "pair",
+            ComponentExportKind::Func,
+            imported,
+            Some(ComponentTypeRef::Func(et)),
+        );
+        c
+    }
+
+    #[test]
+    fn x5b_a_compound_value_crosses_between_source_components_as_a_shared_handle() {
+        use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
+        use crate::testkit::parse;
+        let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
+        // PROVIDER (hand-built): `pair(x)` builds the runtime tuple `(x, x)` and returns its handle.
+        let provider = pairs_peer_component(&import_name);
+        // CONSUMER (from SOURCE): binds `pair : (-> Int64 (Tuple Int64 Int64))`, calls it, projects
+        // element 0. The tuple RESULT crosses as its opaque u32 handle over the shared runtime (X5b
+        // consumer-side widening). main(7) = tuple.0 (pair 7) = 7.
+        let consumer_src = "(do \
+            (extern \"cadenza:pairs/api\" (pair (-> Int64 (Tuple Int64 Int64)))) \
+            (def (main (: x Int64)) (. (pair x) 0)) \
+            (export main))";
+        let consumer =
+            crate::compile::compile_component(&crate::codec::encode(&parse(consumer_src)))
+                .expect("consumer with a compound extern result compiles");
+        for (b, who) in [(&provider, "provider"), (&consumer, "consumer")] {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(b)
+                .unwrap_or_else(|e| panic!("{who} validates: {e}"));
+        }
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("[X5b] runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:pairs/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["7".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("a compound value crosses between two source components")
+        {
+            // The tuple (7,7) the peer built on the shared heap crossed to the consumer as a handle; the
+            // consumer projected element 0 → 7. A runtime COMPOUND crossed between Cadenza components with
+            // NO serialization, over the shared runtime instance.
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "7",
+                    "compound value crosses as a shared handle; consumer reads element 0"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("compound cross-component run trapped: {t}"),
+        }
+    }
 }

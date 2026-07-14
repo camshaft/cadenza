@@ -464,10 +464,13 @@ pub fn emit(
         let body = def_body(db, def)?;
         host::collect_extern_imports(db, body, &mut extern_imports);
     }
-    if !extern_imports.is_empty() && (!host_imports.is_empty() || !imports.is_empty()) {
+    // An extern import composed with a HOST effect is not yet emitted (a consumer that both binds a peer
+    // AND delegates a host effect — a further fusion). An extern + the value-heap RUNTIME (a consumer that
+    // receives a compound `value` handle from a peer and inspects it) IS emitted (X5, `assemble_extern_runtime`).
+    if !extern_imports.is_empty() && !host_imports.is_empty() {
         return Err(Reject::decline(
-            "a cross-component extern import composed with a host effect or the value-heap runtime is \
-             not yet emitted (the extern + host/runtime import fusion is a later increment)",
+            "a cross-component extern import composed with a host effect is not yet emitted \
+             (the extern + host import fusion is a later increment)",
         ));
     }
     // A program mixing a host effect AND the value-heap runtime composes BOTH import spaces
@@ -568,8 +571,13 @@ pub fn emit(
     // A HOST-delegating program threads its host imports through the core module's import section (from
     // module `"host"`, ahead of any runtime op); an ordinary program takes the runtime-only path
     // (byte-identical to before).
-    let mut core = if !extern_imports.is_empty() {
-        // X4b-3: an extern-ONLY program (guarded above) — the core imports its peer ops from `"peer"`.
+    let mut core = if !extern_imports.is_empty() && !imports.is_empty() {
+        // X5: a consumer binding a peer AND using the value-heap runtime (it inspects a compound handle
+        // the peer returned) — the core imports peer ops from `"peer"` AND runtime ops from `"heap"`.
+        serialize::core_module_with_extern_runtime(&funcs, &extern_imports, &imports, layout)
+            .map_err(Reject::decline)?
+    } else if !extern_imports.is_empty() {
+        // X4b-3: an extern-ONLY program — the core imports its peer ops from `"peer"`.
         serialize::core_module_with_extern(&funcs, &extern_imports, layout)
             .map_err(Reject::decline)?
     } else if host_imports.is_empty() {
@@ -787,6 +795,21 @@ pub fn emit(
                 core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
             })
             .collect();
+        // A consumer that ALSO uses the value-heap runtime (it inspects a compound `value` handle the
+        // peer returned) composes BOTH imports — `assemble_extern_runtime` imports the peer (as `"peer"`)
+        // AND the runtime (as `"heap"`), matching the core's dual import (X5). Otherwise the peer-only
+        // envelope (X3).
+        if !imports.is_empty() {
+            let import_name = runtime_import_name();
+            return Ok(envelope::assemble_extern_runtime(
+                &core,
+                &boundary,
+                &iface,
+                &extern_fns,
+                &imports,
+                &import_name,
+            ));
+        }
         return Ok(envelope::assemble_extern(
             &core,
             &boundary,

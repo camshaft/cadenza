@@ -74,6 +74,50 @@ pub fn abi_val_type(ty: &Ty) -> Option<AbiValType> {
     }
 }
 
+/// The boundary `AbiValType` a value of type `ty` crosses as BETWEEN CADENZA PEERS over a SHARED runtime
+/// (X5). A scalar crosses by its scalar rep (`abi_val_type`); a runtime-owned COMPOUND (a value with no
+/// scalar rep but a `u32` heap handle in-guest — a tuple/record/sum/list/map/set/string/bytes/bigint/
+/// rational) crosses as its opaque `u32` handle into the shared heap (component-abi.md §Cadenza Components
+/// Composed Against A Shared Runtime Exchange Values As Handles). Unlike the HOST boundary (where a compound
+/// has no representation — the host can't build a heap handle), a peer shares the runtime, so the handle is
+/// meaningful on both sides. `None` only for `Unit` (elided) or a type with neither a scalar rep nor a heap
+/// handle (a bare function — declines).
+pub fn extern_abi_val_type(ty: &Ty) -> Option<AbiValType> {
+    if let Some(v) = abi_val_type(ty) {
+        return Some(v);
+    }
+    // A value the RUNTIME OWNS crosses as its opaque `u32` heap handle — the compound types that live on
+    // the value heap (a tuple/record/sum/list/map/set + the byte-rope String/Bytes + the bignum BigInt/
+    // Rational), and an erased nominal over one. NOT a narrow scalar (Int8 has no scalar `abi_val_type` yet
+    // but is NOT a heap value). `Unit`/a bare function → None (declines).
+    if is_extern_heap_type(ty) {
+        Some(AbiValType::U32)
+    } else {
+        None
+    }
+}
+
+/// Whether `ty` is a value the shared runtime OWNS — its cross-peer boundary form is an opaque `u32`
+/// handle into the shared heap (X5). The value-heap compound + byte-rope + bignum types; an erased
+/// nominal reads through to its inner type.
+fn is_extern_heap_type(ty: &Ty) -> bool {
+    match ty {
+        Ty::Tuple(_)
+        | Ty::Record(_)
+        | Ty::Sum { .. }
+        | Ty::List(_)
+        | Ty::Map(_, _)
+        | Ty::Set(_)
+        | Ty::Bytes
+        | Ty::String
+        | Ty::BigInt
+        | Ty::Rational => true,
+        Ty::Nominal { inner, .. } => is_extern_heap_type(inner),
+        Ty::Qty { inner, .. } => is_extern_heap_type(inner),
+        _ => false,
+    }
+}
+
 /// Collect the host-import SET a reachable body performs — every distinct `(effect, op)` a
 /// `Core::HostCall` names, in first-encountered order (deterministic: the same walk order every build).
 /// `out` accumulates across all reachable bodies (the caller runs it over `layout.order`). A duplicate
@@ -244,13 +288,15 @@ pub fn collect_extern_imports(db: &mut Db, id: StructId, out: &mut Vec<ExternImp
             result,
         } => {
             // The op's boundary signature — parameter kinds from the arg types, result from `result`. A
-            // `Unit` arg/result is elided. X4b-3 crosses scalars; a non-scalar (compound/`value`) param
-            // is X5, so it maps to no scalar ABI here (the envelope declines an undelegable op).
+            // `Unit` arg/result is elided. A SCALAR crosses by its component scalar rep (`abi_val_type`); a
+            // runtime-owned COMPOUND crosses as its opaque `u32` HANDLE into the shared runtime (X5 —
+            // component-abi.md §Cadenza Components … Exchange Values As Handles), both sides indexing the
+            // one shared heap (X5a). `extern_abi_val_type` unifies the two.
             let mut params = Vec::new();
             for &a in &args {
                 let at = crate::infer::type_of(db, a);
                 if !matches!(at, Ty::Unit)
-                    && let Some(v) = abi_val_type(&at)
+                    && let Some(v) = extern_abi_val_type(&at)
                 {
                     params.push(v);
                 }
@@ -258,7 +304,7 @@ pub fn collect_extern_imports(db: &mut Db, id: StructId, out: &mut Vec<ExternImp
             let result_abi = if matches!(result, Ty::Unit) {
                 None
             } else {
-                abi_val_type(&result)
+                extern_abi_val_type(&result)
             };
             let imp = ExternImport {
                 interface,

@@ -545,6 +545,18 @@ pub fn core_module_with_extern(
     core_module_impl(funcs, &[], &[], extern_fns, layout)
 }
 
+/// [`core_module`] with BOTH a peer extern-import set AND the value-heap runtime (X5): peer ops from
+/// module `"peer"` at core funcs `0..e`, runtime ops from `"heap"` at `e..e+k`. For a consumer that
+/// receives a compound `value` handle from a peer and INSPECTS it (a projection imports runtime ops).
+pub fn core_module_with_extern_runtime(
+    funcs: &[SelectedFunc],
+    extern_fns: &[crate::backend::wasm::host::ExternImport],
+    imports: &[&RtOp],
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    core_module_impl(funcs, imports, &[], extern_fns, layout)
+}
+
 /// [`core_module`] with a leading HOST-import set (E2h-2): `host_fns` are host-delegated ops imported
 /// from module `"host"`, occupying core-func indices `0..h` AHEAD of the runtime ops and defined funcs.
 /// The host-only scope (this increment) means `imports` is empty when `host_fns` is non-empty, but the
@@ -576,15 +588,21 @@ fn core_module_impl(
     // defined function (`import_count..import_count+n`). Numbering imports' types first keeps a defined
     // func's type index equal to `import_count + its emission position`, which the function section
     // references.
+    // EXTERN peer functypes FIRST (`0..e`), then HOST (`e..e+h`), then RUNTIME (`e+h..import_count`), then
+    // one per defined func. Extern and host never coexist (the emit guard forbids extern+host), so an
+    // extern-only program keeps host empty (extern at `0..e`, `CallExternImport(i)=call i`) and a host
+    // program keeps extern empty (host at `0..h`, `CallHostImport(i)=call i`) — both indices stay valid
+    // with either ordering; extern-first is chosen so extern+RUNTIME lays peer ops before runtime ops,
+    // matching the `assemble_extern_runtime` envelope's alias order.
     let mut type_items = Vec::new();
+    for f in extern_fns {
+        type_items.extend_from_slice(&extern_import_functype(f));
+    }
     for f in host_fns {
         type_items.extend_from_slice(&host_import_functype(f));
     }
     for o in imports {
         type_items.extend_from_slice(&import_functype(o));
-    }
-    for f in extern_fns {
-        type_items.extend_from_slice(&extern_import_functype(f));
     }
     for f in funcs {
         type_items.extend_from_slice(&functype(f)?);
@@ -609,21 +627,23 @@ fn core_module_impl(
     } else {
         let mut import_items = Vec::new();
         let mut import_n = 0usize;
-        for (i, f) in host_fns.iter().enumerate() {
-            import_items.extend_from_slice(&host_import_item(&f.op, i as u32));
+        // EXTERN peer ops FIRST (from module `"peer"`, indices `0..e`) — so `CallExternImport(i)=call i`
+        // AND, when composed with the runtime, the peer ops precede the runtime ops (matching the
+        // `assemble_extern_runtime` envelope). Extern + host never coexist, so `e>0 ⇒ h=0`.
+        for (i, f) in extern_fns.iter().enumerate() {
+            import_items.extend_from_slice(&extern_import_item(&f.op, i as u32));
             import_n += 1;
         }
+        for (i, f) in host_fns.iter().enumerate() {
+            import_items.extend_from_slice(&host_import_item(&f.op, (e + i) as u32));
+            import_n += 1;
+        }
+        // RUNTIME ops — from module `"heap"` at indices `e+h..import_count`, resolved BY NAME via
+        // `import_index` (so the shift by `e+h` is automatic wherever a `CallImport` looks up its op).
         for (j, o) in imports.iter().enumerate() {
-            let ti = (h + j) as u32;
+            let ti = (e + h + j) as u32;
             import_items.extend_from_slice(&import_item(o.name, ti));
             import_index.insert(o.name, ti);
-            import_n += 1;
-        }
-        // CROSS-COMPONENT extern ops (X4b) — imported from module `"peer"` at core-func indices
-        // `h+k..h+k+e`, using type indices `h+k..h+k+e` (laid after host + runtime functypes above).
-        for (j, f) in extern_fns.iter().enumerate() {
-            let ti = (h + imports.len() + j) as u32;
-            import_items.extend_from_slice(&extern_import_item(&f.op, ti));
             import_n += 1;
         }
         if needs_memory {
