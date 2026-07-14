@@ -269,6 +269,7 @@ pass	a closure captures a sum value and matches it inside its lifted body throug
 pass	a closure captures a tuple and projects it inside its lifted body through a recursive HOF
 pass	a closure captures another closure and applies it
 pass	a closure captures another closure and applies it at RUNTIME
+pass	a closure captures its environment by value at creation, unaffected by a later same-named binding
 pass	a closure captures the binding in scope where it was created
 pass	a closure captures the result of a build-time host op called with an argument
 pass	a closure capturing THREE scalars is made and called
@@ -588,6 +589,7 @@ pass	a list element position composes with a nested tuple pattern
 pass	a list match arm may carry a guard on its element binders
 pass	a list mixing integer and boolean elements is a type error
 pass	a list mixing integer and float elements is a type error
+pass	a list of closures each keeps its own capture, selected by a runtime index
 pass	a list of maps with different keys is homogeneous, not a type error
 pass	a list of maps: a runtime index then looks a runtime key up in the found map
 pass	a list of records with different field sets is a type error
@@ -1985,6 +1987,7 @@ pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity
 pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two adjacent modules declared inside a function body compose
+pass	two closures from one factory capture distinct values
 pass	two constant records with the same fields in different written order are equal
 pass	two constant sums with the same payload but different variants are not equal
 pass	two definitions imported under the same name are rejected
