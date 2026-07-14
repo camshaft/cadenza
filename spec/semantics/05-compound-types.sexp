@@ -5087,6 +5087,33 @@
             (export main)))
   (output (: 2 Int64)))
 
+(case "a two-variant enum match with constant arms dispatches branchlessly — first variant"
+  (doc    "A TWO-variant enum `(type Flag On Off)` matched to constant arms is `(if (disc == On) 1 0)` —
+           the two-arm sum-discriminant analogue of the scalar two-arm select, so the compiler emits a
+           branchless `select` (both arm constants + the discriminant test), not a structured `if`. A
+           runtime `n < 0` picks `On`, and `(rank On)` = 1. Pins that a two-variant enum dispatch to leaf
+           bodies is branchless and value-correct on the first-variant path.")
+  (input  (do
+            (type Flag On Off)
+            (def (rank (: f Flag)) (match f (Flag.On 1) (Flag.Off 0)))
+            (def (main (: n Int64)) (rank (if (< n 0) Flag.On Flag.Off)))
+            (export main)))
+  (call   main (: -5 Int64))
+  (output (: 1 Int64)))
+
+(case "a two-variant enum match with constant arms dispatches branchlessly — second variant"
+  (doc    "The other arm of the branchless two-variant enum match `(match f (Flag.On 1) (Flag.Off 0))`:
+           a runtime `n >= 0` picks `Off`, so the branchless select returns the else arm 0. Together with
+           the On case this pins value parity of the two-variant sum select with the structured `if` it
+           replaces.")
+  (input  (do
+            (type Flag On Off)
+            (def (rank (: f Flag)) (match f (Flag.On 1) (Flag.Off 0)))
+            (def (main (: n Int64)) (rank (if (< n 0) Flag.On Flag.Off)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 0 Int64)))
+
 (case "an all-nullary enum nested in a tuple carries its discriminant through the heap"
   (doc    "An all-nullary enum is represented as its bare discriminant (no heap box — it carries no data
            beyond WHICH variant it is). When such a value is an ELEMENT of a heap compound it is boxed
