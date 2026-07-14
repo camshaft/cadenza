@@ -3471,6 +3471,10 @@ pub struct SigGroupAbi {
     /// The SUFFIX scalar boundary bytes after the tuple, interleaved into the `call-<g>` functype. Empty for a
     /// SOLE tuple (or a scalar-arg group).
     pub tuple_suffix_bytes: Vec<u8>,
+    /// `Some(shape)` when this group's tuple arg is a NESTED fixed-shape compound: the per-group `call-<g>`
+    /// mint sites emit the inner `tuple<…>` types by index from it (recursively). `None` = a flat all-scalar
+    /// tuple (uses `tuple_arg_bytes`) or a scalar-arg group.
+    pub tuple_shape: Option<Vec<TupleFieldShape>>,
 }
 
 /// One SIGNATURE GROUP's boundary shape for the distinct-signature ROUND-TRIP envelope: its producers
@@ -3566,13 +3570,21 @@ pub fn assemble_distinct_sig_resource_mixed_borrow(
     let n_bytes = groups.iter().filter(|gr| gr.ret_is_bytes).count();
     let any_bytes = n_bytes > 0;
     // A tuple-ARG group's `call-<g>` argument is a native component `tuple<…>` (a DEFINED type minted just
-    // before the call functype), so it also adds ONE extra component type (own<t> + tuple + functype = 3, vs
-    // a scalar-arg call's own<t> + functype = 2) — exactly like a byte-rope group's extra list<u8> type.
-    // `n_tuple` counts those extra tuple types (a group is never both byte-rope-result AND tuple-arg this cut).
-    let n_tuple = groups
+    // before the call functype), so it also adds extra component type(s) — a FLAT tuple adds ONE (own<t> +
+    // tuple + functype = 3, vs a scalar-arg call's own<t> + functype = 2); a NESTED tuple adds
+    // `nested_tuple_type_count` (its inner tuples too). `n_tuple` sums those extras across groups.
+    let n_tuple: usize = groups
         .iter()
-        .filter(|gr| gr.tuple_arg_bytes.is_some())
-        .count();
+        .map(|gr| {
+            if let Some(shape) = &gr.tuple_shape {
+                nested_tuple_type_count(shape) as usize
+            } else if gr.tuple_arg_bytes.is_some() {
+                1
+            } else {
+                0
+            }
+        })
+        .sum();
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
 
@@ -3765,12 +3777,27 @@ pub fn assemble_distinct_sig_resource_mixed_borrow(
                 ti += 2;
             }
             if gr.ret_is_bytes {
-                // call-<g> returns `list<u8>`. With a TUPLE arg: own/borrow<t_g> (ti) + tuple<…> (ti+1) +
-                // list<u8> (ti+2) + `(self, tuple) -> list<u8>` functype (ti+3) — 4 types. Without: own/borrow
-                // (ti) + list<u8> (ti+1) + `(self, args…) -> list<u8>` functype (ti+2) — 3 types.
+                // call-<g> returns `list<u8>`. With a TUPLE arg: own/borrow<t_g> (ti) + tuple type(s) +
+                // list<u8> + `(self, tuple) -> list<u8>` functype. Without: own/borrow (ti) + list<u8> (ti+1) +
+                // `(self, args…) -> list<u8>` functype (ti+2) — 3 types.
                 items.extend_from_slice(&call_handle(rty));
                 let own_ty = ti;
-                if let Some(fields) = &gr.tuple_arg_bytes {
+                if let Some(shape) = &gr.tuple_shape {
+                    let mut next = ti + 1;
+                    let outer_tup = mint_tuple_type_nested(shape, &mut next, &mut items);
+                    let list_ty = next;
+                    items.extend_from_slice(&list_u8_defined_type());
+                    next += 1;
+                    items.extend_from_slice(&closure_call_list_tuple_arg_functype_interleaved(
+                        own_ty,
+                        &gr.tuple_prefix_bytes,
+                        outer_tup,
+                        &gr.tuple_suffix_bytes,
+                        list_ty,
+                    ));
+                    fn_functype.push(next);
+                    ti = next + 1;
+                } else if let Some(fields) = &gr.tuple_arg_bytes {
                     let tup_ty = ti + 1;
                     let list_ty = ti + 2;
                     items.extend_from_slice(&tuple_defined_type(fields));
@@ -3795,6 +3822,21 @@ pub fn assemble_distinct_sig_resource_mixed_borrow(
                     fn_functype.push(ti + 2);
                     ti += 3;
                 }
+            } else if let Some(shape) = &gr.tuple_shape {
+                // call-<g>: own/borrow<t_g> (ti) + nested tuple type(s) + `(self, tuple) -> R` functype.
+                items.extend_from_slice(&call_handle(rty));
+                let own_ty = ti;
+                let mut next = ti + 1;
+                let outer_tup = mint_tuple_type_nested(shape, &mut next, &mut items);
+                items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                    own_ty,
+                    &gr.tuple_prefix_bytes,
+                    outer_tup,
+                    &gr.tuple_suffix_bytes,
+                    gr.result_byte,
+                ));
+                fn_functype.push(next);
+                ti = next + 1;
             } else if let Some(fields) = &gr.tuple_arg_bytes {
                 // call-<g>: own/borrow<t_g> (ti) + tuple<…> (ti+1) + `(self, <prefix…>, tuple, <suffix…>) -> R`.
                 items.extend_from_slice(&call_handle(rty));
@@ -5167,10 +5209,32 @@ fn resource_inner_component_distinct_sig_borrow(
             f += 1;
         }
         if gr.ret_is_bytes {
-            // call-<gi> returns list<u8>. With a TUPLE arg: handle + tuple + list<u8> + functype (4 types);
+            // call-<gi> returns list<u8>. With a TUPLE arg: handle + tuple type(s) + list<u8> + functype;
             // without: handle + list<u8> + functype (3 types).
             let own_ty = ty;
-            if let Some(fields) = &gr.tuple_arg_bytes {
+            if let Some(shape) = &gr.tuple_shape {
+                let mut next = ty + 1;
+                let mut items = call_handle(gi as u32);
+                let outer_tup = mint_tuple_type_nested(shape, &mut next, &mut items);
+                let list_ty = next;
+                items.extend_from_slice(&list_u8_defined_type());
+                next += 1;
+                items.extend_from_slice(&closure_call_list_tuple_arg_functype_interleaved(
+                    own_ty,
+                    &gr.tuple_prefix_bytes,
+                    outer_tup,
+                    &gr.tuple_suffix_bytes,
+                    list_ty,
+                ));
+                let ft_ty = next;
+                let n_types = 1 + nested_tuple_type_count(shape) as usize + 2; // handle + tuple + list + ft
+                out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(n_types, &items)));
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_IMPORT,
+                    &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
+                ));
+                ty = ft_ty + 1;
+            } else if let Some(fields) = &gr.tuple_arg_bytes {
                 let tup_ty = ty + 1;
                 let list_ty = ty + 2;
                 let ft_ty = ty + 3;
@@ -5211,6 +5275,27 @@ fn resource_inner_component_distinct_sig_borrow(
                 ));
                 ty += 3;
             }
+        } else if let Some(shape) = &gr.tuple_shape {
+            // call-<gi> : (self: handle<t_gi>, p: nested tuple) -> R  → handle + nested tuple type(s) + ft.
+            let own_ty = ty;
+            let mut next = ty + 1;
+            let mut items = call_handle(gi as u32);
+            let outer_tup = mint_tuple_type_nested(shape, &mut next, &mut items);
+            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                own_ty,
+                &gr.tuple_prefix_bytes,
+                outer_tup,
+                &gr.tuple_suffix_bytes,
+                gr.result_byte,
+            ));
+            let ft_ty = next;
+            let n_types = 1 + nested_tuple_type_count(shape) as usize + 1; // handle + tuple + ft
+            out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(n_types, &items)));
+            out.extend_from_slice(&section(
+                sec::COMPONENT_IMPORT,
+                &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
+            ));
+            ty = ft_ty + 1;
         } else if let Some(fields) = &gr.tuple_arg_bytes {
             // call-<gi> : (self: handle<t_gi>, <prefix…>, p: tuple<…>, <suffix…>) -> R  → handle + tuple + ft.
             let own_ty = ty;
@@ -5286,9 +5371,34 @@ fn resource_inner_component_distinct_sig_borrow(
             f += 1;
         }
         if gr.ret_is_bytes {
-            // list<u8> result. With a TUPLE arg: handle + tuple + list<u8> + functype (4 types); without:
+            // list<u8> result. With a TUPLE arg: handle + tuple type(s) + list<u8> + functype; without:
             // handle + list<u8> + functype (3 types).
-            if let Some(fields) = &gr.tuple_arg_bytes {
+            if let Some(shape) = &gr.tuple_shape {
+                let mut next = ti + 1;
+                let mut items = call_handle(exp_rty);
+                let outer_tup = mint_tuple_type_nested(shape, &mut next, &mut items);
+                let list_ty = next;
+                items.extend_from_slice(&list_u8_defined_type());
+                next += 1;
+                items.extend_from_slice(&closure_call_list_tuple_arg_functype_interleaved(
+                    ti,
+                    &gr.tuple_prefix_bytes,
+                    outer_tup,
+                    &gr.tuple_suffix_bytes,
+                    list_ty,
+                ));
+                let ft_ty = next;
+                let n_types = 1 + nested_tuple_type_count(shape) as usize + 2;
+                out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(n_types, &items)));
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_EXPORT,
+                    &wasm_vec(
+                        1,
+                        &export_func_ascribed_item(&format!("call-g{gi}"), f as u32, ft_ty),
+                    ),
+                ));
+                ti = ft_ty + 1;
+            } else if let Some(fields) = &gr.tuple_arg_bytes {
                 out.extend_from_slice(&{
                     let mut items = call_handle(exp_rty);
                     items.extend_from_slice(&tuple_defined_type(fields));
@@ -5326,6 +5436,28 @@ fn resource_inner_component_distinct_sig_borrow(
                 ));
                 ti += 3;
             }
+        } else if let Some(shape) = &gr.tuple_shape {
+            let mut next = ti + 1;
+            let mut items = call_handle(exp_rty);
+            let outer_tup = mint_tuple_type_nested(shape, &mut next, &mut items);
+            items.extend_from_slice(&closure_call_tuple_arg_functype_interleaved(
+                ti,
+                &gr.tuple_prefix_bytes,
+                outer_tup,
+                &gr.tuple_suffix_bytes,
+                gr.result_byte,
+            ));
+            let ft_ty = next;
+            let n_types = 1 + nested_tuple_type_count(shape) as usize + 1;
+            out.extend_from_slice(&section(sec::COMPONENT_TYPE, &wasm_vec(n_types, &items)));
+            out.extend_from_slice(&section(
+                sec::COMPONENT_EXPORT,
+                &wasm_vec(
+                    1,
+                    &export_func_ascribed_item(&format!("call-g{gi}"), f as u32, ft_ty),
+                ),
+            ));
+            ti = ft_ty + 1;
         } else if let Some(fields) = &gr.tuple_arg_bytes {
             out.extend_from_slice(&{
                 let mut items = call_handle(exp_rty);

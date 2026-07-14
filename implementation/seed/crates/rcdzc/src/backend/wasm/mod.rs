@@ -3647,8 +3647,15 @@ fn emit_distinct_sig_resource(
         ret_descriptor: Option<Vec<u8>>,
         /// The direct-call compound ARG for this group (a single fixed-shape scalar tuple/record, SOLE or among
         /// scalar args): the tuple's per-field component bytes + prefix scalar bytes + suffix scalar bytes + the
-        /// `TupleArgRebuild` (with `base_param`). `None` = scalar args. Composes with EVERY result shape.
+        /// `TupleArgRebuild` (with `base_param`). Set for BOTH a flat AND a nested tuple arg (the rebuild is
+        /// recursive for nested); for a nested arg the `field_bytes` are unused (the `nested_shape` drives the
+        /// envelope mint). `None` = scalar args.
         tuple_arg: Option<GroupCompoundArg>,
+        /// `Some(shape)` when this group's sole arg is a NESTED fixed-shape compound (a tuple/record with a
+        /// tuple/record field): the recursive `TupleFieldShape` the per-group `call-<g>` envelope mints the
+        /// inner `tuple<…>` types from (by index). `None` for a flat all-scalar-field tuple (which uses the
+        /// flat `tuple_arg` field bytes). When `Some`, `tuple_arg` also carries the recursive rebuild.
+        nested_shape: Option<Vec<crate::backend::wasm::envelope::TupleFieldShape>>,
         /// The LIFTED lambda's OWN param valtypes for this group — used to match a representative lifted slot.
         /// For a scalar-arg group this equals `arg_vts`; for a TUPLE-arg group `arg_vts` is the FLATTENED
         /// fields but the lifted lambda takes ONE i32 tuple-cell handle, so this is `[I32]` (the cell), NOT the
@@ -3675,8 +3682,33 @@ fn emit_distinct_sig_resource(
         } else {
             single_compound_among_scalars(arg_tys.as_slice())
         };
-        let arg_bytes: Vec<u8> = if group_tuple_arg.is_some() {
-            Vec::new() // the flattened tuple fields are carried by `tuple_arg`
+        // A SOLE NESTED fixed-shape compound arg (a tuple/record with a tuple/record field): detected when the
+        // flat `group_tuple_arg` is None. The per-group `call-<g>` rebuilds the nested cell recursively; the
+        // per-group envelope mints the inner `tuple<…>` types by index from `shape`.
+        let group_nested: Option<NestedCompoundArgBoundary> =
+            if group_tuple_arg.is_none() && arg_tys.len() == 1 {
+                nested_fixed_shape_tuple_arg(&arg_tys[0]).and_then(|(lb, lv, rf, shape)| {
+                    let has_nested = shape.iter().any(|f| {
+                        matches!(
+                            f,
+                            crate::backend::wasm::envelope::TupleFieldShape::Nested(_)
+                        )
+                    });
+                    has_nested.then_some((
+                        lb,
+                        lv,
+                        serialize::TupleArgRebuild {
+                            fields: rf,
+                            base_param: 1,
+                        },
+                        shape,
+                    ))
+                })
+            } else {
+                None
+            };
+        let arg_bytes: Vec<u8> = if group_tuple_arg.is_some() || group_nested.is_some() {
+            Vec::new() // the flattened tuple fields are carried by `tuple_arg`/`nested_shape`
         } else {
             arg_tys
                 .iter()
@@ -3719,6 +3751,8 @@ fn emit_distinct_sig_resource(
         // fields, suffix scalars), else each arg's own valtype.
         let arg_vts: Vec<ValType> = if let Some((_, all_vts, _, _, _)) = &group_tuple_arg {
             all_vts.clone()
+        } else if let Some((_, leaf_vts, _, _)) = &group_nested {
+            leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
         } else {
             arg_tys
                 .iter()
@@ -3750,10 +3784,19 @@ fn emit_distinct_sig_resource(
                     .ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
                 })
                 .collect::<Result<_, _>>()?
+        } else if group_nested.is_some() {
+            // A sole nested tuple/record arg is ONE i32 cell handle to the lambda (the `call-<g>` wrapper
+            // rebuilds it recursively from the flattened leaves).
+            vec![ValType::I32]
         } else {
             arg_vts.clone()
         };
-        let tuple_arg = group_tuple_arg.map(|(fb, _, pre, suf, rb)| (fb, pre, suf, rb));
+        // A nested group carries its recursive rebuild in `tuple_arg` (field_bytes unused) + its shape in
+        // `nested_shape`; a flat group carries the field bytes + rebuild in `tuple_arg`, `nested_shape` None.
+        let nested_shape = group_nested.as_ref().map(|(_, _, _, shape)| shape.clone());
+        let tuple_arg = group_tuple_arg
+            .map(|(fb, _, pre, suf, rb)| (fb, pre, suf, rb))
+            .or_else(|| group_nested.map(|(_, _, rb, _)| (Vec::new(), Vec::new(), Vec::new(), rb)));
         ginfos.push(GroupInfo {
             arg_vts,
             ret_vt,
@@ -3763,6 +3806,7 @@ fn emit_distinct_sig_resource(
             ret_template,
             ret_descriptor,
             tuple_arg,
+            nested_shape,
             match_vts,
         });
     }
@@ -4018,6 +4062,7 @@ fn emit_distinct_sig_resource(
                 .as_ref()
                 .map(|(_, _, suf, _)| suf.clone())
                 .unwrap_or_default(),
+            tuple_shape: ginfos[gi].nested_shape.clone(),
         });
     }
 

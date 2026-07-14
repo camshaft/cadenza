@@ -3293,6 +3293,49 @@
   (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (output (: (list 100 10 3) (List Int64))))
 
+; The NESTED compound ARG completes the export-shape matrix on the DISTINCT-SIGNATURE path: closures of
+; DIFFERENT signatures each taking a sole nested tuple/record arg cross as G distinct resource types, each
+; per-group `call-g<n>` rebuilding ITS nested cell recursively + minting ITS inner `tuple<…>` types by index
+; (`SigGroupAbi.tuple_shape`). A nested arg now works on ALL FOUR export shapes for every result shape.
+
+(case "DISTINCT-SIG: two DIFFERENT-signature nested-Tuple-arg closures each cross the direct-call boundary"
+  (doc    "`mk-a : (-> (Tuple Int64 (Tuple Int64 Int64)) Int64)` and `mk-b : (-> (Tuple Int64 (Tuple Int64
+           Bool)) Int64)` — two DIFFERENT nested-tuple signatures (Int64-inner vs Int64/Bool-inner), each its
+           own resource type + `call-g<n>` rebuilding its nested cell. Driving `mk-a`: `make-a()` → handle,
+           `call(handle, (100, (10, 3)))` → `p.0 + p.1.0 + p.1.1` = 113.")
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
+                           (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1)))))
+              (def (mk-b) (fn ((: q (Tuple Int64 (Tuple Int64 Bool))))
+                           (if (. (. q 1) 1) (+ (. q 0) (. (. q 1) 0)) (. q 0))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (output (: 113 Int64)))
+
+(case "DISTINCT-SIG: driving the Int64/Bool-inner nested-Tuple-arg closure (Bool leaf at depth)"
+  (doc    "The SAME distinct-sig component, driving `mk-b : (-> (Tuple Int64 (Tuple Int64 Bool)) Int64)` — its
+           inner tuple has a Bool leaf (boxed via `box-bool` in the recursive rebuild), its own resource type +
+           `call-g<n>`. `make-b()` → handle, `call(handle, (100, (10, true)))` → `if q.1.1 then q.0 + q.1.0 else
+           q.0` = 110. Confirms distinct-sig groups mint their own nested types + rebuild independently.")
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
+                           (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1)))))
+              (def (mk-b) (fn ((: q (Tuple Int64 (Tuple Int64 Bool))))
+                           (if (. (. q 1) 1) (+ (. q 0) (. (. q 1) 0)) (. q 0))))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: (tuple 100 (tuple 10 true)) (Tuple Int64 (Tuple Int64 Bool))))
+  (output (: 110 Int64)))
+
+(case "DISTINCT-SIG: a nested-Tuple-arg closure with a LIST result"
+  (doc    "`mk-a : (-> (Tuple Int64 (Tuple Int64 Int64)) (List Int64))` + `mk-b : (-> (Tuple Int64 (Tuple Int64
+           Bool)) (List Int64))` — DIFFERENT nested sigs, each list-returning `call-g<n>` rebuilding its nested
+           cell then value-encoding the List. Driving `mk-a`: `call(handle, (100, (10, 3)))` → `(list 100 10
+           3)`.")
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
+                           (list (. p 0) (. (. p 1) 0) (. (. p 1) 1))))
+              (def (mk-b) (fn ((: q (Tuple Int64 (Tuple Int64 Bool)))) (list (. q 0))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (output (: (list 100 10 3) (List Int64))))
+
 ; A WIDER fixed-shape tuple (3+ fields) and DEEPER scalar interleaving (2 prefix + 1 suffix) also cross — the
 ; flatten/rebuild + interleave machinery is field-count- and position-agnostic.
 
