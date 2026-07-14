@@ -2657,6 +2657,13 @@ fn resolve_noncanonical_handle(_db: &Db, _id: StructId) -> Resolved {
 /// state binder, and the arm body. Scope for the params/state binders is handled by the ordinary
 /// parent-walk (a reference in the arm body finds its binder), so here we only record the shape. A
 /// malformed arm or a missing init/body is a `Poison`.
+///
+/// The handler that discharges a performed operation is thus determined from the RESOLVED IR: a `handle`
+/// is a resolved node and a perform inside its body is matched to the enclosing handler's arms at resolve
+/// /lower time — so the discharging handler is fixed BEFORE instruction selection, not accumulated as
+/// state while the backend emits instructions.
+//= spec/capabilities/compiler-pipeline.md#the-compiler-resolves-names-before-it-selects-instructions
+//# The compiler MUST determine the handler that discharges each performed effect operation from the structure of the resolved intermediate representation, so that the discharging handler of an operation is fixed before instruction selection rather than by state accumulated while instructions are emitted.
 fn resolve_handle(db: &Db, id: StructId) -> Resolved {
     // A too-short internal tail is reported as incomplete rather than mis-enumerated (we cannot reliably
     // name WHICH part is missing); the shape carries the fix.
