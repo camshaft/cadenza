@@ -4690,6 +4690,22 @@
   (call   main)
   (output (: 3.5 Float64)))
 
+(case "a multi-payload variant with MIXED-width, MIXED-type payloads deconstructs each field"
+  (doc    "A single variant carries THREE heterogeneous payloads — `(Mk UInt8 Int64 Bool)` — a narrow int,
+           a full-width int, and a bool, boxed as ONE tuple whose elements have different machine widths
+           (i32 / i64 / i32-bool). The match binds all three (`a b p`) and each reads back at its own
+           width: `(+ (Int64.wrap a) (if p b 0))`. `(f (Mk 5 100 true))` = 5 + 100 = 105. Pins that a
+           multi-payload variant's heterogeneous-width payload tuple boxes and unboxes each field
+           correctly — the mixed-width companion of the uniform-Int64 multi-payload cases.")
+  (input  (do
+            (type Rec (Mk UInt8 Int64 Bool) (Z))
+            (def (f (: r Rec)) (match r ((Rec.Mk a b p) (+ (Int64.wrap a) (if p b 0))) ((Rec.Z) -1)))
+            (def (main (: k Int64)) (f (Rec.Mk (UInt8.wrap 5) k true)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 100 Int64))
+  (output (: 105 Int64)))
+
 (case "constructor pattern binders capture the payload uniformly"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant: the pattern `(Some x)` binds `x` to the payload (42); the pattern
