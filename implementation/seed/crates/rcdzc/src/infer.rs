@@ -4222,6 +4222,97 @@ fn record_field_typo_fix(db: &mut Db, expected: &Ty, actual: &Ty, arg: StructId)
     None
 }
 
+/// The ENTRY node (`(k v)` pair) of the field named `field` in a WRITTEN record literal `expr` — the whole
+/// pair, so a delete fix can remove `(field value)` as a unit. `None` if `expr` is not an inline record
+/// literal (in the RAW AST) or has no such field. Same raw-AST discipline as [`record_field_key_occ`].
+fn record_field_entry_occ(db: &Db, expr: StructId, field: &str) -> Option<StructId> {
+    let entries = db
+        .ast
+        .as_ctor_form(expr, "record")
+        .or_else(|| db.ast.as_form(expr, "record"))?;
+    for &entry in entries {
+        if let crate::ast::Struct::List(kv) = db.ast.get(entry)
+            && kv.len() == 2
+            && let Some(sym) = crate::resolve::read_key(db, kv[0])
+            && sym.name == field
+        {
+            return Some(entry);
+        }
+    }
+    None
+}
+
+/// The WRITTEN record-literal FORM node of `expr` (the `(record …)` list itself), if `expr` is an inline
+/// record literal in the RAW AST — the node an `InsertArms` fix appends new `(field value)` entries to.
+/// `None` for a name-bound / call-result record (no source form to edit).
+fn record_literal_form(db: &Db, expr: StructId) -> Option<StructId> {
+    // Both the reserved-symbol head `(record …)` and the bare `record` name-alias spell the same list; the
+    // form node we append to is `expr` itself when either parse recognizes it.
+    if db.ast.as_ctor_form(expr, "record").is_some() || db.ast.as_form(expr, "record").is_some() {
+        Some(expr)
+    } else {
+        None
+    }
+}
+
+/// A one-shot ADD-MISSING-FIELDS fix for a record literal that is MISSING fields its expected type
+/// requires: append a `(field (trap "TODO"))` entry per missing field to the written `(record …)` form
+/// (`(record (x 1))` against `(Record (x Int64) (y Int64))` → `(record (x 1) (y (trap "TODO")))`). The
+/// construction analogue of the "add the missing match arms" fix: the SHAPE is right (the field set now
+/// matches, clearing CDZ0203) and `trap : ∀a. String → a` inhabits ANY field type so the placeholder never
+/// introduces a fresh type error — but the VALUES are placeholders the author fills, so it is heuristic
+/// (`--verify-fixes` upgrades it, since applying it clears the fault). Requires BOTH records, the value
+/// written inline (its form is editable), and a NON-EMPTY missing set with NO extra field (a pure omission
+/// — a value that also carries an extra field is a rename candidate `record_field_typo_fix` handles first,
+/// or a genuinely different shape, not a clean "you forgot these" add).
+fn record_field_add_fix(db: &mut Db, expected: &Ty, actual: &Ty, arg: StructId) -> Option<Fix> {
+    let (Ty::Record(want), Ty::Record(got)) = (expected, actual) else {
+        return None;
+    };
+    let missing: Vec<&crate::resolved::Symbol> =
+        want.keys().filter(|k| !got.contains_key(*k)).collect();
+    let extra = got.keys().any(|k| !want.contains_key(k));
+    // A pure omission — some required field absent, and no supplied field the type lacks (that would be a
+    // rename or a genuinely different shape, not a clean "add the fields you forgot").
+    if missing.is_empty() || extra {
+        return None;
+    }
+    let form = record_literal_form(db, arg)?;
+    let arms: Vec<String> = missing
+        .iter()
+        .map(|k| format!("({} (trap \"TODO\"))", k.name))
+        .collect();
+    Some(Fix::insert_arms_heuristic(form, arms))
+}
+
+/// A one-shot DELETE-EXTRA-FIELD fix for a record literal carrying a field its expected type has no place
+/// for: remove that `(field value)` entry from the written `(record …)` form (`(record (x 1) (y 2))`
+/// against `(Record (x Int64))` → `(record (x 1))`). The construction analogue of the "remove the unused
+/// element" delete fix. Requires BOTH records, the value written inline, and EXACTLY ONE extra field with
+/// NO missing field (a single clean surplus — an extra alongside a missing one is a rename candidate
+/// `record_field_typo_fix` handles first; multiple extras are not one mechanical delete).
+fn record_field_delete_fix(db: &mut Db, expected: &Ty, actual: &Ty, arg: StructId) -> Option<Fix> {
+    let (Ty::Record(want), Ty::Record(got)) = (expected, actual) else {
+        return None;
+    };
+    let extra: Vec<&str> = got
+        .keys()
+        .filter(|k| !want.contains_key(*k))
+        .map(|k| k.name.as_str())
+        .collect();
+    let missing = want.keys().any(|k| !got.contains_key(k));
+    if let [surplus] = extra.as_slice()
+        && !missing
+        && let Some(entry) = record_field_entry_occ(db, arg, surplus)
+    {
+        return Some(Fix::delete_heuristic(
+            entry,
+            format!("remove the field `{surplus}` — the expected record has no such field"),
+        ));
+    }
+    None
+}
+
 /// The VALUE occurrence (`v` in a `(k v)` entry) of the field named `field` in a WRITTEN record literal
 /// `expr` — the companion of [`record_field_key_occ`] that returns the field's value node, so a nested
 /// typo fix can recurse into a sub-record literal. `None` if `expr` is not an inline record literal or has
@@ -6642,6 +6733,15 @@ fn check_application(
                         // `Bytes` is expected → `(String.to-bytes …)`. The text-model twin of the numeric
                         // coercion wraps; heuristic, `--verify-fixes` upgrades it.
                         reject.with_fix(Fix::wrap_heuristic(arg, prefix, suffix, verb))
+                    } else if let Some(fix) = record_field_typo_fix(db, &pt, &at, arg)
+                        .or_else(|| record_field_add_fix(db, &pt, &at, arg))
+                        .or_else(|| record_field_delete_fix(db, &pt, &at, arg))
+                    {
+                        // A RECORD-literal field-set repair: a misspelled field is RENAMED (first — a rename
+                        // is the minimal edit); a pure OMISSION gets the missing fields ADDED with `(trap
+                        // "TODO")` placeholders; a lone SURPLUS field is DELETED. The construction analogue of
+                        // rustc's "missing field `y`" / "no field `z`" with an applicable edit.
+                        reject.with_fix(fix)
                     } else {
                         reject
                     };
@@ -9404,12 +9504,23 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 // literal gets the coercion fix (`(record (x 5))` vs `(Record (x Float64))` →
                                 // retype `5`→`5.0`), via `compound_inner_coercion_fix` (M116). A non-literal /
                                 // non-numeric leaf yields None (message only).
-                                if let Some(fix) = record_field_typo_fix(
-                                    db, &annot_ty, &expr_ty, expr,
-                                )
-                                .or_else(|| {
-                                    compound_inner_coercion_fix(db, expr, &annot_ty, &expr_ty)
-                                }) {
+                                if let Some(fix) =
+                                    record_field_typo_fix(db, &annot_ty, &expr_ty, expr)
+                                        .or_else(|| {
+                                            compound_inner_coercion_fix(
+                                                db, expr, &annot_ty, &expr_ty,
+                                            )
+                                        })
+                                        // A pure field-SET diff over a written record literal — ADD the missing
+                                        // fields (`(field (trap "TODO"))` placeholders) or DELETE a lone surplus one,
+                                        // the construction analogue of rustc's applicable "add/remove field" edit.
+                                        .or_else(|| {
+                                            record_field_add_fix(db, &annot_ty, &expr_ty, expr)
+                                        })
+                                        .or_else(|| {
+                                            record_field_delete_fix(db, &annot_ty, &expr_ty, expr)
+                                        })
+                                {
                                     reject = reject.with_fix(fix);
                                 }
                             }
