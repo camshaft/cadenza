@@ -29675,6 +29675,18 @@ mod stage1 {
             .is_ok(),
             "a nested-module effect delegation must not be false-flagged as a non-effect"
         );
+        // A delegated TYPE head — `(host (C) …)` where `C` is a sum type — is likewise a non-effect (the
+        // host twin of the handle-head type case). It used to compile silently; now it names `C` as a type.
+        let ty = compile_component(&crate::codec::encode(&parse(
+            "(module m (type C (Red)) (def (main) (host (C) (+ 1 1))) (export main))",
+        )))
+        .expect_err("delegating a type to the host must be rejected");
+        assert_eq!(ty.code.as_deref(), Some("CDZ0201"), "got: {}", ty.message);
+        assert!(
+            ty.message.contains("`C`") && ty.message.contains("is a type"),
+            "names the delegated type: {}",
+            ty.message
+        );
     }
 
     #[test]

@@ -1106,22 +1106,34 @@ fn check_no_home_walk(
             // declared effect" would false-flag it; testing "is a value def" instead only fires on a genuine
             // non-effect binding. An unbound delegated name is left to the resolver's own unbound-name check.
             for &e in effects.iter() {
-                let names_a_value_def = db
-                    .ast
-                    .as_name(e)
-                    .is_some_and(|n| db.def_by_name(n).is_some());
-                if names_a_value_def {
-                    let named = db
-                        .ast
-                        .as_name(e)
-                        .map(|n| format!(" `{n}`"))
-                        .unwrap_or_default();
+                // A real effect (top-level or nested-module) is fine — skip it.
+                if host_effect_decl(db, e).is_some() {
+                    continue;
+                }
+                let Some(name) = db.ast.as_name(e).map(str::to_string) else {
+                    continue;
+                };
+                // Classify a NON-effect delegated name — only the UNAMBIGUOUS top-level cases, so a
+                // nested-module effect (referenced from an outer scope as a bare name, but a real effect
+                // the compiler brings program-wide) is NEVER flagged:
+                //  - a top-level VALUE def (`(def foo …)`) → "a value definition" (the original case),
+                //  - a top-level TYPE (`(type C …)`) → "a type" (the host twin of the handle-head type case).
+                // A genuinely-unbound name (`(host (Nope) …)`) is deliberately NOT flagged here: a
+                // nested-module effect name ALSO fails to resolve in the outer scope (it resolves to a
+                // Poison), so a "resolves to nothing" test would false-flag it — left to the resolver.
+                let category = if db.def_by_name(&name).is_some() {
+                    Some("is a value definition, not an effect")
+                } else if db.type_decl_by_name(&name).is_some() {
+                    Some("is a type, not an effect")
+                } else {
+                    None
+                };
+                if let Some(cat) = category {
                     out.push(crate::diag::Reject::coded(
                         crate::diag::Code::Malformed,
                         format!(
-                            "a host delegates EFFECTS to the boundary, but this delegated name{named} \
-                             is a value definition, not an effect — a `host` grants a declared effect, \
-                             e.g. `(effect E …)`"
+                            "a host delegates EFFECTS to the boundary, but this delegated name `{name}` \
+                             {cat} — a `host` grants a declared effect, e.g. `(effect E …)`"
                         ),
                     )
                     .at(e));
