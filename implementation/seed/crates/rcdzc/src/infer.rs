@@ -677,8 +677,9 @@ fn literal_width_fault(db: &mut Db, value: StructId, ty_expr: StructId) -> Optio
 /// type can EVER hold a negative value, so the fit is UNAMBIGUOUS (rustc makes exactly this suggestion);
 /// this is NOT a speculative signedness guess, since a negative literal has no unsigned reading, so the
 /// signed type is forced, not chosen.
-/// A value beyond `Int64`/`UInt64` (no aliased width fits) gets the bare reject. Replacing the whole
-/// `ty_expr` rewrites either spelling — a bare `Int8` or a `(Int 8)` compound — to the bare `Int16`.
+/// A value beyond `Int64`/`UInt64` (no aliased width fits) retypes to `BigInt` — the unbounded integer
+/// type holds any magnitude. Replacing the whole `ty_expr` rewrites either spelling — a bare `Int8` or a
+/// `(Int 8)` compound — to the bare `Int16` (or `BigInt`).
 /// Heuristic: the retype clears the range fault, but whether the author meant a wider/signed type (vs. a
 /// different literal) is theirs to confirm. Shared by both CDZ0302 literal-range sites (the value
 /// annotation `(: v T)` and the let-binder/param `((: name T) v)`), so both carry the fix.
@@ -711,7 +712,12 @@ fn int_out_of_range_reject(
             let stem = if fix_signed { "Int" } else { "UInt" };
             reject.with_fix(Fix::replace_heuristic(ty_expr, format!("{stem}{fit}")))
         }
-        None => reject,
+        // No fixed width (8/16/32/64) holds `v` — the literal overflows even `Int64`/`UInt64`. The UNBOUNDED
+        // integer type `BigInt` holds ANY magnitude (a literal grounds to it losslessly), so it is the
+        // forced retype when no aliased width fits — the rustc-gold "use a type that holds it" repair
+        // continued past the fixed widths. Heuristic (the author may instead have meant a different literal),
+        // but the retype clears the range fault in one shot and always type-checks.
+        None => reject.with_fix(Fix::replace_heuristic(ty_expr, "BigInt")),
     }
 }
 

@@ -2197,6 +2197,43 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 )
                 .at(occ),
             );
+            continue;
+        }
+        // A NULLARY export whose SOLVED result type still carries a FREE TYPE VARIABLE — a bare `(None)`
+        // (`Option ?`), an empty `(list)`/`(Set.of (list))` (element `?`), an `Ok` whose `Err` arm is never
+        // built. The value escapes to the host with a type no use constrains, so its serialized type header
+        // is undetermined — a compile-time reject (type-system.md §Inference Is Principal … a value that
+        // escapes with an unconstrained variable MUST be rejected, the fix is an annotation). The EMIT path
+        // (`backend::wasm` resource-escape) already rejects it CDZ0203, but `cdz check` runs no backend, so
+        // it used to ACCEPT the program while `compile` failed — a check≡compile gap. Detect it HERE from
+        // the solved result type so BOTH surfaces agree. Gated exactly as the emit path: `nullary` (a
+        // parameterized export's free var is a shape issue, not this) AND a single export (`!multi_export`).
+        // The `has_free_var` types that ARE a distinct category (a `Ty::Type`, an unrepresentable arrow) are
+        // handled by the `continue`d branches above, so only a genuine undetermined VALUE reaches here.
+        // GATED on `crosses_as_resource_escape` — the SAME predicate the emit path uses — so a bare
+        // `Never`/`Any`/`Var` result (a DIVERGING export whose body always traps: result `_`, emittable as
+        // a trapping function) is NOT flagged: it does not cross as a heap resource, so it has no undetermined
+        // serialization. Only a heap-escaping compound whose payload/element type is free (Option/List/Set/…)
+        // is the undetermined-serialization fault.
+        //= spec/capabilities/type-system.md#inference-is-principal-type-inference-by-unification
+        //# A value that escapes to the host whose type contains a type variable no use constrains MUST be rejected at compile time with the type-determination fault code, rather than crossing the boundary with an invented type, so that a serialized value's type header is always fully determined.
+        let multi_export = db.exports.len() > 1;
+        if nullary
+            && !multi_export
+            && ty.has_free_var()
+            && crate::backend::wasm::crosses_as_resource_escape(&ty)
+        {
+            faults.push(
+                Reject::coded(
+                    Code::TypeMismatch,
+                    format!(
+                        "the result type `{}` is not fully determined — annotate it \
+                         (e.g. `(: <expr> (Option Int64))`) so its value has a defined form",
+                        ty.render_name()
+                    ),
+                )
+                .at(occ),
+            );
         }
     }
     // AN EXPORTED DEFINITION WITH AN UNANNOTATED (AMBIGUOUS-TYPE) PARAMETER — `(def (f x) …)` exported.

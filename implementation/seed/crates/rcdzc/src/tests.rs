@@ -14739,6 +14739,17 @@ mod match_engine {
             "unsigned widens to UInt16: {}",
             u.message
         );
+        // A magnitude beyond every fixed width (past Int64/UInt64) retypes to BigInt — the unbounded
+        // integer type holds any value, so the widen fix continues past the fixed widths.
+        let huge =
+            reject_full("(module m (def (main) (: 99999999999999999999999 Int8)) (export main))")
+                .expect("a huge literal overflows Int8");
+        assert_eq!(
+            huge.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("BigInt"),
+            "a value past every fixed width retypes to BigInt: {}",
+            huge.message
+        );
     }
 
     #[test]
@@ -14766,14 +14777,17 @@ mod match_engine {
             "-200 needs Int16 (outside Int8's -128..=127): {}",
             big.message
         );
-        // A value too large for even Int64 has no signed width → the honest bare reject, no fix.
+        // A value too large for even Int64/UInt64 has no fixed aliased width → retype to `BigInt`, the
+        // UNBOUNDED integer type (which holds any magnitude), rather than the honest-but-dead-end bare
+        // reject. The retype clears the range fault and type-checks (a literal grounds to BigInt losslessly).
         let huge =
             reject_full("(module m (def (main) (: -99999999999999999999999 UInt8)) (export main))")
                 .expect("a huge negative does not fit UInt8");
-        assert!(
-            huge.fix.is_none(),
-            "no signed width holds a value beyond Int64: {:?}",
-            huge.fix
+        assert_eq!(
+            huge.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("BigInt"),
+            "a value beyond every fixed width retypes to BigInt: {}",
+            huge.message
         );
     }
 
@@ -21913,6 +21927,62 @@ mod match_engine {
             decline.message.contains("refutable map value sub-pattern"),
             "the decline names the refutable value limit: {}",
             decline.message
+        );
+    }
+
+    #[test]
+    fn a_map_value_sub_pattern_with_binders_reads_a_runtime_map() {
+        // The RUNTIME companion of `a_map_value_sub_pattern_may_be_an_irrefutable_compound_with_binders`:
+        // over a map whose keys are NOT known at compile time (built by a conditional), the value read at a
+        // key walks the value sub-path at RUN TIME — `synth_value_path_read` emits `(. __mv i)` per tuple
+        // element and a `(match __mv ((Ctor __p) __p) …)` per ctor payload, after the `Map.lookup` unwrap.
+        //
+        // TUPLE value over a runtime map: `pick true` → {"a": (k, 4)}, so the arm binds x=k, y=4.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (pick (: b Bool) (: k Int64)) \
+                 (if b (Map.insert (Map.empty) \"a\" (tuple k 4)) (Map.empty))) \
+               (def (look (: m (Map String (Tuple Int64 Int64)))) \
+                 (match m ((map (\"a\" (tuple x y)) .. rest) (+ x y)) (_ -1))) \
+               (def (main (: k Int64)) (look (pick true k))) (export main))",
+            vec!["3".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime-map-value-tuple run");
+            return;
+        };
+        assert_eq!(
+            v, "7",
+            "a tuple value sub-pattern binds both elements over a runtime map (3+4)"
+        );
+        // An ABSENT key falls through to the catch-all (the presence test fails before the value read).
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (pick (: b Bool) (: k Int64)) \
+                     (if b (Map.insert (Map.empty) \"a\" (tuple k 4)) (Map.empty))) \
+                   (def (look (: m (Map String (Tuple Int64 Int64)))) \
+                     (match m ((map (\"a\" (tuple x y)) .. rest) (+ x y)) (_ -1))) \
+                   (def (main (: k Int64)) (look (pick false k))) (export main))",
+                vec!["3".to_string()],
+            )
+            .unwrap(),
+            "-1",
+            "an absent key falls through before the value read"
+        );
+        // SINGLE-VARIANT CTOR value over a runtime map: `{"a": Mk k}` → binds n=k.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Box (Mk Int64)) \
+                   (def (pick (: b Bool) (: k Int64)) \
+                     (if b (Map.insert (Map.empty) \"a\" (Box.Mk k)) (Map.empty))) \
+                   (def (look (: m (Map String Box))) \
+                     (match m ((map (\"a\" (Box.Mk n)) .. rest) n) (_ -1))) \
+                   (def (main (: k Int64)) (look (pick true k))) (export main))",
+                vec!["9".to_string()],
+            )
+            .unwrap(),
+            "9",
+            "a single-variant ctor value sub-pattern binds its payload over a runtime map"
         );
     }
 
@@ -32304,6 +32374,53 @@ mod stage1 {
     }
 
     #[test]
+    fn an_undetermined_escape_type_is_reported_by_check_not_only_compile() {
+        // The undetermined-escape-result-type reject (a bare `(None)` : `Option ?`, an empty `(Set.of
+        // (list))` : `Set ?`) was an EMIT-path check only — `cdz compile` failed CDZ0203 but `cdz check`
+        // (which runs no backend) ACCEPTED it, a check≡compile gap. `collect_faults` now mirrors the emit
+        // guard, so `diagnostics()` (the `cdz check`/LSP surface) reports the SAME CDZ0203.
+        let check_err = |src: &str| -> Option<crate::abi::Diagnostic> {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+        };
+        for src in [
+            "(module m (def (main) (None)) (export main))",
+            "(module m (def (main) (Set.of (list))) (export main))",
+        ] {
+            let d =
+                check_err(src).unwrap_or_else(|| panic!("check must report the ambiguity: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message.contains("not fully determined") && d.message.contains("annotate"),
+                "check names the undetermined type + fix: {}",
+                d.message
+            );
+            // check≡compile: the emit path must AGREE (also reject).
+            assert!(
+                compile_component(&crate::codec::encode(&parse(src))).is_err(),
+                "compile must also reject (check≡compile): {src}"
+            );
+        }
+        // NO OVERREACH — check stays clean where compile succeeds:
+        //  • an annotated escape (the free var is resolved),
+        //  • a DIVERGING export (body traps; result `_`/Never is NOT a heap-escape, emittable as a
+        //    trapping function — the `crosses_as_resource_escape` guard excludes it),
+        //  • an ordinary scalar.
+        for ok in [
+            "(module m (def (main) (: (None) (Option Int64))) (export main))",
+            "(module m (def (main) (trap \"x\")) (export main))",
+            "(module m (def (main) 42) (export main))",
+        ] {
+            assert!(
+                check_err(ok).is_none(),
+                "check must stay clean where compile succeeds: {ok} -> {:?}",
+                check_err(ok).map(|d| d.message)
+            );
+        }
+    }
+
+    #[test]
     fn tuple_branches_of_different_arity_are_a_type_error() {
         // 02-binding-and-control: `(if true (tuple 1 2) (tuple 3 4 5))` pairs a 2-tuple with a 3-tuple —
         // different types (a tuple's arity is part of its type), so the whole `if` has no single type
@@ -39032,6 +39149,40 @@ mod stage1 {
              `typeval_of` fixes it): depth 200→400 grew the node count {ratio:.1}× (n200={n200}, \
              n400={n400}); linear is ~2×, the O(depth²) blowup was ~4×"
         );
+
+        // The TUPLE and RECORD type constructors are the same-mechanism TWINS (they also went through the
+        // `reduce_ctor`→`encode_typeval` round-trip until they got the direct-build fast path in
+        // `typeval_of`). Assert the arena stays O(depth) for a deeply-nested `(Tuple (Tuple … Int64) Int64)`
+        // and `(Record (f (Record …)))` too, so a regression on EITHER twin is caught here.
+        let wrap_tuple: fn(&str) -> String = |t| format!("(Tuple {t} Int64)");
+        let wrap_record: fn(&str) -> String = |t| format!("(Record (f {t}))");
+        for (label, wrap) in [("Tuple", wrap_tuple), ("Record", wrap_record)] {
+            let src = |depth: usize| {
+                let mut ty = String::from("Int64");
+                for _ in 0..depth {
+                    ty = wrap(&ty);
+                }
+                format!("(module m (def (g (: x {ty})) x) (def (main) 0) (export main))")
+            };
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&src(4))));
+            assert!(
+                diags
+                    .iter()
+                    .all(|d| d.severity != crate::abi::Severity::Error),
+                "a nested {label}-type annotation compiles with no error diagnostics: {diags:?}"
+            );
+            let base = nodes_after_check(&src(50)) as f64;
+            let t200 = nodes_after_check(&src(200)) as f64 - base;
+            let t400 = nodes_after_check(&src(400)) as f64 - base;
+            let ratio = t400 / t200.max(1.0);
+            assert!(
+                ratio < 3.0,
+                "a deeply-nested {label}-type annotation must leave the arena O(depth), not O(depth²) (the \
+                 `reduce_ctor`→`encode_typeval` twin of the collection ctors; the direct `Ty` build fixes \
+                 it): depth 200→400 grew the node count {ratio:.1}× (t200={t200}, t400={t400}); linear is \
+                 ~2×, the O(depth²) blowup was ~4×"
+            );
+        }
     }
 
     #[test]

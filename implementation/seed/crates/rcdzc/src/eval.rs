@@ -2370,6 +2370,40 @@ pub fn typeval_of(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
                     let value = typeval_of(db, args[1])?;
                     return Some(crate::ty::Ty::Map(Box::new(key), Box::new(value)));
                 }
+                // `Tuple`/`Record` are the remaining twins of the collection fast paths above — WITHOUT a
+                // direct build they take the `reduce_ctor`→`encode_typeval` arena round-trip, which
+                // re-serializes the whole built `Ty` per nesting level → O(depth²) nodes on a deeply-nested
+                // `(Tuple (Tuple …) Int64)` / `(Record (f (Record …)))` annotation (the fix that already
+                // covers List/Set/Map). Build the `Ty` in place from the reduced children — exactly what
+                // `reduce_ctor`'s `Tuple`/`Record` arms compute before encoding — and return it.
+                Prim::TupleCtor => {
+                    let mut elems = Vec::with_capacity(args.len());
+                    for &a in args.iter() {
+                        elems.push(typeval_of(db, a)?);
+                    }
+                    return Some(crate::ty::Ty::Tuple(elems.into()));
+                }
+                Prim::RecordCtor => {
+                    let mut fields: std::collections::BTreeMap<
+                        crate::resolved::Symbol,
+                        crate::ty::Ty,
+                    > = std::collections::BTreeMap::new();
+                    for &a in args.iter() {
+                        // Each arg is a raw `(name type)` pair; a malformed pair / non-name / non-type falls
+                        // through to `reduce_ctor` (which reports the fault) via `None`.
+                        let crate::ast::Struct::List(pair) = db.ast.get(a) else {
+                            return None;
+                        };
+                        if pair.len() != 2 {
+                            return None;
+                        }
+                        let (name_occ, ty_occ) = (pair[0], pair[1]);
+                        let name = db.ast.as_name(name_occ)?.to_string();
+                        let t = typeval_of(db, ty_occ)?;
+                        fields.insert(crate::resolved::Symbol::plain(name), t);
+                    }
+                    return Some(crate::ty::Ty::Record(std::rc::Rc::new(fields)));
+                }
                 _ => {}
             }
             let built = reduce_ctor(db, prim, id, &args).ok()?;

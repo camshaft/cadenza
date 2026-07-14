@@ -409,6 +409,23 @@
               (handle Bail 0 ((bail (n) s n)) (if true (Bail.bail 7) 99))) (export main)))
   (output (: 7 Int64)))
 
+(case "an abortive perform in the NON-taken if branch is never evaluated (no speculation)"
+  (doc    "The soundness complement of the taken-branch abort above, and a pin against SPECULATIVE branch
+           evaluation (e.g. a branchless-`select` lowering that would eagerly compute both arms): the abort
+           sits in the branch that is NOT taken and MUST NOT fire. `Bail.bail` is abortive (its arm `(bail
+           (n) s n)` never resumes, yielding `n` as the handle value). The body `(if (< 3 5) 10 (Bail.bail
+           99))` takes the true branch (`3 < 5`), so the handle evaluates to `10`; the else-branch's abort is
+           dead code that never runs. Were the compiler to evaluate both branches (speculating the abort),
+           the handle would wrongly collapse to `99`. Pins that an abortive perform in a non-taken branch is
+           genuinely conditional — only the taken path's effects occur — which the branch-local fold and any
+           branchless-select conversion must both preserve. The control (flip to `(> 3 5)`, abort taken)
+           yields 99.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle Bail 0 ((bail (n) s n)) (if (< 3 5) 10 (Bail.bail 99)))) (export main)))
+  (output (: 10 Int64)))
+
 (case "an abortive perform in the tail of an if branch inside a let body abandons only that branch"
   (doc    "The branch-tail abort composes through a `let`: a `let`'s VALUE is its BODY's value, so a `let`
            body is in the same tail position as the `let` itself. `(let ((k 5)) (if true (Bail.bail 7) k))`

@@ -3220,6 +3220,53 @@
             (export main)))
   (output (: 6 Int64)))
 
+; The tail fold above folds a built-in list with a fixed `+`. The general HIGHER-ORDER left fold
+; (`foldl f acc xs`) takes a COMBINING FUNCTION `f` as a parameter — the single most common higher-order
+; list function, and how a compiler folds over AST children / a symbol list / a constraint set. These pin
+; `foldl` over a built-in `(List Int64)` (the sum-list HOF folds elsewhere use a `(type L …)` cons type;
+; this is the runtime heap vector matched by `(list h .. t)`). Both annotation forms that anchor inference
+; are pinned: annotating the CLOSURE's params, and annotating the HOF's `f` parameter with its arrow type.
+; (The fully-INFERRED spelling — both unannotated — does not yet infer the closure's param types through
+; the recursion; that inference gap is the generics workstream's, tracked in the port's repros.)
+
+(case "a higher-order left fold over a built-in list with an annotated callback"
+  (doc    "`foldl` over a built-in `(List Int64)` taking a combining function `f`: `(fold-list f (f h acc)
+           t)` threads the accumulator, matching the list by `(list h .. t)`. The closure `(fn ((: x Int64)
+           (: a Int64)) (+ a x))` — its params ANNOTATED — sums `[5,7,30]` from acc 0 → 42. Pins the
+           higher-order left fold over a runtime heap list (the fold-over-AST-children idiom), with the
+           closure's own annotations anchoring inference.")
+  (input  (do
+            (def (fold-list f (: acc Int64) (: xs (List Int64)))
+              (match xs ((list) acc) ((list h .. t) (fold-list f (f h acc) t))))
+            (def (main) (fold-list (fn ((: x Int64) (: a Int64)) (+ a x)) 0 (list 5 7 30)))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a higher-order left fold over a built-in list with an annotated fn parameter"
+  (doc    "The other anchor: the closure is UNannotated `(fn (x a) (+ a x))`, but the HOF's `f` parameter
+           carries its arrow type `(: f (-> Int64 (-> Int64 Int64)))`, which flows into the closure's params.
+           Same fold, same result 42. Pins that annotating the fold's function parameter (rather than the
+           closure) is an equivalent working spelling — the form a compiler pass writes when the fold is a
+           named reusable combinator.")
+  (input  (do
+            (def (fold-list (: f (-> Int64 (-> Int64 Int64))) (: acc Int64) (: xs (List Int64)))
+              (match xs ((list) acc) ((list h .. t) (fold-list f (f h acc) t))))
+            (def (main) (fold-list (fn (x a) (+ a x)) 0 (list 5 7 30)))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a higher-order left fold applies its combiner, not a fixed operator"
+  (doc    "The discriminator that the fold genuinely APPLIES `f` (not a hardcoded `+`): the same `fold-list`
+           with a MAX combiner `(fn ((: x Int64) (: a Int64)) (if (> x a) x a))` over `[5,30,7]` from acc 0
+           yields 30 (the maximum), not 42 (their sum). Pins that the combining function is the parameter
+           driving the fold — a fold that ignored `f` and summed would give 42.")
+  (input  (do
+            (def (fold-list f (: acc Int64) (: xs (List Int64)))
+              (match xs ((list) acc) ((list h .. t) (fold-list f (f h acc) t))))
+            (def (main) (fold-list (fn ((: x Int64) (: a Int64)) (if (> x a) x a)) 0 (list 5 30 7)))
+            (export main)))
+  (output (: 30 Int64)))
+
 ; INLINE POLICY — the `@inline-never` / `@inline-always` ANNOTATIONS (`DESIGN-…-monomorphization`
 ; Addendum 4). `@name form` is the general-purpose annotation sigil (canonical `(@ name form)`); these are
 ; the two names the compiler consumes today. The compiler lowers by β-reduction, so the DEFAULT is

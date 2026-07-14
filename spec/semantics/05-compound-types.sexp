@@ -6585,6 +6585,23 @@
             (export main)))
   (output (: 7 Int64)))
 
+(case "a map value sub-pattern with binders reads a runtime map"
+  (doc    "The RUNTIME form of the value-compose case: the scrutinee map is built by a CONDITIONAL, so its
+           keys are not known at compile time. `(map (\"a\" (tuple x y)) …)` looks up \"a\" at run time, and
+           the value read walks INTO the tuple value at run time — a projection `(. __mv 0)`/`(. __mv 1)` per
+           element (a ctor payload reads via a nested match). Here `pick true` builds `{\"a\": (3, 4)}`, so
+           the arm binds `x`=3, `y`=4 → 7; an absent key falls through. Completes the map value-compose axis
+           for the runtime scrutinee (the constant case folds).")
+  (input  (do
+            (def (pick (: b Bool))
+              (if b (Map.insert (Map.empty) "a" (tuple 3 4)) (Map.empty)))
+            (def (look (: m (Map String (Tuple Int64 Int64))))
+              (match m
+                ((map ("a" (tuple x y)) .. rest) (+ x y))
+                (_                               -1)))
+            (def (main) (look (pick true))) (export main)))
+  (output (: 7 Int64)))
+
 ; ── An un-projected element / un-referenced field is UNOBSERVED, so its trap is not raised ──────────
 ; core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed: a trap occurs when the
 ; computation that would raise it is observed — its value flowing to the result, a host call, or an
