@@ -5895,6 +5895,11 @@ fn op_comp_functype(op: &RtOp) -> Vec<u8> {
 //# The mechanism by which a host resolves a call it cannot answer immediately — suspending an in-memory fiber and resuming in place, or discarding the run and re-deriving it from the ordered responses it has recorded — MUST be host runtime policy the language neither prescribes nor represents, so that portable re-derivation and local fiber suspension are both admissible and the emitted component is identical under either.
 //= spec/capabilities/capabilities-and-effects.md#how-a-host-resumes-is-host-policy-not-language
 //# Because a host MAY choose to re-derive a run from its input and recorded responses, a program that is a deterministic function of those (the requirement above) MUST remain resumable under that strategy without carrying any resume state itself; but a host that instead suspends the run in place MAY hold the run's live state, so the language requires determinism rather than statelessness and leaves the choice to the host.
+// The plain functype — no resume parameter, no suspension arm — is also how the seed mandates NOTHING
+// about the host's resume mechanism: determinism is the only boundary requirement, and every faithful
+// resolution strategy (inline, suspend-in-place, tear-down-and-replay) sees these same emitted bytes.
+//= spec/capabilities/capabilities-and-effects.md#a-run-is-a-deterministic-function-of-its-input-and-responses
+//# This determinism MUST be the language's only requirement on the host boundary: the language MUST NOT mandate how a host suspends, resumes, or resolves a call, so that a host is free to answer synchronously, to suspend and resume a run in place, or to tear a run down and re-derive it, and every faithful strategy produces identical observable behavior.
 //= spec/contracts/component-abi.md#the-entry-signature-crosses-the-boundary-by-the-same-rules
 //# The entry's parameter and result types MUST each have a boundary representation fixed by this contract.
 //= spec/contracts/component-abi.md#the-entry-signature-crosses-the-boundary-by-the-same-rules
