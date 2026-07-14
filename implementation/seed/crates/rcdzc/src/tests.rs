@@ -1587,6 +1587,44 @@ fn a_let_binder_shadowing_a_parameter_is_not_substituted() {
     );
 }
 
+#[test]
+fn a_variant_payload_binder_shadowing_a_param_in_a_called_def_binds_the_payload() {
+    // REGRESSION: a VARIANT-PAYLOAD binder that shadows the enclosing def's param, in a def reached via a
+    // CALL, was misresolved. `(def (f (: n Int64)) (match (W.V (+ n 1)) ((W.V n) n) ((W.Z) 0)))` binds the
+    // payload as `n` in the `(W.V n)` arm, shadowing the param `n`. When `f` is CALLED (`(main) (f k)`),
+    // the call path runs `resolve_subtree` over the callee body to pin arguments before β-reduction — and
+    // that eager walk resolved the PATTERN occurrence `n` via `resolve_name`, binding it to the PARAM `n`
+    // (an in-scope outer binding). That corrupted the pattern head detection → "not a variant constructor"
+    // / a spurious CDZ0101. An EXPORTED-directly `f` (no call, no `resolve_subtree`) was unaffected, so the
+    // bug only showed for a helper. Fix: a variant-payload binder occurrence that SHADOWS an outer binding
+    // resolves INERT (like a list/map pattern binder), so the eager walk can't misbind it; a body reference
+    // still resolves to the payload (Case 6, nearest-scope). The arm binder must bind the PAYLOAD, not the
+    // param: `f(5)` → `(W.V (5+1))` matched `(W.V n)` → n = 6 (NOT the param 5). The bug was a
+    // compile-time REJECT (the pattern head detection broke), so COMPILING is the precise guard here; the
+    // RUN (that the binder binds the payload, not the param) is exercised by the corpus case
+    // "a variant-payload binder shadowing a param in a called def binds the payload" (which links the
+    // value-heap runtime a sum construction needs).
+    use crate::testkit::parse;
+    let src = "(module m (type W (V Int64) (Z)) \
+                 (def (f (: n Int64)) (match (W.V (+ n 1)) ((W.V n) n) ((W.Z) 0))) \
+                 (def (main (: k Int64)) (f k)) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+        "a variant-payload binder shadowing the def param, in a CALLED def, must COMPILE (was a spurious \
+         reject: the eager call-site subtree walk bound the pattern occurrence to the shadowed param)"
+    );
+
+    // A MULTI-PAYLOAD variant binder shadowing the param, also called: `(P.Mk a b)` binds `a` to the
+    // FIRST payload, shadowing the param `a`.
+    let multi = "(module m (type P (Mk Int64 Int64) (Z)) \
+                   (def (f (: a Int64)) (match (P.Mk (+ a 1) 5) ((P.Mk a b) (+ a b)) ((P.Z) 0))) \
+                   (def (main (: k Int64)) (f k)) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(multi))).is_ok(),
+        "a multi-payload arm binder shadowing the def param, in a called def, must COMPILE"
+    );
+}
+
 // ── value-heap H2c: a STATIC (fully-constant) tuple pays NO per-call heap cost (§2d) ─────────────
 //
 // The operator directive: get the static heap-value path right FIRST — a constant compound must never
@@ -11723,6 +11761,54 @@ mod match_engine {
     }
 
     #[test]
+    fn adding_two_rationals_declines_honestly_without_a_phantom_int64() {
+        // `(+ r s)` with BOTH operands `Rational` — Rational arithmetic is not yet wired. The operator's
+        // `∀a. (Int a) → …` scheme does not accept a Rational, so the generic scheme-unify would default the
+        // first operand to `Int64` and report the second (Rational) as a numeric MIX — fabricating a phantom
+        // `Int64` the author never wrote. The honest outcome names Rational once, as a not-yet-supported op.
+        let d = reject_full(
+            "(module m (def (f (: r Rational) (: s Rational)) (+ r s)) (def (main) 5) (export main))",
+        )
+        .expect("Rational arithmetic must decline (not yet wired)");
+        assert!(
+            d.message.contains("Rational"),
+            "the message names Rational: {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("Int64"),
+            "no phantom Int64 operand (neither operand is Int64): {}",
+            d.message
+        );
+        // An uncoded decline (a not-yet-built construct), NOT the CDZ0301 numeric-mix rejection.
+        assert_eq!(
+            d.code, None,
+            "an uncoded decline, not a coded mismatch: {}",
+            d.message
+        );
+
+        // CONTRAST — must be UNAFFECTED: equality over two Rationals COMPILES (∀a. a→a→Bool, no Int forcing).
+        assert!(
+            reject_code("(module m (def (f (: r Rational) (: s Rational)) (= r s)) (def (main) 5) (export main))")
+                .is_none(),
+            "equality of two Rationals still compiles"
+        );
+        // A GENUINE Rational/int MIX keeps CDZ0301 — there the Int64 operand IS present (the `1` literal).
+        assert_eq!(
+            reject_code("(module m (def (f (: r Rational)) (+ r 1)) (def (main) 5) (export main))")
+                .as_deref(),
+            Some("CDZ0301"),
+            "a Rational/int mix is a genuine numeric-promotion error"
+        );
+        // BigInt arithmetic IS wired — two BigInt operands still compile (the sibling generic-numeric shape).
+        assert!(
+            reject_code("(module m (def (f (: b BigInt) (: c BigInt)) (+ b c)) (def (main) 5) (export main))")
+                .is_none(),
+            "BigInt arithmetic still compiles"
+        );
+    }
+
+    #[test]
     fn a_bool_match_missing_a_literal_offers_the_specific_missing_arm() {
         // A Bool scrutinee is a FINITE gap: missing `false` → name it AND insert exactly
         // `(false (trap "TODO: false"))` (not a generic wildcard), the same precision as a missing sum
@@ -13409,6 +13495,66 @@ mod match_engine {
             far.fix.is_none(),
             "no fix without a plausible near field: {:?}",
             far.fix
+        );
+    }
+
+    #[test]
+    fn a_wrong_record_row_op_carries_the_operator_swap_fix_the_message_names() {
+        // `Record.extend`/`Record.with` have complementary presence preconditions (extend REQUIRES the
+        // field absent, with REQUIRES it present), and each rejection already NAMES the sibling op to use
+        // ("use `Record.with` to replace" / "use `Record.extend` to add"). Now that named fix is APPLYABLE:
+        // a one-token operator swap on the operation head, marked VERIFIED (the swap's precondition is
+        // exactly the fault's condition — it clears the fault and preserves types by construction, no
+        // guess). The row-op analogue of the numeric `float_sibling_operator` swap.
+
+        // extend a PRESENT field → CDZ0211 + a VERIFIED swap `extend`→`with`.
+        let de = reject_full(
+            "(module m (def (main) (Record.extend (record (a 1)) (a 2))) (export main))",
+        )
+        .expect("extend of a present field is CDZ0211");
+        assert_eq!(de.code.as_deref(), Some("CDZ0211"), "got: {}", de.message);
+        let fe = de.fix.as_ref().expect("carries the operator-swap fix");
+        assert_eq!(fe.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fe.replacement, "with",
+            "swaps the op to `with`: {}",
+            de.message
+        );
+        assert!(
+            fe.verified,
+            "the presence precondition makes the swap verified"
+        );
+
+        // with an ABSENT field that is NOT a near typo → CDZ0212 + a VERIFIED swap `with`→`extend`.
+        let dw = reject_full(
+            "(module m (def (main) (Record.with (record (alpha 1)) (zzzzz 5))) (export main))",
+        )
+        .expect("with of an absent field is CDZ0212");
+        assert_eq!(dw.code.as_deref(), Some("CDZ0212"), "got: {}", dw.message);
+        let fw = dw.fix.as_ref().expect("carries the operator-swap fix");
+        assert_eq!(
+            fw.replacement, "extend",
+            "swaps the op to `extend`: {}",
+            dw.message
+        );
+        assert!(
+            fw.verified,
+            "the absence precondition makes the swap verified"
+        );
+
+        // A NEAR-miss field still prefers the label typo-fix (the likelier intent), NOT the op swap.
+        let dn = reject_full(
+            "(module m (def (main) (Record.with (record (alpha 1)) (alpXa 5))) (export main))",
+        )
+        .expect("with of a near-miss field is CDZ0212");
+        let fn_ = dn
+            .fix
+            .as_ref()
+            .expect("a near typo carries the label rewrite");
+        assert!(
+            fn_.replacement.contains("alpha") && fn_.replacement != "extend",
+            "a near typo rewrites the label, not the op: {}",
+            fn_.replacement
         );
     }
 
@@ -21894,6 +22040,53 @@ mod diagnostics {
             !round_trip.iter().any(|e| e.message.contains("not a type")),
             "the rendered `(Record …)` spelling is accepted in type position: {:?}",
             round_trip.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_cross_kind_operator_clash_uses_the_correct_indefinite_article() {
+        use crate::ty::{FloatTy, IntTy, Ty};
+        // `Ty::render_with_article` prefixes the correct indefinite article for a message that reads
+        // "<this> and <that> are different types". The article keys off the type's SOUND: the signed
+        // integers (`Int…`, "eye-nt") take `an`; `UInt…` ("yoo") and every other name take `a`. A naive
+        // first-letter rule would wrongly say "an UInt8", so this must be sound-based.
+        assert_eq!(
+            Ty::Int(IntTy::fixed(true, 64)).render_with_article(),
+            "an Int64"
+        );
+        assert_eq!(
+            Ty::Int(IntTy::fixed(true, 32)).render_with_article(),
+            "an Int32"
+        );
+        assert_eq!(
+            Ty::Int(IntTy::fixed(false, 8)).render_with_article(),
+            "a UInt8"
+        );
+        assert_eq!(Ty::Float(FloatTy::f64()).render_with_article(), "a Float64");
+        assert_eq!(Ty::Bool.render_with_article(), "a Bool");
+        assert_eq!(Ty::String.render_with_article(), "a String");
+
+        // The cross-kind operator clash message uses it — `(< 1 "x")` reads "an Int64 and a String …",
+        // NOT the old ungrammatical "a Int64 and a String …".
+        let d = first_error("(module m (def (main) (< 1 \"x\")) (export main))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message
+                .contains("an Int64 and a String are different types"),
+            "cross-kind clash names both operands with correct articles: {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("a Int64"),
+            "no ungrammatical `a Int64`: {}",
+            d.message
+        );
+        // A UInt8 operand keeps `a` (the "yoo" sound), confirming the rule is sound-based not letter-based.
+        let du = first_error("(module m (def (g (: n UInt8)) (< n \"x\")) (export g))");
+        assert!(
+            du.message.contains("a UInt8 and a String"),
+            "UInt8 keeps `a` (yoo sound): {}",
+            du.message
         );
     }
 

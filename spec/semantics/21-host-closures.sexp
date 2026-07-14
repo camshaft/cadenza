@@ -2816,3 +2816,36 @@
               (export mk) (export app)))
   (call   app (: 5 Int64))
   (output (: 7 Int64)))
+
+; A SUM whose payload is itself a VARIABLE-LENGTH collection — `Option (List Int64)` — as a round-trip
+; consumer result. The value-encode descriptor nests: the sum's disc switch selects the `Some` variant, then
+; renders its List payload (element type observable). The deepest result-form nesting witnessed.
+
+(case "round-trip: a consumer returns an Option whose payload is a List"
+  (doc    "`mk` adds 1; `app : (own<t>, Int64) -> (Option (List Int64))` returns `(Some (list x (g x)))` — a
+           sum wrapping a variable-length collection. `app(handle, 5)` → `g(5)`=6, so `(: (Some (list 5 6))
+           (Option (List Int64)))`, value-encoded through the nested descriptor (disc switch → List render).
+           Pins a sum-of-collection result form.")
+  (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (Some (list x (g x))))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: (Some (list 5 6)) (Option (List Int64)))))
+
+; The UNIT closure boundary: a closure ARGUMENT or RESULT of type `Unit` has no machine slot
+; (`valtype_of(Unit) = None` — Unit occupies no wasm value, so a lifted lambda taking/returning it cannot be
+; represented), so it declines at lambda-lift ("a closure's result type has no machine representation"),
+; BEFORE the resource envelope. A `Unit`-returning closure is a pure side-effecting callback — only
+; meaningful once a closure may perform an effect (which the scope fence CDZ0406 forbids crossing today), so
+; there is nothing for it to DO across the boundary. Declines as a `todo` — a documented boundary, not a
+; miscompile.
+
+(case "a closure returning Unit is declined — Unit has no machine representation"
+  (doc    "`(def (mk) (fn (x) unit))` — the closure returns `Unit`, which has no machine slot; the lifted
+           lambda's result cannot be represented, so it declines at lift (`a closure's result type has no
+           machine representation`). A pure Unit-returning closure only makes sense as an effect callback, and
+           closures escaping effects are forbidden (CDZ0406) — so a `Unit` result has no boundary role today.
+           Declines (a `todo`).")
+  (input  (do (def (mk) (fn ((: x Int64)) unit)) (export mk)))
+  (call   mk (: 5 Int64))
+  (output (: unit Unit)))
