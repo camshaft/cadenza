@@ -3738,6 +3738,76 @@
              (: (record (a 5) (b 10)) (Record (a Int64) (b Int64))))
   (output (: 15 Int64)))
 
+; N-COMPOUND-ARGS × LIST-RESULT: the N-compound-args path composes with EVERY closure RESULT shape that crosses
+; as `list<u8>` — a byte-rope (`Bytes`), a fixed-shape compound (tuple/record), and a variable-length collection
+; (`List`). The `call` rebuilds each tuple arg cell (a slice of `TupleArgRebuild`), dispatches, then runs the
+; SAME result path the single-tuple list-returning cores use (bytes copy / value-form template / value-encode
+; walker). The envelope mints N `tuple<…>` arg types before the shared `list<u8>` result type (the `ArgSlot`
+; slot model, reused). So ≥2 compound args reach the deep result surface, not only a scalar result.
+
+(case "TWO Tuple args with a LIST result cross the direct-call boundary"
+  (doc    "`mk : (-> (Tuple Int64 Int64) (Tuple Int64 Int64) (List Int64))` pairs `p.0` and `q.1` into a list.
+           Both tuple args cross as native `tuple<s64,s64>` (rebuilt in-guest); the value-encode `call`
+           dispatches then renders the returned List as the value-form document. `call(handle, (5,5), (5,10))`
+           → `(list 5 10)`. The N-compound-args path now reaches the collection-result core.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. q 1))))
+              (export mk)))
+  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: (list 5 10) (List Int64))))
+
+(case "TWO Tuple args with a fixed-shape COMPOUND result"
+  (doc    "`mk : (-> (Tuple Int64 Int64) (Tuple Int64 Int64) (Tuple Int64 Int64))` re-pairs `p.0` and `q.1`.
+           The value-form `call` rebuilds both arg tuples, dispatches, and walks the returned tuple handle into
+           the value-form template. `call(handle, (5,5), (5,10))` → `(tuple 5 10)`, decoded to the typed doc.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (tuple (. p 0) (. q 1))))
+              (export mk)))
+  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: (tuple 5 10) (Tuple Int64 Int64))))
+
+(case "TWO Tuple args with a BYTE-ROPE result"
+  (doc    "`mk : (-> (Tuple Int64 Int64) (Tuple Int64 Int64) Bytes)` builds the bytes `(p.0, q.1)`. The bytes
+           `call` rebuilds both arg tuples, dispatches, and copies the returned Bytes out as `list<u8>`.
+           `call(handle, (5,5), (5,10))` → the bytes `(5 10)`.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
+                (bin (u8 (. p 0)) (u8 (. q 1)))))
+              (export mk)))
+  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: (5 10) Bytes)))
+
+(case "THREE Tuple args with a LIST result"
+  (doc    "N=3 tuple args reaching the collection-result core: `mk : (-> (Tuple Int64 Int64) (Tuple Int64
+           Int64) (Tuple Int64 Int64) (List Int64))` lists `p.0`, `q.1`, `r.0`. All three tuples flatten to six
+           scalar core params, are rebuilt, and the returned List is value-encoded. `call(handle, (1,2), (3,4),
+           (100,200))` → `(list 1 4 100)`.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)) (: r (Tuple Int64 Int64)))
+                (list (. p 0) (. q 1) (. r 0))))
+              (export mk)))
+  (call   mk (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64))
+             (: (tuple 100 200) (Tuple Int64 Int64)))
+  (output (: (list 1 4 100) (List Int64))))
+
+(case "a scalar BETWEEN two Tuple args with a LIST result"
+  (doc    "The interleaved-scalar `ArgSlot` model reaches the list-result core: `mk : (-> (Tuple Int64 Int64)
+           Int64 (Tuple Int64 Int64) (List Int64))` lists `p.0`, `n`, `q.1`. The `call` rebuilds the first
+           tuple, pushes the scalar, rebuilds the second, dispatches, value-encodes the List. `call(handle,
+           (5,5), 10, (1,20))` → `(list 5 10 20)`.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)) (: n Int64) (: q (Tuple Int64 Int64)))
+                (list (. p 0) n (. q 1))))
+              (export mk)))
+  (call   mk (: (tuple 5 5) (Tuple Int64 Int64)) (: 10 Int64) (: (tuple 1 20) (Tuple Int64 Int64)))
+  (output (: (list 5 10 20) (List Int64))))
+
+(case "a CAPTURING closure taking TWO Tuple args with a LIST result"
+  (doc    "N-compound-args + capture + collection result compose: `(def (mk (: k Int64)) …)` returns a closure
+           closing over `k` and taking two tuple args, returning `(list p.0 q.1 k)`. `make(100)` → a handle;
+           `call(handle, (5,5), (5,10))` → `(list 5 10 100)`. The forwarded capture cell + both rebuilt arg
+           cells coexist, and the returned List is value-encoded out.")
+  (input  (do (def (mk (: k Int64)) (fn ((: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
+                (list (. p 0) (. q 1) k)))
+              (export mk)))
+  (call   mk (: 100 Int64) (: (tuple 5 5) (Tuple Int64 Int64)) (: (tuple 5 10) (Tuple Int64 Int64)))
+  (output (: (list 5 10 100) (List Int64))))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner
