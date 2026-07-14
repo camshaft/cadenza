@@ -318,6 +318,7 @@ pass	a conditionally-selected nullary variant is returned as a runtime sum resul
 pass	a conditionally-selected variant is returned as a runtime sum result
 pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a consistent annotation type-checks against the inferred type
+pass	a const collection recursively folded is rejected, not compiled to an infinite loop
 pass	a const parameter rejects an argument that depends on runtime data
 pass	a constant BigInt crosses the host boundary as its value form
 pass	a constant BigInt operand of a runtime BigInt op materializes as a heap value
@@ -1837,6 +1838,7 @@ pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the round trip tracks the produced closure's captured value
 pass	the runtime-if list takes its else branch and measures that length
+pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same declared effect is handled in-program by one entrypoint and delegated by another
 pass	the same function called under two handlers is discharged by each in turn
 pass	the same-core-shape sibling dispatches ITS body, not the first
