@@ -10418,6 +10418,77 @@ mod recursion {
     }
 
     #[test]
+    fn a_self_referential_value_definition_names_the_cycle_not_a_resource_limit() {
+        // `(def (g) g)` — a nullary VALUE defined in terms of itself with no base case — names nothing
+        // (`g = g`). It used to reduce until the depth guard fired, mislabeled "expression nests too deeply
+        // (a recursion/resource limit)" (reads as a compiler resource problem). Now it is rejected CDZ0201
+        // naming the real cause — a value cannot reference itself — with the fix route. (Contrast the mutual
+        // FUNCTIONS above, which run: a function's self-reference is legitimate recursion.)
+        // Through the host-stack guard the bin uses (`host.rs`): a self-referential value cycle reduces
+        // up to `DESCENT_DEPTH_LIMIT` (1024 levels — bounded, and the CDZ0201 IS emitted) before the guard
+        // stops it, but that depth needs the guard-sized 64 MB stack, not a default `cargo test` worker's
+        // ≈2 MB (which SIGABRTs, EXIT=101, 0 FAILED). Deep-but-finite, not a loop — the CLI already runs
+        // this through the guard, so the test must too.
+        let single = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (g) g) (export g))",
+            )))
+        });
+        let d = single
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0201"))
+            .expect("a self-referential value def is rejected");
+        assert!(
+            d.message
+                .contains("defined in terms of itself with no base value"),
+            "names the cycle, not a resource limit: {}",
+            d.message
+        );
+        assert!(
+            single
+                .iter()
+                .all(|d| !d.message.contains("nests too deeply")),
+            "the misleading resource-limit decline is suppressed: {single:?}"
+        );
+        // A MUTUAL value cycle (`a = b`, `b = a`) is caught too — each cyclic def reports once, and the
+        // "nests too deeply" decline is deduped away (exactly 2 errors, both the clear cycle message).
+        let ds = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (a) b) (def (b) a) (export a))",
+            )))
+        });
+        assert_eq!(
+            ds.iter()
+                .filter(|d| d.code.as_deref() == Some("CDZ0201"))
+                .count(),
+            2,
+            "each of the two mutually-cyclic values is named: {ds:?}"
+        );
+        assert!(
+            ds.iter().all(|d| !d.message.contains("nests too deeply")),
+            "no leftover resource-limit decline in the mutual cycle: {ds:?}"
+        );
+        // NO false positive: a def referring to ANOTHER def with a base value is fine; a recursive FUNCTION
+        // is fine (it has params → a lambda, not a bare Ref cycle).
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (a) 5) (def (b) a) (export b))",
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a def referencing another def with a concrete value is valid"
+        );
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (f (: n Int64)) (if (< n 1) 0 (f (- n 1)))) (def (main) (f 5)) (export main))",
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a recursive function is legitimate, not a value cycle"
+        );
+    }
+
+    #[test]
     fn a_tail_recursive_loop_runs_in_constant_stack() {
         use wasmtime::component::Val;
         // A tail-recursive accumulator over a RUNTIME count: the SELF tail-call is compiled as a LOOP
@@ -12282,8 +12353,9 @@ mod match_engine {
             "names both missing fields, sorted: {}",
             two.message
         );
-        // NO field-diff hint when the field NAMES match but a field's TYPE differs — that is a per-field
-        // type mismatch the full render already shows, not a set difference.
+        // When the field NAMES match but a field's TYPE differs, name the SPECIFIC field and its expected
+        // vs actual type (rustc's "expected `Int64`, found `Bool`" anchored on the field) — NOT a field-SET
+        // message (nothing is missing/extra), and not just two full record renders the reader must diff.
         let type_diff = reject_full(
             "(module m (def (h (: p (Record (x Int64)))) (. p x)) \
                (def (g) (h (record (x true)))) (export g))",
@@ -12292,8 +12364,28 @@ mod match_engine {
         assert!(
             !type_diff.message.contains("missing field")
                 && !type_diff.message.contains("no such field"),
-            "a same-field-set type mismatch gets no field-diff hint: {}",
+            "a same-field-set type mismatch is not a set difference: {}",
             type_diff.message
+        );
+        assert!(
+            type_diff
+                .message
+                .contains("field `x` should be Int64, but this one is Bool"),
+            "names the specific differing field + its types: {}",
+            type_diff.message
+        );
+        // In a WIDE record (many fields agree, one differs), the hint pinpoints the culprit (`y`) instead of
+        // burying it in a full-render diff.
+        let wide = reject_full(
+            "(module m (def (h (: p (Record (x Int64) (y Int64) (z Int64)))) (. p x)) \
+               (def (g) (h (record (x 1) (y true) (z 3)))) (export g))",
+        )
+        .expect("a wide record with one wrong field rejects");
+        assert!(
+            wide.message
+                .contains("field `y` should be Int64, but this one is Bool"),
+            "pinpoints the one differing field among many: {}",
+            wide.message
         );
     }
 
@@ -12333,7 +12425,9 @@ mod match_engine {
             "names the arity delta the other direction: {}",
             more.message
         );
-        // NO arity hint when the arities MATCH but an element's TYPE differs.
+        // When the arities MATCH but an element's TYPE differs, name the SPECIFIC position (0-indexed,
+        // matching the projection `(. t 1)` and the "tuple index N" message) and its expected vs actual
+        // type — NOT an arity message (the counts agree).
         let type_diff = reject_full(
             "(module m (def (h (: t (Tuple Int64 Bool))) (. t 0)) \
                (def (g) (h (tuple 1 2))) (export g))",
@@ -12341,8 +12435,221 @@ mod match_engine {
         .expect("a same-arity element-type mismatch rejects");
         assert!(
             !type_diff.message.contains("expected a tuple with"),
-            "a same-arity element-type mismatch gets no arity hint: {}",
+            "a same-arity element-type mismatch is not an arity delta: {}",
             type_diff.message
+        );
+        assert!(
+            type_diff
+                .message
+                .contains("element 1 should be Bool, but this one is Int64"),
+            "names the specific differing position + its types: {}",
+            type_diff.message
+        );
+    }
+
+    #[test]
+    fn a_collection_element_mismatch_names_the_differing_axis() {
+        // The collection analogue of the record/tuple per-member hint: a `List`/`Map`/`Set` whose
+        // element / key / value TYPE differs from the expected type names the differing AXIS and its
+        // expected-vs-actual type ("its elements should be Int64, but these are Bool") instead of leaving
+        // the reader to diff `(Map String Int64)` against `(Map Int64 Int64)` to see it is the KEY axis.
+        // A `List` element mismatch.
+        let list = reject_full(
+            "(module m (def (h (: xs (List Int64))) xs) (def (g) (h (list true))) (export g))",
+        )
+        .expect("a (List Bool) where (List Int64) is wanted rejects");
+        assert_eq!(
+            list.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            list.message
+        );
+        assert!(
+            list.message
+                .contains("its elements should be Int64, but these are Bool"),
+            "names the list element axis: {}",
+            list.message
+        );
+        // A `Map` KEY mismatch — the KEY axis is named (not the value).
+        let key = reject_full(
+            "(module m (def (h (: mp (Map String Int64))) mp) (def (g) (h (map (1 2)))) (export g))",
+        )
+        .expect("a (Map Int64 Int64) where (Map String Int64) is wanted rejects");
+        assert!(
+            key.message
+                .contains("its keys should be String, but these are Int64"),
+            "names the map KEY axis: {}",
+            key.message
+        );
+        // A `Map` VALUE mismatch — the VALUE axis is named (the key agrees).
+        let val = reject_full(
+            "(module m (def (h (: mp (Map Int64 Int64))) mp) (def (g) (h (map (1 true)))) (export g))",
+        )
+        .expect("a (Map Int64 Bool) where (Map Int64 Int64) is wanted rejects");
+        assert!(
+            val.message
+                .contains("its values should be Int64, but these are Bool"),
+            "names the map VALUE axis: {}",
+            val.message
+        );
+        // BOTH map axes differ → report the KEY (leftmost) axis, deterministically.
+        let both = reject_full(
+            "(module m (def (h (: mp (Map String Int64))) mp) (def (g) (h (map (1 true)))) (export g))",
+        )
+        .expect("a map with both axes wrong rejects");
+        assert!(
+            both.message.contains("its keys should be String")
+                && !both.message.contains("its values should be"),
+            "both-axes-differ reports the leftmost (key) axis: {}",
+            both.message
+        );
+        // NO false axis hint across DIFFERENT collection kinds (a Set where a List is annotated) — the
+        // element types agree but the kinds differ, so there is no single "axis" to name.
+        let kinds = reject_full(
+            "(module m (def (h (: s (Set Int64))) s) (def (g) (h (list 1))) (export g))",
+        )
+        .expect("a List where a Set is wanted rejects");
+        assert!(
+            !kinds.message.contains("its elements should be"),
+            "no axis hint across different collection kinds: {}",
+            kinds.message
+        );
+        // No mechanical fix — the repair is retyping the elements, which the author must supply.
+        assert!(list.fix.is_none(), "no mechanical fix: {:?}", list.fix);
+    }
+
+    #[test]
+    fn a_join_site_names_the_structural_delta_not_two_full_renders() {
+        // The per-member structural-delta hints (record field, tuple position, collection axis) now also
+        // fire at the JOIN sites — a list literal, an `if`'s branches, a `match`'s arms — where two
+        // same-kind compounds that differ inside were dumped as two whole renders. `structural_delta_hint`
+        // bundles the three per-member helpers so all three sites point at the SPECIFIC difference.
+        // A LIST LITERAL of records differing in one field's TYPE.
+        let list =
+            reject_full("(module m (def (g) (list (record (x 1)) (record (x true)))) (export g))")
+                .expect("a list of records with a differing field rejects");
+        assert!(
+            list.message
+                .contains("field `x` should be Int64, but this one is Bool"),
+            "list literal names the differing field: {}",
+            list.message
+        );
+        // An `if` whose branches are records differing in one field's TYPE.
+        let iff = reject_full(
+            "(module m (def (f (: b Bool)) (if b (record (x 1)) (record (x true)))) (export f))",
+        )
+        .expect("if branches with a differing record field reject");
+        assert!(
+            iff.message
+                .contains("field `x` should be Int64, but this one is Bool"),
+            "if-branch names the differing field: {}",
+            iff.message
+        );
+        // A `match` whose arms are tuples differing in one position's TYPE.
+        let m = reject_full(
+            "(module m (def (f (: n Int64)) (match n (0 (tuple 1 2)) (_ (tuple 1 true)))) (export f))",
+        )
+        .expect("match arms with a differing tuple position reject");
+        assert!(
+            m.message
+                .contains("element 1 should be Int64, but this one is Bool"),
+            "match-arm names the differing position: {}",
+            m.message
+        );
+        // A LIST LITERAL of tuples of DIFFERENT ARITY names the arity delta (not per-position).
+        let arity = reject_full("(module m (def (g) (list (tuple 1 2) (tuple 1 2 3))) (export g))")
+            .expect("a list of tuples of different arity rejects");
+        assert!(
+            arity
+                .message
+                .contains("expected a tuple with 2 elements, but this one has 3"),
+            "list literal names the tuple arity delta: {}",
+            arity.message
+        );
+        // NO regression: a SCALAR clash keeps its clean message (no structural delta) AND its float-retype
+        // fix — the delta only fires for same-kind compounds that differ inside.
+        let scalar = reject_full("(module m (def (g) (list 1 2.0)) (export g))")
+            .expect("(list 1 2.0) rejects");
+        assert!(
+            !scalar.message.contains("should be") && !scalar.message.contains("field"),
+            "a scalar clash gets no structural-delta tail: {}",
+            scalar.message
+        );
+        assert!(
+            scalar.fix.is_some(),
+            "the int-literal→float retype fix still rides along: {:?}",
+            scalar.fix
+        );
+    }
+
+    #[test]
+    fn a_nested_compound_mismatch_drills_to_the_exact_leaf_path() {
+        // When a differing record field / tuple position is ITSELF a same-shape nested compound, the hint
+        // drills through the shared structure to the deepest SCALAR leaf and names the access PATH — "field
+        // `a.b.c` should be Int64, but this one is Bool" — instead of re-rendering the whole differing
+        // sub-compound (`field `a` should be (Record (b (Record (c Int64)))) …`). Dotted path: a record
+        // field contributes its name, a tuple position its 0-based index.
+        // A two-level record nest.
+        let two = reject_full(
+            "(module m (def (h (: r (Record (inner (Record (x Int64)))))) (. r inner)) \
+               (def (g) (h (record (inner (record (x true)))))) (export g))",
+        )
+        .expect("a nested record with a differing leaf rejects");
+        assert!(
+            two.message
+                .contains("field `inner.x` should be Int64, but this one is Bool"),
+            "drills to the dotted leaf path: {}",
+            two.message
+        );
+        // A three-level record nest — the path grows.
+        let three = reject_full(
+            "(module m (def (h (: r (Record (a (Record (b (Record (c Int64)))))))) (. r a)) \
+               (def (g) (h (record (a (record (b (record (c true)))))))) (export g))",
+        )
+        .expect("a 3-level nested record rejects");
+        assert!(
+            three
+                .message
+                .contains("field `a.b.c` should be Int64, but this one is Bool"),
+            "drills through three levels: {}",
+            three.message
+        );
+        // A record field that is a TUPLE — the path mixes a field name and a 0-based position (`pt.1`).
+        let mixed = reject_full(
+            "(module m (def (h (: r (Record (pt (Tuple Int64 Int64))))) (. r pt)) \
+               (def (g) (h (record (pt (tuple 1 true))))) (export g))",
+        )
+        .expect("a record with a differing tuple field rejects");
+        assert!(
+            mixed
+                .message
+                .contains("field `pt.1` should be Int64, but this one is Bool"),
+            "mixes field name and tuple index in the path: {}",
+            mixed.message
+        );
+        // A tuple whose element is a RECORD — path starts with the 0-based index (`element 0.x`).
+        let tup = reject_full(
+            "(module m (def (h (: t (Tuple (Record (x Int64)) Int64))) (. t 1)) \
+               (def (g) (h (tuple (record (x true)) 2))) (export g))",
+        )
+        .expect("a tuple with a differing record element rejects");
+        assert!(
+            tup.message
+                .contains("element 0.x should be Int64, but this one is Bool"),
+            "tuple element path drills into the record field: {}",
+            tup.message
+        );
+        // The drill STOPS at a field-SET difference deeper down — it names the immediate field with the
+        // sub-render (whose missing field the render shows), NOT a misleading leaf path.
+        let stop = reject_full(
+            "(module m (def (h (: r (Record (inner (Record (x Int64) (y Int64)))))) (. r inner)) \
+               (def (g) (h (record (inner (record (x 1)))))) (export g))",
+        )
+        .expect("a nested field-set difference rejects");
+        assert!(
+            stop.message.contains("field `inner` should be") && !stop.message.contains("inner."),
+            "drill stops at a nested field-set difference (no dotted leaf): {}",
+            stop.message
         );
     }
 
@@ -12390,6 +12697,179 @@ mod match_engine {
     }
 
     #[test]
+    fn over_applying_a_prelude_member_op_names_the_operation_and_arity() {
+        // The over-application companion of the wrong-type-arg member-op message: `(List.push xs 1 2)`
+        // (push takes 2) named the operation + its arity ("`List.push` takes 2 arguments, but 3 were
+        // given") instead of the anonymous "applied 3 arguments to a function of arity 2". Carries the
+        // delete-surplus fix, and reports ONCE (the emit-path wrong-arity decline is deduped away).
+        let d = reject_full(
+            "(module m (def (g (: xs (List Int64))) ((. List push) xs 1 2)) (export g))",
+        )
+        .expect("over-applying List.push rejects");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            d.message
+                .contains("`List.push` takes 2 arguments, but 3 were given"),
+            "names the op + arity: {}",
+            d.message
+        );
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "carries the delete-surplus fix: {:?}",
+            d.fix
+        );
+        // Arity-1 op → SINGULAR "argument"; and the emit-path decline is deduped (ONE error).
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) ((. Map size) (map (1 2)) 99)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errs: Vec<_> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errs.len(),
+            1,
+            "one error, decline deduped: {:?}",
+            out.diagnostics
+        );
+        assert!(
+            errs[0]
+                .message
+                .contains("`Map.size` takes 1 argument, but 2 were given"),
+            "singular 'argument' for an arity-1 op: {}",
+            errs[0].message
+        );
+        // NO regression: a bare operator over-application keeps its own message (not a `.`-member phrasing).
+        let bare =
+            reject_full("(module m (def (g) (+ 1 2 3)) (export g))").expect("(+ 1 2 3) rejects");
+        assert!(
+            !bare.message.contains("were given"),
+            "a bare operator over-application keeps its own message: {}",
+            bare.message
+        );
+    }
+
+    #[test]
+    fn over_applying_a_bare_variant_constructor_names_it() {
+        // The variant-constructor companion of the member-op over-application message: a BARE ctor `(Mk 1
+        // 2 3)` (Mk takes 2) named the constructor + its arity ("`Mk` takes 2 arguments, but 3 were
+        // given") instead of the anonymous "applied 3 arguments to a function of arity 2" — reading as well
+        // as the member-access spelling `(. P Mk)` already did. Carries the delete-surplus fix.
+        let d =
+            reject_full("(module m (type P (Mk Int64 Int64) (Z)) (def (g) (Mk 1 2 3)) (export g))")
+                .expect("over-applying a bare ctor Mk rejects");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            d.message
+                .contains("`Mk` takes 2 arguments, but 3 were given"),
+            "names the bare constructor + arity: {}",
+            d.message
+        );
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "carries the delete-surplus fix: {:?}",
+            d.fix
+        );
+        // The member-access spelling of the SAME ctor names it dotted (`P.Mk`) — the shared phrasing.
+        let member = reject_full(
+            "(module m (type P (Mk Int64 Int64) (Z)) (def (g) ((. P Mk) 1 2 3)) (export g))",
+        )
+        .expect("over-applying (. P Mk) rejects");
+        assert!(
+            member
+                .message
+                .contains("`P.Mk` takes 2 arguments, but 3 were given"),
+            "the member spelling names it dotted: {}",
+            member.message
+        );
+        // NO regression: an ordinary over-applied function keeps the anonymous arity message (not a ctor).
+        let fun = reject_full("(module m (def (h (: a Int64)) a) (def (g) (h 1 2)) (export g))")
+            .expect("over-applying a user fn rejects");
+        assert!(
+            fun.message.contains("function of arity 1") && !fun.message.contains("were given"),
+            "an ordinary function keeps the anonymous over-application message: {}",
+            fun.message
+        );
+    }
+
+    #[test]
+    fn an_unapplied_function_value_names_the_forgotten_call() {
+        // A partial application `(h 1)` (h takes 2) or a bare fn name used where a NON-function value is
+        // expected has type `(-> …)`; the generic "type mismatch: Int64 and (-> Int64 Int64)" / "annotation
+        // Int64 does not match value (-> Int64 Int64)" never says the value is simply an UNAPPLIED function.
+        // Both producer sites (annotation-mismatch + generic arg-unify) now append the "forgot to call it —
+        // apply N more argument(s)" hint (`fn_not_applied_hint`), rustc's "you might have forgotten to call
+        // this function". No mechanical fix (which argument values were meant is unknown) — a tail only.
+        let h = "(def (h (: a Int64) (: b Int64)) (+ a b))";
+        // Annotation-mismatch site: a partial passed to a user fn wanting Int64.
+        let d = reject_full(&format!(
+            "(module m {h} (def (g (: x Int64)) x) (def (main) (g (h 1))) (export main))"
+        ))
+        .expect("passing a partial where Int64 is wanted rejects");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            d.message
+                .contains("hasn't been fully applied; apply it to 1 more argument to get an Int64"),
+            "names the forgotten call: {}",
+            d.message
+        );
+        assert!(d.fix.is_none(), "no mechanical fix: {:?}", d.fix);
+        // Generic arg-unify site: a partial as a bare-operator argument.
+        let op = reject_full(&format!("(module m {h} (def (g) (+ (h 1) 2)) (export g))"))
+            .expect("(+ (h 1) 2) rejects");
+        assert!(
+            op.message
+                .contains("hasn't been fully applied; apply it to 1 more argument"),
+            "the arg-unify site also names it: {}",
+            op.message
+        );
+        // Plural: a 3-ary fn applied to 1 needs 2 more arguments to reach the annotated scalar.
+        let h3 = "(def (h (: a Int64) (: b Int64) (: c Int64)) (+ a (+ b c)))";
+        let two = reject_full(&format!(
+            "(module m {h3} (def (g) (: (h 1) Int64)) (export g))"
+        ))
+        .expect("(: (h 1) Int64) rejects");
+        assert!(
+            two.message.contains("apply it to 2 more arguments"),
+            "plural 'arguments' when two remain: {}",
+            two.message
+        );
+        // NO false positive when applying the remaining args would NOT yield the expected type — `(h 1)`
+        // fully applies to Int64, so annotating it `Bool` has no "just call it" story: keep the plain render.
+        let bad = reject_full(&format!(
+            "(module m {h} (def (g) (: (h 1) Bool)) (export g))"
+        ))
+        .expect("(: (h 1) Bool) rejects");
+        assert!(
+            !bad.message.contains("hasn't been fully applied"),
+            "no fn hint when the applied result would still differ: {}",
+            bad.message
+        );
+        // NO false positive on a fn-vs-fn mismatch: a higher-order param that IS a function keeps the plain
+        // mismatch (the value is a function, but so is the expected type — not a forgotten call).
+        let hof = reject_full(&format!(
+            "(module m (def (apply1 (: f (-> Int64 Int64)) (: x Int64)) (f x)) {h} \
+             (def (g) (apply1 h 5)) (export g))"
+        ))
+        .expect("passing a 2-ary fn where (-> Int64 Int64) is wanted rejects");
+        assert!(
+            !hof.message.contains("hasn't been fully applied"),
+            "no fn hint when the expected type is itself a function: {}",
+            hof.message
+        );
+    }
+
+    #[test]
     fn a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix() {
         // A `String` supplied where `Bytes` is required — `(Bytes.len "hi")`, or `(f "hi")` for a
         // `(: b Bytes)` parameter — has a TOTAL prelude conversion: wrap in `(String.to-bytes …)` (the
@@ -12421,6 +12901,47 @@ mod match_engine {
             rev.fix.is_none(),
             "no one-shot fix for the fallible Bytes→String decode: {:?}",
             rev.fix
+        );
+    }
+
+    #[test]
+    fn a_char_or_symbol_where_a_scalar_string_is_expected_offers_its_total_conversion() {
+        // `Char.to-int : Char → Int64` and `Symbol.to-string : Symbol → String` are TOTAL prelude
+        // conversions, so a Char where Int64 is wanted (`(+ #\a 1)`) / a Symbol where String is wanted
+        // gets the wrap fix — the char/symbol twins of the String→Bytes coercion.
+        let ch = reject_full("(module m (def (main) (+ #\\a 1)) (export main))")
+            .expect("Char/Int mismatch rejects");
+        let cfix = ch.fix.expect("a Char.to-int conversion fix");
+        assert_eq!(cfix.kind, crate::abi::FixKind::Wrap);
+        assert_eq!(
+            cfix.replacement,
+            format!("(Char.to-int {})", crate::abi::WRAP_HOLE),
+            "wraps the char in its scalar-value conversion: {}",
+            ch.message
+        );
+        let sym = reject_full(
+            "(module m (def (f (: s String)) s) (def (g (: sym Symbol)) (f sym)) (export g))",
+        )
+        .expect("Symbol/String mismatch rejects");
+        let sfix = sym.fix.expect("a Symbol.to-string conversion fix");
+        assert_eq!(
+            sfix.replacement,
+            format!("(Symbol.to-string {})", crate::abi::WRAP_HOLE),
+            "wraps the symbol in its content-string conversion: {}",
+            sym.message
+        );
+        // NO spurious Char.to-int when the expected int is NARROWER than Int64 (the wrap yields Int64):
+        // the int-width `.of` coercion takes over instead.
+        let narrow =
+            reject_full("(module m (def (g (: n Int8)) (+ n (Char.to-int #\\a))) (export g))")
+                .expect("Int8/Int64 mismatch rejects");
+        assert!(
+            narrow
+                .fix
+                .as_ref()
+                .is_some_and(|f| f.replacement.contains("Int8.of")),
+            "a narrow-int target takes the int-width coercion, not Char.to-int: {:?}",
+            narrow.fix
         );
     }
 
@@ -13773,6 +14294,83 @@ mod match_engine {
             Some("CDZ0211"),
             "merging records that share a field is CDZ0211"
         );
+    }
+
+    #[test]
+    fn a_record_row_op_over_a_non_record_names_the_kind() {
+        // A `Record.project`/`without`/`merge`/`extend`/`with` over a DEFINITE non-record operand
+        // (`(Record.project n (x))` for `n : Int64`) is a kind error, like member access on a non-record.
+        // It was check-INVISIBLE (the field checks only fire for a `Ty::Record` operand) and compiled to a
+        // MISLEADING "record row operation over a runtime record is not yet built". Now CDZ0201 names the
+        // op + the non-record type: "`Record.project` requires a record, found Int64".
+        let msg = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("requires a record"))
+                .unwrap_or_else(|| panic!("no non-record-operand fault for {src}"))
+                .message
+        };
+        for (op, arg2) in [
+            ("project", "(x)"),
+            ("without", "(x)"),
+            ("merge", "(record (y 1))"),
+            ("extend", "(x 5)"),
+            ("with", "(x 5)"),
+        ] {
+            let src = format!("(module m (def (g (: n Int64)) (Record.{op} n {arg2})) (export g))");
+            let m = msg(&src);
+            assert!(
+                m.contains(&format!("`Record.{op}` requires a record")) && m.contains("Int64"),
+                "{op}: {m}"
+            );
+        }
+        // NO false positive: a real record operand, and a bare (unconstrained `Any`) parameter, are clean.
+        for ok in [
+            "(module m (def (g (: r (Record (x Int64)))) (Record.project r (x))) (export g))",
+            "(module m (def (get-x r) (Record.project r (x))) (def (main) 1) (export main))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("requires a record")),
+                "a record / unconstrained operand is not flagged: {ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tuple_row_op_over_a_non_tuple_names_the_kind() {
+        // The tuple twin of the record-row-op kind check: `Tuple.cat`/`split-at`/`pop` over a definite
+        // non-tuple operand (`(Tuple.pop n)` for `n : Int64`) was check-invisible and compiled to a
+        // misleading "Tuple.<op> over a runtime tuple is not yet built" (the operand is not a tuple at
+        // all). Now CDZ0201 names the op + the non-tuple type.
+        let msg = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("requires a tuple"))
+                .unwrap_or_else(|| panic!("no non-tuple-operand fault for {src}"))
+                .message
+        };
+        for (op, rest) in [("cat", "n"), ("pop", ""), ("split-at", "1")] {
+            let src = format!("(module m (def (g (: n Int64)) (Tuple.{op} n {rest})) (export g))");
+            let m = msg(&src);
+            assert!(
+                m.contains(&format!("`Tuple.{op}` requires a tuple")) && m.contains("Int64"),
+                "{op}: {m}"
+            );
+        }
+        // NO false positive: a real tuple operand, and a bare (unconstrained `Any`) parameter, are clean.
+        for ok in [
+            "(module m (def (g (: t (Tuple Int64 Int64))) (Tuple.pop t)) (export g))",
+            "(module m (def (f t) (Tuple.pop t)) (def (main) 1) (export main))",
+        ] {
+            assert!(
+                !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .any(|d| d.message.contains("requires a tuple")),
+                "a tuple / unconstrained operand is not flagged: {ok}"
+            );
+        }
     }
 
     #[test]
@@ -24663,6 +25261,28 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wide_do_block_discarded_value_pass_runs_in_bounded_time() {
+        // REGRESSION (perf): `collect_discarded_value_warnings` + the `do`/`let` lowering both call
+        // `lower::subtree_reaches_host_call` (does a statement reach an observable host call?), which walked
+        // each statement's WHOLE subtree calling `core_of` per node — on the real corpus workload this pair
+        // was ~45% of compile time. It is now MEMOIZED (`Db::reaches_host_call`) and SKIPS `core_of` on atom
+        // nodes (a host call only lowers from an application `List`). A do-block of N pure non-final
+        // statements each a non-trivial expression must stay LINEAR (and still warn on each), never a
+        // per-statement re-walk of the whole block. N=800 with each statement flagged is the gate.
+        let n = 800;
+        let stmts: String = (0..n).map(|i| format!("(+ {i} {i}) ")).collect();
+        let src = format!("(module m (def (main) (do {stmts}0)) (export main))");
+        let ws = discarded_of(&src);
+        // Every one of the N pure non-final statements is a discarded non-Unit value → N warnings; the last
+        // `0` is the block value (not discarded). Confirms the pass still fires exactly, in bounded time.
+        assert_eq!(
+            ws.len(),
+            n,
+            "each of the {n} pure non-final statements warns"
+        );
+    }
+
+    #[test]
     fn an_effectful_non_final_do_form_does_not_warn() {
         // A non-final statement that reaches a HOST CALL is KEPT by the `Core::Seq` lowering — its call
         // crosses the boundary and must run, so sequencing it for effect is exactly why a non-final form
@@ -29150,6 +29770,26 @@ mod stage1 {
                 .any(|d| d.code.as_deref() == Some("CDZ0101")),
             "an unbound handle head keeps its CDZ0101"
         );
+        // A TYPE head — `(handle C …)` where `C` is a sum type — is the same "head is not an effect" root
+        // cause (it leaked "record has no field `op`" + the fold-decline before). It now names the head as
+        // `a type`, not the misleading "not yet reducible by the tail-resumptive fold".
+        let mut ty_head = crate::db::Db::load(parse(
+            "(module m (type C (Red)) (def (main) (handle C 0 ((x (u) s (resume 1 s))) 5)) (export main))",
+        ));
+        let td = crate::diagnostics(&mut ty_head);
+        let d = td
+            .iter()
+            .find(|d| d.message.contains("head must name an EFFECT"))
+            .expect("a type handle head names the real problem");
+        assert!(
+            d.message.contains("`C`") && d.message.contains("is a type"),
+            "names the head as a type: {}",
+            d.message
+        );
+        assert!(
+            !td.iter().any(|d| d.message.contains("not yet reducible")),
+            "the misleading fold-decline is dropped: {td:?}"
+        );
     }
 
     #[test]
@@ -29303,6 +29943,47 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "a non-tail recursive abort must decline, not miscompile to 102"
+        );
+    }
+
+    #[test]
+    fn a_mutually_recursive_effectful_group_specializes_under_a_state_handler() {
+        // E3 extended to MUTUAL recursion: `ev`/`od` call each other, and the effect (`Ctr.tick`) is reached
+        // by `ev` only THROUGH its partner `od`. The fix: `body_reaches_discharged` now follows RECURSIVE
+        // callees (visited-set bounded), so `recursive_call_reaches_discharged(ev)` sees the effect and the
+        // fold routes `ev` to `specialize_recursive` (which ties the `ev#ctx`/`od#ctx` memo knot). Seed 7,
+        // `tick` hands back `s` and threads `s-1`: `ev(4)`→`od(3)`→`7 + ev(2)`→`od(1)`→`6 + ev(0)`=0, so
+        // `7 + (6 + 0)` = 13.
+        let src = "(module m (effect Ctr (op tick (-> Unit Int64))) \
+                   (def (ev (: n Int64)) (if (= n 0) 0 (od (- n 1)))) \
+                   (def (od (: n Int64)) (+ (Ctr.tick) (ev (- n 1)))) \
+                   (def (main) (handle Ctr 7 ((tick (u) s (resume s (- s 1)))) (ev 4))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a mutually-recursive effectful group must specialize (gate verifies value=13)"
+        );
+        // A three-way cycle (ev/od/tw) works too — the visited-set generalizes to any cycle length.
+        let three = "(module m (effect Ctr (op tick (-> Unit Int64))) \
+                   (def (ev (: n Int64)) (if (= n 0) 0 (od (- n 1)))) \
+                   (def (od (: n Int64)) (tw (- n 1))) \
+                   (def (tw (: n Int64)) (+ (Ctr.tick) (ev (- n 1)))) \
+                   (def (main) (handle Ctr 9 ((tick (u) s (resume s (- s 1)))) (ev 6))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(three))).is_ok(),
+            "a three-way mutually-recursive effectful group must specialize"
+        );
+        // GUARD (a MISCOMPILE regression): an ABORTIVE handler over a MUTUALLY-recursive callee with a
+        // NON-tail cross-call must DECLINE — `recursive_self_calls_all_tail` checks only ONE def's own
+        // self-calls, so the partner's pending `+ 1` frames (which an abort must abandon) would otherwise
+        // flow the abort value back through them (`(+ 1 (od …))` with `od = (+ 1 (ev …))` → 103, not 99).
+        // `callee_calls_other_recursive_def` extends the abortive guard to the mutual case.
+        let abort_mutual = "(module m (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (ev (: n Int64)) (if (= n 0) (Bail.bail 99) (+ 1 (od (- n 1))))) \
+                   (def (od (: n Int64)) (+ 1 (ev (- n 1)))) \
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (ev 4))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(abort_mutual))).is_err(),
+            "an abortive handler over a non-tail mutual recursion must decline, not miscompile to 103"
         );
     }
 
@@ -33899,6 +34580,53 @@ mod stage1 {
             run_returns::<i64>(&bytes, "main"),
             4096,
             "a depth-12 parameter-duplicating call chain must fold to 4096 without exponential blowup"
+        );
+    }
+
+    #[test]
+    fn a_deeply_nested_capturing_lambda_chain_checks_without_exponential_blowup() {
+        // REGRESSION (perf): a chain of INLINE lambdas each capturing the outer params —
+        // `((fn (a0) ((fn (a1) … (+ a0 (+ a1 … ))) 1)) 0)`. `check_application` type-checks a lambda-headed
+        // app by β-reducing the body and `collect`-ing the reduced (synthesized, cache-missing) copy — AND
+        // it computed a `baseline` by ALSO `collect`-ing the UNREDUCED callee body to diff callee-intrinsic
+        // faults. For a nested chain, BOTH collects contain the inner nested application, so each re-reduced
+        // the inner chain → O(2^depth) (a depth-20 chain took ~28s). FIX: skip the baseline collect when the
+        // reduced body has NO faults to filter (the well-typed common case) — the reduced-body collect alone
+        // then reduces each level once. This depth-20 chain would not finish pre-fix; that `diagnostics`
+        // returns quickly (and clean) is the gate.
+        let d = 20;
+        let mut inner = "0".to_string();
+        for i in 0..d {
+            inner = format!("(+ a{i} {inner})");
+        }
+        let mut body = inner;
+        for i in (0..d).rev() {
+            body = format!("((fn (a{i}) {body}) {i})");
+        }
+        let src = format!("(module m (def (main) {body}) (export main))");
+        // Through the host-stack guard the bin uses (`host.rs`): a depth-20 nested-lambda chain's
+        // β-reduction/type-check recurses ~per level, which SIGABRTs a default `cargo test` worker's
+        // ≈2 MB stack (EXIT=101, 0 FAILED) even though the O(2^depth)→O(depth) fix the test guards makes it
+        // TERMINATE quickly. Deep-but-finite, not a loop — size the stack from `DESCENT_DEPTH_LIMIT`.
+        let diags = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+        });
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a deeply-nested capturing lambda chain type-checks clean in bounded time: {diags:?}"
+        );
+        // And the baseline de-dup it guards STILL works: a callee-intrinsic fault (a non-exhaustive match
+        // in an applied lambda's body) is reported EXACTLY ONCE, not duplicated by the reduced-body check.
+        let intrinsic = "(module m (type T (A) (B)) (def (main) ((fn ((: t T)) (match t ((T.A) 1))) (T.A))) (export main))";
+        let n = crate::diagnostics(&mut crate::db::Db::load(parse(intrinsic)))
+            .iter()
+            .filter(|x| x.code.as_deref() == Some("CDZ0210"))
+            .count();
+        assert_eq!(
+            n, 1,
+            "the non-exhaustive-match fault is reported once, not duplicated"
         );
     }
 
@@ -41192,6 +41920,7 @@ mod closure_host_resource {
         let rebuild = TupleArgRebuild {
             field_box_ops: vec![Some("box-int"), Some("box-int")],
             field_extend_signed: vec![None, None],
+            base_param: 1, // the tuple is the sole closure arg → fields at core params 1..1+N
         };
         let core = multi_closure_resource_core_module_with_host_borrow(
             &funcs,
@@ -42745,6 +43474,55 @@ mod closure_host_resource {
         // (b) a tuple whose field is a variable-length LIST → still declines (no fixed flattened form).
         let bad_src = "(module m (def (main) (fn ((: p (Tuple Int64 (List Int64))) ) (. p 0))) (export main))";
         let err = crate::compile::compile_component(&crate::codec::encode(&parse(bad_src)))
+            .expect_err(
+                "a tuple arg with a variable-length List field must DECLINE (needs runtime decode)",
+            );
+        assert!(
+            err.message
+                .contains("no scalar host-boundary representation")
+                && err.code.is_none(),
+            "expected the collection-bearing-compound-arg decline, got: {:?} / {}",
+            err.code,
+            err.message
+        );
+    }
+
+    /// A fixed-shape scalar tuple closure ARG now composes with a BYTE-ROPE result: the bytes-result core +
+    /// envelope thread the `TupleArgRebuild` (the `call` rebuilds the flattened tuple cell, then copies the
+    /// closure's `Bytes` result out as `list<u8>`). Emits a valid component. A COMPOUND/COLLECTION result
+    /// combined with a tuple arg still declines (its cores don't yet thread the rebuild — the companion test).
+    #[test]
+    fn a_tuple_arg_with_a_bytes_result_emits() {
+        use crate::testkit::parse;
+        let src = "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) \
+                   (bin (u8 (. p 0)) (u8 (. p 1))))) (export main))";
+        crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect(
+            "a tuple arg with a Bytes result now emits (rebuild threaded through the bytes core)",
+        );
+    }
+
+    /// A fixed-shape scalar tuple ARGUMENT now composes with EVERY single-export result shape — a fixed-shape
+    /// COMPOUND (value-form) result AND a VARIABLE-LENGTH COLLECTION (value-encode) result both emit (all four
+    /// result cores — scalar, byte-rope, value-form, value-encode — + the shared list<u8> envelope thread the
+    /// `TupleArgRebuild`). The genuinely-unsupported case is a compound arg with a VARIABLE-LENGTH FIELD (a
+    /// tuple CONTAINING a List): that has no fixed flattened form and declines at ARG detection.
+    #[test]
+    fn a_tuple_arg_composes_with_compound_and_collection_results() {
+        use crate::testkit::parse;
+        // (a) a `(Tuple Int64 Int64)` argument AND a `(Tuple Int64 Int64)` result → EMITS (value-form).
+        let compound_res = "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) \
+                   (tuple (. p 0) (. p 1)))) (export main))";
+        crate::compile::compile_component(&crate::codec::encode(&parse(compound_res)))
+            .expect("a tuple arg + a fixed-shape compound result emits (value-form + rebuild)");
+        // (b) a `(Tuple Int64 Int64)` argument AND a `(List Int64)` result → EMITS (value-encode).
+        let coll_res = "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) \
+                   (list (. p 0) (. p 1)))) (export main))";
+        crate::compile::compile_component(&crate::codec::encode(&parse(coll_res))).expect(
+            "a tuple arg + a variable-length collection result emits (value-encode + rebuild)",
+        );
+        // (c) a compound arg with a VARIABLE-LENGTH FIELD → still declines at arg detection (no fixed form).
+        let bad_arg = "(module m (def (main) (fn ((: p (Tuple Int64 (List Int64))) ) (. p 0))) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(bad_arg)))
             .expect_err(
                 "a tuple arg with a variable-length List field must DECLINE (needs runtime decode)",
             );

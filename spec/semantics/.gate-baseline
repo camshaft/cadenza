@@ -2,10 +2,18 @@
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
+pass	DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair
 pass	DISTINCT-SIG: driving the Bool-returning Tuple-arg closure of the distinct-sig pair
+pass	DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List
 pass	DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the direct-call boundary
+pass	MIXED: a List-returning Tuple-arg closure ALONGSIDE a plain export — driving the closure
 pass	MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export
+pass	MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside a Tuple-arg closure
+pass	MULTI-EXPORT: driving the second among-scalars closure (subtract)
+pass	MULTI-EXPORT: two Tuple-arg closures sharing a List-returning `call`
+pass	MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`
+pass	MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg
 pass	MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`
 pass	Ok carrying a Some keeps both variant tags
 pass	Qty.unit recovers a derived unit
@@ -59,6 +67,7 @@ pass	a List-returning closure alongside a plain export — the closure
 pass	a List-returning closure alongside a plain export — the plain
 pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
 pass	a MULTI-shot handler arm folds a two-hole body by re-reducing per resume
+pass	a MUTUALLY-recursive effectful group is specialized under a state handler
 pass	a Map-returning closure alongside a parameterized plain export — the closure
 pass	a Map-returning closure alongside a parameterized plain export — the plain
 pass	a NARROW-int-field Tuple closure ARG flattens + rebuilds (exercises the i32->i64 extend)
@@ -79,6 +88,9 @@ pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
 pass	a THREE-argument closure round-trips — flat arrow spelling
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
+pass	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)
+pass	a Tuple ARG BEFORE a scalar arg crosses the direct-call boundary (tuple, then scalar)
+pass	a Tuple ARG BETWEEN two scalar args crosses the direct-call boundary (scalar, tuple, scalar)
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
@@ -307,6 +319,11 @@ pass	a field is projected off a record unwrapped from an optional with expect
 pass	a field read follows the record's SORTED field order, not its written order
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a final unquote-splice binds the remaining elements as a list
+pass	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
+pass	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
+pass	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
+pass	a fixed-shape Tuple ARG with a RECORD RESULT crosses the direct-call boundary
+pass	a fixed-shape Tuple ARG with a Tuple RESULT crosses the direct-call boundary
 pass	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
 pass	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (host supplies the tuple)
 pass	a fixpoint loop that threads a growing list accumulator returns that list
@@ -527,6 +544,9 @@ pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 pass	a mutually-recursive generic group is instantiated per type
+pass	a mutually-recursive group performs in its entry def while its partner only dispatches
+pass	a mutually-recursive group performs through a shared non-recursive helper
+pass	a mutually-recursive group threads two nested handlers' states at once
 pass	a name bound to a string keys a map by its value, not the literal name
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
@@ -731,6 +751,7 @@ pass	a recursive reader decodes a CBOR application tree and evaluates it by head
 pass	a recursive resolver transforms one runtime sum tree into another, then consumes it
 pass	a recursive resolver whose dead arm builds a trapping compound compiles
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
+pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
 pass	a recursive user sum built in a lib is folded by the entry's structural copy
 pass	a recursive user sum type is built at run time and renders its variant names
@@ -901,6 +922,7 @@ pass	a string passed to a function as a runtime argument is measured by its byte
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
 pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
+pass	a sum type NAMED after a primitive scalar does not collide with the primitive
 pass	a sum type can mix nullary and payload-carrying variants
 pass	a sum type is declared with named variants
 pass	a sum type variant can carry data
@@ -978,6 +1000,8 @@ pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a unary variant applied to a wrong-type payload is a type error
 pass	a unit multiplied by its own inverse cancels to the dimensionless unit
+pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
+pass	a user sum NAMED after a prelude sum shadows it without a duplicate definition
 pass	a user sum's nullary variant escapes with its bare variant name
 pass	a user sum's payload variant escapes with its bare variant name
 pass	a utf8 bin segment binds a decoded string when the bytes are well-formed
@@ -1030,6 +1054,7 @@ pass	an Option carrying a Result is matched across two different sum types
 pass	an SI decimal prefix scales a unit by a power of ten
 pass	an abortive handler abandons a host call in the path it discards
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
+pass	an abortive perform deep in a call chain unwinds every intervening frame to the top handler
 pass	an abortive perform in a conditional let binding abandons the computation
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation
 pass	an abortive perform in an if condition abandons the computation before branching
@@ -1443,6 +1468,7 @@ pass	negative zero is not equal to positive zero
 pass	nested patterns deconstruct recursively
 pass	nested patterns with literals
 pass	nullary constructor patterns are uniform with unary
+pass	one entrypoint's host authority is not reachable by another that does not delegate it
 pass	one generic sum instantiated at two different types in one program
 pass	one of several same-signature closure exports is made and called by the host
 pass	one of two DIFFERENT-signature closure exports is made and called
@@ -1650,6 +1676,7 @@ pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the round trip tracks the produced closure's captured value
 pass	the runtime-if list takes its else branch and measures that length
+pass	the same declared effect is handled in-program by one entrypoint and delegated by another
 pass	the same function called under two handlers is discharged by each in turn
 pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
@@ -1677,6 +1704,7 @@ pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuple elements are accessed by index
 pass	tuples are deconstructed by pattern matching
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
+pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two adjacent modules declared inside a function body compose
 pass	two constant records with the same fields in different written order are equal
 pass	two constant sums with the same payload but different variants are not equal

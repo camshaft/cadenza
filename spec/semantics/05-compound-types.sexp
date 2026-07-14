@@ -4242,6 +4242,101 @@
             (def (main)    (lower (Expr.Neg (Expr.Lit 5)))) (export main)))
   (output (: b"B|" Bytes)))
 
+(case "two MUTUALLY-recursive sum types fold across their boundary"
+  (doc    "Two sum types reference EACH OTHER in their payloads: `Expr` has a `(Block Stmt)` variant and
+           `Stmt` has a `(Ret Expr)` variant, so neither is self-contained — the recursion crosses the
+           type boundary both ways. Each recursive payload needs indirection (the Rust backend boxes BOTH
+           `Expr` and `Stmt` self/cross references), and the two evaluators `ev : Expr → Int` and
+           `run : Stmt → Int` are mutually recursive to match. `(ev (Block (Seq (Ret (Lit 10)) (Ret (Neg
+           (Lit 3))))))` = 10 + (-3) = 7. Pins that a mutually-recursive sum GROUP (an AST with expression
+           and statement nodes — the canonical compiler shape) lays out, constructs, and folds on every
+           backend, not only a single self-recursive type.")
+  (input  (do
+            (type Expr (Lit Int64) (Neg Expr) (Block Stmt))
+            (type Stmt (Ret Expr) (Seq (Tuple Stmt Stmt)))
+            (def (ev  (: e Expr)) (match e ((Expr.Lit n) n) ((Expr.Neg x) (- 0 (ev x))) ((Expr.Block s) (run s))))
+            (def (run (: s Stmt)) (match s ((Stmt.Ret e) (ev e)) ((Stmt.Seq (tuple a b)) (+ (run a) (run b)))))
+            (def (main (: k Int64))
+              (ev (Expr.Block (Stmt.Seq (tuple (Stmt.Ret (Expr.Lit k)) (Stmt.Ret (Expr.Neg (Expr.Lit 3))))))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 10 Int64))
+  (output (: 7 Int64)))
+
+(case "a recursive sum recurses THROUGH a record-typed payload"
+  (doc    "The recursion runs through a RECORD field rather than a tuple element: `(type Tree (Leaf Int64)
+           (Br (Record (l Tree) (r Tree) (w Int64))))` — the `Br` variant's payload is a record whose `l`
+           and `r` fields are the recursive `Tree` (indirection sits inside the record). A fold reads the
+           record fields (`(. rec l)`, `(. rec w)`) and recurses. `(sum (Br {l=Leaf 7, r=Leaf 2, w=1}))`
+           = 1 + 7 + 2 = 10. Pins that the Box/heap indirection decision reaches THROUGH a record-typed
+           payload the same way it reaches through a tuple payload — the record companion of the existing
+           `(Cons (Tuple … Tree))` recursive-list shape.")
+  (input  (do
+            (type Tree (Leaf Int64) (Br (Record (l Tree) (r Tree) (w Int64))))
+            (def (sum (: t Tree))
+              (match t
+                ((Tree.Leaf n)  n)
+                ((Tree.Br rec)  (+ (. rec w) (+ (sum (. rec l)) (sum (. rec r)))))))
+            (def (main (: k Int64)) (sum (Tree.Br (record (l (Tree.Leaf k)) (r (Tree.Leaf 2)) (w 1)))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 7 Int64))
+  (output (: 10 Int64)))
+
+(case "a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer"
+  (doc    "A user declares a generic sum `(type Box (W a) (E))` — its NAME collides with a backend's heap
+           pointer (Rust's `std::boxed::Box`). A recursive `Tree` whose `Node` variant needs indirection is
+           wrapped in that pointer, and `Box Tree` also instantiates the user sum. A backend that emitted an
+           UNqualified indirection pointer would resolve it to the USER `Box` — making `Tree` infinitely
+           sized (Rust E0072). `(unwrap (W (Node (Leaf 5) (Leaf 2))))` counts the tree's leaves → 2. Pins
+           that the compiler-emitted heap indirection is namespace-isolated from every user sum name — a
+           user is free to name a sum `Box` (or any target-runtime type) without corrupting the recursion.")
+  (input  (do
+            (type Tree (Leaf Int64) (Node (Tuple Tree Tree)))
+            (type Box (W a) (E))
+            (def (sz (: t Tree)) (match t ((Tree.Leaf n) 1) ((Tree.Node (tuple l r)) (+ (sz l) (sz r)))))
+            (def (unwrap (: b (Box Tree))) (match b ((Box.W t) (sz t)) ((Box.E) 0)))
+            (def (main (: k Int64)) (unwrap (Box.W (Tree.Node (tuple (Tree.Leaf k) (Tree.Leaf 2))))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 2 Int64)))
+
+(case "a sum type NAMED after a primitive scalar does not collide with the primitive"
+  (doc    "A user names a sum `i64` — colliding with a backend TARGET TYPE (Rust's primitive `i64`). The
+           enum name appears in TYPE position, so a backend that emitted `enum i64 { A(i64), B }` would make
+           the field `A(i64)` refer to the ENUM rather than the primitive — infinitely sized (Rust E0072).
+           `(f (A 5))` = 5. Pins that a sum name colliding with a scalar type name (`i64`, `bool`, `str`, …)
+           is escaped away from the target's primitive namespace — the type-name companion of the
+           `Box`-heap-pointer case above (a compiler-emitted target type name must not be shadowable by, nor
+           shadow, a user sum name).")
+  (input  (do
+            (type i64 (A Int64) (B))
+            (def (f (: x i64)) (match x ((i64.A n) n) ((i64.B) -1)))
+            (def (main (: k Int64)) (f (i64.A k)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "a user sum NAMED after a prelude sum shadows it without a duplicate definition"
+  (doc    "A user declares `(type Sign (X Int64) (Y))` — reusing the NAME of the prelude sum `Sign`
+           (Neg/Zero/Pos), which some backends emit UNCONDITIONALLY (the Rust backend always emits `enum
+           Sign` / `enum Ordering` for the three-way `compare` result). A backend that emitted BOTH the
+           prelude `Sign` and the user `Sign` would define `enum Sign` twice (Rust E0428). The user
+           declaration shadows the prelude in Cadenza (a source `Sign` resolves to the user's), so the
+           prelude enum is unreferenceable and must be suppressed — one `enum Sign`, the user's.
+           `(f (X 5))` = 5. Pins that a user sum may reuse a prelude sum's name (the AST-shape a self-hosted
+           compiler needs — its own `Sign`/`Ordering`/`Expr` nodes) without a duplicate-type miscompile.")
+  (input  (do
+            (type Sign (X Int64) (Y))
+            (def (f (: s Sign)) (match s ((Sign.X n) n) ((Sign.Y) -1)))
+            (def (main (: k Int64)) (f (Sign.X k)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
 (case "a unary constructor is a single-arity function"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (1st sentence): Some is a single-arity constructor. Applied to an

@@ -1057,6 +1057,126 @@ fn op_bigint_cmp(a: Handle, b: Handle) -> i64 {
     }
 }
 
+// ─── Exact rational (Rational) — a NORMALIZED pair of BigInt handles ─────────────────────────────
+// A `Rational` value is a 2-HANDLE node `[numerator, denominator]`, each child a BigInt leaf, kept in
+// canonical NORMALIZED form: lowest terms (gcd-reduced), the sign on the numerator, the denominator
+// strictly positive (`> 0`). So two equal rationals are byte-identical (`2/4` and `1/2` share one node
+// shape), and `champ_eq`/`champ_hash` over the two child leaves compare by value. The runtime reuses the
+// `bigint::Big` limb arithmetic for the component math; `op_dup`/`op_drop` already recurse into the two
+// child handles (a rational is an ordinary 2-handle node), so refcounting needs no special case. A
+// runtime Rational is built by `rational-of` from two BigInt handles (which it consumes: it reads both,
+// normalizes, and re-boxes the canonical pair, dropping the inputs); the constant fold in the compiler
+// never calls these (it emits the folded `num/den` value form directly).
+
+/// Read a Rational node's two children as `(num, den)` `Big`s. Total: a null/mismatched node reads as
+/// `0/1` (deterministic, never a trap — the scalar-read discipline). Borrows the child leaves; does NOT
+/// consume the handles.
+fn unbox_rational(h: Handle) -> (bigint::Big, bigint::Big) {
+    match unsafe { h.0.as_ref() } {
+        Some(n) if n.handles.len() == 2 => (
+            unbox_bigint(n.handles.get(0).copied().unwrap_or(Handle::NULL)),
+            unbox_bigint(n.handles.get(1).copied().unwrap_or(Handle::NULL)),
+        ),
+        _ => (bigint::Big::zero(), bigint::Big::from_i64(1)),
+    }
+}
+
+/// Box a NORMALIZED `(num, den)` pair as a Rational node — a 2-handle node holding the two BigInt leaves.
+/// REQUIRES `den` already normalized (lowest terms, strictly positive) by the caller.
+fn box_rational_normalized(num: &bigint::Big, den: &bigint::Big) -> Handle {
+    alloc_raw(
+        Handles::inline_from(&[box_bigint(num), box_bigint(den)]),
+        Raw::inline(&[]),
+    )
+}
+
+/// Normalize `(num, den)` → lowest terms, denominator strictly positive, sign on the numerator. REQUIRES
+/// `den != 0` (the caller — `rational-of` — traps on a zero denominator before this). `0/d` → `0/1`.
+fn normalize_rational(num: &bigint::Big, den: &bigint::Big) -> (bigint::Big, bigint::Big) {
+    let g = num.gcd(den); // non-negative; gcd(0, d) = |d|
+    let (mut n, _) = num.divmod(&g).expect("gcd is nonzero when den != 0");
+    let (mut d, _) = den.divmod(&g).expect("gcd is nonzero when den != 0");
+    if d.neg {
+        n = n.neg();
+        d = d.neg();
+    }
+    (n, d)
+}
+
+/// `rational-of(num, den)` — CONSTRUCT a normalized rational from two BigInt handles. Normalizes (gcd-
+/// reduce, sign on numerator, denom > 0). A ZERO denominator has no value → TRAPS. CONSUMES both operand
+/// handles (reads then drops them — the caller transfers ownership in, matching the compiler's emit).
+fn op_rational_of(num: Handle, den: Handle) -> Handle {
+    let (n, d) = (unbox_bigint(num), unbox_bigint(den));
+    op_drop(num);
+    op_drop(den);
+    if d.is_zero() {
+        trap_rational_zero_denom();
+    }
+    let (nn, nd) = normalize_rational(&n, &d);
+    box_rational_normalized(&nn, &nd)
+}
+#[cold]
+#[inline(never)]
+fn trap_rational_zero_denom() -> ! {
+    panic!("cdz-runtime: rational with zero denominator")
+}
+/// `rational-num(r)` / `rational-den(r)` — the numerator / denominator as a fresh BigInt handle (a DUP of
+/// the child leaf, so the rational stays intact — the child is borrowed, the returned handle owned). A
+/// null/mismatched node yields the `0/1` components.
+fn op_rational_num(r: Handle) -> Handle {
+    let (n, _) = unbox_rational(r);
+    box_bigint(&n)
+}
+fn op_rational_den(r: Handle) -> Handle {
+    let (_, d) = unbox_rational(r);
+    box_bigint(&d)
+}
+/// `rational-add`/`-sub`/`-mul`/`-div` — exact rational arithmetic over two normalized operands, re-
+/// normalized: `a/b + c/d = (ad+cb)/(bd)`, `- = (ad-cb)/(bd)`, `* = (ac)/(bd)`, `÷ = (ad)/(bc)`. All BORROW
+/// their operands (unbox reads the child leaves without consuming) and return a FRESH normalized rational.
+/// `÷` by `0/1` gives a zero denominator → TRAPS (the rational analogue of ÷0). Never overflow (BigInt).
+fn op_rational_add(a: Handle, b: Handle) -> Handle {
+    let ((an, ad), (bn, bd)) = (unbox_rational(a), unbox_rational(b));
+    let num = an.mul(&bd).add(&bn.mul(&ad));
+    let den = ad.mul(&bd);
+    let (n, d) = normalize_rational(&num, &den);
+    box_rational_normalized(&n, &d)
+}
+fn op_rational_sub(a: Handle, b: Handle) -> Handle {
+    let ((an, ad), (bn, bd)) = (unbox_rational(a), unbox_rational(b));
+    let num = an.mul(&bd).sub(&bn.mul(&ad));
+    let den = ad.mul(&bd);
+    let (n, d) = normalize_rational(&num, &den);
+    box_rational_normalized(&n, &d)
+}
+fn op_rational_mul(a: Handle, b: Handle) -> Handle {
+    let ((an, ad), (bn, bd)) = (unbox_rational(a), unbox_rational(b));
+    let (n, d) = normalize_rational(&an.mul(&bn), &ad.mul(&bd));
+    box_rational_normalized(&n, &d)
+}
+fn op_rational_div(a: Handle, b: Handle) -> Handle {
+    let ((an, ad), (bn, bd)) = (unbox_rational(a), unbox_rational(b));
+    let num = an.mul(&bd);
+    let den = ad.mul(&bn);
+    if den.is_zero() {
+        trap_rational_zero_denom();
+    }
+    let (n, d) = normalize_rational(&num, &den);
+    box_rational_normalized(&n, &d)
+}
+/// `rational-cmp(a, b)` — three-way `-1`/`0`/`1` for `a < b`/`a = b`/`a > b`. Both normalized with a
+/// strictly-positive denominator, so `a/b <=> c/d` ⇔ `a·d <=> c·b` (cross-multiply, direction preserved).
+/// Borrows both operands.
+fn op_rational_cmp(a: Handle, b: Handle) -> i64 {
+    let ((an, ad), (bn, bd)) = (unbox_rational(a), unbox_rational(b));
+    match an.mul(&bd).cmp(&bn.mul(&ad)) {
+        core::cmp::Ordering::Less => -1,
+        core::cmp::Ordering::Equal => 0,
+        core::cmp::Ordering::Greater => 1,
+    }
+}
+
 // ─── Positional array — the ONE runtime shape for TUPLE, RECORD, and LIST ───────────────
 // Elements live in `handles`. Access by an out-of-bounds index into a valid array TRAPS; a null
 // handle is benign (returns NULL / no-op).
@@ -4228,6 +4348,30 @@ impl Guest for Component {
     }
     fn bigint_rem(a: u32, b: u32) -> u32 {
         op_bigint_rem(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
+    }
+    fn rational_of(num: u32, den: u32) -> u32 {
+        op_rational_of(Handle::from_u32(num), Handle::from_u32(den)).to_u32()
+    }
+    fn rational_num(r: u32) -> u32 {
+        op_rational_num(Handle::from_u32(r)).to_u32()
+    }
+    fn rational_den(r: u32) -> u32 {
+        op_rational_den(Handle::from_u32(r)).to_u32()
+    }
+    fn rational_add(a: u32, b: u32) -> u32 {
+        op_rational_add(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
+    }
+    fn rational_sub(a: u32, b: u32) -> u32 {
+        op_rational_sub(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
+    }
+    fn rational_mul(a: u32, b: u32) -> u32 {
+        op_rational_mul(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
+    }
+    fn rational_div(a: u32, b: u32) -> u32 {
+        op_rational_div(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
+    }
+    fn rational_cmp(a: u32, b: u32) -> i64 {
+        op_rational_cmp(Handle::from_u32(a), Handle::from_u32(b))
     }
     fn vec_of_arr(arr: u32) -> u32 {
         op_vec_of_arr(Handle::from_u32(arr)).to_u32()
@@ -10199,6 +10343,69 @@ mod tests {
             op_drop(sum);
         }
         assert_eq!(live_object_count(), before, "no BigInt leak");
+    }
+
+    #[test]
+    fn rational_ops_normalize_and_compute_over_bigint_children() {
+        reset();
+        // R3a: a Rational is a normalized 2-handle node `[num, den]` of BigInt leaves. `rational-of`
+        // normalizes (gcd-reduce, sign on num, denom > 0); the arithmetic is exact; `rational-cmp` orders
+        // by value. Build a rational from two BigInt handles (which `rational-of` CONSUMES) and read the
+        // normalized components back via `rational-num`/`rational-den`.
+        let rat = |n: i64, d: i64| op_rational_of(op_bigint_of_i64(n), op_bigint_of_i64(d));
+        let read = |r: Handle| -> (i64, i64) {
+            let nh = op_rational_num(r);
+            let dh = op_rational_den(r);
+            let v = (op_bigint_to_i64_checked(nh), op_bigint_to_i64_checked(dh));
+            op_drop(nh);
+            op_drop(dh);
+            v
+        };
+        // NORMALIZATION: 2/4 → 1/2; sign onto numerator; both-negative cancels; 0/d → 0/1; whole → n/1.
+        for &((n, d), want) in &[
+            ((1i64, 2i64), (1i64, 2i64)),
+            ((2, 4), (1, 2)),
+            ((6, 8), (3, 4)),
+            ((1, -2), (-1, 2)),
+            ((-1, -2), (1, 2)),
+            ((0, 5), (0, 1)),
+            ((10, 5), (2, 1)),
+            ((7, 1), (7, 1)),
+        ] {
+            let r = rat(n, d);
+            assert_eq!(read(r), want, "normalize {n}/{d}");
+            op_drop(r);
+        }
+        // ARITHMETIC (exact): 1/3 + 1/6 = 1/2; 1/2 - 3/4 = -1/4; (2/3)*(3/4) = 1/2; (1/2)/(3/4) = 2/3.
+        let check = |op: fn(Handle, Handle) -> Handle, a: (i64, i64), b: (i64, i64), want: (i64, i64), name: &str| {
+            let (ra, rb) = (rat(a.0, a.1), rat(b.0, b.1));
+            let r = op(ra, rb);
+            assert_eq!(read(r), want, "rational {name}");
+            op_drop(ra);
+            op_drop(rb);
+            op_drop(r);
+        };
+        check(op_rational_add, (1, 3), (1, 6), (1, 2), "add");
+        check(op_rational_sub, (1, 2), (3, 4), (-1, 4), "sub");
+        check(op_rational_mul, (2, 3), (3, 4), (1, 2), "mul");
+        check(op_rational_div, (1, 2), (3, 4), (2, 3), "div");
+        // CMP: 1/3 < 1/2 (-1), 1/2 = 2/4 (0), 3/4 > 1/2 (1).
+        let cmp = |a: (i64, i64), b: (i64, i64)| {
+            let (ra, rb) = (rat(a.0, a.1), rat(b.0, b.1));
+            let c = op_rational_cmp(ra, rb);
+            op_drop(ra);
+            op_drop(rb);
+            c
+        };
+        assert_eq!(cmp((1, 3), (1, 2)), -1);
+        assert_eq!(cmp((1, 2), (2, 4)), 0);
+        assert_eq!(cmp((3, 4), (1, 2)), 1);
+        // Two EQUAL rationals reached differently are byte-identical (champ_eq basis): 2/4 and 1/2.
+        let (r1, r2) = (rat(2, 4), rat(1, 2));
+        assert!(champ_eq(r1, r2), "2/4 and 1/2 are the same normalized rational");
+        op_drop(r1);
+        op_drop(r2);
+        assert_eq!(live_object_count(), 0, "no Rational leak");
     }
 
     /// A BigInt is a RAW-ONLY leaf compared by its `raw` bytes (`champ_eq`) and hashed over them

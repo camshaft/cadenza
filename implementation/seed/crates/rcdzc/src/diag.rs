@@ -633,6 +633,13 @@ pub const OVER_APPLICATION_DECLINE: &str = "applied more arguments than the func
 /// without pinning the count-bearing text.
 pub const OVER_APPLICATION_MARKER: &str = "arguments to a function of arity";
 
+/// A stable SUBSTRING of the NAMED-member-op over-application message (`` `List.push` takes N argument(s),
+/// but M were given ``) — the member-op variant of [`OVER_APPLICATION_MARKER`]. `dedup_faults` matches
+/// BOTH so a member-op over-application (`(Map.size m x)`) also drops the redundant emit-path wrong-arity
+/// decline, reporting ONE primary error carrying the delete fix. Uses "were given" (an over-application
+/// always supplies ≥2 arguments, so the plural "were" is invariant regardless of the arity's plural).
+pub const MEMBER_OVER_APPLICATION_MARKER: &str = "were given";
+
 /// A stable SUBSTRING unique to the BUILT-IN-OPERATION wrong-arity decline (`<op> is applied at the wrong
 /// arity — a built-in operation must be applied to exactly its arguments …`, in `lower`). Fires on BOTH
 /// an under-application (no coded sibling — the decline is the primary "no") and an OVER-application

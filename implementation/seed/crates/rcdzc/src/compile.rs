@@ -1169,7 +1169,7 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             continue;
         };
         for op in arm_ops {
-            if let Some(head_occ) = crate::effects::arm_op_head_names_a_value(db, op) {
+            if let Some((head_occ, category)) = crate::effects::arm_op_head_names_a_value(db, op) {
                 let named = db
                     .ast
                     .as_name(head_occ)
@@ -1178,8 +1178,8 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                 bad_handle_heads.push((
                     head_occ,
                     format!(
-                        "a handle's head must name an EFFECT, but this head{named} is a value \
-                         definition — write `(handle <effect> <seed> (arms…) <body>)` over a declared \
+                        "a handle's head must name an EFFECT, but this head{named} is {category} \
+                         — write `(handle <effect> <seed> (arms…) <body>)` over a declared \
                          `(effect …)`"
                     ),
                 ));
@@ -1326,9 +1326,46 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         .iter()
         .filter_map(|e| e.def.and_then(|d| db.defs[d].body))
         .collect();
+    // A SELF-REFERENTIAL VALUE DEFINITION — `(def (g) g)`, or a mutual cycle `(def (a) b) (def (b) a)` —
+    // is a value defined in terms of itself with no base case: it names nothing (`g = g`), and the
+    // reduction spins until the depth guard fires, mislabeling it "expression nests too deeply (a resource
+    // limit)". Detect the `Ref` cycle STRUCTURALLY (no reduction) and reject it CDZ0201 with the real
+    // cause — a value cannot be defined in terms of itself — so the message says what is wrong + how to
+    // fix it (give it a base value / break the cycle), not a misleading resource-limit decline. Only a
+    // NULLARY def (a value; a def WITH params is a function, whose self-reference is legitimate recursion
+    // lowered to a `Core::Call`). Checked here, before the body walk, so the clear reject precedes the
+    // depth-limit decline. `value_ref_cycle` reports only a bare-`Ref` cycle (never a computing body or a
+    // recursive function), so it is false-alarm-free.
+    let value_cycles: Vec<(String, StructId, StructId)> = db
+        .defs
+        .iter()
+        .filter(|d| !d.internal && d.params.is_empty())
+        .filter_map(|d| d.body.map(|b| (d.name.clone(), b, d.sig_occ)))
+        .collect();
+    // The body nodes proven a value cycle — SKIPPED by the body-check loop below (their `type_errors` /
+    // reached-poison reduction would spin into the depth guard, deep-recursing on a smaller stack; the
+    // cycle reject already names the fault, so there is nothing more to learn from reducing them).
+    let mut cyclic_bodies: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+    for (name, body, sig_occ) in value_cycles {
+        if crate::resolve::value_ref_cycle(db, body) {
+            cyclic_bodies.insert(body);
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "`{name}` is defined in terms of itself with no base value — a value definition \
+                         cannot reference itself (give it a concrete value, or make it a function if the \
+                         recursion is intended)"
+                    ),
+                )
+                .at(sig_occ),
+            );
+        }
+    }
     let bodies: Vec<(StructId, bool)> = db
         .defs
         .iter()
+        .filter(|d| d.body.is_none_or(|b| !cyclic_bodies.contains(&b)))
         .filter_map(|d| {
             d.body
                 .map(|b| (b, d.params.is_empty() && exported_bodies.contains(&b)))
@@ -1685,6 +1722,16 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
     // Safety). Only suppressed WHEN a CDZ0401 exists — a standalone perform with no entrypoint check
     // covering it (should not happen for an exported body, but defensively) keeps its decline.
     let has_no_home_reject = faults.iter().any(|r| r.code == Some(Code::EffectNoHome));
+    // A SELF-REFERENTIAL VALUE cycle (`(def (g) g)`) is reported with the clear coded CDZ0201 "defined in
+    // terms of itself with no base value". The reduction of that same body ALSO spins into the depth guard
+    // and emits the uncoded "expression nests too deeply (a recursion/resource limit)" decline — the same
+    // root cause reported more weakly (and misleadingly, as a resource limit). Drop the decline whenever
+    // the clear cycle reject is present, so a value cycle is ONE primary `error:` naming the real cause.
+    let has_value_cycle_reject = faults.iter().any(|r| {
+        r.code.is_some()
+            && r.message
+                .contains("defined in terms of itself with no base value")
+    });
     // Likewise: the emit path's uncoded "value is not applyable" DECLINE is redundant when `infer`
     // proved the head a definite non-function (the coded `cannot apply a value of type … — it is not a
     // function` reject). Drop the weaker decline so applying a non-function is ONE primary `error:`.
@@ -1694,9 +1741,12 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
     // Likewise: the evaluator's uncoded "applied more arguments than the function accepts" DECLINE is
     // redundant when `infer` proved the over-application (the coded CDZ0203 `applied N arguments to a
     // function of arity M …` reject). Drop the weaker decline so over-application is ONE primary error.
-    let has_over_application_reject = faults
-        .iter()
-        .any(|r| r.code.is_some() && r.message.contains(crate::diag::OVER_APPLICATION_MARKER));
+    let has_over_application_reject = faults.iter().any(|r| {
+        r.code.is_some()
+            && (r.message.contains(crate::diag::OVER_APPLICATION_MARKER)
+                || r.message
+                    .contains(crate::diag::MEMBER_OVER_APPLICATION_MARKER))
+    });
     // Likewise: a MALFORMED handler (an arm naming an undeclared op — CDZ0403 — or one not discharging
     // every operation — CDZ0405) cannot fold, so `lower` returns the uncoded "not yet reducible by the
     // tail-resumptive fold" DECLINE alongside the coded reject. The decline is a CONSEQUENCE of the very
@@ -1883,6 +1933,11 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
                 && r.is_decline()
                 && r.message == crate::diag::NO_HOME_STANDALONE_DECLINE
             {
+                return false;
+            }
+            // Drop the "nests too deeply (resource limit)" decline that a value cycle's reduction spins
+            // into — the clear CDZ0201 cycle reject names the same fault correctly.
+            if has_value_cycle_reject && r.is_decline() && r.message.contains("nests too deeply") {
                 return false;
             }
             if has_not_a_function_reject
@@ -2924,17 +2979,23 @@ fn collect_discarded_value_warnings(db: &mut Db) -> Vec<Diagnostic> {
             if !db.is_user_node(s) {
                 continue;
             }
+            // A concrete non-Unit type means a real value was thrown away. `Ty::Unit` discards nothing; a
+            // poison (`Ty::Any`) already faulted elsewhere; a free type variable is unresolved — stay
+            // conservative on both and do not warn (a false "discarded value" is worse than a missed one).
+            // CHECK THIS FIRST (before the host-call walk): the type is already solved by the preceding
+            // check, so this is O(1), whereas `subtree_reaches_host_call` recursively walks the statement's
+            // whole subtree. Most non-final statements are Unit-typed (a `(host …)`/sequencing effect, an
+            // assignment-like op) and short-circuit here — so the expensive walk only runs on a statement
+            // that IS a discarded non-Unit value candidate, not on every statement. (Order-independent: both
+            // are `continue` guards, so a warning fires iff BOTH pass — reordering changes nothing.)
+            let ty = crate::infer::type_of(db, s);
+            if matches!(ty, crate::ty::Ty::Unit | crate::ty::Ty::Any) || ty.has_free_var() {
+                continue;
+            }
             // Effectful statements are KEPT by the lowering (their host call is observable and must run) —
             // sequencing them for effect is exactly why a non-final form is allowed to have a value at all,
             // so they are not dead. Only a PURE statement's discarded value is the defect.
             if crate::lower::subtree_reaches_host_call(db, s) {
-                continue;
-            }
-            // A concrete non-Unit type means a real value was thrown away. `Ty::Unit` discards nothing; a
-            // poison (`Ty::Any`) already faulted elsewhere; a free type variable is unresolved — stay
-            // conservative on both and do not warn (a false "discarded value" is worse than a missed one).
-            let ty = crate::infer::type_of(db, s);
-            if matches!(ty, crate::ty::Ty::Unit | crate::ty::Ty::Any) || ty.has_free_var() {
                 continue;
             }
             // Deleting a pure, value-discarded, non-final form preserves the block's meaning (it still
