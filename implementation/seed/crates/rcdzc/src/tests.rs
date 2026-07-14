@@ -17709,13 +17709,15 @@ mod match_engine {
     }
 
     #[test]
-    fn arithmetic_on_two_text_operands_names_the_real_type_and_plus_offers_concat() {
-        // `(+ s t)` on two Strings (the Python/JS reflex) used to report the GENERIC scheme-unify's phantom
-        // "type mismatch: Int64 and String must be the same type here" — an `Int64` the author never wrote,
-        // reading as an internal clash. It now names the REAL situation ("arithmetic is not defined on
-        // String") and — for `+`, whose intent is concatenation — carries the actionable `String.concat`
-        // rewrite (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). Bytes too.
-        // Comparison on two texts stays VALID (lexical order / equality) — the guard is arithmetic-only.
+    fn arithmetic_on_two_same_typed_non_numeric_operands_names_the_real_type_and_plus_offers_concat()
+     {
+        // `(+ s t)` on two Strings (the Python/JS reflex) — and on two Lists/Records/Tuples/Bools/etc. —
+        // used to report the GENERIC scheme-unify's phantom "type mismatch: Int64 and <T> must be the same
+        // type here" — an `Int64` the author never wrote, reading as an internal clash. It now names the
+        // REAL situation ("arithmetic is not defined on <T>") and — for `+` on a type with a total
+        // concatenation op (String/Bytes/List) — carries the actionable `.concat` rewrite
+        // (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). Comparison on two
+        // same-typed values stays VALID (equality / order) — the guard is arithmetic-only.
 
         // `+` on two Strings → honest message + a `((. String concat) …)` replace on the operator head, and
         // NO leftover phantom `Int64`.
@@ -17768,11 +17770,98 @@ mod match_engine {
             );
         }
 
+        // GENERALIZED beyond text: two Lists → List.concat rewrite (a total concat op exists).
+        let lists = reject_full(
+            "(module m (def (f (: a (List Int64)) (: b (List Int64))) (+ a b)) (export f))",
+        )
+        .expect("(+ List List) rejects");
+        assert_eq!(
+            lists.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            lists.message
+        );
+        assert!(
+            lists
+                .message
+                .contains("arithmetic is not defined on (List Int64)")
+                && !lists.message.contains("Int64 and"),
+            "names the real list type, no phantom `Int64 and …`: {}",
+            lists.message
+        );
+        assert_eq!(
+            lists.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("(. List concat)"),
+            "List `+` rewrites to List.concat: {}",
+            lists.message
+        );
+
+        // Two Records / Tuples: honest message naming the real type, NO forced fix (no total `+`-like op —
+        // a mis-suggestion would be worse than none). The phantom `Int64` is gone.
+        for (ty, name) in [
+            ("(Record (x Int64))", "record"),
+            ("(Tuple Int64 Int64)", "tuple"),
+        ] {
+            let d = reject_full(&format!(
+                "(module m (def (f (: a {ty})) (+ a a)) (export f))"
+            ))
+            .unwrap_or_else(|| panic!("(+ {name} {name}) must reject"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{name}: {}", d.message);
+            assert!(
+                d.message.contains("arithmetic is not defined on")
+                    && !d.message.contains("Int64 and"),
+                "{name} names the real type, no phantom `Int64 and …`: {}",
+                d.message
+            );
+            assert!(
+                d.fix.is_none(),
+                "{name} arithmetic offers no forced fix: {:?}",
+                d.fix
+            );
+        }
+
+        // SCOPED OUT (corpus-pinned): a Bool in integer addition stays CDZ0203 — an argument checked
+        // against a body-inferred parameter type (`09-functions.sexp`, `(def (f x) (+ x x)) (f true)`), NOT
+        // relabeled to the CDZ0201 text/compound message. The scalar-ish leaves keep their existing path.
+        assert_eq!(
+            reject_code("(module m (def (f x) (+ x x)) (def (main) (f true)) (export main))")
+                .as_deref(),
+            Some("CDZ0203"),
+            "a Bool in body-inferred integer addition stays the CDZ0203 arg-vs-inferred-param check"
+        );
+
         // NO false fire: comparison on two Strings is VALID (lexical order / equality).
         assert!(run_returns::<bool>(
             &component("(module m (def (main) (< \"a\" \"b\")) (export main))"),
             "main"
         ));
+        // NO false fire: EQUALITY on two same-typed compounds/bools is VALID (structural eq) — not arith.
+        for src in [
+            "(module m (def (f (: a (List Int64)) (: b (List Int64))) (= a b)) (export f))",
+            "(module m (def (f (: a (Record (x Int64))) (: b (Record (x Int64)))) (= a b)) (export f))",
+            "(module m (def (f (: a Bool) (: b Bool)) (= a b)) (export f))",
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "equality on two same-typed values stays valid: {src}"
+            );
+        }
+        // NO false fire: numeric `+` and the Char.to-int coercion path are unaffected.
+        assert!(
+            reject_code("(module m (def (f (: a Int64) (: b Int64)) (+ a b)) (export f))")
+                .is_none(),
+            "numeric + is still valid"
+        );
+        let ch = reject_full("(module m (def (f (: a Char) (: b Char)) (+ a b)) (export f))")
+            .expect("(+ Char Char) rejects");
+        assert!(
+            ch.fix
+                .as_ref()
+                .is_some_and(|f| f.replacement.contains("Char")),
+            "Char `+` keeps its Char.to-int coercion wrap (not intercepted): {} fix={:?}",
+            ch.message,
+            ch.fix
+        );
         // NO false fire: a String against an Int is the DISTINCT cross-kind message (unchanged).
         let cross = reject_full("(module m (def (f (: a String)) (+ a 1)) (export f))")
             .expect("(+ String Int) rejects");
