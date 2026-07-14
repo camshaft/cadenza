@@ -670,6 +670,17 @@ pub const PRIM_AS_VALUE_DECLINE: &str =
 /// redundant, without pinning the whole (name-bearing) text.
 pub const TYPE_EXPORT_MARKER: &str = "is a TYPE, not a runtime value";
 
+/// A stable SUBSTRING of the coded CDZ0201 EFFECT-valued-export reject (`export <name> is an effect, not a
+/// runtime value …`). Its twin for effects: exporting a bare effect name evaluates the effect's SYNTHESIZED
+/// record, leaking a cascade ("unknown intrinsic", unbound `effect-op`/`effect`, nullary-lambda-no-closure).
+/// `dedup_faults` matches this to drop that cascade, keeping the one clean category reject.
+pub const EFFECT_EXPORT_MARKER: &str = "is an effect, not a runtime value";
+
+/// The uncoded DECLINE the resolver emits for an effect-op/intrinsic name reached as a runtime value (a
+/// bare effect name evaluated). Leaked verbatim when an effect is exported; `dedup_faults` drops it (and
+/// the `effect-op`/`effect` unbound-field CDZ0101s) when the effect-export reject is present.
+pub const UNKNOWN_INTRINSIC_DECLINE: &str = "unknown intrinsic";
+
 /// The shared PREFIX of the CDZ0201 "record has no field `<key>`" reject. A member access `(. r key)`
 /// with an absent field is reported by BOTH the infer-side member check (`infer::no_field_reject`, which
 /// adds a did-you-mean fix) AND — when that access is the head of an application `(R.make …)` — the

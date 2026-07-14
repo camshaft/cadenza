@@ -366,7 +366,9 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                         }
                         None => {
                             trace!(target: "rcdzc::resolve", node = id.0, ?name, "unknown intrinsic (decline)");
-                            Resolved::Poison(Reject::decline("unknown intrinsic"))
+                            Resolved::Poison(Reject::decline(
+                                crate::diag::UNKNOWN_INTRINSIC_DECLINE,
+                            ))
                         }
                     }
                 }

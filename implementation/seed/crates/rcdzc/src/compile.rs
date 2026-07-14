@@ -1235,6 +1235,32 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             );
             continue;
         }
+        // An EFFECT-VALUED export — `(def (main) E)` exports a bare effect name. An effect is not a runtime
+        // value; its body's type is the effect's SYNTHESIZED record, so evaluating it leaked a 4-error
+        // cascade of internal errors ("unknown intrinsic", unbound `effect-op`/`effect`, nullary-lambda-no-
+        // closure) — the effect analogue of the type-valued export cascade above. Detect it by the body
+        // being a bare name that `effect_decl_by_name` resolves (the same category check the M74 export-an-
+        // effect and M75 apply-an-effect messages use), report ONE clean coded reject naming the category
+        // (carrying `TYPE_EXPORT_MARKER` so `dedup_faults` drops the downstream leaky declines the same way
+        // it does for a type-valued export), and skip the downstream checks.
+        if db
+            .ast
+            .as_name(body)
+            .is_some_and(|n| db.effect_decl_by_name(n).is_some())
+        {
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "export `{name}` is an effect, not a runtime value — an effect is a capability \
+                         an operation performs, not a value that crosses the component boundary; export a \
+                         function that performs the effect, not the effect itself"
+                    ),
+                )
+                .at(occ),
+            );
+            continue;
+        }
         if arrow_has_unconstrained(&ty) {
             faults.push(
                 Reject::coded(
@@ -1389,6 +1415,13 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
     let has_type_export_reject = faults
         .iter()
         .any(|r| r.code.is_some() && r.message.contains(crate::diag::TYPE_EXPORT_MARKER));
+    // The EFFECT-valued-export analogue: exporting a bare effect name evaluates its synthesized record,
+    // leaking a cascade (an "unknown intrinsic" decline, a nullary-lambda-no-closure decline, and two
+    // `unbound name effect-op`/`effect` CDZ0101s from the internal `(meta …)` field names). Drop that
+    // cascade when the clean effect-export reject is present, keeping the one category message.
+    let has_effect_export_reject = faults
+        .iter()
+        .any(|r| r.code.is_some() && r.message.contains(crate::diag::EFFECT_EXPORT_MARKER));
     // A "record has no field `k`" fault reported by BOTH the infer member check (with a did-you-mean fix)
     // AND the emit-side member fold (fix-less) is ONE fault shown twice. Where the member node is a USER
     // node, both copies now anchor at that SAME node (`lower`'s `Member::NoField` poison carries an
@@ -1541,6 +1574,25 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
                         | crate::diag::CLOSURE_RESULT_NO_REPR_DECLINE
                         | crate::diag::CLOSURE_CAPTURE_NO_REPR_DECLINE
                 )
+            {
+                return false;
+            }
+            // The EFFECT-valued-export cascade: the two DECLINES (`unknown intrinsic`, nullary-lambda-no-
+            // closure) AND the two `unbound name effect-op`/`effect` CDZ0101s (the effect record's internal
+            // `(meta …)` field names, never user-written) are all consequences of evaluating the effect
+            // value the clean reject already reports. Drop them when the effect-export reject is present.
+            if has_effect_export_reject
+                && (r.is_decline()
+                    && matches!(
+                        r.message.as_str(),
+                        crate::diag::UNKNOWN_INTRINSIC_DECLINE
+                            | crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE
+                    )
+                    || (r.code == Some(Code::Unbound)
+                        && matches!(
+                            r.message.as_str(),
+                            "unbound name `effect-op`" | "unbound name `effect`"
+                        )))
             {
                 return false;
             }

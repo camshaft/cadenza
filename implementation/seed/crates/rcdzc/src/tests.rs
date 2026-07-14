@@ -10614,6 +10614,54 @@ mod match_engine {
     }
 
     #[test]
+    fn an_effect_valued_export_reports_one_clean_error_not_a_leaked_cascade() {
+        // Exporting a bare EFFECT name — `(def (main) E)` — evaluates the effect's SYNTHESIZED record,
+        // which leaked a 4-error cascade of INTERNAL errors ("unknown intrinsic", `unbound name effect-op`,
+        // "a nullary lambda has no runtime closure form", `unbound name effect`). The effect analogue of
+        // the type-valued-export cascade: `collect_faults` now reports ONE coded CDZ0201 naming the
+        // category, and `dedup_faults` drops the leaked internals. One clear error, not four leaks.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (effect E (op f (-> Int64))) (def (main) E) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "an effect-valued export = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
+        assert!(
+            errors[0]
+                .message
+                .contains("is an effect, not a runtime value"),
+            "the surviving error names the category: {}",
+            errors[0].message
+        );
+        // NONE of the leaked internals accompany it — no `Record`/`Any`/`effect-op`/intrinsic dump.
+        assert!(
+            !out.diagnostics.iter().any(|d| {
+                d.message.contains("unknown intrinsic")
+                    || d.message.contains("effect-op")
+                    || d.message == crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE
+            }),
+            "the leaked effect-record internals must not accompany the clean reject: {:?}",
+            out.diagnostics
+        );
+    }
+
+    #[test]
     fn an_exported_unannotated_param_surfaces_in_check_with_an_annotate_fix() {
         // An exported def with an unannotated param `(def (f x) …)` has an ambiguous boundary parameter —
         // it MUST be reported by the always-run `Diagnostics` set (`cdz check`), not only the emit path
