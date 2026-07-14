@@ -64,6 +64,9 @@ top. Current `src/` modules (each with same-file `@test`s — 29 tests total):
   Sym, markers) join as passes read them.
 - `src/print.cdz` — renders an `Ast` to an s-expr string (the inverse of decode; hand-written itoa).
 - `src/ast-eq.cdz` — structural `Ast` equality (for dedup / constant-fold / quote comparison).
+- `src/free-vars.cdz` — collect an `Ast`'s `Name`s into a `Set String` (a resolve-lite pass).
+- `src/fold.cdz` — a constant-folder: reduces `(op Int Int)` forms (`+`/`-`/`*`) to an `Int`, bottom-up
+  (so `(+ (* 2 3) 4)` → `7`); leaves unknown-op / non-constant forms untouched.
 
 Planned, following the rcdzc pipeline: decode (binary AST → `Ast`) · resolve · infer (Hindley-Milner)
 · lower (→ core) · encode/emit. The compiler is fundamentally bytes → bytes.
@@ -214,3 +217,11 @@ are the sharp edges.
   `Lst` length + `Lst of Lst` (unannotated) monomorphized at Int AND String; `Map String → user-sum`
   lookup+match; `Set` union/difference/contains/len (String-keyed). ⚠ minor: `Set.len` vs `Map.size`
   (inconsistent op name for the same "count" concept).
+
+- **OPEN (seed `rcdzc` — LIMITATION): a LIST pattern arm allows at most ONE refutable (constructor)
+  element.** `repros/reject-list-arm-multiple-ctor-elements.sexp`: `((list (A.I x) (A.N y) c) …)` →
+  "a list arm with more than one refutable constructor element is not yet supported (match one tagged
+  element per arm)". ONE ctor element + bare binders is fine; TWO+ rejects. This blocks the natural
+  fixed-shape destructure a compiler pass wants (`[Name op, Int x, Int y]`). WORKAROUND (used by
+  `src/fold.cdz`): bind every element as a plain binder, then nested-`match` each. Ask: N refutable
+  elements per list arm. Clean REJECT (not a miscompile) → a Todo, but a common shape.
