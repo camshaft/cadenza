@@ -967,6 +967,7 @@ pass	a performed operation composes as a RECORD field value that is then project
 pass	a performed operation composes under a projection and a negation
 pass	a performed operation is the scrutinee of a match that dispatches on its result
 pass	a performed operation whose result is a sum is matched on its variant
+pass	a performed sum carrying a TUPLE payload is matched and the arm reads MULTIPLE payload elements
 pass	a performing argument to a multiply-using performing callee is not duplicated
 pass	a performing match SCRUTINEE threads its state into a performing arm body
 pass	a performing match-arm guard folds with WILDCARD patterns (no binder to let-bind)

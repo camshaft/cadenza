@@ -2689,6 +2689,27 @@
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
+(case "a performed sum carrying a TUPLE payload is matched and the arm reads MULTIPLE payload elements"
+  (doc    "The effect × sum-with-compound-payload intersection, and a soundness pin against the backend's
+           per-arm-body CSE (which shares the sum-payload prefix when an arm reads more than one payload
+           element). The performed op returns `(Option (Tuple Int64 Int64))`, the handler resumes a `(Some
+           (k, k+1))`, and the matching arm reads BOTH tuple elements. `Look.find : Int64 -> (Option (Tuple
+           Int64 Int64))`, arm `(find (k) s (resume (Some (tuple k (+ k 1))) s))`; `(Look.find 5)` resumes
+           `(Some (5, 6))`, so the `(Some p)` arm computes `(+ (. p 0) (. p 1))` = `5 + 6` = 11. Pins that a
+           sum carrying a TUPLE payload flows through an effect op's result and the arm's two payload
+           projections (`.0`, `.1`) — which the per-arm-body CSE folds to a shared payload load — stay sound
+           over the effect-produced value, because the fold discharges the perform to a concrete resumed
+           value before the optimizer runs. Both backends → 11. The compound-payload companion of the
+           scalar-payload sum-resume case above.")
+  (input  (do
+            (effect Look (op find (-> Int64 (Option (Tuple Int64 Int64)))))
+            (def (main)
+              (handle Look 0 ((find (k) s (resume (Some (tuple k (+ k 1))) s)))
+                (match (Look.find 5)
+                  ((Some p) (+ (. p 0) (. p 1)))
+                  (None 0)))) (export main)))
+  (output (: 11 Int64)))
+
 (case "an effect operation taking a SUM parameter matches it in the handler arm"
   (doc    "The mirror of the sum-RESULT case: `Exec.run` is typed `(-> Cmd Int64)` where `Cmd` is a user
            sum `(Add Int64) | (Mul Int64)`. The PERFORM passes a runtime-built sum `(Exec.run (Cmd.Mul k))`,
