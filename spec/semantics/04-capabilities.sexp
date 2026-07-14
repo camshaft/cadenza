@@ -112,6 +112,25 @@
   (output (: unit Unit))
   (host-calls (call log.emit (: "1" String))))
 
+(case "a component's manifest is the union of two entrypoints' distinct rows"
+  (doc    "Witnesses capabilities-and-effects.md #A Component Is Bound Against The Union Of Its Entrypoints'
+           Rows: a component's import surface MUST be the UNION of the escaping rows its entrypoints
+           acknowledge — one import surface serving every entrypoint. Two exports delegate DIFFERENT host
+           effects: `a` delegates `log` (`(host (log) …)`), `b` delegates `trace` (`(host (trace) …)`).
+           Neither reaches the other's effect, yet the component is bound against BOTH: the manifest
+           `(. m (meta capabilities))` is `(list \"log\" \"trace\")` — the union, in definition order — not
+           either entrypoint's row alone. This is distinct from the single-entrypoint union case (one export,
+           one effect): here the union spans two entrypoints with disjoint rows, pinning that provisioning is
+           per-COMPONENT even though acknowledgment is per-entrypoint.")
+  (input  (do
+            (module m
+              (effect log (op emit (-> String Unit)))
+              (effect trace (op mark (-> Int64 Unit)))
+              (def (a) (host (log) (log.emit "hi")))
+              (def (b) (host (trace) (trace.mark 1))))
+            (= (. m (meta capabilities)) (list "log" "trace"))))
+  (output (: true Bool)))
+
 (case "one entrypoint's host authority is not reachable by another that does not delegate it"
   (doc    "Witnesses capabilities-and-effects.md #Authority Availability Is Not Authority: authority is
            per-entrypoint, not per-component. Entrypoint `a` delegates `ask` to the host (`(host (ask) …)`),
