@@ -293,6 +293,7 @@ pass	a closure whose body applies a nested lambda in place runs through a recurs
 pass	a closure whose body calls a top-level helper function
 pass	a comparison-predicate function returns its boolean result
 pass	a compile-time type branch reads a runtime parameter's static type
+pass	a component's manifest is the union of two entrypoints' distinct rows
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
 pass	a conditional evaluates only the selected branch
