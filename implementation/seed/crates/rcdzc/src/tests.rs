@@ -4057,6 +4057,124 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_if_with_one_boolean_constant_branch_becomes_a_short_circuit_connective() {
+        // `(if c a false)` IS `(and c a)` and `(if c true b)` IS `(or c b)` — an `if` with one
+        // boolean-constant branch is a short-circuit connective, so it emits branchless `i32.and`/`i32.or`
+        // (not a `select`) AND routes through the whole boolean-algebra fold family: `(if (> x 5) (> x 3)
+        // false)` collapses to `(> x 5)` (subsumption), `(if (< x y) (>= x y) false)` to `false`
+        // (complement). VETOED when the guarded branch holds a tail call (tail-loop conversion must win).
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(if c a false)` → `i32.and`, no `select`/`if`.
+        let and_shape = lir("(: c Bool) (: a Bool)", "(if c a false)");
+        assert!(
+            and_shape.iter().any(|i| matches!(i, Lir::I32And))
+                && !and_shape
+                    .iter()
+                    .any(|i| matches!(i, Lir::Select | Lir::If(_))),
+            "(if c a false) → i32.and, got: {and_shape:?}"
+        );
+        // `(if c true b)` → `i32.or`, no `select`/`if`.
+        let or_shape = lir("(: c Bool) (: b Bool)", "(if c true b)");
+        assert!(
+            or_shape.iter().any(|i| matches!(i, Lir::I32Or))
+                && !or_shape
+                    .iter()
+                    .any(|i| matches!(i, Lir::Select | Lir::If(_))),
+            "(if c true b) → i32.or, got: {or_shape:?}"
+        );
+        // FOLD FAMILY UNLOCKED: subsumption collapses `(if (> x 5) (> x 3) false)` to a single compare
+        // (`gt_s`) with NO and/or/select/if.
+        let subsumed = lir("(: x Int64)", "(if (> x 5) (> x 3) false)");
+        assert!(
+            subsumed.iter().filter(|i| matches!(i, Lir::I64GtS)).count() == 1
+                && !subsumed
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32And | Lir::I32Or | Lir::Select | Lir::If(_))),
+            "(if (> x 5) (> x 3) false) → (> x 5), got: {subsumed:?}"
+        );
+        // Complement collapses `(if (< x y) (>= x y) false)` to the constant `false` — no compares at all.
+        let complement = lir("(: x Int64) (: y Int64)", "(if (< x y) (>= x y) false)");
+        assert!(
+            !complement
+                .iter()
+                .any(|i| matches!(i, Lir::I64LtS | Lir::I64GeS | Lir::I32And | Lir::I32Or)),
+            "(if (< x y) (>= x y) false) → false, got: {complement:?}"
+        );
+        // TAIL-CALL VETO: a mutually-recursive `even`/`odd` whose bodies are `(if (= n 0) true/false
+        // (other …))` must NOT rewrite the call-bearing branch into a connective — it stays an `if` so the
+        // loop transform fires. Verified via runtime correctness at a depth that would blow a non-loop
+        // stack only if the transform were defeated; here we just confirm the values are right.
+        let eo = "(module m (def (even (: n Int64)) (if (= n 0) true (odd (- n 1)))) \
+                    (def (odd (: n Int64)) (if (= n 0) false (even (- n 1)))) (export even))";
+        let comp =
+            compile_component(&crate::codec::encode(&crate::testkit::parse(eo))).expect("compile");
+        assert!(run_returns_with::<bool>(&comp, "even", &[Val::S64(10)]));
+        assert!(!run_returns_with::<bool>(&comp, "even", &[Val::S64(7)]));
+
+        // VALUE PARITY: the connective forms match `and`/`or` over the full truth table.
+        for (c, a) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(
+                run::<bool>(
+                    "(: c Bool) (: a Bool)",
+                    "(if c a false)",
+                    &[Val::Bool(c), Val::Bool(a)]
+                ),
+                c && a,
+                "(if c a false) @{c},{a}"
+            );
+            assert_eq!(
+                run::<bool>(
+                    "(: c Bool) (: b Bool)",
+                    "(if c true b)",
+                    &[Val::Bool(c), Val::Bool(a)]
+                ),
+                c || a,
+                "(if c true b) @{c},{a}"
+            );
+        }
+        // TRAP SHIELDING: the guarded branch's trap stays shielded exactly as in the `if` — `(if c (> (/ 10
+        // n) 0) false)` = `(and c (> (/ 10 n) 0))`; at c=false the trapping `/` is NOT evaluated (no trap),
+        // at c=true it fires.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: c Bool) (: n Int64)) (if (if c (> (/ 10 n) 0) false) 1 0)) (export f))",
+        )))
+        .expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&tb, "f", &[Val::Bool(false), Val::S64(0)]),
+            0,
+            "c=false shields the trap"
+        );
+        assert!(
+            call_traps(&tb, "f", &[Val::Bool(true), Val::S64(0)]),
+            "c=true reaches the trapping branch"
+        );
+    }
+
+    #[test]
     fn if_not_comparison_one_zero_computes_the_negated_predicate() {
         // `(if (not (CMP a b)) 1 0)` — a negated comparison materialized as an int. `lower` branch-swaps
         // to `(if (CMP a b) 0 1)` and the backend folds the negation into the complement comparison (no
