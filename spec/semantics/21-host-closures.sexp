@@ -1686,6 +1686,64 @@
   (call   mk (: 5 Int64))
   (output (: (tuple 5 -5) (Tuple Int64 Int64))))
 
+; DEEPER direct-call compound RESULT shapes (single-export): the value-form template / value-encode walker
+; descends arbitrarily — a nested RECORD, a tuple containing a LIST (compound-with-collection), a SUM of a
+; tuple, a LIST of tuples, and a compound ARG composing with a nested/compound RESULT all cross + decode.
+
+(case "a closure returning a NESTED record crosses as the typed value form"
+  (doc    "`(record (a n) (b (record (c n+1) (d n+2))))` → the walker descends the nested record handle.
+           `call(handle, 100)` → `(: (record (a 100) (b (record (c 101) (d 102)))) …)`.")
+  (input  (do (def (mk) (fn ((: n Int64)) (record (a n) (b (record (c (+ n 1)) (d (+ n 2)))))))
+              (export mk)))
+  (call   mk (: 100 Int64))
+  (output (: (record (a 100) (b (record (c 101) (d 102))))
+             (Record (a Int64) (b (Record (c Int64) (d Int64)))))))
+
+(case "a Tuple ARG composes with a NESTED-tuple RESULT"
+  (doc    "`mk : (-> (Tuple Int64 Int64) (Tuple Int64 (Tuple Int64 Int64)))` — a fixed-shape tuple ARG (rebuilt
+           in-guest) feeding a nested-tuple RESULT (value-form-walked out). `call(handle, (10, 3))` → `(tuple
+           10 (tuple 3 13))`.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64)))
+                         (tuple (. p 0) (tuple (. p 1) (+ (. p 0) (. p 1))))))
+              (export mk)))
+  (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (tuple 10 (tuple 3 13)) (Tuple Int64 (Tuple Int64 Int64)))))
+
+(case "a closure returning a tuple whose element is a LIST (compound-with-collection)"
+  (doc    "`mk : (-> Int64 (Tuple Int64 (List Int64)))` — a fixed-shape tuple with a VARIABLE-LENGTH list
+           element. The value-encode walker (not a static template) renders it: `call(handle, 100)` → `(tuple
+           100 (list 100 101))`.")
+  (input  (do (def (mk) (fn ((: n Int64)) (tuple n (list n (+ n 1)))))
+              (export mk)))
+  (call   mk (: 100 Int64))
+  (output (: (tuple 100 (list 100 101)) (Tuple Int64 (List Int64)))))
+
+(case "a NESTED-tuple ARG composes with a NESTED-tuple RESULT"
+  (doc    "`mk : (-> (Tuple Int64 (Tuple Int64 Int64)) (Tuple Int64 (Tuple Int64 Int64)))` — a nested arg
+           (recursively rebuilt) AND a nested result (value-form-walked). `call(handle, (100, (10, 3)))` →
+           `(tuple 100 (tuple 10 3))`.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 (Tuple Int64 Int64))))
+                         (tuple (. p 0) (tuple (. (. p 1) 0) (. (. p 1) 1)))))
+              (export mk)))
+  (call   mk (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (output (: (tuple 100 (tuple 10 3)) (Tuple Int64 (Tuple Int64 Int64)))))
+
+(case "a closure returning a SUM of a tuple (direct-call)"
+  (doc    "`mk : (-> Int64 (Option (Tuple Int64 Int64)))` — a sum whose payload is a compound. The value-encode
+           walker renders the discriminant + the payload tuple. `call(handle, 100)` → `(Some (tuple 100 101))`.")
+  (input  (do (def (mk) (fn ((: n Int64)) (if (> n 0) (Some (tuple n (+ n 1))) None)))
+              (export mk)))
+  (call   mk (: 100 Int64))
+  (output (: (: (Some (tuple 100 101)) (Option (Tuple Int64 Int64))) (Option (Tuple Int64 Int64)))))
+
+(case "a closure returning a LIST of tuples (direct-call)"
+  (doc    "`mk : (-> Int64 (List (Tuple Int64 Int64)))` — a collection whose element is a compound. `call(handle,
+           100)` → `(list (tuple 100 101) (tuple 102 103))`.")
+  (input  (do (def (mk) (fn ((: n Int64)) (list (tuple n (+ n 1)) (tuple (+ n 2) (+ n 3)))))
+              (export mk)))
+  (call   mk (: 100 Int64))
+  (output (: (list (tuple 100 101) (tuple 102 103)) (List (Tuple Int64 Int64)))))
+
 ; A COMPOUND (tuple/record) closure RESULT on the MULTI-EXPORT path — N same-signature closures each
 ; returning a tuple/record share ONE `call` that returns the value form as `list<u8>`. The shared `call`
 ; recovers each closure's code slot from the resource rep, dispatches it, and walks the returned compound
