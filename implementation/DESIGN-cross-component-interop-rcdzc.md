@@ -56,6 +56,29 @@ GOES: the `(extern …)` scan, `Resolved::Extern`, the `Core::ExternCall` varian
 TARGET). Unification bricks: **U1** (this pivot record) → **U2** (an effect bound to a peer routes to the
 boundary envelope) → **U3** (compile-request override) → **U4** (remove `extern`, merge into `HostCall`).
 
+### Unification progress
+- **U1 — pivot recorded. ✅ DONE (`spec` `c810e7e4`).**
+- **U2 — an effect BOUND to a peer routes to the boundary. ✅ DONE (`spec`).** Surface: a top-level
+  `(bind Effect "cadenza:pkg/iface")` directive → `db.effect_bindings` (a `scan_effect_bindings` load-time
+  scan; `bind` in `TOP_LEVEL_FORMS`). Routing: in `emit`, a collected `HostImport` whose effect is bound is
+  MOVED into the extern set retargeted to its bound interface (`host_param_abi` converts the params); `select`'s
+  `Core::HostCall` arm resolves a bound effect against `layout.extern_index` and emits `CallExternImport`
+  (else the host path). NO new IR — `Core::HostCall` IS the peer call. **Proven e2e (`u2_*`): a source
+  consumer `(effect Math (op add (-> Int64 Int64 Int64))) (bind Math "cadenza:math/api") (def (main (: x
+  Int64)) (host (Math) (Math.add x x)))` composed with a peer providing `add` → main(5) = add(5,5) = 10.**
+  An in-program `(handle Math …)` discharges the effect before escape → the test-override, free. Byte-
+  neutral (routing fires only when `effect_bindings` non-empty — gate 2041/0/0). SCOPE: scalar ops, a
+  bound-effect + unbound-host-effect in one program still declines (the extern+host coexistence guard);
+  extern+runtime already composes.
+- **U3 — COMPILE-REQUEST override of an effect's peer binding. ✅ DONE (`spec`).** A `KIND_EFFECT_BIND`
+  input artifact (newline `Effect=iface` lines) merged over `db.effect_bindings` AFTER load, WINNING over
+  the in-source `(bind …)` default: `Effect=<iface>` REBINDS, `Effect=` (empty) UNBINDS (→ escape to host,
+  or a test's in-program handler). **Proven e2e (`u3_*`): the SAME U2 source (bound to `cadenza:math/api`,
+  an ADD peer) rebound by the request to `cadenza:mathv2/api` (a MUL peer) → main(5) = Math.add(5,5) = 5*5 =
+  25, not 10.** Realizes the FULL precedence ladder the operator asked for: **in-source default <
+  compile-request override < in-program `(handle …)`** (the handler discharges before escape, free from
+  U2). Byte-neutral (the artifact only affects a program that supplies it — gate 2046/0/0).
+
 ⚠ The X0–X5d/X4b-4 work below LANDED as the `extern` surface — it is the low-level mechanism the effects
 surface now sits on. The transport/envelope/runner/provider stay; the `extern` front-end is removed in U4.
 

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "cadenza-calculator",
+  "title": "Cadenza Calculator",
+  "description": "A Command+Space calculator over the Cadenza language: exact fractions, units, and big integers.",
+  "icon": "command-icon.png",
+  "author": "cadenza",
+  "categories": ["Developer Tools"],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "calculate",
+      "title": "Calculate",
+      "subtitle": "Cadenza",
+      "description": "Evaluate a Cadenza expression — exact fractions (1 / 3 = 1/3), units, big integers.",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "cdzCalcPath",
+      "type": "textfield",
+      "required": false,
+      "title": "cdz-calc path",
+      "description": "Absolute path to the cdz-calc binary. Defaults to `cdz-calc` on your PATH.",
+      "default": "cdz-calc"
+    },
+    {
+      "name": "cadenzaStore",
+      "type": "textfield",
+      "required": false,
+      "title": "Runtime store",
+      "description": "CADENZA_STORE dir (only if you moved cdz-calc out of the repo; else auto-detected).",
+      "default": ""
+    },
+    {
+      "name": "exact",
+      "type": "checkbox",
+      "required": false,
+      "title": "Exact mode",
+      "label": "Forced rationals — 1 / 3 is 1/3, not 0",
+      "default": true
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.70.0"
+  },
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "lint": "ray lint"
+  }
+}

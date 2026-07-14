@@ -228,6 +228,7 @@ pass	a built-in Ast constructor applied to a wrong-type payload is a type error
 pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
 pass	a built-in Result whose two type arguments DIFFER is matched on both variants
+pass	a built-in comparison on an abstract type's value is rejected outside its module
 pass	a byte sequence carrying a runtime byte value is a first-class value
 pass	a byte sequence is constructed from a list of integers in range
 pass	a byte sequence written as a literal renders back to the same literal
@@ -315,6 +316,8 @@ pass	a compound if condition is a type error, not an unbound name
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
 pass	a conditional on a negated runtime condition selects the correct branch and shields the other
+pass	a conditional performs only the taken branch's effect — else
+pass	a conditional performs only the taken branch's effect — then
 pass	a conditional selects a branch by a runtime value that is not known at compile time
 pass	a conditional selects the false branch when the condition is false
 pass	a conditional shields a trap in a nested unselected branch
@@ -800,6 +803,7 @@ pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
+pass	a perform SHORT-CIRCUITED out of an or's right operand is NOT executed (empty host-calls)
 pass	a perform in a match-arm guard is discharged by the enclosing handle
 pass	a perform in a taken if-branch threads its state to the continuation after the if
 pass	a perform in a taken match-arm threads its state to the continuation after the match
@@ -1012,6 +1016,8 @@ pass	a runtime string equality selects a branch by comparing a parameter to a li
 pass	a runtime string is indexed by scalar and the extracted scalar is returned
 pass	a runtime string is sliced by scalar offsets
 pass	a runtime string returned across the run boundary renders as its quoted text
+pass	a runtime string rope compares equal to its flat twin
+pass	a runtime string rope matches a string-literal arm
 pass	a runtime string slice addresses scalar values, not bytes
 pass	a runtime string slice out of range yields None
 pass	a runtime string slice with an empty in-range span is Some of the empty string
@@ -1407,6 +1413,8 @@ pass	an unused let-init that does not reduce to a value is eliminated, so it doe
 pass	an unusual in-range width is a first-class type
 pass	an unusual-width value that overflows its computed range is rejected at compile time
 pass	and evaluates the right operand when the left is true
+pass	and performs the right operand's effect when the left is true
+pass	and short-circuit does not perform the right operand's effect
 pass	and short-circuits at run time: a false left operand skips the trapping right operand
 pass	annotating a quantity at a dimension the expression does not derive is an error
 pass	applying a boolean is a type error
@@ -1418,6 +1426,7 @@ pass	arithmetic right shift
 pass	arithmetic right shift of negative one is negative one
 pass	arithmetic right shift preserves the sign bit for a negative operand
 pass	arithmetic within one integer type
+pass	binary operator operands are evaluated left to right
 pass	bit-field segments pack sub-byte values into one byte
 pass	bitwise AND masks bits
 pass	bitwise AND of an integer and a float does not silently promote
@@ -1588,6 +1597,7 @@ pass	float multiplication uses the float operator
 pass	float subtraction uses the float operator
 pass	floating-point uses the fixed rounding mode
 pass	four same-signature closure exports share one resource
+pass	function arguments are evaluated left to right
 pass	functions are single-arity and curried
 pass	greater-than at the integer extremes is signed
 pass	greater-than comparison
@@ -1629,6 +1639,7 @@ pass	less-than at the integer extremes is signed, not unsigned
 pass	less-than compares negative operands by signed order
 pass	less-than-or-equal
 pass	less-than-or-equal of an integer and a float is rejected
+pass	let bindings' initializers are evaluated in binding order
 pass	lists are equal by elements in order
 pass	looking up an absent key yields None
 pass	map equality is independent of insertion order
@@ -1710,6 +1721,8 @@ pass	one of several same-signature closure exports is made and called by the hos
 pass	one of two DIFFERENT-signature closure exports is made and called
 pass	one type parameter used at several depths in one multi-payload variant
 pass	or evaluates the right operand when the left is false
+pass	or performs the right operand's effect when the left is false
+pass	or short-circuit does not perform the right operand's effect
 pass	or short-circuits at run time: a true left operand skips the trapping right operand
 pass	ordering a string against an integer is a type error regardless of operand order
 pass	ordering an integer against a boolean is a type error
@@ -1959,6 +1972,7 @@ pass	tuple access on a non-tuple is a type error
 pass	tuple access on a record is a type error
 pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuple elements are accessed by index
+pass	tuple elements are evaluated left to right
 pass	tuples are deconstructed by pattern matching
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity

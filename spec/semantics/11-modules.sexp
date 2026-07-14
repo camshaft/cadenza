@@ -751,3 +751,24 @@
             (def (main) (rank (Color.Green)))
             (export main)))
   (output (: 2 Int64)))
+
+(case "a built-in comparison on an abstract type's value is rejected outside its module"
+  (doc    "`lib` exports the HANDLE `Color` (abstract) + a smart constructor `mk`. The entry may name
+           `Color` and obtain values via `mk`, but comparing two of them with the built-in `=` observes
+           the equality of `Color`'s PRIVATE representation, which the handle-only export withheld — so it
+           is rejected CDZ0202 (the nominal-boundary code). A built-in structural comparison is not one of
+           the operations a handle-only export publishes; a module that wants its abstract type compared
+           exports a comparison FUNCTION (`(def (eq (: x Color) (: y Color)) …)`), the ML discipline —
+           the representation stays hidden and only the module's published operations are available.
+           Within the declaring module (or a concrete `Color.*` importer) `=` on `Color` is unaffected.")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (mk) Color.Green)
+      (export Color)
+      (export mk)))
+  (input  (do
+            (import "lib" (Color mk))
+            (def (main) (= (mk) (mk)))
+            (export main)))
+  (error  CDZ0202))

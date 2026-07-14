@@ -265,23 +265,32 @@ Reuse the existing families; add one dedicated code for the sharp case so the fi
 Land each increment green (`cargo xtask gate` 0 fail, `--check` clean, `cargo test -p rcdzc`). Spec
 first, per repo discipline (a new gating requirement with no impl is a red promotion bar).
 
-> **STATUS (landed on `spec`).** The core feature is DONE, in two increments:
-> - **Increment A** (`@b4700bb9`) — **O1** file-scoped type + constructor resolution. This had to come
->   first: before it, cross-file type privacy did not exist at all (the flat `type_decl_index` let any
->   file name any sibling's type and construct its variants with no import), so hiding a constructor was
->   a no-op. A user sum's identity is its declaration (`type-system.md` §Nominal), not its shape — so a
->   corpus case that relied on two same-named `(type L …)` in different files being interchangeable (a
->   forge-by-re-declare the spec forbids) was migrated to the import form.
-> - **Increment B** (`@a6a029d7`) — **O2 + O3 + most of O0**. The three `(export …)` forms
->   (`T` abstract / `(. T A)` partial / `(. T *)` wildcard concrete), `CtorVis` on the link surface, the
+> **STATUS: COMPLETE — all increments landed on `spec` (5 commits).**
+> - **A** (`@b4700bb9`) — **O1** file-scoped type + constructor resolution. Had to come first: before it,
+>   cross-file type privacy did not exist at all (the flat `type_decl_index` let any file name any
+>   sibling's type and construct its variants with no import). A user sum's identity is its declaration
+>   (`type-system.md` §Nominal), not its shape — so a corpus case relying on two same-named `(type L …)`
+>   being interchangeable (a forge-by-re-declare the spec forbids) was migrated to the import form.
+> - **B** (`@a6a029d7`) — **O2 + O3 + most of O0**. The three `(export …)` forms (`T` abstract /
+>   `(. T A)` partial / `(. T *)` wildcard concrete), `CtorVis` on the link surface, the
 >   `add_type_to_file` ctor-visibility gate, `withheld_ctor_reject` → **CDZ0214**, the
 >   `modules-and-namespaces.md` §"A Type's Handle And Its Constructors Are Independently Visible"
->   requirement (3 MUSTs, cited), and the corpus witnesses. Gate 2035 pass / 0 fail; runs end-to-end.
+>   requirement (3 MUSTs, cited), and the corpus witnesses.
+> - **doc** (`@e087a9f4`).
+> - **O4** (`@1763fdf4`) — **ML-surface ergonomics.** `export { Color.* }` / `export { Color.Red, main }`
+>   read + print (parser: `*` a reserved member segment after `.`, member-aware `brace_export_list`;
+>   printer: `plain_key` admits `*`, `is_export_shape` accepts member-access elements). Units `Unit.*`,
+>   multiply, float `*.`, positional `.0` all unaffected (full-corpus roundtrip 2059/0).
+> - **O0-tail** (`@8b77b03f`) — **representation hiding.** A built-in `=`/`compare` on an abstract-type
+>   value → **CDZ0202** (`Db::is_abstract_type_at`, gated at the compare site). `type-system.md` §"An
+>   Abstract Type's Representation Is Not Observable Across Its Boundary" (comparison MUST enforced+cited;
+>   strip MUST is the companion — no strip op exists yet, vacuous until one lands).
 >
-> **Remaining:** the `type-system.md` strip + structural-`=` gating (O0 tail — deferred until the
-> strip/`=`-visibility CHECK is built, so the MUST is enforced not aspirational); the **O4** ML-printer
-> ergonomics for `Color.*`; and the recursive-sum-synthesis-not-file-scoped limitation (import the type
-> rather than re-declaring it). s-expr is fully working; the corpus uses `(export (. T *))` directly.
+> Gate 2050 pass / 0 fail; feature usable on both surfaces; runs end-to-end.
+>
+> **Only leftover (a SEPARATE, larger feature — not opaque types):** recursive-sum SYNTHESIS is not
+> file-scoped (a recursive `(type L …)` re-declared in two files splits its spine's type; the composing
+> form is to import the type, not re-declare it). Fix = file-scope payload resolution in `sums::synthesize`.
 
 - [x] **O0 — spec + corpus (spec-first).** *(Done except the type-system.md strip/`=` gating, deferred.)* Add to `modules-and-namespaces.md` §Visibility a requirement
   that a type declaration's handle and its constructors are *independently* exportable; that exporting
@@ -306,10 +315,11 @@ first, per repo discipline (a new gating requirement with no impl is a red promo
   `import` of an abstract type binds `T` (handle) but not its ctor names.
 - [x] **O3 — reject construct/match on an abstract type across the boundary.** *(Landed `@a6a029d7` —
   `withheld_ctor_reject` → CDZ0214 for construct + match of a withheld ctor, bare or qualified. The
-  strip + structural-`=` gating (CDZ0202) is DEFERRED — not yet built, so its MUST is not yet added.)*
+  strip + structural-`=` gating: the `=`/`compare` half LANDED `@8b77b03f` (CDZ0202); the strip half is
+  vacuous until a strip op exists.)*
   Pure resolve-time visibility checks; no lowering change — an unbound constructor never reaches infer/lower.
-- [ ] **O4 — the concrete-export paths + AST + ML ergonomics.** *(Concrete paths + AST verified working;
-  ML-printer ergonomics for `Color.*` remain — s-expr works.)* Verify both concrete forms — the
+- [x] **O4 — the concrete-export paths + AST + ML ergonomics.** *(Landed `@1763fdf4` — `export { Color.* }`
+  / `export { Color.Red, main }` read + print; units/multiply/float/positional unaffected.)* Verify both concrete forms — the
   explicit ctor list and the `T.*` wildcard — make a sum importable-and-matchable and produce the
   **same** public surface, and that `(export Ast.*)` round-trips the AST type concretely. Then close the
   **ML-surface printer gaps** (measured, not free): (a) teach the `export { … }` printer to render a
@@ -318,10 +328,11 @@ first, per repo discipline (a new gating requirement with no impl is a red promo
   papercut; (b) reserve `*` as a bare-safe member segment so `(. Color *)` prints `Color.*` rather than
   `` `.`(Color, `*`) ``. Both are `cadenza-syntax` printer/lexer changes with round-trip tests; the
   arena is unchanged. (s-expr already works end to end — verified — so O2/O3/O5 do not depend on O4.)
-- [ ] **O5 — end-to-end.** A two-file package: file `nel` exports `Nel of head` abstractly; entry
-  builds via `of`, reads via `head`, runs; a variant that writes `(Nel.Mk …)` in the entry → CDZ0214
-  with the "use `of`" fix. A second package exports `Color.*` concretely; entry constructs `Color.Red`
-  and matches it → runs. `bench` shows the abstract path emits byte-identical code to a concrete one.
+- [x] **O5 — end-to-end.** *(Verified: an ML-authored package `export { Color, mk }` abstract → the entry's
+  `Color.Green` construction is CDZ0214 + `mk()` usage runs; `export { Color.*, rank }` concrete →
+  construct+match runs, all through the real runtime.)* A two-file package: abstract lib + entry runs via
+  the exported functions; a withheld-ctor construction → CDZ0214; a concrete `Color.*` package
+  constructs + matches → runs.
 
 ## Traps to respect (from repo memory)
 

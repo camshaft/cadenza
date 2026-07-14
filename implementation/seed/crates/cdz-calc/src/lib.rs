@@ -77,6 +77,11 @@ pub struct Calculator {
     /// suffix. Realized by assembling through `repl::assemble_repl_program_exact` (a do-local
     /// `(pragma default-fraction Rational)` module, C6). Off → ordinary Int64/Float defaults.
     exact: bool,
+    /// PLAIN mode: render a result as the BARE value (`1/3`, `1500 meter`, `42`), stripping the
+    /// `(: value type)` / `` `value` : Type`` wrapper — what a launcher (Raycast/Alfred, C5) shows the
+    /// user. Off (the default) keeps the full typed form the REPL shows. Also displays a whole rational
+    /// `5/1` as `5` (a calculator reads `5` more naturally than `5/1`).
+    plain: bool,
 }
 
 impl Calculator {
@@ -87,13 +92,21 @@ impl Calculator {
     }
 
     /// A fresh calculator in `surface` with exact mode set explicitly (`--exact=off` turns it off, giving
-    /// ordinary integer/float literal defaults).
+    /// ordinary integer/float literal defaults). Plain mode off.
     pub fn new_with_exact(surface: Format, exact: bool) -> Self {
         Calculator {
             surface,
             bindings: Vec::new(),
             exact,
+            plain: false,
         }
+    }
+
+    /// Set PLAIN result rendering (bare value, no `: Type` wrapper) — the launcher-facing display. Chained
+    /// on a constructor: `Calculator::new(surface).with_plain(true)`.
+    pub fn with_plain(mut self, plain: bool) -> Self {
+        self.plain = plain;
+        self
     }
 
     /// The surface this calculator reads + renders in.
@@ -172,7 +185,13 @@ impl Calculator {
         } else {
             cadenza_syntax::repl::assemble_repl_program(&buffer, &expr_arena)
         };
-        eval_program(&program).map(|value_form| render_value(&value_form, self.surface))
+        eval_program(&program).map(|value_form| {
+            if self.plain {
+                plain_value(&value_form, self.surface)
+            } else {
+                render_value(&value_form, self.surface)
+            }
+        })
     }
 
     /// Wrap `expr` in a chain of `let` bindings, one per stored binding, OLDEST OUTERMOST — so a later
@@ -320,11 +339,106 @@ fn render_value(sexpr_value: &str, surface: Format) -> String {
     }
 }
 
+/// Render a value form as the BARE value in `surface` — strip the `(: value type)` wrapper to just the
+/// value (`(: 1/3 Rational)` → `1/3`, `(: 1500 (Qty …))` → `1500 meter`), and simplify a whole rational
+/// `N/1` → `N`. What a launcher shows the user. A non-`(: …)` form (shouldn't happen for a run result)
+/// falls back to the full surface render.
+///
+/// Extracts the VALUE subtree structurally (via the parsed arena's `(: …)` form), re-emits it as its own
+/// program, and renders that in the surface — so a compound value (`(tuple 1 2)` → `(1, 2)`) renders
+/// correctly, not by fragile text-stripping.
+fn plain_value(sexpr_value: &str, surface: Format) -> String {
+    let Ok(arenas) = cadenza_syntax::sexpr::read(sexpr_value) else {
+        return render_value(sexpr_value, surface);
+    };
+    // A run result is `(: value type)`; pull the value child (index 0 of the `:` form's tail).
+    let Some(tail) = arenas.as_form(arenas.root, ":") else {
+        return render_value(sexpr_value, surface);
+    };
+    let Some(&value_id) = tail.first() else {
+        return render_value(sexpr_value, surface);
+    };
+    // Copy the value subtree into its own arena + render it in the surface.
+    let value_arena = cadenza_syntax::query::Tree::from_arena(&arenas, value_id).to_arena();
+    let rendered = match cadenza_syntax::convert::write(&value_arena, surface) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).trim().to_string(),
+        Err(_) => return render_value(sexpr_value, surface),
+    };
+    prettify_plain(&rendered)
+}
+
+/// Tidy a plain-rendered value for a launcher: (1) drop the ML printer's backticks around a rational
+/// (`` `1/3` `` → `1/3`) — a cosmetic wart where the ML printer treats `1/3` as an operator name, never
+/// meaningful in a DISPLAYED value; (2) collapse a whole rational `N/1` → `N` (a calculator reads `5`
+/// more naturally than `5/1`), including one embedded in a compound render (`1500/1` → `1500` inside a
+/// quantity). Both are display-only string tidies over the already-correct value.
+fn prettify_plain(s: &str) -> String {
+    // Drop ALL backticks (they only ever wrap a rational literal the ML printer mis-quotes).
+    let unbacktick = s.replace('`', "");
+    // Collapse every `<digits>/1` token → `<digits>` (a whole rational), leaving a proper fraction
+    // (`1/3`) untouched. Scan for a run of digits followed by exactly `/1` not followed by another digit.
+    collapse_whole_rationals(&unbacktick)
+}
+
+/// Rewrite each `<digits>/1` occurrence (a whole rational, optionally the denominator not followed by a
+/// further digit — so `1/13` is NOT touched) to just `<digits>`. Operates on the whole string so an
+/// embedded quantity magnitude (`Qty.of(1500/1, …)` → `Qty.of(1500, …)`) is tidied too. A proper
+/// fraction (`1/3`, `2/3`) is preserved.
+fn collapse_whole_rationals(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // At the start of a digit run? (ASCII digits only — `is_ascii_digit` is byte-safe.)
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            out.push_str(&s[start..i]); // the numerator digits (always emitted)
+            // A `<digits>/1` where the `1` is not part of a longer denominator → drop the `/1`.
+            if s[i..].starts_with("/1") && !bytes.get(i + 2).is_some_and(|c| c.is_ascii_digit()) {
+                i += 2;
+            }
+        } else {
+            // A non-digit byte: copy the whole UTF-8 char at this boundary (multibyte-safe).
+            let ch = s[i..].chars().next().expect("valid char boundary");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
 pub mod runtime;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_value_strips_the_wrapper_and_tidies_rationals() {
+        // `--plain` shows a launcher the BARE value: no `(: … type)` wrapper, no ML backticks, and a
+        // whole rational `N/1` collapsed to `N`. (s-expr surface keeps the value form as-is otherwise.)
+        assert_eq!(plain_value("(: 1/3 Rational)", Format::Sexpr), "1/3");
+        assert_eq!(plain_value("(: 5/1 Rational)", Format::Sexpr), "5"); // whole rational
+        assert_eq!(plain_value("(: 42 Int64)", Format::Sexpr), "42");
+        // ML render of the rational value now resugars to `Rational.of(1, 3)` (the landed printer fix),
+        // but plain mode extracts the VALUE subtree first, so it stays the bare `1/3`.
+        assert_eq!(plain_value("(: 1/3 Rational)", Format::Ml), "1/3");
+    }
+
+    #[test]
+    fn collapse_whole_rationals_leaves_proper_fractions() {
+        assert_eq!(collapse_whole_rationals("5/1"), "5");
+        assert_eq!(collapse_whole_rationals("1500/1"), "1500");
+        assert_eq!(collapse_whole_rationals("1/3"), "1/3"); // proper fraction untouched
+        assert_eq!(collapse_whole_rationals("1/13"), "1/13"); // /1 is a prefix of /13 → untouched
+        assert_eq!(
+            collapse_whole_rationals("Qty.of(1500/1, meter)"),
+            "Qty.of(1500, meter)"
+        );
+    }
 
     #[test]
     fn classify_distinguishes_assignment_from_equality() {

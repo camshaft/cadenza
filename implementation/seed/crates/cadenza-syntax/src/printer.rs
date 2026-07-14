@@ -328,6 +328,31 @@ impl<'a> Printer<'a> {
             {
                 return self.expr(args[0], parent_prec);
             }
+            // ---- rational VALUE resugar: `(: <n/d> Rational)` -> `Rational.of(n, d)` ----
+            // A rational VALUE form carries its magnitude as a `Name` leaf of the shape `n/d` (the
+            // canonical s-expr value form `(: 1/3 Rational)`). On the ML surface a bare `n/d` is NOT a
+            // rational — it lexes as the DIVISION `(/ n d)` — so `emit_name` would have to backtick-quote
+            // it (`` `1/3` ``) to round-trip, which reads as an ugly operator-name. Instead resugar the
+            // whole value form to the constructor `Rational.of(n, d)`, which IS re-readable ML for the
+            // same rational (`(. Rational of) n d`) and reads cleanly. Only a value form (a `Name` of
+            // exactly `[-]digits/digits`) annotated `Rational` matches; a source rational is written
+            // `Rational.of`/`1R`/`(: 5 Rational)` and is unaffected. (The s-expr surface keeps the pinned
+            // `(: n/d Rational)` value form — this resugar is ML-only, and the rational value form appears
+            // only in value OUTPUT, never a corpus INPUT, so the ML round-trip contract is untouched.)
+            if head == ":"
+                && args.len() == 2
+                && self.head_name(args[1]) == Some("Rational".to_string())
+                && let Struct::Atom(l) = self.a.get(args[0])
+                && let Leaf::Name(n) = self.a.leaf(*l)
+                && let Some((num, den)) = split_rational_name(n)
+            {
+                // Render as `Rational.of(num, den)` — the member-access call the ML reader parses back to
+                // `((. Rational of) num den)`, an admissible rational construction.
+                self.doc.ibox(0);
+                self.doc.word(format!("Rational.of({num}, {den})"));
+                self.doc.end();
+                return;
+            }
             // ---- function type `(-> A B)` -> `A -> B` (right-associative) ----
             if head == "->" && args.len() == 2 {
                 return self.arrow(args[0], args[1], parent_prec);
@@ -373,6 +398,21 @@ impl<'a> Printer<'a> {
                 let sigil = if head == "unquote" { "," } else { ",@" };
                 return self.unquote(sigil, args[0], parent_prec);
             }
+            // ---- annotation `(@ name form)` -> `@name form` ----
+            // The general-purpose annotation sigil (inline-never/inline-always today, and whatever the
+            // language grows). `args = [name, form]`; the name prints bare and the form follows on the
+            // same line — the idiomatic ML form the parser re-reads (a nested `(@ …)` recurses here, so
+            // stacked `@a @b def …` round-trips). The name is a plain leaf, emitted via `emit_name`.
+            if head == "@"
+                && args.len() == 2
+                && let Some(name) = self.a.as_name(args[0])
+            {
+                self.doc.word("@");
+                self.doc.word(emit_name(name));
+                self.doc.word(" ");
+                self.expr(args[1], parent_prec);
+                return;
+            }
             // ---- keyword forms ----
             match head.as_str() {
                 "let" if self.is_let_shape(args) => return self.print_let(args, parent_prec),
@@ -381,18 +421,6 @@ impl<'a> Printer<'a> {
                 "match" if self.is_match_shape(args) => return self.print_match(args, parent_prec),
                 "def" if self.is_def_shape(args) => return self.print_def(args),
                 "def" if self.is_value_def_shape(args) => return self.print_value_def(args),
-                // An INLINE-POLICY marker wrapping a def: `(inline-never (def …))` prints as
-                // `inline-never def …` (the keyword prefixing the def), the idiomatic ML form the parser
-                // accepts (rather than the generic `inline-never(def …)` application fallback). `args` is
-                // the wrapper's single operand — the inner `(def …)`.
-                kw @ ("inline-never" | "inline-always")
-                    if args.len() == 1 && self.a.head_name(args[0]) == Some("def") =>
-                {
-                    self.doc.word(kw);
-                    self.doc.word(" ");
-                    self.expr(args[0], parent_prec);
-                    return;
-                }
                 "do" if !args.is_empty() => return self.print_do(args),
                 "type" if self.is_type_shape(args) => return self.print_type(args),
                 "effect" if self.is_effect_shape(args) => return self.print_effect(args),
@@ -1689,10 +1717,28 @@ impl<'a> Printer<'a> {
         self.bracketed("{", "}", true, names, |p, name| p.expr(name, 0));
     }
 
-    /// An `(export name…)` the `export { … }` surface handles: at least one arg, every arg a bare
-    /// name. A malformed export (a non-name arg) falls back to the generic call form so it round-trips.
+    /// An `(export name…)` the `export { … }` surface handles: at least one arg, every arg either a
+    /// bare name (`main`, a value or a type HANDLE) or a constructor-export member access — `(. T A)`
+    /// (one constructor) or `(. T *)` (the wildcard, the whole constructor set). Each renders through
+    /// `print_name_group`'s `expr` as `main` / `Color.Red` / `Color.*`, and the parser reads those back
+    /// to the same forms (a member-access element inside `{ … }`), so the surface round-trips. A
+    /// malformed export element falls back to the generic call form.
     fn is_export_shape(&self, args: &[StructId]) -> bool {
-        !args.is_empty() && args.iter().all(|&a| self.a.as_name(a).is_some())
+        !args.is_empty()
+            && args
+                .iter()
+                .all(|&a| self.a.as_name(a).is_some() || self.is_export_member(a))
+    }
+
+    /// A constructor-export member-access element of an `(export …)` clause: `(. T A)` or `(. T *)`
+    /// where `T` is a bare name and the key is a plain field name or the wildcard `*` — the forms
+    /// `print_name_group` renders as `T.A` / `T.*` and the parser reads back inside `{ … }`.
+    fn is_export_member(&self, id: StructId) -> bool {
+        matches!(self.a.get(id), Struct::List(items)
+            if items.len() == 3
+                && self.head_name(items[0]).as_deref() == Some(".")
+                && self.a.as_name(items[1]).is_some()
+                && self.plain_key(items[2]).is_some())
     }
 
     /// An `(import "path" (name…))` the `import { … } from "path"` surface handles: a string path, a
@@ -2077,6 +2123,12 @@ impl<'a> Printer<'a> {
     /// name — so `(. a b)` prints as `a.b` but a dotted/odd key falls back to the call form.
     fn plain_key(&self, id: StructId) -> Option<String> {
         let n = self.head_name(id)?;
+        // The wildcard member `*` (`obj.*` — the whole-constructor-set key the export surface uses).
+        // A reserved final member segment: the parser reads `.` + `*` as this key (`dot_is_member`), so
+        // rendering it bare round-trips. `*` alone is never a plain field name outside member position.
+        if n == "*" {
+            return Some(n);
+        }
         let mut chars = n.chars();
         match chars.next() {
             Some(c) if c.is_alphabetic() || c == '_' => {}
@@ -2267,6 +2319,20 @@ impl<'a> Printer<'a> {
 /// not a reserved word; otherwise it is backtick-quoted. This is the lossless escape for symbolic
 /// heads (`|`, `+`, `->`), keyword-shaped names (`let`, `in`), and anything that would otherwise
 /// lex as something else.
+/// Split a rational VALUE-form name `[-]num/den` into its `(num, den)` decimal-digit strings, or `None`
+/// if `s` is not exactly that shape. Used to resugar `(: <n/d> Rational)` → `Rational.of(n, d)` on the
+/// ML surface. STRICT: a single `/`, non-empty all-ASCII-digit numerator (optionally a leading `-`) and
+/// denominator — so an ordinary name with a slash, or a partial/garbage form, is left to `emit_name`.
+fn split_rational_name(s: &str) -> Option<(&str, &str)> {
+    let (num, den) = s.split_once('/')?;
+    if den.contains('/') {
+        return None; // more than one `/` — not a rational value form
+    }
+    let num_digits = num.strip_prefix('-').unwrap_or(num);
+    let ok = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+    (ok(num_digits) && ok(den)).then_some((num, den))
+}
+
 pub fn emit_name(s: &str) -> String {
     if name_is_bare_safe(s) {
         s.to_string()
@@ -2514,6 +2580,40 @@ mod tests {
         // a NAME operand or a `)`-terminated operand needs no parens.
         assert_eq!(print(&sexpr::read("(. x 0)").unwrap(), 80), "x.0");
         assert_eq!(print(&sexpr::read("(. (f a) 0)").unwrap(), 80), "f(a).0");
+    }
+
+    #[test]
+    fn annotation_sigil_round_trips() {
+        // `@name form` is the general-purpose annotation sigil, canonically `(@ name form)` — the same
+        // sigil↔head pattern as `.` member-access and `,@` unquote-splicing. It prints back to the `@`
+        // surface and re-reads to the same head form. `inline-never`/`inline-always` are the two names
+        // the compiler consumes today; the surface is name-agnostic.
+        assert_eq!(
+            assert_roundtrip("@inline-never def big(x) = x * 7", 80),
+            "@inline-never def big(x) = x * 7"
+        );
+        // ML surface desugars to the `@`-headed canonical form; the s-expr surface reads it directly.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("@inline-never def big(x) = x * 7").arenas),
+            "(@ inline-never (def (big x) (* x 7)))"
+        );
+        assert_eq!(
+            print(
+                &sexpr::read("(@ inline-always (def (f x) (+ x 1)))").unwrap(),
+                80
+            ),
+            "@inline-always def f(x) = x + 1"
+        );
+        // A name-agnostic annotation (not an inline-policy name) round-trips just the same.
+        assert_eq!(
+            assert_roundtrip("@deprecated def old(x) = x", 80),
+            "@deprecated def old(x) = x"
+        );
+        // Stacked annotations nest, since the annotated form parses in prefix position.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("@a @b def f(x) = x").arenas),
+            "(@ a (@ b (def (f x) x)))"
+        );
     }
 
     #[test]
@@ -3081,6 +3181,52 @@ mod tests {
     }
 
     #[test]
+    fn export_constructor_and_wildcard_surface() {
+        // Opaque/abstract types: an export element may be a type's CONSTRUCTOR `(. T A)` or the
+        // WILDCARD `(. T *)` (the whole constructor set), alongside bare names. Each renders inside the
+        // `export { … }` brace group as `T.A` / `T.*`, and parses back to the same member-access form.
+        assert_eq!(
+            print(&sexpr::read("(export (. Color *))").unwrap(), 80),
+            "export { Color.* }"
+        );
+        assert_eq!(
+            print(&sexpr::read("(export (. Color Red) main)").unwrap(), 80),
+            "export { Color.Red, main }"
+        );
+        // Round-trip both directions: `Color.*` reads back to `(. Color *)`.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("export { Color.* }").arenas),
+            "(export (. Color *))"
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml("export { Color.Red, main }").arenas),
+            "(export (. Color Red) main)"
+        );
+        assert_eq!(
+            assert_roundtrip("export { Color.* }", 80),
+            "export { Color.* }"
+        );
+        assert_eq!(
+            assert_roundtrip("export { Color.Red, main }", 80),
+            "export { Color.Red, main }"
+        );
+    }
+
+    #[test]
+    fn member_wildcard_reads_and_prints() {
+        // `T.*` as a bare member access (the segment the export surface reuses) parses to `(. T *)`
+        // and prints back — `*` is a reserved final member segment, distinct from the `*` multiply op
+        // (which needs an operand before it).
+        assert_eq!(
+            sexpr::print(&parser::read_ml("Color.*").arenas),
+            "(. Color *)"
+        );
+        assert_eq!(print(&sexpr::read("(. Color *)").unwrap(), 80), "Color.*");
+        // Multiply is untouched — `a * b` stays the `*` operator, not a member access.
+        assert_eq!(sexpr::print(&parser::read_ml("a * b").arenas), "(* a b)");
+    }
+
+    #[test]
     fn import_brace_from_surface() {
         // `(import "path" (name…))` renders `import { name, … } from "path"`; parses back to it.
         assert_eq!(
@@ -3197,6 +3343,39 @@ mod tests {
     fn call_breaks_all_args_when_wide() {
         let out = assert_roundtrip("some-function(alpha, beta, gamma, delta, epsilon)", 20);
         assert!(out.starts_with("some-function(\n"), "got:\n{out}");
+    }
+
+    #[test]
+    fn rational_value_form_resugars_to_constructor_not_backtick() {
+        // A rational VALUE form `(: n/d Rational)` carries its magnitude as a `Name("n/d")`. On the ML
+        // surface a bare `n/d` is division, so `emit_name` would backtick-quote it (`` `1/3` ``) — a bug
+        // the resugar replaces with the re-readable constructor `Rational.of(n, d)`.
+        for (sexpr_form, want) in [
+            ("(: 1/3 Rational)", "Rational.of(1, 3)"),
+            ("(: 5/1 Rational)", "Rational.of(5, 1)"),
+            ("(: -3/4 Rational)", "Rational.of(-3, 4)"),
+        ] {
+            let a = sexpr::read(sexpr_form).unwrap();
+            let printed = print(&a, 80);
+            assert_eq!(printed.trim(), want, "{sexpr_form} should resugar");
+            assert!(!printed.contains('`'), "no backticks: {printed}");
+            // Re-readable: the ML parses back + re-prints identically (idempotent).
+            let reparsed = parser::read_ml(&printed);
+            assert!(reparsed.ok(), "{want} re-reads");
+            assert_eq!(
+                print(&reparsed.arenas, 80).trim(),
+                want,
+                "{want} is idempotent"
+            );
+        }
+        // A NON-rational name with a slash is NOT resugared (still backtick-escaped as a name) — the
+        // resugar is strict (annotated `Rational` + a `digits/digits` name only).
+        let a = sexpr::read("(: a/b Rational)").unwrap();
+        let printed = print(&a, 80);
+        assert!(
+            !printed.contains("Rational.of"),
+            "a/b is not a rational value: {printed}"
+        );
     }
 
     #[test]

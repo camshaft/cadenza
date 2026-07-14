@@ -72,6 +72,7 @@ pub enum Kind {
     FatArrow, // `=>`
     Arrow,   // `->`
     Hash,    // `#`
+    At, // `@` — the ANNOTATION sigil (`@name form` -> `(@ name form)`); distinct from `,@` below
     Backtick, // `` ` `` beginning a `` `{ … } `` quasiquote
     UnquoteSplice, // `,@`
 

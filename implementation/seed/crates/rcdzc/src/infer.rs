@@ -664,6 +664,23 @@ fn int_width_range(signed: bool, w: u32) -> Option<String> {
 /// "subtracting", "comparing" — so the message reads as an action ("adding quantities of incompatible
 /// dimension"). `prim` is the operator's [`crate::resolved::Prim`] (the `is_additive` set: `+`/`-` plus
 /// the comparisons); anything else (or an unrecognized head) falls back to the neutral "combining".
+/// The prelude OPERATION-MODULE name for a collection or text type — `List`/`Map`/`Set`/`String`/`Bytes`
+/// — whose fields are its operations (reached by member access `(. List at)`). Used to redirect a NAMED
+/// member access on such a value (`(. xs foo)`, which is not a field read — these are not records) to the
+/// module operation form. `None` for a type with no such operation module (a record has real fields, a
+/// tuple is positional, a scalar/sum has no member-access operations). The module name matches the type's
+/// own render (`List`/`Map`/`Set`/`String`/`Bytes`), so `(. <Module> <op>)` names a real prelude module.
+fn collection_or_text_module(ty: &Ty) -> Option<&'static str> {
+    match ty {
+        Ty::List(_) => Some("List"),
+        Ty::Map(..) => Some("Map"),
+        Ty::Set(_) => Some("Set"),
+        Ty::String => Some("String"),
+        Ty::Bytes => Some("Bytes"),
+        _ => None,
+    }
+}
+
 fn additive_op_gerund(prim: Option<crate::resolved::Prim>) -> &'static str {
     use crate::resolved::Prim;
     match prim {
@@ -4896,6 +4913,40 @@ fn check_application(
             ));
             return;
         }
+        // A built-in `=`/`compare` on a value of an ABSTRACT type — one imported handle-only, its
+        // constructors withheld — is rejected here (CDZ0202, the nominal-boundary code): built-in
+        // structural comparison observes the equality of the module's PRIVATE representation, which the
+        // handle-only export withheld. A module that wants its abstract type comparable exports a
+        // comparison FUNCTION (`(def (eq (: x T) (: y T)) …)`), the ML discipline — the representation
+        // stays hidden and only the operations the module publishes are available. Fires on either
+        // operand (a value of the abstract type on one side is enough); within the declaring module (or
+        // a concrete importer) the type is not abstract, so ordinary comparison is unaffected.
+        //= spec/capabilities/type-system.md#an-abstract-type-s-representation-is-not-observable-across-its-boundary
+        //# A built-in structural comparison whose operand is a value of an abstract type — a type whose handle a module made visible without making its constructors visible ([modules-and-namespaces.md](modules-and-namespaces.md) §A Type's Handle And Its Constructors Are Independently Visible) — MUST be rejected outside the declaring module, so that the abstract type's representation is not observed through equality and a module that wants its abstract type compared publishes a comparison operation rather than exposing its structure.
+        let abstract_operand = |ty: &Ty, node: StructId| {
+            nominal_or_sum_decl(ty).is_some_and(|decl| db.is_abstract_type_at(node, decl))
+        };
+        if abstract_operand(&a, args[0]) || abstract_operand(&b, args[1]) {
+            let ty = if abstract_operand(&a, args[0]) {
+                &a
+            } else {
+                &b
+            };
+            trace!(target: "rcdzc::infer", head = head.0, "fault: built-in comparison on an abstract type value (CDZ0202)");
+            out.push(
+                Reject::coded(
+                    Code::NominalMismatch,
+                    format!(
+                        "`{}` is an abstract type here (its constructors are not exported to this \
+                         file), so its representation cannot be observed through a built-in comparison \
+                         — compare it through a function the module that declares it exports",
+                        ty.render_name()
+                    ),
+                )
+                .at(head),
+            );
+            return;
+        }
         // Comparing a SYMBOL to the plain STRING it wraps is a comparison ACROSS THE NOMINAL BOUNDARY —
         // CDZ0202 (17-symbols "a string compared to a symbol is a type error"). A Symbol is a nominal over
         // String; a nominal value never silently compares equal to the untagged shape it was declared
@@ -6864,15 +6915,48 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 ),
                             ))
                         }
+                        // A COLLECTION or TEXT value accessed by NAME — `(. xs foo)` on a `(List …)`, a
+                        // `(Map …)`, `(Set …)`, `String`, `Bytes`. These are NOT field-bearing records: a
+                        // field NAME reads nothing off them. Their operations live on the type MODULE and
+                        // take the value as the FIRST argument — `(. List at)`/`Map.lookup`/`Set.contains`/
+                        // `String.len` — so the generic "requires a record" reads as a dead end when the fix
+                        // is a module operation. Name the module + the value-first call form so the reader
+                        // reaches for `((. List at) xs …)` (rustc's "method not found; the operations are on
+                        // the type"). Only for a value with such a module; other non-records keep the plain
+                        // message.
                         other => {
-                            trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: member access on a non-record (CDZ0201)");
-                            out.push(Reject::coded(
-                                Code::Malformed,
-                                format!(
-                                    "member access requires a record, found {}",
-                                    other.render_name()
-                                ),
-                            ))
+                            // A COLLECTION or TEXT value accessed by NAME — `(. xs foo)` on a `(List …)`,
+                            // `(Map …)`, `(Set …)`, `String`, `Bytes` — is not a field read (these are not
+                            // records). Its operations live on the type MODULE and take the value as the
+                            // FIRST argument, so name the module + the `((. Module op) value …)` form
+                            // instead of the dead-end "requires a record". Any other non-record (a scalar, a
+                            // sum) has no operation module → keep the plain message.
+                            let reject = match collection_or_text_module(other) {
+                                Some(module) => {
+                                    trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: named member access on a collection/text value (CDZ0201)");
+                                    Reject::coded(
+                                        Code::Malformed,
+                                        format!(
+                                            "a {} value has no field `{}` — its operations live on the \
+                                             `{module}` module and take the value as the first argument, \
+                                             e.g. `((. {module} <op>) <value> …)`",
+                                            other.render_name(),
+                                            key.name,
+                                        ),
+                                    )
+                                }
+                                None => {
+                                    trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: member access on a non-record (CDZ0201)");
+                                    Reject::coded(
+                                        Code::Malformed,
+                                        format!(
+                                            "member access requires a record, found {}",
+                                            other.render_name()
+                                        ),
+                                    )
+                                }
+                            };
+                            out.push(reject)
                         }
                     }
                 }

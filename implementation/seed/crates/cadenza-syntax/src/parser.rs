@@ -717,21 +717,28 @@ impl<'a> Parser<'a> {
                 let t = self.bump().unwrap();
                 self.name(literal::unescape_backtick_name(self.text(t)), span)
             }
-            Kind::Ident
-                if matches!(self.cur_text(), "inline-never" | "inline-always")
-                    && self.nth_kind(1) == Kind::Ident
-                    && keyword(self.nth_text(1)) == Some(Keyword::Def) =>
-            {
-                // An INLINE-POLICY marker on a def: `inline-never def f(x) = …` → `(inline-never (def …))`
-                // (Addendum 4). `inline-never`/`inline-always` are not lexer keywords (hyphenated idents),
-                // so recognized here by text ONLY when immediately followed by `def`; a bare identifier
-                // `inline-never` used as a value stays an ordinary name (the `None` arm below).
-                let kw_text = self.cur_text().to_string();
-                self.bump(); // the marker
-                let kw = self.name(kw_text, span);
-                let def = self.def_expr();
-                let dspan = span.merge(self.prev_span());
-                self.list(vec![kw, def], dspan)
+            // An ANNOTATION: `@name form` -> `(@ name form)`. `@` is a GENERAL-PURPOSE annotation
+            // sigil — the name is any ident (`inline-never`, `inline-always`, and whatever future
+            // annotations the language grows); the compiler consumes the ones it recognizes and rejects
+            // the rest. Stacked annotations nest, since the wrapped form is itself parsed in prefix
+            // position: `@a @b def …` -> `(@ a (@ b (def …)))`.
+            Kind::At => {
+                self.bump(); // `@`
+                let head = self.name("@", span);
+                let name = if self.at(Kind::Ident) {
+                    let name_span = self.cur_span();
+                    let t = self.bump().unwrap();
+                    self.name(self.text(t), name_span)
+                } else {
+                    self.error("expected an annotation name after `@`");
+                    self.error_node(self.cur_span())
+                };
+                // The annotated form parses in PREFIX position (no postfix): a following juxtaposed
+                // top-level form that begins with `(` must not be swallowed as a call of the def. A
+                // `def`/other keyword dispatches to its full form; a nested `@` recurses here.
+                let form = self.prefix();
+                let full = span.merge(self.prev_span());
+                self.list(vec![head, name, form], full)
             }
             Kind::Ident => match keyword(self.cur_text()) {
                 Some(Keyword::Let) => self.let_expr(),
@@ -938,6 +945,16 @@ impl<'a> Parser<'a> {
                             let t = self.bump().unwrap();
                             self.atom(literal::classify_word(self.text(t)), key_span)
                         }
+                        // The WILDCARD member `obj.*` — the `(. obj *)` form the export surface uses to
+                        // name a type's WHOLE constructor set (`export { Color.* }`). `*` is a reserved
+                        // final member segment here (recognized only as a member key, so it never
+                        // collides with the multiply operator, which needs an operand before it). The key
+                        // is the bare `*` name atom the s-expr `(. Color *)` carries, so both surfaces
+                        // agree and it round-trips.
+                        Kind::Star => {
+                            self.bump();
+                            self.name("*", key_span)
+                        }
                         _ => {
                             self.error("expected a member name or index after `.`");
                             self.error_node(key_span)
@@ -962,11 +979,12 @@ impl<'a> Parser<'a> {
     }
 
     /// A `.` begins member access only when followed by a member key — a field name, an escaped name,
-    /// or a numeric index (`obj.0`, positional tuple access).
+    /// a numeric index (`obj.0`, positional tuple access), or the wildcard `*` (`obj.*` — the
+    /// whole-constructor-set member the export surface uses).
     fn dot_is_member(&self) -> bool {
         matches!(
             self.nth_kind(1),
-            Kind::Ident | Kind::BacktickName | Kind::Int
+            Kind::Ident | Kind::BacktickName | Kind::Int | Kind::Star
         )
     }
 
@@ -975,15 +993,6 @@ impl<'a> Parser<'a> {
             .get(self.pos + n)
             .map(|t| t.kind)
             .unwrap_or(Kind::Error)
-    }
-
-    /// The source text of the token `n` ahead of the cursor (`""` past the end). The look-ahead
-    /// companion of `cur_text`, used to peek a hyphenated keyword-ident (`inline-never def …`).
-    fn nth_text(&self, n: usize) -> &'a str {
-        self.tokens
-            .get(self.pos + n)
-            .map(|&t| self.text(t))
-            .unwrap_or("")
     }
 
     /// Parse `( e, … )` and return the argument occurrences.
@@ -1311,7 +1320,7 @@ impl<'a> Parser<'a> {
         let head = self.keyword_head("export", start);
         self.bump(); // `export`
         let mut items = vec![head];
-        items.extend(self.brace_name_list());
+        items.extend(self.brace_export_list());
         let span = start.merge(self.prev_span());
         self.list(items, span)
     }
@@ -1517,15 +1526,35 @@ impl<'a> Parser<'a> {
     }
 
     /// A brace-delimited comma-separated name list `{ a, b, … }` -> the vector of name occurrences.
-    /// Shared by `export`/`import`. Each element is a bare (or backtick-escaped) name; a non-name
-    /// element records an error and is skipped, so a malformed list still terminates.
+    /// Used by `import`. Each element is a bare (or backtick-escaped) name; a non-name element records
+    /// an error and is skipped, so a malformed list still terminates.
     fn brace_name_list(&mut self) -> Vec<StructId> {
+        self.brace_list_of(false)
+    }
+
+    /// The `export { … }` list — a name list where each element MAY carry a member-access postfix
+    /// `.A` / `.*` (a constructor-export element `(. T A)` / the wildcard `(. T *)`), since an export
+    /// publishes a value/handle name OR a type's constructor(s). Import stays name-only (a member has
+    /// no meaning there).
+    fn brace_export_list(&mut self) -> Vec<StructId> {
+        self.brace_list_of(true)
+    }
+
+    /// The shared brace-list machinery. `members` = whether an element may carry a `.member` postfix
+    /// (`export` yes, `import` no) — when set, each binder runs through `postfix` so `Color.*` /
+    /// `Color.Red` parse to the `(. Color …)` member form.
+    fn brace_list_of(&mut self, members: bool) -> Vec<StructId> {
         self.expect(Kind::LBrace, "`{`");
         let mut names = Vec::new();
         if !self.at(Kind::RBrace) {
             loop {
                 let before = self.pos;
-                names.push(self.binder());
+                let elem_span = self.cur_span();
+                let mut elem = self.binder();
+                if members && self.at(Kind::Dot) && self.dot_is_member() {
+                    elem = self.postfix(elem, elem_span);
+                }
+                names.push(elem);
                 if !self.sep_continue(Kind::RBrace) {
                     break;
                 }
@@ -2923,8 +2952,8 @@ mod tests {
     fn a_single_stray_symbol_does_not_cascade() {
         // One bad token in the middle of an otherwise-fine call yields a small, bounded number of
         // errors — recovery resynchronizes rather than mis-parsing everything after it.
-        let p = read_ml("f(a, @, c)");
-        assert!(!p.ok(), "the stray `@` is reported");
+        let p = read_ml("f(a, $, c)");
+        assert!(!p.ok(), "the stray `$` is reported");
         assert!(
             p.errors.len() <= 2,
             "one stray token stays bounded, got {} errors: {:?}",
@@ -3036,7 +3065,7 @@ mod tests {
     #[test]
     fn recovers_the_let_around_a_bad_binding() {
         // A stray value in a binding is isolated: the `let` shape and its body survive.
-        let p = read_ml("let x = @ in x + 1");
+        let p = read_ml("let x = $ in x + 1");
         assert!(!p.ok());
         let a = &p.arenas;
         let tail = a.as_form(a.root, "let").expect("still a let form");
@@ -3049,7 +3078,7 @@ mod tests {
     fn keyword_boundary_is_not_swallowed_by_a_bad_condition() {
         // A stray symbol where the `if` condition belongs must not eat the `then` — the rest of the
         // form still parses, so we get an `(if …)` with three children.
-        let p = read_ml("if @ then a else b");
+        let p = read_ml("if $ then a else b");
         assert!(!p.ok());
         let a = &p.arenas;
         let if_form = a.as_form(a.root, "if").expect("still an if form");

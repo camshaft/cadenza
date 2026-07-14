@@ -2441,6 +2441,48 @@ fn runtime_value_eq_leaves_no_live_objects() {
     );
 }
 
+/// A RUNTIME STRING ROPE compared with `=` is canonicalized (`bytes-compact`) before `value-eq`, so a
+/// rope and its flat twin compare EQUAL — the miscompile fix — AND the compact-then-drop leaves NO live
+/// heap cells. `value-eq` is `champ_eq`, a PHYSICAL-byte compare; a `String.concat` produces a ROPE whose
+/// bytes differ from a flat leaf of identical content, so the compiler compacts an OWNED String operand
+/// first. That compact CONSUMES the owned rope and yields a fresh owned flat leaf the emit drops after the
+/// borrowing compare. Two shapes:
+///   (a) VALUE — `(= (rep "hi" 3) "hixxx")`: the rope's content is "hixxx", so `=` is true → 1 (was 0, a
+///       miscompile: rope-bytes ≠ flat-bytes under champ_eq without the compact).
+///   (b) LEAK — the owned rope operand + its compacted leaf must net to 0 live cells (the literal "hixxx"
+///       side folds to a flat leaf, also compacted+dropped; nothing survives the scalar-returning `main`).
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_runtime_string_rope_compares_equal_and_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[rope-eq] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // `rep` appends "x" three times via `String.concat` → an OWNED rope whose content is "hixxx".
+    let src = "(module m \
+                 (def (rep (: s String) (: n Int64)) \
+                    (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
+                 (def (main) (if (= (rep \"hi\" 3) \"hixxx\") 1 0)) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(1),
+        "a runtime string rope must compare EQUAL to its flat twin (was 0 — a champ_eq physical-byte \
+         miscompile before the compiler compacts the rope operand)"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "rope-eq leak: the owned rope operand + its compacted flat leaf must net to 0 live cells after \
+         the borrowing value-eq (the compact consumes the rope; the emit drops the compacted result)"
+    );
+}
+
 /// RUNTIME BIGINT ARITHMETIC leaves no live objects — the refcount discipline for the borrowing BigInt
 /// ops. The runtime `bigint-add`/…/`to-i64-checked` BORROW their operands (`unbox_bigint` reads without
 /// consuming) and return a FRESH box (or a scalar), the `value-eq` shape — NOT the consuming
@@ -11594,6 +11636,46 @@ mod match_engine {
     }
 
     #[test]
+    fn file_of_binary_search_maps_every_files_nodes_to_the_right_file() {
+        // REGRESSION (perf + correctness): `FileScopeTable::file_of` maps a node id to its package file,
+        // consulted on EVERY file-scoped resolution (`file_scoped_def`/`_type`/`_variant_ctor`). It was a
+        // linear `files.iter().position(|f| f.contains(id))` → O(files) per lookup → O(N²) over a package
+        // of N files. Files are appended sequentially at link (each `struct_base = structure.len()` at its
+        // turn), so the ranges are ascending + non-overlapping and `file_of` is now a BINARY SEARCH
+        // (`partition_point` on `struct_base`, then confirm `contains`). This pins the binary search returns
+        // the SAME file the linear scan did for a node in EACH file (a broken search would misattribute a
+        // node to the wrong file → cross-file privacy / resolution breaks), and correctly returns `None` for
+        // a node in no file (the link-synthesized `(do …)` root, which sits outside every file's range).
+        let n = 40;
+        let files: Vec<(String, crate::ast::Arenas)> = (0..n)
+            .map(|i| {
+                (
+                    format!("f{i}"),
+                    parse(&format!("(do (def (g{i}) {i}) (export g{i}))")),
+                )
+            })
+            .collect();
+        let linked = crate::link::link(&files, "f0").expect("package links");
+        let db = crate::db::Db::load_linked(linked.arenas.clone(), Some(linked.linkage()));
+        // Each file's FIRST and LAST node id must map back to that file's own index — a broken binary
+        // search (wrong bound / off-by-one) would misattribute a boundary node to a neighbouring file.
+        for (fi, fs) in linked.files.iter().enumerate() {
+            let base = crate::ast::StructId(fs.struct_base);
+            let last = crate::ast::StructId(fs.struct_base + fs.struct_count - 1);
+            assert_eq!(
+                db.file_of(base),
+                Some(fi),
+                "file {fi}'s base node maps to {fi}"
+            );
+            assert_eq!(
+                db.file_of(last),
+                Some(fi),
+                "file {fi}'s last node maps to {fi}"
+            );
+        }
+    }
+
+    #[test]
     fn a_same_name_newtype_over_a_record_reads_a_field() {
         // The same-name spelling composes with record payloads: `(Point (record …))` constructs by the
         // type name and `.y` reads the inner field through the erased tag.
@@ -12294,13 +12376,39 @@ mod match_engine {
         );
 
         // NO false positive: a well-formed single OR multi-name export produces no malformed-export fault.
+        // A CONSTRUCTOR-EXPORT `(export (. T A))` / `(export (. T *))` (the opaque-types surface) is ALSO
+        // well-formed — it was regressed to the misleading "an export names a definition" when opaque types
+        // landed (the ctor-export shape is valid in the linker but `malformed_exports` only knew bare
+        // names). It must NOT be flagged.
         for ok in [
             "(module m (def (g) 1) (export g))",
             "(module m (def (a) 1) (def (b) 2) (export a b))",
+            "(module m (type T (A) (B)) (export (. T A)) (def (main) 1) (export main))",
+            "(module m (type T (A) (B)) (export (. T *)) (def (main) 1) (export main))",
         ] {
             assert!(
                 find_export_fault(ok).is_none(),
-                "a well-formed export is not flagged: {ok}"
+                "a well-formed export (incl. a ctor-export) is not flagged: {ok}"
+            );
+        }
+        // A MALFORMED ctor-export — `(. T)` with no ctor, `(. T A B)` with too many segments — gets the
+        // CONSTRUCTOR-EXPORT-specific message (naming the valid forms), NOT the generic "an export names a
+        // definition", and NO bogus `.`-head replace fix.
+        for bad in [
+            "(module m (type T (A) (B)) (export (. T)) (def (main) 1) (export main))",
+            "(module m (type T (A) (B)) (export (. T A B)) (def (main) 1) (export main))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(bad)))
+                .into_iter()
+                .find(|d| d.message.contains("a constructor-export is"))
+                .unwrap_or_else(|| {
+                    panic!("a malformed ctor-export names the ctor-export form: {bad}")
+                });
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert!(
+                d.fix.is_none(),
+                "a malformed ctor-export offers no bogus `.` fix: {:?}",
+                d.fix
             );
         }
     }
@@ -28843,6 +28951,62 @@ mod stage1 {
     }
 
     #[test]
+    fn named_member_access_on_a_collection_points_at_the_operation_module() {
+        // A collection/text value accessed by NAME — `(. xs foo)` on a `(List …)`, `(Map …)`, `(Set …)`,
+        // `String`, `Bytes` — is not a field read (these are not records). Its operations live on the type
+        // MODULE and take the value first, so the message names the module + the `((. Module op) value …)`
+        // form instead of the dead-end "requires a record" (the collection/text twin of the tuple-index
+        // redirect). A SCALAR keeps the plain message (no operation module).
+        for (src, module, ty_render) in [
+            (
+                "(module m (def (g (: xs (List Int64))) (. xs foo)) (export g))",
+                "List",
+                "(List Int64)",
+            ),
+            (
+                "(module m (def (g (: mp (Map Int64 Int64))) (. mp foo)) (export g))",
+                "Map",
+                "(Map Int64 Int64)",
+            ),
+            (
+                "(module m (def (g (: s (Set Int64))) (. s foo)) (export g))",
+                "Set",
+                "(Set Int64)",
+            ),
+            (
+                "(module m (def (g (: str String)) (. str foo)) (export g))",
+                "String",
+                "String",
+            ),
+        ] {
+            let d = compile_component(&crate::codec::encode(&parse(src)))
+                .err()
+                .unwrap_or_else(|| panic!("named access on a {module} must reject"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert!(
+                d.message
+                    .contains(&format!("a {ty_render} value has no field `foo`"))
+                    && d.message
+                        .contains(&format!("live on the `{module}` module"))
+                    && d.message
+                        .contains(&format!("((. {module} <op>) <value> …)")),
+                "names the {module} module + the value-first call form: {}",
+                d.message
+            );
+            assert!(
+                d.fix.is_none(),
+                "no mechanical fix (which op is unknown): {:?}",
+                d.fix
+            );
+        }
+        // A scalar keeps the generic "requires a record" (it has no operation module).
+        assert!(
+            expect_decline("(. 5 foo)").contains("requires a record"),
+            "a scalar member access keeps the record message"
+        );
+    }
+
+    #[test]
     fn member_access_of_a_missing_field_is_a_type_error() {
         // (. (record (x 1)) y) — the user record is CLOSED; a missing field rejects (CDZ0201).
         assert!(expect_decline("(. (record (x 1)) y)").contains("no field"));
@@ -35476,7 +35640,7 @@ mod stage1 {
         // the calls do NOT constant-fold away): called twice, INLINED it emits 6 muls, EMITTED-ONCE it
         // emits 3. Assert the module has exactly 3 muls (emit-once); the un-marked control emits 6.
         let src = "(module m \
-             (inline-never (def (big (: x Int64)) (+ (* x 7) (+ (* x 11) (* x 13))))) \
+             (@ inline-never (def (big (: x Int64)) (+ (* x 7) (+ (* x 11) (* x 13))))) \
              (def (main (: a Int64) (: b Int64)) (+ (big a) (big b))) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
         let mul_count = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::I64Mul));
@@ -35504,7 +35668,7 @@ mod stage1 {
         // erase). Both hold: the dict's `op` is INLINED into the specialized copy (NO `call_indirect`, no
         // runtime record) and that copy is emitted once + called. Runs to 145; asserts 0 `call_indirect`.
         let src = "(module m \
-             (inline-never \
+             (@ inline-never \
                (def (apply2 (const (: d (Record (op (-> Int64 Int64))))) (: x Int64)) \
                  ((. d op) ((. d op) x)))) \
              (def (main) (+ (apply2 (record (op (fn (n) (+ n 10)))) 5) \
@@ -35531,7 +35695,7 @@ mod stage1 {
                 "m",
                 crate::codec::encode(&parse(
                     "(module m \
-                       (inline-always (def (loop-n (: n Int64)) (if (= n 0) 0 (loop-n (- n 1))))) \
+                       (@ inline-always (def (loop-n (: n Int64)) (if (= n 0) 0 (loop-n (- n 1))))) \
                        (def (main) (loop-n 5)) (export main))",
                 )),
             )],
@@ -50639,5 +50803,259 @@ mod cross_component_oracle {
             "10",
             "11",
         );
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // U2 — the EFFECTS-UNIFICATION: an EFFECT bound to a peer contract routes to the boundary. A source
+    // consumer declares `(effect Math …)`, defaults it to a peer via `(bind Math "cadenza:math/api")`,
+    // and DELEGATES it `(host (Math) (Math.add x x))`. The escaping `Math.add` reaches the peer envelope
+    // exactly as an `(extern …)` op did — proving a peer dependency and a host effect are ONE concept.
+    // ------------------------------------------------------------------------------------------------
+
+    /// A hand-built peer exporting `add : func(p0: s64, p1: s64) -> s64` = p0+p1, under `cadenza:math/api`.
+    fn add_peer_component() -> Vec<u8> {
+        use wasm_encoder::*;
+        let core = {
+            let mut m = Module::new();
+            let mut types = TypeSection::new();
+            types
+                .ty()
+                .function(vec![ValType::I64, ValType::I64], vec![ValType::I64]);
+            m.section(&types);
+            let mut funcs = FunctionSection::new();
+            funcs.function(0);
+            m.section(&funcs);
+            let mut exports = ExportSection::new();
+            exports.export("add", ExportKind::Func, 0);
+            m.section(&exports);
+            let mut code = CodeSection::new();
+            let mut f = Function::new(vec![]);
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::I64Add);
+            f.instruction(&Instruction::End);
+            code.function(&f);
+            m.section(&code);
+            m.finish()
+        };
+        let mut c = ComponentBuilder::default();
+        let core_idx = c.core_module_raw(&core);
+        let no_args: [(&str, ModuleArg); 0] = [];
+        let inst = c.core_instantiate(core_idx, no_args);
+        let add_core = c.core_alias_export(inst, "add", ExportKind::Func);
+        let (add_ty, mut ft) = c.type_function();
+        ft.params([
+            ("p0", ComponentValType::Primitive(PrimitiveValType::S64)),
+            ("p1", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let add_comp = c.lift_func(add_core, add_ty, []);
+        // Publish as the interface instance cadenza:math/api (inner import-and-re-export wrapper).
+        let mut inner = ComponentBuilder::default();
+        let (ift, mut iff) = inner.type_function();
+        iff.params([
+            ("p0", ComponentValType::Primitive(PrimitiveValType::S64)),
+            ("p1", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let imp = inner.import("add", ComponentTypeRef::Func(ift));
+        let (et, mut ef) = inner.type_function();
+        ef.params([
+            ("p0", ComponentValType::Primitive(PrimitiveValType::S64)),
+            ("p1", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        inner.export(
+            "add",
+            ComponentExportKind::Func,
+            imp,
+            Some(ComponentTypeRef::Func(et)),
+        );
+        let ic = c.component(inner);
+        let iinst = c.instantiate(ic, [("add", ComponentExportKind::Func, add_comp)]);
+        c.export(
+            "cadenza:math/api",
+            ComponentExportKind::Instance,
+            iinst,
+            None,
+        );
+        c.finish()
+    }
+
+    #[test]
+    fn u2_an_effect_bound_to_a_peer_routes_to_the_boundary() {
+        use crate::testkit::parse;
+        // CONSUMER (source): an EFFECT Math, DEFAULTED to the peer cadenza:math/api, DELEGATED via `host`.
+        // main(5) performs `Math.add 5 5` → the peer computes 10.
+        let src = "(do \
+            (effect Math (op add (-> Int64 Int64 Int64))) \
+            (bind Math \"cadenza:math/api\") \
+            (def (main (: x Int64)) (host (Math) (Math.add x x))) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|d| panic!("consumer compiles: {} [{:?}]", d.message, d.code));
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("effect-bound consumer validates");
+        }
+        let peers = vec![cdz_run::Peer {
+            bytes: add_peer_component(),
+            interface: "cadenza:math/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: None,
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("effect bound to a peer runs across the boundary")
+        {
+            // Math.add(5,5) routed to the peer → 10. An effect bound to a peer contract IS a peer call.
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "10", "an effect bound to a peer routes to the boundary")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("effect-bound cross-component run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // U3 — COMPILE-REQUEST override of an effect's peer binding. The SAME source (bound to
+    // cadenza:math/api in-source) is REBOUND by a compile request to a DIFFERENT peer interface — the
+    // compiler-level override the operator asked for (rebind for a test / a different environment).
+    // ------------------------------------------------------------------------------------------------
+
+    /// A peer exporting `op : func(p0: s64, p1: s64) -> s64` under `iface`, computing p0*p1 (a MUL peer,
+    /// distinct from the add peer — so a rebind is observable). Op name `add` (the effect op's name is
+    /// fixed by the source; only the INTERFACE the request rebinds to differs).
+    fn mul_peer_component(iface: &str) -> Vec<u8> {
+        use wasm_encoder::*;
+        let core = {
+            let mut m = Module::new();
+            let mut types = TypeSection::new();
+            types
+                .ty()
+                .function(vec![ValType::I64, ValType::I64], vec![ValType::I64]);
+            m.section(&types);
+            let mut funcs = FunctionSection::new();
+            funcs.function(0);
+            m.section(&funcs);
+            let mut exports = ExportSection::new();
+            exports.export("add", ExportKind::Func, 0);
+            m.section(&exports);
+            let mut code = CodeSection::new();
+            let mut f = Function::new(vec![]);
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::I64Mul);
+            f.instruction(&Instruction::End);
+            code.function(&f);
+            m.section(&code);
+            m.finish()
+        };
+        let mut c = ComponentBuilder::default();
+        let core_idx = c.core_module_raw(&core);
+        let no_args: [(&str, ModuleArg); 0] = [];
+        let inst = c.core_instantiate(core_idx, no_args);
+        let add_core = c.core_alias_export(inst, "add", ExportKind::Func);
+        let (add_ty, mut ft) = c.type_function();
+        ft.params([
+            ("p0", ComponentValType::Primitive(PrimitiveValType::S64)),
+            ("p1", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let add_comp = c.lift_func(add_core, add_ty, []);
+        let mut inner = ComponentBuilder::default();
+        let (ift, mut iff) = inner.type_function();
+        iff.params([
+            ("p0", ComponentValType::Primitive(PrimitiveValType::S64)),
+            ("p1", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let imp = inner.import("add", ComponentTypeRef::Func(ift));
+        let (et, mut ef) = inner.type_function();
+        ef.params([
+            ("p0", ComponentValType::Primitive(PrimitiveValType::S64)),
+            ("p1", ComponentValType::Primitive(PrimitiveValType::S64)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        inner.export(
+            "add",
+            ComponentExportKind::Func,
+            imp,
+            Some(ComponentTypeRef::Func(et)),
+        );
+        let ic = c.component(inner);
+        let iinst = c.instantiate(ic, [("add", ComponentExportKind::Func, add_comp)]);
+        c.export(iface, ComponentExportKind::Instance, iinst, None);
+        c.finish()
+    }
+
+    #[test]
+    fn u3_a_compile_request_rebinds_an_effect_to_a_different_peer() {
+        use crate::Target;
+        use crate::abi::Artifact;
+        use crate::compile::compile;
+        use crate::testkit::parse;
+        // SAME source as U2 (binds Math → cadenza:math/api in-source), but a compile-request `effect-bind`
+        // artifact REBINDS Math → cadenza:mathv2/api (a MUL peer). The request WINS over the source default.
+        let src = "(do \
+            (effect Math (op add (-> Int64 Int64 Int64))) \
+            (bind Math \"cadenza:math/api\") \
+            (def (main (: x Int64)) (host (Math) (Math.add x x))) \
+            (export main))";
+        let out = crate::host::run_with_compiler_stack(|| {
+            compile(
+                &[
+                    Artifact::new(
+                        Artifact::KIND_AST,
+                        "main",
+                        crate::codec::encode(&parse(src)),
+                    ),
+                    Artifact::new(
+                        crate::link::KIND_EFFECT_BIND,
+                        "effect-bind",
+                        b"Math=cadenza:mathv2/api".to_vec(),
+                    ),
+                ],
+                &[Target::Wasm],
+            )
+        });
+        let consumer = out
+            .artifact(Target::Wasm.artifact_kind())
+            .unwrap_or_else(|| {
+                panic!(
+                    "rebound consumer compiles: {:?}",
+                    out.diagnostics
+                        .iter()
+                        .map(|d| &d.message)
+                        .collect::<Vec<_>>()
+                )
+            })
+            .to_vec();
+        // Bound to the REBOUND interface now — compose with the MUL peer at cadenza:mathv2/api.
+        let peers = vec![cdz_run::Peer {
+            bytes: mul_peer_component("cadenza:mathv2/api"),
+            interface: "cadenza:mathv2/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: None,
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts).expect("rebound effect runs") {
+            // The request rebound Math to the MUL peer → Math.add(5,5) = 5*5 = 25 (not the add peer's 10).
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "25",
+                    "a compile-request rebinds the effect to a different peer"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("rebound run trapped: {t}"),
+        }
     }
 }

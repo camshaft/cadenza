@@ -100,6 +100,10 @@ impl<'a> Lexer<'a> {
                 });
             }
             '#' => Kind::Hash,
+            // A bare `@` is the ANNOTATION sigil (`@inline-never def …`); the parser wraps the
+            // following form as `(@ name form)`. (The `,@` splice is a `,`-led token, handled above,
+            // so a lone `@` only ever reaches here as an annotation prefix.)
+            '@' => Kind::At,
             // `..` is the rest/spread marker (one token); a lone `.` is member access. A float's
             // fractional `.` is consumed inside `number` (it needs a digit after the `.`), so it never
             // reaches here — `1..n` therefore lexes `1` `..` `n`, not `1.` `.n`.
