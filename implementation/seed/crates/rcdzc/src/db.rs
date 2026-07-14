@@ -740,6 +740,7 @@ pub struct Db {
     /// signature rather than re-triggering; this set is the defensive backstop that a demand landing
     /// mid-solve returns without recomputing. Holds the def indices whose solve is on the stack.
     pub(crate) solving_params: crate::fxhash::FxHashSet<usize>,
+    pub(crate) seed_transitive: crate::fxhash::FxHashSet<usize>,
 
     /// The set of `let`-binding INITIALIZER occurrences that `lower` decided to KEEP as an A-normal
     /// `Core::Let` binding — a runtime value used more than once, named once so it is computed once
@@ -1137,6 +1138,7 @@ impl Db {
             def_schemes: crate::fxhash::FxHashMap::default(),
             param_types: crate::fxhash::FxHashMap::default(),
             solving_params: crate::fxhash::FxHashSet::default(),
+            seed_transitive: crate::fxhash::FxHashSet::default(),
             resolved: Column::new(),
             types: Column::new(),
             core: Column::new(),

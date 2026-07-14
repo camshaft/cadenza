@@ -2729,10 +2729,18 @@ fn emit(
         Core::Tuple { elems } => {
             out.push(Lir::ConstI32(elems.len() as i32));
             out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [arr]
+            // Each element starts its scratch ABOVE the high-water the PREVIOUS elements reached, NOT at a
+            // fixed `base`. An element that stashes a value in a scratch slot at a given TYPE (a
+            // `SumExpect`/match materializing an i32 heap handle) fixes that slot's declared type; a LATER
+            // element reusing the same slot number at a DIFFERENT width (`(+ i 1)` → i64) would re-type it,
+            // an invalid module (`expected i64, found i32`). Advancing `elem_base` past each element's
+            // high-water keeps sibling elements on disjoint slots. (A scalar element leaves `*high` where it
+            // was, so this is a no-op for the common all-scalar tuple — byte-identical there.)
             for (i, &elem) in elems.iter().enumerate() {
+                let elem_base = *high;
                 // [arr] ; push index ; push (box, if scalar) the element ; arr-set → [arr]
                 out.push(Lir::ConstI32(i as i32)); // [arr, i]
-                emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [arr, i, elem]
+                emit(db, elem, slots, elem_base, high, scratch_ty, layout, out)?; // [arr, i, elem]
                 // A scalar element boxes (a NARROW int extends i32→i64 first, box-int takes i64); a
                 // nested compound is ALREADY a u32 handle → `arr-set` it directly, no box.
                 if let Some(op) = box_op(db, elem)? {
@@ -2754,9 +2762,12 @@ fn emit(
         Core::ListNew { elems } => {
             out.push(Lir::ConstI32(elems.len() as i32));
             out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [arr]
+            // Per-element scratch above the running high-water (see `Core::Tuple` — sibling elements of
+            // different widths must not share a slot number).
             for (i, &elem) in elems.iter().enumerate() {
+                let elem_base = *high;
                 out.push(Lir::ConstI32(i as i32)); // [arr, i]
-                emit(db, elem, slots, base, high, scratch_ty, layout, out)?; // [arr, i, elem]
+                emit(db, elem, slots, elem_base, high, scratch_ty, layout, out)?; // [arr, i, elem]
                 if let Some(op) = box_op(db, elem)? {
                     emit_box_i32_to_i64_extend(db, elem, out);
                     out.push(Lir::CallImport(op)); // [arr, i, handle]
@@ -3849,20 +3860,24 @@ fn emit(
             scrutinee,
             disc_present,
         } => {
-            // Reserve slot `base` for the sum handle (i32); emit the scrutinee ABOVE it (`base + 1`, so its
-            // own transient scratch — a `checked-add`'s temps — floats clear), then stash the one handle.
-            // Reading the slot twice (disc probe + payload) evaluates the scrutinee EXACTLY ONCE, whether
-            // it is a reusable param/local or a computed value.
-            let handle_slot = base;
-            if handle_slot + 1 > *high {
-                *high = handle_slot + 1;
-            }
+            // Reserve a fresh i32 slot for the sum handle ABOVE the running high-water (`*high`), NOT at
+            // `base`. When this `SumExpect` is a SUB-EXPRESSION whose SIBLING uses `base` for a different
+            // width — `(tuple (AInt (Option.expect …)) (+ i 1))`, where the i64 `(+ i 1)` sibling also
+            // starts scratch at `base` — reusing `base` for the i32 handle re-types a slot the sibling
+            // `local.set`s at i64, an invalid module (`expected i64, found i32`). A slot at `*high` is
+            // guaranteed never pre-typed, so the handle never clashes with a sibling's scalar slot. This is
+            // the SAME "advance past the reserved handle slot" discipline `MatchSum`/`if`-cond use for a
+            // heap-handle sub-expression (the documented scratch-floor family). Emit the scrutinee ABOVE the
+            // handle slot (its own transient scratch floats clear), then stash the one handle; reading the
+            // slot twice (disc probe + payload) evaluates the scrutinee EXACTLY ONCE.
+            let handle_slot = *high;
+            *high = handle_slot + 1;
             scratch_ty.insert(handle_slot, ValType::I32);
             emit(
                 db,
                 scrutinee,
                 slots,
-                base + 1,
+                handle_slot + 1,
                 high,
                 scratch_ty,
                 layout,

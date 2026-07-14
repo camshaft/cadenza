@@ -61,6 +61,7 @@ pass	a Some carrying an inner-annotated None matches its arm (the control)
 pass	a String compound export under a non-main name crosses to the host
 pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
+pass	a THREE-argument closure round-trips — flat arrow spelling
 pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
@@ -103,6 +104,7 @@ pass	a bottom-up fold matches a tuple of its recursive results with constructor 
 pass	a bound name in a map key is used by its value, not the literal name
 pass	a branch perform under two nested handlers threads the inner state to the continuation
 pass	a branching recursive tree fold infers its unannotated callback across both arms
+pass	a build-time delegated effect whose result a returned closure captures does not escape
 pass	a built map renders its entries in canonical key order
 pass	a built-in Ast constructor applied to a wrong-type payload is a type error
 pass	a built-in Option is unwrapped by a helper that binds its payload
@@ -448,7 +450,10 @@ pass	a module with two definitions of the same name is rejected
 pass	a module's delegated capability is reachable as metadata, not as an export
 pass	a multi-argument call node is evaluated by iterating its payload arg list
 pass	a multi-argument closure among distinct-signature exports
+pass	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
 pass	a multi-argument closure round-trips through a consumer
+pass	a multi-argument closure round-trips through a consumer — FLAT arrow spelling
+pass	a multi-argument closure with COMPOUND args round-trips — flat arrow spelling
 pass	a multi-export set of parameterized capturing closures is driven per export
 pass	a multi-field record with one param-named key survives the call
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
@@ -462,6 +467,7 @@ pass	a multi-variant constructor nested in a tuple let-binder is refutable and r
 pass	a multi-variant-sum binding pattern is refutable and rejected
 pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
+pass	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 pass	a name bound to a string keys a map by its value, not the literal name
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
 pass	a name resolves to the nearest enclosing binding
@@ -607,6 +613,8 @@ pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
 pass	a recursive byte walk threading a Bytes parameter through a helper infers without annotation
 pass	a recursive def computes over its argument
 pass	a recursive def with a match base case computes over its argument
+pass	a recursive do-local function nested in an inlined helper recurses
+pass	a recursive do-local function survives two inlinings of its helper
 pass	a recursive effectful walk under a state-threading handler compiles without leaking an internal name
 pass	a recursive emitter dispatches on a sum's variants to build bytes per node
 pass	a recursive fold infers a callback applied to the RECURSIVE-CALL RESULT
@@ -1133,13 +1141,24 @@ pass	distinct-sig compound result — the Bool→(Tuple Bool Int64) closure
 pass	distinct-sig compound result — the Int64→(Tuple Int64 Int64) closure
 pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one
 pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Int64 one
+pass	distinct-sig round-trip: TWO collection consumers of different sigs — the List
+pass	distinct-sig round-trip: TWO collection consumers of different sigs — the Map
 pass	distinct-sig round-trip: TWO compound consumers of different sigs — the record one
 pass	distinct-sig round-trip: TWO compound consumers of different sigs — the tuple one
+pass	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Record-arg one
+pass	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Tuple-arg one
+pass	distinct-sig round-trip: a List consumer + a compound consumer of another sig — the compound
+pass	distinct-sig round-trip: a List consumer + a compound consumer of another sig — the list
+pass	distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the list
+pass	distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the scalar
 pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one
 pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the scalar one
 pass	distinct-sig round-trip: a compound consumer + a byte-rope consumer of different sigs — the byte-rope
 pass	distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the compound
 pass	distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the scalar
+pass	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the compound-arg one
+pass	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the scalar-arg one
+pass	distinct-sig round-trip: a higher-order closure + a scalar closure of another sig — the higher-order one
 pass	distinct-sig: a String closure + a Bytes closure of different signatures — the String one
 pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one
 pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one
@@ -1349,10 +1368,18 @@ pass	resuming with a value of the wrong type for the operation's result is a typ
 pass	resuming with a wrong-type value for a compound result type is a type error
 pass	round-trip byte-rope consumer alongside a plain export — the consumer
 pass	round-trip byte-rope consumer alongside a plain export — the plain
+pass	round-trip: a HIGHER-ORDER closure — its argument is itself a closure built in-guest
 pass	round-trip: a String-returning consumer of a closure
+pass	round-trip: a closure taking a NESTED compound (Tuple of Tuples) arg
+pass	round-trip: a closure taking a SUM (Option) arg built in-guest
+pass	round-trip: a closure taking a String arg built in-guest
 pass	round-trip: a compound consumer + a byte-rope consumer of the same closure — the byte-rope
 pass	round-trip: a compound consumer + a byte-rope consumer of the same closure — the compound
 pass	round-trip: a compound consumer alongside a plain export — the plain
+pass	round-trip: a compound-arg closure whose consumer returns a compound
+pass	round-trip: a consumer applies a closure taking a List arg built in-guest
+pass	round-trip: a consumer applies a closure taking a Record arg built in-guest
+pass	round-trip: a consumer applies a closure taking a Tuple arg built in-guest
 pass	round-trip: a consumer applies the handed-back closure and returns Bytes
 pass	round-trip: a consumer applies the handed-back closure and returns a List
 pass	round-trip: a consumer applies the handed-back closure and returns a tuple
@@ -1360,12 +1387,16 @@ pass	round-trip: a consumer returns a Map from the closure result
 pass	round-trip: a consumer returns a Set built from the closure result
 pass	round-trip: a consumer returns a byte-rope built from a single closure result
 pass	round-trip: a consumer returns a record built from the closure result
+pass	round-trip: a higher-order closure applied to TWO distinct inner closures
+pass	round-trip: a higher-order closure whose inner closure CAPTURES and is applied twice
+pass	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
 pass	round-trip: a scalar consumer + a List consumer of the same closure — the list
 pass	round-trip: a scalar consumer + a List consumer of the same closure — the scalar
 pass	round-trip: a scalar consumer + a compound consumer of the same closure — the compound
 pass	round-trip: a scalar consumer + a compound consumer of the same closure — the scalar
 pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
 pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
+pass	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	scalar length counts Unicode scalar values, not bytes
@@ -1556,7 +1587,8 @@ todo	Ast.decode decodes bytes that arrive as a function argument
 todo	Ast.encode and Ast.decode round-trip
 todo	Type is a first-class value
 todo	a UInt32 addition that overflows the 32-bit width traps
-pass	a build-time delegated effect whose result a returned closure captures does not escape
+todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
+todo	a compound closure ARG on the DIRECT-CALL path is declined — host would supply the compound
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type
@@ -1568,7 +1600,6 @@ todo	a list update at an index that wraps below the length still traps
 todo	a literal subterm in a quote pattern matches by equality
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
-todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested unquote pattern matches a sub-AST by shape
 todo	a nominal record compared to a plain record of the same shape is a type error

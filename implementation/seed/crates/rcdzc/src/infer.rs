@@ -1120,7 +1120,22 @@ fn call_site_arg_types(db: &mut Db, def: usize, own_body: StructId) -> Vec<Optio
     for args in &call_args {
         for (i, &arg) in args.iter().enumerate() {
             if out[i].is_none() {
-                let t = type_of(db, arg);
+                let mut t = type_of(db, arg);
+                if matches!(t, Ty::Any | Ty::Var(_))
+                    && let Some((d, j)) = arg_is_other_def_param(db, arg)
+                    && !db.seed_transitive.contains(&d)
+                {
+                    db.seed_transitive.insert(d);
+                    if let Some(d_body) = db.defs[d].body {
+                        let d_args = call_site_arg_types(db, d, d_body);
+                        if let Some(Some(at)) = d_args.get(j)
+                            && !matches!(at, Ty::Any | Ty::Var(_))
+                        {
+                            t = at.clone();
+                        }
+                    }
+                    db.seed_transitive.remove(&d);
+                }
                 if !matches!(t, Ty::Any | Ty::Var(_)) {
                     out[i] = Some(t);
                 }
@@ -1128,6 +1143,24 @@ fn call_site_arg_types(db: &mut Db, def: usize, own_body: StructId) -> Vec<Optio
         }
     }
     out
+}
+
+fn arg_is_other_def_param(db: &mut Db, arg: StructId) -> Option<(usize, usize)> {
+    let binder = match resolved_of(db, arg) {
+        Resolved::Ref { value } => value,
+        Resolved::Param { binder } => binder,
+        _ => return None,
+    };
+    let d = def_of_param(db, binder)?;
+    let pos = db.defs[d].params.iter().position(|&p| {
+        let name_occ = db
+            .ast
+            .as_form(p, ":")
+            .and_then(|t| t.first().copied())
+            .unwrap_or(p);
+        name_occ == binder
+    })?;
+    Some((d, pos))
 }
 
 /// Walk `node` collecting the ARGUMENT lists of every application whose head resolves to def `target`

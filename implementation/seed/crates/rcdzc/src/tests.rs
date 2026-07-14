@@ -15359,6 +15359,52 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mutually_recursive_decoder_infers_and_emits_valid_wasm() {
+        // Two fixes compose here: (1) TRANSITIVE call-site inference — `dn`'s param `b` (a `(List Int64)`)
+        // is decided only via `main → top → dn` / `dac → dn`, threaded through the pass-through param by
+        // seeding `dac`/`top`'s params from THEIR call sites; (2) an EMIT scratch-floor fix — `SumExpect`
+        // (Option.expect) reserves its handle slot ABOVE `*high`, and `Core::Tuple`/`ListNew` advance each
+        // element's scratch base past the prior element's high-water, so an i32 heap handle never re-types
+        // an i64 slot a sibling element uses (`(tuple (AInt (expect …)) (+ i 1))` clashed before →
+        // `expected i64, found i32`). The decoder normalizes `(list 42 7)` → `(AInt 42)`, matched to 42.
+        let Some(v) = run_heap_value(
+            "(module m (type Ast (AInt Int64) ALeaf (AList (List Ast))) \
+               (def (dn b i) (if (= i 0) (tuple (AInt ((. Option expect) ((. List at) b 0) \"in range\")) (+ i 1)) \
+                                         (tuple (AList (dac b i (- i 1) (list))) (+ i 1)))) \
+               (def (dac b i n acc) (if (< n 1) acc \
+                   (match (dn b i) ((tuple child nx) (dac b nx (- n 1) ((. List push) acc child)))))) \
+               (def (top b) (match (dn b 0) ((tuple ast pos) ast))) \
+               (def (main) (match (top (list 42 7)) ((AInt n) n) (_ -1))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping mutually-recursive decoder run");
+            return;
+        };
+        assert_eq!(
+            v, "42",
+            "the decoder normalizes (list 42 7) to (AInt 42) → 42"
+        );
+    }
+
+    #[test]
+    fn a_sum_expect_in_a_tuple_beside_an_i64_element_emits_valid_wasm() {
+        // Regression guard for the scratch-slot clash: a `(tuple <Option.expect result> <i64 arith>)` — an
+        // i32 heap-handle element beside an i64 element — must give each element DISJOINT scratch slots
+        // (the SumExpect handle above `*high`, the per-element scratch base advanced), else the i32 handle
+        // and the i64 value share a slot and wasm rejects the module. `(tuple (expect (List.at xs 0)) (+ i 1))`.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (go xs i) (. (tuple ((. Option expect) ((. List at) xs 0) \"x\") (+ i 1)) 0)) \
+                   (def (main) (go (list 7 8) 0)) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "7",
+            "SumExpect beside an i64 tuple element gets a disjoint scratch slot"
+        );
+    }
+
+    #[test]
     fn a_recursive_def_infers_its_params_from_a_call_site() {
         // CALL-SITE INFERENCE: a recursive def whose parameter types the BODY alone cannot ground — they
         // are decided only by HOW a caller invokes it — is now seeded from a NON-recursive call site.
