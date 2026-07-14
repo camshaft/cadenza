@@ -2042,11 +2042,17 @@ impl<'a> Parser<'a> {
     /// type `A -> B`.
     fn param(&mut self) -> StructId {
         let start = self.cur_span();
-        // A parameter is normally a plain binder name, but a `(`-led parameter is a destructuring
-        // PATTERN — a tuple pattern `(a, b)` or a literal-bearing one like `(1, x)` (which desugars
-        // to a refutable `let` binder, rejected as CDZ0210). Parse it as a pattern so the ML surface
-        // round-trips the pattern parameters the s-expr surface and the printer already support.
-        let binder = if self.at(Kind::LParen) {
+        // A parameter is normally a plain binder name, but a parameter that STARTS a compound PATTERN is a
+        // destructuring binder — a `(`-led tuple pattern `(a, b)`, a `[`-led list pattern `[x, .. rest]`, or
+        // a `#{`-led map pattern `#{ k = v }` — each of which `pattern_atom` reads (a refutable/ill-shaped
+        // one then faults CDZ0210/CDZ0201 at lowering, exactly as the equivalent `let` binder does). Parse
+        // it as a pattern so the ML surface ROUND-TRIPS every destructuring parameter the s-expr surface +
+        // the printer support: the printer emits `def head([x, .. rest]) = …` for `(def (head (list x ..
+        // rest)) …)`, so the reader must accept the `[`-led pattern here or the round-trip breaks.
+        let starts_pattern = self.at(Kind::LParen)
+            || self.at(Kind::LBracket)
+            || (self.at(Kind::Hash) && self.nth_kind(1) == Kind::LBrace);
+        let binder = if starts_pattern {
             self.pattern()
         } else {
             self.binder()
@@ -2515,6 +2521,44 @@ mod tests {
         assert_eq!(
             sexpr::print(&parse_ok("b[u8(1)] == other")),
             "(= (bin (u8 1)) other)"
+        );
+    }
+
+    #[test]
+    fn a_def_parameter_may_be_a_destructuring_pattern() {
+        use crate::sexpr;
+        // A def parameter that STARTS a compound pattern is a destructuring binder, not just a bare name —
+        // the ML reader must accept every pattern shape the printer emits for a pattern parameter, or the
+        // corpus round-trip breaks (the regression this guards: `def head([x, .. rest]) = x` failed
+        // "expected a name" because `param` routed only `(`-led patterns to `pattern()`, not `[`/`#{`).
+
+        // A `(`-led TUPLE pattern parameter (the already-working case) — kept as a regression anchor.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f((a, b)) = a")),
+            "(def (f (tuple a b)) a)"
+        );
+        // A `[`-led LIST pattern parameter — a fixed-arity and a rest form.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f([a, b]) = a")),
+            "(def (f (list a b)) a)"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def head([x, .. rest]) = x")),
+            "(def (head (list x .. rest)) x)"
+        );
+        // A `#{`-led MAP pattern parameter.
+        assert_eq!(
+            sexpr::print(&parse_ok("def get(#{ 1 = v }) = v")),
+            "(def (get (map (1 v))) v)"
+        );
+        // Pattern parameters COMPOSE and mix with plain-name / annotated params.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f([(a, b), .. rest]) = a")),
+            "(def (f (list (tuple a b) .. rest)) a)"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(x, [a, .. rest]) = x")),
+            "(def (f x (list a .. rest)) x)"
         );
     }
 
