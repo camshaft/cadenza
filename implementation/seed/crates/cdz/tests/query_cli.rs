@@ -1752,11 +1752,14 @@ fn fix_all_drops_a_fractional_form_from_an_integer_valued_float_in_an_int_contex
 }
 
 #[test]
-fn check_offers_no_fix_for_a_non_integer_float_in_an_int_context() {
-    // Honesty boundary: a NON-integer float (`2.5`) in an int position has no clean repair (rounding
-    // or truncating is a semantic choice the compiler must not make), so the diagnostic carries the
-    // CDZ0301 message but NO structured fix — not a wrong one.
-    let dir = scratch_dir("nofix_frac");
+fn check_retypes_the_int_operand_of_an_int_float_mix() {
+    // An int/float mix (`(+ 2 2.5)`) IS cleanly repairable — NOT by touching the fractional `2.5`
+    // (rounding/truncating would be a semantic choice the compiler must not make), but by widening the
+    // INT operand `2` -> `2.0`, giving the all-Float64 `(+ 2.0 2.5)`. The retype fix conforms an operand
+    // to the other's type regardless of order (`rcdzc@484876e6`), so it targets the literal-int side; the
+    // repaired program re-checks clean. (The earlier honesty-boundary test asserted NO fix here, from
+    // when the coercion only ever targeted the second operand — the fractional `2.5` — and thus declined.)
+    let dir = scratch_dir("frac_retype");
     let f = dir.join("prog.sexp");
     std::fs::write(&f, "(module m (def (main) (+ 2 2.5)) (export main))\n").unwrap();
     let (ok, stdout, _) = run(&["check", f.to_str().unwrap()], "");
@@ -1766,9 +1769,19 @@ fn check_offers_no_fix_for_a_non_integer_float_in_an_int_context() {
         "the mismatch is reported: {stdout}"
     );
     assert!(
-        !stdout.contains("help"),
-        "no fix is offered for a fractional literal: {stdout}"
+        stdout.contains("replace with `2.0`"),
+        "the fix widens the INT operand to float, not the fractional literal: {stdout}"
     );
+    // `fix --all` applies it — the int became `2.0`, the `2.5` is untouched, and it re-checks clean.
+    let (fixed_ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(fixed_ok, "fix succeeds: {stderr}");
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("(+ 2.0 2.5)"),
+        "the int operand widened to float: {repaired}"
+    );
+    let (ok2, _, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(ok2, "repaired file has no errors: {repaired}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
