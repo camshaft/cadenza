@@ -21316,6 +21316,68 @@ mod match_engine {
     }
 
     #[test]
+    fn a_narrow_width_wrapping_arith_const_fold_masks_to_the_width_not_rejects() {
+        // A NARROW-width wrapping op's constant fold must MASK the result to the type width (mod 2^w,
+        // sign-extended for a signed narrow type) — a wrapping op has a defined modular outcome, so a
+        // narrow overflow WRAPS, it does NOT fit-reject CDZ0302 the way the checked `+`/`*` and a genuine
+        // over-range LITERAL do (numeric-model.md §A Wrapping Operation Has A Defined Modular Outcome). This
+        // guards the const-fold ↔ runtime AGREEMENT: the same expression must not reject as a constant yet
+        // run as runtime data. Regression: `(UInt8.wrapping-mul 20 20)` rejected CDZ0302 before the fold-
+        // site width mask (it produced an unmasked ConstInt(400) that hit select's literal-width gate).
+        // UInt8 wrapping-mul: 20·20 = 400 ≡ 144 (mod 256); 16·16 = 256 ≡ 0; 15·17 = 255 fits exactly.
+        for (prog, want) in [
+            ("((. UInt8 wrapping-mul) 20 20)", 144u8),
+            ("((. UInt8 wrapping-mul) 16 16)", 0),
+            ("((. UInt8 wrapping-mul) 15 17)", 255),
+            ("((. UInt8 wrapping-mul) 3 4)", 12),
+            ("((. UInt8 wrapping-add) 200 100)", 44), // 300 ≡ 44 (mod 256)
+            ("((. UInt8 wrapping-add) 100 100)", 200), // fits
+        ] {
+            let src = format!("(module m (def (main) {prog}) (export main))");
+            assert_eq!(
+                run_returns::<u8>(&component(&src), "main"),
+                want,
+                "narrow unsigned wrapping const-fold: {prog}"
+            );
+        }
+        // SIGNED narrow wrap: Int8 100+100 = 200, low 8 bits with the sign bit set → -56.
+        assert_eq!(
+            run_returns::<i8>(
+                &component("(module m (def (main) ((. Int8 wrapping-add) 100 100)) (export main))"),
+                "main"
+            ),
+            -56,
+            "signed narrow wrapping const-fold sign-extends the masked low bits"
+        );
+        // UInt16 wrapping-mul: 300·300 = 90000 ≡ 24464 (mod 2^16) — a wider narrow width still masks.
+        assert_eq!(
+            run_returns::<u16>(
+                &component(
+                    "(module m (def (main) ((. UInt16 wrapping-mul) 300 300)) (export main))"
+                ),
+                "main"
+            ),
+            24464,
+            "UInt16 wrapping const-fold masks to 16 bits"
+        );
+        // GUARD (the mask must NOT leak to literals): a genuine over-range LITERAL still rejects CDZ0302 —
+        // only the wrapping OP masks; `(: 400 UInt8)` is an ill-formed literal, not a modular outcome.
+        assert_eq!(
+            reject_code("(module m (def (main) (: 400 UInt8)) (export main))").as_deref(),
+            Some("CDZ0302"),
+            "an over-range literal still rejects — the wrapping mask does not leak to literals"
+        );
+        // GUARD (the CHECKED op still traps): `(+ (: 200 UInt8) (: 100 UInt8))` overflows UInt8 → CDZ0304,
+        // proving the fold-site mask is scoped to the WRAPPING prim, not the checked add.
+        assert_eq!(
+            reject_code("(module m (def (main) (+ (: 200 UInt8) (: 100 UInt8))) (export main))")
+                .as_deref(),
+            Some("CDZ0304"),
+            "a checked narrow add overflow still traps — the mask is wrapping-only"
+        );
+    }
+
+    #[test]
     fn checked_integer_conversion_folds_in_range_and_rejects_out_of_range_constants() {
         // `T.of` — the CHECKED (range-checked) integer conversion (numeric-model.md §A Conversion Between
         // Integer Types Is Explicit): a constant IN RANGE folds to the value at the target type; a

@@ -1672,7 +1672,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // a constant pair via `wrapping_*`; a runtime operand emits `Core::Arith` (which for a
                 // wrapping prim selects the RAW machine op, no overflow guard).
                 Some(prim @ (Prim::WrappingAdd | Prim::WrappingMul)) if args.len() == 2 => {
-                    lower_wrapping_arith(db, prim, args[0], args[1])
+                    lower_wrapping_arith(db, id, prim, args[0], args[1])
                 }
                 // `String.concat` — the TOTAL binary join. FOLD two constant strings to their
                 // concatenation (the result is another constant `String`). The value form is always NFC,
@@ -13659,11 +13659,21 @@ fn lower_checked_arith(
 
 /// Lower `(Int64.wrapping-add a b)` / `(Int64.wrapping-mul a b)` — two's-complement wraparound, NEVER
 /// trapping (numeric-model.md §Overflow Is Defined — the modular value outcome). FOLD a constant operand
-/// pair via `i64` `wrapping_add`/`wrapping_mul` (evaluated at the Stage default width; a later width stage
-/// masks to the solved width). A runtime operand becomes a `Core::Arith` carrying the WRAPPING prim — the
-/// backend selects the RAW machine `i64.add`/`i64.mul` (which already wraps), NOT the checked/trapping
-/// path the `+`/`*` prims take. A poison operand propagates.
-fn lower_wrapping_arith(db: &mut Db, prim: Prim, lhs: StructId, rhs: StructId) -> Core {
+/// pair via `i64` `wrapping_add`/`wrapping_mul`, then MASK the result to the op's SOLVED width (`wrap_to`,
+/// mod 2^w with sign-extension for a signed narrow type) — a wrapping op has a defined modular outcome, so
+/// a NARROW overflow (`(UInt8.wrapping-mul 20 20) = 400 → 144`) must WRAP, never fit-reject. Without the
+/// mask the unmasked `ConstInt(400)` reaches select's literal-width gate and is wrongly rejected CDZ0302
+/// (the checked-op reject), diverging from the RUNTIME narrow-wrap path (which masks at the backend) — see
+/// the `df9f369b` runtime witnesses. At Int64 the mask to 64 bits is a no-op. A runtime operand becomes a
+/// `Core::Arith` carrying the WRAPPING prim — the backend selects the RAW machine `i64.add`/`i64.mul`
+/// (which already wraps), NOT the checked/trapping path the `+`/`*` prims take. A poison operand propagates.
+fn lower_wrapping_arith(
+    db: &mut Db,
+    id: StructId,
+    prim: Prim,
+    lhs: StructId,
+    rhs: StructId,
+) -> Core {
     let a = core_of(db, lhs);
     let b = core_of(db, rhs);
     match (a, b) {
@@ -13677,8 +13687,18 @@ fn lower_wrapping_arith(db: &mut Db, prim: Prim, lhs: StructId, rhs: StructId) -
                 Prim::WrappingAdd => x.wrapping_add(y),
                 _ => x.wrapping_mul(y),
             };
-            trace!(target: "rcdzc::fold", ?prim, result = n, "wrapping arithmetic folds to a constant");
-            Core::ConstInt(IntValue::from_i64(n))
+            // MASK the raw i64 result to the op's solved integer width — a wrapping op's outcome is the
+            // value MODULO 2^w (sign-extended for a signed narrow type), so a narrow overflow wraps rather
+            // than fit-rejecting at select. A non-integer/unsolved result type leaves the i64 value as-is
+            // (a later stage grounds it); at Int64 the 64-bit mask is a no-op.
+            let folded = match crate::infer::type_of(db, id) {
+                crate::ty::Ty::Int(it) => {
+                    IntValue::from_i64(n).wrap_to(it.ground_signed(), it.ground_width())
+                }
+                _ => IntValue::from_i64(n),
+            };
+            trace!(target: "rcdzc::fold", ?prim, result = n, "wrapping arithmetic folds to a constant (masked to the solved width)");
+            Core::ConstInt(folded)
         }
         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
         // ALGEBRAIC IDENTITY: one operand is a constant making the wrapping op a no-op (`a +% 0`,
