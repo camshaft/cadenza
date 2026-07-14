@@ -7041,6 +7041,76 @@ mod tests {
         assert_eq!(live_nodes(), 0, "no leak");
     }
 
+    /// Decode a single-Float value-encode document back to the decimal string it denotes:
+    /// `[-]<significand>e<exponent>`, where the significand is the big-endian base-256 magnitude read as a
+    /// base-10 integer. Robust to a magnitude of ANY length (repeated ÷10 on a base-256 limb vector — no
+    /// u128 width assumption), so it works for a fuzzed value's full shortest decimal. Doc layout:
+    /// header(8)·leaf_count(1)·[KIND_FLOAT · neg(1) · exp(8 BE) · siglen(1) · mag] · struct… — the float
+    /// leaf is first, at offset 9: [9]=KIND, [10]=neg, [11..19]=exp, [19]=siglen, [20..]=mag.
+    fn float_doc_to_decimal(doc: &[u8]) -> String {
+        let neg = doc[10] == 1;
+        let mut eb = [0u8; 8];
+        eb.copy_from_slice(&doc[11..19]);
+        let exp = i64::from_be_bytes(eb);
+        let siglen = doc[19] as usize;
+        let mag = &doc[20..20 + siglen]; // big-endian base-256
+        // base-256 (big-endian) → decimal string via repeated division by 10.
+        let mut limbs: Vec<u32> = mag.iter().map(|&b| b as u32).collect(); // most-significant first
+        let mut digits_rev: Vec<u8> = Vec::new();
+        while limbs.iter().any(|&l| l != 0) {
+            let mut rem = 0u32;
+            for l in limbs.iter_mut() {
+                let cur = rem * 256 + *l;
+                *l = cur / 10;
+                rem = cur % 10;
+            }
+            digits_rev.push(b'0' + rem as u8);
+            // trim leading (most-significant) zero limbs so the loop terminates promptly
+            while limbs.first() == Some(&0) && limbs.len() > 1 {
+                limbs.remove(0);
+            }
+        }
+        let sig: String = if digits_rev.is_empty() {
+            "0".into()
+        } else {
+            digits_rev.iter().rev().map(|&b| b as char).collect()
+        };
+        format!("{}{}e{}", if neg { "-" } else { "" }, sig, exp)
+    }
+
+    /// FUZZ: the `float_leaf` conversion (f64 → codec KIND_FLOAT decimal via `{:e}` + base-10→base-256
+    /// Horner) over RANDOM f64 bit patterns — far stronger than the ~12 hand-picked values in
+    /// `value_encode_float_decimal_round_trips_to_the_same_f64`. Every FINITE f64 encoded via the real
+    /// `op_value_encode_form` must, when its KIND_FLOAT decimal is parsed back, reconstruct the EXACT bits
+    /// — a digit-count, exponent-fold, or Horner-carry bug in `float_leaf_from_sci` would surface on some
+    /// bit pattern the fixed list misses. A non-finite float declines (`None`) — asserted too. No leak.
+    #[test]
+    fn prop_float_leaf_round_trips_bit_exact_under_random_f64() {
+        bolero::check!().with_type::<u64>().for_each(|&bits| {
+            reset();
+            let v = f64::from_bits(bits);
+            let desc: &[u8] = &[0x01, 0x02, 0x00]; // [0]=Float(tag 2), root=0
+            let h = op_box_float(v);
+            let doc = op_value_encode_form(h, desc);
+            if v.is_finite() {
+                let doc = doc.expect("a finite float must encode");
+                let decimal = float_doc_to_decimal(&doc);
+                let reconstructed: f64 = decimal.parse().expect("the KIND_FLOAT decimal must parse");
+                assert_eq!(
+                    reconstructed.to_bits(),
+                    v.to_bits(),
+                    "f64 {v} (bits {bits:#018x}) must round-trip through its decimal {decimal}"
+                );
+            } else {
+                // nan/inf have no exact-decimal form → the walker declines (they cross by dedicated forms).
+                // (`op_box_float` canonicalizes NaN, but the encode of a non-finite still declines.)
+                assert!(doc.is_none(), "a non-finite float must DECLINE the value-encode, not emit garbage");
+            }
+            op_drop(h);
+            assert_eq!(live_nodes(), 0, "no leak for bits {bits:#018x}");
+        });
+    }
+
     /// `op_box_float` normalizes every NaN — of ANY bit pattern — to the ONE canonical quiet NaN
     /// (`f64::NAN.to_bits()`), so a float leaf has a single canonical byte form (deterministic-value-
     /// form.md). Two NaN values that differ ONLY in their (unobservable) payload/sign bits must therefore
