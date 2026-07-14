@@ -101,6 +101,8 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                 Ty::int()
             }
             Some(crate::resolved::SegKind::Bytes { .. }) => Ty::Bytes,
+            // A `utf8` segment decodes its bytes to a well-formed `String` (a non-match on ill-formed).
+            Some(crate::resolved::SegKind::Utf8 { .. }) => Ty::String,
             None => Ty::Any,
         },
         // A MAP PATTERN binder: a VALUE binder (`key = Some`) has the map's VALUE type; the REST binder
@@ -5133,10 +5135,27 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             ));
                         }
                     }
+                    // A `utf8` segment is byte-aligned (a string is a byte sequence); it is always sized,
+                    // so there is no non-final-unsized fault to check (unlike `bytes`).
+                    crate::resolved::SegKind::Utf8 { .. } => {
+                        if !bit_cursor.is_multiple_of(8) {
+                            out.push(Reject::coded(
+                                Code::IllFormedBinary,
+                                format!(
+                                    "a bin utf8 segment must start on a byte boundary, but {} of \
+                                     bit-fields precede it — {}",
+                                    open_bits_phrase(bit_cursor),
+                                    bits_to_byte_boundary_hint(bit_cursor),
+                                ),
+                            ));
+                        }
+                    }
                 }
                 collect(db, seg.slot, out);
-                if let crate::resolved::SegKind::Bytes { size: Some(n) } = &seg.kind {
-                    collect(db, *n, out);
+                match &seg.kind {
+                    crate::resolved::SegKind::Bytes { size: Some(n) } => collect(db, *n, out),
+                    crate::resolved::SegKind::Utf8 { size } => collect(db, *size, out),
+                    _ => {}
                 }
             }
             // The whole form must be byte-aligned: any open bits at the end are ill-formed.

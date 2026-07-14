@@ -1108,8 +1108,12 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         Resolved::Bin { segs } => {
             for s in segs.iter() {
                 collect_callees(db, s.slot, out);
-                if let crate::resolved::SegKind::Bytes { size: Some(n) } = &s.kind {
-                    collect_callees(db, *n, out);
+                match &s.kind {
+                    crate::resolved::SegKind::Bytes { size: Some(n) } => {
+                        collect_callees(db, *n, out)
+                    }
+                    crate::resolved::SegKind::Utf8 { size } => collect_callees(db, *size, out),
+                    _ => {}
                 }
             }
         }

@@ -1134,6 +1134,12 @@ pub enum SegKind {
     /// A byte-sequence segment `(bytes b [n])`: splice all of `b` (build) / bind the rest or exactly `n`
     /// bytes (match). `size` is the optional dependent-size occurrence (`n`); `None` = unsized (final).
     Bytes { size: Option<StructId> },
+    /// A UTF-8 string segment `(utf8 s n)`: `size` is the dependent-size occurrence (`n`, an earlier
+    /// integer segment binder). In pattern position it reads exactly `n` bytes and DECODES them as
+    /// strict UTF-8 — a well-formed sequence binds `s : String`, an ill-formed one is a NON-MATCH (never
+    /// a trap: `collections-and-text.md #Decoding Bytes To A String Is Total, Not Trapping`). Unlike
+    /// `Bytes`, the size is REQUIRED (always `(utf8 s n)`), so there is no unsized/final form.
+    Utf8 { size: StructId },
 }
 
 /// One `(kind slot [modifier])` segment of a [`Resolved::Bin`]. `slot` is the value/binder/literal

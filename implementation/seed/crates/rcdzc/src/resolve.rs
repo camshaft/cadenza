@@ -2478,9 +2478,26 @@ fn resolve_bin(db: &Db, id: StructId) -> Resolved {
             });
             continue;
         }
+        // A UTF-8 string segment `(utf8 s n)` — read `n` bytes and decode them as strict UTF-8, binding
+        // `s : String` on success, a non-match on ill-formed input. The size is REQUIRED (always
+        // dependent): a String segment with no length has no boundary, so there is no unsized form.
+        if kind_name == "utf8" {
+            if parts.len() != 3 {
+                return Resolved::Poison(Reject::coded(
+                    Code::Malformed,
+                    "a utf8 bin segment is (utf8 s n)",
+                ));
+            }
+            segs.push(crate::resolved::Segment {
+                kind: crate::resolved::SegKind::Utf8 { size: parts[2] },
+                slot: parts[1],
+                little_endian: false,
+            });
+            continue;
+        }
         return Resolved::Poison(Reject::coded(
             Code::Malformed,
-            "an unrecognized bin segment kind (expected uNN/iNN/bits/bytes)",
+            "an unrecognized bin segment kind (expected uNN/iNN/bits/bytes/utf8)",
         ));
     }
     Resolved::Bin { segs }

@@ -16093,6 +16093,46 @@ mod match_engine {
     }
 
     #[test]
+    fn a_utf8_bin_segment_decodes_a_length_prefixed_string() {
+        // `(bin (u8 n) (utf8 s n))` reads a length byte then decodes exactly `n` bytes as strict UTF-8,
+        // binding `s : String` on well-formed input and being a NON-MATCH (→ catch-all) on ill-formed
+        // bytes — never a trap (collections-and-text.md #Decoding Bytes To A String Is Total). The decode
+        // is CONSTANT-FOLDED here (a constant `Bytes.of` scrutinee), so the match reduces to a bool via
+        // string equality: `[3 102 111 111]` = len-3 "foo" → matches, binds "foo" (= "foo" → 1); `[1 255]`
+        // = len-1 then 0xFF (invalid UTF-8) → non-match → catch-all (→ 0).
+        for (bytes, want) in [
+            ("3 102 111 111", 1), // len 3, "foo" — well-formed, binds and equals "foo"
+            ("1 255", 0),         // len 1, 0xFF — ill-formed, falls to the catch-all
+        ] {
+            let src = format!(
+                "(module m (def (main) (match (Bytes.of (list {bytes})) \
+                   ((bin (u8 n) (utf8 name n)) (if (= name \"foo\") 1 2)) \
+                   (_ 0))) (export main))"
+            );
+            assert_eq!(
+                run_returns::<i64>(&component(&src), "main"),
+                want,
+                "utf8 bin segment [{bytes}]"
+            );
+        }
+    }
+
+    #[test]
+    fn a_utf8_bin_match_with_no_catch_all_is_non_exhaustive() {
+        // A `utf8` segment can fail to match (ill-formed bytes), so a `bin` match whose only arm carries a
+        // `(utf8 …)` segment does not cover every byte sequence → CDZ0210 (the exhaustiveness rule every
+        // `bin` match obeys, made pointed by the decode itself being a source of non-match).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (match (Bytes.of (list 3 102 111 111)) \
+                   ((bin (u8 n) (utf8 name n)) name))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210")
+        );
+    }
+
+    #[test]
     fn a_string_annotation_checks_against_a_string_value() {
         // `String` in type position (`(: "hi" String)`) decodes to `Ty::String` (`resolve::decode_ty`) —
         // transparent over a string value, but a MISMATCH is rejected: `(: "hi" Int64)` conflicts the

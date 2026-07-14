@@ -175,6 +175,9 @@ pass	a closure returning an empty Bytes crosses as the empty list
 pass	a closure returning an empty String crosses as the empty list
 pass	a closure taking a nominal-over-scalar argument receives the underlying scalar
 pass	a closure that performs a delegated effect cannot cross the host boundary
+pass	a closure whose CALL returns a tuple CONTAINING a list
+pass	a closure whose CALL returns a user sum crosses as the value form
+pass	a closure whose CALL returns an Option crosses as the value form
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
 pass	a closure whose body calls a top-level helper function
 pass	a comparison-predicate function returns its boolean result
@@ -876,6 +879,9 @@ pass	a unary variant applied to a wrong-type payload is a type error
 pass	a unit multiplied by its own inverse cancels to the dimensionless unit
 pass	a user sum's nullary variant escapes with its bare variant name
 pass	a user sum's payload variant escapes with its bare variant name
+pass	a utf8 bin segment binds a decoded string when the bytes are well-formed
+pass	a utf8 bin segment is a non-match on ill-formed bytes, forcing the catch-all
+pass	a utf8-decoding bin match with no catch-all is non-exhaustive
 pass	a value declaration in a do block is in scope for the following forms
 pass	a value definition may carry a leading doc, like a function definition
 pass	a value-eq guard on a LITERAL-probe arm drives a tail-recursive loop
@@ -1153,6 +1159,8 @@ pass	distinct-sig round-trip: a List consumer + a compound consumer of another s
 pass	distinct-sig round-trip: a List consumer + a compound consumer of another sig — the list
 pass	distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the list
 pass	distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the scalar
+pass	distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the collection one
+pass	distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the sum one
 pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one
 pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the scalar one
 pass	distinct-sig round-trip: a compound consumer + a byte-rope consumer of different sigs — the byte-rope
@@ -1370,6 +1378,7 @@ pass	resuming with a value of the wrong type for the operation's result is a typ
 pass	resuming with a wrong-type value for a compound result type is a type error
 pass	round-trip byte-rope consumer alongside a plain export — the consumer
 pass	round-trip byte-rope consumer alongside a plain export — the plain
+pass	round-trip: a HIGHER-ORDER closure arg composed with a SUM result
 pass	round-trip: a HIGHER-ORDER closure — its argument is itself a closure built in-guest
 pass	round-trip: a String-returning consumer of a closure
 pass	round-trip: a closure taking a NESTED compound (Tuple of Tuples) arg
@@ -1386,9 +1395,16 @@ pass	round-trip: a consumer applies the handed-back closure and returns Bytes
 pass	round-trip: a consumer applies the handed-back closure and returns a List
 pass	round-trip: a consumer applies the handed-back closure and returns a tuple
 pass	round-trip: a consumer returns a Map from the closure result
+pass	round-trip: a consumer returns a Map whose VALUE is a list
+pass	round-trip: a consumer returns a Result (Err type pinned) from the closure result
+pass	round-trip: a consumer returns a Result reaching BOTH variants
 pass	round-trip: a consumer returns a Set built from the closure result
 pass	round-trip: a consumer returns a byte-rope built from a single closure result
+pass	round-trip: a consumer returns a list of tuples from repeated closure application
 pass	round-trip: a consumer returns a record built from the closure result
+pass	round-trip: a consumer returns a tuple CONTAINING a list built from the closure result
+pass	round-trip: a consumer returns an Option built from the closure result
+pass	round-trip: a consumer returns an Option of a tuple
 pass	round-trip: a higher-order closure applied to TWO distinct inner closures
 pass	round-trip: a higher-order closure whose inner closure CAPTURES and is applied twice
 pass	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
@@ -1621,9 +1637,6 @@ todo	a rational with numerator and denominator both negative normalizes to posit
 todo	a rational's sign is normalized onto the numerator
 todo	a rational-magnitude quantity erases to its exact rational value
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
-todo	a utf8 bin segment binds a decoded string when the bytes are well-formed
-todo	a utf8 bin segment is a non-match on ill-formed bytes, forcing the catch-all
-todo	a utf8-decoding bin match with no catch-all is non-exhaustive
 todo	a whole rational carries a denominator of one
 todo	adding two units of one dimension converts to the reference unit exactly
 todo	an IEC binary prefix scales a unit by a power of two

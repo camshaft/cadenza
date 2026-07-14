@@ -2094,8 +2094,12 @@ fn walk_for_dead_traps(
         Resolved::Bin { segs } => {
             for s in segs.iter() {
                 discarded(db, s.slot, out, seen);
-                if let crate::resolved::SegKind::Bytes { size: Some(n) } = &s.kind {
-                    discarded(db, *n, out, seen);
+                match &s.kind {
+                    crate::resolved::SegKind::Bytes { size: Some(n) } => {
+                        discarded(db, *n, out, seen)
+                    }
+                    crate::resolved::SegKind::Utf8 { size } => discarded(db, *size, out, seen),
+                    _ => {}
                 }
             }
         }

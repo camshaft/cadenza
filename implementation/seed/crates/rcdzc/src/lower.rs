@@ -4699,6 +4699,7 @@ fn ref_escapes_whole(db: &mut Db, node: StructId, init: StructId) -> bool {
         Resolved::Bin { segs } => segs.iter().any(|s| {
             ref_escapes_whole(db, s.slot, init)
                 || matches!(&s.kind, crate::resolved::SegKind::Bytes { size: Some(n) } if ref_escapes_whole(db, *n, init))
+                || matches!(&s.kind, crate::resolved::SegKind::Utf8 { size } if ref_escapes_whole(db, *size, init))
         }),
         Resolved::Annot { expr, .. } => ref_escapes_whole(db, expr, init),
         Resolved::Apply { head, args } => {
@@ -6327,8 +6328,12 @@ fn uses_in(db: &mut Db, node: StructId, init: StructId) -> u32 {
             let mut n = 0;
             for s in segs.iter() {
                 n += uses_in(db, s.slot, init);
-                if let crate::resolved::SegKind::Bytes { size: Some(sz) } = &s.kind {
-                    n += uses_in(db, *sz, init);
+                match &s.kind {
+                    crate::resolved::SegKind::Bytes { size: Some(sz) } => {
+                        n += uses_in(db, *sz, init)
+                    }
+                    crate::resolved::SegKind::Utf8 { size } => n += uses_in(db, *size, init),
+                    _ => {}
                 }
             }
             n
@@ -11681,6 +11686,9 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
         SegKind::Bytes { .. } => bin_const_scrutinee(db, s.slot).is_none(),
         // A runtime bit-field value (a param, not a `ConstInt`) — the run packs at run time.
         SegKind::Bits { .. } => !matches!(core_of(db, s.slot), Core::ConstInt(_) | Core::Poison(_)),
+        // A `utf8` segment is a PATTERN-only construct here — building a `(utf8 s n)` (splice a String's
+        // bytes) is not yet lowered; route it to the const-build loop, which declines cleanly.
+        SegKind::Utf8 { .. } => false,
     });
     if any_runtime {
         // Build the `bin` as a sequence of PIECES concatenated at run time (`Core::BytesConcat`): each
@@ -11790,6 +11798,13 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                     flush_ints(db, &mut int_run, &mut pieces);
                     flush_bits(db, &mut bits_run, &mut pieces);
                     pieces.push(seg.slot);
+                }
+                // Constructing a `(utf8 s n)` segment (splice a String's bytes) is not yet lowered — the
+                // `utf8` segment is currently pattern-only (`bin_match_decode`). Decline cleanly.
+                SegKind::Utf8 { .. } => {
+                    return Core::Poison(Reject::decline(
+                        "constructing a utf8 bin segment is not yet built (utf8 is pattern-only)",
+                    ));
                 }
             }
         }
@@ -11927,6 +11942,13 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
                 }
                 raw.extend(bytes);
             }
+            // Constructing a `(utf8 s n)` segment (splice a String's UTF-8 bytes) is not yet lowered —
+            // `utf8` is currently pattern-only (`bin_match_decode`). Decline cleanly.
+            SegKind::Utf8 { .. } => {
+                return Core::Poison(Reject::decline(
+                    "constructing a utf8 bin segment is not yet built (utf8 is pattern-only)",
+                ));
+            }
         }
     }
     // A well-formed `bin` is byte-aligned, so no open bits remain here (CDZ0220 caught a mis-aligned one
@@ -11976,6 +11998,10 @@ fn bin_const_scrutinee(db: &mut Db, scrutinee: StructId) -> Option<Vec<u8>> {
 enum BinDecoded {
     Int(i64),
     ByteRange(usize, usize),
+    /// A `utf8` segment's decoded string — the byte range validated as strict UTF-8 (its match already
+    /// required well-formedness, so this is a real `String`). Kept alongside the range so a binder can
+    /// bind the decoded `String` directly.
+    Str(String),
 }
 
 /// Run a `bin` PATTERN's segment automaton over the concrete bytes `raw`, left-to-right. Returns each
@@ -12085,6 +12111,34 @@ fn bin_match_decode(
                 out.push(BinDecoded::ByteRange(off, off + n));
                 off += n;
             }
+            // A UTF-8 string segment `(utf8 s n)`: read exactly `n` bytes (like a dependent `bytes`) then
+            // DECODE them as strict UTF-8. Ill-formed bytes are a NON-MATCH (return `None`), never a trap —
+            // exhaustiveness (a required catch-all) forces the caller to handle the bad case. `n` names an
+            // earlier integer segment binder, resolved to its already-decoded value.
+            SegKind::Utf8 { size } => {
+                debug_assert_eq!(
+                    nbits, 0,
+                    "a well-formed bin is byte-aligned at a utf8 segment"
+                );
+                let size_name = db.ast.as_name(*size)?;
+                let bound = segs
+                    .iter()
+                    .take(i)
+                    .position(|s| db.ast.as_name(s.slot) == Some(size_name))
+                    .and_then(|idx| match out.get(idx) {
+                        Some(BinDecoded::Int(v)) => Some(*v),
+                        _ => None,
+                    });
+                let n = bound.filter(|v| *v >= 0)? as usize;
+                if off + n > raw.len() {
+                    return None; // the named size overruns the remaining bytes → non-match
+                }
+                // Strict UTF-8 validation (matches `str::from_utf8` — rejects invalid leads, overlong
+                // forms, surrogates, and code points > U+10FFFF). Ill-formed → non-match.
+                let s = core::str::from_utf8(&raw[off..off + n]).ok()?;
+                out.push(BinDecoded::Str(s.to_string()));
+                off += n;
+            }
         }
     }
     // Whole-scrutinee accounting: after the last segment, any open bits or leftover bytes are a non-match
@@ -12122,6 +12176,9 @@ fn decode_bin_field(
     };
     match decoded.get(seg_index) {
         Some(BinDecoded::Int(n)) => Core::ConstInt(IntValue::from_i64(*n)),
+        // A `utf8` segment binds the decoded, already-validated string as a `Core::ConstStr` (typed
+        // `Ty::String`) — the same rep a string literal lowers to, so it rides the constant path.
+        Some(BinDecoded::Str(s)) => Core::ConstStr(s.clone()),
         Some(BinDecoded::ByteRange(s, e)) => {
             // A synthesized constant `Core::BytesOf` of the bound sub-range (same shape the Bytes.slice
             // fold produces): fresh UInt8 element leaves, core/ty pre-filled so it rides the constant path.
@@ -12155,9 +12212,9 @@ fn bin_static_offset(segs: &[crate::resolved::Segment], seg_index: usize) -> Opt
     for seg in segs.iter().take(seg_index) {
         match &seg.kind {
             SegKind::Int { width, .. } => off += *width as u32,
-            // A bit-field / bytes segment before the target makes the runtime read's offset non-trivial
-            // (sub-byte cursor, or dynamic length) — not built yet.
-            SegKind::Bits { .. } | SegKind::Bytes { .. } => return None,
+            // A bit-field / bytes / utf8 segment before the target makes the runtime read's offset
+            // non-trivial (sub-byte cursor, or dynamic length) — not built yet.
+            SegKind::Bits { .. } | SegKind::Bytes { .. } | SegKind::Utf8 { .. } => return None,
         }
     }
     Some(off)
@@ -12223,9 +12280,11 @@ fn decode_bin_field_runtime(
                 )),
             }
         }
-        SegKind::Bits { .. } | SegKind::Bytes { .. } => Core::Poison(Reject::decline(
-            "a runtime bin bit-field / sized-bytes binder is not yet decoded",
-        )),
+        SegKind::Bits { .. } | SegKind::Bytes { .. } | SegKind::Utf8 { .. } => {
+            Core::Poison(Reject::decline(
+                "a runtime bin bit-field / sized-bytes / utf8 binder is not yet decoded",
+            ))
+        }
     }
 }
 
