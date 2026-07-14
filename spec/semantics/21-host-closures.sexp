@@ -4186,6 +4186,62 @@
   (call   mk (: 100 Int64) (: (Err 30) (Result Int64 Int64)))
   (output (: 70 Int64)))
 
+; DIRECT-CALL SUM ARG × MULTI-EXPORT + MIXED: the Option/Result-arg path now composes with the MULTI-EXPORT
+; shape (N same-sig closures share ONE `call` taking the sum) and the MIXED shape (a sum-arg closure alongside
+; a plain export). The shared `call` rebuilds the sum cell from the flattened `(disc, payload)` (branch on the
+; boundary disc → `sum-new`, dispatched through the guest funcref table by the handle's rep), and the shared
+; envelope mints the `option<…>`/`result<…>` boundary type via the SAME `ArgSlot` slot model the tuple path
+; uses. Scoped to a SCALAR result (a list result over a sum arg on these shapes declines honestly).
+
+(case "MULTI-EXPORT: two same-sig Option-arg closures share one `call`"
+  (doc    "`mk-a`/`mk-b : (-> (Option Int64) Int64)` — two same-signature closures each taking an `(Option
+           Int64)`, crossing as two `make-<name>`s sharing ONE `call` whose argument is a native `option<s64>`
+           (rebuilt in-guest per closure). Driving `mk-a`: `make-a()` → a handle, `call(handle, Some(42))` →
+           `(match o ((Some x) x) (None 0))` = 42.")
+  (input  (do (def (mk-a) (fn ((: o (Option Int64))) (match o ((Some x) x) (None 0))))
+              (def (mk-b) (fn ((: o (Option Int64))) (match o ((Some x) (+ x 1)) (None -1))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: (Some 42) (Option Int64)))
+  (output (: 42 Int64)))
+
+(case "MULTI-EXPORT: driving the SECOND Option-arg closure (Some and None)"
+  (doc    "The SAME multi-export component, driving `mk-b`: `call(handle, Some(42))` → `(+ x 1)` = 43. Both
+           same-sig Option-arg closures share the one `call` (dispatched by the handle's resource rep).")
+  (input  (do (def (mk-a) (fn ((: o (Option Int64))) (match o ((Some x) x) (None 0))))
+              (def (mk-b) (fn ((: o (Option Int64))) (match o ((Some x) (+ x 1)) (None -1))))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: (Some 42) (Option Int64)))
+  (output (: 43 Int64)))
+
+(case "MULTI-EXPORT: two same-sig Result-arg closures share one `call`"
+  (doc    "`mk-a`/`mk-b : (-> (Result Int64 Int64) Int64)` sharing one `call` whose argument is a native
+           `result<s64,s64>`. Driving `mk-a` with `Err(3)`: `(match r ((Ok x) x) ((Err e) (- 0 e)))` = -3.")
+  (input  (do (def (mk-a) (fn ((: r (Result Int64 Int64))) (match r ((Ok x) x) ((Err e) (- 0 e)))))
+              (def (mk-b) (fn ((: r (Result Int64 Int64))) (match r ((Ok x) (+ x 1)) ((Err e) e))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: (Err 3) (Result Int64 Int64)))
+  (output (: -3 Int64)))
+
+(case "MIXED: an Option-arg closure ALONGSIDE a plain (non-closure) export"
+  (doc    "The sum-arg path composes with the MIXED shape: a `(-> (Option Int64) Int64)` closure crosses via
+           the resource envelope's `make` + shared `call` (rebuilding the native `option<s64>`) WHILE a plain
+           export `twice` rides alongside as an ordinary top-level func. Driving the CLOSURE: `make()` →
+           handle, `call(handle, Some(42))` → 42.")
+  (input  (do (def (mk) (fn ((: o (Option Int64))) (match o ((Some x) x) (None 0))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk) (export twice)))
+  (call   mk (: (Some 42) (Option Int64)))
+  (output (: 42 Int64)))
+
+(case "MIXED: driving the PLAIN export alongside an Option-arg closure"
+  (doc    "The SAME mixed component, driving the PLAIN export `twice` — proving it coexists with the Option-arg
+           closure interface. `twice(21)` → 42.")
+  (input  (do (def (mk) (fn ((: o (Option Int64))) (match o ((Some x) x) (None 0))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk) (export twice)))
+  (call   twice (: 21 Int64))
+  (output (: 42 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner

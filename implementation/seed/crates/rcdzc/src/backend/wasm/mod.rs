@@ -3409,11 +3409,28 @@ fn emit_multi_closure_resource(
     } else {
         None
     };
+    // A SOLE `(Option/Result scalar)` arg shared by all same-sig closures crosses as a native `option<…>`/
+    // `result<…>` the ABI flattens to `(disc, payload)`; the shared `call` rebuilds the sum cell via
+    // `SumArgRebuild`, the envelope mints the boundary type via the returned `ArgSlot`. Scoped: SCALAR result.
+    let sum_arg: Option<(
+        crate::backend::wasm::envelope::ArgSlot,
+        crate::backend::wasm::lir::ValType,
+        crate::backend::wasm::serialize::SumArgRebuild,
+    )> = if tuple_arg.is_none()
+        && nested_tuple.is_none()
+        && multi_args.is_none()
+        && arg_tys.len() == 1
+    {
+        fixed_shape_option_scalar_arg(db, &arg_tys[0])
+    } else {
+        None
+    };
     let arg_bytes: Vec<u8> = if tuple_arg.is_some()
         || nested_tuple.is_some()
         || multi_args.is_some()
+        || sum_arg.is_some()
     {
-        Vec::new() // the flattened fields are carried by tuple_arg/nested_tuple/multi_args, not arg_bytes
+        Vec::new() // the flattened fields are carried by tuple_arg/nested_tuple/multi_args/sum_arg, not arg_bytes
     } else {
         arg_tys
             .iter()
@@ -3471,6 +3488,8 @@ fn emit_multi_closure_resource(
         leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
     } else if let Some((_, all_vts, _)) = &multi_args {
         all_vts.clone() // the flattened leaves of EVERY tuple/scalar arg, in order (N-compound-args)
+    } else if let Some((_, payload_vt, _)) = &sum_arg {
+        vec![crate::backend::wasm::lir::ValType::I32, *payload_vt] // sum flattens to (disc, payload)
     } else {
         arg_tys
             .iter()
@@ -3593,6 +3612,16 @@ fn emit_multi_closure_resource(
                 }
             }
         }
+        // A SOLE sum arg (Option/Result) shared by all makes: the shared `call` rebuilds the sum cell via
+        // `sum-new` (branching on disc), boxing each arm's payload with its box op.
+        if let Some((_, _, rebuild)) = &sum_arg {
+            used.insert("sum-new");
+            for arm in [&rebuild.arm_true, &rebuild.arm_false] {
+                if let Some((box_op, _)) = arm.payload_box {
+                    used.insert(box_op);
+                }
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -3681,6 +3710,15 @@ fn emit_multi_closure_resource(
                 .map(|(_, _, _, _, _, suf)| suf.as_slice())
         })
         .unwrap_or(&[]);
+    // A SOLE sum arg with a LIST result on the multi-export path declines: the multi list-result cores/envelope
+    // thread tuples (`list_rebuilds`/`list_slots`) but NOT sums, so a sum + list result would fall into them
+    // with a mismatched `arg_vts`. Decline HERE so it doesn't reach the single-tuple-oriented list routings.
+    if sum_arg.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
+        return Err(Reject::decline(
+            "a multi-export closure taking an Option/Result arg AND returning a byte-rope/compound/collection \
+             is not yet emitted (the multi list-result path threads tuples, not sums; scalar-result works)",
+        ));
+    }
     // A COMPOUND shared result → the N-makes-one-list-`call` VALUE-FORM core (walks each closure's returned
     // handle into the value-form template) + the SAME memory/realloc envelope as the bytes path. cdz-run
     // try-decodes the `list<u8>` result to the typed `(: value T)` form.
@@ -3821,6 +3859,43 @@ fn emit_multi_closure_resource(
             &[],  // single-tuple suffix unused
             None, // single-tuple nested shape unused
             Some(slots),
+        ));
+    }
+    // DIRECT-CALL SUM ARG (multi-export, SCALAR result): N same-sig closures share one `call` taking an
+    // `(Option/Result scalar)`. The shared `call` rebuilds the sum cell (branch on disc → `sum-new`) from the
+    // flattened `(disc, payload)`; the envelope's shared `call` functype takes the `option<…>`/`result<…>`
+    // boundary type via the classifier's `ArgSlot`. `own<t>` (single-use); the rebuilt cell drop is unconditional.
+    if let Some((slot, _payload_vt, rebuild)) = &sum_arg {
+        let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
+            &funcs,
+            &imports,
+            &[],
+            &ser_makes,
+            &[], // no plain (non-closure) exports on the pure multi-export path
+            &arg_vts,
+            ret_vt,
+            lifted_type_idx,
+            &layout,
+            false,
+            &[], // no tuple arg
+            std::slice::from_ref(rebuild),
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &abi_makes,
+            &arg_bytes,
+            result_byte,
+            &[], // no plain exports
+            false,
+            None,
+            &[],
+            &[],
+            None,
+            Some(std::slice::from_ref(slot)),
         ));
     }
     // DIRECT-CALL COMPOUND ARG (multi-export): N same-sig closures share one `call` whose single argument is
@@ -4025,11 +4100,27 @@ fn emit_mixed_closure_resource(
     } else {
         None
     };
+    // A SOLE `(Option/Result scalar)` arg shared by the closure exports, plain exports alongside. Scoped:
+    // SCALAR shared-`call` result.
+    let sum_arg: Option<(
+        crate::backend::wasm::envelope::ArgSlot,
+        crate::backend::wasm::lir::ValType,
+        crate::backend::wasm::serialize::SumArgRebuild,
+    )> = if tuple_arg.is_none()
+        && nested_tuple.is_none()
+        && multi_args.is_none()
+        && arg_tys.len() == 1
+    {
+        fixed_shape_option_scalar_arg(db, &arg_tys[0])
+    } else {
+        None
+    };
     let arg_bytes: Vec<u8> = if tuple_arg.is_some()
         || nested_tuple.is_some()
         || multi_args.is_some()
+        || sum_arg.is_some()
     {
-        Vec::new() // the flattened fields are carried by tuple_arg/nested_tuple/multi_args, not arg_bytes
+        Vec::new() // the flattened fields are carried by tuple_arg/nested_tuple/multi_args/sum_arg, not arg_bytes
     } else {
         arg_tys
             .iter()
@@ -4087,6 +4178,8 @@ fn emit_mixed_closure_resource(
         leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
     } else if let Some((_, all_vts, _)) = &multi_args {
         all_vts.clone() // the flattened leaves of EVERY tuple/scalar arg, in order (N-compound-args)
+    } else if let Some((_, payload_vt, _)) = &sum_arg {
+        vec![crate::backend::wasm::lir::ValType::I32, *payload_vt] // sum flattens to (disc, payload)
     } else {
         arg_tys
             .iter()
@@ -4241,6 +4334,16 @@ fn emit_mixed_closure_resource(
                 }
             }
         }
+        // A SOLE sum arg (Option/Result) shared by the closure exports: the shared `call` rebuilds the sum cell
+        // via `sum-new`, boxing each arm's payload.
+        if let Some((_, _, rebuild)) = &sum_arg {
+            used.insert("sum-new");
+            for arm in [&rebuild.arm_true, &rebuild.arm_false] {
+                if let Some((box_op, _)) = arm.payload_box {
+                    used.insert(box_op);
+                }
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     if layout.lifted.is_empty() {
@@ -4348,6 +4451,14 @@ fn emit_mixed_closure_resource(
                 .map(|(_, _, _, _, _, suf)| suf.as_slice())
         })
         .unwrap_or(&[]);
+    // A SOLE sum arg with a LIST result on the mixed path declines (the mixed list-result cores thread tuples,
+    // not sums) — decline HERE so it doesn't reach the single-tuple-oriented list routings below.
+    if sum_arg.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
+        return Err(Reject::decline(
+            "a mixed closure taking an Option/Result arg AND returning a byte-rope/compound/collection is not \
+             yet emitted (the mixed list-result path threads tuples, not sums; scalar-result works)",
+        ));
+    }
     // A COMPOUND shared closure result → the VALUE-FORM mixed core (N makes + shared list-`call` walking each
     // closure's returned handle into the value-form template + the plain exports as top-level funcs), same
     // `list<u8>` envelope as the bytes path. cdz-run try-decodes the result to the typed `(: value T)` form.
@@ -4487,6 +4598,42 @@ fn emit_mixed_closure_resource(
             &[],  // single-tuple suffix unused
             None, // single-tuple nested shape unused
             Some(slots),
+        ));
+    }
+    // DIRECT-CALL SUM ARG (mixed, SCALAR result): the shared `call` takes an `(Option/Result scalar)`, plain
+    // exports alongside. The shared `call` rebuilds the sum cell (branch on disc → `sum-new`); the envelope's
+    // shared `call` functype takes the `option<…>`/`result<…>` boundary type via the classifier's `ArgSlot`.
+    if let Some((slot, _payload_vt, rebuild)) = &sum_arg {
+        let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
+            &funcs,
+            &imports,
+            &[],
+            &ser_makes,
+            &ser_plain,
+            &arg_vts,
+            ret_vt,
+            lifted_type_idx,
+            &layout,
+            false,
+            &[], // no tuple arg
+            std::slice::from_ref(rebuild),
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &abi_makes,
+            &arg_bytes,
+            result_byte,
+            &abi_plain,
+            false,
+            None,
+            &[],
+            &[],
+            None,
+            Some(std::slice::from_ref(slot)),
         ));
     }
     // DIRECT-CALL COMPOUND ARG (mixed): the shared `call`'s single arg is a fixed-shape scalar tuple/record.
