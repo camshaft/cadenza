@@ -333,6 +333,24 @@
   (input  (String.at "😀b" 1))
   (output (: (Some "b") (Option String))))
 
+(case "a constant-index String.at result compares equal to a literal by content"
+  (doc    "`(= (String.at \"banana\" 1) \"a\")` is true — the scalar at index 1 of \"banana\" is \"a\", and
+           the one-scalar String it yields compares equal by CONTENT to the literal \"a\". A constant-index
+           `String.at` folds to a `ConstStr`, so its equality is a content compare. Pins that a `String.at`
+           result is content-comparable (the character-classifying `(= (String.at s i) …)` a lexer uses).
+           MUST be true.")
+  (input  (= (Option.expect (String.at "banana" 1) "c") "a"))
+  (output (: true Bool)))
+
+(case "a constant-index String.at result compares unequal to a different literal"
+  (doc    "The negative companion: index 0 of \"banana\" is \"b\", so `(= (String.at \"banana\" 0) \"a\")`
+           is FALSE — the content compare distinguishes \"b\" from \"a\". Together with the case above this
+           pins that a folded `String.at` result equals a literal exactly when their content matches. (At a
+           CONSTANT index this equality folds and is correct; the same at a RUNTIME index is the
+           failures-queue miscompile — these are the working boundary the bug sits against.) MUST be false.")
+  (input  (= (Option.expect (String.at "banana" 0) "c") "a"))
+  (output (: false Bool)))
+
 ; --- String.at and String.slice are fallible: an out-of-range index yields None -------------
 ; collections-and-text.md #A String Is A Sequence Of Unicode Scalar Values gives a string a defined
 ; scalar length, and #Indexing And Lookup Are Fallible, Not Trapping requires an out-of-range read to

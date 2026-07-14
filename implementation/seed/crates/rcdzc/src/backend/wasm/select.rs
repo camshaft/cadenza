@@ -326,11 +326,24 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         // `Proj`, which `arr-get`-borrows). `tail_borrowed` is set by the `Proj` arm below for its
         // operand; every other occurrence (the result, a tuple element, a call arg) is consuming.
         Core::LocalRef { binder: b } => b == binder && !tail_borrowed,
-        // A projection BORROWS its operand — so a `LocalRef` directly under a `Proj` does not escape
-        // through it. Recurse with the borrow flag set for the operand. `List.len` (`vec-len`) reads its
-        // operand without consuming it — a borrow, like a projection.
-        Core::Proj { operand, .. } | Core::ListLen { operand } | Core::BytesLen { operand } => {
+        // A projection of a SCALAR element BORROWS its operand — `arr-get` then `get-int`/`get-bool` COPIES
+        // the value out, retaining nothing from the aggregate — so a `LocalRef` directly under such a `Proj`
+        // does not escape through it (recurse with the borrow flag). But a projection of a NESTED-COMPOUND
+        // element returns the CHILD HANDLE, a live reference INTO the aggregate that TRANSFERS OUT to the
+        // consumer (a call arg, a constructor element, or the return); if the aggregate were then dropped,
+        // that drop would cascade to free the extracted child — a use-after-free (the byte-decode `(let ((r
+        // (one …))) (loop … (. r 0)))` threading a boxed-sum `(. r 0)` into a param returned garbage). So a
+        // nested-compound projection ESCAPES its operand: the operand must NOT be reclaimed (its child left
+        // through the projection). Conservative — the aggregate's array + its other children leak rather
+        // than risk the UAF (the analysis's stated bias: a false "escapes" only leaks). `get_op(id)` is
+        // `Some` for a scalar element (borrow), `None` for a nested-compound (escape). `List.len`/`Bytes.len`
+        // (`vec-len`/`bytes-len`) read a scalar count — always a borrow.
+        Core::ListLen { operand } | Core::BytesLen { operand } => {
             binding_escapes(db, operand, binder, true)
+        }
+        Core::Proj { operand, .. } => {
+            let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
+            binding_escapes(db, operand, binder, scalar_element)
         }
         // `List.at` BORROWS its list (`vec-len`/`vec-get` both borrow; the read element is DUP'd into the
         // `Some` payload rather than moved) — so a list bound here does not escape through `List.at`. The
@@ -916,7 +929,6 @@ pub fn collect_used_ops(
             // RECLAMATION (U13/U14): a projection off an OWNED-temporary aggregate reclaims it after the
             // borrowing read — mirror the emit's reclaim condition so the ops are imported. A SCALAR element
             // `drop`s the parent; a NESTED-COMPOUND element `dup`s the returned child then `drop`s the parent.
-            // (A borrowed-operand projection reclaims nothing, matching the emit.)
             if matches!(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
@@ -5216,7 +5228,10 @@ fn emit(
             out.push(Lir::ConstI32(index as i32)); // [handle, i]
             out.push(Lir::CallImport(OP_ARR_GET)); // → [elem-handle]
             // A scalar element unboxes (`get-int`/`get-bool`, then a NARROW int narrows i64→i32); a
-            // nested compound: the handle `arr-get` yields IS the nested compound — use it as-is.
+            // nested compound: the handle `arr-get` yields IS the nested compound — use it as-is. (A
+            // nested-compound projection of a BORROWED aggregate is kept alive by the aggregate's owner not
+            // being dropped while the projection escapes — see `binding_escapes`'s nested-compound Proj arm,
+            // which treats such a projection as an ESCAPE of the operand so its owner is not reclaimed.)
             if let Some(op) = scalar_elem {
                 out.push(Lir::CallImport(op)); // → [scalar (i64 for an int, i32 for a bool)]
                 if needs_get_int_narrow(db, id) {
@@ -6553,24 +6568,26 @@ fn emit_match_arms_tailable(
     };
     // BRANCHLESS 2-ARM SELECT: a match of exactly TWO UNGUARDED arms — a literal probe then a wildcard
     // (`(match n (0 a) (_ b))`), or a Bool's two literals (`(match p (true a) (false b))`) — is
-    // `(if (scrutinee == probe0) body0 body1)`, so when both bodies are cheap trap-free LEAVES and the
-    // result is a scalar it emits wasm's `select` instead of an `if`/`else` block: `body0 ; body1 ;
-    // (scrutinee == probe0) ; select`. This is the match analogue of the `if`→`select` rewrite and rests
-    // on the same soundness (a `select` evaluates both operands, safe precisely because each leaf is
-    // trap/allocation-free). Excluded for a heap/unit result (a `select` on a handle would drop-leak;
-    // unit has no value). TAIL position is fine here even though a `select` cannot carry a tail call: a
-    // `is_select_leaf` body is a param/local/const, which is never a call, so no arm is ever a tail call
-    // to preserve. A NON-leaf body, a guard, or >2 arms falls through to the probe chain (which does
-    // handle tail bodies). `arms[1]` is the wildcard/second-literal cover (`lower` guaranteed
-    // exhaustiveness), so `(scrutinee == probe0) ? body0 : body1` is total.
+    // `(if (scrutinee == probe0) body0 body1)`, so when both bodies are cheap trap-free SCALAR arms
+    // (`is_select_arm` — a leaf, a small trap-free op like `(& x 7)`, or a shallow nested conditional,
+    // exactly as the `if`→`select` conversion) and the result is a scalar it emits wasm's `select`
+    // instead of an `if`/`else` block: `body0 ; body1 ; (scrutinee == probe0) ; select`. This is the
+    // match analogue of the `if`→`select` rewrite and rests on the same soundness (a `select` evaluates
+    // both operands, safe precisely because each arm is trap-/allocation-/effect-free). Excluded for a
+    // heap/unit result (a `select` on a handle would drop-leak; unit has no value). TAIL position is fine
+    // even though a `select` cannot carry a tail call: an `is_select_arm` body is trap-free, and a call is
+    // never trap-free, so no arm is ever a tail call to preserve. A body that is a call / heavier op, a
+    // guard, or >2 arms falls through to the probe chain (which does handle tail bodies). `arms[1]` is the
+    // wildcard/second-literal cover (`lower` guaranteed exhaustiveness), so `(scrutinee == probe0) ?
+    // body0 : body1` is total.
     if arms.len() == 2
         && arms.iter().all(|a| a.guard.is_none())
         && matches!(
             arms[0].probe,
             crate::core::Probe::Int(_) | crate::core::Probe::Bool(_)
         )
-        && is_select_leaf(db, arms[0].body)
-        && is_select_leaf(db, arms[1].body)
+        && is_select_arm(db, arms[0].body)
+        && is_select_arm(db, arms[1].body)
         && !matches!(block_ty, BlockType::Empty)
     {
         // The body leaves are grounded to the match's result width (as the probe-chain arms are),
@@ -8601,33 +8618,22 @@ fn refined_frame_for_match_arm(
     frame
 }
 
-/// Whether an `if`'s BRANCH is cheap enough to compute UNCONDITIONALLY for a branchless `select`: a
-/// leaf that costs one instruction and can neither trap nor allocate — a parameter, a kept `let`-local,
-/// or a compile-time constant. A `select` evaluates BOTH operands (there is no short-circuit), so a
-/// heavier branch would waste the work the `if` avoided, and a trapping/allocating branch would change
-/// behavior (a trap on the untaken side, a leaked heap cell); a leaf is safe on both counts.
-fn is_select_leaf(db: &mut Db, id: StructId) -> bool {
-    matches!(
-        core_of(db, id),
-        Core::Param { .. } | Core::LocalRef { .. } | Core::ConstInt(_) | Core::ConstBool(_)
-    )
-}
-
-/// Whether an `if`'s BRANCH is a candidate for the branchless `select` — a generalization of
-/// [`is_select_leaf`] to a SMALL, TRAP-FREE scalar computation (not only a one-instruction leaf), AND to
-/// a shallow NESTED CONDITIONAL whose parts are themselves convertible (so a nested `if`/select folds into
-/// a nested `select` — the sign/clamp/3-way idiom `(if (< x 0) -1 (if (> x 0) 1 0))`). A `select`
-/// evaluates BOTH arms unconditionally then picks, so an arm is convertible iff every value it computes on
-/// the untaken path is SAFE to compute there — no trap, no allocation, no effect — and the whole thing is
-/// CHEAP (a bounded subtree, so the wasted untaken work never exceeds the branch it removes). Two shapes
-/// qualify (see [`select_arm_convertible`] for the recursion):
+/// Whether an `if`'s or 2-arm `match`'s BRANCH is a candidate for the branchless `select`: a SMALL,
+/// TRAP-FREE scalar computation — from a one-instruction leaf (a param/kept `let`-local/constant) up
+/// through a small trap-free op — OR a shallow NESTED CONDITIONAL whose parts are themselves convertible
+/// (so a nested `if`/select folds into a nested `select` — the sign/clamp/3-way idiom
+/// `(if (< x 0) -1 (if (> x 0) 1 0))`). A `select` evaluates BOTH arms unconditionally then picks, so an
+/// arm is convertible iff every value it computes on the untaken path is SAFE to compute there — no trap,
+/// no allocation, no effect — and the whole thing is CHEAP (a bounded subtree, so the wasted untaken work
+/// never exceeds the branch it removes). Two shapes qualify (see [`select_arm_convertible`] for the
+/// recursion):
 ///   (a) a TRAP-FREE scalar op (`is_trap_free`: bitwise/compare/not/wrap/proj/count/in-range shift/
 ///       const-divisor div-rem over trap-free operands, and every leaf — EXCLUDES checked `+`/`-`/`*`, a
 ///       runtime-count shift, a call, and any heap construct);
 ///   (b) a nested `Core::If` whose CONDITION is trap-free (safe to evaluate unconditionally) and whose two
 ///       arms are RECURSIVELY convertible — the inner `if` will itself select-convert when emitted.
-/// The total node budget (`<= SELECT_ARM_MAX_SIZE`) bounds the unconditional work either way. (A leaf is
-/// trap-free with size 1, so this strictly widens `is_select_leaf`.)
+/// The total node budget (`<= SELECT_ARM_MAX_SIZE`, or `SELECT_NESTED_MAX_SIZE` for a nested conditional)
+/// bounds the unconditional work either way.
 fn is_select_arm(db: &mut Db, id: StructId) -> bool {
     if !select_arm_convertible(db, id) {
         return false;
@@ -8767,7 +8773,7 @@ fn try_bool_materialization(
 /// connective (`(and lhs rhs)` / `(or lhs rhs)` → `i32.and`/`i32.or`, no short-circuit `if`). The
 /// short-circuit exists ONLY to skip a `rhs` that could TRAP or has an EFFECT when `lhs` already decides
 /// the result; a `rhs` that can neither trap nor effect is identical evaluated always. This is broader
-/// than `is_select_leaf` (which also bounds COST for the `if`→`select` branch rewrite): a boolean `rhs`
+/// than `is_select_arm` (which also bounds COST for the `if`→`select` branch rewrite): a boolean `rhs`
 /// is only ever a few instructions, so cost is not the concern — only trap/effect-freedom is. Accepts a
 /// leaf, plus the TOTAL boolean-producing forms over recursively-safe operands: a comparison
 /// (`i64.lt_s` etc. never trap), a bitwise `&`/`|`/`^` (total), a `not` (`i32.eqz`), and a `wrap`
@@ -10551,7 +10557,7 @@ mod tests {
         // structured `if`/`else`/`end`: `select` evaluates BOTH branches unconditionally, so converting
         // a heavier/possibly-trapping branch would waste the work the `if` avoids (and could surface a
         // trap on the untaken side). So the wasm block survives with a real `if`. This pins the
-        // eligibility gate `is_select_leaf` alongside the positive case above.
+        // eligibility gate `is_select_arm` alongside the positive case above.
         let ast = crate::testkit::parse(
             "(module m (def (f (: p Bool) (: a Int64)) (if p a (+ a a))) (def (main) 0) (export main))",
         );
@@ -10753,13 +10759,53 @@ mod tests {
             ],
             "a Bool 2-arm match selects on the bare condition"
         );
-        // A NON-leaf body keeps the structured if (no select).
+        // A body that is NOT trap-free (`(+ a 1)`, a checked add) keeps the structured if (no select) —
+        // `select` would evaluate the untaken arm, possibly surfacing its overflow trap.
         let nonleaf = lir(
             "(module m (def (f (: n Int64) (: a Int64) (: b Int64)) (match n (0 (+ a 1)) (_ b))) (def (main) 0) (export main))",
         );
         assert!(
             !nonleaf.contains(&Lir::Select) && nonleaf.iter().any(|i| matches!(i, Lir::If(_))),
-            "a non-leaf arm body keeps the if, got: {nonleaf:?}"
+            "a possibly-trapping arm body keeps the if, got: {nonleaf:?}"
+        );
+    }
+
+    #[test]
+    fn a_two_arm_match_with_small_trap_free_op_bodies_selects() {
+        // The match analogue of cycle-161/162's widened `if`→`select`: a 2-arm scalar/bool match whose
+        // bodies are small TRAP-FREE ops (not bare leaves) — here `(& x 7)` / `(| x 8)` — emits a
+        // branchless `select`, not a probe chain. Sound for the same reason as the `if` case: a bitwise op
+        // can neither trap nor allocate on the untaken path. This unifies the match dispatch with the `if`
+        // dispatch (both use `is_select_arm`).
+        let lir = |src: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = layout_of(&mut db);
+            let (params, body) = function_of(&mut db, "f");
+            select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // (match n (0 (& x 7)) (_ (| x 8))) → branchless select over the two bitwise arms.
+        let ops = lir(
+            "(module m (def (f (: n Int64) (: x Int64)) (match n (0 (& x 7)) (_ (| x 8)))) (def (main) 0) (export main))",
+        );
+        assert!(
+            ops.contains(&Lir::Select) && !ops.iter().any(|i| matches!(i, Lir::If(_) | Lir::Else)),
+            "small trap-free op arms select branchlessly, got: {ops:?}"
+        );
+        assert!(
+            ops.contains(&Lir::I64And) && ops.contains(&Lir::I64Or),
+            "both trap-free arms are emitted before the select, got: {ops:?}"
+        );
+        // A body binding the SCRUTINEE (`(match n (0 -1) (m (& m 255)))` — `m` binds `n`) selects too: the
+        // binder reads the scrutinee's spill slot, which is materialized before the arm bodies emit.
+        let bind = lir(
+            "(module m (def (f (: n Int64)) (match n (0 -1) (m (& m 255)))) (def (main) 0) (export main))",
+        );
+        assert!(
+            bind.contains(&Lir::Select) && !bind.iter().any(|i| matches!(i, Lir::If(_))),
+            "a scrutinee-binding trap-free arm selects, got: {bind:?}"
         );
     }
 

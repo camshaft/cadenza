@@ -214,6 +214,24 @@ pub fn resolve_subtree(db: &mut Db, id: StructId) {
     db.resolved_subtrees.insert(id);
 }
 
+/// Drop the memoized RESOLVED form of every node in the subtree rooted at `id` so a following
+/// [`resolve_subtree`] RECOMPUTES it against a NEW context. A lowering-time desugar that RE-PARENTS an
+/// existing subtree — a map arm BODY moved under a synthesized destructuring `(match __mv (<value-pat>
+/// body) …)`, where a value binder resolved to a `MapField` and must now re-resolve against the
+/// destructuring pattern — calls this first: `resolved_of` is memoized, so a re-parented node would else
+/// keep its stale resolution + the `resolved_subtrees` walk-guard would skip it. Clears both the `resolved`
+/// column slot AND the walk-guard for the subtree; the type memo is left (a stale ground type recomputes
+/// lazily and re-resolution alone does not invalidate it). Bounded by the subtree size.
+pub fn forget_subtree(db: &mut Db, id: StructId) {
+    db.resolved.forget(id);
+    db.resolved_subtrees.remove(&id);
+    if let Struct::List(children) = db.ast.get(id) {
+        for c in children.clone() {
+            forget_subtree(db, c);
+        }
+    }
+}
+
 /// Classify one AST occurrence into its resolved form. Reads the AST + the parent index (for scope);
 /// does not recurse into children (they resolve on their own demand). A "no" is a `Poison` value.
 fn compute(db: &Db, id: StructId) -> Resolved {

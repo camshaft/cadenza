@@ -6648,6 +6648,21 @@
             (def (main) (look (pick true))) (export main)))
   (output (: 7 Int64)))
 
+(case "a refutable map value sub-pattern dispatches by the value's constructor"
+  (doc    "A map value sub-pattern MAY be REFUTABLE — a multi-variant constructor `(map (\"a\" (Some n)) …)`
+           matches only a map whose value at \"a\" is `Some`, binding its payload `n` (the map analogue of a
+           refutable constructor list element). It is lifted into the body as `(match __mv ((Some n) body) (_
+           <catch-all>))`: a `Some` value runs the body, a `None` value falls through (like any refutable
+           pattern, the arm needs the catch-all). Here the map holds `(Some 5)` at \"a\" → the arm binds
+           `n`=5. A `None` value would fall to the catch-all.")
+  (input  (do
+            (def (look (: m (Map String (Option Int64))))
+              (match m
+                ((map ("a" (Some n)) .. rest) n)
+                (_                            -1)))
+            (def (main) (look (Map.insert (Map.empty) "a" (Some 5)))) (export main)))
+  (output (: 5 Int64)))
+
 ; ── An un-projected element / un-referenced field is UNOBSERVED, so its trap is not raised ──────────
 ; core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed: a trap occurs when the
 ; computation that would raise it is observed — its value flowing to the result, a host call, or an

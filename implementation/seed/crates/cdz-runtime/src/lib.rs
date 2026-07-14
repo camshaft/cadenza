@@ -12563,6 +12563,49 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak once the kept owner drops");
     }
 
+    /// The NESTED-COMPOUND variant of the projection-escape — the `spec@76aa1bdc` UAF shape. The test
+    /// above keeps a FLAT-leaf child; there the free-cascade's "stop at rc>1" has nothing below to wrongly
+    /// free. `76aa1bdc` was a Perceus UAF where a projection extracted a nested-compound child (a boxed sum
+    /// `W.Atom(payload)` — a child WITH its own subtree) out of an aggregate and kept it, but the compiler
+    /// dropped the aggregate anyway → the free-cascade descended into the escaped child and freed its
+    /// subtree (a use-after-free). That was a COMPILER emit bug (fixed compiler-side); the RUNTIME property
+    /// it relies on — `op_drop` of an aggregate whose nested-compound child was dup'd-out (rc≥2) must
+    /// decrement that child and NOT recurse into its subtree — is exercised here: a flat-leaf test can't
+    /// (no subtree to wrongly free). Pins that the cascade stops at a shared child WITH children, leaving
+    /// the whole subtree intact + reclaiming cleanly on the child's own last drop.
+    #[test]
+    fn rc_convention_nested_compound_projection_survives_aggregate_drop() {
+        reset();
+        let before = live_nodes();
+        // r = (tuple W.Atom(42) 7): a nested-compound child (sum + payload = 2 nodes) + a scalar sibling.
+        let nested = op_sum_new(1, boxed_int_leaf(42));
+        let r = op_arr_alloc(2);
+        op_arr_set(r, 0, nested);
+        op_arr_set(r, 1, boxed_int_leaf(7));
+        assert_eq!(
+            live_nodes(),
+            before + 4,
+            "aggregate + nested sum + its payload + scalar sibling"
+        );
+        // Project the NESTED child out and keep it (dup before dropping the aggregate) — the escape.
+        let kept = op_arr_get(r, 0);
+        op_dup(kept); // the escaped nested-compound is now rc=2
+        op_drop(r); // frees r + the scalar sibling; MUST NOT free `kept` or its payload (rc>1 stops the cascade)
+        // The escaped child's WHOLE subtree is intact — reading its payload is not a use-after-free.
+        assert_eq!(
+            op_get_int(op_sum_payload(kept)),
+            42,
+            "the kept nested-compound's payload survives the aggregate drop (no UAF)"
+        );
+        assert_eq!(
+            live_nodes(),
+            before + 2,
+            "only the escaped child + its payload remain (aggregate + sibling freed, subtree NOT freed)"
+        );
+        op_drop(kept); // the escaped owner's last drop reclaims its subtree
+        assert_eq!(live_nodes(), before, "no leak once the escaped child drops");
+    }
+
     /// §3.5 — `match Some(x) => x`: dup the borrowed payload, then drop the scrutinee. Payload
     /// survives; the sum node is reclaimed.
     #[test]
@@ -15032,6 +15075,57 @@ mod tests {
         assert_eq!(op_set_size(s), 1, "a compacted rope and its flat twin are the SAME set element");
         op_drop(s);
         assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    /// The runtime half of the `String.at` content-equality fix (`spec@a2c75cc0` root-caused the
+    /// compiler-side miscompile). The contract test above uses a CONCAT rope; a `String.at` result is a
+    /// distinct rope shape — a `bytes-SLICE` (`raw = [off, len]`, arity 1 — the parent). `champ_eq`
+    /// physical-byte-compares that `[off,len]` header, so two slices of the same char at DIFFERENT offsets
+    /// (or into different parents) are champ_eq-DISTINCT despite equal content — EXACTLY the miscompile
+    /// (`String.at "banana" 1` ≠ `String.at "banana" 3` though both are "a", so `count-a` returns 0). The
+    /// compiler's fix compacts the `String.at` result before `=`; that fix RELIES on the runtime's
+    /// `bytes-compact` flattening a SLICE (not just a concat) to a champ_eq-canonical flat leaf. Pin that
+    /// runtime half here — the SLICE arm of `bytes_flatten` (read parent's `off+j`), not the concat arm.
+    #[test]
+    fn compact_makes_a_slice_rope_canonical_the_string_at_shape() {
+        reset();
+        let before = live_nodes();
+        // Two 1-byte slices of "a" at DIFFERENT offsets into DIFFERENT parents (the `String.at` shape).
+        let p1 = bytes_leaf(b"banana");
+        let sl1 = op_bytes_slice(p1, 1, 1); // "a" at index 1
+        let p2 = bytes_leaf(b"banana");
+        let sl2 = op_bytes_slice(p2, 3, 1); // "a" at index 3 — same content, different offset
+        let flat_a = bytes_leaf(b"a");
+        // (1) TRIPWIRE — raw slices are champ_eq-DISTINCT from each other AND the flat "a" (physical `[off,
+        // len]` compare, NOT content). This IS the miscompile the compiler must compact away.
+        assert!(
+            !champ_eq(sl1, sl2),
+            "two slices of the same char at different offsets are champ_eq-distinct (physical [off,len])"
+        );
+        assert!(
+            !champ_eq(sl1, flat_a),
+            "a raw slice is champ_eq-distinct from a flat leaf of the same content"
+        );
+        // (2) THE GUARANTEE — compact each slice → all champ_eq + hash-identical to the flat twin.
+        let c1 = op_bytes_compact(sl1);
+        let c2 = op_bytes_compact(sl2);
+        assert!(
+            champ_eq(c1, flat_a),
+            "a compacted slice == the flat char (the String.at fix's runtime half)"
+        );
+        assert!(
+            champ_eq(c1, c2),
+            "two compacted slices of the same content are champ_eq (count-a now works)"
+        );
+        assert_eq!(
+            champ_hash(c1),
+            champ_hash(flat_a),
+            "…and hashes identically"
+        );
+        op_drop(c1);
+        op_drop(c2);
+        op_drop(flat_a);
+        assert_eq!(live_nodes(), before, "no leak across the slice-compact");
     }
 
     /// CONTRACT-BOUNDARY TRIPWIRE for `value-eq` (op 61, the language `=`): it is `champ_eq` — a PHYSICAL-

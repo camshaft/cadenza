@@ -1602,6 +1602,25 @@
                 (+ (. r 0) ((. List len) (. r 1))))) (export main)))
   (output (: 44 Int64)))
 
+(case "an effect-built NESTED-compound value escapes the handle and a nested projection reads through it"
+  (doc    "The nested-compound escape: the handle's VALUE is a TUPLE OF TUPLES built from performed reads,
+           it escapes to an enclosing `let`, and a NESTED projection `(. (. r 0) 0/1)` reads through the
+           outer then inner aggregate — the effect-produced companion of the plain nested-projection escape,
+           and a memory-safety pin for the aggregate-projection-that-escapes path. `Idx` seeded 10, arm
+           `(resume s (+ s 1))`: the inner tuple `(tuple (Idx.next) (Idx.next))` reads 10 then 11 = `(10,
+           11)`, the outer third read is 12, so `r = ((10, 11), 12)`; the nested projection `(. (. r 0) 1)`
+           reads the inner tuple's second field, 11. Pins that a nested compound the handle builds from
+           performed values escapes intact AND a projection reaching THROUGH the outer aggregate into a
+           nested one is correctly reference-managed (no use-after-free / double-free when the nested field
+           outlives its parent aggregate) — the effects × nested-projection-escape composition.")
+  (input  (do
+            (effect Idx (op next (-> Unit Int64)))
+            (def (main)
+              (let ((r (handle Idx 10 ((next (u) s (resume s (+ s 1))))
+                         (tuple (tuple (Idx.next) (Idx.next)) (Idx.next)))))
+                (. (. r 0) 1))) (export main)))
+  (output (: 11 Int64)))
+
 ; A RECURSIVE effectful walk whose handler arm resumes WITH THE STATE ITSELF and threads a CHANGED state
 ; `(resume s (+ s 1))` — the exact combination (recursion × a state-threading arm whose resume VALUE is
 ; the state) that leaked a compiler-internal specialization name. The recursive-def specialization

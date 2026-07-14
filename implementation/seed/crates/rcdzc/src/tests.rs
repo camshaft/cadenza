@@ -11621,6 +11621,39 @@ mod match_engine {
     }
 
     #[test]
+    fn a_tail_loop_threading_a_projected_boxed_sum_accumulator_decodes_correctly() {
+        // A tuple-projected boxed sum threaded through a self-tail loop must SURVIVE the loop step. `one`
+        // returns `(tuple (W.Atom <byte>) (+ pos 1))`; `loop` threads `(. r 0)` (the nested-compound boxed
+        // sum) and `(. r 1)` (the scalar next-position) into its params, so the `W.Atom` child handle
+        // escapes OUT of the tuple into the recursive call as `last`. If the `let`-bound tuple `r` were
+        // reclaimed after its projections (the naive rule saw only borrows — `(. r 1)` copies its scalar
+        // out), the drop would cascade to FREE the escaped boxed sum → use-after-free → garbage 0 instead
+        // of 5. Pins that a nested-compound projection ESCAPES its aggregate (select.rs `binding_escapes`),
+        // so the aggregate is not reclaimed while its extracted child is live. The `if` inside `one` forces
+        // `r` to be a real join-produced heap handle (not a folded constant); all three of {`if`, boxed-sum
+        // accumulator, sibling-projected cursor} are jointly required to trigger the bug.
+        let Some(v) = run_heap_value(
+            "(module m (type W (Atom Int64) (Zero)) \
+               (def (one (: b Bytes) (: pos Int64)) \
+                 (if (= ((. Option expect) ((. Bytes at) b pos) \"t\") 5) \
+                     (tuple ((. W Atom) ((. Option expect) ((. Bytes at) b pos) \"v\")) (+ pos 1)) \
+                     (tuple ((. W Atom) 99) (+ pos 1)))) \
+               (def (loop (: b Bytes) (: n Int64) (: pos Int64) (: last W)) \
+                 (if (= n 0) last (let ((r (one b pos))) (loop b (- n 1) (. r 1) (. r 0))))) \
+               (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Zero) _) 0))) \
+               (def (main (: pos Int64)) (wval (loop b\"\\x05\\x07\" 1 pos ((. W Atom) 0)))) (export main))",
+            vec!["0".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping projected-boxed-sum tail-loop run");
+            return;
+        };
+        assert_eq!(
+            v, "5",
+            "the projected boxed-sum accumulator must survive the tail-loop step, not be freed"
+        );
+    }
+
+    #[test]
     fn a_multi_payload_pattern_with_a_wildcard_and_narrow_widths() {
         // A wildcard in one payload position `(Cons _ t)` binds only the tail (no head binder), and a
         // narrow-width payload (UInt8 beside Int64) boxes/unboxes at its own width in the payload tuple.
@@ -19975,6 +20008,28 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0302")
         );
+        // The reject NAMES the truncation `UInt8.wrap` AND now offers it as a structural fix — wrap the
+        // offending element in `(UInt8.wrap …)` (which truncates to the low 8 bits). Anchored at the
+        // element, not the whole `Bytes.of` / list, and it VERIFIES: applying it recompiles clean.
+        let d = reject_full(
+            "(module m (def (main) ((. Bytes len) ((. Bytes of) (list 256)))) (export main))",
+        )
+        .expect("must reject");
+        let fix = d.fix.as_ref().expect("a UInt8.wrap fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::Wrap, "a wrap fix: {:?}", fix);
+        assert!(
+            fix.replacement.contains("UInt8") && fix.replacement.contains("wrap"),
+            "the fix wraps in UInt8.wrap: {}",
+            fix.replacement
+        );
+        // Applying the truncation makes the program compile (the byte is now in range by construction).
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (def (main) ((. Bytes len) ((. Bytes of) (list ((. UInt8 wrap) 256))))) (export main))"
+            )))
+            .is_ok(),
+            "the UInt8.wrap'd element compiles"
+        );
     }
 
     #[test]
@@ -21933,21 +21988,61 @@ mod match_engine {
             "1",
             "a deeply-nested tuple value sub-pattern binds the inner element"
         );
-        // A REFUTABLE value (a multi-variant ctor) declines — value-discriminant dispatch is unbuilt.
-        let decline = reject_full(
-            "(module m (def (f (: m (Map String (Option Int64)))) \
-               (match m ((map (\"a\" (Some n)) .. rest) n) (_ -1))) \
-             (def (main) (f (Map.insert (Map.empty) \"a\" (Some 5)))) (export main))",
-        )
-        .expect("a multi-variant-ctor map value declines");
+    }
+
+    #[test]
+    fn a_refutable_map_value_sub_pattern_dispatches_by_value() {
+        // A REFUTABLE map value sub-pattern — a MULTI-VARIANT ctor `(map ("a" (Some n)))` — now dispatches
+        // by the VALUE (the map analogue of Inc-12's ctor-list-element). `desugar_map_value_subpatterns`
+        // LIFTS the refutable value into the body as `(match __mv ((Some n) body) (_ <catch-all>))`: it
+        // binds `n` AND falls through to the catch-all when the value is NOT `Some`. The lift re-resolves
+        // the body's `n` against the synthesized `(Some n)` (via `forget_subtree`, since Inc-17 had resolved
+        // it to a `MapField` at the fault stage). Only the arm needs a catch-all (a refutable value may not
+        // match), which a map match requires anyway.
+        //
+        // A `{"a": Some 5}` matches `(Some n)` → n=5; a `{"a": None}` falls through to -1.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (pick (: b Bool)) \
+                 (if b (Map.insert (Map.empty) \"a\" (Some 5)) (Map.insert (Map.empty) \"a\" None))) \
+               (def (look (: m (Map String (Option Int64)))) \
+                 (match m ((map (\"a\" (Some n)) .. rest) n) (_ -1))) \
+               (def (main (: b Bool)) (look (pick b))) (export main))",
+            vec!["true".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping refutable-map-value run");
+            return;
+        };
         assert_eq!(
-            decline.code, None,
-            "a refutable map value declines (no code)"
+            v, "5",
+            "a Some value matches the (Some n) sub-pattern, binding its payload"
         );
-        assert!(
-            decline.message.contains("refutable map value sub-pattern"),
-            "the decline names the refutable value limit: {}",
-            decline.message
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (pick (: b Bool)) \
+                     (if b (Map.insert (Map.empty) \"a\" (Some 5)) (Map.insert (Map.empty) \"a\" None))) \
+                   (def (look (: m (Map String (Option Int64)))) \
+                     (match m ((map (\"a\" (Some n)) .. rest) n) (_ -1))) \
+                   (def (main (: b Bool)) (look (pick b))) (export main))",
+                vec!["false".to_string()],
+            )
+            .unwrap(),
+            "-1",
+            "a None value does NOT match (Some n) and falls through to the catch-all"
+        );
+        // A CONSTANT-map form folds the same: `{"a": Some 7}` → 7.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (main) \
+                   (match (Map.insert (Map.empty) \"a\" (Some 7)) \
+                     ((map (\"a\" (Some n)) .. rest) n) \
+                     (_ -1))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "7",
+            "a constant Some value folds the (Some n) match"
         );
     }
 
@@ -25410,6 +25505,52 @@ mod match_engine {
             ),
             10,
             "(eval (quote (+ (* 2 3) 4))) reconstructs a nested form and folds to 10"
+        );
+    }
+
+    #[test]
+    fn eval_of_a_non_compile_time_ast_names_the_form_not_an_unbound_eval() {
+        // `eval` desugars ONLY a compile-time-visible AST (`(quote …)` / literal `Ast.*`); a runtime /
+        // non-Ast argument does not desugar, so the `eval` head fell through to `resolve` as "unbound name
+        // `eval`" — MISLEADING (as if `eval` were a typo, even offering a did-you-mean to a near name). The
+        // message now NAMES the real situation: `eval` is a recognized form that executes only a
+        // compile-time AST, so a runtime/non-Ast argument has nothing to reconstruct.
+        let msg = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0101"))
+                .unwrap_or_else(|| panic!("expected CDZ0101 for {src}"))
+                .message
+        };
+        for src in [
+            "(module m (def (main) (eval 5)) (export main))", // a scalar (non-Ast)
+            "(module m (def (f (: a Ast)) (eval a)) (export f))", // a runtime Ast
+        ] {
+            let m = msg(src);
+            assert!(
+                m.contains("COMPILE-TIME-VISIBLE AST") && !m.contains("did you mean"),
+                "eval of a non-compile-time AST names the form, not an unbound-name typo: {m}"
+            );
+        }
+        // NO REGRESSION: a real `(eval (quote …))` still compiles + runs (the desugar fires).
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (main) (eval (quote (+ 1 2)))) (export main))"
+                )))
+                .expect("compile"),
+                "main"
+            ),
+            3
+        );
+        // NO OVER-REACH: a bare `eval`-shaped typo that is NOT an `(eval …)` head still gets the ordinary
+        // unbound-name did-you-mean (a near def wins), not the eval-form message.
+        let typo = "(module m (def (evil) 5) (def (main) (evel)) (export main))";
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(typo)))
+                .iter()
+                .any(|d| d.message.contains("did you mean `evil`?")),
+            "a near-eval typo keeps the ordinary unbound path"
         );
     }
 
