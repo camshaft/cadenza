@@ -808,6 +808,14 @@ pub struct Db {
     /// combined against it afterward (a tiny scan). A pure function of the program + query.
     pub(crate) suggest_pool_winner: crate::fxhash::FxHashMap<(String, u8), Option<String>>,
 
+    /// Memo of the nearest VARIANT name of a scrutinee sum to a mistyped match-pattern head — keyed by
+    /// `(sum-decl occ, mistyped-key)`. `lower::enrich_pattern_head_suggestion` clones the sum's variant
+    /// names + edit-distance-scans them per bad pattern; a WIDE sum (N variants) matched with a stale
+    /// variant name from N sites (a renamed variant still named at many match arms) re-ran that O(variants)
+    /// scan each → O(N²). Keyed by `(decl, key)`, the winner is computed once per distinct query. A pure
+    /// function of the sum declaration + the mistyped key. The variant-suggest twin of `suggest_pool_winner`.
+    pub(crate) variant_suggest_winner: crate::fxhash::FxHashMap<(StructId, String), Option<String>>,
+
     /// CAPTURED-reference occurrences: a body reference inside a lifted lambda that names a FREE VARIABLE
     /// (a binding from the lambda's creation scope), mapped to `(capture index, solved type)`. Recorded
     /// by `lower::lower_lambda_value` when the lambda is lifted; read when the LIFTED body is lowered so
@@ -1123,6 +1131,7 @@ impl Db {
             sum_out_edges: crate::fxhash::FxHashMap::default(),
             suggest_pool: [None, None, None],
             suggest_pool_winner: crate::fxhash::FxHashMap::default(),
+            variant_suggest_winner: crate::fxhash::FxHashMap::default(),
             captured_ref: crate::fxhash::FxHashMap::default(),
             resolved_subtrees: crate::fxhash::FxHashSet::default(),
             def_schemes: crate::fxhash::FxHashMap::default(),

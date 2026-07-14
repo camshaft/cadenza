@@ -3013,19 +3013,16 @@ fn collect_pattern_binders(
 /// when this fires; a non-sum leaves the bare `reject` untouched). Returns the enriched (or original)
 /// reject. Deterministic — `suggest::nearest` over the declaration-ordered variant set.
 fn enrich_pattern_head_suggestion(
-    db: &Db,
+    db: &mut Db,
     head: StructId,
     ty: &crate::ty::Ty,
     reject: Reject,
 ) -> Reject {
-    // The scrutinee sum's declared variant names — the closed candidate set.
+    // The scrutinee sum's declaration occurrence — the key of its (memoized) variant candidate set.
     let crate::ty::Ty::Sum { decl, .. } = ty else {
         return reject;
     };
-    let Some(t) = db.type_decl_by_occ(*decl) else {
-        return reject;
-    };
-    let names: Vec<String> = t.variants.iter().map(|v| v.name.clone()).collect();
+    let decl = *decl;
     // The mistyped key: the second child of the `(. Sum Q)` head; its name is what to match + rewrite.
     let Some(key_occ) = db.ast.as_form(head, ".").and_then(|t| t.get(1).copied()) else {
         return reject;
@@ -3033,7 +3030,22 @@ fn enrich_pattern_head_suggestion(
     let Some(key) = db.ast.as_name(key_occ).map(str::to_string) else {
         return reject;
     };
-    let Some(candidate) = crate::diag::suggest::nearest(&key, &names) else {
+    // The nearest variant of `decl` to `key`, MEMOIZED per (decl, key): the variant-name clone + edit-
+    // distance scan is O(variants), and a WIDE sum matched with a stale variant from N sites re-ran it each
+    // → O(N²). Keyed by (decl, key), it is computed once per distinct query.
+    let candidate = if let Some(hit) = db.variant_suggest_winner.get(&(decl, key.clone())) {
+        hit.clone()
+    } else {
+        let names: Vec<String> = match db.type_decl_by_occ(decl) {
+            Some(t) => t.variants.iter().map(|v| v.name.clone()).collect(),
+            None => return reject,
+        };
+        let winner = crate::diag::suggest::nearest(&key, &names);
+        db.variant_suggest_winner
+            .insert((decl, key.clone()), winner.clone());
+        winner
+    };
+    let Some(candidate) = candidate else {
         return reject; // no near variant — keep the bare "record has no field" message
     };
     // Append the suggestion to the bare message and carry a replace fix on the key occurrence — mirroring

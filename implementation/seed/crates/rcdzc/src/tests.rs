@@ -20239,6 +20239,42 @@ mod diagnostics {
     }
 
     #[test]
+    fn many_match_patterns_typoing_one_variant_suggest_the_memoized_winner() {
+        // The nearest-variant suggestion for a mistyped match-pattern head is MEMOIZED per (sum-decl,
+        // mistyped-key), so a WIDE sum matched with a stale variant name from N sites (a renamed variant
+        // still named at N match arms) shares one edit-distance scan instead of re-running it each — the
+        // O(N²) fix. N defs each match `(T.V0x)` (a typo of `V0`) on an 8-variant sum. The identical
+        // (code, message) faults dedup in the surfaced set, but every one exercises the memoized lookup
+        // during lowering; this locks in that the memo yields the CORRECT winner `V0` (not a stale/empty
+        // answer) — a wrong memo key or a mis-combined result would surface a different variant or none.
+        let n = 15;
+        let variants = (0..8)
+            .map(|i| format!("V{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let defs = (0..n)
+            .map(|i| format!("(def (d{i} (: t T)) (match t ((T.V0x) {i}) (_ -1)))"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let src =
+            format!("(module m (type T {variants}) {defs} (def (main) (d0 (T.V0))) (export main))");
+        let mut db = crate::db::Db::load(parse(&src));
+        let sugg: Vec<String> = crate::diagnostics(&mut db)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0201"))
+            .filter_map(|d| d.fix.map(|f| f.replacement))
+            .collect();
+        assert!(
+            !sugg.is_empty(),
+            "the typo'd `V0x` pattern is reported: {sugg:?}"
+        );
+        assert!(
+            sugg.iter().all(|s| s == "V0"),
+            "every surfaced suggestion is the memoized winner `V0`: {sugg:?}"
+        );
+    }
+
+    #[test]
     fn an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix() {
         // The THIRD site of the same int coercion (arg + value-annotation + here): an annotated let-binder
         // whose annotation is a different int width than its INIT — `(let (((: x Int64) n)) …)` with
