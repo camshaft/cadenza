@@ -1135,6 +1135,22 @@ pub mod driver {
                     Vec::new(),
                 ))
             }
+            Format::Cedar => {
+                // A Cedar policy is a queryable/rewritable tree like any surface (its `(cedar-policyset
+                // …)` nodes — effects, scope constraints, `when`/`unless` expressions — are all
+                // matchable). This is the point: an agent restructures a policy with the same tools.
+                let text =
+                    std::str::from_utf8(input).map_err(|e| format!("input not UTF-8: {e}"))?;
+                let (arena, spans) =
+                    crate::cedar::read_spanned(text).map_err(|e| format!("Cedar parse: {}", e.0))?;
+                Ok((
+                    Target {
+                        tree: Tree::of(&arena),
+                        spans: Some(spans),
+                    },
+                    Vec::new(),
+                ))
+            }
             Format::Debug | Format::Flat => Err(format!(
                 "`{}` is an output-only format, not an input",
                 from.name()
@@ -1312,6 +1328,7 @@ pub mod driver {
             Format::Markdown => Ok(crate::markdown::print(arena, width)),
             Format::Json => Ok(crate::json::print(arena, width)),
             Format::Toml => Ok(crate::toml_surface::print(arena, width)),
+            Format::Cedar => Ok(crate::cedar::print(arena, width)),
             Format::Debug => Ok(crate::debug::print(arena)),
             Format::Flat => Ok(crate::debug::print_flat(arena)),
             Format::Binary => Err("binary output is not supported for query results".to_string()),

@@ -30,5 +30,10 @@ pulldown-cmark = { version = "0.13", default-features = false }
 # decor-in-arena node vocabulary + byte-exact round-trip, not this parser. Lean feature set — only
 # `parse`+`display` (serde/kstring/serde_spanned are off), so the transitive deps stay small.
 toml_edit = { version = "0.22", default-features = false, features = ["parse", "display"] }
+# The Cedar policy parser + policy-syntax-tree (pst) for the `cedar` surface (AWS's authorization
+# policy language). Same REFERENCE-only rationale as pulldown-cmark/toml_edit: the durable artifact is
+# the `cedar-*` node vocabulary + round-trip, not this parser. We use only its syntax layer
+# (PolicySet::from_str -> pst -> Display); NO evaluation/authorization engine is pulled into meaning.
+cedar-policy = "4"
 # Used ONLY by the `cdz-syntax` bin for arg parsing; the library itself takes no CLI dependency.
 clap = { version = "4", features = ["derive"] }
