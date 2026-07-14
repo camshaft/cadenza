@@ -21800,6 +21800,39 @@ mod diagnostics {
             "no spurious suggestion for a far typo: {}",
             far.message
         );
+
+        // A BARE (unqualified) pattern head `((Alph) …)` where `Alph` is not a variant resolves as an
+        // UNBOUND NAME (CDZ0101), not a member "no field" — but the scrutinee's sum still gives the
+        // candidate set, so it ALSO suggests the nearest variant + carries the replace fix (the bare twin
+        // of the qualified case above). A far bare typo keeps the plain "unbound name" with no suggestion.
+        let bare = first_error(
+            "(module m (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((Alph) 1) (_ 2))) (export main))",
+        );
+        assert_eq!(
+            bare.code.as_deref(),
+            Some("CDZ0101"),
+            "got: {}",
+            bare.message
+        );
+        assert!(
+            bare.message.contains("`Alph`") && bare.message.contains("did you mean `Alpha`?"),
+            "a bare non-variant pattern head suggests the nearest variant: {}",
+            bare.message
+        );
+        assert_eq!(
+            bare.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Alpha"),
+            "the bare-head suggestion carries the replace fix: {}",
+            bare.message
+        );
+        let bare_far = first_error(
+            "(module m (type C (Alpha) (Beta)) (def (main) (match (C.Alpha) ((Zzz) 1) (_ 2))) (export main))",
+        );
+        assert!(
+            !bare_far.message.contains("did you mean"),
+            "no spurious suggestion for a far bare typo: {}",
+            bare_far.message
+        );
     }
 
     #[test]

@@ -3135,9 +3135,17 @@ fn enrich_pattern_head_suggestion(
         return reject;
     };
     let decl = *decl;
-    // The mistyped key: the second child of the `(. Sum Q)` head; its name is what to match + rewrite.
-    let Some(key_occ) = db.ast.as_form(head, ".").and_then(|t| t.get(1).copied()) else {
-        return reject;
+    // The mistyped key + the occurrence a replace fix rewrites. Two head shapes reach here:
+    //  - a QUALIFIED `(. Sum Q)` head — the key is its second child (`((C.Alph) …)`, a CDZ0201 "record
+    //    has no field" poison from the member fold); rewrite the key child.
+    //  - a BARE name head — `((Alph) …)`, a CDZ0101 "unbound name" poison (a bare pattern name resolves as
+    //    an ordinary name → unbound when it is not a variant). The key IS the head node; rewrite it whole.
+    // Either way the scrutinee's sum gives the candidate variant set, so a mistyped BARE variant name gets
+    // the same "did you mean?" the qualified form does (`((Alph) …)` on `(type C (Alpha) …)` → `Alpha`).
+    let key_occ = match db.ast.as_form(head, ".").and_then(|t| t.get(1).copied()) {
+        Some(k) => k,
+        None if db.ast.as_name(head).is_some() => head,
+        None => return reject,
     };
     let Some(key) = db.ast.as_name(key_occ).map(str::to_string) else {
         return reject;
