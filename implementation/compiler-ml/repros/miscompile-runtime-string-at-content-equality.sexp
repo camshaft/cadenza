@@ -48,6 +48,22 @@
 ;;     etc.) is Owned, not Borrowed — then the existing owned-compact path handles it correctly. That is
 ;;     the same ownership-of-a-projected-value analysis the `Map.lookup` borrow-decline family needs, so
 ;;     both are worth fixing together. (Reverted the naive attempt; keeping this crisp root-cause note.)
+;;
+;;   SECOND FIX ATTEMPT (iter 13) — compact IN the `Core::StrAt` emit: after `bytes-slice(str,…)` (the
+;;     Some payload), insert `bytes-compact` so the payload is a FLAT leaf by construction (equality then
+;;     works regardless of the eq site's ownership analysis; owned-in/owned-out, rc-neutral). This made
+;;     ALL the isolated compares correct — but it EXPOSED a LATENT SEPARATE BUG: a loop that calls
+;;     `String.at s i` on a BORROWED param `s` while ALSO threading `s` through the recursion now TRAPS.
+;;     Verified this trap is caused by the compact and does NOT depend on `==` at all: even
+;;       `(scan (: s String) (: i n) → … (String.byte-len (Option.expect (String.at s i) "c")) …)`
+;;     (no equality) traps once the compact is added, whereas on the CLEAN compiler it returns 6.
+;;     DIAGNOSIS: `String.at`'s Some path does `bytes-slice(str,…)` which CONSUMES `str`; `str` here is a
+;;     borrowed param the recursion reuses. On the clean compiler the slice is a LAZY rope VIEW that
+;;     shares the source buffer, so the reuse limps along (returning the right length but WRONG-content
+;;     for `=`); forcing materialization with `bytes-compact` reads the already-consumed buffer → trap.
+;;     So `String.at` on a borrowed, reused string has a latent lifetime bug (it should `dup` `str` before
+;;     the consuming `bytes-slice`, like other consuming ops dup a borrowed operand). The content-equality
+;;     fix and this lifetime fix must land TOGETHER. Reverted; two-bug interaction documented.
 (do
   (def (count-a (: s String) (: i Int64) (: n Int64) (: acc Int64))
     (if (= i n)

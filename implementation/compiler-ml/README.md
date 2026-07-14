@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 102 tests total across 12 modules):
+top. Current `src/` modules (each with same-file `@test`s — 112 tests total across 13 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -101,6 +101,11 @@ top. Current `src/` modules (each with same-file `@test`s — 102 tests total ac
   `internal-count`. All SCALAR-returning (no heap value crosses a call), so it sidesteps the resolver's
   borrow-ownership block — a deliberately scalar-only pass that RUNS. Useful for cost heuristics /
   recursion-depth guards. 10 `@test`s (incl. a leaf+internal = total consistency check).
+- `src/prec.cdz` — operator precedence + the pretty-printer's parenthesization decision: a `Map String
+  Int64` precedence table, `needs-parens` (a child of lower precedence needs wrapping), `paren-count`
+  (fold that over a tree). Stresses a `Map String Int64` keyed by a matched sum-payload String. 10
+  `@test`s pass; the DEEP `paren-count` case is withheld (it hits the two-live-string-payloads
+  miscompile — see the log).
 
 A `resolve` pass (lexical scope-check accumulating unbound-variable diagnostics — a `Set String` scope
 threaded down, a `List String` of faults threaded through, `Let` binding + shadowing) is written and
@@ -170,6 +175,17 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   (`(match xs ((list) (list)) ((list h .. t) (List.concat (list (f h)) (rec t))))`), which works but is
   O(n²) via `concat`. `List.map`/`List.filter`/`List.fold` are the obvious missing higher-order list ops.
   `src/traverse.cdz` now provides these hand-rolled (map/filter/fold + Ast predicate-count/fold).
+
+- **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value): two live `String` sum-payloads across a
+  recursion drop a per-node result.** `repros/miscompile-two-live-string-payloads-across-recursion.sexp`.
+  A recursive tree walk where at each node BOTH the node's own `String` key AND its child's key are read
+  (two matched `String` payloads live at once), past a >=3-deep recursion, drops one per-node decision.
+  A parenthesization count that should be 2 returns 1. The IDENTICAL tree with an Int64 key counts
+  correctly (2), and using either key ALONE per node is correct, and a depth-2 tree is correct — so the
+  trigger is precisely two overlapping matched-`String` payloads across depth >= 3. Same borrow/ownership-
+  of-a-matched-heap-payload family as the `Map.lookup`-return and runtime-`String.at` findings, with the
+  depth-threshold sensitivity of the slot-alias family. `src/prec.cdz`'s deep `paren-count` case is
+  withheld for this (its shallow cases pass).
 
 - **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value): runtime `String.at` breaks content equality.**
   `repros/miscompile-runtime-string-at-content-equality.sexp`. A `String.at` at a RUNTIME index yields a
