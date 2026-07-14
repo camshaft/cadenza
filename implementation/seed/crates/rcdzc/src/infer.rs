@@ -267,7 +267,17 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             .unwrap_or_else(Ty::float),
         Resolved::Unit => Ty::Unit,
         // A name IS its bound value's type — follow the ref (a lazy `type_of` on the value occurrence).
-        Resolved::Ref { value } => type_of(db, value),
+        // EXCEPT when the ref is to an annotated let-binder `((: n T) v)` whose declared type `T` and the
+        // initializer's inferred type disagree: that mismatch is ALREADY reported once at the binder
+        // (CDZ0203, `check_binding_pattern`), and a body use should type against what the author DECLARED,
+        // not the wrong value — exactly as an annotated PARAMETER does (`Resolved::Param` prefers
+        // `param_annot_ty`). Without this the body sees the initializer's type and can emit a SECOND
+        // diagnostic whose fix CONTRADICTS the first (rename the value's field vs rename the body's use), a
+        // cascade rustc suppresses by binding the name at its declared type. Agreeing annotations are
+        // untouched (the helper returns `None`), so a well-typed program is byte-identical.
+        Resolved::Ref { value } => {
+            annotated_let_binder_ty(db, value).unwrap_or_else(|| type_of(db, value))
+        }
         // A `let`'s type is its body's type (the bindings are compile-time structure that folds away).
         Resolved::Let { body, .. } => type_of(db, body),
         // A VARIANT CONSTRUCTOR record carrying `(meta variant)` is a sum value/constructor, not a plain
@@ -5184,6 +5194,47 @@ fn pattern_is_variant_ctor(db: &mut Db, pat: StructId) -> bool {
     crate::eval::variant_owner_decl(db, head).is_some()
 }
 
+/// If `value` is the INITIALIZER occurrence of an ANNOTATED let-binding `((: <pat> T) value)` whose
+/// declared type `T` DISAGREES with the initializer's inferred type, the declared type `T`; otherwise
+/// `None`. This is the body-use side of the annotation-wins rule: a `let` binder reference (resolve's
+/// `binder_in`, Case 1) resolves to a `Resolved::Ref { value: kv[1] }` — the initializer occurrence — so a
+/// body use follows `value`'s inferred type. When the annotation and the initializer contradict, that
+/// initializer type is the WRONG one to expose (the annotation is what the author declared and what the
+/// binder-mismatch diagnostic told them to keep), so we hand back the annotation instead — suppressing the
+/// contradictory downstream cascade.
+///
+/// Deliberately narrow, so a well-typed program is byte-identical. `value` must be the SECOND element
+/// (`kv[1]`) of a two-element binding pair, whose pair sits in a `let`'s bindings-list
+/// (`let_of_bindings_list`), whose LHS is an annotation `(: <pat> T)` with a resolvable type `T`, AND `T`
+/// must disagree with the initializer's inferred type (`!agrees_with`). An agreeing annotation, a bare-name
+/// binding, a destructuring pattern, or a non-let use all return `None` — the caller then follows the
+/// initializer's type exactly as before.
+fn annotated_let_binder_ty(db: &mut Db, value: StructId) -> Option<Ty> {
+    // `value` is a binding pair's second element: pair = [lhs, value], and the pair's parent is a let's
+    // bindings-list.
+    let pair = db.parent_of(value)?;
+    let kv = match db.ast.get(pair) {
+        crate::ast::Struct::List(kv) if kv.len() == 2 && kv[1] == value => kv.clone(),
+        _ => return None,
+    };
+    let bindings_occ = db.parent_of(pair)?;
+    crate::resolve::let_of_bindings_list(db, bindings_occ)?;
+    // The LHS must be an annotation `(: <pat> T)` with a resolvable type value `T`.
+    let ann = db.ast.as_form(kv[0], ":")?;
+    if ann.len() != 2 {
+        return None;
+    }
+    let ty_expr = ann[1];
+    let annot_ty = crate::eval::typeval_of(db, ty_expr)?;
+    // Only override when the annotation and the initializer genuinely CONTRADICT — an agreeing (or
+    // deferred/`Any`) annotation leaves the initializer type in force (byte-identical to before).
+    let value_ty = type_of(db, value);
+    if annot_ty.agrees_with(&value_ty) {
+        return None;
+    }
+    Some(annot_ty)
+}
+
 /// The SET of parameter binders the lambda `head`'s body REFERENCES — the binder identity every body
 /// reference resolves to, collected in ONE structural walk. A parameter present here is USED (its argument
 /// appears substituted in the reduced body, so that argument's faults are already collected there and it
@@ -7748,8 +7799,21 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             match crate::eval::member_value(db, operand, &key) {
                 crate::eval::Member::Field(_) => {}
                 crate::eval::Member::NoField => {
-                    trace!(target: "rcdzc::infer", node = id.0, key = %key.name, "fault: record has no such field (CDZ0201)");
-                    out.push(no_field_reject(db, id, operand, &key))
+                    // The evaluator reduced the operand to a CONCRETE record lacking `key`. Usually that IS
+                    // the fault — but when the operand's TYPE (annotation-wins, see `Resolved::Ref`) DOES
+                    // carry `key`, the value/type disagreement is an annotated let-binder whose initializer
+                    // contradicts its annotation (`(: r (Record (foo …))) (record (fooo …))`) — already
+                    // reported once at the binder (CDZ0203). Suppress the member fault so the two-diagnostic
+                    // CASCADE (rename the value's field vs rename the body's use) does not fire; a body use
+                    // types against what the author DECLARED, so under the declared type the access is valid.
+                    let declared_has_key = matches!(
+                        type_of(db, operand).strip_nominal(),
+                        Ty::Record(fields) if fields.contains_key(&key)
+                    );
+                    if !declared_has_key {
+                        trace!(target: "rcdzc::infer", node = id.0, key = %key.name, "fault: record has no such field (CDZ0201)");
+                        out.push(no_field_reject(db, id, operand, &key))
+                    }
                 }
                 // The operand did not reduce to a compile-time-visible record. Before rejecting, check
                 // its TYPE: a RUNTIME record (a call result, an `if` selection) carries a record type,

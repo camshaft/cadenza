@@ -3032,7 +3032,7 @@ fn find_binder_in_pattern_is_ctor(db: &Db, lhs: StructId) -> bool {
 
 /// If `form` is the bindings-list of a `let` (its parent is a `let` and `form` is that let's first
 /// tail element), the enclosing `let` form.
-fn let_of_bindings_list(db: &Db, form: StructId) -> Option<StructId> {
+pub(crate) fn let_of_bindings_list(db: &Db, form: StructId) -> Option<StructId> {
     let parent = db.parent_of(form)?;
     let tail = db.ast.as_form(parent, "let")?;
     if tail.first().copied() == Some(form) {

@@ -14069,6 +14069,78 @@ mod match_engine {
     }
 
     #[test]
+    fn an_annotated_let_binder_mismatch_does_not_cascade_a_contradictory_body_diagnostic() {
+        // CASCADE SUPPRESSION (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix —
+        // the fix must resolve in ONE shot, not spawn a contradictory follow-on). An annotated let-binder
+        // whose initializer disagrees with its annotation reports ONCE at the binder (CDZ0203). A body use
+        // types against the DECLARED type (annotation-wins, like an annotated PARAMETER), so it does NOT
+        // emit a SECOND diagnostic whose fix undoes the first — exactly as rustc binds `let x: T = e` at `T`
+        // for the body.
+
+        // A RECORD field typo: the binder fix says "keep the annotation `foo`, rename the value's `fooo`".
+        // The body read `(. r foo)` used to ALSO fault ("record has no field `foo` — did you mean `fooo`?"),
+        // a fix that would UNDO the binder fix. Now it is a single diagnostic: the binder mismatch, carrying
+        // the value-side rename.
+        let rec = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (main) \
+                   (let (((: r (Record (foo Int64))) (record (fooo 1)))) (. r foo))) (export main))",
+            )))
+        });
+        let errs: Vec<_> = rec
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errs.len(),
+            1,
+            "exactly one diagnostic (the binder mismatch), no contradictory body cascade: {rec:?}"
+        );
+        assert_eq!(errs[0].code.as_deref(), Some("CDZ0203"), "got: {rec:?}");
+        assert!(
+            errs[0].message.contains("binder annotated"),
+            "the sole diagnostic is the binder mismatch: {}",
+            errs[0].message
+        );
+
+        // A SCALAR mismatch: `(: n Int64)` bound to `true`, body `(+ n 1)`. The body used to fault a second
+        // time ("a Bool and an Int64 are different types"); now it types `n` as the declared `Int64`.
+        let scalar = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (main) (let (((: n Int64) true)) (+ n 1))) (export main))",
+            )))
+        });
+        let serrs: Vec<_> = scalar
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            serrs.len(),
+            1,
+            "a scalar binder mismatch reports once, no arithmetic cascade in the body: {scalar:?}"
+        );
+        assert!(
+            serrs[0].message.contains("binder annotated"),
+            "the sole diagnostic is the binder mismatch: {}",
+            serrs[0].message
+        );
+
+        // NO false suppression: a GENUINE bad field on a WELL-TYPED annotated binder STILL faults (the
+        // annotation and value agree; the body simply names a field neither has).
+        let genuine = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (main) \
+                   (let (((: r (Record (foo Int64))) (record (foo 1)))) (. r bar))) (export main))",
+            )))
+        });
+        assert!(
+            genuine.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("has no field `bar`")),
+            "a genuine absent field on a well-typed binder still faults: {genuine:?}"
+        );
+    }
+
+    #[test]
     fn a_join_site_option_or_unapplied_fn_clash_carries_the_annotation_sites_hint() {
         // FIX-PARITY: the annotation site `(: v T)` names an OPTION-vs-payload clash ("match it to handle
         // `None`") and an UNAPPLIED-FUNCTION clash ("apply it to N more arguments"); the PEER-JOIN sites —
