@@ -637,20 +637,47 @@ fn run_test_file(
                      runner generates (Int/Bool/Float/Char); annotate it with a scalar type"
                 );
             }
-            // Nullary: one run, the plain unit-test path.
-            Some(gens) if gens.is_empty() => match run_one(&[]) {
-                TrialOutcome::Pass => {
-                    passed += 1;
-                    println!("PASS {name}");
-                }
-                TrialOutcome::Fail(msg) => {
-                    failed += 1;
-                    match msg {
-                        Some(m) => println!("FAIL {name}: {m}"),
-                        None => println!("FAIL {name}"),
+            // Nullary SOURCE signature — but this splits at runtime into two cases by whether the body
+            // performs `Test.gen`: a GENERATOR-DRIVEN property test (a nullary wrapper that pulls random
+            // ints from the runner to build its own inputs — the compound/int-stream route) vs a plain
+            // unit test (pulls no generated int). Decide it by RUNNING once under a seeded int pool and
+            // counting the `Test.gen` calls the guest made.
+            Some(gens) if gens.is_empty() => {
+                match run_gen_driven(cdz_run, &tmp, &kebab, store, trials, seed) {
+                    // The test consumed NO generated int → a plain unit test; report its single run.
+                    GenDrivenOutcome::Plain(TrialOutcome::Pass) => {
+                        passed += 1;
+                        println!("PASS {name}");
+                    }
+                    GenDrivenOutcome::Plain(TrialOutcome::Fail(msg)) => {
+                        failed += 1;
+                        match msg {
+                            Some(m) => println!("FAIL {name}: {m}"),
+                            None => println!("FAIL {name}"),
+                        }
+                    }
+                    // A generator-driven property test that passed every trial.
+                    GenDrivenOutcome::Property(None) => {
+                        passed += 1;
+                        println!("PASS {name} ({trials} trials)");
+                    }
+                    // A generator-driven property test with a counterexample (the shrunk failing int pool).
+                    GenDrivenOutcome::Property(Some(fail)) => {
+                        failed += 1;
+                        let msg = fail.message.map(|m| format!(": {m}")).unwrap_or_default();
+                        let pool = fail
+                            .inputs
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        println!(
+                            "FAIL {name}{msg}\n  counterexample: generated ints [{pool}]  (seed {seed}; \
+                             replay with `--seed {seed}`)"
+                        );
                     }
                 }
-            },
+            }
             // A PROPERTY test: run `trials` trials with generated inputs.
             Some(gens) => match run_property(gens, trials, seed, &run_one) {
                 None => {
@@ -745,6 +772,29 @@ fn run_one_trial(
     store: &std::path::Path,
     arg_vals: &[String],
 ) -> TrialOutcome {
+    run_one_trial_with_pool(cdz_run, component, kebab, store, arg_vals, &[]).0
+}
+
+/// The well-known GENERATOR effect operation a property test performs to pull one random `Int64` from the
+/// runner's driver: `Test.gen : Unit -> Int64` (the "well-known `Test` effect extends" convention — the
+/// same `Test` effect that carries `fail`). `cdz test` answers a `Test.gen` performance with the next int
+/// from a seeded pool, so a generator built on this ONE op — bolero's Driver model, one int source that
+/// type-directed generation decodes — needs no per-shape host coordination.
+const GEN_OP_LABEL: &str = "test.gen";
+
+/// Invoke `cdz-run` once, ALSO supplying a seeded int `pool` as `--host-response Test.gen=<n>` responses
+/// (consumed IN ORDER by each `Test.gen` performance — a result-bearing op; a unit op like `Test.fail`
+/// consumes none). Returns the trial outcome AND how many `Test.gen` calls the guest actually made (parsed
+/// from `cdz-run`'s `host-call` stderr lines) — the signal that distinguishes a PROPERTY test (pulls ≥1
+/// generated int) from a plain unit test (pulls none). An unconsumed pool response is harmless (ignored).
+fn run_one_trial_with_pool(
+    cdz_run: &std::path::Path,
+    component: &std::path::Path,
+    kebab: &str,
+    store: &std::path::Path,
+    arg_vals: &[String],
+    pool: &[i64],
+) -> (TrialOutcome, usize) {
     let mut cmd = std::process::Command::new(cdz_run);
     cmd.arg(component)
         .arg("--call")
@@ -754,11 +804,33 @@ fn run_one_trial(
     for v in arg_vals {
         cmd.arg("--arg").arg(v);
     }
-    match cmd.output() {
-        Ok(o) if o.status.success() => TrialOutcome::Pass,
-        Ok(o) => TrialOutcome::Fail(test_failure_message(&o.stderr)),
-        Err(e) => TrialOutcome::Fail(Some(format!("could not run `cdz-run`: {e}"))),
+    for n in pool {
+        cmd.arg("--host-response").arg(format!("Test.gen={n}"));
     }
+    match cmd.output() {
+        Ok(o) => {
+            let gens = count_gen_calls(&o.stderr);
+            let outcome = if o.status.success() {
+                TrialOutcome::Pass
+            } else {
+                TrialOutcome::Fail(test_failure_message(&o.stderr))
+            };
+            (outcome, gens)
+        }
+        Err(e) => (
+            TrialOutcome::Fail(Some(format!("could not run `cdz-run`: {e}"))),
+            0,
+        ),
+    }
+}
+
+/// How many `Test.gen` performances the guest made, from `cdz-run`'s `host-call\t<op>` stderr lines — the
+/// count of generated ints a trial consumed. `> 0` ⇒ the test is a PROPERTY test driven by the int pool.
+fn count_gen_calls(stderr: &[u8]) -> usize {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .filter(|l| l.strip_prefix("host-call\t") == Some(GEN_OP_LABEL))
+        .count()
 }
 
 /// Run a PROPERTY test `trials` times with generated inputs, returning `None` if every trial passed or the
@@ -780,6 +852,109 @@ fn run_property(
         }
     }
     None
+}
+
+/// What a nullary-signature test turned out to be at runtime: a PLAIN unit test (consumed no generated
+/// int — its single-run outcome), or a generator-driven PROPERTY test (`None` = every trial passed, or
+/// the shrunk failing int pool).
+enum GenDrivenOutcome {
+    Plain(TrialOutcome),
+    Property(Option<PropertyFailure>),
+}
+
+/// The number of random ints a property test's generator is offered per trial — the driver POOL size. A
+/// generator pulls as many as its shape needs (a scalar 1, an `(Int64, Bool)` 2, a small list a few); a
+/// pool larger than any reasonable shape means the guest never runs dry, and unconsumed responses are
+/// ignored. (When compound generators land and can pull unboundedly, this becomes a per-trial budget.)
+const GEN_POOL_SIZE: usize = 64;
+
+/// Run a nullary-signature test, deciding PLAIN vs generator-driven PROPERTY by whether it pulls any
+/// `Test.gen` int. The FIRST run uses a seeded pool (`seed`); if the guest consumed ZERO generated ints
+/// it is a plain unit test — return its outcome directly (one run, today's semantics, unaffected by the
+/// unconsumed pool). If it consumed ≥1, it is a property test: run `trials` trials each with a FRESH
+/// seeded pool (`seed + trial`, reproducible), failing on the first trapping trial with the SHRUNK pool.
+fn run_gen_driven(
+    cdz_run: &std::path::Path,
+    component: &std::path::Path,
+    kebab: &str,
+    store: &std::path::Path,
+    trials: u64,
+    seed: u64,
+) -> GenDrivenOutcome {
+    let run_pool = |pool: &[i64]| -> (TrialOutcome, usize) {
+        run_one_trial_with_pool(cdz_run, component, kebab, store, &[], pool)
+    };
+    // First trial (trial 0) doubles as the PLAIN-vs-property probe.
+    let pool0 = gen_pool(seed, GEN_POOL_SIZE);
+    let (outcome0, gens0) = run_pool(&pool0);
+    if gens0 == 0 {
+        // No generated int consumed → a plain unit test. Its outcome is the single run.
+        return GenDrivenOutcome::Plain(outcome0);
+    }
+    // A property test. Trial 0's result counts; if it already failed, shrink + report.
+    if let TrialOutcome::Fail(message) = outcome0 {
+        return GenDrivenOutcome::Property(Some(shrink_pool(&pool0, gens0, message, &run_pool)));
+    }
+    // Remaining trials, each a fresh seeded pool.
+    for trial in 1..trials {
+        let pool = gen_pool(seed.wrapping_add(trial), GEN_POOL_SIZE);
+        let (outcome, gens) = run_pool(&pool);
+        if let TrialOutcome::Fail(message) = outcome {
+            return GenDrivenOutcome::Property(Some(shrink_pool(&pool, gens, message, &run_pool)));
+        }
+    }
+    GenDrivenOutcome::Property(None)
+}
+
+/// A seeded pool of `size` random `Int64`s — the driver stream a property test's generator pulls from.
+/// Reproducible from `seed` (bolero's `driver::Rng` over a seeded `Xoshiro256PlusPlus`), so a reported
+/// failing seed replays the exact pool.
+fn gen_pool(seed: u64, size: usize) -> Vec<i64> {
+    use bolero_generator::driver::{self, Rng};
+    use bolero_generator::{ValueGenerator, produce};
+    let rng = rand_from_seed(seed);
+    let mut d = Rng::new(rng, &driver::Options::default());
+    (0..size)
+        .map(|_| produce::<i64>().generate(&mut d).unwrap_or(0))
+        .collect()
+}
+
+/// SHRINK a failing int pool toward a minimal counterexample: reduce the CONSUMED prefix (`gens` ints —
+/// the ones the generator actually pulled; trailing pool entries never affected the run) toward 0, one
+/// position at a time by halving, keeping any reduction that STILL fails. Reports the consumed prefix
+/// (rendered) — the ints that reproduce the failure. Greedy + bounded, like the scalar `shrink`.
+fn shrink_pool(
+    pool: &[i64],
+    gens: usize,
+    message: Option<String>,
+    run_pool: &dyn Fn(&[i64]) -> (TrialOutcome, usize),
+) -> PropertyFailure {
+    // Only the CONSUMED prefix matters — the generator pulled `gens` ints; the rest of the pool is inert.
+    let mut best: Vec<i64> = pool.iter().take(gens).copied().collect();
+    let mut best_msg = message;
+    for i in 0..best.len() {
+        let mut n = best[i];
+        while n != 0 {
+            n /= 2;
+            let mut trial = best.clone();
+            trial[i] = n;
+            // Re-run with the candidate prefix (the runner pads with the untouched trailing pool via the
+            // original size is unnecessary — the consumed prefix is what the generator reads in order).
+            let (outcome, _) = run_pool(&trial);
+            if matches!(outcome, TrialOutcome::Fail(_)) {
+                best[i] = n;
+                if let (TrialOutcome::Fail(m), _) = run_pool(&best) {
+                    best_msg = m;
+                }
+            } else {
+                break; // this position can't shrink further while still failing
+            }
+        }
+    }
+    PropertyFailure {
+        inputs: best.iter().map(|n| n.to_string()).collect(),
+        message: best_msg,
+    }
 }
 
 /// Generate one `--arg` string per generator, from a driver seeded at `seed` — bolero's `driver::Rng`

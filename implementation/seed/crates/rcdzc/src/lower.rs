@@ -8877,6 +8877,31 @@ fn should_keep_binding(db: &mut Db, init: StructId, uses: &BindingUses) -> bool 
     if crate::eval::lambda_body(db, init).is_some() {
         return false;
     }
+    // A binding whose value PERFORMS A HOST EFFECT is ALWAYS kept — regardless of use count. A host call
+    // has OBSERVABLE ORDER AND COUNT (`core-semantics.md` §Host Calls Are Ordered And Part Of Observable
+    // Behavior), so copy-propagating it is UNSOUND both ways: at ≥2 uses it re-performs the effect once per
+    // use (`let a = (E.op) in a + a` → two calls), and at 0 uses it DROPS the perform entirely (`let a =
+    // (E.op) in 99` → the call vanishes). Naming it as a `Core::Let` binding evaluates it EXACTLY ONCE at
+    // the `let`, in program order — the strict-`let` semantics the kept `Call`/`Arith` bindings already
+    // rely on. This precedes the `is_runtime_computation` / use-count gates, which would otherwise inline
+    // or drop it. (Checked AFTER the two lambda short-circuits, so `subtree_reaches_host_call`'s `core_of`
+    // cannot speculatively lift a lambda init.) The soundness fix a `let`-bound generator/perform needs.
+    //
+    // EXCLUDE a fold-through COMPOUND init (a `Core::Tuple`/`Record`/`ListNew` whose ELEMENTS perform the
+    // effect): the compound is not itself a perform — it CONTAINS them, and its own element lowering
+    // already evaluates each element exactly once, left to right (`let t = (tuple (E.op) (E.op)) in …`
+    // keeps the two calls in construction order without keeping `t`, so a projection-only tuple still folds
+    // through). Keeping such a compound would instead force an unlowerable heap build. Only an init that IS
+    // (or reduces to) the perform — not one that merely aggregates performs into a fold-through shape — is
+    // force-kept here; the compound's elements are single-evaluated by the compound, not by naming it.
+    if subtree_reaches_host_call(db, init)
+        && !matches!(
+            core_of(db, init),
+            Core::Tuple { .. } | Core::Record { .. } | Core::ListNew { .. }
+        )
+    {
+        return true;
+    }
     // A value that folds to a constant / atom leaves no computation to share — always propagate.
     if !is_runtime_computation(db, init) {
         return false;
