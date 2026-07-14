@@ -1013,6 +1013,9 @@ pub fn collect_used_ops(
                 }
             }
             for (k, v) in &entries {
+                if key_needs_compaction(db, *k) {
+                    out.insert(OP_BYTES_COMPACT);
+                }
                 collect_used_ops(db, *k, out);
                 collect_used_ops(db, *v, out);
             }
@@ -1031,6 +1034,9 @@ pub fn collect_used_ops(
             }
             if let Ok(Some(op)) = box_op_ty(db, &val_ty) {
                 out.insert(op);
+            }
+            if key_needs_compaction(db, key) {
+                out.insert(OP_BYTES_COMPACT);
             }
             collect_used_ops(db, map, out);
             collect_used_ops(db, key, out);
@@ -1052,6 +1058,9 @@ pub fn collect_used_ops(
             if let Ok(Some(op)) = box_op_ty(db, &key_ty) {
                 out.insert(op);
             }
+            if key_needs_compaction(db, key) {
+                out.insert(OP_BYTES_COMPACT);
+            }
             collect_used_ops(db, map, out);
             collect_used_ops(db, key, out);
         }
@@ -1060,6 +1069,9 @@ pub fn collect_used_ops(
             out.insert(OP_MAP_REMOVE);
             if let Ok(Some(op)) = box_op_ty(db, &key_ty) {
                 out.insert(op);
+            }
+            if key_needs_compaction(db, key) {
+                out.insert(OP_BYTES_COMPACT);
             }
             collect_used_ops(db, map, out);
             collect_used_ops(db, key, out);
@@ -1079,6 +1091,9 @@ pub fn collect_used_ops(
                 }
             }
             for &e in &elems {
+                if key_needs_compaction(db, e) {
+                    out.insert(OP_BYTES_COMPACT);
+                }
                 collect_used_ops(db, e, out);
             }
         }
@@ -1089,6 +1104,9 @@ pub fn collect_used_ops(
             if let Ok(Some(op)) = box_op_ty(db, &elem_ty) {
                 out.insert(op);
             }
+            if key_needs_compaction(db, elem) {
+                out.insert(OP_BYTES_COMPACT);
+            }
             collect_used_ops(db, set, out);
             collect_used_ops(db, elem, out);
         }
@@ -1098,6 +1116,9 @@ pub fn collect_used_ops(
             if let Ok(Some(op)) = box_op_ty(db, &elem_ty) {
                 out.insert(op);
             }
+            if key_needs_compaction(db, elem) {
+                out.insert(OP_BYTES_COMPACT);
+            }
             collect_used_ops(db, set, out);
             collect_used_ops(db, elem, out);
         }
@@ -1105,6 +1126,9 @@ pub fn collect_used_ops(
             out.insert(OP_SET_REMOVE);
             if let Ok(Some(op)) = box_op_ty(db, &elem_ty) {
                 out.insert(op);
+            }
+            if key_needs_compaction(db, elem) {
+                out.insert(OP_BYTES_COMPACT);
             }
             collect_used_ops(db, set, out);
             collect_used_ops(db, elem, out);
@@ -4291,6 +4315,9 @@ fn emit(
                     emit_box_i32_to_i64_extend(db, k, out);
                     out.push(Lir::CallImport(op)); // [map, key-handle]
                 }
+                if key_needs_compaction(db, k) {
+                    out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
+                }
                 emit(db, v, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
                 if let Some(op) = box_op_ty(db, &val_ty)? {
                     emit_box_i32_to_i64_extend(db, v, out);
@@ -4316,6 +4343,9 @@ fn emit(
                 emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
             }
+            if key_needs_compaction(db, key) {
+                out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf (champ contract)
+            }
             emit(db, val, slots, base, high, scratch_ty, layout, out)?; // [map, key, val]
             if let Some(op) = box_op_ty(db, &val_ty)? {
                 emit_box_i32_to_i64_extend(db, val, out);
@@ -4333,6 +4363,9 @@ fn emit(
             if let Some(op) = box_op_ty(db, &key_ty)? {
                 emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
+            }
+            if key_needs_compaction(db, key) {
+                out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
             }
             out.push(Lir::CallImport(OP_MAP_REMOVE)); // → [map']
             Ok(())
@@ -4357,6 +4390,9 @@ fn emit(
                     emit_box_i32_to_i64_extend(db, e, out);
                     out.push(Lir::CallImport(op)); // [set, elem-handle]
                 }
+                if key_needs_compaction(db, e) {
+                    out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
+                }
                 out.push(Lir::CallImport(OP_SET_INSERT)); // → [set'] (consumes set, elem)
             }
             Ok(()) // leaves [set] — the set handle
@@ -4370,6 +4406,9 @@ fn emit(
                 emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
             }
+            if key_needs_compaction(db, elem) {
+                out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
+            }
             out.push(Lir::CallImport(OP_SET_INSERT)); // → [set']
             Ok(())
         }
@@ -4382,6 +4421,9 @@ fn emit(
             if let Some(op) = box_op_ty(db, &elem_ty)? {
                 emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
+            }
+            if key_needs_compaction(db, elem) {
+                out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
             }
             out.push(Lir::CallImport(OP_SET_REMOVE)); // → [set']
             Ok(())
@@ -4408,6 +4450,10 @@ fn emit(
             if let Some(op) = box_op_ty(db, &elem_ty)? {
                 emit_box_i32_to_i64_extend(db, elem, out);
                 out.push(Lir::CallImport(op)); // [set, elem-handle]
+            }
+            if key_needs_compaction(db, elem) {
+                // Compact BEFORE the tee so elem_slot holds the owned flat leaf the later drop reclaims.
+                out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
             }
             out.push(Lir::LocalTee(elem_slot)); // [set, elem], elem_slot = elem (for the later drop)
             out.push(Lir::CallImport(OP_SET_CONTAINS)); // [bool] (borrows set + elem)
@@ -4454,6 +4500,10 @@ fn emit(
             if let Some(op) = box_op_ty(db, &key_ty)? {
                 emit_box_i32_to_i64_extend(db, key, out);
                 out.push(Lir::CallImport(op)); // [map, key-handle]
+            }
+            if key_needs_compaction(db, key) {
+                // Compact BEFORE the tee so key_slot holds the owned flat leaf the later drop reclaims.
+                out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
             }
             out.push(Lir::LocalTee(key_slot)); // [map, key], key_slot = key (for the later drop)
             out.push(Lir::CallImport(OP_MAP_LOOKUP)); // [value-or-null] (borrows map + key)
@@ -6421,6 +6471,21 @@ fn operand_is_string(db: &mut Db, id: StructId) -> bool {
         }
     }
     matches!(peel(&type_of(db, id)), Ty::String | Ty::Symbol)
+}
+
+/// Whether a Map/Set KEY operand needs `bytes-compact` before the CHAMP `champ_hash`/`champ_eq` — an
+/// OWNED runtime String (a `String.concat` rope, whose physical bytes differ from a flat twin's of equal
+/// content, so it would hash into a different slot and never match its flat twin). This is the KEY-path
+/// companion of the `Core::ValueEq` compaction (`731dbf09`): both `value-eq` and the map/set key path use
+/// `champ_eq` over physical bytes, so a rope must be canonicalized at BOTH. Only a DIRECT, OWNED String
+/// key is compacted — a BORROWED String key (a param / a kept-local reference) is a FLAT leaf in practice
+/// and `bytes-compact` would consume it under its owner (mirrors the value-eq ownership gate); a String
+/// NESTED inside a compound key is the same rarer deferred case value-eq leaves. A compacted owned key is
+/// stack- and ownership-NEUTRAL: an owned rope in, an owned flat leaf out, so each site's existing key
+/// accounting (consumed by insert, or the dropped borrow-temporary at lookup/remove/contains) is unchanged.
+fn key_needs_compaction(db: &mut Db, key: StructId) -> bool {
+    operand_is_string(db, key)
+        && matches!(heap_operand_ownership(db, key), Ok(HandleOwnership::Owned))
 }
 
 fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, Reject> {
