@@ -529,6 +529,22 @@
                 (apply1 (fn (z) (* z 2)) 10))) (export main)))
   (output (: 25 Int64)))
 
+(case "an arm that binds its resume in a lambda and applies it immediately folds"
+  (doc    "An arm that names its continuation as a LAMBDA and APPLIES it in place — `(flip (u) s (let ((k (fn
+           (x) (resume (* x 2) s)))) (k 5)))`. This LOOKS like the captured-continuation frontier (a `k`
+           bound to the resume), but `k` does NOT escape — it is applied immediately, `(k 5)`. So the
+           applied-lambda pre-reduction inlines it to `(resume (* 5 2) s)` = `(resume 10 s)`, an ORDINARY
+           non-tail resume the pure one-hole fold serves: `C = (+ 100 [])` over the body `(+ 100 (Amb.flip))`,
+           so the handle yields `(+ 100 10)` = 110. Pins that binding the resume in a lambda and applying it
+           in-arm is NOT the hard captured-`k` case (which needs a reified continuation) — an immediately-
+           applied continuation-lambda reduces away, distinguishing 'names k' from 'k escapes'.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (let ((k (fn (x) (resume (* x 2) s)))) (k 5))))
+                (+ 100 (Amb.flip)))) (export main)))
+  (output (: 110 Int64)))
+
 (case "an applied lambda whose body enters a mutually-recursive performing group folds"
   (doc    "Composes the applied-lambda pre-reduction with mutual-recursion specialization: the handle body
            is `((fn (m) (ev m)) 4)`, a lambda applied to a pure literal whose body ENTERS the
@@ -608,6 +624,20 @@
             (def (main)
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 50) (+ 1 (Amb.flip)) 0))) (export main)))
   (output (: 13 Int64)))
+
+(case "TWO performs in an if condition both fold on the strict-first spine"
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (resume 1 s)))
+                (if (= (Amb.flip) (Amb.flip)) 100 200))) (export main)))
+  (doc    "Both operands of an `if` CONDITION perform — `(if (= (Amb.flip) (Amb.flip)) 100 200)`. The
+           condition is a strict, evaluated-first position and `=`'s two operands are strict-first
+           sub-positions, so BOTH flips lie on the uniform strict spine and fold: each resumes 1 (a
+           tail-resumptive arm, seed 0 read twice — no state advance), so the condition is `(= 1 1)` = true
+           and the handle yields the then-branch 100. Extends the single-perform-in-a-condition case to two
+           performs in the SAME condition — a compiler pass that reads two fresh values to decide a branch.")
+  (output (: 100 Int64)))
 
 (case "a handler arm that resumes NON-tail folds when the perform is in an if condition"
   (doc    "The pure one-hole continuation extends into an `if` CONDITION — a strict, always-evaluated-first
