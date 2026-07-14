@@ -1106,6 +1106,11 @@ the component type. The new work:
   new envelope/serializer. e2e: two DIFFERENT-sig scalar-then-nested → 1113, 1100 (Bool leaf), × List. **A nested
   fixed-shape compound ARG now crosses on ALL FOUR export shapes (single/multi/mixed/distinct-sig), SOLE or
   AMONG scalars, for every result shape.**
+- **✅ DEEPER direct-call compound RESULT shapes witnessed** (`dcedfc29`, corpus-only). The value-form template
+  + value-encode walker descend arbitrarily + compose with the arg rebuild — a nested record result, a
+  Tuple-arg × nested-tuple result, a tuple-with-a-List (compound-with-collection), a nested-arg × nested-result,
+  a Sum-of-tuple, and a List-of-tuples all cross + decode on the direct-call path (all ALREADY worked; corpus
+  lagged). The direct-call RESULT surface is as deep as the arg surface.
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (1) **N
   compound args** (two tuple args) — `single_compound_among_scalars` rejects >1 tuple; `TupleArgRebuild` + ~65
