@@ -90,6 +90,15 @@ pub fn extern_abi_val_type(ty: &Ty) -> Option<AbiValType> {
     // the value heap (a tuple/record/sum/list/map/set + the byte-rope String/Bytes + the bignum BigInt/
     // Rational), and an erased nominal over one. NOT a narrow scalar (Int8 has no scalar `abi_val_type` yet
     // but is NOT a heap value). `Unit`/a bare function → None (declines).
+    //
+    // So a COMPOUND crosses between peers as an opaque handle INTO the one shared runtime instance (X5),
+    // NOT marshaled into a component-model aggregate — no serialization, the shared runtime owns the value.
+    // The handle is the SAME runtime handle a program exchanges with the runtime across its internal
+    // boundary, interpretable only by that shared runtime (neither peer dereferences it).
+    //= spec/contracts/component-abi.md#cadenza-components-composed-against-a-shared-runtime-exchange-values-as-handles
+    //# Two or more separately-derived Cadenza components that a host composes against a single value-heap runtime instance MUST exchange a compound value that crosses between them as an opaque handle into that shared runtime, rather than by marshaling the value into a component-model aggregate at the crossing, so that a value passes between Cadenza components with no serialization and the shared runtime that owns the value is the one place its representation lives.
+    //= spec/contracts/component-abi.md#cadenza-components-composed-against-a-shared-runtime-exchange-values-as-handles
+    //# The opaque handle by which a compound value crosses MUST be interpretable only by the shared runtime — the same runtime handle a program exchanges with the runtime across its internal boundary (§A Runtime Value Crosses As An Opaque Handle) — so that a handle one component produces is a value the other accepts without either dereferencing it, and the concrete boundary form of that handle (a runtime handle valtype, or a well-known `value` resource type the runtime interface publishes) is fixed at the declared-default location rather than by this contract.
     if is_extern_heap_type(ty) {
         Some(AbiValType::U32)
     } else {

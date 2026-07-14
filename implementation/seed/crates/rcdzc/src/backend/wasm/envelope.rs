@@ -987,6 +987,15 @@ pub fn assemble_extern(
 /// `2..=1+m`. Peer op aliases → comp funcs `0..p`; runtime aliases → `p..p+k`; lifts → `p+k..`. Imported
 /// peer instance → comp instance 0; runtime instance → comp instance 1; peer core instance 0; runtime core
 /// instance 1; program core instance 2.
+///
+/// The handle a peer hands this consumer is meaningful only within the ONE shared runtime instance (both
+/// import the same runtime), and the consumer NEVER dereferences it — it reads the value only through the
+/// shared runtime's accessors (`arr-get`/`get-int`/…) at the value's statically-known type, so it depends
+/// on the runtime interface rather than the handle's byte representation and no peer's heap is aliased.
+//= spec/contracts/component-abi.md#a-cross-component-handle-is-meaningful-only-in-the-shared-runtime-instance
+//# A `value` handle that crosses between composed components MUST be meaningful only within the single runtime instance the composition shares, consistent with a runtime handle being meaningful only within the instance that produced it (§A Runtime Value Crosses As An Opaque Handle), so that composing components against a shared runtime is what makes a handle one produces intelligible to another and a handle never denotes a value in a different instance.
+//= spec/contracts/component-abi.md#a-cross-component-handle-is-meaningful-only-in-the-shared-runtime-instance
+//# A composed component MUST NOT dereference or interpret a handle it receives from a peer, reading the value only through the shared runtime's accessors as the value's statically-known type, so that the receiving component depends on the runtime's interface rather than on the handle's byte representation and no peer's heap is aliased by another linear memory.
 pub fn assemble_extern_runtime(
     core: &[u8],
     exports: &[BoundaryExport],
