@@ -25692,6 +25692,42 @@ mod diagnostics {
                 "the surviving reject carries the delete fix for {src}"
             );
         }
+        // A NAMED-MEMBER CONVERSION op over-applied — `(Int64.of 5 6)` / `(Float64.of 1.0 2.0)` — routes
+        // through `lower`'s `lower_conversion`/`lower_float_of`, which emit a coded CDZ0201 "of takes
+        // exactly 1 operand" ALONGSIDE `infer`'s member over-application CDZ0203 "`Int64.of` takes 1
+        // argument, but 2 were given" (with the delete fix). They are the same defect — dedup keeps ONE,
+        // the op-NAMING CDZ0203 with its fix, dropping the bare emit-path arity reject.
+        for (src, op) in [
+            (
+                "(module m (def (main) (Int64.of 5 6)) (export main))",
+                "Int64.of",
+            ),
+            (
+                "(module m (def (main) (Float64.of 1.0 2.0)) (export main))",
+                "Float64.of",
+            ),
+        ] {
+            let errs: Vec<_> = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .collect();
+            assert_eq!(
+                errs.len(),
+                1,
+                "a member-op conversion over-application reports ONCE (emit arity reject deduped): {errs:?} for {src}"
+            );
+            assert_eq!(errs[0].code.as_deref(), Some("CDZ0203"), "for {src}");
+            assert!(
+                errs[0].message.contains(op) && errs[0].message.contains("were given"),
+                "the surviving reject NAMES the op `{op}`: {}",
+                errs[0].message
+            );
+            assert_eq!(
+                errs[0].fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Delete),
+                "the surviving CDZ0203 carries the delete fix for {src}"
+            );
+        }
     }
 
     #[test]

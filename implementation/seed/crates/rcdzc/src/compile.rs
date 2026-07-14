@@ -2028,6 +2028,17 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
                 || r.message
                     .contains(crate::diag::MEMBER_OVER_APPLICATION_MARKER))
     });
+    // A NAMED-MEMBER-OP over-application specifically (`Int64.of`/`List.push` — the `… were given` phrasing,
+    // NOT the bare-operator `arguments to a function of arity`). A member-op's over-application ALSO makes
+    // the emit path return a coded arity reject (`of takes exactly 1 operand`), which is redundant with the
+    // op-naming CDZ0203 — drop it only for a MEMBER over-application. A bare OPERATOR (`+`) instead has a
+    // resolve-path CDZ0201 (`+ takes exactly 2 operands`) that IS the primary (kept), so it must NOT match
+    // this flag — hence keying on the member marker, not the general over-application flag.
+    let has_member_over_application_reject = faults.iter().any(|r| {
+        r.code.is_some()
+            && r.message
+                .contains(crate::diag::MEMBER_OVER_APPLICATION_MARKER)
+    });
     // Likewise: a MALFORMED handler (an arm naming an undeclared op — CDZ0403 — or one not discharging
     // every operation — CDZ0405) cannot fold, so `lower` returns the uncoded "not yet reducible by the
     // tail-resumptive fold" DECLINE alongside the coded reject. The decline is a CONSEQUENCE of the very
@@ -2279,6 +2290,21 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             if has_over_application_reject
                 && r.is_decline()
                 && r.message.contains(crate::diag::BUILTIN_WRONG_ARITY_DECLINE)
+            {
+                return false;
+            }
+            // The emit-path CONVERSION arity reject (`of takes exactly 1 operand`, from `lower`'s
+            // `lower_conversion`/`lower_float_of`/…) is a CODED CDZ0201 that fires alongside `infer`'s
+            // MEMBER-op over-application CDZ0203 (`Int64.of takes 1 argument, but 2 were given`, with a
+            // delete fix). The CDZ0203 names the op and carries the fix, so it is the primary; drop the
+            // bare emit-path arity reject. Gated on the MEMBER over-application flag (not the general one):
+            // a bare OPERATOR `(+ 1 2 3)` has a resolve-path CDZ0201 `+ takes exactly 2 operands` that IS
+            // its primary (kept — its CDZ0203 sibling is dropped by the operator-arity path below), so it
+            // must not match here; only a `Module.op` over-application (the `were given` phrasing) does.
+            if has_member_over_application_reject
+                && r.code == Some(Code::Malformed)
+                && r.message.contains(crate::diag::EMIT_OPERAND_ARITY_MARKER)
+                && r.message.contains("operand")
             {
                 return false;
             }
