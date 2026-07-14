@@ -4029,6 +4029,95 @@ mod runtime_ops {
     }
 
     #[test]
+    fn comparing_two_bool_materialized_ints_folds_to_a_boolean_equality() {
+        // `(= (if c 1 0) (if d 1 0))` compares two booleans coerced to ints — it IS `(= c d)`, a direct
+        // bool `i32.eq`, dropping the two `extend_i32_u`s and the i64 compare. Each `(if _ 1 0)`/`(if _ 0
+        // 1)` maps to its bool (or negation); opposite net polarities give `(= c (not d))`.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // Same polarity → `(= c d)`: a direct `i32.eq`, NO `extend_i32_u` and NO i64 compare.
+        let same = lir("(: c Bool) (: d Bool)", "(= (if c 1 0) (if d 1 0))");
+        assert!(
+            same.iter().any(|i| matches!(i, Lir::I32Eq))
+                && !same
+                    .iter()
+                    .any(|i| matches!(i, Lir::I64ExtendI32U | Lir::I64Eq | Lir::I32Eqz)),
+            "(= (if c 1 0) (if d 1 0)) → (= c d), got: {same:?}"
+        );
+        // Opposite polarity → `(= c (not d))`: one `i32.eqz` (the negation) + the `i32.eq`, still no extend.
+        let opp = lir("(: c Bool) (: d Bool)", "(= (if c 0 1) (if d 1 0))");
+        assert!(
+            opp.iter().filter(|i| matches!(i, Lir::I32Eqz)).count() == 1
+                && opp.iter().any(|i| matches!(i, Lir::I32Eq))
+                && !opp
+                    .iter()
+                    .any(|i| matches!(i, Lir::I64ExtendI32U | Lir::I64Eq)),
+            "(= (if c 0 1) (if d 1 0)) → (= (not c) d), got: {opp:?}"
+        );
+        // Both negated → `(= c d)` again (the two negations cancel).
+        let both = lir("(: c Bool) (: d Bool)", "(= (if c 0 1) (if d 0 1))");
+        assert!(
+            both.iter().any(|i| matches!(i, Lir::I32Eq))
+                && !both
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32Eqz | Lir::I64ExtendI32U)),
+            "(= (if c 0 1) (if d 0 1)) → (= c d), got: {both:?}"
+        );
+
+        // VALUE PARITY: every polarity over the full truth table.
+        for (body, f) in [
+            ("(= (if c 1 0) (if d 1 0))", 0u8), // c == d
+            ("(= (if c 0 1) (if d 1 0))", 1),   // (not c) == d
+            ("(= (if c 0 1) (if d 0 1))", 0),   // c == d
+            ("(= (if c 1 0) (if d 0 1))", 1),   // c == (not d)
+        ] {
+            for c in [true, false] {
+                for d in [true, false] {
+                    let want = if f == 0 { c == d } else { c != d };
+                    assert_eq!(
+                        run::<bool>("(: c Bool) (: d Bool)", body, &[Val::Bool(c), Val::Bool(d)]),
+                        want,
+                        "{body} @c={c},d={d}"
+                    );
+                }
+            }
+        }
+        // NON-fold guards: a non-0/1 branch pair keeps a real `if`/`select` (both compares run); a bool-int
+        // vs a genuine runtime int is not this fold.
+        let kept = lir(
+            "(: c Bool) (: d Bool)",
+            "(: (= (if c 5 7) (if d 5 7)) Bool)",
+        );
+        assert!(
+            kept.iter().any(|i| matches!(i, Lir::Select | Lir::If(_))),
+            "non-0/1 branches are not folded, got: {kept:?}"
+        );
+    }
+
+    #[test]
     fn a_boolean_compared_to_a_literal_folds_to_the_boolean_or_its_negation() {
         // `(= c true)` → `c` (a bare `local.get`), `(= c false)` → `!c` (`i32.eqz`) — either operand order.
         // The redundant `i32.const K ; i32.eq` the runtime compare would emit is dropped. A derived bool

@@ -9376,9 +9376,31 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     }
 }
 
+/// If `id` is a boolean coerced to an integer — a `(if cond 1 0)` (the bool itself) or `(if cond 0 1)`
+/// (its negation) — return `(cond, negated)`: the underlying boolean condition occurrence and whether the
+/// materialized int is the NEGATION of it. `None` otherwise. The shared shape-recognizer for the bool-int
+/// folds (a `Core::If` whose two branches are the constants `1` and `0`).
+fn materialized_bool(db: &mut Db, id: StructId) -> Option<(StructId, bool)> {
+    let Core::If { cond, then_, else_ } = core_of(db, id) else {
+        return None;
+    };
+    let branch_val = |db: &mut Db, b: StructId| -> Option<i64> {
+        match core_of(db, b) {
+            Core::ConstInt(v) => v.to_i64().filter(|&x| x == 0 || x == 1),
+            _ => None,
+        }
+    };
+    match (branch_val(db, then_)?, branch_val(db, else_)?) {
+        (1, 0) => Some((cond, false)), // `(if c 1 0)` — c itself
+        (0, 1) => Some((cond, true)),  // `(if c 0 1)` — !c
+        _ => None,
+    }
+}
+
 /// Fold `(= <bool-int-if> K)` where `K` ∈ {0,1} and the other operand is a `(if c 1 0)` / `(if c 0 1)`
 /// (a boolean coerced to an integer). Returns `c` when the `if`-value equals `K`, `!c` (`Core::Not`) when
-/// it is the complement — dropping the materialize-then-compare. `None` when neither operand is a 0/1
+/// it is the complement — dropping the materialize-then-compare. Also folds `(= <bool-int> <bool-int>)`
+/// (BOTH operands materialized bools) to `(= c d)` / `(= c (not d))`. `None` when neither operand is a 0/1
 /// constant, or the other is not a `(if c <one> <zero>)`-shaped bool-int, so the caller keeps the runtime
 /// compare. Value-identical: `(if c 1 0)` is `1` iff `c` (so `== 1` is `c`, `== 0` is `!c`); `(if c 0 1)`
 /// is the mirror. `c` is trap-free by construction (it was an `if` condition, a Bool) and is REUSED, so
@@ -9392,6 +9414,29 @@ fn fold_bool_int_eq(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<Core> {
             _ => None,
         }
     };
+    // BOTH operands bool-materialized ints — `(= (if c 1 0) (if d 1 0))` is `(= c d)`, dropping two
+    // `extend_i32_u`s and the i64 compare for a direct bool `i32.eq`. Each `(if _ 1 0)`/`(if _ 0 1)` maps
+    // to its underlying bool (or its negation); the equality of two 0/1 values is the equality of the
+    // bools, XOR-adjusted for each negation: `(= biᶜ biᵈ)` = `c == d` when neither/both negated, else `c
+    // != d` (i.e. `= c (not d)`). Built as a `Core::Compare{Eq}` on the two bool operands, one wrapped in
+    // `Core::Not` when the polarities differ (synth so the negation folds — `(not (< …))` → the complement
+    // op). Tried before the const-K path since a bool-int is not a 0/1 constant.
+    if let Some((cc, cneg)) = materialized_bool(db, lhs)
+        && let Some((dd, dneg)) = materialized_bool(db, rhs)
+    {
+        // Equal iff the bools agree after accounting for each side's negation. Same net polarity → `(= c
+        // d)`; opposite → `(= c (not d))`. Reuse `cc` as the left bool; the right is `dd` or `(not dd)`.
+        let right = if cneg == dneg {
+            dd
+        } else {
+            synth_core(db, Core::Not { operand: dd }, crate::ty::Ty::Bool)
+        };
+        return Some(Core::Compare {
+            op: Prim::Eq,
+            lhs: cc,
+            rhs: right,
+        });
+    }
     let (if_node, k) = if let Some(k) = as_const01(db, rhs) {
         (lhs, k)
     } else if let Some(k) = as_const01(db, lhs) {
