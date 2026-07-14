@@ -3586,6 +3586,30 @@ fn an_if_false_true_negation_runs_as_not_the_condition() {
     ));
 }
 
+/// A recursive effectful walk whose self-call is `let`-BOUND and whose perform runs AFTER it (in the
+/// `let` body) observes the recursion's OUT-state — the single-return specialization threads only the
+/// INCOMING state, so it CANNOT fold this. It must DECLINE CLEANLY (a "not yet compiled" todo), NOT leak
+/// the internal `walk#eff2$s0` state-param name in a confusing CDZ0101. The operand-scan guard missed the
+/// `let`-bound shape (the self-call is buried in the init, the body's `(+ rest (Ctr.tick))` has only a
+/// `Ref` + a perform as operands); the `let`-sequencing arm of `selfcall_precedes_perform_in_operands`
+/// catches it. The direct-operand `(+ (walk …) (Ctr.tick))` form folds (accumulator-introduction rewrites
+/// it to tail form first) — this is specifically the leaked-internal-name check≡compile gap.
+#[test]
+fn a_let_bound_selfcall_then_perform_declines_cleanly_without_leaking_an_internal_name() {
+    use crate::testkit::parse;
+    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
+               (def (walk (: n Int64)) (if (= n 0) 0 (let ((rest (walk (- n 1)))) (+ rest (Ctr.tick))))) \
+               (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src)))
+        .expect_err("the out-state-observing let-bound post-order shape must decline");
+    // The decline must NOT leak an internal specialization name (`walk#eff…$s…`) — that was the bug.
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
 /// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
 /// compiler DECLINES asking for an annotation rather than inventing a width.
 #[test]
