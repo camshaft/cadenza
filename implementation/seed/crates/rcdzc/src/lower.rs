@@ -3303,7 +3303,7 @@ fn tuple_constructor_elems(db: &mut Db, id: StructId) -> Option<Vec<StructId>> {
 /// suggestion). `decl` is the scrutinee sum's declaration occurrence; `tested` the discriminants the
 /// arms already cover; `scrutinee` the match's scrutinee node (its parent IS the `(match …)` form the
 /// insert targets). The fix is Heuristic — the arm SHAPES cover the gap (applying makes the match
-/// exhaustive), but their BODIES are `unit` placeholders the author fills.
+/// exhaustive), but their BODIES are `(trap "TODO: …")` placeholders the author fills.
 fn non_exhaustive_sum_reject(
     db: &Db,
     decl: StructId,
@@ -3332,18 +3332,28 @@ fn non_exhaustive_sum_reject(
         if missing.len() == 1 { "" } else { "s" },
         join_and(&names),
     );
-    // One arm per missing variant. A nullary variant → `(Name unit)`; a payload variant → bind each
+    // One arm per missing variant. A nullary variant → `(Name <body>)`; a payload variant → bind each
     // payload with a fresh `_`-prefixed name so the arm is well-formed AND does not itself warn unused:
-    // `((Some _p0) unit)`. The body is `unit` (a placeholder the author replaces).
+    // `((Some _p0) <body>)`. The body is `(trap "TODO: <variant>")` — a DIVERGING placeholder the author
+    // replaces. `trap : ∀a. String → a`, so it type-checks in ANY arm whatever the sibling arms' result
+    // type is; a bare `unit` body cascaded to a CDZ0203 "match arms differ: T vs Unit" the moment the
+    // other arms were not Unit-typed (trading one fault for another — a fix must resolve in ONE shot,
+    // `spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). The message names the
+    // variant so the author sees which case is stubbed.
     let arms: Vec<String> = missing
         .iter()
         .map(|v| {
             if v.payloads.is_empty() {
-                format!("({} unit)", v.name)
+                format!("({} (trap \"TODO: {}\"))", v.name, v.name)
             } else {
                 let binders: Vec<String> =
                     (0..v.payloads.len()).map(|i| format!("_p{i}")).collect();
-                format!("(({} {}) unit)", v.name, binders.join(" "))
+                format!(
+                    "(({} {}) (trap \"TODO: {}\"))",
+                    v.name,
+                    binders.join(" "),
+                    v.name
+                )
             }
         })
         .collect();
@@ -3369,11 +3379,14 @@ fn join_and(items: &[String]) -> String {
 /// The CDZ0210 non-exhaustive-SCALAR-match rejection, enriched with an "add the covering arm" fix (the
 /// scalar analogue of `non_exhaustive_sum_reject` — `spec/capabilities/diagnostics.md` §A Diagnostic
 /// Carries A Route To A Fix). A BOOL scrutinee missing a literal (`bool_true`/`bool_false` = whether
-/// each is covered by an unguarded arm) is a FINITE gap: name + insert exactly the missing `(true unit)`
-/// / `(false unit)` arm, like a missing sum variant. Any OTHER scalar (an open Int/String, or a Bool
-/// with neither literal) is closed only by a wildcard: insert `(_ unit)`. The arm bodies are `unit`
-/// placeholders → Heuristic. Anchored at the `(match …)` form (parent of the scrutinee); falls back to
-/// the plain reject (no fix) if that parent is absent.
+/// each is covered by an unguarded arm) is a FINITE gap: name + insert exactly the missing
+/// `(true (trap …))` / `(false (trap …))` arm, like a missing sum variant. Any OTHER scalar (an open
+/// Int/String, or a Bool with neither literal) is closed only by a wildcard: insert `(_ (trap …))`. The
+/// arm bodies are `(trap "TODO: …")` — a DIVERGING placeholder (`trap : ∀a. String → a`) that type-checks
+/// in ANY arm whatever the sibling arms return; a bare `unit` body cascaded to a CDZ0203 "match arms
+/// differ: T vs Unit" the moment the other arms were not Unit-typed. Heuristic (the author fills the
+/// body). Anchored at the `(match …)` form (parent of the scrutinee); falls back to the plain reject (no
+/// fix) if that parent is absent.
 fn non_exhaustive_scalar_reject(
     db: &Db,
     scrutinee: StructId,
@@ -3387,14 +3400,14 @@ fn non_exhaustive_scalar_reject(
         let missing = if bool_true { "false" } else { "true" };
         (
             format!("non-exhaustive match: `{missing}` is not covered"),
-            vec![format!("({missing} unit)")],
+            vec![format!("({missing} (trap \"TODO: {missing}\"))")],
         )
     } else {
         // An open scalar (or a Bool with neither literal) — only a wildcard closes it.
         (
             "non-exhaustive match: add a wildcard `_` arm to cover the remaining values"
                 .to_string(),
-            vec!["(_ unit)".to_string()],
+            vec!["(_ (trap \"TODO\"))".to_string()],
         )
     };
     match db.parent_of(scrutinee) {

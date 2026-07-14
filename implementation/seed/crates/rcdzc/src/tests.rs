@@ -10302,8 +10302,10 @@ mod match_engine {
     #[test]
     fn a_non_exhaustive_scalar_match_offers_a_wildcard_arm_fix() {
         // An open Int scalar match with no wildcard is CDZ0210; it now carries an INSERT fix that appends
-        // a `(_ unit)` wildcard arm (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To
-        // A Fix — the scalar twin of the sum add-arms fix).
+        // a `(_ (trap "TODO"))` wildcard arm (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A
+        // Route To A Fix — the scalar twin of the sum add-arms fix). The body is a `trap` (∀a. String → a),
+        // NOT `unit`, so the added arm type-checks against sibling arms of ANY result type (a bare `unit`
+        // cascaded to a CDZ0203 "match arms differ" — a fix must resolve in ONE shot).
         let d = reject_full("(module m (def (f (: n Int64)) (match n (0 1) (1 2))) (export f))")
             .expect("non-exhaustive must reject");
         assert_eq!(d.code.as_deref(), Some("CDZ0210"), "got: {}", d.message);
@@ -10314,14 +10316,18 @@ mod match_engine {
         );
         let fix = d.fix.expect("a wildcard-arm fix is carried");
         assert_eq!(fix.kind, crate::abi::FixKind::InsertInto);
-        assert_eq!(fix.replacement, "(_ unit)", "appends a wildcard arm");
+        assert_eq!(
+            fix.replacement, "(_ (trap \"TODO\"))",
+            "appends a wildcard arm with a diverging placeholder body"
+        );
         assert!(!fix.verified, "the arm body is a placeholder → heuristic");
     }
 
     #[test]
     fn a_bool_match_missing_a_literal_offers_the_specific_missing_arm() {
-        // A Bool scrutinee is a FINITE gap: missing `false` → name it AND insert exactly `(false unit)`
-        // (not a generic wildcard), the same precision as a missing sum variant.
+        // A Bool scrutinee is a FINITE gap: missing `false` → name it AND insert exactly
+        // `(false (trap "TODO: false"))` (not a generic wildcard), the same precision as a missing sum
+        // variant. The `trap` body type-checks against the sibling `Int64` arm (a `unit` body would clash).
         let d = reject_full("(module m (def (main (: b Bool)) (match b (true 1))) (export main))")
             .expect("non-exhaustive must reject");
         assert_eq!(d.code.as_deref(), Some("CDZ0210"), "got: {}", d.message);
@@ -10332,19 +10338,60 @@ mod match_engine {
         );
         assert_eq!(
             d.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("(false unit)"),
+            Some("(false (trap \"TODO: false\"))"),
             "inserts the specific missing arm: {}",
             d.message
         );
-        // Symmetric: missing `true` → `(true unit)`.
+        // Symmetric: missing `true` → `(true (trap "TODO: true"))`.
         let d2 =
             reject_full("(module m (def (main (: b Bool)) (match b (false 2))) (export main))")
                 .expect("reject");
         assert_eq!(
             d2.fix.as_ref().map(|f| f.replacement.as_str()),
-            Some("(true unit)"),
+            Some("(true (trap \"TODO: true\"))"),
             "message: {}",
             d2.message
+        );
+    }
+
+    #[test]
+    fn the_exhaustiveness_add_arm_fix_type_checks_in_one_shot_against_int_arms() {
+        // The key property of the `trap`-bodied add-arm fix over the old `unit` body: the covering arm it
+        // suggests type-checks in ONE shot even when the sibling arms return a non-Unit type. A `unit` body
+        // traded the CDZ0210 for a fresh CDZ0203 "match arms differ: Int64 vs Unit" (a cascade — the fix
+        // did not verify); the diverging `trap` (∀a. String → a) unifies with the `Int64` arms, so the
+        // repaired program compiles clean. These are the exact arm shapes the fix inserts (verified by the
+        // `fix.replacement` assertions in the sibling tests) — here we confirm the RESULT compiles.
+        fn compiles_clean(src: &str) {
+            assert!(
+                reject_full(src).is_none(),
+                "the add-arm fix's covering arm must type-check against the Int64 sibling arms (no cascade): \
+                 {:?}\nsrc: {src}",
+                reject_full(src).map(|d| (d.code, d.message))
+            );
+        }
+        // Each is the ORIGINAL non-exhaustive match with the fix's exact covering arm spliced in. Sibling
+        // arms return Int64 — the old `unit` body clashed (CDZ0203); the `trap` body does not.
+        compiles_clean(
+            "(module m (type C (A) (B) (Cc)) (def (main) (match (C.A) ((A) 1) ((B) 2) (Cc (trap \"TODO: Cc\")))) (export main))",
+        );
+        compiles_clean(
+            "(module m (def (main) (match true (true 1) (false (trap \"TODO: false\")))) (export main))",
+        );
+        compiles_clean(
+            "(module m (def (main) (match (Some 1) ((None) 0) ((Some _p0) (trap \"TODO: Some\")))) (export main))",
+        );
+        compiles_clean(
+            "(module m (def (main) (match 5 (1 10) (2 20) (_ (trap \"TODO\")))) (export main))",
+        );
+        // And the OLD `unit` body genuinely DID cascade — pin the regression so a revert is caught.
+        let with_unit = reject_full(
+            "(module m (type C (A) (B) (Cc)) (def (main) (match (C.A) ((A) 1) ((B) 2) (Cc unit))) (export main))",
+        );
+        assert_eq!(
+            with_unit.and_then(|d| d.code).as_deref(),
+            Some("CDZ0203"),
+            "a `unit` arm body among Int64 arms is the cascade the trap body avoids"
         );
     }
 
@@ -18997,7 +19044,7 @@ mod diagnostics {
         );
         let fix = d[0].fix.as_ref().expect("carries the add-arm fix");
         assert_eq!(fix.kind, crate::abi::FixKind::InsertInto);
-        assert_eq!(fix.replacement, "(D unit)");
+        assert_eq!(fix.replacement, "(D (trap \"TODO: D\"))");
 
         // A NON-exported function's non-exhaustive match is caught too — it escapes emission entirely
         // (dead, never laid out), so this is the only place it is reported.
@@ -25935,16 +25982,21 @@ mod stage1 {
         );
         let fix = err.fix.expect("an add-arms fix is carried");
         assert_eq!(fix.kind, crate::abi::FixKind::InsertInto, "it INSERTS arms");
-        // `None` is nullary → the synthesized arm is `(None unit)`.
-        assert_eq!(fix.replacement, "(None unit)", "the covering arm");
+        // `None` is nullary → the synthesized arm is `(None (trap "TODO: None"))`. The body is a diverging
+        // `trap` (∀a. String → a), NOT `unit`, so it type-checks against the sibling `Int64` arm (a bare
+        // `unit` cascaded to a CDZ0203 "match arms differ: Int64 vs Unit").
+        assert_eq!(
+            fix.replacement, "(None (trap \"TODO: None\"))",
+            "the covering arm"
+        );
         assert!(!fix.verified, "the arm body is a placeholder → heuristic");
     }
 
     #[test]
     fn a_non_exhaustive_match_synthesizes_payload_binders_and_lists_multiple_missing() {
         // Two missing variants, one with a PAYLOAD: the fix synthesizes a `_`-prefixed binder per payload
-        // (`(Some _p0) unit`) so the arm is well-formed and does not itself warn unused, and the message
-        // lists both missing variants.
+        // (`(Some _p0) (trap …)`) so the arm is well-formed and does not itself warn unused, and the
+        // message lists both missing variants.
         use crate::testkit::parse;
         let src = "(module m (type T (A Int64) B C) \
                      (def (f (: t T)) (match t ((A x) x))) (export f))";
@@ -25957,8 +26009,11 @@ mod stage1 {
             err.message
         );
         let fix = err.fix.expect("an add-arms fix is carried");
-        // B and C are nullary; the fix appends both arms, space-joined.
-        assert_eq!(fix.replacement, "(B unit) (C unit)", "both covering arms");
+        // B and C are nullary; the fix appends both arms, space-joined, each with a `trap` placeholder body.
+        assert_eq!(
+            fix.replacement, "(B (trap \"TODO: B\")) (C (trap \"TODO: C\"))",
+            "both covering arms"
+        );
     }
 
     #[test]
