@@ -1558,6 +1558,29 @@
   (call   main (: 127 Int8)) (output (: -128 Int8))
   (call   main (: -5 Int8)) (output (: -4 Int8)))
 
+; The runtime narrow-wrap cases above wrap modulo the TYPE's width. Their CONSTANT-fold twins must give the
+; IDENTICAL result — a wrapping op has a defined modular outcome regardless of whether its operands are
+; constant. A narrow-width const-fold that reused the trapping/checked width-fit gate would REJECT CDZ0302
+; ("integer literal does not fit its width") on a result exceeding the width instead of masking it — const
+; and runtime would then diverge (the same expression rejects as a constant yet runs as runtime data). These
+; pin the const-fold at both the unsigned mod-2^8 and the signed ±128 boundary, matching the runtime twins.
+
+(case "a narrow-width wrapping-mul constant folds by wrapping, not by rejecting"
+  (doc    "`(UInt8.wrapping-mul 20 20)` = 400, which exceeds UInt8. A wrapping op's outcome is the value
+           MODULO the type width (400 mod 256 = 144), so the const-fold must MASK the result to 8 bits — not
+           route it through the checked-op width-fit gate and reject CDZ0302. This is the constant twin of
+           `wrapping-mul on a runtime UInt8` above (200·2 → 144): const and runtime must agree.")
+  (input  (do (def (main) ((. UInt8 wrapping-mul) 20 20)) (export main)))
+  (output (: 144 UInt8)))
+
+(case "a signed narrow-width wrapping-add constant folds by wrapping to the negative outcome"
+  (doc    "`(Int8.wrapping-add 100 100)` = 200, which exceeds Int8.max; the wrap sign-extends the low 8 bits,
+           so 200 mod 2^8 with the sign bit set is -56. The signed companion of the const-fold above — a
+           wrapping fold that width-fit-rejected (CDZ0302) or dropped the sign would diverge from the runtime
+           signed narrow wrap. Pins the const-fold's signed masking at the ±128 boundary.")
+  (input  (do (def (main) ((. Int8 wrapping-add) 100 100)) (export main)))
+  (output (: -56 Int8)))
+
 (case "greater-than comparison"
   (doc    "The compiler uses > for bounds checking and conditional logic.")
   (input  (> 5 3))

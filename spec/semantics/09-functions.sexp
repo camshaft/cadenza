@@ -27,6 +27,56 @@
               (add-y 4))))
   (output (: 7 Int64)))
 
+; The case above captures a CONSTANT `y` and folds. These pin closure capture semantics at RUN TIME (a
+; boundary parameter flows into the capture, so nothing folds) and with two closures alive at once — the
+; cases the single-closure constant case cannot: capture is BY VALUE at creation (a later same-named
+; binding does NOT rebind an existing closure's capture) and each closure holds its OWN captured
+; environment (two closures from one factory do not share a capture slot). A representation that captured
+; by reference / late-bound the name, or that shared one environment cell across closures, would give a
+; different — and here numerically distinct — answer.
+
+(case "a closure captures its environment by value at creation, unaffected by a later same-named binding"
+  (doc    "`(let ((k n)) (let ((f (fn (x) (+ x k)))) (let ((k 1000)) (f 1))))` — `f` captures `k = n` at
+           creation; the INNER `(let ((k 1000)) …)` introduces a NEW `k` in scope at the APPLICATION site,
+           but `f` observes the `k` it captured, not the later one. So `(f 1)` = `1 + n`, NOT `1 + 1000`:
+           n=5 → 6, n=40 → 41 (core-semantics.md §A Function Value Captures The Bindings In Scope Where It
+           Is Created — capture is by value at creation). A compiler that late-bound the free `k` to the
+           nearest binding at APPLICATION time would answer 1001. The runtime companion of the
+           application-site-shadowing case above, with the shadowing binding sitting BETWEEN creation and
+           application.")
+  (input  (do (def (main (: n Int64))
+                (let ((k n))
+                  (let ((f (fn (x) (+ x k))))
+                    (let ((k 1000))
+                      (f 1))))) (export main)))
+  (call   main (: 5 Int64)) (output (: 6 Int64))
+  (call   main (: 40 Int64)) (output (: 41 Int64)))
+
+(case "two closures from one factory capture distinct values"
+  (doc    "`(adder k) = (fn (x) (+ x k))` built twice — `add3` captures 3, `add10` captures 10 — both alive
+           at once. `(- (add10 n) (add3 n))` = `(n+10) - (n+3)` = 7 for EVERY `n` (n=5 and n=0 both → 7).
+           Pins that each closure holds its OWN captured environment: a representation that shared one
+           capture cell across the two closures (both ending at the last-built 10, or both at 3) would give
+           0, not 7. The two captures are distinct and independent.")
+  (input  (do (def (adder k) (fn (x) (+ x k)))
+              (def (main (: n Int64)) (let ((add3 (adder 3)) (add10 (adder 10))) (- (add10 n) (add3 n)))) (export main)))
+  (call   main (: 5 Int64)) (output (: 7 Int64))
+  (call   main (: 0 Int64)) (output (: 7 Int64)))
+
+(case "a list of closures each keeps its own capture, selected by a runtime index"
+  (doc    "Three closures `(mk 10)`, `(mk 20)`, `(mk 30)` — each `(mk k) = (fn (x) (+ x k))` capturing its
+           own `k` — are stored in a LIST and one is selected by a runtime index, then applied. `apply-at
+           fs i 1` = `(elem i)(1)` = `1 + (10|20|30)`: i=0 → 11, i=2 → 31, an out-of-bounds index → -1. Pins
+           that closures carried in a collection each retain their distinct capture (the list does not
+           collapse them to one environment), and that indexing selects the intended one at run time — the
+           collection companion of the two-factory-closures case.")
+  (input  (do (def (mk k) (fn (x) (+ x k)))
+              (def (apply-at fs i x) (match (List.at fs i) ((Some f) (f x)) (None -1)))
+              (def (main (: i Int64)) (apply-at (list (mk 10) (mk 20) (mk 30)) i 1)) (export main)))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: 2 Int64)) (output (: 31 Int64))
+  (call   main (: 9 Int64)) (output (: -1 Int64)))
+
 ; A lambda that references an ENCLOSING binding and is applied INSIDE that binding's scope — the capture
 ; is a free variable bound further out, not inside the lambda's own body. core-semantics.md §A Function
 ; Value Captures The Bindings In Scope Where It Is Created: `(+ x k)` reads `k` from the enclosing `let`.
@@ -3084,3 +3134,22 @@
             (def (main) (loop-n 5))
             (export main)))
   (error  CDZ0201))
+
+; COST HEURISTIC (Addendum 4). The UNANNOTATED default is always-inline, but a LARGE, MULTIPLY-CALLED def
+; whose call has a runtime-dependent argument is emitted ONCE and called instead of duplicated at each site.
+; This is an EMISSION-STRATEGY choice — it does NOT change semantics — so it is observable only via the
+; VALUE being unchanged: `big(x) = x*7 + x*11 + x*13 + x*17` = 48x. `main a b = big(a) + big(b)`; the export
+; is called with runtime args by the harness. The heuristic emits `big` once and calls it twice; the
+; `@inline-never` case above forces the same emission, and both agree on the value. `big(2)+big(3)` = 96 +
+; 144 = 240. (The floor is deliberately conservative; small helpers stay inlined.)
+(case "a large multiply-called definition is emitted once by the cost heuristic"
+  (doc    "A def large enough (past the inline-cost floor) and called at multiple sites with a runtime
+           argument is emitted as ONE function and called, not inlined per site — the cost heuristic's
+           duplication win. Semantics are unchanged (emission strategy only): with runtime args a=2, b=3,
+           `big(x)=48x`, so `big(2)+big(3)` = 96 + 144 = 240.")
+  (input  (do
+            (def (big (: x Int64)) (+ (* x 7) (+ (* x 11) (+ (* x 13) (* x 17)))))
+            (def (main (: a Int64) (: b Int64)) (+ (big a) (big b)))
+            (export main)))
+  (call   main (: 2 Int64) (: 3 Int64))
+  (output (: 240 Int64)))

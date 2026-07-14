@@ -683,6 +683,17 @@ pub const MALFORMED_EXTERN_MESSAGE: &str = "an `(extern …)` names a peer INTER
 /// which defect. Every such message begins ``an `(extern …)` ``.
 pub const MALFORMED_EXTERN_PREFIX: &str = "an `(extern …)`";
 
+/// A `(bind …)` directive whose shape is not `(bind <Effect> "cadenza:pkg/iface")` — a missing/non-string
+/// interface, or the wrong arity. Reported at the form so a malformed peer-binding directive is named, not
+/// silently dropped (the `bind` analogue of [`MALFORMED_EXTERN_MESSAGE`]).
+pub const MALFORMED_BIND_MESSAGE: &str = "a `(bind …)` binds an EFFECT to a peer interface string — write \
+     `(bind Effect \"cadenza:pkg/iface\")` (the effect is a declared effect's name, the interface a string literal)";
+
+/// A `(bind Name …)` whose `Name` is not a declared effect. Reported at the name so binding a non-effect
+/// (a def, a type, an unbound name) to a peer is named rather than silently ignored.
+pub const BIND_NOT_AN_EFFECT_MESSAGE: &str = "a `(bind …)` names a declared EFFECT — this name is not an \
+     effect, so there is nothing to route to a peer";
+
 /// A stable SUBSTRING unique to the coded CDZ0201 resume-value/result-type mismatch (`a handler resumes
 /// with a value of type X but the operation's result type is Y`). An ill-typed resume ALSO makes the
 /// handler unfoldable, so `lower` emits the uncoded [`HANDLER_NOT_REDUCIBLE_DECLINE`] alongside — a

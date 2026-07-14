@@ -88,6 +88,26 @@
   (host-calls (call ask.ask))
   (output (: 42 Int64)))
 
+(case "an in-program handler OVERRIDES an effect's peer binding (the test-mock, no peer call)"
+  (doc    "Witnesses the U-pivot headline (DESIGN-cross-component-interop-rcdzc.md #UNIFY cross-component
+           interop WITH EFFECTS): an effect bound to a PEER contract by a top-level `(bind Math
+           \"cadenza:math/api\")` directive is normally a peer CALL — but a NEARER in-program `(handle Math
+           …)` DISCHARGES it before it escapes, so the peer binding is OVERRIDDEN and no peer/host call is
+           made. This is the free test-mock the unification gives: routing precedence is in-program handler
+           > peer binding, exactly as an in-program handler beats a `(host …)` delegation. The mock arm
+           computes `a + b + 100`, so `(Math.add 2 3)` = 105 — the handler's answer, not the peer's — and
+           the empty `(host-calls)` fixture pins that the bound peer is never reached (the effect does not
+           escape). Pins that `(handle E …)` is the unit-test override for a peer dependency, reusing the
+           complete E0–E5 handler machinery with no peer needed.")
+  (input  (do
+            (effect Math (op add (-> Int64 Int64 Int64)))
+            (bind Math "cadenza:math/api")
+            (def (main)
+              (handle Math 0 ((add (a b) s (resume (+ (+ a b) 100) s)))
+                (Math.add 2 3))) (export main)))
+  (output (: 105 Int64))
+  (host-calls))
+
 (case "an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary"
   (doc    "Witnesses capabilities-and-effects.md #A Handler May Interpose On An Effect An Entrypoint Would
            Delegate: the entrypoint delegates `ask` to the host (outermost router), but an inner handler
@@ -1902,6 +1922,20 @@
   (input  (do
             (def foo 5)
             (def (main) (host (foo) 5)) (export main)))
+  (error  CDZ0201))
+
+(case "a bind directive naming a value definition rather than an effect is rejected"
+  (doc    "The `(bind …)` peer-binding analogue of the host-delegates-a-value reject above (the U-pivot
+           unifies a peer dependency with an effect, so binding a peer names a declared EFFECT). `(bind foo
+           \"cadenza:x/y\")` where `foo` is a value definition names a VALUE, not an effect — there is
+           nothing to route to a peer, so it is a malformed binding rejected at compile time (CDZ0201)
+           rather than SILENTLY DROPPED (the `bind` scan used to ignore a non-effect/malformed directive, so
+           a typo'd binding quietly did nothing). Pins that a peer binding names a declared effect, the same
+           bar the host delegation and the `(extern …)` interface hold.")
+  (input  (do
+            (def (foo) 5)
+            (bind foo "cadenza:x/y")
+            (def (main) 0) (export main)))
   (error  CDZ0201))
 
 (case "a host delegating the same effect twice is rejected"
