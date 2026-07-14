@@ -238,6 +238,29 @@
   (input  3.5)
   (output (: 3.5 Float64)))
 
+(case "a scientific-notation float literal denotes the scaled value"
+  (doc    "`1.5e3` is the Float64 1500.0 — a fractional mantissa with a decimal exponent, the `<digits>.
+           <digits>e<exp>` form (distinct from the integer-mantissa `1e19` cases below, which have no
+           decimal point). Pinned by value equality against the plain decimal so it does not depend on the
+           exact rendered form: the scientific literal and `1500.0` are the same Float64.")
+  (input  (= 1.5e3 1500.0))
+  (output (: true Bool)))
+
+(case "the exponent marker is case-insensitive"
+  (doc    "`1.5E3` (uppercase `E`) reads as the same value as `1.5e3` (lowercase `e`) — the exponent marker
+           is case-insensitive, exactly as a hexadecimal literal's digits are (`0xFF` = `0xff`). Pins that
+           the lexer accepts both spellings of the exponent as one value, so a source using either case
+           denotes the same float.")
+  (input  (= 1.5E3 1.5e3))
+  (output (: true Bool)))
+
+(case "a negative exponent scales the mantissa down"
+  (doc    "`2.5e-2` is 0.025 — a negative exponent divides by the power of ten (a distinct sign path in the
+           exponent from the non-negative `1.5e3`). Pinned by equality against `0.025`. Pins that the `e-`
+           form reads the fractional value, not a malformed token or a sign dropped.")
+  (input  (= 2.5e-2 0.025))
+  (output (: true Bool)))
+
 (case "a large whole-valued float renders its full value, not an integer saturation"
   (doc    "Witnesses contracts/deterministic-value-form.md #Numeric Values Serialize Deterministically
            (2nd/3rd sentences: floats equal under structural equality share a canonical form, and
