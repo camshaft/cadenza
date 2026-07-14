@@ -27748,6 +27748,19 @@ mod stage1 {
         assert!(expect_decline("frobnicate").contains("unbound name"));
         // A well-formed literal is unaffected.
         assert_eq!(run_main("0x2A"), 42);
+        // A `N`-suffixed literal in FLOAT FORM (`0.5N`/`2.0N`/`1e3N`) — the common suffix slip — gets a
+        // SPECIFIC message naming the cause (`N` = BigInt, spelled as a plain integer) + the fix (use the
+        // `R` Rational suffix), not the bare generic "malformed numeric literal".
+        for (tok, fix) in [("0.5N", "0.5R"), ("2.0N", "2.0R"), ("1e3N", "1e3R")] {
+            let msg = expect_decline(tok);
+            assert!(
+                msg.contains("the `N` suffix means BigInt") && msg.contains(&format!("`{fix}`")),
+                "a float-form `N`-suffixed `{tok}` explains + suggests `{fix}`, got: {msg}"
+            );
+        }
+        // A genuinely garbled digit-led token that merely ENDS in `N` (not a float-form suffix slip) keeps
+        // the generic message — `12xN` has a non-numeric body, not a decimal one.
+        assert!(expect_decline("12xN").contains("malformed numeric literal"));
     }
 
     #[test]
