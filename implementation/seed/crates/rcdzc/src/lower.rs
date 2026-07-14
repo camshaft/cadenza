@@ -2553,10 +2553,26 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
 /// a `_`/whole-list binder or a `(list .. rest)` arm covers the infinite tail — else CDZ0210.
 //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
 //# A list MUST be matchable by an element pattern that names some number of leading elements positionally and MAY end in a rest binder for the remaining elements.
+// Length dispatch: a fixed-arity arm matches exactly its arity, a rest arm matches length ≥ its lead, a
+// bare binder / `_` matches any length; the empty pattern `(list)` matches only the empty list, and a
+// single-leading-element-plus-rest `(list x .. r)` matches any non-empty list.
+//= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
+//# An element pattern naming exactly `n` elements with no rest binder MUST match a list of length exactly `n`, binding each named element position to the corresponding element; a list of any other length MUST NOT match that pattern.
+//= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
+//# An element pattern naming `n` leading elements followed by a rest binder MUST match any list of length at least `n`, binding the leading positions to the first `n` elements and the rest binder to a list of the remaining elements in order.
+//= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
+//# In particular, the empty element pattern MUST match exactly the empty list, and a single-leading-element-plus-rest pattern MUST match any non-empty list, binding its first element and the rest of the list.
 //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
 //# A set of list-element arms MUST be treated as exhaustive when it covers both the empty list and every non-empty list — for example an empty-list arm together with a leading-element-plus-rest arm, or an arm ending in a rest binder that names no leading elements — and a set of arms that leaves some length uncovered MUST be a compile-time error under *Matching Is Exhaustive Or Rejected* unless a later arm (a name or wildcard pattern) covers the remainder.
 //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
 //# An element pattern MUST observe a list only through its length and its elements in order; it MUST NOT expose or depend on any internal cell or node structure of the list's representation, so that the same pattern matches a list regardless of how the list is represented.
+// A leading element position COMPOSES — it MAY itself be any irrefutable nested pattern (a wildcard, a
+// name, a tuple pattern, a single-variant constructor) matched recursively to any depth
+// (`list_element_irrefutable_or_decline`), and the whole list pattern is checked linear (CDZ0102 via
+// `check_pattern_linear`). The rest binder binds the tail SUBLIST, whose type is the SAME `List T` as the
+// scrutinee (infer.rs `RestFrom`), so a recursive function may match it again.
+//= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
+//# Each element position and the rest binder MUST be a binder position in the sense of *Patterns Compose*, so an element MAY itself be any pattern (a wildcard, a name, a tuple pattern, a constructor pattern, or a nested element pattern) matched recursively, and the whole pattern MUST remain linear (`CDZ0102`). The rest binder MUST bind a value of the same list type as the scrutinee, so a recursive function MAY match it again.
 fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     enum Arm {
         Fixed(usize, StructId), // a fixed-arity `(list …)` of this exact arity
