@@ -656,6 +656,21 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // so the OUTCOME is unchanged; only the message stops misleading.
     let defined_names: Vec<String> = db.defs.iter().map(|d| d.name.clone()).collect();
     for (head, occ) in db.unknown_top_forms() {
+        // `import` is a KNOWN surface keyword (the ML reader lexes `import { … } from "…"` → an
+        // `(import …)` top-level form) that this compiler does NOT YET model — distinct from a typo. The
+        // generic path below would suggest "did you mean `export`?" (import→export is only 2 edits), an
+        // actively MISLEADING fix: an author who wrote `import` never meant its opposite. Name the real
+        // situation — a recognized module form that is not yet supported — with NO swap fix.
+        if head == "import" {
+            faults.push(
+                Reject::decline(
+                    "`import` is a module form this compiler does not yet model (cross-module imports \
+                     are not supported here) — the program cannot be compiled",
+                )
+                .at(occ),
+            );
+            continue;
+        }
         // FIRST: is the head a plausible TYPO of a top-level DECLARATION KEYWORD (`exprot`→`export`,
         // `deff`→`def`)? That is the far likelier intent than a mistyped VALUE name — a top-level `(head
         // …)` form is a declaration position, so a near-miss for `def`/`export`/`type`/`effect`/`module`/
@@ -1115,6 +1130,65 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             )
             .at(occ),
         );
+    }
+    // A `handle` HEAD THAT NAMES A VALUE. `(handle foo 0 …)` where `foo` is a `(def foo …)` value — the head
+    // must name an EFFECT (the arms ARE that effect's operations). The desugar folds the head into each
+    // arm's `(. foo op)` projection, so a value head surfaces only as a LEAKY cascade — "member access
+    // requires a record, found Int64" (from `(. foo op)` where foo is Int64) plus an uncoded fold-decline —
+    // never naming the real problem. Scan each handle's arms; if an arm op's head names a value def
+    // (`arm_op_head_names_a_value`, conservative — never a nested-module effect / unbound name), reject
+    // CDZ0201 naming the head, and DROP the cascade faults anchored inside this handle so the report names
+    // the root once. Collected first (a `&mut db` walk) to keep the borrow simple.
+    let mut bad_handle_heads: Vec<(StructId, String)> = Vec::new();
+    for id in (0..db.ast.structure.len() as u32).map(StructId) {
+        if db.ast.head_name(id) != Some(crate::effects::HANDLE_INTERNAL) {
+            continue;
+        }
+        // The arms list is the internal handle's 2nd tail element; each arm's op is its first child.
+        let Some(tail) = db
+            .ast
+            .as_form(id, crate::effects::HANDLE_INTERNAL)
+            .map(<[_]>::to_vec)
+        else {
+            continue;
+        };
+        let Some(&arms_occ) = tail.get(1) else {
+            continue;
+        };
+        let Some(arm_ops): Option<Vec<StructId>> = (match db.ast.get(arms_occ) {
+            crate::ast::Struct::List(arms) => Some(
+                arms.iter()
+                    .filter_map(|&a| match db.ast.get(a) {
+                        crate::ast::Struct::List(parts) => parts.first().copied(),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        }) else {
+            continue;
+        };
+        for op in arm_ops {
+            if let Some(head_occ) = crate::effects::arm_op_head_names_a_value(db, op) {
+                let named = db
+                    .ast
+                    .as_name(head_occ)
+                    .map(|n| format!(" `{n}`"))
+                    .unwrap_or_default();
+                bad_handle_heads.push((
+                    head_occ,
+                    format!(
+                        "a handle's head must name an EFFECT, but this head{named} is a value \
+                         definition — write `(handle <effect> <seed> (arms…) <body>)` over a declared \
+                         `(effect …)`"
+                    ),
+                ));
+                break; // one diagnostic per handle (all arms share the head)
+            }
+        }
+    }
+    for (head_occ, msg) in bad_handle_heads {
+        faults.push(Reject::coded(Code::Malformed, msg).at(head_occ));
     }
     let mut non_arrow_op_types: Vec<StructId> = Vec::new();
     for e in &db.effect_decls {
@@ -1662,6 +1736,15 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
         r.code == Some(Code::Malformed)
             && r.message.starts_with(crate::diag::NON_ARROW_OP_TYPE_PREFIX)
     });
+    // Likewise: a `handle` whose HEAD names a VALUE (`(handle foo …)`) is rejected CDZ0201 at the head. The
+    // head is desugared into each arm's `(. foo op)` projection, so the value head ALSO leaks a CDZ0201
+    // "member access requires a record, found <T>" (from `(. foo op)`) and the uncoded fold-decline — both
+    // CONSEQUENCES of the value head. Drop them when the clean head reject is present, keeping the one
+    // primary that names the real problem.
+    let has_value_head_reject = faults.iter().any(|r| {
+        r.code == Some(Code::Malformed)
+            && r.message.starts_with(crate::diag::HANDLE_VALUE_HEAD_PREFIX)
+    });
     // Likewise: an exported closure with a non-representable part (an `Any` param/result, a captured
     // value with no machine type) is reported as the coded CDZ0201 "cannot cross the component boundary"
     // at the export clause. The emit path ALSO returns an uncoded "a closure's <part> has no machine
@@ -1881,6 +1964,15 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             // synthesized meta-channel field no user type spells) is the CONSEQUENCE of a malformed
             // non-arrow op type; drop it in favor of the declaration-site CDZ0201 (with its wrap fix).
             if has_non_arrow_op_type_reject && r.message.contains(crate::diag::OP_VALUE_RECORD_LEAK)
+            {
+                return false;
+            }
+            // A `handle` whose HEAD names a value leaks two consequents from the desugared `(. foo op)`
+            // projections: the uncoded fold-decline and a "member access requires a record" CDZ0201 (foo is
+            // a scalar). Both are consequences of the value head — drop them for the clean head reject.
+            if has_value_head_reject
+                && (r.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE
+                    || r.message.contains("member access requires a record"))
             {
                 return false;
             }

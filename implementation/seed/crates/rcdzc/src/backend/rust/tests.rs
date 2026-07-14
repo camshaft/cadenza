@@ -1222,6 +1222,26 @@ fn rustc_roundtrip_two_disc_ge_1_nested_sum_variants_over_a_runtime_disc() {
 }
 
 #[test]
+fn rustc_roundtrip_match_a_runtime_tuple_from_an_if() {
+    // A top-level `(tuple a b)` pattern over a RUNTIME tuple scrutinee — a tuple built by an `if` (or a
+    // branchy fn), NOT a constant `Core::Tuple` and NOT a bound `__pay` (a top-level tuple match mints no
+    // `Switch` arm, hence no bind). The binders `a`/`b` read `[Elem(0)]`/`[Elem(1)]` directly off the
+    // scrutinee; the backend now emits the scrutinee value indexed (`(<t>).i`) — the runtime-tuple twin of
+    // the constant fold. Was a Rust-backend decline ("sum payload has no bound match arm"); wasm reads it
+    // via `arr-get` (no bind needed). `g(5)` = (5,0) → 5, `g(-3)` = (0,-3) → -3.
+    let rs = compile_rust(
+        "(module m (def (g (: k Int64)) (if (> k 0) (tuple k 0) (tuple 0 k))) \
+           (def (f (: k Int64)) (match (g k) ((tuple a b) (+ a b)))) (export f))",
+    );
+    if let Some(out) = rustc_run(&rs, "f(5)") {
+        assert_eq!(out, "5");
+    }
+    if let Some(out) = rustc_run(&rs, "f(-3)") {
+        assert_eq!(out, "-3");
+    }
+}
+
+#[test]
 fn a_generic_sum_emits_a_parameterized_descriptor_for_the_gate_renderer() {
     // A GENERIC user sum emits a `// cdz-sum[Ident]:` descriptor whose payload tokens carry `T{k}`
     // PLACEHOLDERS (not concrete types), plus a `// cdz-sum-params[Ident]: N` note giving the parameter

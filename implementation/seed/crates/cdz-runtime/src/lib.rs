@@ -215,6 +215,17 @@ impl Raw {
             buf,
         }
     }
+    /// Build a `Raw` from a BORROWED slice of ANY length: inline when it fits the cap (no heap alloc — the
+    /// common short-string/short-key case), else copy to a heap `Vec`. Unlike `From<Vec<u8>>` this needs no
+    /// caller-side `Vec` for the short case, so a value-encode `Str`/`Bytes` leaf built from a node's raw
+    /// slice allocates NOTHING when short (was a `to_vec` per leaf).
+    fn from_slice(bytes: &[u8]) -> Raw {
+        if bytes.len() <= INLINE_RAW_CAP {
+            Raw::inline(bytes)
+        } else {
+            Raw::Heap(bytes.to_vec())
+        }
+    }
     fn as_slice(&self) -> &[u8] {
         match self {
             Raw::Inline { len, buf } => &buf[..*len as usize],
@@ -1453,8 +1464,12 @@ enum DocLeaf {
     IntScalar(i64),
     Int(bool, Vec<u8>), // (negative, big-endian magnitude) — BigInt / arbitrary width only
     Bool(bool),
-    Str(Vec<u8>),   // UTF-8 body verbatim (the runtime String's raw bytes)
-    Bytes(Vec<u8>), // raw byte payload verbatim (the runtime Bytes value, rope flattened)
+    // UTF-8 body / raw byte payload stored as `Raw` (inline for ≤INLINE_RAW_CAP bytes — the common short
+    // string/key case — else heap), so a SHORT string/bytes leaf allocates NOTHING (a JSON-dictionary key
+    // "k00", a small tag) instead of a per-leaf `Vec<u8>`. `Raw` owns its bytes (no lifetime coupling to the
+    // source node), so the pooled leaf stays `'static`. `finish` reads `.as_slice()` — storage-transparent.
+    Str(Raw),   // UTF-8 body verbatim (the runtime String's raw bytes)
+    Bytes(Raw), // raw byte payload verbatim (the runtime Bytes value, rope flattened)
     Float { negative: bool, exponent: i64, significand: Vec<u8> }, // exact decimal (from f64), big-endian mag
 }
 enum DocStruct {
@@ -1575,15 +1590,18 @@ impl DocBuilder {
     }
     /// A string leaf — the UTF-8 body verbatim (the codec's `KIND_STR`, `write_bytes` = LEB len + bytes,
     /// identical framing to a `Name` leaf but a distinct kind). Not deduped (like `int_leaf`/`bool_leaf`):
-    /// the codec DECODER re-interns leaves on read, so a repeated string in the pool is harmless.
-    fn str_leaf(&mut self, bytes: Vec<u8>) -> u32 {
-        self.leaves.push(DocLeaf::Str(bytes));
+    /// the codec DECODER re-interns leaves on read, so a repeated string in the pool is harmless. Takes a
+    /// BORROWED slice + stores it as `Raw` (inline for a short string — no heap alloc; the leaf owns its
+    /// bytes so no lifetime coupling to the source node).
+    fn str_leaf(&mut self, bytes: &[u8]) -> u32 {
+        self.leaves.push(DocLeaf::Str(Raw::from_slice(bytes)));
         (self.leaves.len() - 1) as u32
     }
     /// A bytes leaf — the raw byte payload verbatim (the codec's `KIND_BYTES`, `write_bytes` = LEB len +
-    /// bytes, same framing as a `Str`/`Name` leaf, distinct kind). Not deduped (like `str_leaf`).
-    fn bytes_leaf(&mut self, bytes: Vec<u8>) -> u32 {
-        self.leaves.push(DocLeaf::Bytes(bytes));
+    /// bytes, same framing as a `Str`/`Name` leaf, distinct kind). Not deduped (like `str_leaf`). Borrowed
+    /// slice → `Raw` (inline for a short payload — no heap alloc).
+    fn bytes_leaf(&mut self, bytes: &[u8]) -> u32 {
+        self.leaves.push(DocLeaf::Bytes(Raw::from_slice(bytes)));
         (self.leaves.len() - 1) as u32
     }
     /// A float leaf — the EXACT decimal `(-1)^neg · significand · 10^exponent` the codec's `KIND_FLOAT`
@@ -1760,13 +1778,13 @@ impl DocBuilder {
                     // KIND_STR + write_bytes (LEB len + UTF-8 body) — same framing as a Name, distinct kind.
                     out.push(doc::KIND_STR);
                     doc_leb(&mut out, bytes.len() as u64);
-                    out.extend_from_slice(bytes);
+                    out.extend_from_slice(bytes.as_slice());
                 }
                 DocLeaf::Bytes(bytes) => {
                     // KIND_BYTES + write_bytes (LEB len + raw bytes) — same framing as Str/Name, distinct kind.
                     out.push(doc::KIND_BYTES);
                     doc_leb(&mut out, bytes.len() as u64);
-                    out.extend_from_slice(bytes);
+                    out.extend_from_slice(bytes.as_slice());
                 }
                 DocLeaf::Float { negative, exponent, significand } => {
                     // KIND_FLOAT + negative(u8) + exponent(FIXED 8-byte big-endian i64, NOT LEB) +
@@ -2035,8 +2053,11 @@ fn encode_value(
                         // Without the flatten a runtime string (a concat/slice) rendered its raw HANDLE
                         // bytes (garbage), losing the content.
                         bytes_flatten(h);
-                        let bytes = with_node(h, Vec::new(), |n| n.raw.as_slice().to_vec());
-                        let l = b.str_leaf(bytes);
+                        // Build the leaf DIRECTLY from the flattened node's borrowed raw slice — `str_leaf`
+                        // stores it as an inline `Raw` for a short string (no `to_vec`). `with_node` returns
+                        // the leaf index while the borrow is live; a null/missing node reads as empty.
+                        let l = with_node(h, None, |n| Some(b.str_leaf(n.raw.as_slice())))
+                            .unwrap_or_else(|| b.str_leaf(&[]));
                         out.push(b.atom(l));
                     }
                     Shape::Bytes => {
@@ -2045,8 +2066,8 @@ fn encode_value(
                         // UNOBSERVABLE even on a borrowed/shared value), then read the leaf's raw and emit a
                         // KIND_BYTES leaf. A leaf is already flat (flatten is a no-op there).
                         bytes_flatten(h);
-                        let bytes = with_node(h, Vec::new(), |n| n.raw.as_slice().to_vec());
-                        let l = b.bytes_leaf(bytes);
+                        let l = with_node(h, None, |n| Some(b.bytes_leaf(n.raw.as_slice())))
+                            .unwrap_or_else(|| b.bytes_leaf(&[]));
                         out.push(b.atom(l));
                     }
                     Shape::Float => {
@@ -6709,13 +6730,13 @@ mod tests {
                 // exactly as `S::Bytes` does; without it a runtime string rendered its raw handle bytes.
                 bytes_flatten(h);
                 let bytes = with_node(h, Vec::new(), |n| n.raw.as_slice().to_vec());
-                let l = b.str_leaf(bytes);
+                let l = b.str_leaf(&bytes);
                 b.atom(l)
             }
             S::Bytes => {
                 bytes_flatten(h);
                 let bytes = with_node(h, Vec::new(), |n| n.raw.as_slice().to_vec());
-                let l = b.bytes_leaf(bytes);
+                let l = b.bytes_leaf(&bytes);
                 b.atom(l)
             }
             S::Float => {
@@ -7004,6 +7025,46 @@ mod tests {
         op_drop(u);
 
         assert_eq!(live_nodes(), before, "no leak: every string value dropped");
+    }
+
+    /// A `Str`/`Bytes` leaf stores its bytes as `Raw` (inline ≤INLINE_RAW_CAP=12, else heap) so a SHORT
+    /// string allocates NO per-leaf `Vec` — but a LONGER string must still round-trip byte-exact through the
+    /// heap arm. The inline↔heap boundary (12 bytes) is invisible in the output (both write the same KIND_STR
+    /// len+body), so pin it: a 12-byte (inline max) and a 13-byte (first heap) string each encode to their
+    /// exact KIND_STR bytes. Guards `Raw::from_slice`'s boundary in the leaf path — a short-string regression
+    /// (dropping the inline arm) or an off-by-one at the cap would still pass the existing "hi" test.
+    #[test]
+    fn value_encode_str_leaf_inline_and_heap_boundary_round_trips() {
+        reset();
+        let before = live_nodes();
+        let desc: &[u8] = &[0x01, 0x03, 0x00]; // [0]=Str(tag 3), root=0
+        for len in [INLINE_RAW_CAP, INLINE_RAW_CAP + 1] {
+            let body: Vec<u8> = (0..len as u8).map(|i| b'a' + (i % 26)).collect();
+            let s = op_str_new(String::from_utf8(body.clone()).unwrap());
+            let got = op_value_encode_form(s, desc).expect("encode a String");
+            // header(8) · leaf_count=1 · KIND_STR(7) · LEB(len) · body · struct_count=1 · TAG_ATOM 0 · root 0
+            let mut expect = vec![0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x01, 0x07];
+            let mut leb = len as u64;
+            loop {
+                let mut byte = (leb & 0x7f) as u8;
+                leb >>= 7;
+                if leb != 0 {
+                    byte |= 0x80;
+                }
+                expect.push(byte);
+                if leb == 0 {
+                    break;
+                }
+            }
+            expect.extend_from_slice(&body);
+            expect.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // struct_count, TAG_ATOM, leaf 0, root 0
+            assert_eq!(
+                got, expect,
+                "len={len} String encodes byte-exact (inline vs heap Raw arm invisible)"
+            );
+            op_drop(s);
+        }
+        assert_eq!(live_nodes(), before, "no leak across the inline/heap boundary");
     }
 
     /// value-encode of a ROPE String (concat/slice nodes) via `Shape::Str` must MATERIALIZE it first.
@@ -9112,8 +9173,8 @@ mod tests {
         // leaf — all LINEAR in entry count, NONE from the key comparator (borrowed-slice compare). A
         // `to_vec`-per-compare regression would add ~2·N·log N (~320/encode = ~32000 over 100 reps).
         assert!(
-            smap_enc <= 6000,
-            "value_encode_stringkeymap x{SMAP_REPS} allocs {smap_enc} exceeds ceiling 6000 (10200 → 7100 (`DocLeaf::IntScalar` for the int values) → ~4800 (`ENCODE_BUILDER`+`ENCODE_OUT` reuse — pools grow once, not per encode). The per-encode residual is each string KEY's leaf (a `Vec<u8>` clone) + the entries Vec + the output. The Str key comparator compares BORROWED slices — a to_vec-per-compare regression would add ~2·N·log N sort allocs, ~32000, firmly past this ceiling)"
+            smap_enc <= 2200,
+            "value_encode_stringkeymap x{SMAP_REPS} allocs {smap_enc} exceeds ceiling 2200 (10200 → 7100 (`DocLeaf::IntScalar` int values) → ~4800 (`ENCODE_BUILDER`+`ENCODE_OUT` reuse) → ~1600 (`DocLeaf::Str` stores `Raw` — a SHORT key like \"k00\" inlines, no per-leaf `Vec` clone). The residual is the entries Vec + the output byte Vec growth. A LONG (>12-byte) key still heaps. The Str key comparator compares BORROWED slices — a to_vec-per-compare regression would add ~2·N·log N sort allocs, ~32000, firmly past this ceiling)"
         );
         op_drop(smap);
 
