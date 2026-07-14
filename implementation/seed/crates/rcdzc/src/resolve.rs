@@ -4461,8 +4461,14 @@ fn withheld_ctor_reject(db: &Db, id: StructId, ty: &str, key: &Symbol) -> Option
     if !decl.variants.iter().any(|v| v.name == key.name) {
         return None;
     }
-    // If this constructor IS visible in the file, the access is legitimate — no reject.
-    if matches!(db.file_scoped_variant_ctor(id, &key.name), Some(Ok(_))) {
+    // If this constructor IS visible in the file, the access is legitimate — no reject. This is a
+    // QUALIFIED `(. T A)` access, so consult the qualified surface: a prelude-named ctor (`Ast.Int`)
+    // is omitted from the BARE map (so bare `Int` stays the width type) but is fully reachable through
+    // the qualified path, and must NOT be reported as withheld here.
+    if matches!(
+        db.file_scoped_variant_ctor_qualified(id, &key.name),
+        Some(Ok(_))
+    ) {
         return None;
     }
     Some(

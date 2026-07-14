@@ -70,6 +70,71 @@ fn a_check_follows_an_import_and_resolves_a_cross_file_name() {
 }
 
 #[test]
+fn a_wildcard_exported_constructor_that_collides_with_a_prelude_type_name_imports_and_constructs() {
+    // REGRESSION: a variant whose name collides with a prelude TYPE/MODULE name (`Int`/`Bool`/`List`) —
+    // the natural spelling of an AST sum, `(type Ast (Int Int64) (Bool Bool) (List (List Ast)) …)` — is
+    // omitted from the BARE constructor map (so bare `Int` keeps meaning the width type), and the CDZ0214
+    // withheld check used to consult THAT bare map. So a wildcard-exported `Ast.Int` imported into a
+    // sibling was falsely rejected "constructor `Int` is not exported" — it even flagged the DECLARING
+    // file's own `Ast.Int`. A prelude-named ctor is unreachable bare but perfectly reachable QUALIFIED, so
+    // the withheld check now consults the qualified surface (`file_scoped_variant_ctor_qualified`). This
+    // pins that `lib` exports `Ast.*`, the entry `(import "lib" (Ast tag))` constructs `(. Ast Int …)`
+    // AND `(. Ast List …)`, and the whole package checks CLEAN.
+    let dir = pkg_dir("prelude-name-ctor");
+    write(
+        &dir,
+        "lib.sexp",
+        "(do (type Ast (Int Int64) (Bool Bool) (List (List Ast))) \
+           (def (tag (: node Ast)) \
+             (match node (((. Ast Int) _) 1) (((. Ast Bool) _) 2) (((. Ast List) _) 3))) \
+           (export (. Ast *)) (export tag))",
+    );
+    let app = write(
+        &dir,
+        "app.sexp",
+        "(do (import \"lib\" (Ast tag)) \
+           (def (main) (tag ((. Ast List) (list ((. Ast Int) 1) ((. Ast Bool) true))))) \
+           (export main))",
+    );
+    let (ok, stdout, stderr) = run(&["check", &app]);
+    assert!(
+        ok,
+        "a wildcard-exported prelude-named ctor must import + construct cleanly: {stdout}{stderr}"
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "no diagnostics expected (no false CDZ0214): {stdout}"
+    );
+}
+
+#[test]
+fn an_abstract_import_still_withholds_a_prelude_named_constructor() {
+    // The dual of the regression above: when `lib` exports the type HANDLE alone (bare `(export Ast)`, no
+    // `(. Ast *)`), a prelude-named ctor `Ast.Int` in the IMPORTER is STILL a withheld constructor
+    // (CDZ0214) — the qualified-surface fix must not leak an abstract type's constructors. The declaring
+    // file's own `Ast.Int` remains usable; only the importer is blocked.
+    let dir = pkg_dir("prelude-name-abstract");
+    write(
+        &dir,
+        "lib.sexp",
+        "(do (type Ast (Int Int64) (Name String)) \
+           (def (tag (: node Ast)) (match node (((. Ast Int) _) 1) (((. Ast Name) _) 2))) \
+           (export Ast) (export tag))",
+    );
+    let app = write(
+        &dir,
+        "app.sexp",
+        "(do (import \"lib\" (Ast tag)) (def (main) (tag ((. Ast Int) 5))) (export main))",
+    );
+    let (ok, stdout, _) = run(&["check", &app]);
+    assert!(!ok, "an abstract import's ctor use must fail the check");
+    assert!(
+        stdout.contains("CDZ0214") && stdout.contains('`') && stdout.contains("Int"),
+        "the importer's `Ast.Int` is a withheld constructor: {stdout}"
+    );
+}
+
+#[test]
 fn a_diagnostic_in_an_imported_library_is_located_in_that_library() {
     // The type error is in `lib`, not `app` — the check must point at `lib.sexp`, not the entry.
     let dir = pkg_dir("lib-error");
