@@ -2458,6 +2458,22 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             ));
         }
     }
+    // A SINGLE unguarded CATCH-ALL BINDING arm `(match s (z <body>))` over a NON-SCALAR scrutinee binds
+    // `z` to the scrutinee and yields the body — it inspects NO structure, so it needs no probe chain and
+    // no heap walk. Lower it to the body directly (the binder resolves to the scrutinee via the Case-5
+    // binder→scrutinee rule, so `(match (BigInt.of n) (z (* z z)))` becomes the `bigint-mul`). This must
+    // come BEFORE the non-scalar decline below, which would otherwise reject a `BigInt`/compound scrutinee
+    // even though a bare-binder match never looks at it. Restricted to a NON-scalar scrutinee: a SCALAR
+    // single-binder match keeps its existing `Core::Match` path below (it carries the binder's
+    // lexical-block DWARF — a scratch-slot variable fenced to the match — which a body-collapse would
+    // drop; the debug-info tests pin that). The scrutinee is still evaluated for effects/traps: the body
+    // reads it through the binder, or a trap-free unused scrutinee simply is not mentioned by `core_of`.
+    if !is_scalar(db, scrutinee)
+        && let [(crate::core::Probe::Wild, None, body)] = probes.as_slice()
+    {
+        trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "non-scalar match with a single catch-all binder lowers to its body");
+        return core_of(db, *body);
+    }
     // Runtime scalar scrutinee — it must BE a scalar (a compound needs a heap walk, later).
     if !is_scalar(db, scrutinee) {
         return Core::Poison(Reject::decline(
