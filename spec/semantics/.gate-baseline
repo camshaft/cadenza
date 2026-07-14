@@ -46,6 +46,7 @@ pass	N-suffixed literals compose under BigInt arithmetic
 pass	Ok carrying a Some keeps both variant tags
 pass	Qty.unit recovers a derived unit
 pass	Qty.unit recovers a quantity's unit to build another quantity of the same unit
+pass	Qty.unit recovers the unit of a quantity whose magnitude is a runtime value
 pass	Qty.value recovers the underlying numeric value, discarding the unit
 pass	Result propagates errors without trapping
 pass	Result type for fallible operations
@@ -960,6 +961,7 @@ pass	a runtime bytes value is spliced into a length-prefixed frame
 pass	a runtime closure compares its argument to a captured value in a branch
 pass	a runtime closure whose body calls a recursive top-level function
 pass	a runtime compound structural equality is expressible as a hand-written recursive comparator
+pass	a runtime concat places the second operand's elements after the first's
 pass	a runtime condition selects an abortive branch reading an enclosing parameter
 pass	a runtime conditional selects its then-branch when the runtime condition holds
 pass	a runtime conjunction still shields a comparison right operand whose subexpression traps
@@ -1327,6 +1329,8 @@ pass	an imported helper reaches its own file's private definition when inlined
 pass	an imported name resolves to a sibling file's exported definition
 pass	an in-bounds slice yields Some of the bytes at that range
 pass	an in-range constant argument to a narrow parameter computes at the parameter width
+pass	an inline-never definition is emitted once and called
+pass	an inline-never definition with a const dictionary still monomorphizes the dictionary
 pass	an inner binding shadows an outer one only within its scope
 pass	an inner lambda captures an enclosing match-arm binder and is applied
 pass	an inner lambda captures an enclosing tuple-pattern binder and is applied
@@ -1445,6 +1449,7 @@ pass	concatenating an empty string on the left is the identity
 pass	concatenating an empty string on the right is the identity
 pass	concatenating byte sequences built at run time appends their bytes in order
 pass	concatenating lists of different element types is a type error
+pass	concatenating lists with a runtime element appends in order and totals the length
 pass	concatenating tuples preserves each element's type
 pass	concatenating tuples with a runtime element reads elements from both operands
 pass	concatenating two byte sequences appends their bytes in order
@@ -1589,9 +1594,12 @@ pass	indexing a list with a negative index yields None
 pass	indexing a runtime string past its last scalar yields None
 pass	indexing a slice is relative to the slice's start
 pass	indexing an empty list yields None
+pass	inline-always on a recursive definition is rejected
 pass	inserting a key already present replaces its value, not the size
 pass	inserting a key of a different type into a map is a type error
 pass	inserting a present element is a no-op value
+pass	inserting a runtime element adds it or is a no-op if already present
+pass	inserting a runtime element yields a set that contains it
 pass	inserting a value of a different type into a map is a type error
 pass	inserting an element yields a set containing it
 pass	inserting into the empty map then looking a key up yields the value
@@ -1704,6 +1712,7 @@ pass	performing a string-parameter operation with a non-string argument is a typ
 pass	performing an operation with a wrong-type argument for a compound parameter is a type error
 pass	performing an operation with an argument of the wrong type is a type error
 pass	popping a field yields its value and the remaining record
+pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple
 pass	popping an absent field is rejected
 pass	projecting a field is independent of the order fields are written
@@ -1739,6 +1748,8 @@ pass	recursive fibonacci with literal match base cases
 pass	redeclaring a built-in unit with its own conversion is admissible
 pass	redeclaring a user-declared unit with the same conversion is admissible
 pass	removing a key drops its association and the size
+pass	removing a runtime element drops it or is a no-op if absent
+pass	removing a runtime element lowers the cardinality only when present
 pass	removing an absent key leaves the map unchanged
 pass	removing an element yields a set without it
 pass	resolving a head against a prelude symbol rejects a length-mismatched prefix
@@ -1913,6 +1924,7 @@ pass	the three-way comparison orders strings lexicographically
 pass	the two variants of Result compare unequal
 pass	the underlying numeric type obeys the numeric core — no silent promotion under a unit
 pass	the union contains the elements of either set
+pass	the unit recovered from a runtime-magnitude quantity is dimensionally checked
 pass	the unit value
 pass	the value-yielding insert reports the prior value at a runtime key
 pass	the value-yielding insert reports the value it replaced
