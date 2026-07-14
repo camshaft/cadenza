@@ -17097,11 +17097,13 @@ mod match_engine {
             0,
             "or (<ab)(>=ab) → true"
         );
-        // A NON-complement pair (`<`/`<=`) does NOT fold — both compares stay.
+        // `(or (< x 5) (<= x 5))` is NOT a complement (both are upper bounds), but it IS a same-direction
+        // subsumption — `x < 5` implies `x <= 5`, so `or` keeps the looser `x <= 5`: ONE compare (folded by
+        // `subsuming_comparison`, not the complement fold). See `a_same_direction_comparison_pair_subsumes`.
         assert_eq!(
             cmps(&lir("(: x Int64)", "(: (or (< x 5) (<= x 5)) Bool)")),
-            2,
-            "non-complement kept"
+            1,
+            "same-direction subsumption (not a complement)"
         );
         // A SWAPPED operand pair (`(< a b)` vs `(>= b a)`) is NOT a complement — kept (and NOT a tautology).
         assert_eq!(
@@ -17213,7 +17215,7 @@ mod match_engine {
             1,
             "mirrored operand"
         );
-        // NON-subsumable: distinct variable, different operator, different side — all kept (2 compares).
+        // NON-subsumable: a distinct variable keeps both compares.
         assert_eq!(
             cmps(&lir(
                 "(: x Int64) (: y Int64)",
@@ -17222,10 +17224,13 @@ mod match_engine {
             2,
             "distinct var kept"
         );
+        // DIFFERENT-operator SAME-DIRECTION bounds now subsume via inclusive normalization: `< 5` and
+        // `<= 4` both mean `x <= 4`, so they collapse to ONE compare (see the mixed-operator test
+        // `a_mixed_operator_same_direction_comparison_pair_subsumes`).
         assert_eq!(
             cmps(&lir("(: x Int64)", "(: (and (< x 5) (<= x 4)) Bool)")),
-            2,
-            "different op kept"
+            1,
+            "different op same direction subsumes"
         );
         // A DIFFERENT operand on the other side is not subsumable — `(< x 5)` and `(< 10 y)` share no
         // variable, so neither the same-side subsumption nor the disjoint-interval fold applies: both
@@ -17263,6 +17268,106 @@ mod match_engine {
         assert!(
             call_traps(&tb, "f", &[Val::S64(0)]),
             "the kept comparison preserves the operand's trap"
+        );
+    }
+
+    #[test]
+    fn a_mixed_operator_same_direction_comparison_pair_subsumes() {
+        // SUBSUMPTION now handles MIXED operators via inclusive-bound normalization (`comparison_halfline`):
+        // `(< x 5)` and `(<= x 4)` both mean `x <= 4`; `(<= x 10)` subsumes `(< x 5)` under `or`. `and` keeps
+        // the tighter inclusive bound, `or` the looser — regardless of which of `<`/`<=` (or `>`/`>=`) each
+        // side uses. Opposite-direction pairs are NOT subsumed here (the disjoint/coincident folds own those).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let cmps = |params: &str, body: &str| -> usize {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+                .iter()
+                .filter(|i| matches!(i, Lir::I64LtS | Lir::I64GtS | Lir::I64LeS | Lir::I64GeS))
+                .count()
+        };
+        // Each mixed-operator same-direction pair subsumes to ONE compare.
+        for body in [
+            "(: (and (< x 5) (<= x 4)) Bool)",  // both x<=4
+            "(: (or (<= x 10) (< x 5)) Bool)",  // or → x<=10
+            "(: (and (< x 10) (<= x 5)) Bool)", // and → x<=5
+            "(: (or (> x 5) (>= x 3)) Bool)",   // or → x>=3
+            "(: (and (>= x 5) (> x 3)) Bool)",  // and → x>=5
+            "(: (and (< 5 x) (<= 3 x)) Bool)",  // mirrored: x>5 & x>=3 → x>5
+        ] {
+            assert_eq!(cmps("(: x Int64)", body), 1, "mixed-op subsumes: {body}");
+        }
+        // Opposite-direction (a real range) is NOT subsumed — both compares stay.
+        assert_eq!(
+            cmps("(: x Int64)", "(: (and (> x 5) (< x 100)) Bool)"),
+            2,
+            "opposite-direction range kept"
+        );
+
+        // VALUE PARITY at the exact boundaries (the inclusive normalization must not shift a bound).
+        use wasmtime::component::Val;
+        let f = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: x Int64)) (if {body} 1 0)) (export f))"
+            ))))
+            .expect("compile")
+        };
+        // `(and (< x 5) (<= x 4))` = x<=4.
+        let a = f("(and (< x 5) (<= x 4))");
+        for (x, want) in [(3, 1), (4, 1), (5, 0), (6, 0)] {
+            assert_eq!(
+                run_returns_with::<i64>(&a, "f", &[Val::S64(x)]),
+                want,
+                "and-mixed @{x}"
+            );
+        }
+        // `(or (<= x 10) (< x 5))` = x<=10.
+        let o = f("(or (<= x 10) (< x 5))");
+        for (x, want) in [(5, 1), (10, 1), (11, 0), (12, 0)] {
+            assert_eq!(
+                run_returns_with::<i64>(&o, "f", &[Val::S64(x)]),
+                want,
+                "or-mixed @{x}"
+            );
+        }
+        // `(or (> x 5) (>= x 3))` = x>=3.
+        let l = f("(or (> x 5) (>= x 3))");
+        for (x, want) in [(2, 0), (3, 1), (4, 1), (6, 1)] {
+            assert_eq!(
+                run_returns_with::<i64>(&l, "f", &[Val::S64(x)]),
+                want,
+                "or-lower-mixed @{x}"
+            );
+        }
+        // TRAP SAFETY: the surviving compare still evaluates the trapping operand.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: z Int64)) (if (and (< (/ 100 z) 5) (<= (/ 100 z) 4)) 1 0)) (export f))",
+        )))
+        .expect("compile");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0)]),
+            "the kept mixed-op comparison preserves the operand's trap"
         );
     }
 

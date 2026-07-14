@@ -7715,78 +7715,36 @@ fn complementary_comparisons(db: &mut Db, lhs: StructId, rhs: StructId) -> bool 
     complement && core_equiv(db, la, ra) && core_equiv(db, lb, rb)
 }
 
-/// SUBSUMPTION between two comparisons on the SAME runtime operand `v` against CONSTANTS with the SAME
-/// operator — one implies the other, so `(and …)`/`(or …)` keeps just one. Returns the occurrence to KEEP
-/// (`lhs` or `rhs`), or `None` when the shape does not match. `is_and` selects which survives: `and` keeps
-/// the STRONGER (tighter) bound, `or` the WEAKER (looser). Restricted to IDENTICAL operators so no
-/// off-by-one bound arithmetic is needed — `< c` is stronger than `< d` iff `c <= d` (smaller upper bound);
-/// `> c` is stronger iff `c >= d` (larger lower bound); `<=`/`>=` compare the same way. The runtime operand
-/// `v` must be `core_equiv` on both sides and on the SAME side (both `(cmp v const)` or both `(cmp const v)`
-/// — a mirrored pair would flip the direction). The kept comparison still evaluates `v`, so no trap drops.
+/// SUBSUMPTION between two comparisons on the SAME runtime operand `v` against CONSTANTS that form
+/// SAME-DIRECTION half-lines (both upper bounds `v ≤ B`, or both lower `v ≥ B`) — one implies the other,
+/// so `(and …)`/`(or …)` keeps just one. Returns the occurrence to KEEP (`lhs` or `rhs`), or `None` when
+/// the pair is not two same-direction half-lines on the same `v`. `is_and` selects which survives: `and`
+/// keeps the STRONGER (tighter) bound, `or` the WEAKER (looser).
+///
+/// Uses `comparison_halfline` to normalize each side to an INCLUSIVE bound (`v ≤ B` / `v ≥ B`), so MIXED
+/// operators are handled uniformly — `(< v 5)` and `(<= v 4)` both normalize to `v ≤ 4` (and keeps either),
+/// `(or (<= v 10) (< v 5))` → `v ≤ 10` (the looser). For two UPPER bounds the tighter is the SMALLER `B`;
+/// for two LOWER bounds the tighter is the LARGER `B`. `comparison_halfline` already handles either operand
+/// side (a mirrored `(< c v)` normalizes to a lower bound on `v`) and only the four ordering ops (`Eq`/
+/// `Compare` are not half-lines, so a `(= x 5)`/`(= x 6)` pair returns `None` here — never mis-subsumed).
+/// The kept comparison still evaluates `v`, so no trap drops. OPPOSITE-direction pairs are `None` here (the
+/// disjoint/covering + coincident-point folds handle those).
 fn subsuming_comparison(
     db: &mut Db,
     lhs: StructId,
     rhs: StructId,
     is_and: bool,
 ) -> Option<StructId> {
-    let Core::Compare {
-        op: lop,
-        lhs: la,
-        rhs: lb,
-    } = core_of(db, lhs)
-    else {
-        return None;
-    };
-    let Core::Compare {
-        op: rop,
-        lhs: ra,
-        rhs: rb,
-    } = core_of(db, rhs)
-    else {
-        return None;
-    };
-    if lop != rop {
-        return None; // identical operator only (avoids `<`/`<=` bound normalization edge cases)
-    }
-    // ONLY the four ORDERING operators subsume — one half-line implies another. `Eq` (and `Compare`) do
-    // NOT: `(= x 5)` and `(= x 6)` are the SAME operator but NEITHER implies the other — their `and` is a
-    // CONTRADICTION (always false), not a subsumption. Treating two `Eq`s as a subsumable pair would keep
-    // one and MISCOMPILE `(and (= x 5) (= x 6))` to `(= x 6)`. (The equality-vs-range and same-constant
-    // cases are handled elsewhere; two DIFFERENT-constant equalities under `and` are always-false, under
-    // `or` a 2-point set that stays runtime — neither is this fold.)
-    if !matches!(lop, Prim::Lt | Prim::Gt | Prim::Le | Prim::Ge) {
+    let (lv, l_upper, lb) = comparison_halfline(db, lhs)?;
+    let (rv, r_upper, rb) = comparison_halfline(db, rhs)?;
+    // Same operand, same direction (both upper or both lower) — an opposite-direction pair is a range, not
+    // a subsumption (handled by `disjoint_or_covering`/`coincident_point_eq`).
+    if l_upper != r_upper || !core_equiv(db, lv, rv) {
         return None;
     }
-    let as_int = |db: &mut Db, id: StructId| match core_of(db, id) {
-        Core::ConstInt(v) => v.to_i64(),
-        _ => None,
-    };
-    // Identify `(v, c)` for each side with the runtime operand `v` on the SAME side (both left, both right).
-    // `v_left` = the compare is `(cmp v c)`; else `(cmp c v)` — a mixed arrangement flips the effective
-    // direction, so require the same arrangement on both.
-    let (lv, lc, l_v_left) = match (as_int(db, lb), as_int(db, la)) {
-        (Some(c), _) => (la, c, true),  // `(cmp v c)`
-        (_, Some(c)) => (lb, c, false), // `(cmp c v)`
-        _ => return None,
-    };
-    let (rv, rc, r_v_left) = match (as_int(db, rb), as_int(db, ra)) {
-        (Some(c), _) => (ra, c, true),
-        (_, Some(c)) => (rb, c, false),
-        _ => return None,
-    };
-    if l_v_left != r_v_left || !core_equiv(db, lv, rv) {
-        return None; // same operand on the same side
-    }
-    // With `v` on the left: `< `/`<=` are UPPER bounds (stronger = smaller c), `>`/`>=` LOWER bounds
-    // (stronger = larger c). With `v` on the RIGHT (`c < v` ≡ `v > c`), the sense flips. Compute whether
-    // the LHS comparison is the stronger (tighter) one.
-    let upper_bound_on_v = matches!(
-        (lop, l_v_left),
-        (Prim::Lt | Prim::Le, true) | (Prim::Gt | Prim::Ge, false)
-    );
-    // For an upper bound on `v`, smaller constant ⇒ stronger; for a lower bound, larger ⇒ stronger.
-    let lhs_stronger = if upper_bound_on_v { lc <= rc } else { lc >= rc };
-    // `and` keeps the stronger; `or` keeps the weaker.
+    // For UPPER bounds `v ≤ B`, the tighter (stronger) is the SMALLER B; for LOWER bounds `v ≥ B`, the
+    // LARGER B. `and` keeps the stronger, `or` the weaker.
+    let lhs_stronger = if l_upper { lb <= rb } else { lb >= rb };
     let keep_lhs = if is_and { lhs_stronger } else { !lhs_stronger };
     Some(if keep_lhs { lhs } else { rhs })
 }
