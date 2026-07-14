@@ -18090,6 +18090,48 @@ mod match_engine {
             "text-vs-scalar keeps the kind-boundary message: {}",
             cross.message
         );
+
+        // GENERALIZED to USER SUM / NOMINAL: Cadenza has no operator overloading, so `(+ c d)` on two
+        // `Color`s — or two `UserId` newtypes — is always a type error, never a user-defined `+`. It named
+        // the phantom "type mismatch: Int64 and Color"; now it names the real type, no phantom `Int64 and`.
+        let sum = reject_full(
+            "(module m (type Color (Red) (Blue)) (def (f (: a Color) (: b Color)) (+ a b)) (export f))",
+        )
+        .expect("(+ Color Color) rejects");
+        assert_eq!(sum.code.as_deref(), Some("CDZ0201"), "got: {}", sum.message);
+        assert!(
+            sum.message.contains("arithmetic is not defined on Color")
+                && !sum.message.contains("Int64 and"),
+            "a user sum names the real type, no phantom Int64: {}",
+            sum.message
+        );
+        assert!(
+            sum.fix.is_none(),
+            "no forced fix for sum arithmetic: {:?}",
+            sum.fix
+        );
+        let nominal = reject_full(
+            "(module m (type UserId (Mk Int64)) (def (f (: a UserId) (: b UserId)) (+ a b)) (export f))",
+        )
+        .expect("(+ UserId UserId) rejects");
+        assert!(
+            nominal
+                .message
+                .contains("arithmetic is not defined on UserId")
+                && !nominal.message.contains("Int64 and"),
+            "a newtype over a number names the real type, no phantom Int64: {}",
+            nominal.message
+        );
+        // NO false fire: EQUALITY / ORDERING on two same user sums stays VALID (a sum is comparable).
+        for op in ["=", "<"] {
+            assert!(
+                reject_code(&format!(
+                    "(module m (type Color (Red) (Blue)) (def (f (: a Color) (: b Color)) ({op} a b)) (export f))"
+                ))
+                .is_none(),
+                "`{op}` on two same user sums stays valid (comparison, not arithmetic)"
+            );
+        }
     }
 
     #[test]
