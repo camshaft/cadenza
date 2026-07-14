@@ -4349,9 +4349,9 @@ fn desugar_runtime_map_match(
             )));
         };
         // A value sub-pattern must be a bare binder or an IRREFUTABLE nested pattern (its binders read via
-        // `MapField`). Over a RUNTIME map the value READ of a nested binder isn't wired yet
-        // (`lower_map_field_runtime` declines `value_steps`), so this dispatch pass accepts the SHAPE here
-        // and the read declines at `lower_map_field` — honest, no miscompile. A refutable value declines.
+        // `MapField` `value_steps`). Over a RUNTIME map the nested-binder READ is wired (`f3f8f94e`):
+        // `lower_map_field_runtime` walks `value_steps` after the `Map.lookup` via `synth_value_path_read`.
+        // A refutable value sub-pattern declines.
         for &(_, v) in &entries {
             if let Err(r) = map_value_irrefutable_or_decline(db, v) {
                 return Some(Core::Poison(r));
@@ -4460,10 +4460,11 @@ fn clone_key_expr(db: &mut Db, k: StructId) -> StructId {
 // name (bare binder), a tuple pattern, or a (single-variant) constructor pattern, matched recursively to
 // any depth against the value at the key — resolve descends the sub-pattern giving `MapField.value_steps`
 // (`880c95b6`; `5bc7215e` first did binder-free literals), and the whole-arm CDZ0102 linearity walk spans
-// the value binders. (SCOPE, honest: a REFUTABLE value — a bare literal, lifted; or a MULTI-variant ctor
-// `(Some n)`, needing value-discriminant dispatch — declines, and a RUNTIME-map nested value binder
-// declines: the constant-map fold reads `value_steps`, the runtime `Map.lookup` sub-path read is a later
-// increment. The sentence's ENUMERATED kinds — wildcard/name/tuple/constructor — all bind.)
+// the value binders. It reads over a CONSTANT map (fold down `value_steps`) AND a RUNTIME map
+// (`f3f8f94e`: `lower_map_field_runtime` walks `value_steps` after the `Map.lookup`). (SCOPE, honest: only
+// a REFUTABLE value declines — a bare literal is lifted; a MULTI-variant ctor `(Some n)` needs value-
+// discriminant dispatch, a later increment. The sentence's ENUMERATED kinds — wildcard/name/tuple/
+// constructor — all bind, over both const and runtime maps.)
 //= spec/capabilities/core-semantics.md#a-map-is-matched-by-key-directed-patterns
 //# Each value binder position MUST be a binder position in the sense of *Patterns Compose*, so a value MAY be bound by any pattern (a wildcard, a name, a tuple pattern, a constructor pattern) matched recursively against the value at that key, and the whole pattern MUST remain linear (`CDZ0102`).
 fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {

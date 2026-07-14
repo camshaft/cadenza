@@ -4212,6 +4212,52 @@
   (call   f (: 5 Int64))
   (output (: 10 Int64)))
 
+; The built-in `Result` (`Ok`/`Err`) is the fallible-pass carrier a compiler is built from: each pass
+; RETURNS a `Result`, and a pipeline CHAINS them so an `Err` short-circuits the rest — `(match (step x)
+; ((Ok v) (next v)) ((Err e) (Err e)))`. The corpus consumes a GIVEN `Result` (an `Ast.decode` outcome);
+; these instead CONSTRUCT a `Result` from a runtime condition and thread it through such a chain, pinning
+; that an `Ok` flows into the next step and an `Err` propagates unchanged (the short-circuit) — the
+; pass-pipeline idiom (parse → resolve → typecheck, each `Result`-returning, an error aborting the rest).
+
+(case "a runtime Result constructed from a condition selects its Ok or Err arm"
+  (doc    "`(if (> n 0) (Ok n) (Err 99))` builds a `Result Int64 Int64` decided by the runtime argument, and
+           the match selects the arm: n=5 → `(Ok 5)` → 5; n=0 → `(Err 99)` → -99. Pins that a built-in
+           `Result` CONSTRUCTED at run time (not a given decode outcome) matches its `Ok`/`Err` variants —
+           the foundation of the fallible-pass carrier.")
+  (input  (do
+            (def (main (: n Int64)) (match (if (> n 0) (Ok n) (Err 99)) ((Ok v) v) ((Err e) (- 0 e))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64))
+  (call   main (: 0 Int64)) (output (: -99 Int64)))
+
+(case "a Result pipeline short-circuits on the first Err"
+  (doc    "Two fallible steps chained so an `Err` from either aborts the rest: `run` calls `step1`, and on
+           `Ok` feeds it to `step2`, on `Err` propagates the error unchanged (`((Err e) (Err e))`). step1
+           doubles a positive input else errs 1; step2 increments an input < 100 else errs 2. n=5 →
+           step1 Ok 10 → step2 Ok 11 → 11; n=0 → step1 Err 1 (step2 never runs) → -1; n=60 → step1 Ok 120 →
+           step2 Err 2 → -2. Pins the pass-pipeline short-circuit: an `Ok` flows into the next step, an
+           `Err` propagates and skips the remaining steps — the parse→resolve→typecheck spine.")
+  (input  (do
+            (def (step1 (: n Int64)) (if (> n 0) (Ok (* n 2)) (Err 1)))
+            (def (step2 (: n Int64)) (if (< n 100) (Ok (+ n 1)) (Err 2)))
+            (def (run (: n Int64)) (match (step1 n) ((Ok v) (step2 v)) ((Err e) (Err e))))
+            (def (main (: n Int64)) (match (run n) ((Ok v) v) ((Err e) (- 0 e))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 11 Int64))
+  (call   main (: 0 Int64)) (output (: -1 Int64))
+  (call   main (: 60 Int64)) (output (: -2 Int64)))
+
+(case "a runtime Result carrying a String error is matched"
+  (doc    "The `Err` payload may be a heap `String` (a diagnostic message), not only a scalar code: `(if
+           (> n 0) (Ok n) (Err \"neg\"))` — n=5 → `(Ok 5)` → 5; n=0 → `(Err \"neg\")`, whose message is read
+           by `String.byte-len` → 3. Pins that a `Result` with an `Ok Int64` / `Err String` shape (a value
+           or a diagnostic — the compiler's fallible-result shape) constructs and matches at run time.")
+  (input  (do
+            (def (main (: n Int64)) (match (if (> n 0) (Ok n) (Err "neg")) ((Ok v) v) ((Err e) (String.byte-len e))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64))
+  (call   main (: 0 Int64)) (output (: 3 Int64)))
+
 (case "a RUNTIME guarded sum-match arm dispatches through its guard"
   (doc    "A guarded arm over a RUNTIME sum scrutinee (chosen by `if`, so the match cannot fold): `((guard
            (V.A n) (> n 5)) 1)` fires only when the `A` payload exceeds 5, else FALLS THROUGH to the

@@ -171,6 +171,22 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   O(n²) via `concat`. `List.map`/`List.filter`/`List.fold` are the obvious missing higher-order list ops.
   `src/traverse.cdz` now provides these hand-rolled (map/filter/fold + Ast predicate-count/fold).
 
+- **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value): runtime `String.at` breaks content equality.**
+  `repros/miscompile-runtime-string-at-content-equality.sexp`. A `String.at` at a RUNTIME index yields a
+  one-char String that never `=`-compares equal to the same char obtained any other way — a different-
+  index `String.at`, a `String.concat`-built char, or a literal; it only equals ITSELF at the identical
+  index. So `count-a "banana"` (scan + `= "a"`) returns 0, not 3. A CONSTANT-index `String.at` folds and
+  compares correctly. This silently breaks char-by-char scanning — i.e. a LEXER. **ROOT-CAUSED (two
+  layers in `backend/wasm/select.rs`):** (1) `Core::ValueEq` `bytes-compact`s a String operand only when
+  OWNED, but a `String.at` result is a non-flat `bytes-slice` rope reached via `Option.expect`; (2)
+  `heap_operand_ownership` classifies `SumExpect`/`SumPayload`/`Proj` as always `Borrowed` — right for a
+  `Map.lookup`, WRONG for a fresh producer like `String.at` (a `bytes-slice` is Owned, `Option.expect`
+  transfers it out). The principled fix is layer 2 (a `SumExpect`/`SumPayload` of a producer is Owned) —
+  which then also serves the `Map.lookup` borrow-decline family. A naive layer-1-only fix (compact
+  borrowed Strings too) makes isolated compares correct but double-frees in a loop; reverted, root-cause
+  documented in the repro for a seed agent. `String.slice` on a runtime string DECLINES outright
+  ("constant strings only") — a separate gap.
+
 - **OPEN (seed `rcdzc` — HM inference GAP): an unannotated closure passed to a SELF-RECURSIVE HOF fails
   to infer the closure's parameter types.** `repros/reject-inferred-closure-param-through-recursive-hof.
   sexp`. The classic `foldl` written idiomatically — `(def (fold-list f acc xs) … (fold-list f (f h acc)

@@ -8614,26 +8614,62 @@ fn is_select_leaf(db: &mut Db, id: StructId) -> bool {
 }
 
 /// Whether an `if`'s BRANCH is a candidate for the branchless `select` — a generalization of
-/// [`is_select_leaf`] to a SMALL, TRAP-FREE scalar computation, not only a one-instruction leaf. A
-/// `select` evaluates BOTH arms unconditionally then picks, so an arm is convertible iff it (a) CANNOT
-/// TRAP when run on the untaken path (`is_trap_free` — bitwise/compare/not/wrap/proj/count/in-range
-/// shift/const-divisor div-rem over trap-free operands, and every leaf; EXCLUDES checked `+`/`-`/`*`, a
-/// runtime-count shift, a call, control flow, and any heap construct), and (b) is CHEAP — a bounded
-/// subtree (`<= SELECT_ARM_MAX_SIZE` nodes) so computing the untaken arm wastes at most a few
-/// instructions vs the branch it removes. `is_trap_free` also guarantees allocation-freedom and
-/// effect-freedom (a heap construct / call is not trap-free), so a converted arm leaks no cell and runs
-/// no side effect on the discarded path. The result-is-scalar / non-heap filter stays with the caller.
-/// (A leaf is trap-free with size 1, so this strictly widens `is_select_leaf`.)
+/// [`is_select_leaf`] to a SMALL, TRAP-FREE scalar computation (not only a one-instruction leaf), AND to
+/// a shallow NESTED CONDITIONAL whose parts are themselves convertible (so a nested `if`/select folds into
+/// a nested `select` — the sign/clamp/3-way idiom `(if (< x 0) -1 (if (> x 0) 1 0))`). A `select`
+/// evaluates BOTH arms unconditionally then picks, so an arm is convertible iff every value it computes on
+/// the untaken path is SAFE to compute there — no trap, no allocation, no effect — and the whole thing is
+/// CHEAP (a bounded subtree, so the wasted untaken work never exceeds the branch it removes). Two shapes
+/// qualify (see [`select_arm_convertible`] for the recursion):
+///   (a) a TRAP-FREE scalar op (`is_trap_free`: bitwise/compare/not/wrap/proj/count/in-range shift/
+///       const-divisor div-rem over trap-free operands, and every leaf — EXCLUDES checked `+`/`-`/`*`, a
+///       runtime-count shift, a call, and any heap construct);
+///   (b) a nested `Core::If` whose CONDITION is trap-free (safe to evaluate unconditionally) and whose two
+///       arms are RECURSIVELY convertible — the inner `if` will itself select-convert when emitted.
+/// The total node budget (`<= SELECT_ARM_MAX_SIZE`) bounds the unconditional work either way. (A leaf is
+/// trap-free with size 1, so this strictly widens `is_select_leaf`.)
 fn is_select_arm(db: &mut Db, id: StructId) -> bool {
-    crate::lower::is_trap_free(db, id) && subtree_size(db, id) <= SELECT_ARM_MAX_SIZE
+    if !select_arm_convertible(db, id) {
+        return false;
+    }
+    // A nested-conditional arm gets a larger node budget than a flat op: an inner `if` turns into an inner
+    // `select`, which is still all-branchless cheap work, but the shape naturally spans more nodes (an
+    // inner `if` + its compare + operands). A flat trap-free op keeps the tight leaf-idiom budget.
+    let budget = if matches!(core_of(db, id), Core::If { .. }) {
+        SELECT_NESTED_MAX_SIZE
+    } else {
+        SELECT_ARM_MAX_SIZE
+    };
+    subtree_size(db, id) <= budget
 }
 
-/// The node-count ceiling for [`is_select_arm`]: a branch bigger than this is left as an `if` so a
-/// `select` never duplicates a non-trivial computation onto the untaken path. Sized to admit the common
-/// one-operator idioms — `(& x mask)`, `(| x bit)`, `(>> x k)`, `(not b)`, `(< a b)` (each an op over two
-/// leaves = 3 nodes) — plus a shallow nest (a masked shift `(& (>> x k) m)` = 5), while excluding a deep
-/// expression whose unconditional evaluation would cost more than the branch it replaces.
+/// The convertibility recursion for [`is_select_arm`] (the size bound is applied by the caller; this only
+/// checks the SHAPE). A node is convertible when it is a trap-free scalar op, or a nested `Core::If` with
+/// a trap-free condition and two convertible arms. A nested conditional is sound to turn into a nested
+/// `select` because: the condition is trap-free (safe to evaluate even on the untaken outer path), and
+/// each arm — being convertible — is itself trap-free/allocation-free/effect-free all the way down, so
+/// evaluating BOTH inner arms discards no owned cell and runs no side effect.
+fn select_arm_convertible(db: &mut Db, id: StructId) -> bool {
+    if let Core::If { cond, then_, else_ } = core_of(db, id) {
+        return crate::lower::is_trap_free(db, cond)
+            && select_arm_convertible(db, then_)
+            && select_arm_convertible(db, else_);
+    }
+    crate::lower::is_trap_free(db, id)
+}
+
+/// The node-count ceiling for a FLAT (non-nested) [`is_select_arm`]: a branch bigger than this is left as
+/// an `if` so a `select` never duplicates a non-trivial computation onto the untaken path. Sized to admit
+/// the common one-operator idioms — `(& x mask)`, `(| x bit)`, `(>> x k)`, `(not b)`, `(< a b)` (each an
+/// op over two leaves = 3 nodes) — plus a shallow nest (a masked shift `(& (>> x k) m)` = 5), while
+/// excluding a deep expression whose unconditional evaluation would cost more than the branch it replaces.
 const SELECT_ARM_MAX_SIZE: u32 = 5;
+
+/// The node-count ceiling for a NESTED-CONDITIONAL [`is_select_arm`] (an arm whose top node is a
+/// `Core::If`): larger than the flat budget so a ONE-LEVEL nested conditional `(if (< x 0) -1 (if (> x 0)
+/// 1 0))` — an inner `if` + a compare over two leaves + two constants = 8 nodes — folds to a nested
+/// `select` (the sign/clamp/3-way idiom), while a deeper tree still stays a branch.
+const SELECT_NESTED_MAX_SIZE: u32 = 9;
 
 /// Emit the LOGICAL NEGATION of a boolean expression `id` (a Bool i32 → its `0`/`1` complement). When
 /// `id` is a `Core::Compare`, the negation folds into the single COMPLEMENT comparison (`(not (< a b))`
@@ -10591,6 +10627,83 @@ mod tests {
         assert!(
             !f.code.contains(&Lir::Select),
             "an over-size trap-free arm must NOT use select, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn a_nested_conditional_folds_to_nested_branchless_selects() {
+        // The sign/clamp/3-way idiom `(if (< x 0) -1 (if (> x 0) 1 0))` — an `if` whose else arm is
+        // itself a small conditional over trap-free (compare + constant) parts — folds to fully BRANCHLESS
+        // code: no `if`/`else`/`end` block anywhere. The inner `(if (> x 0) 1 0)` is a bool materialization
+        // (`x>0` extended) and the outer selects between `-1` and that. Sound: every condition is trap-free
+        // (safe to evaluate unconditionally) and every arm is a constant, so evaluating both discards no
+        // owned cell and runs no effect. Pins the nested-conditional widening of `is_select_arm`.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (if (< x 0) -1 (if (> x 0) 1 0))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            !f.code
+                .iter()
+                .any(|i| matches!(i, Lir::If(_) | Lir::Else | Lir::End)),
+            "a nested conditional over trap-free parts is fully branchless, got: {:?}",
+            f.code
+        );
+        assert!(
+            f.code.contains(&Lir::Select),
+            "the nested conditional uses select, got: {:?}",
+            f.code
+        );
+        // A genuine 3-way nested select `(if (= x 0) 0 (if (< x 0) -1 1))` nests TWO selects (the inner
+        // picks -1/1, the outer picks 0/inner) — still no branch.
+        let ast2 = crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (if (= x 0) 0 (if (< x 0) -1 1))) (def (main) 0) (export main))",
+        );
+        let mut db2 = Db::load(ast2);
+        let layout2 = layout_of(&mut db2);
+        let (params2, body2) = function_of(&mut db2, "f");
+        let f2 = select_function(&mut db2, body2, &params2, &layout2).expect("select");
+        assert_eq!(
+            f2.code.iter().filter(|i| matches!(i, Lir::Select)).count(),
+            2,
+            "a 3-way nested conditional nests two selects, got: {:?}",
+            f2.code
+        );
+        assert!(
+            !f2.code
+                .iter()
+                .any(|i| matches!(i, Lir::If(_) | Lir::Else | Lir::End)),
+            "the 3-way nested conditional is fully branchless, got: {:?}",
+            f2.code
+        );
+    }
+
+    #[test]
+    fn a_nested_conditional_with_a_trapping_inner_arm_keeps_the_branch() {
+        // A nested conditional whose inner arm is NOT trap-free — here `(* x 1000000000000)`, a checked
+        // multiply that overflows for a large `x` — must keep the structured `if` and NOT become a nested
+        // `select` (which would evaluate the would-overflow arm unconditionally, surfacing a trap on the
+        // untaken path). The branch survives; the mul keeps its overflow guard. Pins the trap-freedom gate
+        // on the nested-conditional recursion (`select_arm_convertible` descends into the inner arm).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: x Int64)) (if (< x 0) 0 (if (> x 100) (* x 1000000000000) x))) (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert!(
+            f.code.contains(&Lir::If(BlockType::Val(ValType::I64))),
+            "a nested conditional with a trapping inner arm keeps the structured if, got: {:?}",
+            f.code
+        );
+        assert!(
+            f.code.contains(&Lir::I64Mul),
+            "the checked multiply survives (guarded), got: {:?}",
             f.code
         );
     }
