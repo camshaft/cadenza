@@ -153,6 +153,29 @@
             (def (main) (f)) (export main)))
   (error  CDZ0201))
 
+(case "two sibling modules may each define a private helper of the same name"
+  (doc    "The duplicate-definition check is PER-MODULE, not global across a linked package: a module's
+           name set is fixed WITHIN one module (the rejection above), but two SEPARATE files may each carry
+           a private helper of the same name. `lib` defines a private `foo` (`+ x 1`) that its exported
+           `bump` calls; the entry defines its OWN private `foo` (`* x 2`). Each `foo` binds to its own
+           module's definition — `(foo 5)` in the entry is 10 (entry's `* 2`), `(bump 5)` is 6 (lib's `+ 1`
+           via lib's `foo`), summing to 16 — so the two same-named helpers do NOT collide and neither wins
+           the other's calls. The value twin of the per-module TYPE-declaration case (two `Box` types in
+           separate modules); the idiomatic multi-module layout where a shared type module is imported by
+           several passes, each with its own generically-named local helper (`node-count`, `foo`). A global
+           seen-set falsely flagged this as a duplicate (CDZ0201); the check keys on `(file, name)`.")
+  (module "lib"
+    (do
+      (def (foo (: x Int64)) (+ x 1))
+      (def (bump (: x Int64)) (foo x))
+      (export bump)))
+  (input  (do
+            (import "lib" (bump))
+            (def (foo (: x Int64)) (* x 2))
+            (def (main) (+ (foo 5) (bump 5)))
+            (export main)))
+  (output (: 16 Int64)))
+
 ; A duplicate EXPORT clause is the export-side analogue of the duplicate definition above: a module's
 ; exports are a record whose fields are the exported names (core-semantics.md #A Module Evaluates To A
 ; Record Of Its Exports), and a record has a fixed set of field names, so exporting the same name twice
