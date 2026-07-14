@@ -27898,13 +27898,19 @@ mod match_engine {
         // dimensions — CDZ0501. Unit.in converts WITHIN a dimension, never across one.
         let src = "(do (def (main) ((. Unit in) ((. Unit of) #\"meter\") \
                    ((. Qty of) 3.0 ((. Unit of) #\"second\")))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("converting across dimensions with Unit.in must reject");
         assert_eq!(
-            compile_component(&crate::codec::encode(&parse(src)))
-                .err()
-                .and_then(|d| d.code.as_deref().map(str::to_string))
-                .as_deref(),
+            err.code.as_deref(),
             Some("CDZ0501"),
             "converting across dimensions with Unit.in must reject CDZ0501"
+        );
+        // The message NAMES both units (the source `second` and the target `meter`), matching the
+        // addition-mismatch phrasing — not the terse "a unit of a different dimension".
+        assert!(
+            err.message.contains("second") && err.message.contains("meter"),
+            "the convert-mismatch names both units: {}",
+            err.message
         );
     }
 
@@ -33024,16 +33030,29 @@ mod stage1 {
             compile_component(&crate::codec::encode(&parse(fixed))).is_ok(),
             "the renamed record argument compiles"
         );
-        // NO false rename: a genuinely-MISSING field (not a typo of a supplied one) gets the message, no fix.
+        // A genuinely-MISSING field (not a typo of a supplied one) is not a RENAME — it is an ADD: the
+        // message names the missing field AND carries an insert fix appending `(y (trap "TODO"))` to the
+        // record literal (a `trap` placeholder inhabits any field type, so it clears the fault in one shot).
         let missing = "(module m (def (g (: r (Record (x Int64) (y Int64)))) (. r x)) \
                        (def (main) (g (record (x 1)))) (export main))";
         let dm =
             compile_component(&crate::codec::encode(&parse(missing))).expect_err("must reject");
         assert!(
-            dm.message.contains("missing field `y`") && dm.fix.is_none(),
-            "a genuinely-missing field gets no rename fix: {} fix={:?}",
-            dm.message,
-            dm.fix
+            dm.message.contains("missing field `y`"),
+            "names the missing field: {}",
+            dm.message
+        );
+        let mf = dm.fix.as_ref().expect("a missing field carries an add fix");
+        assert_eq!(
+            mf.kind,
+            crate::abi::FixKind::InsertInto,
+            "an ADD (insert) fix: {:?}",
+            mf
+        );
+        assert!(
+            mf.replacement.contains("(y (trap \"TODO\"))"),
+            "the add fix appends a placeholder `y` field: {:?}",
+            mf.replacement
         );
         // The LET-BINDER twin: a record literal with a misspelled field bound to a `(: r (Record …))`
         // binder gets the SAME rename on the primary binding-mismatch reject (previously it declined the
@@ -33084,6 +33103,93 @@ mod stage1 {
             "a genuinely-missing nested field gets no rename: {} fix={:?}",
             dnm.message,
             dnm.fix
+        );
+    }
+
+    #[test]
+    fn a_record_field_set_mismatch_offers_add_missing_or_delete_extra_fields() {
+        // The construction analogue of rustc's applicable "add the missing field" / "no field `z`" edits
+        // (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). A record literal
+        // whose field SET differs from its expected type — a pure OMISSION or a lone SURPLUS — now carries
+        // the mechanical repair, not just the naming message.
+
+        // MISSING fields → an INSERT fix appending `(field (trap "TODO"))` per missing field. `trap` (∀a.
+        // String → a) inhabits any field type, so applying it clears the fault in one shot (verifiable).
+        let miss = "(module m (def (f (: r (Record (x Int64) (y Int64) (z Int64)))) r) \
+                    (def (main) (f (record (x 1)))) (export main))";
+        let dm = compile_component(&crate::codec::encode(&parse(miss))).expect_err("must reject");
+        assert_eq!(dm.code.as_deref(), Some("CDZ0203"), "got: {}", dm.message);
+        assert!(
+            dm.message.contains("missing fields `y`, `z`"),
+            "names the missing fields: {}",
+            dm.message
+        );
+        let fm = dm.fix.as_ref().expect("an add fix is carried");
+        assert_eq!(fm.kind, crate::abi::FixKind::InsertInto);
+        assert!(
+            fm.replacement.contains("(y (trap \"TODO\"))")
+                && fm.replacement.contains("(z (trap \"TODO\"))"),
+            "the add fix appends placeholders for BOTH missing fields: {:?}",
+            fm.replacement
+        );
+        // The added-fields form compiles (the placeholder inhabits any field type).
+        let miss_fixed = "(module m (def (f (: r (Record (x Int64) (y Int64) (z Int64)))) r) \
+                          (def (main) (f (record (x 1) (y (trap \"TODO\")) (z (trap \"TODO\"))))) \
+                          (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(miss_fixed))).is_ok(),
+            "the record with placeholder fields added compiles"
+        );
+
+        // A lone SURPLUS field → a DELETE fix removing the `(field value)` entry.
+        let extra = "(module m (def (f (: r (Record (x Int64)))) r) \
+                     (def (main) (f (record (x 1) (y 2)))) (export main))";
+        let de = compile_component(&crate::codec::encode(&parse(extra))).expect_err("must reject");
+        assert!(
+            de.message.contains("no such field `y`"),
+            "names the surplus field: {}",
+            de.message
+        );
+        let fe = de.fix.as_ref().expect("a delete fix is carried");
+        assert_eq!(
+            fe.kind,
+            crate::abi::FixKind::Delete,
+            "a DELETE fix: {:?}",
+            fe
+        );
+        // The delete resolves the fault (removing `(y 2)` leaves the expected shape).
+        let extra_fixed = "(module m (def (f (: r (Record (x Int64)))) r) \
+                           (def (main) (f (record (x 1)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(extra_fixed))).is_ok(),
+            "the record with the surplus field removed compiles"
+        );
+
+        // The DIRECT value-annotation site carries the same fixes.
+        let annot_miss = "(module m (def (main) \
+                          (: (record (x 1)) (Record (x Int64) (y Int64)))) (export main))";
+        let da =
+            compile_component(&crate::codec::encode(&parse(annot_miss))).expect_err("must reject");
+        assert!(
+            da.fix
+                .as_ref()
+                .is_some_and(|f| f.kind == crate::abi::FixKind::InsertInto
+                    && f.replacement.contains("(y (trap \"TODO\"))")),
+            "the value-annotation site also offers the add fix: {} fix={:?}",
+            da.message,
+            da.fix
+        );
+
+        // NO false fix — BOTH a missing AND an extra field that is NOT a typo of the missing one is
+        // ambiguous (neither a clean add nor a clean delete nor a rename), so the message guides, no fix.
+        let ambig = "(module m (def (f (: r (Record (x Int64) (y Int64)))) r) \
+                     (def (main) (f (record (x 1) (zzzzzz 2)))) (export main))";
+        let dz = compile_component(&crate::codec::encode(&parse(ambig))).expect_err("must reject");
+        assert!(
+            dz.fix.is_none(),
+            "an ambiguous missing-and-extra field set gets no mechanical fix: {} fix={:?}",
+            dz.message,
+            dz.fix
         );
     }
 
