@@ -149,6 +149,7 @@ pass	a bare built-in constructor Some is passed as a first-class function
 pass	a bare conditional keyword is rejected, not a crash
 pass	a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant
 pass	a bare equality keyword is rejected, not a crash
+pass	a bare literal exceeding the default-integer pragma's narrow type is rejected
 pass	a bare nullary constructor is the nullary sum value
 pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare user constructor is passed as a first-class function to a higher-order function

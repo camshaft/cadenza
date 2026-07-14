@@ -153,6 +153,7 @@ pass	a deeply nested expression is diagnosed by the parser, never crashes it
 pass	a deeply nested literal in a tuple let-binder is refutable and rejected
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
 pass	a default-integer pragma naming a non-integer type is rejected
+pass	a bare literal exceeding the default-integer pragma's narrow type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
 pass	a delegated capability is not itself an export field
 pass	a delegation naming an effect that is never reached is rejected as latent authority
