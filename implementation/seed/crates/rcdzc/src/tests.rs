@@ -28656,6 +28656,45 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_duplicate_field_in_a_record_type_is_rejected_like_the_value_form() {
+        // A record TYPE `(Record (x Int64) (x Bool))` names field `x` twice. A record's field names are a
+        // fixed SET (the same rule the record VALUE `(record (a 1) (a 2))` is rejected for), but the type
+        // form built its field map by last-wins insert, SILENTLY accepting the duplicate (`x` became
+        // `Bool`). It is now CDZ0201, anchored at the redundant `(name Type)` entry with a delete fix — in
+        // both an annotation and a variant payload.
+        for src in [
+            "(module m (def (f (: r (Record (x Int64) (x Bool)))) r) (export f))",
+            "(module m (type P (Mk (Record (x Int64) (x Bool)))) (def (f) 1) (export f))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0201"))
+                .unwrap_or_else(|| panic!("a record-type dup field must reject: {src}"));
+            assert!(
+                d.message
+                    .contains("record type names field `x` more than once"),
+                "names the duplicate field: {}",
+                d.message
+            );
+            assert_eq!(
+                d.fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Delete),
+                "carries a delete-the-duplicate fix: {:?}",
+                d.fix
+            );
+        }
+        // NO REGRESSION: a valid record type (distinct fields) is clean.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (f (: r (Record (x Int64) (y Bool)))) r) (export f))"
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a record type with distinct fields is accepted"
+        );
+    }
+
+    #[test]
     fn a_duplicate_export_carries_a_delete_the_duplicate_fix() {
         // Exporting a name twice (CDZ0201) now carries a DELETE fix on the redundant later `(export …)`
         // clause — the earlier one already makes the name public, so removing the duplicate is the direct
