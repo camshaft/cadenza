@@ -12632,11 +12632,44 @@ mod tests {
             let n = op_str_from_bytes(bytes_leaf(bad));
             assert_eq!(n, Handle::NULL, "ill-formed UTF-8 {bad:?} → None");
         }
-        // (4) the empty buffer is valid "" .
+        // (4) the empty buffer (a HEAP leaf, how a 0-element `Bytes.of` builds) is valid "" .
         let empty = op_str_from_bytes(bytes_leaf(b""));
         assert_eq!(op_str_get(empty), "", "empty bytes → empty string (valid)");
+        assert!(
+            !is_immediate(empty),
+            "a heap empty-bytes leaf stays a heap leaf"
+        );
+        // (4b) the IMMEDIATE-input branch: `op_str_from_bytes` short-circuits an immediate `buf` (the
+        // empty-compound constant `imm_unit`, which a 0-length Bytes can also be) by returning it AS the
+        // String. The result MUST be canonically interchangeable with a real `""` literal — `champ_eq`
+        // decodes an immediate as arity-0/empty-raw, the same as a heap empty leaf, so the two empty-String
+        // representations compare EQUAL (a `str-from-bytes` empty used as a map key / in `=` must match a
+        // `""` literal, whichever representation each took). Pins that the immediate short-circuit doesn't
+        // introduce a second, unequal empty-String form. (The immediate is `op_drop`-safe — a no-op.)
+        let from_imm = op_str_from_bytes(imm_unit());
+        assert!(
+            is_immediate(from_imm),
+            "an immediate input passes through as an immediate"
+        );
+        assert_eq!(op_str_get(from_imm), "", "immediate empty reads as \"\"");
+        assert!(
+            champ_eq(from_imm, empty),
+            "the immediate empty String == the heap empty String (canonical, interchangeable as a key)"
+        );
+        let real_empty = op_str_new(String::new());
+        assert!(
+            champ_eq(from_imm, real_empty),
+            "the immediate empty String == a `\"\"` literal (op_str_new) — one canonical empty String"
+        );
+        assert_eq!(
+            champ_hash(from_imm),
+            champ_hash(real_empty),
+            "…and hashes identically, so they dedup as the same map key"
+        );
+        op_drop(real_empty);
         op_drop(empty);
-        // (5) balance: every buffer consumed (valid ones dropped, invalid ones released internally).
+        // (5) balance: every buffer consumed (valid ones dropped, invalid ones released internally). The
+        // immediate `from_imm` needs no drop (an immediate holds no node — dropping it is a no-op).
         assert_eq!(
             live_nodes(),
             before,
