@@ -143,6 +143,16 @@ boundary envelope) → **U3** (compile-request override) → **U4** (remove `ext
   `main(9)=neg(pair(9).0)=-9` (a value from EACH peer, via `assemble_extern_runtime` g=2) — plus `u9b_*` the
   same-op-name collision decline. 12 cross-component tests.
 
+- **U10 — a consumer+provider (middle of a chain) DECLINES honestly. ✅ DONE (`spec`).** A component that
+  is BOTH a consumer (binds a peer) AND a provider (compiled with `--component-name`) previously took the
+  extern branch and returned BEFORE the provider branch — silently exporting its boundary top-level and
+  DROPPING its `--component-name`, so a downstream consumer binding its interface would fail to link. Added
+  a guard at the top of the extern branch (`db.component_name.is_some()`) that DECLINES ("both binds a peer
+  interface AND publishes its own … the consumer+provider chain envelope is a later increment") rather than
+  miscompile (decline-don't-miscompile, `reference-compiler.md §Outcomes Are Ordered By Safety`). Test
+  `u10_*`. Byte-neutral (no corpus program is both peer-bound and named); gate 2126/0/0. The fused
+  consumer+provider envelope for a real A→B→C chain is the next widening. 13 cross-component tests.
+
 🎉 **THE UNIFICATION IS COMPLETE.** Cross-component interop IS the effect system: a contract is an
 `(effect …)`, a peer dependency is that effect `(bind …)`-ed to a peer interface, a test overrides with a
 `(handle …)` or a compile-request `--bind`. ONE concept — an escaping effect the manifest records — for

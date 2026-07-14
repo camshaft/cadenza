@@ -51704,6 +51704,42 @@ mod cross_component_oracle {
         }
     }
 
+    #[test]
+    fn u10_a_consumer_that_is_also_a_provider_declines() {
+        use crate::abi::Artifact;
+        use crate::backend::Target;
+        use crate::testkit::parse;
+        // A MIDDLE-OF-CHAIN source: it BINDS a peer (`(effect P)` + `(bind P …)`) AND is compiled with a
+        // `--component-name` (means to publish `main` as `cadenza:mid/api`). The consumer+provider fused
+        // envelope is not yet emitted, so this must DECLINE honestly rather than silently export top-level.
+        let src = "(do \
+            (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) \
+            (bind P \"cadenza:pairs/api\") \
+            (def (main (: x Int64)) (host (P) (. (P.pair x) 0))) \
+            (export main))";
+        let ast = crate::codec::encode(&parse(src));
+        let out = crate::host::run_with_compiler_stack(|| {
+            crate::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "mid", ast),
+                    crate::cli::component_name_artifact("cadenza:mid/api"),
+                ],
+                &[Target::Wasm],
+            )
+        });
+        assert!(
+            out.artifact(Target::Wasm.artifact_kind()).is_none(),
+            "a consumer+provider must decline, not emit a component that drops its --component-name"
+        );
+        assert!(
+            out.diagnostics.iter().any(|d| d
+                .message
+                .contains("both binds a peer interface AND publishes its own")),
+            "expected the consumer+provider decline; got: {:?}",
+            out.diagnostics
+        );
+    }
+
     /// Substring search over bytes (dependency-free) — used to assert a component embeds an import name.
     fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
