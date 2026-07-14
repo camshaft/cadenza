@@ -15984,14 +15984,20 @@ mod match_engine {
         // i32 heap-handle element beside an i64 element — must give each element DISJOINT scratch slots
         // (the SumExpect handle above `*high`, the per-element scratch base advanced), else the i32 handle
         // and the i64 value share a slot and wasm rejects the module. `(tuple (expect (List.at xs 0)) (+ i 1))`.
+        // `run_heap_value` returns `None` when the value-heap runtime store is absent (a fresh checkout /
+        // CI's `cargo test` job, which does NOT `xtask build` first) — skip the value assertion then, as the
+        // sibling heap-run tests do, rather than `.unwrap()`-panicking. The wasm-validity half of the guard
+        // still runs: `run_heap_value` compiles + validates the module before it needs the runtime.
+        let Some(v) = run_heap_value(
+            "(module m (def (go xs i) (. (tuple ((. Option expect) ((. List at) xs 0) \"x\") (+ i 1)) 0)) \
+               (def (main) (go (list 7 8) 0)) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping sum-expect-in-tuple heap run");
+            return;
+        };
         assert_eq!(
-            run_heap_value(
-                "(module m (def (go xs i) (. (tuple ((. Option expect) ((. List at) xs 0) \"x\") (+ i 1)) 0)) \
-                   (def (main) (go (list 7 8) 0)) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "7",
+            v, "7",
             "SumExpect beside an i64 tuple element gets a disjoint scratch slot"
         );
     }

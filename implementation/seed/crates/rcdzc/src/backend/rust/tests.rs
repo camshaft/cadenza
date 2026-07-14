@@ -1167,7 +1167,10 @@ fn rustc_roundtrip_generic_sum_with_a_type_param_nested_in_a_variant_payload() {
            (export f))",
     );
     // The nested param renders `Option<T0>`, not a declined `Ty::Var`.
-    assert!(rs.contains("W(Option<T0>)"), "nested param renders T0:\n{rs}");
+    assert!(
+        rs.contains("W(Option<T0>)"),
+        "nested param renders T0:\n{rs}"
+    );
     if let Some(out) = rustc_run(&rs, "f(7)") {
         assert_eq!(out, "7");
     }

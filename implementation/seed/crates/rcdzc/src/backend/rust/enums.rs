@@ -283,7 +283,10 @@ fn sentinel_payload_ty(
     // A MULTI-payload variant's `payload_ty_at_instantiation` returns the whole `Ty::Tuple` of all its
     // payloads; but `payload_rust_type` is called PER payload occurrence. Select this occurrence's element
     // by its position in the variant, so a multi-payload generic variant renders each field's own type.
-    let variant = decl.variants.iter().find(|v| v.payloads.contains(&pty_occ))?;
+    let variant = decl
+        .variants
+        .iter()
+        .find(|v| v.payloads.contains(&pty_occ))?;
     if variant.payloads.len() > 1 {
         let idx = variant.payloads.iter().position(|&p| p == pty_occ)?;
         if let Ty::Tuple(elems) = &payload {
