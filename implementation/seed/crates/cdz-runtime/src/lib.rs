@@ -17507,6 +17507,49 @@ mod tests {
         op_drop(neg_expected);
     }
 
+    /// `op_bigint_of_bytes` calls `bytes_flatten(buf)` before reading `raw` — because a Bytes leaf may be a
+    /// ROPE (concat/slice nodes), whose `raw` holds the node's HEADER bytes, NOT the content (the same
+    /// rope-read landmine fixed in `str-get`, `@9b24aeb2`). The compiler bakes a FLAT leaf, so that flatten
+    /// is defensive — and the sibling's round-trip test builds via `op_bytes_alloc` (flat), leaving the
+    /// flatten path UNEXERCISED. Pin it: build the SAME sign-magnitude bytes as a ROPE (concat across a
+    /// seam) and confirm `bigint-of-bytes` yields the identical BigInt as the flat leaf — proving the
+    /// flatten materializes the rope before decoding, not reading concat-header garbage as a magnitude.
+    #[test]
+    fn bigint_of_bytes_flattens_a_rope_input() {
+        reset();
+        let before = live_object_count();
+        // Sign-magnitude bytes of a beyond-i64 value (1e20). `[sign][LE magnitude]` — several bytes.
+        let mut buf = [0u8; 32];
+        let n = bigint::Big::i128_to_sign_magnitude_bytes_into(100_000_000_000_000_000_000i128, &mut buf)
+            .expect("fits 32");
+        let sm = &buf[..n];
+        assert!(sm.len() >= 4, "the value needs a multi-byte magnitude to span a rope seam");
+        // A leaf carrying a byte slice.
+        let leaf = |bytes: &[u8]| -> Handle {
+            let h = op_bytes_alloc(bytes.len() as u32);
+            for (i, &b) in bytes.iter().enumerate() {
+                op_bytes_set(h, i as u32, b as u32);
+            }
+            h
+        };
+        // FLAT reference.
+        let flat_big = op_bigint_of_bytes(leaf(sm)); // consumes
+        // ROPE of the same bytes: concat [.. mid] + [mid ..], the seam mid-magnitude.
+        let mid = sm.len() / 2;
+        let rope = op_bytes_concat(leaf(&sm[..mid]), leaf(&sm[mid..])); // consumes both leaves
+        let rope_big = op_bigint_of_bytes(rope); // flattens the rope, then decodes; consumes
+        assert_eq!(
+            op_bigint_cmp(flat_big, rope_big),
+            0,
+            "bigint-of-bytes of a ROPE equals the flat leaf — the bytes_flatten materialized it before decoding"
+        );
+        // And byte-identical leaves (the champ-key / canonical property).
+        assert!(champ_eq(flat_big, rope_big), "the two BigInt leaves are byte-identical (canonical)");
+        op_drop(flat_big);
+        op_drop(rope_big);
+        assert_eq!(live_object_count(), before, "no leak (both byte leaves consumed, both BigInts dropped)");
+    }
+
     #[test]
     fn set_iter_next_fbip_unique_zero_alloc() {
         reset();
