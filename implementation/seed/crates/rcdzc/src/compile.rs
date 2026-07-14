@@ -520,6 +520,60 @@ fn is_record_bearing(db: &Db, id: StructId) -> bool {
     }
 }
 
+/// Validate ONE declaration-site type-expression position (a variant payload, an effect-operation
+/// arg/result). `params` are the enclosing declaration's type parameters (empty for an effect op). Pushes
+/// a reject to `out` iff the position is not a valid type: a genuinely-unknown Capitalized type name
+/// (CDZ0101, `Nonesuch`) or a well-formed non-type (`5` → CDZ0203, `<what> requires a type`). A type
+/// PARAMETER (a name in `params`, or — since a free lowercase name IS a type variable by the language
+/// convention — any lowercase name) is valid and never faults; a param-parameterized application
+/// (`(Option a)`) fails `typeval_of` out-of-context but is valid, so ONLY a real unknown Capitalized name
+/// (not a param) survives the filter — every other artifact of out-of-context resolution (`cannot apply`,
+/// a nested-param `unbound name`) is dropped. `what` names the position for the non-type message.
+fn validate_type_position(
+    db: &mut Db,
+    pos: StructId,
+    params: &[String],
+    what: &str,
+    out: &mut Vec<Reject>,
+) {
+    // A bare position that is a type PARAMETER (declared, or a free lowercase variable) is valid — skip it.
+    if let Some(name) = db.ast.as_name(pos)
+        && (params.iter().any(|p| p == name) || name.starts_with(|c: char| c.is_ascii_lowercase()))
+    {
+        return;
+    }
+    if crate::eval::typeval_of(db, pos).is_some() {
+        return; // denotes a real type (self/mutual/forward refs + nested generics resolve)
+    }
+    let raw = type_errors(db, pos);
+    let raw_count = raw.len();
+    // KEEP only a genuinely-unknown type name: a CDZ0101 whose name is neither a declared param NOR a
+    // lowercase type-variable. Drop every other out-of-context artifact.
+    let kept: Vec<Reject> = raw
+        .into_iter()
+        .filter(|f| {
+            f.code == Some(Code::Unbound)
+                && unbacktick(&f.message).is_none_or(|n| {
+                    !params.iter().any(|p| p == n)
+                        && !n.starts_with(|c: char| c.is_ascii_lowercase())
+                })
+        })
+        .collect();
+    if !kept.is_empty() {
+        out.extend(kept);
+    } else if raw_count == 0 {
+        // No faults AND not a type — a well-formed NON-type (a literal, a value). (When faults WERE
+        // surfaced but were all param/variable artifacts, the position IS a valid parametric type.)
+        out.push(
+            Reject::coded(
+                Code::TypeMismatch,
+                format!("{what} requires a type, but found a non-type"),
+            )
+            .at(pos),
+        );
+    }
+}
+
 /// The first backtick-quoted substring of `msg` (`` unbound name `x` `` → `x`), or `None` if there is no
 /// `` `…` `` pair. Used to read the offending NAME out of a coded message when the `Reject` carries only
 /// the rendered string (the variant-payload check filters a type-parameter's unbound-name fault by name).
@@ -908,51 +962,36 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         }
     }
     for (payload, params) in &type_positions {
-        // A bare position that is one of the declaration's type PARAMETERS is valid (a type variable, not a
-        // global type) — skip it entirely (its `typeval_of` is None but it is not an error).
-        if let Some(name) = db.ast.as_name(*payload)
-            && params.iter().any(|p| p == name)
-        {
-            continue;
-        }
-        // The operand denotes a type → fine (self/mutual/forward refs + nested generics resolve). Otherwise
-        // surface its OWN faults (an unbound name → CDZ0101, recursing into a compound `(List Nonesuch)`);
-        // if none surfaced (a well-formed non-type), add the "requires a type" reject, mirroring the
-        // parameter/value-annotation check.
-        if crate::eval::typeval_of(db, *payload).is_none() {
-            let raw = type_errors(db, *payload);
-            let raw_count = raw.len();
-            // KEEP only a genuinely-unknown-name fault: a CDZ0101 whose name is NOT one of THIS
-            // declaration's type PARAMETERS. Everything else is an artifact of validating a parametric type
-            // OUT of its declaration scope — a nested param `a` (`(Tuple a a)`) resolves as `unbound name
-            // \`a\`` (filtered by the params list), and a param-parameterized APPLICATION (`(Option a)`)
-            // resolves as `cannot apply … Option` (filtered by dropping every non-CDZ0101 fault). A real
-            // unknown type — `Nonesuch`, whether bare, nested (`(List Nonesuch)`), or inside a record field
-            // (`(Record (v Nonesuch))`) — is `unbound name \`Nonesuch\`` and survives (not a param). The
-            // name is the backtick-quoted identifier in the message.
-            let kept: Vec<Reject> = raw
-                .into_iter()
-                .filter(|f| {
-                    f.code == Some(Code::Unbound)
-                        && unbacktick(&f.message).is_none_or(|n| !params.iter().any(|p| p == n))
-                })
-                .collect();
-            if !kept.is_empty() {
-                // A genuinely-unknown type name survived — surface it.
-                faults.extend(kept);
-            } else if raw_count == 0 {
-                // No faults at all AND not a type — a well-formed NON-type payload (a literal, a value).
-                // (When faults WERE surfaced but were all param artifacts, the payload IS a valid parametric
-                // type like `(Tuple a a)` / `(Option a)` — no fallback.)
-                faults.push(
-                    Reject::coded(
-                        Code::TypeMismatch,
-                        "a variant payload requires a type, but found a non-type",
-                    )
-                    .at(*payload),
-                );
+        validate_type_position(db, *payload, params, "a variant payload", &mut faults);
+    }
+    // Validate every EFFECT OPERATION's declared TYPE — `(op e (-> ArgT ResultT))`. An unknown type in an
+    // operation's arg/result (`(op e (-> Nonesuch Unit))`) was silently accepted, exactly as a variant
+    // payload was: the name resolved to nothing and the op's `(meta t)` arrow was corrupted to `Any`, so
+    // performing it reported a garbled "cannot apply a value of type (Record (apply Any) …)". The op TYPE
+    // is a `(-> A B …)` arrow — every element past the `->` head is a type position; validate each with the
+    // same record-aware walk. Effect ops carry no declared type params (an empty param set), so the walk's
+    // lowercase-name leniency (a bare lowercase name is a type-variable artifact, not a global type) covers
+    // a `(-> a a)`-style variable.
+    let mut op_type_positions: Vec<(StructId, Vec<String>)> = Vec::new();
+    for e in &db.effect_decls {
+        for op in &e.ops {
+            let Some(ty) = op.ty else { continue };
+            match db.ast.get(ty) {
+                // `(-> A B …)` — each element after the arrow head is a type position (record-split).
+                crate::ast::Struct::List(children)
+                    if children.first().and_then(|&h| db.ast.as_name(h)) == Some("->") =>
+                {
+                    for &pos in children.iter().skip(1) {
+                        push_payload_type_positions(db, pos, &[], &mut op_type_positions);
+                    }
+                }
+                // A non-arrow op type (a bare type / malformed) — validate whole.
+                _ => op_type_positions.push((ty, Vec::new())),
             }
         }
+    }
+    for (pos, params) in &op_type_positions {
+        validate_type_position(db, *pos, params, "an operation type", &mut faults);
     }
     // DUPLICATE PARAMETER NAME. A function's parameter list is a BINDER POSITION, so it must be LINEAR
     // exactly as a pattern is (core-semantics.md §Patterns Compose: "A pattern MUST bind each name at

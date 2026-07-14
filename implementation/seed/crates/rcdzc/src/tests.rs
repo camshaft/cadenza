@@ -19536,6 +19536,37 @@ mod match_engine {
     }
 
     #[test]
+    fn an_unknown_type_in_an_effect_operation_type_is_rejected() {
+        // The effect-declaration sibling of the variant-payload check: an unknown type in an operation's
+        // arg/result — `(op e (-> Nonesuch Unit))` / `(-> Unit Nonesuch)` / `(-> (List Zzz) Unit)` — was
+        // silently accepted (the name resolved to nothing and the op's `(meta t)` arrow was corrupted to
+        // `Any`, so performing it reported a garbled "cannot apply … (Record (apply Any) …)"). Now the
+        // declaration-site check rejects it CDZ0101, via the SAME record-aware `validate_type_position` the
+        // variant-payload check uses. Each `(-> A B …)` element past the arrow is a type position.
+        for src in [
+            "(module m (effect E (op e (-> Nonesuch Unit))) (def (main) 0) (export main))",
+            "(module m (effect E (op e (-> Unit Nonesuch))) (def (main) 0) (export main))",
+            "(module m (effect E (op e (-> (List Zzz) Unit))) (def (main) 0) (export main))",
+        ] {
+            let err = compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err("an unknown type in an effect op type must be rejected");
+            assert_eq!(err.code.as_deref(), Some("CDZ0101"), "got: {}", err.message);
+        }
+        // NO false positive: a known concrete arg/result, a generic `(Option Int64)`, and a bare lowercase
+        // type-variable `(-> a a)` must all compile.
+        for ok in [
+            "(module m (effect E (op e (-> Int64 Unit))) (def (main) 0) (export main))",
+            "(module m (effect E (op e (-> (Option Int64) Unit))) (def (main) 0) (export main))",
+            "(module m (effect E (op e (-> a a))) (def (main) 0) (export main))",
+        ] {
+            assert!(
+                compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
+                "a valid effect operation type must compile: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn a_false_variant_guard_shields_a_trapping_body() {
         // The variant-guard short-circuit (core-semantics.md §Boolean Connectives Short-Circuit applied to
         // a guarded arm): a guarded arm's BODY is evaluated only when the guard HOLDS. `(guard (Some x) (>
