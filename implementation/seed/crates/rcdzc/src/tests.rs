@@ -15920,13 +15920,20 @@ mod match_engine {
         // neither keeps just one. The fold now excludes `Eq` (ordering operators only). Pins the VALUE
         // (runtime, since the standalone export was the miscompiling path) — a constant fold masks it.
         use wasmtime::component::Val;
-        let f = |body: &str| compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-            "(module m (def (f (: x Int64)) {body}) (export f))"
-        )))).expect("compile");
+        let f = |body: &str| {
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
+                "(module m (def (f (: x Int64)) {body}) (export f))"
+            ))))
+            .expect("compile")
+        };
         // `(and (= x 5) (= x 6))` is always false — including at x=5 and x=6 (the miscompiled points).
         let andeq = f("(if (and (= x 5) (= x 6)) 1 0)");
         for x in [5, 6, 7, 0] {
-            assert_eq!(run_returns_with::<i64>(&andeq, "f", &[Val::S64(x)]), 0, "and-two-eq @{x} must be 0");
+            assert_eq!(
+                run_returns_with::<i64>(&andeq, "f", &[Val::S64(x)]),
+                0,
+                "and-two-eq @{x} must be 0"
+            );
         }
         // `(or (= x 5) (= x 6))` is the 2-point set {5,6}.
         let oreq = f("(if (or (= x 5) (= x 6)) 1 0)");
