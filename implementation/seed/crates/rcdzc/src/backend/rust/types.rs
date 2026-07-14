@@ -83,10 +83,51 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
 }
 
 /// The Rust identifier for a sum type / variant name — sanitized to a valid identifier the same way a
-/// def name is (`super::sanitize_ident`: a `-` and any non-ident char → `_`), so the emitted `enum`
-/// declaration, every `Name::Variant(...)` construction, and every `match` pattern agree on the spelling.
+/// def name is (`super::sanitize_ident`: a `-` and any non-ident char → `_`, a Rust keyword → `r#kw`), so
+/// the emitted `enum` declaration, every `Name::Variant(...)` construction, and every `match` pattern agree
+/// on the spelling.
+///
+/// ADDITIONALLY escapes a name that collides with a Rust PRIMITIVE TYPE (`i64`, `bool`, `str`, `usize`, …).
+/// Unlike a `fn`/binder name (a local `let i64 = …` harmlessly shadows the primitive in value position), an
+/// ENUM name appears in TYPE position — `enum i64 { A(i64), … }` makes the field `A(i64)` refer to the ENUM
+/// (infinitely sized, rustc E0072) instead of the primitive. A primitive name is not a Rust keyword, so
+/// `sanitize_ident` passes it through unescaped; prefix it here (`cdz_ty_i64`) so a user sum named after a
+/// primitive is namespace-isolated from the primitive it would otherwise shadow. The prefix is applied to
+/// the WHOLE sum/variant-name space uniformly (decl, construct, match all route through here), so they agree.
 pub fn sum_ident(name: &str) -> String {
-    super::sanitize_ident(name)
+    let s = super::sanitize_ident(name);
+    if is_rust_primitive_type(&s) {
+        format!("cdz_ty_{s}")
+    } else {
+        s
+    }
+}
+
+/// Whether `s` names a Rust PRIMITIVE / built-in scalar type — the set an emitted `enum <name>` would
+/// shadow in type position. Covers the integer/float widths, `bool`, `char`, `str`, the machine-size ints,
+/// and the unit-like `()` is not spellable as an ident so is excluded. NOT the keyword set (that is
+/// [`super::is_rust_keyword`], handled by `sanitize_ident`); these are contextual type names, valid as a
+/// binder but ruinous as an emitted type name.
+fn is_rust_primitive_type(s: &str) -> bool {
+    matches!(
+        s,
+        "i8" | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+            | "bool"
+            | "char"
+            | "str"
+    )
 }
 
 /// The Rust tuple type for a sequence of element types — `(T0, T1, …)`, each mapped recursively; a

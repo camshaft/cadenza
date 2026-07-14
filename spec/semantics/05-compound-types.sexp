@@ -4302,6 +4302,23 @@
   (call   main (: 5 Int64))
   (output (: 2 Int64)))
 
+(case "a sum type NAMED after a primitive scalar does not collide with the primitive"
+  (doc    "A user names a sum `i64` — colliding with a backend TARGET TYPE (Rust's primitive `i64`). The
+           enum name appears in TYPE position, so a backend that emitted `enum i64 { A(i64), B }` would make
+           the field `A(i64)` refer to the ENUM rather than the primitive — infinitely sized (Rust E0072).
+           `(f (A 5))` = 5. Pins that a sum name colliding with a scalar type name (`i64`, `bool`, `str`, …)
+           is escaped away from the target's primitive namespace — the type-name companion of the
+           `Box`-heap-pointer case above (a compiler-emitted target type name must not be shadowable by, nor
+           shadow, a user sum name).")
+  (input  (do
+            (type i64 (A Int64) (B))
+            (def (f (: x i64)) (match x ((i64.A n) n) ((i64.B) -1)))
+            (def (main (: k Int64)) (f (i64.A k)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
 (case "a unary constructor is a single-arity function"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (1st sentence): Some is a single-arity constructor. Applied to an
