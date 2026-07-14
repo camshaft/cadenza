@@ -263,6 +263,13 @@ pub struct ModuleDecl {
     /// ALWAYS `Some` once the `Db` exists. The module NAME resolves to a `Ref` to it, reached by the
     /// ordinary scope→lookup order like a `def`/`type` — no separate name map, nothing privileged by name.
     pub synth: Option<StructId>,
+    /// The TYPE-EXPRESSION occurrence of a `(pragma default-integer <T>)` member, if the module declares
+    /// one — the type an otherwise-unconstrained bare integer literal WRITTEN in this module defaults to,
+    /// instead of `Int64` (`numeric-model.md` §A Module May Declare Its Default Integer Literal Type).
+    /// `None` for a module with no such pragma. Kept as the un-reduced occurrence (registration runs
+    /// before the evaluator exists); the load-time `default_int_literals` map records which literals it
+    /// applies to (a per-node map, robust to the β-copy reparenting a parent-walk cannot follow).
+    pub default_int: Option<StructId>,
 }
 
 /// The bound on β-reduction nesting depth — a backstop. A recursive function is caught STATICALLY
@@ -385,6 +392,17 @@ pub struct Db {
     /// "which sums erase" decision is materialized; every type reader consults it via `decode_ty`, so the
     /// `Sum`↔`Nominal` choice is uniform across the compiler.
     pub newtype_inner: crate::fxhash::FxHashMap<StructId, crate::ty::Ty>,
+
+    /// Each bare integer-LITERAL node WRITTEN inside a `(module … (pragma default-integer <T>) …)` → the
+    /// pragma's `<T>` type-expression occurrence. A literal in this map defaults to `<T>` instead of
+    /// `Int64` (`numeric-model.md` §A Module May Declare Its Default Integer Literal Type). Built ONCE at
+    /// load by an ARENA walk of each pragma-module's member subtrees (`collect_default_int_literals`) —
+    /// keyed by the ORIGINAL source-literal node, so it is robust to the β-copy reparenting a parent-walk
+    /// cannot follow (an inlined body's literal keeps its original id, which stays in this map). DEFINITION-
+    /// SITE scoped: only literals written in the module carrying the pragma, never a caller's. `infer::
+    /// compute` consults it to give the literal its starting type; an explicit annotation still wins (the
+    /// `Annot` node fixes its own type) and no-promotion still holds (the default is a type, not a coercion).
+    pub default_int_literals: crate::fxhash::FxHashMap<StructId, StructId>,
 
     /// The declaration occurrences of sums that are C-style ENUMS — MORE than one variant, EVERY variant
     /// nullary (no payloads). Such a value carries no data beyond WHICH variant it is, so it needs no heap
@@ -1213,6 +1231,16 @@ impl Db {
         // Scan the program's `(Unit.define …)` forms BEFORE `ast` moves into the db (a raw-occurrence
         // store the units layer reduces on demand).
         let unit_defines = scan_unit_defines(&ast);
+        // Map each bare integer LITERAL written inside a `(pragma default-integer <T>)` module to its
+        // default type-expr — an ARENA walk of each pragma-module's member subtrees (before `ast` moves,
+        // before any β-copy), so a literal's default survives inlining that reparents it (the parent-walk
+        // a naive lookup would use is unusable post-copy). See `default_int_literals`.
+        let mut default_int_literals = crate::fxhash::FxHashMap::default();
+        for m in &modules {
+            if let Some(ty_expr) = m.default_int {
+                collect_default_int_literals(&ast, m.occ, ty_expr, &mut default_int_literals);
+            }
+        }
         let mut db = Db {
             ast,
             defs,
@@ -1221,6 +1249,7 @@ impl Db {
             effect_decls,
             modules,
             newtype_inner: crate::fxhash::FxHashMap::default(),
+            default_int_literals,
             enum_disc: crate::fxhash::FxHashSet::default(),
             parent,
             child_ix,
@@ -2947,13 +2976,31 @@ fn collect_module_decl(
         return;
     };
     let members = mod_tail.get(1..).unwrap_or(&[]).to_vec();
+    // A `(pragma default-integer <T>)` member is MODELED — its VALIDATION is built (CDZ0601/0602/0303,
+    // `compile::collect_faults`) and its EFFECT (a bare literal in this module defaults to `<T>`) is
+    // realized via `ModuleDecl::default_int` + the load-time literal map, so it is not an unmodeled
+    // obligation blocking registration. A `(pragma …)` with any OTHER key is still unmodeled (blocks) —
+    // the modeled set is exactly the keys whose meaning the compiler realizes.
+    let is_default_int_pragma = |member: StructId| {
+        ast.as_form(member, "pragma")
+            .is_some_and(|t| t.first().and_then(|&k| ast.as_name(k)) == Some("default-integer"))
+    };
     let modeled = |member: StructId| {
         matches!(
             ast.head_name(member),
             Some("def" | "effect" | "op" | "type" | "module" | "doc")
-        )
+        ) || is_default_int_pragma(member)
     };
     let all_modeled = members.iter().all(|&m| modeled(m));
+    // The type-expression of a well-formed `(pragma default-integer <T>)` member (the 2nd operand after
+    // the key). A malformed pragma (wrong arity) is caught by the CDZ0602 validation; here take the type
+    // occ when present.
+    let default_int = members.iter().find_map(|&m| {
+        let t = ast.as_form(m, "pragma")?;
+        (t.first().and_then(|&k| ast.as_name(k)) == Some("default-integer"))
+            .then(|| t.get(1).copied())
+            .flatten()
+    });
     if all_modeled
         && let Some(&name) = mod_tail.first()
         && let Some(name_str) = ast.as_name(name)
@@ -2962,6 +3009,7 @@ fn collect_module_decl(
             name: name_str.to_string(),
             occ: form,
             synth: None,
+            default_int,
         });
     }
     for &member in &members {
@@ -2973,6 +3021,57 @@ fn collect_module_decl(
         {
             // A `(def …)` member whose body may itself carry a `(do …)` with declarations.
             collect_nested_decls(ast, def_body, top, types, effects, modules);
+        }
+    }
+}
+
+/// Record every bare integer-LITERAL node in the DEF-BODY subtrees of a `(pragma default-integer <T>)`
+/// module `mod_form` → the pragma's `<T>` occurrence, into `out`. DEFINITION-SITE scoped: it descends
+/// only the module's OWN `(def …)` member bodies (a literal in a NESTED `(module inner …)` member is
+/// governed by `inner`'s OWN pragma, not this one — so nested modules are NOT descended here; each is
+/// walked when `collect_default_int_literals` is called for it). Keyed by the ORIGINAL literal node, so a
+/// later β-copy that reparents the literal (moving it out of the module structurally) still finds its
+/// default via this map — the parent-walk a naive lookup would use is unusable post-copy.
+fn collect_default_int_literals(
+    ast: &Arenas,
+    mod_form: StructId,
+    ty_expr: StructId,
+    out: &mut crate::fxhash::FxHashMap<StructId, StructId>,
+) {
+    let Some(mod_tail) = ast.as_form(mod_form, "module") else {
+        return;
+    };
+    for &member in mod_tail.get(1..).unwrap_or(&[]) {
+        // Only a `(def …)` member's BODY carries value literals to default; a nested `(module …)` has its
+        // own scope (skip), and `pragma`/`type`/`effect`/`doc` members carry no value literals.
+        if let Some(def_tail) = ast.as_form(member, "def")
+            && let Some(&def_body) = def_tail.get(1)
+        {
+            mark_int_literals(ast, def_body, ty_expr, out);
+        }
+    }
+}
+
+/// Mark every integer-literal node reachable from `node` (recursively) with `ty_expr` in `out`, WITHOUT
+/// descending into a nested `(module …)` (its own scope). A literal already recorded is left as-is (the
+/// nearest enclosing pragma wins — the outer walk visits an inner module separately with its own type).
+fn mark_int_literals(
+    ast: &Arenas,
+    node: StructId,
+    ty_expr: StructId,
+    out: &mut crate::fxhash::FxHashMap<StructId, StructId>,
+) {
+    if ast.as_int(node).is_some() {
+        out.entry(node).or_insert(ty_expr);
+        return;
+    }
+    // A nested module carries its OWN default (or none) — do not leak this module's default into it.
+    if ast.as_form(node, "module").is_some() {
+        return;
+    }
+    if let Struct::List(children) = ast.get(node) {
+        for &c in children {
+            mark_int_literals(ast, c, ty_expr, out);
         }
     }
 }

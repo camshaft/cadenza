@@ -115,6 +115,7 @@ pass	a Rational-payload sum value escapes across the boundary in its canonical f
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
+pass	a SUM is threaded as a handler's folded state across operations
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
@@ -331,6 +332,7 @@ pass	a deeply nested expression is diagnosed by the parser, never crashes it
 pass	a deeply nested literal in a tuple let-binder is refutable and rejected
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
 pass	a def parameter may be a list rest pattern binding the head
+pass	a default-integer pragma makes a bare literal take the declared integer type
 pass	a default-integer pragma naming a non-integer type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
 pass	a delegated capability is not itself an export field
@@ -1176,6 +1178,7 @@ pass	an effect discharged by a handler does not escape to the manifest
 pass	an effect operation declared with no name is rejected
 pass	an effect operation reached with neither a handler nor a delegation is rejected
 pass	an effect operation returning a SUM is resumed with a sum value and matched
+pass	an effect operation taking a SUM parameter matches it in the handler arm
 pass	an effect performed in a callee is discharged by the caller's handler
 pass	an effect resolves past an intermediate frame that installs no handler
 pass	an effect resolves through a deep chain of intermediate functions
@@ -1205,6 +1208,7 @@ pass	an escaping closure whose body binds a multi-variable let
 pass	an escaping closure whose body is a match hits the literal arm
 pass	an escaping closure whose body is a match hits the wildcard arm
 pass	an expect of a list index result is an integer usable in arithmetic
+pass	an explicit annotation overrides the default-integer pragma
 pass	an explicit conversion makes the operation well-typed
 pass	an explicit float-width conversion makes a mixed-width operation well-typed
 pass	an export and a like-named metadata key do not collide
@@ -1877,13 +1881,11 @@ todo	Type is a first-class value
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
-todo	a default-integer pragma makes a bare literal take the declared integer type
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a nominal record compared to a plain record of the same shape is a type error
 todo	a plain record compared to a nominal record of the same shape is a type error
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
-todo	an explicit annotation overrides the default-integer pragma
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
 todo	comparing same-shape nominal types is a type error

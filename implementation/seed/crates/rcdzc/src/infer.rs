@@ -99,8 +99,15 @@ pub fn type_is_nominal(db: &mut Db, id: StructId) -> bool {
 /// inference (or, failing that, the backend) grounds later.
 fn compute(db: &mut Db, id: StructId) -> Ty {
     match resolved_of(db, id) {
-        // A bare integer literal is polymorphic in its width until something fixes it.
-        Resolved::Int(_) => Ty::int(),
+        // A bare integer literal is polymorphic in its width until something fixes it — UNLESS the module
+        // it is WRITTEN in declares `(pragma default-integer <T>)`, which fixes the type an otherwise-
+        // unconstrained literal STARTS as (`numeric-model.md` §A Module May Declare Its Default Integer
+        // Literal Type). `default_int_literals` (a load-time per-node map) records which literals it
+        // applies to — keyed by the ORIGINAL node, so it survives the β-copy that reparents an inlined
+        // literal. The default is the literal's starting type in unification, NOT a coercion: a mix with
+        // another numeric type still rejects CDZ0301 (no silent promotion), and an explicit annotation
+        // still wins (the `Annot` node fixes its own type regardless of the inner literal's).
+        Resolved::Int(_) => module_default_int_ty(db, id).unwrap_or_else(Ty::int),
         Resolved::Bool(_) => Ty::Bool,
         Resolved::Str(_) => Ty::String,
         Resolved::Bytes(_) => Ty::Bytes,
@@ -1470,6 +1477,18 @@ fn shape_fn_typed_params(
             shape_fn_typed_params(db, c, env, subst, fresh);
         }
     }
+}
+
+/// The declared default-integer type for the bare literal at `id`, or `None` if it is not written in a
+/// `(pragma default-integer <T>)` module. Reads the load-time `default_int_literals` map (keyed by the
+/// literal's ORIGINAL node, so it survives β-copy reparenting) and reduces the recorded `<T>` occurrence
+/// to a `Ty` via the ordinary evaluator (`typeval_of`, the same path an annotation's type takes). Only an
+/// INTEGER type is honored (a non-integer `<T>` is separately the CDZ0303 domain reject); anything that
+/// does not reduce to a concrete integer type is `None` (the literal keeps the deferred `Int64` default).
+fn module_default_int_ty(db: &mut Db, id: StructId) -> Option<Ty> {
+    let ty_expr = *db.default_int_literals.get(&id)?;
+    let ty = crate::eval::typeval_of(db, ty_expr)?;
+    matches!(ty, Ty::Int(_) | Ty::BigInt).then_some(ty)
 }
 
 /// Ground a solved parameter type: a still-unsolved variable that a numeric use constrained becomes the

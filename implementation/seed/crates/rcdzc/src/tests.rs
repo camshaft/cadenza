@@ -14255,20 +14255,57 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0303")
         );
+        // NOTE the default-integer EFFECT (a bare literal takes the module's declared default) is pinned
+        // by `a_default_integer_pragma_makes_a_bare_literal_take_the_declared_type` below.
         // `BigInt` names an INTEGER type the numeric model admits as a declarable default
-        // (`options/numeric-model/explicit-checked.md` §"Any integer type is declarable"), and B0 makes
-        // it a modeled `Ty::BigInt` — so `(pragma default-integer BigInt)` is ACCEPTED (the domain
-        // predicate takes `Ty::Int` OR `Ty::BigInt`), NOT a false CDZ0303. The program's reported error is
-        // then the downstream unbound `m` (the nested module's export is not in scope at `((. m x) unit)`)
-        // — CDZ0101, confirming the pragma itself raised nothing. (Before B0, `BigInt` was unbound and the
-        // PRAGMA's own resolution gave CDZ0101; now the pragma succeeds and the SAME code comes from the
-        // downstream reference — the assertion value is unchanged, its cause corrected.)
+        // (`options/numeric-model/explicit-checked.md` §"Any integer type is declarable"), a modeled
+        // `Ty::BigInt` — so `(pragma default-integer BigInt)` is ACCEPTED (the domain predicate takes
+        // `Ty::Int` OR `Ty::BigInt`), NOT a false CDZ0303. Now that the default-integer EFFECT is realized,
+        // a `(pragma default-integer …)` member no longer BLOCKS module registration (it is a modeled
+        // member, not an unmodeled obligation): `m` registers, `x` returns 5 (as BigInt via the module
+        // default), the projection `(. m x)` resolves, and the whole program COMPILES CLEAN — `None`.
+        // (Before this increment the pragma member blocked registration and the downstream `m` was unbound
+        // → CDZ0101; the pragma itself was always well-formed, and now the module it declares works.)
         assert_eq!(
             reject_code(
                 "(module top (def (main) (do (module m (pragma default-integer BigInt) (def (x) 5)) ((. m x) unit))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0101")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_default_integer_pragma_makes_a_bare_literal_take_the_declared_type() {
+        // `numeric-model.md` §A Module May Declare Its Default Integer Literal Type: a bare, otherwise-
+        // unconstrained integer literal WRITTEN in a `(pragma default-integer <T>)` module takes `<T>`
+        // instead of Int64. Realized by the load-time `default_int_literals` map (keyed by the ORIGINAL
+        // literal node, so it survives the β-copy that reparents an inlined body).
+        //
+        // (1) THE EFFECT: `double`'s bare `2` is a BigInt, so `(* x 2)` with `x : BigInt` is a homogeneous
+        //     BigInt op and `(double (BigInt.of 21))` = 42 : BigInt — clean, no CDZ0301 mix.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module crypto (pragma default-integer BigInt) \
+                   (def (double x) (* x 2))) ((. crypto double) ((. BigInt of) 21)))) (export main))"
+            ),
+            None,
+            "a bare literal in a default-integer=BigInt module is a BigInt, so (* x 2) is homogeneous"
+        );
+        // (2) AN EXPLICIT ANNOTATION STILL WINS: `(: 5 Int64)` in the same module is Int64, not BigInt —
+        //     the default only decides the otherwise-unconstrained case (the `Annot` node fixes its type).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-integer BigInt) \
+                   (def (pinned) (: 5 Int64))) ((. m pinned) unit))) (export main))"
+            ),
+            None,
+            "an explicit annotation overrides the module default without a mismatch"
+        );
+        // (3) A literal OUTSIDE any pragma module is unaffected — still the Int64 default (no map entry).
+        assert_eq!(
+            reject_code("(module m (def (main) (+ 2 3)) (export main))"),
+            None,
+            "a literal outside a default-integer module keeps the ordinary Int64 default"
         );
     }
 
