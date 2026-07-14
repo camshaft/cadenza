@@ -1788,7 +1788,7 @@ pub fn assemble_runtime_resource(
     dtor_core: &[u8],
     imports: &[&RtOp],
     import_name: &str,
-    make_param_bytes: &[u8],
+    make_params: MakeParamBoundary<'_>,
 ) -> Vec<u8> {
     let k = imports.len();
     let mut out = Vec::new();
@@ -1917,49 +1917,73 @@ pub fn assemble_runtime_resource(
         section(sec::ALIAS, &wasm_vec(4, &items))
     };
     out.extend_from_slice(&boundary_aliases);
-    // sec 7: `own<t>` (type 2) then the `make` functype `(make-params…) -> own<t>` (type 3). The resource
-    // is component type 1 here (the import-instance-type is type 0), so `own` references type 1. A NULLARY
-    // export gives `make() -> own<t>` (empty `make_param_bytes`, byte-identical to the old form); a
-    // PARAMETERIZED export forwards its scalar boundary params so the host computes the heap value from
-    // its arguments (the value analogue of the closure resource's `make(k)`).
+    // sec 7: [a `tuple<…>` make-param type IF the param is a compound (type 2, shifting the rest +1)] then
+    // `own<t>` and the `make` functype `(make-params…) -> own<t>`. The resource is component type 1 (the
+    // import-instance-type is type 0), so `own` references type 1. A NULLARY export gives `make() ->
+    // own<t>` (empty params, byte-identical to the old form); a SCALAR-param export forwards inline scalar
+    // params; a COMPOUND-param export takes the minted native `tuple<…>` (the ABI flattens it into the
+    // scalar core leaves the core `make` rebuilds the cell from). `shift` = 1 when a tuple type is minted.
+    let shift = if make_params.mints_tuple() { 1 } else { 0 };
+    let own_ty = 2 + shift; // own<t> sits after the optional tuple type
+    let make_ft = 3 + shift;
     let make_types = {
-        let mut items = own_item(1);
-        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(2)));
-        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        let mut items = Vec::new();
+        let make_param_bytes: Vec<u8> = match make_params {
+            MakeParamBoundary::Scalars(b) => b.to_vec(),
+            MakeParamBoundary::Tuple(fields) => {
+                // Mint `tuple<fields…>` at type 2; the `make` functype's single param references it.
+                items.extend_from_slice(&tuple_defined_type(fields));
+                owned_valtype(2) // the tuple type index, as the sole param's valtype
+            }
+        };
+        items.extend_from_slice(&own_item(1));
+        // A tuple param is ONE param whose valtype is the tuple type index; scalars are inline bytes.
+        if make_params.mints_tuple() {
+            items.extend_from_slice(&single_param_result_functype(
+                &make_param_bytes,
+                &owned_valtype(own_ty),
+            ));
+        } else {
+            items.extend_from_slice(&params_result_functype(
+                &make_param_bytes,
+                &owned_valtype(own_ty),
+            ));
+        }
+        section(sec::COMPONENT_TYPE, &wasm_vec(2 + shift as usize, &items))
     };
     out.extend_from_slice(&make_types);
-    // sec 8: lift `make` (core func k+3) against functype type 3 → component func k.
+    // sec 8: lift `make` (core func k+3) against the make functype → component func k.
     out.extend_from_slice(&section(
         sec::CANON,
-        &wasm_vec(1, &canon_lift_item((k + 3) as u32, 3)),
+        &wasm_vec(1, &canon_lift_item((k + 3) as u32, make_ft)),
     ));
-    // sec 7: `borrow<t>` (type 4), the shared `list u8` type (type 5), then the `encode` functype
-    // `(self: borrow<t>) -> list<u8>` (type 6). `encode` BORROWS self — the host keeps ownership and
-    // drops the handle afterward (firing the dtor, which reclaims the heap rep). The core `t-encode`
-    // receives the borrow's REP DIRECTLY as its param (wasmtime's `lift_borrow` passes the rep, not a
-    // table index), so it walks the heap without `resource.rep` and does NOT drop — the value survives
-    // the call, making the method repeatable ([[rcdzc-r1-resource-encode-linking-findings]], the
-    // 2026-07-13 borrow correction; proven by `a_borrow_self_encode_walks_and_crosses`).
+    // sec 7: `borrow<t>`, the shared `list u8` type, then the `encode` functype `(self: borrow<t>) ->
+    // list<u8>` — each shifted +`shift` by the optional tuple type. `encode` BORROWS self (the host keeps
+    // ownership; the dtor reclaims on drop); the core `t-encode` gets the rep directly (no `resource.rep`),
+    // so the method is repeatable ([[rcdzc-r1-resource-encode-linking-findings]]).
+    let borrow_ty = 4 + shift;
+    let list_ty = 5 + shift;
+    let encode_ft = 6 + shift;
     let encode_types = {
         let mut items = borrow_item(1); // borrow<resource> — resource is component type 1
         items.extend_from_slice(&list_u8_defined_type());
-        items.extend_from_slice(&self_borrow_to_list_functype(4, 5));
+        items.extend_from_slice(&self_borrow_to_list_functype(borrow_ty, list_ty));
         section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
     };
     out.extend_from_slice(&encode_types);
-    // sec 8: lift `encode` (core func k+4) against functype type 6, carrying Memory 0 + Realloc (core
+    // sec 8: lift `encode` (core func k+4) against the encode functype, carrying Memory 0 + Realloc (core
     // func k+5) → component func k+1.
     out.extend_from_slice(&section(
         sec::CANON,
         &wasm_vec(
             1,
-            &canon_lift_list_item((k + 4) as u32, 0, (k + 5) as u32, 6),
+            &canon_lift_list_item((k + 4) as u32, 0, (k + 5) as u32, encode_ft),
         ),
     ));
     // sec 4: the nested re-export component — the BORROW variant (re-types `encode` against
     // `borrow<t>`), matching the borrow lift above; its `make` carries the same forwarded params.
     out.extend_from_slice(&component_section(&resource_inner_component_borrow(
-        make_param_bytes,
+        make_params,
     )));
     // sec 5: instantiate the inner component (component 0) with the resource (comp type 1) + the two
     // lifted funcs (comp funcs k, k+1) → component instance 0.
@@ -6583,72 +6607,118 @@ fn component_instantiate_roundtrip_item(
 /// against the ComponentBuilder borrow oracle) as scaffolding for the follow-up; the live path still
 /// uses `own` ([[rcdzc-r1-resource-encode-linking-findings]]).
 #[allow(dead_code)]
-fn resource_inner_component_borrow(make_param_bytes: &[u8]) -> Vec<u8> {
+fn resource_inner_component_borrow(make_params: MakeParamBoundary<'_>) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
+    // A COMPOUND make param mints a `tuple<…>` type just before EACH `make` functype (the imported one and
+    // the re-export ascription), so every type index after each mint shifts by one. `s` = per-mint shift;
+    // the running type cursor accounts for the two mints. A scalar/nullary param mints nothing (`s`=0),
+    // byte-identical to before. Helper emits the `make` functype items for a given `own<r>` valtype,
+    // minting the tuple type FIRST when compound and returning the item bytes.
+    let s: u32 = if make_params.mints_tuple() { 1 } else { 0 };
+    // The `make` functype items: `own<resource_ty>` (the type index of the resource the `own` wraps) then
+    // the make functype at type `own_type_idx+1` referencing that own. When compound, a `tuple<…>` is
+    // minted FIRST (at `tuple_type_idx`) and the functype takes it as its one param. Scalar/nullary emits
+    // own+functype (2 items); compound emits tuple+own+functype (3 items). `resource_ty` is the RESOURCE
+    // type index (0 on the import side, the re-exported `E` on the export side) — NOT `own_type_idx-1`.
+    let make_functype_items = |resource_ty: u32,
+                               own_type_idx: u32,
+                               tuple_type_idx: u32|
+     -> Vec<u8> {
+        let mut items = Vec::new();
+        match make_params {
+            MakeParamBoundary::Scalars(b) => {
+                items.extend_from_slice(&own_item(resource_ty));
+                items.extend_from_slice(&params_result_functype(b, &owned_valtype(own_type_idx)));
+            }
+            MakeParamBoundary::Tuple(fields) => {
+                items.extend_from_slice(&tuple_defined_type(fields));
+                items.extend_from_slice(&own_item(resource_ty));
+                items.extend_from_slice(&single_param_result_functype(
+                    &owned_valtype(tuple_type_idx),
+                    &owned_valtype(own_type_idx),
+                ));
+            }
+        }
+        items
+    };
     // sec 10: import the abstract resource `import-type-t` (Type, SubResource bound) → type 0.
     out.extend_from_slice(&section(
         sec::COMPONENT_IMPORT,
         &wasm_vec(1, &import_subresource_item("import-type-t")),
     ));
-    // sec 7: `own<0>` (type 1) then the imported `make` functype `(make-params…) -> own<0>` (type 2) —
-    // the SAME param signature the outer component lifts, so the re-export ascription type-checks.
+    // sec 7: [tuple type (1) if compound] `own<0>` then the imported `make` functype `(params) -> own<0>`.
+    // With a tuple: tuple=1, own<0>=2, make-ft=3. Without: own<0>=1, make-ft=2.
+    let own0 = 1 + s;
+    let make_import_ft = 2 + s;
     let make_import_types = {
-        let mut items = own_item(0);
-        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(1)));
-        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        let items = make_functype_items(0, own0, 1); // resource = imported type 0; tuple (if any) at type 1
+        section(sec::COMPONENT_TYPE, &wasm_vec((2 + s) as usize, &items))
     };
     out.extend_from_slice(&make_import_types);
-    // sec 10: import `import-func-make` as a func of type 2 → func 0.
+    // sec 10: import `import-func-make` as a func of the make functype → func 0.
     out.extend_from_slice(&section(
         sec::COMPONENT_IMPORT,
-        &wasm_vec(1, &import_func_item("import-func-make", 2)),
+        &wasm_vec(1, &import_func_item("import-func-make", make_import_ft)),
     ));
-    // sec 7: `borrow<0>` (type 3), `list u8` (type 4), then the imported `encode` functype
-    // `(self: borrow<0>) -> list<u8>` (type 5).
+    // sec 7: `borrow<0>`, `list u8`, then the imported `encode` functype — shifted +s by the tuple type.
+    let borrow0 = make_import_ft + 1; // 3 (+s)
+    let list0 = borrow0 + 1; // 4 (+s)
+    let enc_import_ft = list0 + 1; // 5 (+s)
     let encode_import_types = {
         let mut items = borrow_item(0);
         items.extend_from_slice(&list_u8_defined_type());
-        items.extend_from_slice(&self_borrow_to_list_functype(3, 4));
+        items.extend_from_slice(&self_borrow_to_list_functype(borrow0, list0));
         section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
     };
     out.extend_from_slice(&encode_import_types);
-    // sec 10: import `import-func-encode` as a func of type 5 → func 1.
+    // sec 10: import `import-func-encode` as a func of the encode functype → func 1.
     out.extend_from_slice(&section(
         sec::COMPONENT_IMPORT,
-        &wasm_vec(1, &import_func_item("import-func-encode", 5)),
+        &wasm_vec(1, &import_func_item("import-func-encode", enc_import_ft)),
     ));
-    // sec 11: RE-EXPORT the imported resource type 0 DIRECTLY under the name `t` → exported type 6.
+    // sec 11: RE-EXPORT the imported resource type 0 DIRECTLY under `t` → exported type E.
+    let exp_rty = enc_import_ft + 1; // 6 (+s)
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
         &wasm_vec(1, &export_type_direct_item(RESOURCE_TYPE_NAME, 0)),
     ));
-    // sec 7: `own<6>` (type 7) then the `make` functype re-typed against the exported resource (type 8),
-    // carrying the same forwarded params as the import side.
+    // sec 7: [tuple type if compound] `own<E>` then the `make` functype re-typed against the exported
+    // resource — a SECOND tuple mint, shifting the export-side indices by another `s`.
+    let exp_tuple = exp_rty + 1; // the export-side tuple type (only present when compound)
+    let own_e = exp_rty + 1 + s; // own<E>
+    let make_export_ft = exp_rty + 2 + s;
     let make_export_types = {
-        let mut items = own_item(6);
-        items.extend_from_slice(&params_result_functype(make_param_bytes, &owned_valtype(7)));
-        section(sec::COMPONENT_TYPE, &wasm_vec(2, &items))
+        let items = make_functype_items(exp_rty, own_e, exp_tuple);
+        section(sec::COMPONENT_TYPE, &wasm_vec((2 + s) as usize, &items))
     };
     out.extend_from_slice(&make_export_types);
-    // sec 11: export `make` (func 0) ascribed to the exported functype 8.
+    // sec 11: export `make` (func 0) ascribed to the exported make functype.
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
-        &wasm_vec(1, &export_func_ascribed_item(MAKE_BOUNDARY_NAME, 0, 8)),
+        &wasm_vec(
+            1,
+            &export_func_ascribed_item(MAKE_BOUNDARY_NAME, 0, make_export_ft),
+        ),
     ));
-    // sec 7: `borrow<6>` (type 9), `list u8` (type 10), then the `encode` functype re-typed against the
-    // exported resource (type 11).
+    // sec 7: `borrow<E>`, `list u8`, then the `encode` functype re-typed against the exported resource.
+    let borrow_e = make_export_ft + 1;
+    let list_e = borrow_e + 1;
+    let enc_export_ft = list_e + 1;
     let encode_export_types = {
-        let mut items = borrow_item(6);
+        let mut items = borrow_item(exp_rty);
         items.extend_from_slice(&list_u8_defined_type());
-        items.extend_from_slice(&self_borrow_to_list_functype(9, 10));
+        items.extend_from_slice(&self_borrow_to_list_functype(borrow_e, list_e));
         section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
     };
     out.extend_from_slice(&encode_export_types);
-    // sec 11: export `encode` (func 1) ascribed to the exported functype 11.
+    // sec 11: export `encode` (func 1) ascribed to the exported encode functype.
     out.extend_from_slice(&section(
         sec::COMPONENT_EXPORT,
-        &wasm_vec(1, &export_func_ascribed_item(ENCODE_BOUNDARY_NAME, 1, 11)),
+        &wasm_vec(
+            1,
+            &export_func_ascribed_item(ENCODE_BOUNDARY_NAME, 1, enc_export_ft),
+        ),
     ));
     out
 }
@@ -6893,6 +6963,22 @@ fn params_result_functype(param_bytes: &[u8], result_valtype: &[u8]) -> Vec<u8> 
         params.push(vt);
     }
     item.extend_from_slice(&wasm_vec(param_bytes.len(), &params));
+    item.push(0x00); // one result
+    item.extend_from_slice(result_valtype);
+    item
+}
+
+/// A component functype with EXACTLY ONE param whose valtype is a MULTI-BYTE valtype (a defined-type
+/// index, e.g. a `tuple<…>` — `owned_valtype`/a type-index uleb), not a single primitive byte. The
+/// `tuple<…>`-param `make` form: `(p0: <tuple-type-idx>) -> <result>`. Distinct from
+/// [`params_result_functype`] (which pushes one PRIMITIVE byte per param).
+fn single_param_result_functype(param_valtype: &[u8], result_valtype: &[u8]) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    let mut params = Vec::new();
+    params.extend_from_slice(&uleb_bytes("p0".len() as u64));
+    params.extend_from_slice(b"p0");
+    params.extend_from_slice(param_valtype);
+    item.extend_from_slice(&wasm_vec(1, &params));
     item.push(0x00); // one result
     item.extend_from_slice(result_valtype);
     item
@@ -7457,6 +7543,26 @@ fn tuple_defined_type(field_bytes: &[u8]) -> Vec<u8> {
     let mut item = vec![0x6f];
     item.extend_from_slice(&wasm_vec(field_bytes.len(), field_bytes));
     item
+}
+
+/// How a value-resource `make` presents its forwarded parameters at the component boundary: inline
+/// SCALARS (one primitive byte per param — the common case, byte-identical to the pre-compound-param
+/// envelope) or a single native `tuple<…>` (a fixed-shape scalar compound param, whose per-field bytes
+/// these are). For the tuple case the envelope mints a `tuple<…>` DEFINED type just before `make`'s
+/// functype (so `own<t>` and every later type index shift by one) and `make` takes that type; the
+/// canonical ABI flattens it into the scalar core leaves the core `make` rebuilds the cell from.
+#[derive(Clone, Copy)]
+pub enum MakeParamBoundary<'a> {
+    Scalars(&'a [u8]),
+    Tuple(&'a [u8]),
+}
+
+impl MakeParamBoundary<'_> {
+    /// True iff a native `tuple<…>` defined type must be minted before `make`'s functype (shifting the
+    /// subsequent component type indices by one).
+    fn mints_tuple(&self) -> bool {
+        matches!(self, MakeParamBoundary::Tuple(_))
+    }
 }
 
 /// The boundary component-TYPE shape of a fixed-shape compound closure argument, recursively: each field is

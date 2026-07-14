@@ -6268,3 +6268,26 @@
   (input  (do (def (main (: n Int64)) (tuple n (+ n 1))) (export main)))
   (call   main (: 5 Int64)) (output (: (tuple 5 6) (Tuple Int64 Int64)))
   (call   main (: 40 Int64)) (output (: (tuple 40 41) (Tuple Int64 Int64))))
+
+(case "a tuple-parameter export returns a list computed from its fields"
+  (doc    "An export whose PARAMETER is a fixed-shape tuple crosses the boundary: the param arrives as a
+           native `tuple<…>` the canonical ABI flattens into scalar leaves, which `make` rebuilds into the
+           cell before running the body — so `main((tuple 7 9)) = (list 7 9)`. Closes the compound-PARAM
+           side of the heap-return boundary (a scalar param already worked); the value is a runtime List.")
+  (input  (do (def (main (: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))) (export main)))
+  (call   main (: (tuple 7 9) (Tuple Int64 Int64)))
+  (output (: (list 7 9) (List Int64))))
+
+(case "a tuple-parameter export returns a BigInt computed from its fields"
+  (doc    "`main((tuple 5000000000 6000000000)) = 5e9 + 6e9 = 11000000000` as a BigInt — a heap numeric
+           value computed from a tuple parameter's fields, past Int64's reach.")
+  (input  (do (def (main (: p (Tuple Int64 Int64))) (+ (BigInt.of (. p 0)) (BigInt.of (. p 1)))) (export main)))
+  (call   main (: (tuple 5000000000 6000000000) (Tuple Int64 Int64)))
+  (output (: 11000000000 BigInt)))
+
+(case "a record-parameter export returns a tuple computed from its fields"
+  (doc    "A RECORD parameter crosses as a `tuple<…>` in canonical sorted-key order; `main((record (x 3)
+           (y 8))) = (tuple 8 3)` swaps the fields. Proves the record-param + tuple-result compound path.")
+  (input  (do (def (main (: p (Record (x Int64) (y Int64)))) (tuple (. p y) (. p x))) (export main)))
+  (call   main (: (record (x 3) (y 8)) (Record (x Int64) (y Int64))))
+  (output (: (tuple 8 3) (Tuple Int64 Int64))))

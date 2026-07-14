@@ -1009,6 +1009,7 @@ pub fn runtime_resource_core_module(
     export_abs: u32,
     template: &crate::lower::ValueFormTemplate,
     make_param_vts: &[ValType],
+    make_rebuild: Option<&TupleArgRebuild>,
 ) -> Result<Vec<u8>, String> {
     runtime_resource_core_module_form(
         funcs,
@@ -1016,6 +1017,7 @@ pub fn runtime_resource_core_module(
         export_abs,
         EscapeForm::Flat(template),
         make_param_vts,
+        make_rebuild,
     )
 }
 
@@ -1048,8 +1050,17 @@ pub fn runtime_resource_core_module_form(
     export_abs: u32,
     form: EscapeForm,
     make_param_vts: &[ValType],
+    make_rebuild: Option<&TupleArgRebuild>,
 ) -> Result<Vec<u8>, String> {
-    runtime_resource_core_module_form_ex(funcs, imports, export_abs, form, &[], make_param_vts)
+    runtime_resource_core_module_form_ex(
+        funcs,
+        imports,
+        export_abs,
+        form,
+        &[],
+        make_param_vts,
+        make_rebuild,
+    )
 }
 
 /// A value-resource METHOD the core module emits beyond make/t-encode/cabi_realloc (VM-1..VM-3). Each is a
@@ -1083,6 +1094,7 @@ pub fn runtime_resource_core_module_form_ex(
     form: EscapeForm,
     methods: &[CoreMethod],
     make_param_vts: &[ValType],
+    make_rebuild: Option<&TupleArgRebuild>,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -1258,16 +1270,42 @@ pub fn runtime_resource_core_module_form_ex(
     for f in funcs {
         code_items.extend_from_slice(&code_entry(f, &import_index));
     }
-    // make: forward the export's params (locals `0..p`), `call <export>` (builds the compound → its heap
-    // handle on the stack) then `call resource-new` (register the handle → a resource handle). A NULLARY
-    // export forwards zero params (byte-identical to the old `make()`); a parameterized export threads its
-    // scalar params into the body call so the compound is computed from the host's arguments.
+    // make: forward the export's params, `call <export>` (builds the compound → its heap handle on the
+    // stack) then `call resource-new` (register the handle → a resource handle). A NULLARY export forwards
+    // zero params (byte-identical to the old `make()`); a SCALAR-param export threads its scalar params
+    // (locals `0..p`) into the body call; a COMPOUND-param export REBUILDS the cell in-guest from the
+    // flattened leaf params (the canonical ABI flattened its `tuple<…>` param into scalar leaves — the same
+    // `emit_cell_rebuild` a closure `call` uses) and passes that one handle. So the compound is computed
+    // from the host's arguments however they cross.
     {
-        let mut inner = uleb_bytes(0); // no locals of its own — params are locals 0..p
-        for p in 0..make_param_vts.len() {
-            inner.push(op::LOCAL_GET);
-            uleb128(p as u64, &mut inner);
-        }
+        let (inner, imp) = {
+            let imp = |name: &str| import_index[name] as u64;
+            let mut inner = if make_rebuild.is_some() {
+                // One local group of one i32 (the rebuilt cell handle); the flattened leaf params are locals
+                // 0..L. Locals vec = <group-count=1> <count-in-group=1> <type=i32>.
+                let mut l = uleb_bytes(1); // one local group
+                uleb128(1, &mut l); // …of one local
+                l.push(wasm_abi::CORE_I32);
+                l
+            } else {
+                uleb_bytes(0) // no locals — scalar params are forwarded directly
+            };
+            if let Some(rebuild) = make_rebuild {
+                // Rebuild the cell from the flattened leaves (params 0..L), stash into the one local, then
+                // push it as the export's single argument.
+                let cell_local = make_param_vts.len() as u32;
+                emit_tuple_rebuild(rebuild, cell_local, &imp, &mut inner);
+                // `emit_tuple_rebuild` `local.tee`s the handle, leaving it on the stack — exactly the arg.
+            } else {
+                for p in 0..make_param_vts.len() {
+                    inner.push(op::LOCAL_GET);
+                    uleb128(p as u64, &mut inner);
+                }
+            }
+            (inner, imp)
+        };
+        let _ = imp;
+        let mut inner = inner;
         inner.push(op::CALL);
         uleb128(export_abs as u64, &mut inner);
         inner.push(op::CALL);
