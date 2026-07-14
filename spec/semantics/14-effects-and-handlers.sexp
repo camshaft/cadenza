@@ -497,6 +497,37 @@
                 (let ((k (fn (y) (* y 2)))) (+ (k 3) (Amb.flip))))) (export main)))
   (output (: 15 Int64)))
 
+(case "a MULTI-shot arm folds a perform under a CURRIED lambda applied to pure arguments"
+  (doc    "The applied-lambda pre-reduction reduces a CURRIED redex — nested applications — as long as each
+           argument is pure. `(((fn (a) (fn (b) (+ a (+ b (Amb.flip))))) 10) 20)` applies the outer lambda to
+           `10` (yielding the inner `(fn (b) …)`) then to `20`, β-reducing to `(+ 10 (+ 20 (Amb.flip)))` =
+           `(+ 30 (Amb.flip))` — a single perform in a pure one-hole context `C = (+ 30 [])`. Both arguments
+           are pure literals, so the substitution (into params each used once) duplicates no effect, and the
+           reduced body folds under the multi-shot arm: `(+ (+ 30 1) (+ 30 2))` = 63. Pins that pre-reduction
+           follows a curried application chain, not only a single β-redex.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s))))
+                (((fn (a) (fn (b) (+ a (+ b (Amb.flip))))) 10) 20))) (export main)))
+  (output (: 63 Int64)))
+
+(case "a pure lambda passed as an argument to a performing callee folds"
+  (doc    "A HIGHER-ORDER call whose function ARGUMENT is a pure lambda and whose CALLEE performs. `apply1 g n
+           = (+ (g n) (Amb.flip))` takes a function `g` and performs; called with `g = (fn (z) (* z 2))` (an
+           effect-free lambda) and `n = 10`. The argument lambda is strongly pure (a lambda VALUE carries no
+           effect), so the pre-reduction inlines the call — `(g 10)` reduces to `(* 10 2)` = 20, leaving
+           `(+ 20 (Amb.flip))`, a single perform in a pure one-hole context. The handler resumes 5, so the
+           result is `(+ 20 5)` = 25. Pins that a pure function-valued argument does not block the fold — the
+           closure is passed and applied inside the reduced body with no effect duplication.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (apply1 (: g (-> Int64 Int64)) (: n Int64)) (+ (g n) (Amb.flip)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (resume 5 s)))
+                (apply1 (fn (z) (* z 2)) 10))) (export main)))
+  (output (: 25 Int64)))
+
 (case "a performing argument to a multiply-using performing callee is not duplicated"
   (doc    "The SOUNDNESS ANCHOR for the applied-lambda pre-reduction: a call is β-reduced early (before the
            pure-one-hole classifier) ONLY when its arguments are strongly PURE. Here the argument itself

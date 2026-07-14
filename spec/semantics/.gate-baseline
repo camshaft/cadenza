@@ -84,6 +84,7 @@ pass	a List-returning closure alongside a plain export — the plain
 pass	a MIXED Int-and-Float Tuple closure ARG flattens + rebuilds (box-int + box-float)
 pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
 pass	a MULTI-shot arm folds a perform in a let-bound lambda applied in the body
+pass	a MULTI-shot arm folds a perform under a CURRIED lambda applied to pure arguments
 pass	a MULTI-shot arm folds a perform wrapped in an inline lambda application
 pass	a MULTI-shot arm keeps a pure applied lambda in its duplicated continuation
 pass	a MULTI-shot handler arm folds a two-hole body by re-reducing per resume
@@ -710,6 +711,7 @@ pass	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
 pass	a projected tuple element IS observed, so its trap occurs (the anchor)
+pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
