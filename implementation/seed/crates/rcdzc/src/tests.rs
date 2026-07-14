@@ -29603,6 +29603,47 @@ mod stage1 {
     }
 
     #[test]
+    fn a_mutually_recursive_effectful_group_specializes_under_a_state_handler() {
+        // E3 extended to MUTUAL recursion: `ev`/`od` call each other, and the effect (`Ctr.tick`) is reached
+        // by `ev` only THROUGH its partner `od`. The fix: `body_reaches_discharged` now follows RECURSIVE
+        // callees (visited-set bounded), so `recursive_call_reaches_discharged(ev)` sees the effect and the
+        // fold routes `ev` to `specialize_recursive` (which ties the `ev#ctx`/`od#ctx` memo knot). Seed 7,
+        // `tick` hands back `s` and threads `s-1`: `ev(4)`→`od(3)`→`7 + ev(2)`→`od(1)`→`6 + ev(0)`=0, so
+        // `7 + (6 + 0)` = 13.
+        let src = "(module m (effect Ctr (op tick (-> Unit Int64))) \
+                   (def (ev (: n Int64)) (if (= n 0) 0 (od (- n 1)))) \
+                   (def (od (: n Int64)) (+ (Ctr.tick) (ev (- n 1)))) \
+                   (def (main) (handle Ctr 7 ((tick (u) s (resume s (- s 1)))) (ev 4))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+            "a mutually-recursive effectful group must specialize (gate verifies value=13)"
+        );
+        // A three-way cycle (ev/od/tw) works too — the visited-set generalizes to any cycle length.
+        let three = "(module m (effect Ctr (op tick (-> Unit Int64))) \
+                   (def (ev (: n Int64)) (if (= n 0) 0 (od (- n 1)))) \
+                   (def (od (: n Int64)) (tw (- n 1))) \
+                   (def (tw (: n Int64)) (+ (Ctr.tick) (ev (- n 1)))) \
+                   (def (main) (handle Ctr 9 ((tick (u) s (resume s (- s 1)))) (ev 6))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(three))).is_ok(),
+            "a three-way mutually-recursive effectful group must specialize"
+        );
+        // GUARD (a MISCOMPILE regression): an ABORTIVE handler over a MUTUALLY-recursive callee with a
+        // NON-tail cross-call must DECLINE — `recursive_self_calls_all_tail` checks only ONE def's own
+        // self-calls, so the partner's pending `+ 1` frames (which an abort must abandon) would otherwise
+        // flow the abort value back through them (`(+ 1 (od …))` with `od = (+ 1 (ev …))` → 103, not 99).
+        // `callee_calls_other_recursive_def` extends the abortive guard to the mutual case.
+        let abort_mutual = "(module m (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (ev (: n Int64)) (if (= n 0) (Bail.bail 99) (+ 1 (od (- n 1))))) \
+                   (def (od (: n Int64)) (+ 1 (ev (- n 1)))) \
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (ev 4))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(abort_mutual))).is_err(),
+            "an abortive handler over a non-tail mutual recursion must decline, not miscompile to 103"
+        );
+    }
+
+    #[test]
     fn two_abortive_performs_on_a_strict_spine_the_first_wins() {
         // E4 abortive FIRST-WINS (a MISCOMPILE regression). Two abortive performs on one strict spine —
         // `(+ (Bail.bail 7) (Bail.bail 9))` — evaluate LEFT-TO-RIGHT, and an abort ABANDONS the rest, so the

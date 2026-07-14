@@ -1011,6 +1011,24 @@
               (handle Countdown 3 ((tick (u) s (resume s (- s 1)))) (loop))) (export main)))
   (output (: 3 Int64)))
 
+(case "a MUTUALLY-recursive effectful group is specialized under a state handler"
+  (doc    "Effect-context monomorphization extends past a SINGLE self-recursive function to a MUTUALLY-
+           recursive group. `ev` and `od` call each other, and the effect `Ctr.tick` is reached by `ev`
+           only THROUGH its partner `od` — so detecting that `ev` reaches the effect requires following the
+           RECURSIVE partner call, and specializing it requires tying the two specializations' knot (each
+           partner's recursive call resolves to the other's specialized copy). Seeded 7, `tick` hands back
+           the counter and threads `s - 1`: `ev(4)`→`od(3)` reads 7, `ev(2)`→`od(1)` reads 6, `ev(0)`=0, so
+           the sum is `7 + (6 + 0)` = 13. Recursive-while-performing across a MUTUAL cycle — the same
+           dynamic-extent state fold as the single-recursion countdown, over a call graph rather than a
+           single self-call.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (ev (: n Int64)) (if (= n 0) 0 (od (- n 1))))
+            (def (od (: n Int64)) (+ (Ctr.tick) (ev (- n 1))))
+            (def (main)
+              (handle Ctr 7 ((tick (u) s (resume s (- s 1)))) (ev 4))) (export main)))
+  (output (: 13 Int64)))
+
 (case "a recursive function sums a range it walks by performing a fresh-index effect"
   (doc    "Witnesses the recursive-effect idiom folding a real accumulator across a self-recursive
            walk: `Idx` supplies a descending index (seeded 3, each `next` hands back `s` and threads

@@ -2921,13 +2921,30 @@ fn call_reaches_discharged_effect(db: &mut Db, head: StructId, ctx: &HandlerCtx)
     body_reaches_discharged(db, body, ctx, 0)
 }
 
-/// Whether the resolved subtree at `node` performs a discharged operation, following NON-RECURSIVE calls
-/// into their callee bodies (up to a small depth bound — a cross-function chain past it is left to E3's
-/// specialization / a clean decline). A syntactic perform of a discharged op is the base case.
+/// Whether the resolved subtree at `node` performs a discharged operation, following calls into their
+/// callee bodies. A syntactic perform of a discharged op is the base case. Follows BOTH non-recursive AND
+/// recursive callees — a `visited` set of callee bodies bounds the walk over a (possibly MUTUALLY-recursive)
+/// call cycle so it terminates. Following recursive callees is what lets a MUTUALLY-recursive effectful
+/// group be detected as reaching the effect: `ev` reaches `Ctr.tick` only THROUGH its recursive partner
+/// `od`, so without following `od` the specialize trigger `recursive_call_reaches_discharged(ev)` would read
+/// false and `ev` would be copied unthreaded (its perform then hitting the no-home check). Mirrors
+/// `body_reached_effects`'s visited-set call-following.
 fn body_reaches_discharged(db: &mut Db, node: StructId, ctx: &HandlerCtx, depth: u32) -> bool {
-    // Depth backstop — a cross-function chain deeper than this declines (the inline trigger stays
-    // bounded, mirroring the evaluator's reduction guard).
-    if depth > 16 {
+    let mut visited = std::collections::HashSet::new();
+    body_reaches_discharged_walk(db, node, ctx, depth, &mut visited)
+}
+
+fn body_reaches_discharged_walk(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+    depth: u32,
+    visited: &mut std::collections::HashSet<StructId>,
+) -> bool {
+    // Depth backstop — a cross-function chain deeper than this declines (the trigger stays bounded,
+    // mirroring the evaluator's reduction guard). The `visited` set already bounds cycles; the depth bound
+    // caps a long non-cyclic chain.
+    if depth > 64 {
         return false;
     }
     // A syntactic perform of a discharged operation.
@@ -2936,13 +2953,13 @@ fn body_reaches_discharged(db: &mut Db, node: StructId, ctx: &HandlerCtx, depth:
     {
         return true;
     }
-    // A call to a NON-RECURSIVE function whose body reaches a discharged op — follow it (a parameterized
-    // OR a nullary-def callee).
+    // A call whose callee body reaches a discharged op — follow it (a parameterized OR nullary-def callee),
+    // recursive or not. `visited.insert` returns false on re-entry, stopping a self-/mutual-recursive cycle.
     if let Resolved::Apply { head, .. } = resolved_of(db, node)
         && let Some(callee) = crate::eval::lambda_body(db, head)
             .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
-        && !crate::eval::is_recursive(db, callee)
-        && body_reaches_discharged(db, callee, ctx, depth + 1)
+        && visited.insert(callee)
+        && body_reaches_discharged_walk(db, callee, ctx, depth + 1, visited)
     {
         return true;
     }
@@ -2950,7 +2967,7 @@ fn body_reaches_discharged(db: &mut Db, node: StructId, ctx: &HandlerCtx, depth:
     match db.ast.get(node).clone() {
         Struct::List(children) => children
             .iter()
-            .any(|&c| body_reaches_discharged(db, c, ctx, depth)),
+            .any(|&c| body_reaches_discharged_walk(db, c, ctx, depth, visited)),
         Struct::Atom(_) => false,
     }
 }
@@ -3097,6 +3114,29 @@ fn recursive_self_calls_all_tail(db: &mut Db, body: StructId, callee_def: usize)
     self_calls_tail(db, body, callee_def, true)
 }
 
+/// Whether `body` (the def `callee_def`'s body) calls a RECURSIVE def OTHER than itself — the signature of
+/// MUTUAL recursion (`ev`'s body calls the recursive `od`). Used by the abortive guard: `self_calls_tail`
+/// validates only THIS def's own self-calls, so a mutually-recursive callee needs this extra decline (its
+/// partner may hold non-tail pending frames an abort must abandon — the non-local-exit vertical). A bounded
+/// structural walk; only DIRECT calls in the body are inspected (a transitive partner is reached through
+/// one of them, so the direct check suffices to flag the group).
+fn callee_calls_other_recursive_def(db: &mut Db, body: StructId, callee_def: usize) -> bool {
+    if let Resolved::Apply { head, .. } = resolved_of(db, body)
+        && let Some(other) = callee_def_index_of(db, head)
+        && other != callee_def
+        && let Some(other_body) = db.defs[other].body
+        && crate::eval::is_recursive(db, other_body)
+    {
+        return true;
+    }
+    match db.ast.get(body).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| callee_calls_other_recursive_def(db, c, callee_def)),
+        Struct::Atom(_) => false,
+    }
+}
+
 /// Recursive worker for [`recursive_self_calls_all_tail`]: verify every self-call (a call resolving to
 /// `callee_def`) occurs only at a `tail` position. Returns `false` at the first off-tail self-call.
 fn self_calls_tail(db: &mut Db, node: StructId, callee_def: usize, tail: bool) -> bool {
@@ -3158,6 +3198,16 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // convention (a stack of `+ 1` frames the abort unwinds — a later vertical). A TAIL self-call is fine:
     // the abort is the tail value, propagating up with no pending frame. Decline the non-tail abortive case.
     if !ctx.abortive.is_empty() && !recursive_self_calls_all_tail(db, orig_body, callee_def) {
+        return None;
+    }
+    // ABORTIVE + MUTUAL RECURSION: decline. `recursive_self_calls_all_tail` above checks only THIS def's
+    // OWN self-calls, so a MUTUALLY-recursive callee (`ev` calls `od` calls `ev`) whose partner has a
+    // NON-tail call to it passes that check yet still has pending frames an abort must abandon — the same
+    // miscompile (`(def (ev n) (if (= n 0) (Bail 99) (+ 1 (od …)))) (def (od n) (+ 1 (ev …)))` → 103, not
+    // 99). Verifying cross-def tail-ness over the whole recursive group is the non-local-exit vertical;
+    // until then, an abortive context over a MUTUALLY-recursive callee (one that calls ANOTHER recursive
+    // def) declines cleanly. (A self-recursive callee is handled by the tail check above.)
+    if !ctx.abortive.is_empty() && callee_calls_other_recursive_def(db, orig_body, callee_def) {
         return None;
     }
     // Each slot's state TYPE must be FULLY DETERMINED to annotate its trailing state param. An
