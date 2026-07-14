@@ -1045,6 +1045,24 @@
                 (+ 1 (St.get)))) (export main)))
   (output (: 6 Int64)))
 
+(case "a handler whose STATE is a TUPLE reads both fields and rebuilds the pair per performance"
+  (doc    "The handler's threaded state is a TUPLE packing TWO independent slots — a running accumulator and
+           a fixed base — and the arm READS BOTH components (via projection) and REBUILDS the pair to thread
+           a modified state, a read-modify-write on a compound state slot. `Acc.step : Int64 -> Int64`, arm
+           `(step (v) p (resume (+ (. p 0) (. p 1)) (tuple (+ (. p 0) v) (. p 1))))`: it resumes with the sum
+           of the two fields and threads a new tuple advancing only field 0 by `v` (field 1 held). Seeded
+           `(0, 100)`: `(Acc.step 1)` reads `(0, 100)` → resumes `0 + 100` = 100, state → `(1, 100)`; `(Acc.step
+           2)` reads `(1, 100)` → resumes `1 + 100` = 101, state → `(3, 100)`; so `(+ 100 101)` = 201. Pins
+           that a handler state slot carries a TUPLE through the fold — the arm projects its fields and
+           reconstructs it — the compound-scalar-pair companion of the sum-state and list-state cases (two
+           independent scalar sub-states threaded in one tuple slot, not one shared counter).")
+  (input  (do
+            (effect Acc (op step (-> Int64 Int64)))
+            (def (main)
+              (handle Acc (tuple 0 100) ((step (v) p (resume (+ (. p 0) (. p 1)) (tuple (+ (. p 0) v) (. p 1)))))
+                (+ (Acc.step 1) (Acc.step 2)))) (export main)))
+  (output (: 201 Int64)))
+
 (case "an arm chooses its resume value by an if on the handler state"
   (doc    "A handler arm whose body is NOT a bare `(resume …)` but an `if` on the STATE that resumes a
            different value per branch — a CONDITIONAL resume. `(get (u) s (if (> s 5) (resume 100 s) (resume
