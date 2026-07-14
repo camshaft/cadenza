@@ -334,6 +334,64 @@
   (input  (+ 1 "two"))
   (error  CDZ0201))
 
+; --- Arithmetic is not defined on a non-numeric type, even when both operands SHARE it ------
+; The case above mixes DIFFERENT kinds (Int64 vs String). Arithmetic is also rejected when BOTH
+; operands are the SAME non-numeric type — `(+ s t)` on two Strings, `(+ xs ys)` on two Lists, `(+ r
+; q)` on two Records/Sets: the numeric operators offer arithmetic over the NUMERIC types only
+; (numeric-model.md #Numeric ...), and Cadenza never coerces text or a compound to a number. This is a
+; distinct path from the cross-kind mismatch — the two operands unify (they are one type), so the
+; cross-kind guard does not fire; the operator's numeric requirement is what rejects it (CDZ0201,
+; "arithmetic is not defined on <T>"). It is a genuine type error, not a phantom-`Int64` internal clash
+; misattributed to the second operand. (`+` on a type with a total concatenation — String/List/Bytes —
+; additionally carries a `((. List concat) …)` fix suggestion; the behavior pinned here is the
+; rejection, whichever repair the diagnostic offers.)
+
+(case "addition of two strings is rejected — text is not a number"
+  (doc    "`(+ \"ab\" \"cd\")` adds two Strings; arithmetic is not defined on text (Cadenza never coerces
+           a String to a number), so the compiler rejects it (CDZ0201). Unlike `(+ 1 \"two\")` the two
+           operands are the SAME type — they unify, so this is not the cross-kind mismatch but the
+           operator's numeric-operand requirement. Pins the honest 'not defined on String' rejection (the
+           `+`-means-concat reflex is a fix suggestion, not an accepted meaning).")
+  (input  (+ "ab" "cd"))
+  (error  CDZ0201))
+
+(case "subtraction of two strings is rejected"
+  (doc    "`(- \"ab\" \"cd\")` — a non-`+` arithmetic operator on two Strings has no concatenation reading
+           at all and is rejected (CDZ0201), the same 'arithmetic is not defined on String'. Pins that the
+           rejection covers the whole arithmetic family on text, not only `+` (which merely additionally
+           offers a concat fix).")
+  (input  (- "ab" "cd"))
+  (error  CDZ0201))
+
+(case "addition of two lists is rejected — a list is not a number"
+  (doc    "`(+ (list 1 2) (list 3 4))` adds two Lists of the same type; arithmetic is not defined on a
+           List (CDZ0201). Both operands share the type `(List Int64)`, so this is the same-type path, not
+           a cross-kind mismatch. Pins that a compound collection is not silently a number — the author
+           who meant concatenation is offered the `List.concat` rewrite, not an implicit `+`.")
+  (input  (+ (list 1 2) (list 3 4)))
+  (error  CDZ0201))
+
+(case "addition of two records is rejected — a record is not a number"
+  (doc    "`(+ r q)` on two same-typed Records is rejected (CDZ0201, 'arithmetic is not defined on
+           (Record (a Int64))'). A Record has no concatenation, so — unlike String/List — no fix is
+           offered, only the honest message. Pins that the numeric-operand requirement rejects a compound
+           record, the companion of the list case with no concat rewrite. Runtime operands (parameters),
+           so the fault is the operator's, not a fold.")
+  (input  (do
+            (def (f (: r (Record (a Int64))) (: q (Record (a Int64)))) (+ r q))
+            (def (main) (f (record (a 1)) (record (a 2)))) (export main)))
+  (error  CDZ0201))
+
+(case "addition of two sets is rejected — a set is not a number"
+  (doc    "`(+ r q)` on two same-typed Sets is rejected (CDZ0201, 'arithmetic is not defined on (Set
+           Int64)'). A set's combination is `Set.union`, not `+`; the numeric operator does not accept it.
+           Pins the compound-collection rejection for Set (the sibling of the list and record cases), so
+           `+` is never quietly overloaded to a set operation.")
+  (input  (do
+            (def (f (: r (Set Int64)) (: q (Set Int64))) (+ r q))
+            (def (main) (f (Set.of (list 1)) (Set.of (list 2)))) (export main)))
+  (error  CDZ0201))
+
 ; --- Equality type-checks its operands: no cross-type comparison ---------------------------
 ; `=` offers structural equality over ONE type's values (type-system.md #Structural Values Are
 ; Comparable Only When Their Shapes Match), so comparing two DIFFERENT types is a type error — the
