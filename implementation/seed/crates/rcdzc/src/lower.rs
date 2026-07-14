@@ -2683,6 +2683,8 @@ struct MatchRow {
 //= spec/capabilities/core-semantics.md#bindings-introduced-by-a-pattern-are-scoped-to-its-branch
 //# A pattern MUST bind each name at most once; a pattern that binds the same name more than once MUST be a compile-time error (`CDZ0102`), so that a pattern is linear rather than silently shadowing an earlier binder or imposing a hidden equality constraint.
 //= spec/capabilities/core-semantics.md#patterns-compose
+//# A pattern MUST admit any pattern in each of its binder positions, so that a constructor pattern's binder and a tuple pattern's element MAY themselves be a wildcard, a name, a tuple pattern, or a constructor pattern, matched recursively to any depth.
+//= spec/capabilities/core-semantics.md#patterns-compose
 //# A composed pattern MUST bind the union of its sub-patterns' bindings, matched recursively, and MUST remain linear across the whole pattern, so that a name appearing in more than one sub-pattern is the same `CDZ0102` error as one appearing twice in a flat pattern.
 fn check_pattern_linear(db: &mut Db, pat: StructId) -> Result<(), Reject> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -8805,6 +8807,17 @@ fn ordering_discs(db: &mut Db, id: StructId) -> Option<(u32, u32, u32)> {
 /// fold/escape/match exactly as a variant constructor does. A float pair compares by canonical value
 /// (IEEE partial order; a NaN pair — unordered — declines). A compound or runtime operand declines (the
 /// heap-walk / runtime three-way compare is a later stage), mirroring `lower_comparison`.
+///
+/// The order each scalar type offers is TOTAL and a deterministic function of the values: Int by numeric
+/// value, Char by scalar value, String lexicographically, and Bool by `false < true` (Rust `bool::cmp`).
+/// Every ordered pair folds to exactly one of Less/Equal/Greater, and the fold reads only the operand
+/// values — no environment, order, or outside influence enters.
+//= spec/capabilities/core-semantics.md#ordering-where-offered-is-total
+//# A type that offers an ordering MUST offer a total order over its values.
+//= spec/capabilities/core-semantics.md#ordering-where-offered-is-total
+//# The ordering a type offers MUST be a deterministic function of the values compared.
+//= spec/capabilities/core-semantics.md#ordering-where-offered-is-total
+//# The Bool type MUST offer a total order in which false is less than true.
 fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Core {
     use std::cmp::Ordering::{Equal, Greater, Less};
     let Some((lt, eq, gt)) = ordering_discs(db, id) else {
