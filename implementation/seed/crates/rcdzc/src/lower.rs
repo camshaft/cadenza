@@ -14754,6 +14754,91 @@ fn lower_map_field(
 /// re-lowering grounds the synthesized nodes' types (the Inc-11/12/14 discipline that unblocked Inc-9's
 /// "synthesized generic app not grounded at emit").
 #[allow(clippy::too_many_arguments)]
+/// Synthesize a SOURCE expression reading `base` (a binder name) down the value sub-path `steps` — the
+/// runtime companion of `fold_sum_path` for a map value sub-pattern binder over a RUNTIME value. An
+/// `Elem(i)` step is a tuple projection `(. acc i)`; a `Payload` step (head from the `heads` queue, in
+/// order) extracts a variant's sole payload via a nested `(match acc ((<head> __p) __p) (_ (trap …)))` — the
+/// match is safe (control reached here because the arm's keys are present AND, for an IRREFUTABLE value
+/// sub-pattern, the ctor is single-variant so the `_ → trap` is dead but keeps the match well-formed). An
+/// empty `steps` reads `base` directly. The result re-resolves + lowers via the caller's
+/// `resolve_subtree`/`core_of`.
+fn synth_value_path_read(
+    db: &mut Db,
+    base: &str,
+    steps: &[crate::core::PathStep],
+    heads: &[StructId],
+) -> StructId {
+    let mut acc = db.push_name(base);
+    let mut heads_it = heads.iter();
+    for step in steps {
+        match step {
+            crate::core::PathStep::Elem(i) => {
+                // `(. acc <i>)` — a tuple projection at an integer key.
+                let dot = db.push_name(".");
+                let idx = db.push_atom(crate::ast::Leaf::Int {
+                    value: crate::ast::IntValue::from_u128(*i as u128),
+                    radix: crate::ast::Radix::Dec,
+                });
+                acc = db.push_list(vec![dot, acc, idx]);
+            }
+            crate::core::PathStep::Payload => {
+                // `(match acc ((<head> __p) __p) (_ (trap …)))` — extract the variant's sole payload. The
+                // head occurrence is copied (a fresh `(. Sum V)` / bare-name pattern head) so it re-resolves
+                // as a ctor PATTERN, not the original expression-context node.
+                let head = match heads_it.next() {
+                    Some(&h) => clone_ctor_head(db, h),
+                    None => return acc, // malformed (fewer heads than Payload steps) — read what we have
+                };
+                let p_binder = db.push_name("__pp");
+                let ctor_pat = db.push_list(vec![head, p_binder]);
+                let p_ref = db.push_name("__pp");
+                let arm = db.push_list(vec![ctor_pat, p_ref]);
+                let wild = db.push_name("_");
+                let trap_head = db.push_name("trap");
+                let trap_msg = db.push_str("unreachable: value sub-pattern ctor already matched");
+                let trap = db.push_list(vec![trap_head, trap_msg]);
+                let else_arm = db.push_list(vec![wild, trap]);
+                let match_head = db.push_name("match");
+                acc = db.push_list(vec![match_head, acc, arm, else_arm]);
+            }
+            crate::core::PathStep::RestFrom(_) => {
+                // A list rest inside a map value is not produced here (value sub-patterns descend tuple/ctor;
+                // a nested list value declines upstream) — leave `acc` unchanged defensively.
+            }
+        }
+    }
+    acc
+}
+
+/// A FRESH copy of a constructor-pattern HEAD occurrence `h` — a `(. Sum V)` member form or a bare variant
+/// name — for reuse as a ctor pattern head in a synthesized value-path read. A `.`-member form is rebuilt
+/// from fresh copies of its segments; a bare name is re-pushed. Falls back to reusing `h` for any other
+/// shape (never happens for a real ctor head).
+fn clone_ctor_head(db: &mut Db, h: StructId) -> StructId {
+    if let Some(seg) = db.ast.as_form(h, ".").map(<[_]>::to_vec) {
+        let dot = db.push_name(".");
+        let mut children = vec![dot];
+        for s in seg {
+            // Each segment is a bare name (`Sum`, `V`) — copy it.
+            match db.ast.as_name(s) {
+                Some(nm) => {
+                    let n = nm.to_string();
+                    children.push(db.push_name(&n));
+                }
+                None => children.push(s),
+            }
+        }
+        return db.push_list(children);
+    }
+    match db.ast.as_name(h) {
+        Some(nm) => {
+            let n = nm.to_string();
+            db.push_name(&n)
+        }
+        None => h,
+    }
+}
+
 fn lower_map_field_runtime(
     db: &mut Db,
     id: StructId,
@@ -14763,7 +14848,6 @@ fn lower_map_field_runtime(
     value_steps: &[crate::core::PathStep],
     value_heads: &[StructId],
 ) -> Core {
-    let _ = value_heads;
     // Helper: `((. Map <op>) args…)`.
     fn map_op(db: &mut Db, op: &str, args: &[StructId]) -> StructId {
         let dot = db.push_name(".");
@@ -14775,20 +14859,21 @@ fn lower_map_field_runtime(
         db.push_list(call)
     }
     match key {
-        // VALUE binder at key `k`: `(match (Map.lookup scrutinee k) ((Some x) x) ((None) (trap …)))`. When
-        // the binder is NESTED in a value sub-pattern (`value_steps` non-empty), the Some-arm reads the
-        // sub-path INTO the bound value via source projections/payload-reads — but that runtime read is a
-        // later increment; for now a NESTED value binder over a RUNTIME map declines (the CONSTANT-map fold
-        // handles it via `fold_sum_path`). A bare value binder (empty `value_steps`) reads directly.
-        Some(k) if value_steps.is_empty() => {
+        // VALUE binder at key `k`: `(match (Map.lookup scrutinee k) ((Some __mv) <read>) ((None) (trap …)))`.
+        // The Some-arm binds the value to `__mv`; `<read>` is `__mv` for a bare value binder, or `__mv`
+        // walked down `value_steps` for a NESTED binder (`(map ("a" (tuple x y)))` reads `(. __mv 0)`;
+        // `(map ("a" (Box.Mk n)))` reads the payload via a nested `(match __mv ((Box.Mk __p) __p) …)`) —
+        // synthesized as SOURCE by `synth_value_path_read`. `Some` is guaranteed by the presence test, the
+        // `None → trap` is dead but keeps the match exhaustive.
+        Some(k) => {
             let k_copy = clone_key_expr(db, k);
             let lookup = map_op(db, "lookup", &[scrutinee, k_copy]);
-            // `((Some x) x)` — the payload binder `x` and the body ref are two occurrences of one fresh name.
             let some_head = db.push_name("Some");
             let x_binder = db.push_name("__mv");
             let some_pat = db.push_list(vec![some_head, x_binder]);
-            let x_ref = db.push_name("__mv");
-            let some_arm = db.push_list(vec![some_pat, x_ref]);
+            // The Some-arm body: read `__mv` down the value sub-path (empty steps = bare `__mv`).
+            let read = synth_value_path_read(db, "__mv", value_steps, value_heads);
+            let some_arm = db.push_list(vec![some_pat, read]);
             // `((None) (trap …))` — dead (presence proven) but keeps the match exhaustive.
             let none_head = db.push_name("None");
             let none_pat = db.push_list(vec![none_head]);
@@ -14799,20 +14884,14 @@ fn lower_map_field_runtime(
             let match_head = db.push_name("match");
             let rewritten = db.push_list(vec![match_head, lookup, some_arm, none_arm]);
             crate::resolve::resolve_subtree(db, rewritten);
-            // Carry the binder's KNOWN value type onto the synthesized read (the map value type — `id`'s own
-            // solved type), so the emit path has a grounded result type even if the synthesized Option's `v`
-            // is slow to solve. Only a ground type sticks (`types.fill` no-ops a free var / Any).
+            // Carry the binder's KNOWN type onto the synthesized read (the nested binder's own solved type
+            // — `id`'s type), so the emit path has a grounded result type. Only a ground type sticks.
             let vty = crate::infer::type_of(db, id);
             if !matches!(vty, crate::ty::Ty::Any) && !vty.has_free_var() {
                 db.types.fill(rewritten, vty);
             }
             core_of(db, rewritten)
         }
-        // A NESTED value binder over a RUNTIME map — the runtime sub-path read is a later increment (the
-        // CONSTANT-map fold handles it). Decline honestly.
-        Some(_) => Core::Poison(Reject::decline(
-            "a nested value sub-pattern binder over a runtime map is not yet matched (constant map only)",
-        )),
         // REST binder: `(Map.remove (Map.remove scrutinee k1) k2 …)` — the map minus every named key.
         None => {
             let mut acc = scrutinee;
