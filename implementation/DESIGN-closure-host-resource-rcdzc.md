@@ -702,14 +702,27 @@ the component type. The new work:
   as `list<u8>`" (byte-rope OR compound OR collection). (3) `emit_roundtrip_resource` per-consumer
   `ret_descriptor`. `cdz-run` already try-decodes. +5 corpus (List/Set/Map consumer results; a List consumer +
   a scalar consumer of the same closure).
-- **REMAINING (all optional, none blocking):** a variable-length collection result on the DISTINCT-SIG
-  round-trip path (single/multi/mixed/distinct-sig/round-trip are done; only distinct-sig-round-trip is left —
-  its `ClosureConsume.ret_descriptor` is `None` there today); a compound/collection result on the distinct-sig
-  round-trip; a compound closure ARG (host→guest decode — harder); a closure TRANSFORMER (`own<t>` both
-  directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call handle. **The entire
-  byte-rope (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result
-  surface, AND the variable-length collection (List/Map/Set) result surface are DONE across single-export +
-  multi-export + mixed + distinct-sig + round-trip.**
+- **✅ VARIABLE-LENGTH collection RESULT on the DISTINCT-SIG ROUND-TRIP path COMPLETE `@eec9d552` — the LAST
+  collection sub-shape; the collection-result surface is now closed across EVERY closure shape.** A
+  distinct-signature round-trip CONSUMER that applies its handed-back closure and RETURNS a List/Map/Set now
+  crosses as `list<u8>` value form via `value-encode(rep, desc)` against the consumer's own shape descriptor —
+  the single-sig round-trip mechanism generalized to the per-group distinct-signature core. A collection
+  consumer coexists with a scalar / compound / byte-rope consumer of another signature (three result-assembly
+  mechanisms across two resource types). Pieces: (1) `emit_distinct_sig_roundtrip_resource` — per-consumer
+  `ret_descriptor` via `sum_shape_descriptor`; `any_collection` adds the value-encode used-ops;
+  `ConsS.ret_descriptor` threaded into `serialize::ClosureConsume`; `ClosureConsumeAbi.ret_is_bytes` widened.
+  (2) `distinct_sig_roundtrip_core_module` — `consumer_is_list` + the consumer wrapper's `extra_i32` (5: rep,
+  desc, doc, n, i) widened; a new collection branch builds the descriptor Bytes, `value-encode`s the body's
+  returned handle, copies the doc out PAST all compound-template data (`bytes_out_off`, disjoint memory). (3)
+  The envelope re-export/instantiate path is UNCHANGED (it already lifts a `ret_is_bytes` consumer as
+  `(…)->list<u8>`). `cdz-run` already try-decodes. +6 corpus (a List + scalar consumer of distinct sigs; two
+  collection consumers — List + Map; a List + a compound consumer).
+- **REMAINING (all optional, none blocking):** a compound closure ARG (host→guest decode — harder); a closure
+  TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call
+  handle. **The entire byte-rope (`Bytes`/`String`) result surface, the entire fixed-shape compound
+  (tuple/record/sum) result surface, AND the variable-length collection (List/Map/Set) result surface are ALL
+  DONE across EVERY closure shape — single-export + multi-export + mixed + distinct-sig + round-trip +
+  distinct-sig-round-trip. The complete closure-RESULT matrix is closed.**
 
 ## Risks / open questions
 
