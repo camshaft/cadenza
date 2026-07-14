@@ -16643,6 +16643,16 @@ mod tests {
             op_str_new(String::from("hi")),
             bytes_leaf(&[1, 2, 3]),
             op_map_insert(op_map_empty(), op_box_int(1), op_box_int(10)),
+            // A runtime BigInt (wire tag 17, `Shape::BigInt` → `unbox_bigint`/`bigint_leaf`). MULTI-LIMB
+            // (i64::MAX² ≈ 2^126) so the arbitrary-width `bigint_leaf` arm — sign + BE-magnitude → KIND_INT
+            // — is exercised under the fuzz, not just the one fixed `bigint_escape…` shape. A BigInt under a
+            // MISMATCHED random descriptor must decline (not trap); under a real tag-17 descriptor it renders.
+            box_bigint(&bigint::Big::from_i64(i64::MAX).mul(&bigint::Big::from_i64(i64::MAX))),
+            // Float64 / Float32 (tags 2 / 14 → `float_leaf`/`float32_leaf`). These arms convert an f64/f32
+            // to an exact decimal and DECLINE (`None`, so the whole encode declines) on a non-finite value —
+            // a totality path (a return, not a trap) the fuzz must also cover under arbitrary descriptors.
+            op_box_float(1.5),
+            op_box_float32(-2.5f32),
         ];
         for &h in &values {
             // The property: NO panic. The result (Some doc / None decline) is not checked for content —

@@ -5023,6 +5023,15 @@ fn emit(
         // program's host-import set, resolved via `layout.host_index`). A `Unit` argument occupies no
         // boundary slot, so it is skipped (a nullary op `(E.op)` pushes nothing). The op's scalar result
         // is left on the stack by the imported call.
+        //
+        // This is JUST an ordinary imported-function call: the program pushes its arguments and reads the
+        // response the import leaves on the stack — nothing here encodes or observes how the host produces
+        // that response (inline, suspend-and-resume, or abort). The emitted instruction is the same under
+        // every host resolution strategy.
+        //= spec/capabilities/capabilities-and-effects.md#a-host-call-returns-a-response
+        //# A host call MUST be an ordinary call to an imported function that returns its response to the program, so that from the program's side reaching the host is a plain function call and how the host produces the response is the host's concern.
+        //= spec/capabilities/capabilities-and-effects.md#a-host-call-returns-a-response
+        //# The program MUST NOT observe or encode how a host call is resolved, so that whether the host answers inline, suspends the run and resumes it later, or aborts it is invisible to the program and not part of the program's meaning.
         Core::HostCall {
             effect, op, args, ..
         } => {
@@ -5436,6 +5445,11 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         | Core::BigIntOfI64 { .. }
         | Core::BigIntBinOp { .. }
         | Core::Call { .. } => Ok(HandleOwnership::Owned),
+        // A CONSTANT typed `BigInt` materializes to a FRESH owned handle at `emit` (the `Core::ConstInt`
+        // arm routes a BigInt-typed constant through `bigint-of-i64`), exactly like `ConstStr` above — so
+        // as a borrowing-op operand it is Owned and the emit drops it. This is what lets `Int64.of (if c
+        // (BigInt.of 1) (BigInt.of 2))` narrow a BigInt-valued `if` whose branches are constant BigInts.
+        Core::ConstInt(_) if matches!(type_of(db, id), Ty::BigInt) => Ok(HandleOwnership::Owned),
         // A reference to a parameter or a kept `let`-binding — the owner elsewhere reclaims it.
         Core::Param { .. } | Core::LocalRef { .. } => Ok(HandleOwnership::Borrowed),
         // A payload/element READ (`sum-payload`/`arr-get`) BORROWS its operand — the enclosing compound

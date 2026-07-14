@@ -480,6 +480,65 @@ pub(super) fn ty_supports_eq(db: &mut Db, ty: &crate::ty::Ty) -> bool {
     ty_derives_eq(db, ty, &mut std::collections::HashSet::new())
 }
 
+/// Ground a comparison operand type whose ONLY obstacle to a native `==` is a genuinely-free (non-sentinel)
+/// `Ty::Var`/`Any` — a PHANTOM type position no value ever flows through. Such a var appears when a variant
+/// is never constructed (`Result Int64 ?e` where no `Err` is built leaves Err's `?e` free), so the `==`
+/// never actually compares a value of that type. Rust's `#[derive(Eq)]` for the emitted enum bounds each
+/// arg `Eq`, and rustc's inference is GLOBAL — a bare `Result::Ok(5) == Result::Ok(k)` leaves `E`
+/// un-inferable ("type annotations needed"). Grounding the phantom var to `()` (zero-size, `Eq`, has a
+/// nameable Rust type) lets the caller pin `E` via a typed `let` so rustc can instantiate the enum. Sound
+/// for the SAME reason the wasm layout grounds a free-var heap slot to the i64 cell: a free var at codegen
+/// means dead/phantom — a LIVE value never has a free-var type (inference would have solved it), so the
+/// choice of `()` can never disagree with a value that flows there.
+///
+/// Returns `Some(grounded)` only when the grounded type genuinely supports native eq (so a type that
+/// declines for a REAL reason — a `String` leaf, a float, a collection — still returns `None` and the
+/// caller declines unchanged). Leaves a SENTINEL var (a generic sum's own param) untouched — it is already
+/// `Eq` via the derive's bound and is never present in a solved `type_of`.
+pub(super) fn ground_free_for_eq(db: &mut Db, ty: &crate::ty::Ty) -> Option<crate::ty::Ty> {
+    let grounded = ground_free_vars(ty);
+    if ty_supports_eq(db, &grounded) {
+        Some(grounded)
+    } else {
+        None
+    }
+}
+
+/// Replace every genuinely-free (non-sentinel) `Ty::Var`/`Any` in `ty` with `Ty::Unit`, recursing through
+/// the compound structure (sum args, tuple/record elements, a nominal's args + inner). A sentinel var (the
+/// generic-sum descriptor placeholder, `>= PARAM_SENTINEL_BASE`) is preserved. See [`ground_free_for_eq`].
+fn ground_free_vars(ty: &crate::ty::Ty) -> crate::ty::Ty {
+    use crate::ty::Ty;
+    match ty {
+        Ty::Var(n) if *n < PARAM_SENTINEL_BASE => Ty::Unit,
+        Ty::Any => Ty::Unit,
+        Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(ground_free_vars).collect()),
+        Ty::Record(fields) => Ty::Record(std::sync::Arc::new(
+            fields
+                .iter()
+                .map(|(k, v)| (k.clone(), ground_free_vars(v)))
+                .collect(),
+        )),
+        Ty::Sum { decl, name, args } => Ty::Sum {
+            decl: *decl,
+            name: name.clone(),
+            args: args.iter().map(ground_free_vars).collect(),
+        },
+        Ty::Nominal {
+            decl,
+            name,
+            args,
+            inner,
+        } => Ty::Nominal {
+            decl: *decl,
+            name: name.clone(),
+            args: args.iter().map(ground_free_vars).collect(),
+            inner: Box::new(ground_free_vars(inner)),
+        },
+        other => other.clone(),
+    }
+}
+
 /// Whether the solved type `ty` maps to a Rust type that derives `Eq` (hence `PartialEq`) — the condition
 /// for a native `==`. Int/Bool/Unit/enum-disc + a nominal newtype over such + a tuple/record/Option/Result/
 /// user-sum of such all qualify; a FLOAT (`PartialEq` but not `Eq`), a FUNCTION, a `List`/`Map`/`Set`, or a

@@ -2258,6 +2258,26 @@
   (call   main (: 7 Int64))
   (output (: 7 Int64)))
 
+(case "equality over a partly-un-built sum with a free Err type compiles on every backend"
+  (doc    "The equality companion to the total-match case above: `(= (if (> k 0) (Ok k) (Ok 0)) (Ok 5))`
+           compares two `Result Int64 ?e` values where NO `Err` is ever built, so the Err type stays a
+           free var (a phantom — the `Ok k ⊔ Ok 0` join fixes only the Ok side). Structural `=` over a sum
+           needs the sum to derive equality on BOTH arms; the phantom Err arm carries no value, so its
+           equality is UNREACHABLE and need only type-check. The wasm backend already handled this (it
+           compares the disc + the live Ok payload). The Rust backend grounds the phantom Err to a
+           zero-size `Eq` type and pins it so `rustc` can instantiate the enum (a bare `Ok(5) == Ok(k)`
+           leaves the phantom Err un-inferable) — sound for the same reason the dead-arm layout grounds a
+           free-var heap slot: a free var at codegen is dead/phantom, never a live value. `(f 5)` compares
+           `Ok(5) = Ok(5)` → equal → 1; `(f 3)` compares `Ok(3) = Ok(5)` → 0. (An ESCAPE of the
+           under-determined value still rejects CDZ0203 — that boundary is unchanged.)")
+  (input  (do
+            (def (f (: k Int64))
+              (if (= (if (> k 0) (Result.Ok k) (Result.Ok 0)) (Result.Ok 5)) 1 0))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64)))
+
 (case "a sum-type value is deconstructed by an exhaustive match"
   (doc    "Patterns are uniform: `(Ctor _)` for nullary constructors. The binder `_` matches the
            unit payload. Consistent with unary constructor patterns like `(Some x)`.")
