@@ -36123,6 +36123,21 @@ mod closure_host_resource {
             "the used-as-export routing must NOT surface the internal message, got: {}",
             err2.message
         );
+        // A host op with a DETERMINED COMPOUND ARGUMENT declines honestly too (the guard checks args as
+        // well as the result), with the grammatical article "an argument" — never silently dropping the arg.
+        let compound_arg = "(do (effect ask (op send (-> (Tuple Int64 Int64) Int64))) \
+                   (def (main) (host (ask) (ask.send (tuple 1 2)))) (export main))";
+        let err3 = crate::compile::compile_component(&crate::codec::encode(&parse(compound_arg)))
+            .expect_err(
+                "a host op taking a compound argument has no boundary form yet — must decline",
+            );
+        assert!(
+            err3.message.contains("send")
+                && err3.message.contains("an argument")
+                && err3.message.contains("no component"),
+            "a compound-argument host op must decline honestly with the correct article, got: {}",
+            err3.message
+        );
         // A SCALAR-result host op still compiles (the honest decline must not over-reject).
         let ok = "(do (effect ask (op ask (-> Unit Int64))) \
                   (def (main) (host (ask) (+ (ask.ask) 1))) (export main))";

@@ -177,8 +177,10 @@ pub fn emit(
     for &def in &layout.order {
         let body = def_body(db, def)?;
         if let Some((op, pos, ty)) = host::first_unrepresentable_host_op(db, body) {
+            // "an argument" / "a result" — the article agrees with the position word.
+            let article = if pos == "argument" { "an" } else { "a" };
             return Err(Reject::decline(format!(
-                "the host operation `{op}` has a {pos} of type `{ty}`, which has no component \
+                "the host operation `{op}` has {article} {pos} of type `{ty}`, which has no component \
                  boundary form this compiler emits yet (only scalar and unit results, and \
                  scalar/string/unit arguments, cross the host boundary; a string or compound result \
                  is a later increment)"
