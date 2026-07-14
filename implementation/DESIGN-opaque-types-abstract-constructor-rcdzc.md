@@ -265,7 +265,25 @@ Reuse the existing families; add one dedicated code for the sharp case so the fi
 Land each increment green (`cargo xtask gate` 0 fail, `--check` clean, `cargo test -p rcdzc`). Spec
 first, per repo discipline (a new gating requirement with no impl is a red promotion bar).
 
-- [ ] **O0 — spec + corpus (spec-first).** Add to `modules-and-namespaces.md` §Visibility a requirement
+> **STATUS (landed on `spec`).** The core feature is DONE, in two increments:
+> - **Increment A** (`@b4700bb9`) — **O1** file-scoped type + constructor resolution. This had to come
+>   first: before it, cross-file type privacy did not exist at all (the flat `type_decl_index` let any
+>   file name any sibling's type and construct its variants with no import), so hiding a constructor was
+>   a no-op. A user sum's identity is its declaration (`type-system.md` §Nominal), not its shape — so a
+>   corpus case that relied on two same-named `(type L …)` in different files being interchangeable (a
+>   forge-by-re-declare the spec forbids) was migrated to the import form.
+> - **Increment B** (`@a6a029d7`) — **O2 + O3 + most of O0**. The three `(export …)` forms
+>   (`T` abstract / `(. T A)` partial / `(. T *)` wildcard concrete), `CtorVis` on the link surface, the
+>   `add_type_to_file` ctor-visibility gate, `withheld_ctor_reject` → **CDZ0214**, the
+>   `modules-and-namespaces.md` §"A Type's Handle And Its Constructors Are Independently Visible"
+>   requirement (3 MUSTs, cited), and the corpus witnesses. Gate 2035 pass / 0 fail; runs end-to-end.
+>
+> **Remaining:** the `type-system.md` strip + structural-`=` gating (O0 tail — deferred until the
+> strip/`=`-visibility CHECK is built, so the MUST is enforced not aspirational); the **O4** ML-printer
+> ergonomics for `Color.*`; and the recursive-sum-synthesis-not-file-scoped limitation (import the type
+> rather than re-declaring it). s-expr is fully working; the corpus uses `(export (. T *))` directly.
+
+- [x] **O0 — spec + corpus (spec-first).** *(Done except the type-system.md strip/`=` gating, deferred.)* Add to `modules-and-namespaces.md` §Visibility a requirement
   that a type declaration's handle and its constructors are *independently* exportable; that exporting
   the handle alone yields an abstract type whose constructors, match capability, strip, and structural
   comparison are not importable; and that the wildcard export form exports the handle together with its
@@ -275,20 +293,23 @@ first, per repo discipline (a new gating requirement with no impl is a red promo
   **`T.*` wildcard concrete export: construct + match outside → runs, and equals the explicit list**;
   malformed `*` export → CDZ0201) and `07-type-system.sexp` (strip/`=` on an abstract type → CDZ0202).
   Wire `traceability.md`.
-- [ ] **O1 — file-scoped type resolution.** Make `type_decl_by_name` respect the `FileScopeTable`
+- [x] **O1 — file-scoped type resolution.** *(Landed `@b4700bb9` — `FileScopeTable` gained
+  `visible_types`/`visible_ctors`; `resolve_name` steps 3/3c consult them when linked.)* Make
+  `type_decl_by_name` respect the `FileScopeTable`
   (the residual (a) above). A sibling file's type is invisible unless imported. Byte-neutral for
   single-file programs (`Db::load` path unchanged).
-- [ ] **O2 — export the handle, the constructors, or both — distinctly.** The export collector accepts
+- [x] **O2 — export the handle, the constructors, or both — distinctly.** *(Landed `@a6a029d7`.)* The export collector accepts
   (a) a type name → records the handle *without* implying its constructors; (b) a `(. T A)` ctor name →
   records that one constructor public; (c) the wildcard `(. T *)` → records the handle **and** expands
   to every constructor of `T`'s current variant set (read off the resolved `SumDef`), the same public
   surface as naming each explicitly. A constructor is public iff named explicitly or covered by a `T.*`.
   `import` of an abstract type binds `T` (handle) but not its ctor names.
-- [ ] **O3 — reject construct/match/strip/`=` on an abstract type across the boundary** with the codes
-  above (CDZ0214 / CDZ0202 / CDZ0201), plus the malformed-wildcard reject (`*` not against a
-  constructor-bearing type handle → CDZ0201). These are pure resolve-time visibility checks; no lowering
-  change — an unbound constructor never reaches infer/lower.
-- [ ] **O4 — the concrete-export paths + AST + ML ergonomics.** Verify both concrete forms — the
+- [x] **O3 — reject construct/match on an abstract type across the boundary.** *(Landed `@a6a029d7` —
+  `withheld_ctor_reject` → CDZ0214 for construct + match of a withheld ctor, bare or qualified. The
+  strip + structural-`=` gating (CDZ0202) is DEFERRED — not yet built, so its MUST is not yet added.)*
+  Pure resolve-time visibility checks; no lowering change — an unbound constructor never reaches infer/lower.
+- [ ] **O4 — the concrete-export paths + AST + ML ergonomics.** *(Concrete paths + AST verified working;
+  ML-printer ergonomics for `Color.*` remain — s-expr works.)* Verify both concrete forms — the
   explicit ctor list and the `T.*` wildcard — make a sum importable-and-matchable and produce the
   **same** public surface, and that `(export Ast.*)` round-trips the AST type concretely. Then close the
   **ML-surface printer gaps** (measured, not free): (a) teach the `export { … }` printer to render a
