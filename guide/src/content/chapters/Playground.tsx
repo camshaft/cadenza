@@ -10,6 +10,14 @@ function PlaygroundLink({ children }: { children: React.ReactNode }) {
   );
 }
 
+function CalculatorLink({ children }: { children: React.ReactNode }) {
+  return (
+    <Link to="/calculator" className="font-medium text-cadenza-300 underline-offset-2 hover:underline">
+      {children}
+    </Link>
+  );
+}
+
 export default function Playground() {
   return (
     <article>
@@ -87,6 +95,20 @@ export default function Playground() {
         Press <strong>Share</strong> and the whole program is packed into the page's URL — no account, no
         server, no saved file. Send the link and the recipient opens your exact program, in the syntax
         you wrote it. It's the fastest way to ask a question or show something off.
+      </P>
+
+      <H2>A calculator, too</H2>
+      <P>
+        There's a lighter-weight sibling for quick sums: the{" "}
+        <CalculatorLink>calculator</CalculatorLink>. It's a focused prompt over the same language, tuned for
+        arithmetic you'd otherwise reach for a desk calculator to do — except it's <em>exact</em>. Fractions
+        stay fractions (<C>1 / 3 + 1 / 3 + 1 / 3</C> is <C>1</C>, not <C>0.9999…</C>), dimensioned quantities
+        carry their units, and big integers don't overflow. Recall the previous result with <C>ans</C> and
+        keep going.
+      </P>
+      <P>
+        It's the <strong>Exact fractions</strong> and <strong>Units of measure</strong> chapters made
+        interactive — reach for it when you want a number now, and the playground when you want a program.
       </P>
 
       <P>

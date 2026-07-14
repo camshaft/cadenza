@@ -1,0 +1,90 @@
+/// collect.cdz — a leaf-collecting analysis over an `Ast` that returns a RECORD `{ count, vals }` — the
+/// number of `Num` leaves and the list of their values — built bottom-up in ONE traversal. This stresses
+/// a shape the port had not: a RECORD carrying a heap `List` field, CONSTRUCTED at each node and THREADED
+/// (concatenated) through the recursion, then its fields projected. A real compiler gathers "all the free
+/// variables AND their count", "all the string literals", etc. in exactly this record-of-results form.
+type Ast =
+  | Num(Int64)
+  | Str(String)
+  | Bool(Bool)
+  | Node(List(Ast))
+
+/// The collected result: how many `Num` leaves, and their values in encounter order.
+def collect(e: Ast) = match e with
+  | Ast.Num(v) => { count = 1, vals = [v] }
+  | Ast.Node(kids) => collect-list(kids)
+  | _ => { count = 0, vals = [] }
+
+def collect-list(xs: List(Ast)) = match xs with
+  | [] => { count = 0, vals = [] }
+  | [h, .. t] =>
+    let a = collect(h) in
+    let b = collect-list(t) in
+    { count = a.count + b.count, vals = List.concat(a.vals, b.vals) }
+
+/// The number of `Num` leaves in `e` (the record's `count` field).
+def num-count(e: Ast) = collect(e).count
+
+/// The sum of every `Num` leaf's value (folding the record's `vals` list).
+def num-total(e: Ast) = sum-list(collect(e).vals)
+
+def sum-list(xs: List(Int64)) = match xs with
+  | [] => 0
+  | [h, .. t] => h + sum-list(t)
+
+/// The number of collected values (should always equal `count` — a record-consistency invariant).
+def vals-len(e: Ast) = List.len(collect(e).vals)
+
+def first-val(e: Ast) = match collect(e).vals with
+  | [] => 0 - 1
+  | [h, .. _] => h
+
+@test
+def collect-single-num() =
+  if num-count(Ast.Num(42)) == 1 then (if num-total(Ast.Num(42)) == 42 then unit else trap("total 42")) else trap("count 1")
+
+@test
+def collect-no-nums() =
+  // a tree of only Str/Bool leaves → count 0, total 0
+  if num-count(Ast.Node([Ast.Str("x"), Ast.Bool(true)])) == 0 then unit else trap("count 0")
+
+@test
+def collect-flat() =
+  let tree = Ast.Node([Ast.Num(1), Ast.Num(2), Ast.Num(3)]) in
+  if num-count(tree) == 3 then (if num-total(tree) == 6 then unit else trap("total 6")) else trap("count 3")
+
+@test
+def collect-nested() =
+  // (5 (7 30)) → 3 nums, total 42
+  let tree = Ast.Node([Ast.Num(5), Ast.Node([Ast.Num(7), Ast.Num(30)])]) in
+  if num-count(tree) == 3 then (if num-total(tree) == 42 then unit else trap("total 42")) else trap("count 3")
+
+@test
+def collect-mixed-leaves() =
+  // Num + Str + Bool interleaved: only the Nums count
+  let tree = Ast.Node([Ast.Num(5), Ast.Str("a"), Ast.Node([Ast.Bool(false), Ast.Num(7)]), Ast.Num(30)]) in
+  if num-count(tree) == 3 then (if num-total(tree) == 42 then unit else trap("total 42")) else trap("count 3")
+
+@test
+def collect-count-matches-vals-len() =
+  // the record invariant: count == length of vals, for any tree
+  let tree = Ast.Node([Ast.Num(1), Ast.Node([Ast.Num(2), Ast.Str("x"), Ast.Num(3)]), Ast.Bool(true)]) in
+  if num-count(tree) == vals-len(tree) then unit else trap("count == vals length")
+
+@test
+def collect-encounter-order() =
+  // the first Num in a left-to-right walk is the head of vals
+  let tree = Ast.Node([Ast.Node([Ast.Num(9), Ast.Num(8)]), Ast.Num(7)]) in
+  if first-val(tree) == 9 then unit else trap("first val 9")
+
+@test
+def collect-empty-node() =
+  if num-count(Ast.Node([])) == 0 then unit else trap("empty node count 0")
+
+@test
+def collect-deep() =
+  // (((( Num 4 )))) — 4 node levels, one Num
+  let tree = Ast.Node([Ast.Node([Ast.Node([Ast.Node([Ast.Num(4)])])])]) in
+  if num-count(tree) == 1 then (if num-total(tree) == 4 then unit else trap("deep total 4")) else trap("deep count 1")
+
+export { collect, num-count, num-total }
