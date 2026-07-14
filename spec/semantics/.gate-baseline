@@ -2,6 +2,11 @@
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
+pass	DIFF-WIDTH RESULT: (Result Int32 Int64) — the NARROW side is Ok, negative
+pass	DIFF-WIDTH RESULT: (Result Int64 Int32) arg, drive Err with a NEGATIVE narrow payload
+pass	DIFF-WIDTH RESULT: (Result Int64 Int32) arg, drive Ok with a big s64
+pass	DIFF-WIDTH RESULT: a (Result Int64 Int32) group + a (Result Int32 Int64) group, distinct-sig
+pass	DIFF-WIDTH RESULT: two same-sig (Result Int64 Int32) closures share one call
 pass	DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple LIST group (tuple then suffix scalar)
 pass	DISTINCT-SIG among-scalars: driving the Int64/Bool-tuple group (Bool field in the rebuild)
 pass	DISTINCT-SIG among-scalars: two scalar-then-Tuple closures of DIFFERENT sigs each returning a LIST
@@ -1465,6 +1470,7 @@ pass	a well-formed annotation still checks and accepts a matching type (the cont
 pass	a whole rational carries a denominator of one
 pass	a wide fixed-size integer width is reserved, not yet a valid type
 pass	a wildcard in a nested pattern position ignores that element
+pass	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
 pass	a wrong-arity tuple binding pattern is a shape error
 pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error
 pass	a zero-arm match on an empty-sum scrutinee is exhaustive
@@ -2042,6 +2048,7 @@ pass	pattern matching over AST distinguishes forms
 pass	performing a string-parameter operation with a non-string argument is a type error
 pass	performing an operation with a wrong-type argument for a compound parameter is a type error
 pass	performing an operation with an argument of the wrong type is a type error
+pass	performs in the ELEMENTS of a tuple / list CONSTRUCTOR thread left-to-right
 pass	popping a field yields its value and the remaining record
 pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple
@@ -2360,6 +2367,7 @@ pass	two same-signature closures alongside a plain export all coexist
 pass	two same-signature closures alongside a plain export — the plain export runs
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
+pass	two sibling modules may each define a private helper of the same name
 pass	two structural values of the same shape are equal
 pass	two sum arms with textually identical bodies still bind their own variant's payload
 pass	two sum types whose names differ only by punctuation stay DISTINCT types

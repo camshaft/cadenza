@@ -18,12 +18,7 @@
 /// So `build` reconstructs the full tree and `nsize` is its length oracle. Both recurse over the buffer;
 /// the value is returned BARE and the position is recomputed, so no tuple-projected sum is threaded
 /// through a loop — the decode design the slot-alias bug forces, and which now runs correctly.
-type Ast =
-  | Int(Int64)
-  | Str(String)
-  | Bool(Bool)
-  | Name(String)
-  | List(List(Ast))
+import { Ast } from "ast"
 
 /// The number of bytes the node encoded at `pos` occupies (so a caller advances the cursor without
 /// projecting it out of a tuple). A List is 2 header bytes plus the total size of its children.

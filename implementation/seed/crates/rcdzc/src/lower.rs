@@ -2705,6 +2705,15 @@ pub fn binop_arity_fault(db: &mut Db, id: StructId) -> Option<Reject> {
 /// `Void`/`Never`, `type-system.md §Never Is The Empty Sum`). Such a type has no value, so a zero-arm
 /// match on it is vacuously exhaustive. Reads the sum's declaration by its `decl` occurrence and checks
 /// the variant count; a non-sum (or a sum with variants) is `false`.
+///
+/// A program declares one as an ordinary zero-variant sum — `(type Void)` — so the empty sum is a
+/// NAMEABLE type in the universe (the dual of the empty tuple / unit), built by the same `type_decl` path
+/// as any sum. It is UNINHABITED: `synthesize` builds a variant constructor per variant, and a zero-variant
+/// declaration has none — there is no constructor and thus no value of the type.
+//= spec/capabilities/type-system.md#never-is-the-empty-sum
+//# The type universe MUST include the empty sum — a sum type with zero variants — as the dual of the unit type, which is the empty tuple, so that the zero of the sum constructor is a nameable type exactly as the zero of the product constructor is.
+//= spec/capabilities/type-system.md#never-is-the-empty-sum
+//# The empty sum MUST be uninhabited — it MUST have no constructor and no value — because a sum over zero variants offers no variant to construct.
 fn is_empty_sum_ty(db: &mut Db, ty: &crate::ty::Ty) -> bool {
     if let crate::ty::Ty::Sum { decl, .. } = ty.strip_nominal() {
         return db
@@ -2729,6 +2738,8 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         // exist, so the match is unreachable: emit `Core::Trap` (the scrutinee still evaluates — reading
         // it is itself the divergence — but no arm is needed). Distinct from the diverging-EXPRESSION case
         // below (a scrutinee that folds to a trap): here the scrutinee's static TYPE proves uninhabited.
+        //= spec/capabilities/type-system.md#never-is-the-empty-sum
+        //# A match on a scrutinee of the empty sum type MUST be exhaustive with zero arms, because there is no variant left to cover — the degenerate base case of the exhaustiveness rule, not an exception to it.
         let scrut_ty = crate::infer::type_of(db, scrutinee);
         if is_empty_sum_ty(db, &scrut_ty) {
             return Core::Trap;

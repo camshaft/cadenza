@@ -114,23 +114,21 @@ export default function Strings() {
         id="strings:2"
         prompt={
           <>
-            Now a slice. <C>String.slice</C> takes a half-open range <C>[start, end)</C>; pull the word{" "}
-            <C>"world"</C> out of <C>"hello world"</C> by filling in the <em>start</em> index. Measuring
-            the result confirms you got it — <C>"world"</C> is <C>5</C> characters.
+            Now a slice, and the half-open range is the whole trick. Pull the first three characters —{" "}
+            <C>"cad"</C> — out of <C>"cadenza"</C> by filling in the <em>end</em> index. The check compares
+            the slice against <C>"cad"</C>, so getting the boundary right gives <C>1</C>.
           </>
         }
         starter={`(def (main)
-  (String.scalar-len
-    (Option.expect (String.slice "hello world" ? 11) "in range")))`}
+  (if (= (Option.expect (String.slice "cadenza" 0 ?) "in range") "cad") 1 0))`}
         solution={`(def (main)
-  (String.scalar-len
-    (Option.expect (String.slice "hello world" 6 11) "in range")))`}
-        expected="5"
+  (if (= (Option.expect (String.slice "cadenza" 0 3) "in range") "cad") 1 0))`}
+        expected="1"
         hint={
           <>
-            Count characters from <C>0</C>: <C>"world"</C> begins at index <C>6</C> (right after the
-            space at <C>5</C>), and the range runs up to but not including <C>11</C>. Start at <C>5</C>{" "}
-            instead and you'd catch the leading space — six characters, not five.
+            The range is <C>[start, end)</C> — <C>end</C> is <em>excluded</em>. To keep characters at
+            indices <C>0</C>, <C>1</C>, <C>2</C> (the <C>"cad"</C>) and stop before index <C>3</C>, the
+            end is <C>3</C>, not <C>2</C>. Write <C>2</C> and you'd get only <C>"ca"</C>.
           </>
         }
       />

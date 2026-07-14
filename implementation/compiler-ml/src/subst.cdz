@@ -1,9 +1,4 @@
-type Ast =
-  | Int(Int64)
-  | Str(String)
-  | Bool(Bool)
-  | Name(String)
-  | List(List(Ast))
+import { Ast } from "ast"
 
 def subst(env: Map(String, Ast), node: Ast) = match node with
   | Ast.Name(n) => (match Map.lookup(env, n) with

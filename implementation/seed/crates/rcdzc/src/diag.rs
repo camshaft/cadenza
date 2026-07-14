@@ -847,6 +847,20 @@ pub const UNKNOWN_INTRINSIC_DECLINE: &str = "unknown intrinsic";
 /// copy (the one carrying the fix). NOTE the trailing space before the backticked key.
 pub const NO_FIELD_PREFIX: &str = "record has no field ";
 
+/// The BARE member-access decline the LOWERING path (`lower.rs`) returns when a projection cannot fold and
+/// the operand is not a runtime record — "member access requires a record" with NO ", found <T>" tail.
+/// Distinct from `infer`'s richer "member access requires a record, found <T>" (which names the type and
+/// is the primary). The bare form is emitted only by lowering, so when a member-access `infer` reject is
+/// present (e.g. the tuple-by-position message for `(. t name)`, or a "found <T>" reject), this bare
+/// decline is the same defect reached again through the emit path — a consequent `dedup_faults` drops.
+pub const MEMBER_NOT_RECORD_DECLINE: &str = "member access requires a record";
+
+/// A stable SUBSTRING of `infer`'s tuple-accessed-by-name reject (`(. t name)` on a `(Tuple …)`): "a tuple
+/// is accessed by position, not by name". The precise, actionable primary; used by `dedup_faults` to
+/// recognize the same-defect [`MEMBER_NOT_RECORD_DECLINE`] the emit path leaks at a CALL SITE (the reduced
+/// body lowers `(. (tuple …) name)`, which cannot fold) and drop that weaker consequent.
+pub const TUPLE_BY_NAME_MARKER: &str = "a tuple is accessed by position, not by name";
+
 pub const CLOSURE_PARAM_NO_REPR_DECLINE: &str =
     "a closure's parameter type has no machine representation";
 pub const CLOSURE_RESULT_NO_REPR_DECLINE: &str =

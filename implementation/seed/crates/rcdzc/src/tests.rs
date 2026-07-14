@@ -3636,6 +3636,51 @@ fn a_do_sequence_selfcall_then_perform_declines_not_miscompiles() {
     );
 }
 
+/// TWO SIBLING self-recursive calls in one arm, `let`-sequenced (`(let ((a (walk l))) (let ((b (walk r)))
+/// (+ a b)))`) under a STATE-threading handler, SILENTLY MISCOMPILED (found by the compiler-ml port, iter
+/// 38): the second sibling `(walk r)` threaded against the INCOMING state, not the state `(walk l)`
+/// advanced — `walk (Node Leaf Leaf)` returned 0 (both leaves drew id 0) where the answer is 1 (ids 0, 1).
+/// The out-state guard's `let` arm now also flags a LATER init that is itself a recursive call
+/// (`contains_recursive_call`) — a nested `let` obscured the perform from `contains_any_perform`, so the
+/// guard didn't fire and the fold accepted a shape it could not thread. It now DECLINES cleanly. A SINGLE
+/// recursive call in the arm still folds; a constant-handback handler still counts the draws correctly.
+#[test]
+fn two_sibling_self_recursive_calls_in_a_let_decline_not_miscompile() {
+    use crate::testkit::parse;
+    let src = "(do (type T (Leaf) (Node T T)) (effect Fresh (op next (-> Int64))) \
+               (def (walk (: t T)) (match t ((T.Leaf) (Fresh.next)) \
+                 ((T.Node l r) (let ((a (walk l))) (let ((b (walk r))) (+ a b)))))) \
+               (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) \
+                 (walk (T.Node (T.Leaf) (T.Leaf))))) (export main))";
+    // Must DECLINE (the out-state shape) rather than compile to the wrong value (0 where the answer is 1).
+    let err = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+        "the sibling-recursive-calls out-state shape must decline, not miscompile to 0",
+    );
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
+/// A perform in a TUPLE/LIST CONSTRUCTOR element (the STRING-HEADED primitive `("tuple" …)`, what the ML
+/// tuple/list literal lowers to) now THREADS like an arithmetic operand / call argument (reported by the
+/// compiler-ml port, iter 38 — was an honest decline). `thread_bounded` gained a `Resolved::Tuple`/`List`
+/// arm that threads each element left-to-right and rebuilds the string-headed ctor. `(let ((p ("tuple"
+/// (Fresh.next) (Fresh.next)))) (+ (. p 0) (. p 1)))` seeded 0 reads 0, 1 → 1. (Bare `tuple` NAME already
+/// threaded via the `(meta apply)` call path; only the string-head ctor primitive was declining.)
+#[test]
+fn a_perform_in_a_tuple_constructor_element_threads() {
+    use crate::testkit::parse;
+    let src = "(do (effect Fresh (op next (-> Int64))) \
+               (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) \
+                 (let ((p (\"tuple\" (Fresh.next) (Fresh.next)))) (+ (. p 0) (. p 1))))) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+        "a perform in a string-headed tuple ctor element must thread, not decline"
+    );
+}
+
 /// A recursive effectful walk whose self-call is the `match` SCRUTINEE and whose perform is in an arm BODY
 /// — `(match (walk (- n 1)) (_ (Ctr.tick)))` — is the same out-state-observing shape: the scrutinee runs
 /// the recursion, then the arm-body perform reads its OUT-state. Before the `match` arm of
@@ -18683,6 +18728,61 @@ mod match_engine {
     }
 
     #[test]
+    fn arithmetic_or_comparison_with_a_type_value_operand_names_it_not_a_phantom_int64() {
+        // A first-class TYPE value (`Color`, `Int64`, a module name) in an arithmetic/comparison op is
+        // always a type error (there is no `+` on types; type EQUALITY is the dedicated `Type.eq`, not the
+        // bare `=`/`+`). It leaked the generic scheme's phantom "type mismatch: Int64 and Type". Now: a Type
+        // vs a scalar names the kind boundary; two Types in arithmetic name "arithmetic is not defined on
+        // Type".
+        // Type vs scalar (arithmetic) → kind boundary, no phantom Int64.
+        let mixed =
+            reject_full("(module m (type Color (Red)) (def (main) (+ Color 1)) (export main))")
+                .expect("(+ Type Int) rejects");
+        assert_eq!(
+            mixed.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            mixed.message
+        );
+        assert!(
+            mixed.message.contains("kind boundary")
+                && mixed.message.contains("Type")
+                && !mixed.message.contains("Int64 and Type"),
+            "a Type-vs-scalar op names the kind boundary, no phantom `Int64 and Type`: {}",
+            mixed.message
+        );
+        // Two Types in arithmetic → "arithmetic is not defined on Type".
+        let both =
+            reject_full("(module m (type Color (Red)) (def (main) (+ Color Color)) (export main))")
+                .expect("(+ Type Type) rejects");
+        assert!(
+            both.message.contains("arithmetic is not defined on Type"),
+            "two Type operands name the real type: {}",
+            both.message
+        );
+        // A prelude type name (`Int64`) as an operand is the same.
+        let prelude = reject_full("(module m (def (main) (+ Int64 1)) (export main))")
+            .expect("(+ Int64-type Int) rejects");
+        assert!(
+            prelude.message.contains("kind boundary")
+                && !prelude.message.contains("Int64 and Type"),
+            "a prelude type value operand names the kind boundary: {}",
+            prelude.message
+        );
+        // NO false change: a bare `(= Int64 Int64)` (two Types) is NOT relabeled — type equality is
+        // `Type.eq`, and the bare `=` on two types keeps its own path (both share the Type kind tag, so the
+        // cross-kind guard does not fire).
+        let two_types_eq =
+            reject_full("(module m (def (main) (if (= Int64 Int64) 1 0)) (export main))")
+                .expect("bare = on two types still declines");
+        assert!(
+            !two_types_eq.message.contains("kind boundary"),
+            "bare = on two identical types is not relabeled a kind boundary: {}",
+            two_types_eq.message
+        );
+    }
+
+    #[test]
     fn a_bool_against_a_number_or_char_names_the_scalar_kind_boundary() {
         // A `Bool` operand against a DIFFERENT scalar kind — a number or a `Char` — `(< true 5)`, `(+ 1
         // true)`, `(= true #\a)`. Both are scalars, so the compound/text cross-kind guard does not fire,
@@ -33051,6 +33151,31 @@ mod stage1 {
     }
 
     #[test]
+    fn a_top_level_doc_wrapper_names_its_in_definition_placement() {
+        // Unlike a `//` COMMENT (which `strip_comments` peels, so a `(comment "…" (def …))` wrapper is
+        // seen through), a `(doc "…")` documents a definition from INSIDE it — `(def (f …) (doc "…") …)`,
+        // the shape a `///` doc-comment renders to. A user who WRAPS a def in a top-level `(doc "…" (def
+        // …))` (a natural guess from the comment behavior) used to get the generic "unbound name `doc`"
+        // plus a misleading "export names no definition" cascade. Now the message names the real placement.
+        let msg = compile_component(&crate::codec::encode(&parse(
+            "(module m (doc \"the main fn\" (def (main) 1)) (export main))",
+        )))
+        .expect_err("a top-level doc wrapper hides the def, so the program cannot compile")
+        .message;
+        assert!(
+            msg.contains("documents a definition from INSIDE it")
+                && msg.contains("not as a top-level wrapper"),
+            "names the in-definition placement, not a bare unbound name: {msg}"
+        );
+        // The CANONICAL shape — a `(doc …)` INSIDE the def — compiles and the doc is queryable.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (main) (doc \"the main fn\") 42) (export main))",
+        )))
+        .expect("an in-definition doc clause is valid");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
+    }
+
+    #[test]
     fn a_do_local_declaration_scope_is_backward_only() {
         // Sequential scope: a form sees only the declarations BEFORE it. A FORWARD reference (`y`'s value
         // `(+ x 1)` references `x` declared AFTER it) is unbound — a declaration does not see later ones.
@@ -33879,6 +34004,52 @@ mod stage1 {
         assert!(
             expect_decline("(. 5 x)").contains("requires a record"),
             "a scalar member access keeps the record message"
+        );
+    }
+
+    #[test]
+    fn a_called_tuple_by_name_access_reports_the_position_message_once_not_a_call_site_cascade() {
+        // A tuple-literal accessed by NAME in a def that is CALLED — `(def (g) (. (tuple 1 2) foo))` used
+        // from an exported body — reported TWICE: the precise "a tuple is accessed by position" at the def,
+        // PLUS the bare "member access requires a record" at the CALL SITE (the reached-poison walk lowers
+        // the reduced `(. (tuple 1 2) foo)`, which cannot fold). The call-site decline is the same defect
+        // reached again through lowering — a different node + a weaker message, so neither same-node dedup
+        // nor the reduced-body baseline-diff collapsed it. `dedup_faults` now drops the bare decline for the
+        // tuple-by-position reject. Exactly ONE fault, the precise one; the bare decline is gone.
+        let ds = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (g) (. (tuple 1 2) foo)) (def (main) (g)) (export main))",
+        )));
+        let errs: Vec<_> = ds
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errs.len(),
+            1,
+            "one precise fault, not a call-site cascade: {ds:?}"
+        );
+        assert!(
+            errs[0]
+                .message
+                .contains("a tuple is accessed by position, not by name `foo`"),
+            "the surviving fault is the precise position message: {}",
+            errs[0].message
+        );
+        assert!(
+            !ds.iter()
+                .any(|d| d.message == "member access requires a record"),
+            "the bare call-site decline is suppressed: {ds:?}"
+        );
+        // A SCALAR member access on a non-record still reports its own "found <T>" message (NOT suppressed —
+        // the exact-match drops only the bare lowering form). Two independent defects still both report.
+        let scalar = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) (. 5 x)) (export main))",
+        )));
+        assert!(
+            scalar.iter().any(|d| d
+                .message
+                .contains("member access requires a record, found Int64")),
+            "a scalar non-record access keeps its typed message: {scalar:?}"
         );
     }
 
@@ -35619,6 +35790,44 @@ mod stage1 {
                 "the lowercase-type-var hint points at the unannotated-generic route: {m}"
             );
         }
+        // NESTED type-var positions get the SAME rich guidance (was the terse "unbound name `b`"): a var
+        // inside `(List b)` / `(Tuple a b)` / `(-> a b)` / `(Map k v)`, at every annotation site.
+        for src in [
+            "(module m (def (f (: x (List b))) x) (export f))",
+            "(module m (def (f (: x (Tuple a b))) x) (export f))",
+            "(module m (def (f (: g (-> a b))) g) (export f))",
+            "(module m (def (f (: m (Map k v))) m) (export f))",
+            "(module m (def (main) (: 5 (List b))) (export main))",
+            "(module m (def (main) (let (((: x (List b)) 5)) 0)) (export main))",
+        ] {
+            let m = unbound_hint(src);
+            assert!(
+                m.contains("not a type variable") && m.contains("UNANNOTATED"),
+                "a NESTED lowercase type-var gets the rich hint too: {src} -> {m}"
+            );
+        }
+        // NO false change: an UPPERCASE unknown type nested in a compound stays the plain message (a real
+        // missing type, not a would-be var), and a well-formed nested type is clean.
+        let nested_upper = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: x (List Widget))) x) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0101"))
+        .expect("Widget nested is unbound");
+        assert!(
+            nested_upper.message.contains("unbound name `Widget`")
+                && !nested_upper.message.contains("not a type variable"),
+            "an uppercase nested missing type keeps the plain message: {}",
+            nested_upper.message
+        );
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (f (: x (List Int64))) x) (export f))"
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a well-formed nested type annotation is clean"
+        );
         // A lowercase name in a VARIANT PAYLOAD is still a genuine type variable — NOT this fault. And an
         // UPPERCASE unbound type name (`Widget`) is a plain missing-type, keeping the bare message (it is
         // not a would-be type variable).
@@ -37210,6 +37419,46 @@ mod stage1 {
                 "main"
             ),
             3
+        );
+    }
+
+    #[test]
+    fn two_sibling_modules_may_each_define_a_private_helper_of_the_same_name() {
+        // REGRESSION: the duplicate-value-def check is PER-MODULE (per-file), not global — mirroring the
+        // duplicate-TYPE check. A value-name set is fixed within ONE module, but two SEPARATE files of a
+        // linked package may each define a PRIVATE helper of the same name (`node-count` in a lib AND in
+        // the importing entry). Each module owns its value namespace; a sibling's un-imported def is
+        // invisible, so re-using the name is not a redeclaration. The old global scan flagged this as a
+        // spurious "defined more than once", blocking the idiomatic multi-module layout (a shared type
+        // module `ast` + several passes that each carry their own generically-named helper).
+        let lib = parse(
+            "(do (type Ast (Int Int64) (Name String)) (def (foo (: x Int64)) (+ x 1)) (export (. Ast *)))",
+        );
+        let app = parse(
+            "(do (import \"lib\" (Ast)) (def (foo (: x Int64)) (+ x 2)) \
+               (def (main) (foo (match (. Ast Int 0) (((. Ast Int) n) n) (((. Ast Name) _) 0)))) (export main))",
+        );
+        let files = vec![("lib".to_string(), lib), ("app".to_string(), app)];
+        let linked = crate::link::link(&files, "app").expect("package links");
+        let mut db = crate::db::Db::load_linked(linked.arenas.clone(), Some(linked.linkage()));
+        let dups: Vec<_> = crate::diagnostics(&mut db)
+            .into_iter()
+            .filter(|d| d.message.contains("defined more than once"))
+            .collect();
+        assert!(
+            dups.is_empty(),
+            "a private `foo` in each of two sibling modules is not a duplicate: {dups:?}"
+        );
+
+        // But a SAME-FILE duplicate must STILL reject — the per-file scoping narrows the collision, it
+        // does not remove it. Two `foo` in ONE module collide as before.
+        let mut db2 =
+            crate::db::Db::load(parse("(module m (def (foo) 1) (def (foo) 2) (export foo))"));
+        assert!(
+            crate::diagnostics(&mut db2)
+                .iter()
+                .any(|d| d.message.contains("defined more than once")),
+            "a same-file duplicate def still rejects"
         );
     }
 
@@ -51963,6 +52212,270 @@ mod closure_host_resource {
             .expect("call(handle, Err(3))");
         call.post_return(&mut store).expect("call post_return");
         assert_eq!(out2[0], Val::S64(-3), "match Err(3) → -3");
+    }
+
+    /// DIFFERENT-WIDTH RESULT-ARG oracle core: a closure `(fn (r) (match r ((Ok x) x) ((Err e) (Int64.of e))))`
+    /// whose ONE argument is a `(Result Int64 Int32)` — the ok payload s64 (an i64 core leaf), the err payload
+    /// s32 (an i32 core leaf). The HYPOTHESIS about the canonical ABI's payload JOIN: `result<s64, s32>`
+    /// flattens to `(disc: i32, payload: i64)` — the join takes the WIDER core valtype (i64), and a narrow s32
+    /// err value arrives SIGN-EXTENDED into that i64 slot (wasmtime lowers the s32 into the joined i64). So the
+    /// guest `call` receives `(i32 self, i32 disc, i64 payload)`; the Ok arm reads the i64 directly, the Err arm
+    /// recovers the s32 by `i32.wrap_i64` (the low 32 bits — the value already correct because it arrived
+    /// sign-extended). If this validates + runs (incl. a NEGATIVE narrow err), a different-core-width `(Result
+    /// scalar scalar)` arg is an implementation gap (the join-width + narrow-recover), NOT an ABI wall. Test
+    /// closure: Ok(x:s64)→x; Err(e:s32)→(Int64.of e) = sign-extend e to i64. Standalone (no heap): a bare branch.
+    fn closure_diff_width_result_arg_call_core() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        // 0 = resource-new/rep (i32)->i32; 1 = make ()->i32; 2 = call (i32 self, i32 disc, i64 payload)->i64.
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I32], vec![ValType::I32]); // 0
+        types.ty().function(vec![], vec![ValType::I32]); // 1 make
+        types.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I64],
+            vec![ValType::I64],
+        ); // 2 call
+        m.section(&types);
+
+        let mut imports = ImportSection::new();
+        imports.import("heap", "resource-new", EntityType::Function(0));
+        imports.import("heap", "resource-rep", EntityType::Function(0));
+        m.section(&imports);
+        let f_rnew = 0u32;
+
+        let mut funcs = FunctionSection::new();
+        funcs.function(1); // make
+        funcs.function(2); // call
+        m.section(&funcs);
+        let f_make = 2u32;
+        let f_call = 3u32;
+
+        let mut exports = ExportSection::new();
+        exports.export("make", ExportKind::Func, f_make);
+        exports.export("call", ExportKind::Func, f_call);
+        m.section(&exports);
+
+        let mut code = CodeSection::new();
+        let mut make = Function::new(vec![]);
+        make.instruction(&Instruction::I32Const(0));
+        make.instruction(&Instruction::Call(f_rnew));
+        make.instruction(&Instruction::End);
+        code.function(&make);
+        // call(self, disc, payload) = if disc==0 { payload (Ok x:s64) }
+        //                             else { (Int64.of (i32.wrap payload)) — recover s32 err then re-extend }.
+        // The Err path wraps the joined i64 to its low 32 bits (the s32 e), then sign-extends back to i64 — the
+        // (Int64.of e) the closure body computes. Because the value arrived sign-extended, wrap+extend is an
+        // identity on the value; the point is to prove the guest can RECOVER the narrow arm from the joined slot.
+        let mut call = Function::new(vec![]);
+        call.instruction(&Instruction::LocalGet(1)); // disc
+        call.instruction(&Instruction::I32Const(0)); // Ok's discriminant
+        call.instruction(&Instruction::I32Eq);
+        call.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+        call.instruction(&Instruction::LocalGet(2)); // payload (x:s64) directly
+        call.instruction(&Instruction::Else);
+        call.instruction(&Instruction::LocalGet(2)); // joined payload (i64)
+        call.instruction(&Instruction::I32WrapI64); // → low 32 bits = the s32 err value
+        call.instruction(&Instruction::I64ExtendI32S); // (Int64.of e) — sign-extend back to i64
+        call.instruction(&Instruction::End);
+        call.instruction(&Instruction::End);
+        code.function(&call);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// The outer oracle component for the DIFFERENT-WIDTH RESULT-ARG closure: `call` lifted against `(self:
+    /// own<t>, r: result<s64, s32>) -> s64`, NO canon options — the flatten hypothesis is `(i32 disc, i64
+    /// payload)` where the payload join is the WIDER core (i64). Reuses the same inner re-export SHAPE as the
+    /// same-width oracle but with an s32 err side.
+    fn oracle_closure_diff_width_result_arg_component(core: &[u8]) -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let dtor_idx = c.core_module_raw(&dtor_stub_module());
+        let dtor_inst = c.core_instantiate(dtor_idx, std::iter::empty::<(&str, ModuleArg)>());
+        let dtor_core = c.core_alias_export(dtor_inst, "t-dtor", ExportKind::Func);
+        let res_ty = c.type_resource(ValType::I32, Some(dtor_core));
+        let rnew_core = c.resource_new(res_ty);
+        let rrep_core = c.resource_rep(res_ty);
+        let heap_inst = c.core_instantiate_exports([
+            ("resource-new", ExportKind::Func, rnew_core),
+            ("resource-rep", ExportKind::Func, rrep_core),
+        ]);
+        let module_idx = c.core_module_raw(core);
+        let prog_inst = c.core_instantiate(module_idx, [("heap", ModuleArg::Instance(heap_inst))]);
+        let make_core = c.core_alias_export(prog_inst, "make", ExportKind::Func);
+        let call_core = c.core_alias_export(prog_inst, "call", ExportKind::Func);
+        let (own_t, odef) = c.type_defined();
+        odef.own(res_ty);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_t)));
+        let make_comp = c.lift_func(make_core, make_ty, []);
+        let (own_t2, odef2) = c.type_defined();
+        odef2.own(res_ty);
+        let (var_t, odef_v) = c.type_defined();
+        odef_v.result(
+            Some(ComponentValType::Primitive(PrimitiveValType::S64)),
+            Some(ComponentValType::Primitive(PrimitiveValType::S32)),
+        );
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_t2)),
+            ("r", ComponentValType::Type(var_t)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_comp = c.lift_func(call_core, call_ty, []);
+        let inner_idx = c.component(inner_reexport_component_diff_width_result_arg());
+        let inst = c.instantiate(
+            inner_idx,
+            [
+                ("import-type-t", ComponentExportKind::Type, res_ty),
+                ("import-func-make", ComponentExportKind::Func, make_comp),
+                ("import-func-call", ComponentExportKind::Func, call_comp),
+            ],
+        );
+        c.export(
+            "cadenza:closure/exports",
+            ComponentExportKind::Instance,
+            inst,
+            None,
+        );
+        c.finish()
+    }
+
+    /// The inner re-export component for the DIFFERENT-WIDTH RESULT-ARG closure: like the same-width one but
+    /// `call`'s argument is a `result<s64, s32>` DEFINED TYPE (asymmetric payload widths).
+    fn inner_reexport_component_diff_width_result_arg() -> wasm_encoder::ComponentBuilder {
+        use wasm_encoder::*;
+        let mut c = ComponentBuilder::default();
+        let imp_t = c.import(
+            "import-type-t",
+            ComponentTypeRef::Type(TypeBounds::SubResource),
+        );
+        let (own_imp, od) = c.type_defined();
+        od.own(imp_t);
+        let (make_ty, mut mf) = c.type_function();
+        mf.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_imp)));
+        let make_fn = c.import("import-func-make", ComponentTypeRef::Func(make_ty));
+        let (var_imp, od_v) = c.type_defined();
+        od_v.result(
+            Some(ComponentValType::Primitive(PrimitiveValType::S64)),
+            Some(ComponentValType::Primitive(PrimitiveValType::S32)),
+        );
+        let (own_imp2, od2) = c.type_defined();
+        od2.own(imp_t);
+        let (call_ty, mut cf) = c.type_function();
+        cf.params([
+            ("self", ComponentValType::Type(own_imp2)),
+            ("r", ComponentValType::Type(var_imp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let call_fn = c.import("import-func-call", ComponentTypeRef::Func(call_ty));
+        let exp_t = c.export("t", ComponentExportKind::Type, imp_t, None);
+        let (own_exp, od3) = c.type_defined();
+        od3.own(exp_t);
+        let (make_exp_ty, mut mf2) = c.type_function();
+        mf2.params::<[(&str, ComponentValType); 0], _>([])
+            .result(Some(ComponentValType::Type(own_exp)));
+        c.export(
+            "make",
+            ComponentExportKind::Func,
+            make_fn,
+            Some(ComponentTypeRef::Func(make_exp_ty)),
+        );
+        let (var_exp, od_v2) = c.type_defined();
+        od_v2.result(
+            Some(ComponentValType::Primitive(PrimitiveValType::S64)),
+            Some(ComponentValType::Primitive(PrimitiveValType::S32)),
+        );
+        let (own_exp2, od4) = c.type_defined();
+        od4.own(exp_t);
+        let (call_exp_ty, mut cf2) = c.type_function();
+        cf2.params([
+            ("self", ComponentValType::Type(own_exp2)),
+            ("r", ComponentValType::Type(var_exp)),
+        ])
+        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        c.export(
+            "call",
+            ComponentExportKind::Func,
+            call_fn,
+            Some(ComponentTypeRef::Func(call_exp_ty)),
+        );
+        c
+    }
+
+    /// THE REFUTATION ATTEMPT: does a `(Result Int64 Int32)` closure ARGUMENT (DIFFERENT-width payloads) cross
+    /// by native flattening where the payload JOIN is the WIDER core (i64)? `make()`, then `call(handle, Ok(7))`
+    /// → 7, a fresh `call(h2, Err(3))` → 3, and a fresh `call(h3, Err(-5))` → -5 (the NEGATIVE narrow case pins
+    /// the sign-extend into the joined i64). If it validates + runs, a different-core-width `(Result scalar
+    /// scalar)` arg is an implementation gap (join-width + narrow-recover), NOT an ABI wall.
+    #[test]
+    fn a_diff_width_result_scalar_closure_arg_crosses_by_native_flattening() {
+        use wasmtime::component::{Component, Linker, Val};
+        use wasmtime::{Engine, Store};
+        let comp = oracle_closure_diff_width_result_arg_component(
+            &closure_diff_width_result_arg_call_core(),
+        );
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        validator
+            .validate_all(&comp)
+            .expect("diff-width result-arg closure component validates");
+
+        let engine = Engine::default();
+        let component = Component::from_binary(&engine, &comp).expect("valid component");
+        let linker: Linker<()> = Linker::new(&engine);
+        let mut store = Store::new(&engine, ());
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let iface = instance
+            .get_export_index(&mut store, None, "cadenza:closure/exports")
+            .expect("closure interface");
+        let make_idx = instance
+            .get_export_index(&mut store, Some(&iface), "make")
+            .expect("make export");
+        let call_idx = instance
+            .get_export_index(&mut store, Some(&iface), "call")
+            .expect("call export");
+        let make = instance.get_func(&mut store, make_idx).expect("make func");
+        let call = instance.get_func(&mut store, call_idx).expect("call func");
+
+        // call(handle, Ok(7)) → 7 (the s64 ok payload read directly off the joined i64).
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle).expect("make call");
+        make.post_return(&mut store).expect("make post_return");
+        let ok_arg = Val::Result(Ok(Some(Box::new(Val::S64(7)))));
+        let mut out = [Val::Bool(false)];
+        call.call(&mut store, &[handle[0].clone(), ok_arg], &mut out)
+            .expect("call(handle, Ok(7))");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(out[0], Val::S64(7), "match Ok(7) → 7");
+
+        // A fresh handle: call(h2, Err(3)) → 3 (the s32 err recovered from the joined i64 via wrap).
+        let mut handle2 = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle2)
+            .expect("make call 2");
+        make.post_return(&mut store).expect("make post_return 2");
+        let err_arg = Val::Result(Err(Some(Box::new(Val::S32(3)))));
+        let mut out2 = [Val::Bool(false)];
+        call.call(&mut store, &[handle2[0].clone(), err_arg], &mut out2)
+            .expect("call(handle, Err(3))");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(out2[0], Val::S64(3), "match Err(3) → 3");
+
+        // A fresh handle: call(h3, Err(-5)) → -5 — the NEGATIVE narrow err pins the sign-extend into the join.
+        let mut handle3 = [Val::Bool(false)];
+        make.call(&mut store, &[], &mut handle3)
+            .expect("make call 3");
+        make.post_return(&mut store).expect("make post_return 3");
+        let err_neg = Val::Result(Err(Some(Box::new(Val::S32(-5)))));
+        let mut out3 = [Val::Bool(false)];
+        call.call(&mut store, &[handle3[0].clone(), err_neg], &mut out3)
+            .expect("call(handle, Err(-5))");
+        call.post_return(&mut store).expect("call post_return");
+        assert_eq!(out3[0], Val::S64(-5), "match Err(-5) → -5 (sign-extended)");
     }
 
     /// NESTED-COMPOUND oracle core: a closure `(fn (p) (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))` whose ONE

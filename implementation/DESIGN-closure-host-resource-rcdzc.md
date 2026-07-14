@@ -1214,9 +1214,21 @@ the component type. The new work:
   no-sum groups stay byte-identical. Corpus: 6 DISTINCT-SIG cases (mixed Option/Result groups + driving each,
   different-width Option payloads, a sum group beside a tuple group, capturing sum groups, sum groups alongside
   a plain export).
+- **✅ SUM (Result scalar) arg with DIFFERENT-WIDTH ok/err payloads — scalar result (`spec@454851fd`).** A
+  `(Result ok err)` whose ok/err payloads have different CORE widths (one i64, one i32-core — e.g. `(Result
+  Int64 Int32)`) now crosses; previously the classifier bailed at `ok_vt != err_vt`. The canonical ABI flattens
+  `result<s64,s32>` to `(disc: i32, payload: JOIN)` where the payload core valtype is the JOIN of the two sides
+  = the WIDER core (i64 if either side is i64, else i32). The narrow side arrives SIGN-EXTENDED into that joined
+  i64; the guest `call` recovers it with `i32.wrap_i64` (low 32 bits) before the arm's own extend, then boxes
+  via `sum-new`. `serialize::SumArgArm` gains `wrap_join: bool` (set on whichever side is narrower than the
+  join); `emit_sum_arm` prepends `i32.wrap_i64` when set; the classifier computes the join vt + per-arm
+  `wrap_join`. A float↔int / f32↔f64 mixed join still declines. Same-width Result reads the join directly
+  (`wrap_join` false, byte-neutral). Composes with multi-export + distinct-sig for free (the `SumArgRebuild`
+  threads uniformly). Oracle `a_diff_width_result_scalar_closure_arg_crosses_by_native_flattening` pins the ABI
+  under wasmtime incl. a NEGATIVE narrow payload (narrow side both err and ok). Corpus: 5 cases.
   **REMAINING within SUM-arg:** a general USER sum / >2 variants (needs a NAMED
-  `variant<…>` — an export-a-named-type step); a Result with DIFFERENT-width ok/err payloads (a wider flattened
-  join); a compound/nested payload; a LIST result over a sum arg (the list cores thread tuples, not sums).
+  `variant<…>` — an export-a-named-type step); a compound/nested sum payload; a LIST result over a sum arg (the
+  list cores thread tuples, not sums).
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap).
   (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that

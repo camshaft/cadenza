@@ -1560,6 +1560,13 @@ pub struct SumArgArm {
     pub decl_disc: u32,
     /// `Some((box_op, extend))` for a single scalar payload; `None` for a nullary variant (builds IMM_UNIT).
     pub payload_box: Option<(&'static str, Option<bool>)>,
+    /// The flattened payload param is a WIDER core JOIN (i64) than this arm's own narrow (i32-core) payload —
+    /// the different-width `result<ok,err>` case, where the canonical ABI joins the payload slot to the wider
+    /// of the two sides. When `true`, the guest `i32.wrap_i64`s the joined param FIRST (recovering the narrow
+    /// value's low 32 bits) before this arm's own `extend` (`payload_box`'s `Some(signed)`). Always `false` for
+    /// an Option arm (single payload, no join) and for a same-core-width Result (both sides read the join
+    /// directly). Proven by the `a_diff_width_result_scalar_closure_arg_crosses_by_native_flattening` oracle.
+    pub wrap_join: bool,
 }
 
 /// How a closure `call` reassembles ONE flattened fixed-shape SUM argument (an `Option`/`Result` — a
@@ -1596,6 +1603,13 @@ fn emit_sum_arm(arm: &SumArgArm, payload_param: u32, imp: &dyn Fn(&str) -> u64, 
     if let Some((box_op, extend)) = &arm.payload_box {
         out.push(op::LOCAL_GET);
         uleb128(payload_param as u64, out); // [disc, payload-leaf]
+        if arm.wrap_join {
+            // The joined payload slot is the WIDER core (i64) but THIS arm's payload is narrow (i32-core): the
+            // narrow value arrived widened into the join, so recover its low 32 bits before this arm's own
+            // (re-)extend. `i32.wrap_i64` keeps the low 32 bits (the raw narrow value, sign/zero irrelevant here
+            // since `extend` below re-applies the correct one). See the diff-width Result oracle.
+            out.push(op::I32_WRAP_I64);
+        }
         if let Some(signed) = extend {
             out.push(if *signed {
                 op::I64_EXTEND_I32_S

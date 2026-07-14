@@ -9,12 +9,7 @@
 /// `repros/reject-inferred-closure-param-through-recursive-hof.sexp`. Annotating the HOF's function
 /// parameter (or the closure's params) gives inference the anchor it can't derive through the
 /// recursion; the arrow annotation is the idiomatic fix and reads well.
-type Ast =
-  | Int(Int64)
-  | Str(String)
-  | Bool(Bool)
-  | Name(String)
-  | List(List(Ast))
+import { Ast } from "ast"
 
 /// Map a function over an Int64 list (the `List.map` the prelude lacks).
 def map-list(f: Int64 -> Int64, xs: List(Int64)) = match xs with
