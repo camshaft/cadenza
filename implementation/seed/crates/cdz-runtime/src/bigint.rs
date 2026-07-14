@@ -145,6 +145,43 @@ impl Big {
         }
     }
 
+    /// Three-way compare TWO values given their canonical sign-magnitude heap-leaf bytes DIRECTLY — the
+    /// same result as decoding both to `Big` and calling `cmp`, but with NO heap `Big` (no limb `Vec`)
+    /// allocated. The runtime `bigint-cmp` op reads both operands' `raw` slices and calls this, so a
+    /// comparison (the primitive `<`/`>`/`=`/… lower to, incl. a BigInt map-key compare) is allocation-
+    /// FREE. Bytes are `[sign][LE magnitude, trailing-zeros-stripped]` (the `to_sign_magnitude_bytes`
+    /// form); a canonical zero is `[0]` (sign byte only), and zero is never negative — so the sign-differ
+    /// arms below can't misfire on a zero (its sign byte is 0). Differential-tested against `Big::cmp`.
+    pub fn cmp_sign_magnitude_bytes(a: &[u8], b: &[u8]) -> Ordering {
+        let a_neg = a.first().copied().unwrap_or(0) != 0;
+        let b_neg = b.first().copied().unwrap_or(0) != 0;
+        let a_mag = a.get(1..).unwrap_or(&[]); // LE magnitude bytes, trailing zeros already stripped
+        let b_mag = b.get(1..).unwrap_or(&[]);
+        match (a_neg, b_neg) {
+            (false, true) => Ordering::Greater,
+            (true, false) => Ordering::Less,
+            (false, false) => Big::cmp_mag_bytes_le(a_mag, b_mag),
+            // Both negative: the LARGER magnitude is the SMALLER value.
+            (true, true) => Big::cmp_mag_bytes_le(b_mag, a_mag),
+        }
+    }
+
+    /// Compare two little-endian, trailing-zero-stripped magnitude byte slices by value. Longer = larger
+    /// (no trailing zeros, so the length is significant-byte count); equal length → compare from the
+    /// most-significant (highest-index) byte down. The byte analogue of `cmp_mag` over limbs.
+    fn cmp_mag_bytes_le(a: &[u8], b: &[u8]) -> Ordering {
+        if a.len() != b.len() {
+            return a.len().cmp(&b.len());
+        }
+        for i in (0..a.len()).rev() {
+            match a[i].cmp(&b[i]) {
+                Ordering::Equal => continue,
+                ne => return ne,
+            }
+        }
+        Ordering::Equal
+    }
+
     /// `self + other`.
     pub fn add(&self, other: &Big) -> Big {
         let mut r = if self.neg == other.neg {
@@ -544,6 +581,13 @@ mod tests {
 
             let ord = a.cmp(&b);
             assert_eq!(ord, ra.cmp(&rb), "cmp {a:?} {b:?}");
+            // The BYTE-form compare (what `bigint-cmp` runs on the operands' raw slices, no `Big` decode)
+            // must give the SAME ordering as `Big::cmp` for every pair.
+            assert_eq!(
+                Big::cmp_sign_magnitude_bytes(&a.to_sign_magnitude_bytes(), &b.to_sign_magnitude_bytes()),
+                ord,
+                "byte-form cmp agrees with Big::cmp {a:?} {b:?}"
+            );
 
             if !b.is_zero() {
                 let (q, r) = a.divmod(&b).unwrap();
