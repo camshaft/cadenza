@@ -101,6 +101,10 @@ export default function Lists() {
 (def (main) (count (list 10 20 30 40)))`}
       />
       <P>
+        Four elements in, so <C>4</C> out — and you never wrote the element type: <C>count</C> works on a
+        list of anything, because <C>List.len</C> doesn't care what the elements are.
+      </P>
+      <P>
         To visit <em>every</em> element, match the list by shape. A <C>match</C> on a list has two
         cases: the empty list <C>(list)</C>, and a non-empty one <C>(list x .. rest)</C> — which binds the
         first element to <C>x</C> and the <em>rest</em> of the list to <C>rest</C>. Recurse on <C>rest</C>{" "}

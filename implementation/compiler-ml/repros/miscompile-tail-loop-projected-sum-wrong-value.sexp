@@ -1,12 +1,25 @@
-;; MISCOMPILE — SILENT WRONG VALUE (2026-07-14). `cdz check` CLEAN, `cdz compile -t wasm` SUCCEEDS
-;; (valid wasm), but the program returns the WRONG VALUE at run time. `main 0` must return 5 (the byte
-;; at position 0 of b"\x05\x07", wrapped in `W.Atom`, threaded once through the loop) but returns 0.
+;; ✅ FIXED (2026-07-14, seed rcdzc) — REGRESSION WITNESS. `main 0` now returns 5. The root was NOT
+;; slot-aliasing as first hypothesized — it was a PERCEUS use-after-free in `backend/wasm/select.rs`
+;; `binding_escapes`: `(. r 0)` projects a NESTED-COMPOUND child (the boxed sum `W.Atom`) OUT of the
+;; `let`-bound tuple `r` and threads it into the recursive `loop` call as `last`. The escape analysis
+;; only saw the SCALAR sibling projection `(. r 1)` (which copies its i64 out), judged `r` fully
+;; borrowed, and DROPPED it after the projections — cascading to FREE the escaped boxed-sum child →
+;; garbage read → 0 instead of 5. FIX: a nested-compound projection (`get_op(id) == None`) ESCAPES its
+;; operand, so the aggregate is NOT reclaimed while its extracted child is still live. Migrated to the
+;; corpus as `spec/semantics/10-bytes.sexp` ("a tail loop threading a projected boxed-sum accumulator
+;; and a projected cursor decodes correctly") + unit test
+;; `a_tail_loop_threading_a_projected_boxed_sum_accumulator_decodes_correctly`. Kept as the witness.
 ;;
-;; This is the SURVIVING face of the i32/i64 slot-aliasing loop-transform family. A sibling FIXED the
+;; ORIGINAL (2026-07-14): MISCOMPILE — SILENT WRONG VALUE. `cdz check` CLEAN, `cdz compile -t wasm`
+;; SUCCEEDS (valid wasm), but the program returned the WRONG VALUE at run time. `main 0` must return 5
+;; (the byte at position 0 of b"\x05\x07", wrapped in `W.Atom`, threaded once through the loop) but
+;; returned 0.
+;;
+;; This was the SURVIVING face of the i32/i64 slot-aliasing loop-transform family. A sibling FIXED the
 ;; INVALID-WASM face (the minimal `miscompile-slot-alias-i32i64-loop-tupleproj.sexp` now compiles AND
-;; returns the correct value), but the WRONG-VALUE face persists — and a silent wrong value is more
-;; dangerous than a loud validation error. Root still `backend/wasm/select.rs` loop-transform emit: a
-;; tuple-projected value threaded into a loop param slot is read from the wrong slot.
+;; returns the correct value), but the WRONG-VALUE face persisted — and a silent wrong value is more
+;; dangerous than a loud validation error. (Hypothesis at filing was a loop-transform slot mis-read;
+;; the actual root was the Perceus escape gap above.)
 ;;
 ;; SHARP BOUND (bisected 2026-07-14) — the JOINTLY-REQUIRED ingredients (remove ANY one → returns 5):
 ;;   (1) a SELF-TAIL loop that threads a BOXED SUM handle projected from a tuple (`(. r 0)`) as a param;

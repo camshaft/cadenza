@@ -856,3 +856,34 @@
             (def (id b) b)
             (def (main) (id b"A\nB")) (export main)))
   (output (: b"A\nB" Bytes)))
+
+; --- A tuple-projected boxed-sum accumulator threaded through a byte-decode tail loop --------------
+; A single-scan byte decoder: `one` reads a byte and returns a `(tuple <boxed-sum> <next-pos>)`; the
+; driver `loop` threads BOTH projections of that tuple — `(. r 0)` the boxed-sum accumulator and
+; `(. r 1)` the advanced position — into its own tail-recursive params. `(. r 0)` extracts a NESTED
+; COMPOUND (the boxed sum `W.Atom`) child handle OUT of the tuple; that child escapes into the
+; recursive `loop` call as the `last` param. If the enclosing `let`-bound tuple `r` were reclaimed
+; after the projections (its scalar `(. r 1)` copies out, so the naive rule sees only borrows), the
+; drop would cascade to FREE the escaped boxed-sum child — a use-after-free that read back garbage (the
+; accumulator came out 0 instead of 5). Pins that a NESTED-COMPOUND projection ESCAPES its aggregate
+; (the aggregate is not reclaimed while its extracted child is still live), so the threaded boxed-sum
+; survives the loop step. The `if` inside `one` forces `r` to be a real join-produced heap handle, not
+; a folded constant — remove it, or thread a plain-Int64 accumulator, or advance pos any other way, and
+; the bug vanishes: all three conditions are jointly required.
+(case "a tail loop threading a projected boxed-sum accumulator and a projected cursor decodes correctly"
+  (doc    "`one b pos` returns `(tuple (W.Atom <byte>) (+ pos 1))`; `loop` threads `(. r 0)` (the boxed
+           sum) and `(. r 1)` (the next position) into its params, so the projected `W.Atom` child
+           handle escapes OUT of the tuple into the recursive call. `main 0` scans byte 0 of
+           `b\"\\x05\\x07\"` (= 5) once, wraps it in `W.Atom`, threads it through one loop step, and
+           unwraps to 5. A projection that let the tuple be reclaimed would free the escaped boxed sum
+           and read garbage (it returned 0). Pins nested-compound-projection escape through a tail loop.")
+  (input  (do (type W (Atom Int64) (Zero))
+              (def (one (: b Bytes) (: pos Int64))
+                (if (= ((. Option expect) ((. Bytes at) b pos) "t") 5)
+                    (tuple ((. W Atom) ((. Option expect) ((. Bytes at) b pos) "v")) (+ pos 1))
+                    (tuple ((. W Atom) 99) (+ pos 1))))
+              (def (loop (: b Bytes) (: n Int64) (: pos Int64) (: last W))
+                (if (= n 0) last (let ((r (one b pos))) (loop b (- n 1) (. r 1) (. r 0)))))
+              (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Zero) _) 0)))
+              (def (main (: pos Int64)) (wval (loop b"\x05\x07" 1 pos ((. W Atom) 0)))) (export main)))
+  (call   main (: 0 Int64)) (output (: 5 Int64)))

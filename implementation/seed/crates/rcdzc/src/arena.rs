@@ -148,6 +148,17 @@ impl<Id: Index, T> Column<Id, T> {
         self.slots[ix] = Slot::Filled(value);
     }
 
+    /// Reset the slot at `id` to `Absent`, dropping any memoized fact. Used when a lowering-time desugar
+    /// RE-PARENTS an existing subtree (a body moved under a synthesized destructuring `match`, so a name
+    /// that resolved to one binder must re-resolve against the new enclosing pattern) — the memoized
+    /// resolved-form is then stale. No-op for an id past the filled region.
+    pub fn forget(&mut self, id: Id) {
+        let ix = id.ix();
+        if ix < self.slots.len() {
+            self.slots[ix] = Slot::Absent;
+        }
+    }
+
     /// Read the slot at `id`. An id past the filled region reads as `Absent`.
     pub fn get(&self, id: Id) -> &Slot<T> {
         match self.slots.get(id.ix()) {

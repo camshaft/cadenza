@@ -7251,6 +7251,33 @@ fn enrich_unbound(db: &mut Db, id: crate::ast::StructId, r: Reject) -> Reject {
     let Some(name) = db.ast.as_name(id).map(str::to_string) else {
         return r;
     };
+    // `eval` is a RECOGNIZED metaprogramming form (`desugar_eval` rewrites `(eval AST)` to the source the
+    // AST denotes) — but ONLY when its argument is a COMPILE-TIME-VISIBLE `Ast` construction (a `(quote
+    // …)` / literal `Ast.*`). A `(eval 5)` (non-Ast arg), `(eval a)` (a runtime Ast), or `(eval)` (no arg)
+    // does not desugar, so the `eval` head falls through to `resolve` as an unbound NAME — a MISLEADING
+    // "unbound name `eval`" (and worse, a did-you-mean to a near name like `even`), as if `eval` were a
+    // typo, when the real situation is a recognized form whose argument this compiler does not execute. Name
+    // that — the metaprogramming analogue of the top-level `import`/`pragma` recognized-but-not-modeled
+    // messages (`compile::collect_faults`). Fires only when `id` heads a `(eval …)` form (so a bare `eval`
+    // reference elsewhere still gets the ordinary unbound path).
+    if name == "eval"
+        && db
+            .parent_of(id)
+            .and_then(|p| db.ast.as_form(p, "eval").map(|t| (t, p)))
+            .is_some_and(|(_, p)| {
+                matches!(db.ast.get(p), crate::ast::Struct::List(kids) if kids.first() == Some(&id))
+            })
+    {
+        return Reject::coded(
+            Code::Unbound,
+            "`eval` executes only a COMPILE-TIME-VISIBLE AST construction (a `(quote …)` or literal \
+             `Ast.*`): it reconstructs the source that AST denotes and compiles it. A runtime / \
+             non-constant AST argument is not executed (the compiler builds and analyzes AST but does not \
+             run a dynamically-built one), so this `eval` has nothing to reconstruct."
+                .to_string(),
+        )
+        .at(id);
+    }
     match crate::resolve::nearest_unbound_suggestion(db, id, &name) {
         Some(candidate) => Reject::coded(
             Code::Unbound,

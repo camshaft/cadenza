@@ -145,6 +145,26 @@
   (call   main (: 10 Int64))
   (output (: 2 Int64)))
 
+(case "a two-arm match whose wildcard binds the scrutinee and applies a trap-free op — selects, binder reads it"
+  (doc    "`(def (main (: n Int64)) (match n (0 -1) (m (& m 255))))` — a two-arm scalar match: the `0`
+           probe yields -1, else the wildcard binds the scrutinee as `m` and returns `(& m 255)` (the low
+           byte). Both arms are trap-free, so the compiler emits a branchless `select` (the match analogue
+           of the `if`→`select` conversion); the `m` binder reads the scrutinee's spilled value, which is
+           materialized before either arm. Called with 300: not 0, so `300 & 255 = 44`. Pins that the
+           select-converted match's scrutinee binder still reads the runtime scrutinee value correctly.")
+  (input  (do (def (main (: n Int64)) (match n (0 -1) (m (& m 255)))) (export main)))
+  (call   main (: 300 Int64))
+  (output (: 44 Int64)))
+
+(case "a two-arm match whose wildcard binds the scrutinee — the zero-probe arm"
+  (doc    "The probe-hit companion of the select-converted binding match `(match n (0 -1) (m (& m 255)))`:
+           called with 0, the `0` probe matches and yields -1 (the `m` arm is not selected, though the
+           branchless `select` evaluates both arm values). Confirms value parity of the select-converted
+           match with the structured probe chain on the probe-hit path too.")
+  (input  (do (def (main (: n Int64)) (match n (0 -1) (m (& m 255)))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: -1 Int64)))
+
 ; A lexical binding wins in APPLICATION-HEAD position too, not only value position — even when its
 ; name coincides with a built-in constructor form like `list`/`tuple`/`record`/`map`. core-semantics.md
 ; #Binding Is Lexical: "A name MUST resolve to the nearest enclosing binding of that name." A `let`
