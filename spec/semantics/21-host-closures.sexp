@@ -2756,3 +2756,44 @@
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: true Bool))
   (output (: (list 1 1) (List Int64))))
+
+; FINAL COMPOSITION WITNESSES — the closure surface composes across all its axes at once. These exercise
+; combinations not covered by the per-feature cases: a higher-order (closure-typed) argument on the
+; DISTINCT-SIG round-trip path; a collection result built by REPEATED closure application; and the mixed
+; shape (closures + a plain export) driving the plain side. All run end-to-end under wasmtime.
+
+(case "distinct-sig round-trip: a higher-order closure-typed arg on one group + a scalar closure on another"
+  (doc    "`mka : () -> (-> (-> Int64 Int64) Int64)` (applies its function arg to 1 and 2, sums) and `mkb : ()
+           -> (-> Bool Int64)` are distinct sigs → two resource types. `appa` hands `g` a guest-built `(fn (y)
+           (* y x))`. `appa(handle, 5)` → `g((fn y->y*5))` = 5*1 + 5*2 = 15. Composes the higher-order arg with
+           distinct-signature grouping.")
+  (input  (do (def (mka) (fn ((: f (-> Int64 Int64))) (+ (f 1) (f 2))))
+              (def (mkb) (fn ((: b Bool)) (: (if b 9 8) Int64)))
+              (def (appa (: g (-> (-> Int64 Int64) Int64)) (: x Int64)) (g (fn (y) (* y x))))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 5 Int64))
+  (output (: 15 Int64)))
+
+(case "round-trip: a consumer returns a Set built from REPEATED closure application"
+  (doc    "`mk` multiplies by 10; `app : (own<t>, Int64) -> (Set Int64)` = `(Set.of (list (g x) (g x) x))` —
+           the closure `g` is applied TWICE and its result plus `x` form a set (duplicates collapse).
+           `app(handle, 3)` → `g(3)`=30 twice, so `{3, 30}` → `(: ((. Set of) (list 3 30)) (Set Int64))` in
+           canonical order. Composes repeated in-guest application with a collection value-encode result.")
+  (input  (do (def (mk) (fn ((: n Int64)) (* n 10)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (Set.of (list (g x) (g x) x)))
+              (export mk) (export app)))
+  (call   app (: 3 Int64))
+  (output (: ((. Set of) (list 3 30)) (Set Int64))))
+
+(case "mixed: two closure exports alongside a plain export — driving the plain export"
+  (doc    "`inc`/`dbl` are two same-signature closure exports (crossing via `make-<name>` + a shared borrow
+           `call`) and `two` is a PLAIN (non-closure) export, all in one component. Calling `two` = 2 drives
+           the plain top-level func directly, coexisting with the closure-resource interface. Pins that a
+           plain export rides alongside the (now borrow<t>) multi-export closure shape.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (dbl) (fn ((: x Int64)) (* x 2)))
+              (def (two) 2)
+              (export inc) (export dbl) (export two)))
+  (call   two)
+  (output (: 2 Int64)))
