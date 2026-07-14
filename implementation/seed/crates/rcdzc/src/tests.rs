@@ -14472,6 +14472,66 @@ mod match_engine {
         );
     }
 
+    /// A WELL-FORMED `(pragma default-integer <T>)` written at the PROGRAM'S TOP LEVEL — the root module's
+    /// own member, or a bare `(do …)` item — has NO effect: the load-time pass collects a pragma's literals
+    /// only from a NESTED `(module NAME …)` declaration (one inside a `(do …)`), not the root. Before, such
+    /// a top-level pragma hit the generic "unbound name `pragma`" decline (a misleading typo read, since
+    /// `pragma` is a recognized directive). Now `unknown_top_forms`' `pragma` case names the real situation
+    /// — a pragma is effective only inside a nested module — coded CDZ0601, so the author wraps the module
+    /// in a `(do …)` rather than chasing a phantom typo. A MALFORMED top-level pragma keeps its more-
+    /// specific registry reject (unknown key CDZ0601 / arity CDZ0602 / domain CDZ0303), not the placement
+    /// message.
+    #[test]
+    fn a_top_level_pragma_names_its_ineffective_placement_not_an_unbound_name() {
+        use crate::testkit::parse;
+        // A well-formed top-level `default-integer` pragma → the placement message (not "unbound name").
+        for src in [
+            "(module m (pragma default-integer Int32) (def (main) 1) (export main))",
+            "(do (pragma default-integer BigInt) (def (main) 1) (export main))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("has effect only inside a nested"))
+                .unwrap_or_else(|| panic!("a top-level pragma names its placement: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0601"), "got: {}", d.message);
+            // NOT the old misleading "unbound name `pragma`".
+            let all = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                !all.iter()
+                    .any(|d| d.message.contains("unbound name `pragma`")),
+                "no misleading unbound-pragma: {src} -> {:?}",
+                all.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+        // A MALFORMED top-level pragma keeps the MORE-SPECIFIC registry message, not the placement one:
+        // unknown key → names the key; wrong arity → CDZ0602; non-integer type → CDZ0303.
+        let unknown = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (pragma nonesuch 5) (def (main) 1) (export main))",
+        )));
+        assert!(
+            unknown
+                .iter()
+                .any(|d| d.message.contains("`nonesuch` is not a module directive"))
+                && !unknown
+                    .iter()
+                    .any(|d| d.message.contains("has effect only inside a nested")),
+            "an unknown top-level pragma key keeps the registry message, not the placement one: {:?}",
+            unknown.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            reject_code("(module m (pragma default-integer) (def (main) 1) (export main))")
+                .as_deref(),
+            Some("CDZ0602"),
+            "a wrong-arity top-level pragma keeps CDZ0602"
+        );
+        assert_eq!(
+            reject_code("(module m (pragma default-integer String) (def (main) 1) (export main))")
+                .as_deref(),
+            Some("CDZ0303"),
+            "a non-integer top-level default keeps CDZ0303"
+        );
+    }
+
     #[test]
     fn a_default_integer_pragma_naming_a_non_integer_type_is_cdz0303() {
         // 06-numeric-model "a default-integer pragma naming a non-integer type is rejected" +
