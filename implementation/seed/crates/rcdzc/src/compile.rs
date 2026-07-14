@@ -2029,15 +2029,33 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             );
             continue;
         }
-        // Well-shaped: the bound name must be an effect, not a value. Flag only an UNAMBIGUOUS value def
-        // (a name that is neither a top-level effect nor a module effect but IS a top-level def).
+        // Well-shaped: the bound name must be a declared EFFECT. A name that is NOT an effect binds
+        // nothing and is silently dropped by `scan_effect_bindings`, so flag it here. Two non-effect
+        // cases, both certain mis-binds at the TOP LEVEL (a top-level `(bind …)` can only route a
+        // top-level effect):
+        //   • the name is a VALUE DEF (`(bind foo …)` for a `(def (foo) …)`) — it names something real,
+        //     just not an effect;
+        //   • the name is UNKNOWN — neither an effect nor a def (`(bind Ghost …)`, or a typo `Loger` of
+        //     `Logger`). This used to be SILENTLY ACCEPTED: the comment here assumed an unbound bind-name
+        //     surfaces its own CDZ0101 "at the reference", but a `(bind …)` directive OPERAND is not
+        //     resolved as a value reference, so nothing flagged it and the bind quietly vanished. Reject it
+        //     WITH a did-you-mean over the declared effect names (a `bind` targets an effect, a small
+        //     closed set — listing/suggesting is signal).
         let name_occ = btail[0];
         let name = db.ast.as_name(name_occ).unwrap().to_string();
-        if db.effect_decl_by_name(&name).is_none() && db.def_by_name(&name).is_some() {
-            faults.push(
-                Reject::coded(Code::Malformed, crate::diag::BIND_NOT_AN_EFFECT_MESSAGE)
-                    .at(name_occ),
-            );
+        if db.effect_decl_by_name(&name).is_none() {
+            let effect_names: Vec<&str> = db.effect_decls.iter().map(|e| e.name.as_str()).collect();
+            let hint = crate::diag::suggest::did_you_mean(&name, effect_names.iter().copied(), 3);
+            let mut reject = Reject::coded(
+                Code::Malformed,
+                format!("{}{hint}", crate::diag::BIND_NOT_AN_EFFECT_MESSAGE),
+            )
+            .at(name_occ);
+            // A confident single typo of an effect name → carry the rename fix on the bind-name occ.
+            if let Some(near) = crate::diag::suggest::nearest(&name, effect_names.iter().copied()) {
+                reject = reject.with_fix(crate::diag::Fix::replace_heuristic(name_occ, near));
+            }
+            faults.push(reject);
             continue;
         }
         // A DUPLICATE `(bind E …)` — the same effect bound to a peer TWICE in source. `scan_effect_bindings`

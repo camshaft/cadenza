@@ -54223,6 +54223,35 @@ mod cross_component_oracle {
             "an effect operation named `bind` must not be misread as a peer-binding directive: {:?}",
             d5.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+        // (f) an UNKNOWN bind name — neither an effect nor a value def — was SILENTLY ACCEPTED (the
+        // directive operand is not resolved as a value reference, so no CDZ0101 surfaced and the bind
+        // quietly vanished). It is now CDZ0201, and a near effect name is suggested with a rename fix.
+        let ghost = "(do (bind Ghost \"cadenza:x/y\") (def (main) 0) (export main))";
+        let d6 = crate::diagnostics(&mut crate::db::Db::load(parse(ghost)));
+        assert!(
+            d6.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("names a declared EFFECT")),
+            "a (bind …) of an UNKNOWN name is CDZ0201, not a silent drop: {:?}",
+            d6.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // A typo of a REAL effect names it + carries a rename fix.
+        let typo = "(do (effect Logger (op log (-> Int64 Unit))) (bind Loger \"cadenza:x/y\") \
+                    (def (main) 0) (export main))";
+        let d7 = crate::diagnostics(&mut crate::db::Db::load(parse(typo)));
+        let bind_err = d7
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0201") && d.message.contains("declared EFFECT"))
+            .expect("a bind typo is CDZ0201");
+        assert!(
+            bind_err.message.contains("did you mean `Logger`?"),
+            "a bind typo suggests the near effect: {}",
+            bind_err.message
+        );
+        assert_eq!(
+            bind_err.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Logger"),
+            "the bind typo carries a rename fix"
+        );
     }
     // ------------------------------------------------------------------------------------------------
     // X4b-3 — the BACKEND EMIT: a SOURCE consumer `(extern …)` + `(neg x)` compiles to a valid component
