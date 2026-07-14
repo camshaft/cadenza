@@ -864,12 +864,34 @@ fn type_ctor_arity_message(db: &mut Db, ty_expr: StructId) -> Option<String> {
 /// the per-node core of [`type_ctor_arity_message`]. `None` if this node is not a `(Ctor arg…)` list, or
 /// the ctor is applied at its correct arity, or it is not a type constructor at all.
 fn type_ctor_arity_message_here(db: &mut Db, ty_expr: StructId) -> Option<String> {
+    // `cs.len() >= 1` (not `>= 2`): a ZERO-arg constructor application `(Int)` / `(List)` — the head with
+    // no arguments — is also a wrong arity, and the messages below name the missing argument. A bare atom
+    // (no list) is not an application, so it is excluded.
     let children = match db.ast.get(ty_expr) {
-        crate::ast::Struct::List(cs) if cs.len() >= 2 => cs.to_vec(),
+        crate::ast::Struct::List(cs) if !cs.is_empty() => cs.to_vec(),
         _ => return None,
     };
     let head = children[0];
     let supplied = children.len() - 1;
+    // A WIDTH-INDEXED integer/float type constructor — `(Int 64)` / `(UInt 8)` / `(Float 32)`. It takes
+    // exactly ONE argument, a compile-time WIDTH; `(Int)` / `(Int 32 64)` is a wrong arity. `reduce_ctor`
+    // rejects it → the generic `non_type_annotation_message` calls it "a non-type", misleading since `Int`
+    // IS a type constructor (just missing/over its width). Name the width requirement + the fix (spell the
+    // aliased `Int64` when the width is a plain natural, else `(Int <width>)`).
+    if let Some((name, placeholder)) = match crate::eval::meta_apply_of(db, head) {
+        Some(crate::resolved::Prim::IntCtor) => Some(("Int", "width")),
+        Some(crate::resolved::Prim::UIntCtor) => Some(("UInt", "width")),
+        Some(crate::resolved::Prim::FloatCtor) => Some(("Float", "width")),
+        _ => None,
+    } {
+        if supplied == 1 {
+            return None; // correct arity — a genuine width fault (non-natural width) surfaces elsewhere
+        }
+        return Some(format!(
+            "`{name}` is a WIDTH-indexed type constructor taking one width, but {supplied} arguments \
+             were supplied — write `({name} <{placeholder}>)`, e.g. `{name}64`"
+        ));
+    }
     // A PRELUDE collection type constructor — its arity is fixed by the prim, and its argument placeholder
     // names read naturally (`List Elem`, `Map Key Value`).
     if let Some((name, expected, placeholder)) = match crate::eval::meta_apply_of(db, head) {

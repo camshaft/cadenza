@@ -17302,6 +17302,21 @@ mod match_engine {
                 "(module m (def (g) (: 5 (List Int64 Int64))) (export g))",
                 "`List` takes 1 type argument, but 2 were supplied — write `(List Elem)`",
             ),
+            // The WIDTH-indexed integer/float constructors `Int`/`UInt`/`Float` take one WIDTH — `(Int)`
+            // (zero args) and `(Int 32 64)` (too many) are wrong arities that formerly read as the generic
+            // "found a non-type" (misleading — `Int` IS a type constructor, just missing its width).
+            (
+                "(module m (def (main) (: 5 (Int))) (export main))",
+                "`Int` is a WIDTH-indexed type constructor taking one width, but 0 arguments were supplied — write `(Int <width>)`, e.g. `Int64`",
+            ),
+            (
+                "(module m (def (main) (: 5 (UInt))) (export main))",
+                "`UInt` is a WIDTH-indexed type constructor taking one width, but 0 arguments were supplied — write `(UInt <width>)`, e.g. `UInt64`",
+            ),
+            (
+                "(module m (def (main) (: 5 (Int 32 64))) (export main))",
+                "`Int` is a WIDTH-indexed type constructor taking one width, but 2 arguments were supplied — write `(Int <width>)`, e.g. `Int64`",
+            ),
         ] {
             let d = reject_full(src).unwrap_or_else(|| panic!("{src} rejects"));
             assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
@@ -17323,6 +17338,15 @@ mod match_engine {
                 |d| !d.message.contains("takes") && !d.message.contains("requires a type")
             ),
             "the correct arity `(List Int64)` raises no arity/type fault: {ok:?}"
+        );
+        // The correct `(Int 64)` width application raises no arity fault either (it is `Int64`).
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (main) (: 5 (Int 64))) (export main))"
+            )))
+            .iter()
+            .all(|d| !d.message.contains("WIDTH-indexed")),
+            "the correct arity `(Int 64)` raises no width-ctor arity fault"
         );
         let lit = reject_full("(module m (def (g (: n 5)) n) (export g))")
             .expect("a literal annotation rejects");
