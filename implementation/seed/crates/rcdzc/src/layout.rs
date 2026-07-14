@@ -283,6 +283,8 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
     //# The compiler MUST NOT let filesystem enumeration order or nondeterministic collection iteration affect the order of its output.
     //= constitution.md#ii-compilation-is-reproducible
     //# The compiler MUST emit its output in an order that is a function of the source alone, independent of filesystem enumeration order or nondeterministic collection iteration.
+    //= spec/contracts/reproducible-derivation.md#derivation-is-a-function-of-source-and-toolchain
+    //# Deriving the same canonical source with the same pinned toolchain MUST produce byte-identical component output.
     // `order` keeps the emission SEQUENCE (exports first, then reachable callees); `in_order` is the
     // O(1) membership check that goes with it. A plain `order.contains(&x)` here is an O(len) scan, and
     // it runs once per export AND once per discovered callee — O(N²) on a program with many exports or
