@@ -557,6 +557,7 @@ pass	a list mixing integer and float elements is a type error
 pass	a list of maps with different keys is homogeneous, not a type error
 pass	a list of records with different field sets is a type error
 pass	a list of tuples with different arities is a type error
+pass	a list pattern in a sum-variant payload matches a runtime node by its child count
 pass	a list value consumed by two operations in one function is not freed early
 pass	a list with a runtime element is returned as a program result
 pass	a list-concatenating helper threads lists through a call

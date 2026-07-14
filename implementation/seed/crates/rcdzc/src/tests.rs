@@ -19336,6 +19336,69 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_pattern_in_a_sum_payload_matches_a_runtime_node() {
+        // THE COMPILER-AST SHAPE: a sum-variant payload that is a LIST — `(type Node (Lit Int64) (Call
+        // (List Node)))` — matched over a RUNTIME node by a list pattern in the payload position: `((Call
+        // (list _ .. rest)) …)`. Before, this declined "a list/string pattern over a runtime payload is not
+        // yet supported (only a constant folds)" — the decision-tree matcher produced a `Probe::ListLen`
+        // lit-test that only folded. Now the backend emits it: walk the path to the payload's LIST HANDLE,
+        // `vec-len`, compare (`== n` fixed / `>= n` rest), fall through on mismatch — so a node's child list
+        // is dispatched by length at run time, the exact idiom a self-hosted compiler's tree-walk uses.
+        // `build 2` = `Call [Lit 2, Call [Lit 1, Lit 7]]` — a non-empty Call → the rest arm → 99.
+        let Some(v) = run_heap_value(
+            "(module m (type Node (Lit Int64) (Call (List Node))) \
+               (def (build (: k Int64)) (if (< k 1) (Lit 7) (Call (list (Lit k) (build (- k 1)))))) \
+               (def (top (: n Node)) (match n ((Lit v) v) ((Call (list _ .. rest)) 99) (_ 0))) \
+               (def (main) (top (build 2))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime list-in-payload match run");
+            return;
+        };
+        assert_eq!(
+            v, "99",
+            "a non-empty Call's child list matches the rest arm"
+        );
+
+        // The EMPTY-Call case dispatches by the SAME length gate: `build 0` = `Lit 7` (a Lit, not a Call),
+        // so it takes the `Lit` arm → 7. And a distinct FIXED-arity payload arm selects by exact length:
+        // `(Call (list a))` (exactly one child) vs `(Call (list _ .. rest))` (≥1). Build a one-child Call.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Node (Lit Int64) (Call (List Node))) \
+                   (def (one) (Call (list (Lit 5)))) \
+                   (def (top (: n Node)) (match n \
+                       ((Lit v) v) \
+                       ((Call (list only)) (match only ((Lit w) w) (_ -1))) \
+                       (_ 0))) \
+                   (def (main) (top (one))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "5",
+            "a fixed-arity list payload binds the sole child, read by a nested match"
+        );
+
+        // Length DISPATCH within a variant: a 2-child Call takes the arity-2 arm, a 1-child the arity-1
+        // arm — the `vec-len == n` gate distinguishes them at run time. `two` builds `Call [Lit 3, Lit 4]`.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Node (Lit Int64) (Call (List Node))) \
+                   (def (two) (Call (list (Lit 3) (Lit 4)))) \
+                   (def (top (: n Node)) (match n \
+                       ((Call (list a)) 1) \
+                       ((Call (list a b)) 2) \
+                       (_ 0))) \
+                   (def (main) (top (two))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "2",
+            "a runtime list-payload match dispatches by exact length (2-child → arity-2 arm)"
+        );
+    }
+
+    #[test]
     fn a_guarded_list_arm_does_not_count_toward_exhaustiveness() {
         // A guarded list arm may fail its guard, so it covers NO length unconditionally — a match whose only
         // tail-covering arm is GUARDED is non-exhaustive (CDZ0210), exactly as a guarded scalar/sum tail is.
