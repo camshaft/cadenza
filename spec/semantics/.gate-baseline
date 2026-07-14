@@ -393,6 +393,7 @@ pass	a constant multi-payload variant match binds both payloads and folds to a s
 pass	a constant tuple is returned as a program result
 pass	a constructor CHOSEN by matching one sum is applied to build another
 pass	a constructor STORED in a tuple is extracted and applied as a first-class closure
+pass	a constructor list element dispatches a runtime list by its discriminant
 pass	a constructor pattern in a tuple payload slot is matched in one arm
 pass	a constructor pattern nested under Some matches a runtime list element
 pass	a constructor selected at RUNTIME is a first-class value that is then applied

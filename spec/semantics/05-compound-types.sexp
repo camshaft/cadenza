@@ -2068,6 +2068,27 @@
             (def (main) (classify (list 0 5 9))) (export main)))
   (output (: 5 Int64)))
 
+(case "a constructor list element dispatches a runtime list by its discriminant"
+  (doc    "THE compiler tree-walk idiom: a list of TAGGED nodes matched by the head's DISCRIMINANT —
+           `(match instrs ((list (Op.Add x) .. r) …) ((list (Op.Neg x) .. r) …) (_ …))`. A multi-variant
+           constructor element `(Op.Add n)` is REFUTABLE (matches only an `Add`-tagged element) AND binds
+           the payload, so — unlike a literal element (a pure `=` test) — it desugars to a fresh binder + a
+           DISCRIMINANT-TEST guard `(match __e ((Op.Add _) true) (_ false))` (which gates the arm, falling
+           through to the next arm on a different tag) PLUS a body re-match `(match __e ((Op.Add n) body) (_
+           trap))` that binds the payload for the body. Reuses the guard machinery + the ordinary sum
+           matcher, no new runtime form. A discriminant test may fail, so the arm is EXCLUDED from
+           length-coverage exhaustiveness — a `_` catch-all stays required. `classify (list (Op.Neg 5) …)`
+           → the head is `Neg` → the second arm binds `n`=5 and negates it → -5.")
+  (input  (do
+            (type Op (Add Int64) (Neg Int64))
+            (def (classify (: xs (List Op)))
+              (match xs
+                ((list (Op.Add n) .. r) n)
+                ((list (Op.Neg n) .. r) (* n -1))
+                (_                      -99)))
+            (def (main) (classify (list (Op.Neg 5) (Op.Add 1)))) (export main)))
+  (output (: -5 Int64)))
+
 (case "a list match arm may carry a guard on its element binders"
   (doc    "A list-pattern arm MAY carry a `(guard <list-pattern> <cond>)` guard, exactly as a scalar or sum
            arm does (`core-semantics.md` §Matching Is Exhaustive Or Rejected: a guard is a boolean the arm's

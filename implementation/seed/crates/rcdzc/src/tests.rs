@@ -17050,8 +17050,9 @@ mod match_engine {
         // A refutable SCALAR/STRING LITERAL element NO LONGER declines — it now DISPATCHES by element value
         // (desugars to a fresh binder + a `(= binder <lit>)` guard; see
         // `a_refutable_literal_list_element_dispatches_by_element_value`). So `(list 0 .. r)` with a `_`
-        // catch-all COMPILES (no code, no decline). A refutable MULTI-VARIANT CONSTRUCTOR element still
-        // declines (it needs discriminant refinement, a different mechanism, not this literal desugar).
+        // catch-all COMPILES (no code, no decline). A refutable MULTI-VARIANT CONSTRUCTOR element ALSO
+        // now compiles (dispatches by discriminant; see
+        // `a_refutable_ctor_list_element_dispatches_by_discriminant`).
         assert_eq!(
             reject_code(
                 "(module m (def (f (: xs (List Int64))) (match xs ((list 0 .. r) 1) (_ 0))) \
@@ -17060,21 +17061,33 @@ mod match_engine {
             None,
             "a refutable scalar-literal list element now compiles (dispatches by value)"
         );
-        // A multi-variant-constructor element still declines (codeless) — the length-dispatch matcher
-        // cannot refine on a variant discriminant, and the literal desugar does not cover a ctor.
+        assert_eq!(
+            reject_code(
+                "(module m (type C (A Int64) (B Int64)) \
+                   (def (f (: xs (List C))) (match xs ((list (C.A n) .. r) n) (_ 0))) \
+                   (def (main) (f (list (C.A 1)))) (export main))"
+            ),
+            None,
+            "a refutable multi-variant-ctor list element now compiles (dispatches by discriminant)"
+        );
+        // What STILL declines: MORE THAN ONE refutable-ctor element in a single arm (the body-rematch
+        // nesting + payload-scope interleaving is a later increment; the common tree-walk matches one
+        // tagged head per arm). A codeless decline (nothing ill-formed — the refinement is unbuilt).
         let decline = reject_full(
             "(module m (type C (A Int64) (B Int64)) \
-               (def (f (: xs (List C))) (match xs ((list (C.A n) .. r) n) (_ 0))) \
-               (def (main) (f (list (C.A 1)))) (export main))",
+               (def (f (: xs (List C))) (match xs ((list (C.A n) (C.B m) .. r) (+ n m)) (_ 0))) \
+               (def (main) (f (list (C.A 1) (C.B 2)))) (export main))",
         )
-        .expect("a multi-variant-ctor element blocks compilation");
+        .expect("two ctor elements in one arm block compilation");
         assert_eq!(
             decline.code, None,
-            "a multi-variant-ctor element declines (no code)"
+            "two refutable-ctor elements in one arm declines (no code)"
         );
         assert!(
-            decline.message.contains("refutable list element"),
-            "the decline names the refutable element: {}",
+            decline
+                .message
+                .contains("more than one refutable constructor element"),
+            "the decline names the multi-ctor-element limit: {}",
             decline.message
         );
     }
@@ -20729,6 +20742,87 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0210"),
             "a refutable-literal-element match still needs a catch-all covering every length"
+        );
+    }
+
+    #[test]
+    fn a_refutable_ctor_list_element_dispatches_by_discriminant() {
+        // THE compiler tree-walk idiom: a list of TAGGED nodes matched by the head's DISCRIMINANT —
+        // `(match instrs ((list (Op.Add x) .. r) …) ((list (Op.Neg x) .. r) …) (_ …))`. A multi-variant
+        // ctor element `(Op.Add n)` is REFUTABLE (matches only an `Add`-tagged element) AND binds the
+        // payload, so it desugars to a fresh binder + a discriminant-test guard + a body re-match binding
+        // the payload (`desugar_refutable_ctor_list_elements`). Before, it declined "needs element-value
+        // refinement". A single-variant ctor stays irrefutable (Inc-1); ≥2 ctor elements/arm declines.
+        let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
+        ok("(module m (type Op (Add Int64) (Neg Int64)) \
+              (def (f (: xs (List Op))) (match xs ((list (Op.Add n) .. r) n) ((list (Op.Neg n) .. r) (* n -1)) (_ -1))) \
+              (def (main) (f (list (Op.Add 5)))) (export main))");
+        // Option-payload element (a structural multi-variant sum).
+        ok(
+            "(module m (def (f (: xs (List (Option Int64)))) (match xs ((list (Some n) .. r) n) (_ -1))) \
+              (def (main) (f (list (Some 5)))) (export main))",
+        );
+
+        // RUN, RUNTIME scrutinee: the discriminant selects the arm and its payload binder is returned; a
+        // different tag falls through. `classify [Op.Add k, …]` → k (the Add arm); `[Op.Neg k, …]` → -k.
+        let Some(v) = run_heap_value(
+            "(module m (type Op (Add Int64) (Neg Int64)) \
+               (def (classify (: xs (List Op))) \
+                 (match xs ((list (Op.Add n) .. r) n) ((list (Op.Neg n) .. r) (* n -1)) (_ -99))) \
+               (def (main (: k Int64)) (classify (list (Op.Add k) (Op.Neg 1)))) (export main))",
+            vec!["7".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping refutable-ctor-list-element run");
+            return;
+        };
+        assert_eq!(
+            v, "7",
+            "the Add-tagged head selects the first arm, binding its payload"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Op (Add Int64) (Neg Int64)) \
+                   (def (classify (: xs (List Op))) \
+                     (match xs ((list (Op.Add n) .. r) n) ((list (Op.Neg n) .. r) (* n -1)) (_ -99))) \
+                   (def (main (: k Int64)) (classify (list (Op.Neg k) (Op.Add 1)))) (export main))",
+                vec!["7".to_string()],
+            )
+            .unwrap(),
+            "-7",
+            "a Neg-tagged head falls through to the second arm, binding + negating its payload"
+        );
+        // An UNMATCHED tag with only these two ctor arms + a catch-all falls to the catch-all: build a list
+        // whose head is neither arm's discriminant is impossible here (Op has only Add/Neg), so instead
+        // verify the catch-all fires on the EMPTY list (length 0, no leading element to tag).
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Op (Add Int64) (Neg Int64)) \
+                   (def (classify (: xs (List Op))) \
+                     (match xs ((list (Op.Add n) .. r) n) ((list (Op.Neg n) .. r) (* n -1)) (_ -99))) \
+                   (def (main) (classify (list))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "-99",
+            "the empty list matches no ctor arm and falls to the catch-all"
+        );
+    }
+
+    #[test]
+    fn a_refutable_ctor_list_element_still_requires_a_catch_all() {
+        // A discriminant test may fail, so — like a literal element or any guarded arm — a ctor-element arm
+        // does NOT count toward length-coverage exhaustiveness. Two ctor arms covering every discriminant
+        // still leave the empty list (and the discriminant-failure path) uncovered → CDZ0210.
+        assert_eq!(
+            reject_code(
+                "(module m (type Op (Add Int64) (Neg Int64)) \
+                   (def (f (: xs (List Op))) \
+                     (match xs ((list (Op.Add n) .. r) n) ((list (Op.Neg n) .. r) n))) \
+                 (def (main) (f (list (Op.Add 5)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210"),
+            "a refutable-ctor-element match still needs a catch-all covering every length"
         );
     }
 

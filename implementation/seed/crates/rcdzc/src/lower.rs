@@ -3118,7 +3118,240 @@ fn desugar_refutable_literal_list_elements(
     Some(core_of(db, rewritten))
 }
 
+/// If `elem_pat` is a REFUTABLE MULTI-VARIANT CONSTRUCTOR leading list-element sub-pattern — a `(C.V …)` /
+/// `(V …)` / bare-member `(. Sum V)` whose owning sum has ≥2 variants — return `Some(head)` (the ctor head
+/// occurrence). Such an element matches only when the element's DISCRIMINANT is `V`, so — like a literal —
+/// it is refutable and the length-dispatch matcher cannot express it directly; it desugars to a fresh
+/// binder + a discriminant-test guard + a body that re-matches the binder (`desugar_refutable_ctor_list_
+/// elements`). A SINGLE-variant ctor is IRREFUTABLE (handled inline by `list_element_irrefutable_or_decline`
+/// / Inc-1), so it returns `None` here. A non-ctor element (literal, tuple, bare binder) returns `None`.
+fn refutable_ctor_element_head(db: &mut Db, elem_pat: StructId) -> Option<StructId> {
+    // The ctor head: a bare name / member `(. Sum V)` used whole, or a `(head arg…)` application's head —
+    // the same head extraction `classify_binding_ctor` performs.
+    let head = match db.ast.get(elem_pat) {
+        crate::ast::Struct::Atom(_) => elem_pat,
+        crate::ast::Struct::List(children) => match children.first().copied() {
+            Some(first) if db.ast.as_name(first) == Some(".") => elem_pat,
+            Some(first) => first,
+            None => return None,
+        },
+    };
+    let decl = crate::eval::variant_owner_decl(db, head)?;
+    let variant_count = db.type_decl_by_occ(decl).map(|d| d.variants.len())?;
+    (variant_count > 1).then_some(head)
+}
+
+/// PRE-PASS for `lower_match_list` (the CONSTRUCTOR twin of `desugar_refutable_literal_list_elements`):
+/// rewrite an arm whose list pattern has a refutable MULTI-VARIANT CONSTRUCTOR leading element into an
+/// equivalent guarded arm the length-dispatch matcher already handles. This is the compiler tree-walk idiom
+/// — matching a list of tagged nodes by the head's TAG: `(match instrs ((list (Op.Add x) .. r) …) ((list
+/// (Op.Neg x) .. r) …) (_ …))`.
+///
+/// A ctor element `(C.V p…)` at leading position `i` is refutable (matches only a `C.V`-discriminant
+/// element) AND binds payload sub-patterns — so unlike a literal (a pure `=` test) it needs BOTH a
+/// discriminant test for fall-through AND payload binding for the body. The desugar splits those across the
+/// guard and a body re-match, reusing the Inc-5 guard pipeline + the ordinary sum matcher:
+///   `((list (C.V p…) rest… .. r) body)`  ≡
+///   `((guard (list __lc rest… .. r) (match __lc ((C.V …wildcards) true) (_ false)))
+///       (match __lc ((C.V p…) body) (_ (trap …))))`
+/// The GUARD's discriminant test gates the arm (a non-`C.V` element → false → FALL THROUGH to the next arm,
+/// exactly as the length-dispatch matcher wants); the BODY re-matches the SAME element binder to bind the
+/// payload sub-patterns `p…` for `body` (the inner `_ → trap` arm is DEAD — the guard already proved the
+/// discriminant — but keeps the inner match exhaustive). A guarded arm is EXCLUDED from length-coverage
+/// exhaustiveness, so the outer match still needs a `_`/rest catch-all (correct — a discriminant test may
+/// fail). Three distinct occurrences of the fresh name `__lc{arm}` (the Inc-11 two-parents lesson): the
+/// inert PATTERN-position element binder, the guard-cond match scrutinee, and the body-rematch scrutinee.
+///
+/// Scope: ONE refutable-ctor element per arm (the overwhelmingly common tree-walk shape). An arm with ≥2
+/// refutable-ctor elements DECLINES honestly (its body-rematch nesting + payload-scope interleaving is a
+/// later increment). NO new IR, NO backend change. Returns `Some(Core)` iff the rewrite fired.
+fn desugar_refutable_ctor_list_elements(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    // Detect whether ANY arm's list pattern has a refutable multi-variant-ctor LEADING element. Bail early
+    // if none (the common case pays only this scan).
+    let leading_of = |db: &mut Db, pat: StructId| -> Option<Vec<StructId>> {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        let es = db
+            .ast
+            .as_ctor_form(inner, "list")
+            .or_else(|| db.ast.as_form(inner, "list"))
+            .map(<[_]>::to_vec)?;
+        let lead = es
+            .iter()
+            .position(|&e| db.ast.as_name(e) == Some(".."))
+            .unwrap_or(es.len());
+        Some(es[..lead].to_vec())
+    };
+    let mut any_ctor = false;
+    for &(pat, _) in arms {
+        if let Some(leading) = leading_of(db, pat) {
+            for e in leading {
+                if refutable_ctor_element_head(db, e).is_some() {
+                    any_ctor = true;
+                }
+            }
+        }
+    }
+    if !any_ctor {
+        return None;
+    }
+    // Rewrite each arm.
+    let mut new_arms: Vec<StructId> = Vec::with_capacity(arms.len());
+    for (ai, &(pat, body)) in arms.iter().enumerate() {
+        let (inner, existing_guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            _ => (pat, None),
+        };
+        let list_es = db
+            .ast
+            .as_ctor_form(inner, "list")
+            .or_else(|| db.ast.as_form(inner, "list"))
+            .map(<[_]>::to_vec);
+        let Some(es) = list_es else {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        };
+        let lead = es
+            .iter()
+            .position(|&e| db.ast.as_name(e) == Some(".."))
+            .unwrap_or(es.len());
+        // Locate the refutable-ctor leading element positions.
+        let ctor_positions: Vec<usize> = (0..lead)
+            .filter(|&p| refutable_ctor_element_head(db, es[p]).is_some())
+            .collect();
+        if ctor_positions.is_empty() {
+            // No ctor element in this arm — reuse verbatim (a literal-only / irrefutable arm; a literal
+            // element is handled by the literal desugar pass which runs after this one).
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        }
+        if ctor_positions.len() > 1 {
+            // ≥2 refutable-ctor elements in one arm — the body-rematch nesting + payload-scope interleaving
+            // is a later increment. Decline honestly (rare shape; the common tree-walk matches ONE tagged
+            // head per arm).
+            return Some(Core::Poison(Reject::decline(
+                "a list arm with more than one refutable constructor element is not yet supported \
+                 (match one tagged element per arm)",
+            )));
+        }
+        let cpos = ctor_positions[0];
+        let ctor_pat = es[cpos]; // the original `(C.V p…)` element pattern
+        let head = db.ast.get(inner);
+        let list_head = match head {
+            crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+            _ => db.push_name("list"),
+        };
+        let name = format!("__lc{ai}");
+        // Rebuild the list pattern with the ctor element replaced by a fresh bare binder.
+        let mut new_es: Vec<StructId> = Vec::with_capacity(es.len());
+        for (p, &e) in es.iter().enumerate() {
+            if p == cpos {
+                new_es.push(db.push_name(&name)); // the inert pattern-position element binder
+            } else {
+                new_es.push(e);
+            }
+        }
+        let mut list_children = vec![list_head];
+        list_children.extend(new_es);
+        let new_list = db.push_list(list_children);
+        // The DISCRIMINANT-TEST guard: `(match __lc (<ctor-with-wildcard-payloads> true) (_ false))`. Build a
+        // wildcard-payload copy of the ctor pattern so it tests ONLY the discriminant (no payload binding in
+        // the guard). The guard scrutinee is a fresh occurrence of `__lc`.
+        let disc_scrut = db.push_name(&name);
+        let disc_pat = ctor_pattern_with_wildcard_payloads(db, ctor_pat);
+        // `true`/`false` are BOOL LITERAL atoms (`Leaf::Bool`), NOT bare names — a `push_name("true")`
+        // resolves fine in `check` but the emit path reports CDZ0101 "unbound name `true`".
+        let true_node = db.push_atom(crate::ast::Leaf::Bool(true));
+        let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
+        let disc_true_arm = db.push_list(vec![disc_pat, true_node]);
+        let wild = db.push_name("_");
+        let disc_false_arm = db.push_list(vec![wild, false_node]);
+        let disc_match_head = db.push_name("match");
+        let disc_test = db.push_list(vec![
+            disc_match_head,
+            disc_scrut,
+            disc_true_arm,
+            disc_false_arm,
+        ]);
+        // Combine with any existing guard (AND): the discriminant must hold AND the author's guard.
+        let guard_cond = match existing_guard {
+            None => disc_test,
+            Some(g) => {
+                let and_head = db.push_name("and");
+                db.push_list(vec![and_head, g, disc_test])
+            }
+        };
+        let guard_head = db.push_name("guard");
+        let new_pat = db.push_list(vec![guard_head, new_list, guard_cond]);
+        // The BODY re-match: `(match __lc (<original ctor pattern> <body>) (_ (trap …)))` — binds the ctor's
+        // payload sub-patterns for the original body; the `_` arm is dead (the guard proved the discriminant)
+        // but keeps the inner match exhaustive. The scrutinee + fall-through are fresh nodes.
+        let body_scrut = db.push_name(&name);
+        let body_true_arm = db.push_list(vec![ctor_pat, body]);
+        let trap_head = db.push_name("trap");
+        let trap_msg =
+            db.push_str("unreachable: list-ctor-element discriminant already gated by guard");
+        let trap = db.push_list(vec![trap_head, trap_msg]);
+        let wild_b = db.push_name("_");
+        let body_false_arm = db.push_list(vec![wild_b, trap]);
+        let body_match_head = db.push_name("match");
+        let new_body = db.push_list(vec![
+            body_match_head,
+            body_scrut,
+            body_true_arm,
+            body_false_arm,
+        ]);
+        new_arms.push(db.push_list(vec![new_pat, new_body]));
+    }
+    let match_head = db.push_name("match");
+    let mut items = vec![match_head, scrutinee];
+    items.extend(new_arms);
+    let rewritten = db.push_list(items);
+    crate::resolve::resolve_subtree(db, rewritten);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with a refutable ctor element → fresh-binder + disc-test guard + body re-match");
+    Some(core_of(db, rewritten))
+}
+
+/// A copy of the constructor pattern `ctor_pat` (`(C.V p0 p1)` / `(. Sum V)` / a bare variant name) with
+/// every PAYLOAD argument replaced by a wildcard `_` — the discriminant-only test pattern for the guard.
+/// A bare-name / bare-member ctor (nullary, or a whole `(. Sum V)`) has no payload args, so it is reused
+/// verbatim. An applied ctor `(C.V p…)` keeps its HEAD and replaces each arg with a fresh `_`.
+fn ctor_pattern_with_wildcard_payloads(db: &mut Db, ctor_pat: StructId) -> StructId {
+    match db.ast.get(ctor_pat) {
+        crate::ast::Struct::List(children) => {
+            let children = children.clone();
+            match children.first().copied() {
+                // A bare member `(. Sum V)` used whole — no payload args, reuse verbatim.
+                Some(first) if db.ast.as_name(first) == Some(".") => ctor_pat,
+                Some(head) => {
+                    let mut new_children = vec![head];
+                    for _ in 1..children.len() {
+                        new_children.push(db.push_name("_"));
+                    }
+                    db.push_list(new_children)
+                }
+                None => ctor_pat,
+            }
+        }
+        // A bare-name nullary ctor — no payload, reuse verbatim.
+        crate::ast::Struct::Atom(_) => ctor_pat,
+    }
+}
+
 fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // PRE-PASS (ctor): a refutable MULTI-VARIANT CONSTRUCTOR leading element (`(list (Op.Add x) .. r)`) —
+    // the tree-walk-tagged-nodes idiom — desugars to a fresh binder + a discriminant-test guard + a body
+    // re-match binding the payload. Run BEFORE the literal pass: it rebuilds the match and recurses through
+    // `core_of` → `lower_match_list`, where the literal pass then handles any remaining literal elements.
+    if let Some(core) = desugar_refutable_ctor_list_elements(db, scrutinee, arms) {
+        return core;
+    }
     // PRE-PASS: a refutable SCALAR/STRING LITERAL leading element (`(list 0 a .. r)`, `(list "add" x)`) is
     // an element-VALUE refinement the length-dispatch matcher cannot express directly. Desugar it to a
     // fresh binder + a `(= binder <lit>)` guard (the Inc-5 guard machinery handles the rest), then this
