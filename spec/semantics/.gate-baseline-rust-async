@@ -225,6 +225,7 @@ pass	a map literal with keys of two different types is a type error
 pass	a map mixing integer and float values is a type error
 pass	a map pattern falls through when the key is absent
 pass	a map pattern matches a present key and binds its value
+pass	a map pattern nested in a tuple binds its value binder
 pass	a map with a duplicate key is a type error
 pass	a map with record values of different field sets is a type error
 pass	a map with tuple values of different arities is a type error
@@ -294,6 +295,7 @@ pass	a nested constructor value dispatches on both tags in a match
 pass	a nested element kind mismatch in equality is a type error
 pass	a nested if on the same condition collapses the inner test to the known branch
 pass	a nested literal pattern of the wrong type is a type error
+pass	a nested map pattern falls through when its key is absent
 pass	a nested match on a runtime scrutinee
 pass	a nested option value annotated with the wrong inner payload type is rejected
 pass	a nested runtime tuple built behind a recursive call escapes to the host

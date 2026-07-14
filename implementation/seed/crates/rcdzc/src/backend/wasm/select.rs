@@ -1599,6 +1599,10 @@ fn collect_cont_ops(
                 // A `ListLen` probe over a runtime list payload reads `vec-len` of the sub-list handle to
                 // gate the arm (a constant list folds instead, never reaching here).
                 crate::core::Probe::ListLen { .. } => out.insert(OP_VEC_LEN),
+                // A `MapHasKeys` probe only ever FOLDS (a constant map sub-value); a runtime map declines at
+                // `build_lit_test` before a decision tree emits, so it never reaches a runtime LitTest — no
+                // op to collect.
+                crate::core::Probe::MapHasKeys { .. } => false,
                 crate::core::Probe::Wild => false,
             };
             collect_cont_ops(db, scrutinee, then_, out);
@@ -6612,6 +6616,11 @@ fn emit_probe_condition(probe: &crate::core::Probe, src: OperandSrc, it: IntTy, 
         crate::core::Probe::ListLen { .. } => {
             unreachable!("a list-length probe folds; it is never emitted as a runtime scalar probe")
         }
+        // A `MapHasKeys` probe folds against a constant map; a runtime map declines earlier, so it never
+        // reaches a runtime scalar probe.
+        crate::core::Probe::MapHasKeys { .. } => {
+            unreachable!("a map-key probe folds; it is never emitted as a runtime scalar probe")
+        }
         crate::core::Probe::Wild => {}
     }
 }
@@ -7048,6 +7057,11 @@ fn emit_probe_chain(
             crate::core::Probe::ListLen { .. } => {
                 unreachable!(
                     "a list-length probe folds; a runtime list match declines at build_lit_test"
+                )
+            }
+            crate::core::Probe::MapHasKeys { .. } => {
+                unreachable!(
+                    "a map-key probe folds; a runtime map match declines at build_lit_test"
                 )
             }
             crate::core::Probe::Wild => unreachable!("has_literal_probe"),
@@ -7878,6 +7892,15 @@ fn emit_sum_cont(
                     out.push(Lir::CallImport(OP_VEC_LEN)); // [len:i32]
                     out.push(Lir::ConstI32(*len as i32));
                     out.push(if *at_least { Lir::I32GeU } else { Lir::I32Eq }); // [bool]
+                }
+                crate::core::Probe::MapHasKeys { .. } => {
+                    // A map-pattern payload over a RUNTIME map: the key-presence gate would need a runtime
+                    // `map-lookup` per key (and the value binders a runtime keyed read), not yet wired — a
+                    // CONSTANT map folds the `MapHasKeys` test instead (`build_tree`), never reaching here.
+                    // Decline (like the runtime string-payload probe), never a miscompile.
+                    return Err(Reject::decline(
+                        "a map-pattern payload over a runtime map is not yet matched at run time",
+                    ));
                 }
                 crate::core::Probe::Wild => {
                     return Err(Reject::decline("a wildcard literal test is a compiler bug"));

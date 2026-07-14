@@ -6435,6 +6435,43 @@
             (def (main) (look (pick true))) (export main)))
   (output (: 5 Int64)))
 
+; A map key-directed pattern also composes when NESTED inside another pattern — a map alongside other
+; data in a tuple/list, matched in one arm. The value binder reads the map at its sub-path of the
+; scrutinee (a `MapField` at the nested access path, the map analogue of a nested tuple/list element
+; binder), and a `MapHasKeys` presence gate makes the arm fall through when a named key is absent. Only a
+; nested map dropped its binder before (the nested-binder walk descended tuple/list sub-patterns but had
+; no map arm); a DIRECT map match (above) always bound. These pin the tuple-nested map.
+
+(case "a map pattern nested in a tuple binds its value binder"
+  (doc    "`(match t ((tuple (map (1 a)) k) (+ a k)) …)` on `(tuple (map (1 100)) 5)` — a MAP key-value
+           pattern nested inside a tuple pattern, binding the value at key 1 to `a` alongside the second
+           element `k`. Binds a=100, k=5 → 105. A nested map pattern once dropped its binder ('unbound name
+           `a`') — the nested-binder walk handled tuple/list sub-patterns but not a map sub-pattern; now a
+           `(map …)` nested in a tuple binds exactly as a direct map match does. Also holds for a rest
+           binder and two nested maps.")
+  (input  (do
+            (def (f (: t (Tuple (Map Int64 Int64) Int64)))
+              (match t
+                ((tuple (map (1 a)) k) (+ a k))
+                (_ (- 0 1))))
+            (def (main) (f (tuple (map (1 100)) 5)))
+            (export main)))
+  (output (: 105 Int64)))
+
+(case "a nested map pattern falls through when its key is absent"
+  (doc    "The soundness companion: the nested `(map (7 a))` names key 7, which the matched map (holding
+           only key 1) lacks — so the arm's `MapHasKeys` presence gate fails and the match falls through to
+           the catch-all (→ -1), NOT a spurious match on the wrong key. Pins that a nested map pattern is a
+           genuine key-presence test, exactly as a direct map pattern is.")
+  (input  (do
+            (def (f (: t (Tuple (Map Int64 Int64) Int64)))
+              (match t
+                ((tuple (map (7 a)) k) (+ a k))
+                (_ (- 0 1))))
+            (def (main) (f (tuple (map (1 100)) 5)))
+            (export main)))
+  (output (: -1 Int64)))
+
 ; ── An un-projected element / un-referenced field is UNOBSERVED, so its trap is not raised ──────────
 ; core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed: a trap occurs when the
 ; computation that would raise it is observed — its value flowing to the result, a host call, or an

@@ -696,6 +696,7 @@ pass	a map operation applies to a map passed as a function parameter
 pass	a map pattern binds the rest of the map after the named key
 pass	a map pattern falls through when the key is absent
 pass	a map pattern matches a present key and binds its value
+pass	a map pattern nested in a tuple binds its value binder
 pass	a map threaded as a recursive accumulator is grown then measured
 pass	a map whose value is a list: a runtime lookup then indexes the returned list
 pass	a map with a String value is looked up and its value compared in the arm
@@ -830,6 +831,7 @@ pass	a nested if on the same condition collapses the inner test to the known bra
 pass	a nested lambda captures+applies a closure-typed def PARAMETER (inline lambda argument)
 pass	a nested list element composes over a runtime list of lists
 pass	a nested literal pattern of the wrong type is a type error
+pass	a nested map pattern falls through when its key is absent
 pass	a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive
 pass	a nested match on a runtime scrutinee
 pass	a nested module's function export is applied through the projection chain
@@ -1090,11 +1092,14 @@ pass	a runtime float multiplication emits the machine mul
 pass	a runtime float promotes to a wider width with the machine promote
 pass	a runtime function value is manually eta-wrapped and applied through nested recursive HOFs
 pass	a runtime greater-than compares by signed order
+pass	a runtime greater-than-or-equal holds at the equal-operand boundary
 pass	a runtime integer converts to a float with the machine convert
 pass	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 pass	a runtime left shift by the bit width or more traps
 pass	a runtime left shift multiplies by a power of two
 pass	a runtime less-than at the integer extremes is signed
+pass	a runtime less-than-or-equal holds at the equal-operand boundary
+pass	a runtime less-than-or-equal is signed at the integer extremes
 pass	a runtime list of lists escapes with its nested element type
 pass	a runtime mixed-unit sum emits the scale conversion (Int)
 pass	a runtime modulo of the minimum integer by -1 is zero on every backend

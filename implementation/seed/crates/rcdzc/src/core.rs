@@ -173,6 +173,14 @@ pub enum Probe {
     /// match declines until the runtime list matcher is wired into the payload path. Carried as DATA, gated
     /// once the enclosing discriminant constraints are satisfied, exactly like a literal test.
     ListLen { len: usize, at_least: bool },
+    /// A MAP pattern's key-presence test — the map at this path must contain every one of these KEY
+    /// occurrences (each `const_compound_eq` to some entry key). A `(map (k v) …)` sub-pattern nested in a
+    /// tuple/record/variant arm matches iff all its named keys are present; the value binders then read via
+    /// `MapField`. Like `ListLen`, only the CONSTANT-scrutinee FOLD is realized (a constant `Core::MapNew`
+    /// whose entries cover the keys passes; a runtime map declines). Carried as DATA — the key occurrences,
+    /// resolved/compared at fold time — gated once the enclosing discriminant constraints hold. (The DIRECT
+    /// map scrutinee uses `lower_match_map`, not this path; this is the nested-map arm of the sum matcher.)
+    MapHasKeys { keys: std::rc::Rc<[StructId]> },
     /// The wildcard `_` OR a bare binder — always matches.
     Wild,
 }

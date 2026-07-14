@@ -3550,6 +3550,34 @@ fn selfcall_precedes_perform_in_operands(
             }
         }
     }
+    // A `let` sequences its inits left-to-right and THEN its body, so it is a strict spine just like an
+    // operator's operands: once an INIT contains a self-call, any LATER init or the BODY that reaches a
+    // perform reads the recursion's OUT-state — the same offending shape as `(+ (walk …) (E.op))`, just
+    // hidden behind a binder (`(let ((rest (walk …))) (+ rest (E.op)))`). Without this arm the operand scan
+    // never sees the self-call (it is buried in the init, and the body's `(+ rest (E.op))` has only a `Ref`
+    // and a perform as operands), so specialization proceeds and leaks the internal `f#ctx$s0` name in a
+    // confusing CDZ0101. Positions after the self-call init are: the remaining inits, then the body.
+    if let Some(form) = db.ast.as_form(node, "let").map(|t| t.to_vec())
+        && form.len() == 2
+        && let Struct::List(pairs) = db.ast.get(form[0]).clone()
+    {
+        let mut seen_self_call = false;
+        for pair in pairs {
+            if let Struct::List(kv) = db.ast.get(pair).clone()
+                && kv.len() == 2
+            {
+                if seen_self_call && contains_any_perform(db, kv[1], ctx) {
+                    return true;
+                }
+                if contains_self_call(db, kv[1], callee_def) {
+                    seen_self_call = true;
+                }
+            }
+        }
+        if seen_self_call && contains_any_perform(db, form[1], ctx) {
+            return true;
+        }
+    }
     // Recurse structurally — the shape can be nested inside a branch/let/operand.
     match db.ast.get(node).clone() {
         Struct::List(children) => children

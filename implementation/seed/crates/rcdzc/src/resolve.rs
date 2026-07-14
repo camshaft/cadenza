@@ -1317,10 +1317,26 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
     // Case M: `form` is a MATCH ARM `((map (k v) … .. rest) body)`, ascended from `body`, whose map
     // pattern binds `name` — either a VALUE binder `v` at key `k` (a key-directed lookup) or the REST
     // binder (the scrutinee minus the named keys). Resolves to a `MapField` (the map analogue of Case 6's
-    // `SumPayload` / Case B's `BinField`). Scoped to this arm.
+    // `SumPayload` / Case B's `BinField`). Scoped to this arm. The map pattern is the DIRECT match
+    // scrutinee here, so the access path is EMPTY.
     if let Some((scrutinee, key, named)) = match_arm_map_binds(db, form, from, name) {
         return Some(Resolved::MapField {
             scrutinee,
+            path: std::rc::Rc::from(Vec::new()),
+            key,
+            named: named.into(),
+        });
+    }
+    // Case Mn: `form`'s pattern is a COMPOUND (tuple/record/variant/list) with a MAP pattern NESTED inside
+    // it that binds `name` — `((tuple (map (k v)) j) …)` binds `v` at `Elem(0)`'s map. The nested walk
+    // (`find_map_binder_in_pattern`) returns the access PATH to the map plus the value key / rest keys, so
+    // the `MapField` reads the map at that sub-path of the scrutinee (the map analogue of a nested
+    // `SumPayload`). Complements Case M (the direct map scrutinee); tuple/list-nested tuple/list binders
+    // already compose via `SumPayload`, this adds the missing nested-MAP arm.
+    if let Some((scrutinee, path, key, named)) = match_arm_nested_map_binds(db, form, from, name) {
+        return Some(Resolved::MapField {
+            scrutinee,
+            path: std::rc::Rc::from(path),
             key,
             named: named.into(),
         });
@@ -2171,22 +2187,11 @@ fn is_map_pattern_binder_occurrence(db: &Db, id: StructId) -> bool {
         let Some((entries, rest)) = map_pattern_of(db, cand) else {
             continue;
         };
-        // Is `cand` an arm's PATTERN (first element of a 2-element arm under a `(match …)`)?
-        let Some(arm) = db.parent_of(cand) else {
-            continue;
-        };
-        let Struct::List(pb) = db.ast.get(arm) else {
-            continue;
-        };
-        if pb.len() != 2 || pb[0] != cand {
-            continue;
-        }
-        let Some(matchf) = db.parent_of(arm) else {
-            continue;
-        };
-        let is_arm = matches!(db.ast.as_form(matchf, "match"),
-            Some(mtail) if mtail.first().copied() != Some(arm) && mtail.contains(&arm));
-        if !is_arm {
+        // Is `cand` WITHIN a match arm's PATTERN? Directly (the map IS the arm pattern — Case M) or NESTED
+        // inside a tuple/record/variant arm pattern (the map is a sub-pattern — Case Mn). Ascend from
+        // `cand` through its enclosing compound patterns to the arm's pattern slot; a binder occurrence in
+        // EITHER position names a binding, not a value, so it must resolve inert.
+        if !map_pattern_is_in_a_match_arm(db, cand) {
             continue;
         }
         // `id` is a binder iff it is a VALUE position of some entry, or the REST binder. (A KEY position
@@ -2194,6 +2199,34 @@ fn is_map_pattern_binder_occurrence(db: &Db, id: StructId) -> bool {
         if rest == Some(id) || entries.iter().any(|&(_, v)| v == id) {
             return true;
         }
+    }
+    false
+}
+
+/// Whether the map pattern `cand` sits inside a match arm's PATTERN slot — directly (it IS the pattern) or
+/// nested inside the arm's tuple/record/variant/list pattern. Ascends from `cand` to the enclosing arm's
+/// first child (the pattern), bounded so it stops at the arm boundary (a 2-element list under a `(match
+/// …)` whose first child is on the ascent path). Used to mark a nested map pattern's value/rest binder
+/// inert (like a direct one), so an eager subtree walk never reports it a spurious unbound name.
+fn map_pattern_is_in_a_match_arm(db: &Db, cand: StructId) -> bool {
+    // Walk up: at each step, if the current node is the FIRST child (pattern slot) of a 2-element arm under
+    // a `(match …)`, this is a match-arm pattern → true. Bounded by a small depth (patterns don't nest
+    // deeply) to avoid runaway on a malformed cycle-free arena.
+    let mut node = cand;
+    for _ in 0..64 {
+        let Some(parent) = db.parent_of(node) else {
+            return false;
+        };
+        if let Struct::List(pb) = db.ast.get(parent)
+            && pb.len() == 2
+            && pb[0] == node
+            && let Some(matchf) = db.parent_of(parent)
+            && matches!(db.ast.as_form(matchf, "match"),
+                Some(mtail) if mtail.first().copied() != Some(parent) && mtail.contains(&parent))
+        {
+            return true;
+        }
+        node = parent;
     }
     false
 }
@@ -2426,6 +2459,13 @@ fn is_list_pattern(db: &Db, id: StructId) -> bool {
     db.ast.as_form(id, "list").is_some() || db.ast.head_ctor(id) == Some("list")
 }
 
+/// Whether `id` is a map PATTERN `(map (k v) … .. rest)` — a `map` NAME head (the shadowable alias) or the
+/// `"map"` string-literal primitive. Routes a NESTED map sub-pattern into [`find_map_binder_in_pattern`]
+/// (the key-directed binder descent), the map analogue of [`is_tuple_pattern`]/[`is_list_pattern`].
+fn is_map_pattern(db: &Db, id: StructId) -> bool {
+    db.ast.as_form(id, "map").is_some() || db.ast.head_ctor(id) == Some("map")
+}
+
 /// Descend a TUPLE pattern `(tuple p0 p1…)` looking for the binder `name` in one of its element
 /// positions, appending an `Elem(i)` step for the element that (transitively) binds `name`. An element
 /// may itself be a bare binder (found — one `Elem(i)` step), a nested variant pattern (recurse via
@@ -2465,6 +2505,148 @@ fn find_binder_in_tuple(
         heads.truncate(heads_len);
     }
     false
+}
+
+/// The resolution of a NESTED map-pattern binder: the enclosing match's `scrutinee`, the access `path`
+/// from it down to the nested map, `Some(key)` for a VALUE binder at that key (else `None` for the map's
+/// REST binder), and the `named` keys the map pattern names.
+type NestedMapBind = (
+    StructId,
+    Vec<crate::core::PathStep>,
+    Option<StructId>,
+    Vec<StructId>,
+);
+
+/// If `form` is a match ARM `(pattern body)` (ascended from its BODY) whose pattern is a COMPOUND
+/// (tuple/list/variant/record) with a MAP pattern NESTED inside it binding `name`, return the
+/// [`NestedMapBind`]. `None` otherwise. The NESTED companion of [`match_arm_map_binds`] (which handles the
+/// map as the DIRECT scrutinee).
+fn match_arm_nested_map_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<NestedMapBind> {
+    let Struct::List(pb) = db.ast.get(form) else {
+        return None;
+    };
+    if pb.len() != 2 || from != pb[1] {
+        return None; // not an arm, or the reference is not from the arm's body
+    }
+    let pattern = pb[0];
+    // `form`'s parent must be a `(match scrutinee arm…)` and `form` an arm (not the scrutinee).
+    let parent = db.parent_of(form)?;
+    let mtail = db.ast.as_form(parent, "match")?;
+    let scrutinee = *mtail.first()?;
+    if form == scrutinee {
+        return None;
+    }
+    // The map pattern must be NESTED — a DIRECT map scrutinee is Case M, not here (an empty path would
+    // duplicate it). Descend the compound for a map sub-pattern binding `name`.
+    let mut path = Vec::new();
+    let hit = find_map_binder_in_pattern(db, pattern, name, &mut path)?;
+    if path.is_empty() {
+        return None; // the map is the whole pattern → Case M's job
+    }
+    Some((scrutinee, path, hit.0, hit.1))
+}
+
+/// Descend a COMPOUND pattern (tuple/list/variant/record) looking for a MAP sub-pattern that binds `name`,
+/// accumulating the `Elem`/`Payload` access steps to reach that map. On a hit returns `Some((key, named))`
+/// — `Some(key)` if `name` is the VALUE binder at that key, `None` if it is the map's REST binder — with
+/// `path` holding the steps from the enclosing pattern's scrutinee to the map. The map analogue of the
+/// element-by-element binder descent (`find_binder_in_tuple`/`_list`/`_pattern`), which handle tuple/list/
+/// variant sub-patterns but had no map arm — so a `(map …)` nested in a tuple/record/variant dropped its
+/// binder (a spurious "unbound name"). Element positions compose to any depth (`core-semantics.md §145`).
+fn find_map_binder_in_pattern(
+    db: &Db,
+    pattern: StructId,
+    name: &str,
+    path: &mut Vec<crate::core::PathStep>,
+) -> Option<(Option<StructId>, Vec<StructId>)> {
+    // A MAP pattern here: does it bind `name` (a value binder at some key, or the rest binder)?
+    if is_map_pattern(db, pattern) {
+        let (entries, rest) = map_pattern_of(db, pattern)?;
+        let named: Vec<StructId> = entries.iter().map(|&(k, _)| k).collect();
+        for &(k, v) in &entries {
+            if db.ast.as_name(v).is_some_and(|nm| nm == name && nm != "_") {
+                return Some((Some(k), named)); // a VALUE binder at key `k`
+            }
+        }
+        if rest.is_some_and(|r| db.ast.as_name(r).is_some_and(|nm| nm == name && nm != "_")) {
+            return Some((None, named)); // the REST binder
+        }
+        return None; // this map does not bind `name`
+    }
+    // A TUPLE / LIST pattern: try each element position at `Elem(i)`, recursing for a nested map.
+    let elems: Option<Vec<StructId>> = if is_tuple_pattern(db, pattern) {
+        db.ast
+            .as_form(pattern, "tuple")
+            .or_else(|| db.ast.as_ctor_form(pattern, "tuple"))
+            .map(<[StructId]>::to_vec)
+    } else if is_list_pattern(db, pattern) {
+        // Only LEADING (fixed) elements compose an `Elem(i)`; a `.. rest` sublist is not descended for a
+        // nested map (a runtime sublist read — out of scope, as `find_binder_in_list`'s rest is).
+        db.ast
+            .as_form(pattern, "list")
+            .or_else(|| db.ast.as_ctor_form(pattern, "list"))
+            .map(
+                |t| match t.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
+                    Some(k) => t[..k].to_vec(),
+                    None => t.to_vec(),
+                },
+            )
+    } else {
+        None
+    };
+    if let Some(elems) = elems {
+        for (i, &elem) in elems.iter().enumerate() {
+            let len = path.len();
+            path.push(crate::core::PathStep::Elem(i));
+            if let Some(hit) = find_map_binder_in_pattern(db, elem, name, path) {
+                return Some(hit);
+            }
+            path.truncate(len);
+        }
+        return None;
+    }
+    // A VARIANT pattern `(head arg…)` (head a `(. Sum V)` / bare variant name, not a compound ctor): the
+    // payload is reached by a `Payload` step, then each arg (multi-payload → tuple `Elem(i)`) descends.
+    let Struct::List(app) = db.ast.get(pattern) else {
+        return None;
+    };
+    if app.len() < 2 {
+        return None;
+    }
+    let head = app[0];
+    let is_compound_ctor = db
+        .ast
+        .as_name(head)
+        .is_some_and(|h| matches!(h, "list" | "tuple" | "record" | "map"));
+    let head_ok = !is_compound_ctor
+        && (db.ast.as_form(head, ".").is_some() || db.ast.as_name(head).is_some());
+    if !head_ok {
+        return None;
+    }
+    let len = path.len();
+    path.push(crate::core::PathStep::Payload);
+    if app.len() == 2 {
+        if let Some(hit) = find_map_binder_in_pattern(db, app[1], name, path) {
+            return Some(hit);
+        }
+    } else {
+        // Multi-payload `(Cons h t)` = a single tuple payload: each arg descends at `Elem(i)` after Payload.
+        for (i, &arg) in app[1..].iter().enumerate() {
+            let plen = path.len();
+            path.push(crate::core::PathStep::Elem(i));
+            if let Some(hit) = find_map_binder_in_pattern(db, arg, name, path) {
+                return Some(hit);
+            }
+            path.truncate(plen);
+        }
+    }
+    path.truncate(len);
+    None
 }
 
 // (The parameter-name extraction that `binder_in`'s Case-3/Case-4 used lives in `db::build_scope_binders`
