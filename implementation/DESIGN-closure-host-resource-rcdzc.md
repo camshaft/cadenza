@@ -1226,9 +1226,28 @@ the component type. The new work:
   (`wrap_join` false, byte-neutral). Composes with multi-export + distinct-sig for free (the `SumArgRebuild`
   threads uniformly). Oracle `a_diff_width_result_scalar_closure_arg_crosses_by_native_flattening` pins the ABI
   under wasmtime incl. a NEGATIVE narrow payload (narrow side both err and ok). Corpus: 5 cases.
+- **✅ COMPOUND sum payload — an `(Option tuple/record)` closure arg (`spec@19bf4b5d`).** A sum whose payload is
+  itself a fixed-shape TUPLE/record (not a bare scalar) — e.g. `(Option (Tuple Int64 Int64))` — now crosses as a
+  native `option<tuple<…>>`: BOTH the `option` and `tuple` formers are anonymous-allowed (unlike a general
+  `variant`), so no naming wall. The canonical ABI flattens `option<tuple<s64,s64>>` to `(disc: i32, f0: i64, f1:
+  i64)` — the disc then the payload tuple's OWN recursively-flattened leaves (depth-first, exactly as a bare
+  tuple arg). The guest `call` rebuilds the payload cell from those leaves (`emit_cell_rebuild`, recursing for a
+  nested field) then `sum-new`s the Some over it; None builds `sum-new(None, unit)`. `serialize::SumArgArm`'s
+  scalar fields become a `SumArmPayload` enum (Nullary | Scalar{box_op,extend,wrap_join} | Compound(Vec<
+  FieldRebuild>)); `SumArgRebuild::flattened_param_count()` (disc + payload leaves) replaces the hardcoded `a +=
+  2` param-skip; `ArgSlot::OptionCompound(Vec<TupleFieldShape>)` mints `option<tuple<…>>`; the classifier
+  returns the payload's `Vec<ValType>` leaves + all four call paths prepend the disc. Composes with multi-export
+  + distinct-sig for free. Oracle `an_option_tuple_payload_closure_arg_crosses_by_native_flattening` pins the ABI
+  under wasmtime. Corpus: 7 cases (Some/None, record payload, nested-tuple payload, mixed-width tuple, multi-
+  export, distinct-sig). 🔑 the same wall does NOT lift for a general USER `variant<…>`: wasmparser's
+  `type_named_type_id` treats Variant/Record/Flags/Enum as NEVER anonymous — they must be a NAMED (exported)
+  type, and threading a named structural type through the nested resource-reexport component (where the `call`
+  IMPORT can't reference a locally-defined type) is the larger export-a-named-type lift, refuted this tick by an
+  oracle (`func not valid to be used as import`).
   **REMAINING within SUM-arg:** a general USER sum / >2 variants (needs a NAMED
-  `variant<…>` — an export-a-named-type step); a compound/nested sum payload; a LIST result over a sum arg (the
-  list cores thread tuples, not sums).
+  `variant<…>` — the export-a-named-type step, oracle-scoped this tick as a real architectural lift, not an ABI
+  wall); a COMPOUND Result payload (the Result arms don't yet carry a compound rebuild); a LIST result over a
+  sum arg (the list cores thread tuples, not sums).
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap).
   (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
