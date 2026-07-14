@@ -968,6 +968,22 @@
                 (let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b))))) (export main)))
   (output (: 10 Int64)))
 
+(case "a do-sequence of unit-returning performs runs each for effect, then yields the tail value"
+  (input  (do
+            (effect Log (op w (-> Int64 Unit)))
+            (def (main)
+              (handle Log 0 ((w (n) s (resume unit (+ s n))))
+                (do (Log.w 3) (Log.w 4) 99))) (export main)))
+  (doc    "The side-effect-only sequencing shape: a `do` of two UNIT-returning performs run purely for
+           effect, then a tail value. `Log.w : Int64 -> Unit` accumulates its argument into the handler
+           state (seeded 0, threads `s + n`); `(do (Log.w 3) (Log.w 4) 99)` performs `Log.w 3` (state 0 → 3)
+           then `Log.w 4` (state 3 → 7) — each yields unit, discarded — and the sequence's value is the tail
+           `99`. Pins that a chain of unit-op performs threads state in order while their unit results are
+           dropped, the essential shape of a compiler pass that EMITS several diagnostics (each advancing an
+           accumulator) then returns its result. The handler's threaded total is observed only through the
+           state; the handle's value is the body's tail.")
+  (output (: 99 Int64)))
+
 ; --- A perform inside an if/match BRANCH threads its state OUT to the continuation after the conditional.
 ; A branch's state advance is not local to the branch: the code following the conditional must run against
 ; the branch's POST-state, not the pre-branch state. Because only one branch runs, the state after the

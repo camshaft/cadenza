@@ -428,6 +428,7 @@ pass	a diverging expression unifies with an integer position
 pass	a division whose divisor folds to zero still traps
 pass	a do-local function declaration is recursive
 pass	a do-local generic function is instantiated per type
+pass	a do-sequence of unit-returning performs runs each for effect, then yields the tail value
 pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
 pass	a duplicate match arm is dead code but the program still runs
