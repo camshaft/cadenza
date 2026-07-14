@@ -2236,6 +2236,11 @@ fn link_inputs(
     entry_name: Option<&str>,
 ) -> Result<(crate::ast::Arenas, Option<crate::link::Linkage>), Reject> {
     match ast_arts {
+        // No `ast` artifact in the input list — the source tree the tool requires to derive a component
+        // is absent, so this is a diagnostic (`compile` turns the `Reject` into an error `Diagnostic`),
+        // never an empty or arbitrary component.
+        //= spec/contracts/build-tool-interface.md#the-tool-s-inputs-are-a-kinded-artifact-list
+        //# An input artifact list that omits the source tree the tool requires to derive a component MUST be reported as a diagnostic rather than producing an empty or arbitrary output.
         [] => Err(Reject::decline("no `ast` input artifact")),
         // The overwhelmingly common case: exactly one file, no package framing. Decode it as-is — flat
         // namespace, no linkage — so a one-file program compiles through the identical path it always
