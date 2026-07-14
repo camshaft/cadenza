@@ -4431,6 +4431,61 @@
   (call   main (: 4 Int64))
   (output (: 1 Int64)))
 
+(case "a four-level nested-constructor pattern with a generic user sum in the middle matches"
+  (doc    "A deeply nested match pattern `(Some (Ok (Box.W (Some n))))` descends FOUR sum layers —
+           built-in `Option`, built-in `Result`, a USER GENERIC sum `Box`, and `Option` again — binding `n`
+           at the leaf. Each layer's discriminant + payload extraction composes, and the generic `Box` in
+           the middle instantiates at `(Box (Option Int64))`. The match is total over every inner shape
+           (Box.E, inner None, Result.Err, outer None). `(f 7)` takes the all-present path → 7. Pins that a
+           nested-constructor decision tree threads through a USER generic sum nested among built-ins, not
+           only built-in-only nests.")
+  (input  (do
+            (type Box (W a) (E))
+            (def (f (: k Int64))
+              (match (Option.Some (Result.Ok (Box.W (Option.Some k))))
+                ((Option.Some (Result.Ok (Box.W (Option.Some n)))) n)
+                ((Option.Some (Result.Ok (Box.W (Option.None))))   -1)
+                ((Option.Some (Result.Ok (Box.E)))                 -2)
+                ((Option.Some (Result.Err e))                      e)
+                ((Option.None)                                     -3)))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 7 Int64))
+  (output (: 7 Int64)))
+
+(case "a sum variant carrying a String payload matches and reads the string"
+  (doc    "A sum variant carries a `String` payload — `(type Msg (Text String) (Empty))`. A match binds the
+           string out of the `Text` variant and reads its scalar length; the `Empty` variant is nullary.
+           `(len-of (Text \"hello\"))` = 5. Pins that a String (a heap value) rides in a sum payload,
+           survives the match binder, and feeds a String op — the String companion of the sum-carrying-a-
+           tuple/record/list payload cases. (The String never crosses the host boundary here — it is
+           consumed by `scalar-len` — so this is realizable on every backend, unlike a String RESULT.)")
+  (input  (do
+            (type Msg (Text String) (Empty))
+            (def (len-of (: m Msg)) (match m ((Msg.Text s) (String.scalar-len s)) ((Msg.Empty) 0)))
+            (def (main (: k Int64)) (len-of (Msg.Text "hello")))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 0 Int64))
+  (output (: 5 Int64)))
+
+(case "a sum variant carrying a Map payload is deconstructed and the map queried"
+  (doc    "A sum variant carries a `Map` — `(type Cache (Empty) (Full (Map Int64 Int64)))`. A match binds
+           the map out of `Full` and reads its size. `(sz (Full {k↦1, 2↦2}))` = 2. Pins that a persistent
+           heap collection (a Map) rides in a sum payload and is queried through the match binder — the
+           heap-collection-in-a-sum-payload shape. (Realizable on the wasm backend, which has the heap
+           collections; the Rust backend declines a Map value — a collections-as-values vertical, not
+           sum-specific — so this is a wasm-oracle witness.)")
+  (input  (do
+            (type Cache (Empty) (Full (Map Int64 Int64)))
+            (def (sz (: c Cache)) (match c ((Cache.Empty) 0) ((Cache.Full m) (Map.size m))))
+            (def (main (: k Int64)) (sz (Cache.Full (Map.insert (Map.insert (Map.empty) k 1) 2 2))))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 5 Int64))
+  (output (: 2 Int64)))
+
 (case "a unary constructor is a single-arity function"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (1st sentence): Some is a single-arity constructor. Applied to an

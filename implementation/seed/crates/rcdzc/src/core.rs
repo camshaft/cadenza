@@ -88,6 +88,17 @@ pub enum BigIntOp {
     Rem,
 }
 
+/// Which runtime Rational binary ARITHMETIC op a [`Core::RationalBinOp`] performs — `+`/`-`/`*`/`/` mapped
+/// to the runtime `rational-add`/`-sub`/`-mul`/`-div`. (Comparison lowers through `rational-cmp` + a fixed
+/// compare in `lower`, so it is not one of these; `%` is not a rational op — exact division is total.)
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum RationalOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
 /// One arm of a [`Core::MatchList`] — a LENGTH condition on the list scrutinee plus a body. The backend
 /// tests the conditions in arm order against `vec-len(scrutinee)`; the first satisfied arm's body runs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -419,6 +430,31 @@ pub enum Core {
     /// when at least one operand is a runtime `BigInt` (a constant pair folds via `num-bigint` in `lower`);
     /// like the arithmetic ops, `bigint-cmp` BORROWS both operands (the emit drops each owned temporary).
     BigIntCmp {
+        op: Prim,
+        lhs: StructId,
+        rhs: StructId,
+    },
+    /// `Rational.of n d` on RUNTIME fixed-width integers — widen each to a `BigInt` (`bigint-of-i64`) then
+    /// `rational-of` (normalize + build the 2-handle node; TRAPS on a zero denominator at run time). A
+    /// constant pair folds to `Core::ConstRational` in `lower` and never reaches here; this is the runtime
+    /// path (R3b). Both operand slots are i64 values (the fixed-width ints), widened at emit.
+    RationalOfInts { num: StructId, den: StructId },
+    /// `Rational.of-int n` on a RUNTIME fixed-width integer — the whole rational `n/1`: widen `n` to a
+    /// `BigInt`, `bigint-of-i64(1)` for the denominator, then `rational-of`. A constant folds in `lower`.
+    RationalOfIntWiden { value: StructId },
+    /// A runtime Rational BINARY op `+`/`-`/`*`/`/` (the runtime `rational-add`/`-sub`/`-mul`/`-div`).
+    /// Present when at least one operand is a runtime `Rational` (a constant pair folds in `lower`).
+    /// Produces a normalized `Rational` handle; `rational-div` traps on a zero divisor at run time. The
+    /// ops BORROW both operands (the emit drops each owned temporary), like the BigInt arithmetic.
+    RationalBinOp {
+        op: RationalOp,
+        lhs: StructId,
+        rhs: StructId,
+    },
+    /// A runtime Rational COMPARISON `<`/`>`/`<=`/`>=`/`=` — `rational-cmp` (three-way `-1`/`0`/`1`) then
+    /// the operator's fixed i64 compare-with-zero (`=`→`eqz`), a `Bool` result. Present when an operand is
+    /// a runtime `Rational` (a constant pair folds in `lower`). `rational-cmp` BORROWS both operands.
+    RationalCmp {
         op: Prim,
         lhs: StructId,
         rhs: StructId,

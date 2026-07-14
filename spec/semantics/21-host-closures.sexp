@@ -2591,6 +2591,49 @@
   (call   mk (: (tuple 100 23) (Tuple Int32 Int32)))
   (output (: 123 Int32)))
 
+(case "a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)"
+  (doc    "A `(Tuple Int32 Bool)` closure arg — a Bool field beside an int. Each field crosses flattened; the
+           cell rebuild boxes the Bool field with `box-bool` (the int with `box-int`). This exercises a box op
+           OTHER than `box-int`: the `TupleArgRebuild` `field_box_ops` list names `box-bool` for the Bool
+           field, and the closure `call`'s import-collection pass must register it — an all-int tuple worked
+           only because `box-int` was pulled in elsewhere, so a Bool/Float field's box op was ABSENT from the
+           import index and `emit_tuple_rebuild`'s `imp(bop)` PANICKED the compiler ('rebuild op imported',
+           serialize.rs). Now imports are keyed off `field_box_ops`, so every field-type mix compiles.
+           `call(handle, (42, true))` → `(if (. p 1) (. p 0) 0)` = 42.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int32 Bool))) (if (. p 1) (. p 0) 0)))
+              (export mk)))
+  (call   mk (: (tuple 42 true) (Tuple Int32 Bool)))
+  (output (: 42 Int32)))
+
+(case "a BOOL-field Tuple closure ARG, false discriminant"
+  (doc    "The discriminant control for the box-bool case above: with the flag false, `(if (. p 1) (. p 0) 0)`
+           takes the else arm → 0. Together they prove the rebuilt Bool field carries its real value across the
+           boundary (not a constant), on the same `(Tuple Int32 Bool)` closure arg.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int32 Bool))) (if (. p 1) (. p 0) 0)))
+              (export mk)))
+  (call   mk (: (tuple 42 false) (Tuple Int32 Bool)))
+  (output (: 0 Int32)))
+
+(case "a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)"
+  (doc    "A `(Tuple Float64 Float64)` closure arg — two Float fields. The cell rebuild boxes each with
+           `box-float` (a native-width float box, not `box-int`), so the closure `call`'s imports must include
+           `box-float`; without it the compiler PANICKED exactly as the Bool case. `call(handle, (2.5, 9.0))`
+           → `(. p 0)` = 2.5. Pins the Float-field box op alongside the Bool one.")
+  (input  (do (def (mk) (fn ((: p (Tuple Float64 Float64))) (. p 0)))
+              (export mk)))
+  (call   mk (: (tuple 2.5 9.0) (Tuple Float64 Float64)))
+  (output (: 2.5 Float64)))
+
+(case "a MIXED Int-and-Float Tuple closure ARG flattens + rebuilds (box-int + box-float)"
+  (doc    "A `(Tuple Int64 Float64)` closure arg mixes an int field (`box-int`) with a float field
+           (`box-float`) in ONE rebuild — the import set must carry BOTH box ops. Before the fix the float
+           field's `box-float` was absent and the compiler panicked. `call(handle, (7, 3.5))` → `(. p 0)` = 7.
+           Confirms a per-field mix of box ops all resolve.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Float64))) (. p 0)))
+              (export mk)))
+  (call   mk (: (tuple 7 3.5) (Tuple Int64 Float64)))
+  (output (: 7 Int64)))
+
 (case "a CAPTURING closure taking a Tuple ARG crosses the DIRECT-CALL boundary"
   (doc    "The tuple-arg path composes with capture (C-HOST-2): a parameterized export `(def (mk (: k
            Int64)) …)` returns a closure that BOTH captures `k` AND takes a `(Tuple Int64 Int64)` argument.
@@ -2893,10 +2936,11 @@
   (call   mk (: (tuple 10 3) (Tuple Int64 Int64)) (: 100 Int64))
   (output (: (list 10 3 100) (List Int64))))
 
-; The tuple-among-scalars arg shape extends to the MULTI-EXPORT scalar-result path: N same-sig closures each
-; taking `(-> Int64 (Tuple Int64 Int64) Int64)` share one `call` that interleaves the prefix scalar with the
-; rebuilt tuple. (An among-scalars tuple with a LIST result on the mixed/distinct-sig paths still declines —
-; those cores don't yet interleave prefix/suffix; the SINGLE-export list-result path is covered above.)
+; The tuple-among-scalars arg shape extends to the MULTI-EXPORT path — for EVERY result shape: N same-sig
+; closures share one `call` that interleaves the prefix scalar with the rebuilt tuple, then produces a scalar,
+; a byte-rope, a fixed-shape compound value-form, or a collection value-encode result. (An among-scalars tuple
+; with a LIST result on the MIXED/distinct-sig paths still declines — those emit fns don't yet interleave
+; prefix/suffix; the SINGLE + MULTI-export list-result paths are covered here + above.)
 
 (case "MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg"
   (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 Int64) Int64)` — a scalar `n` then a tuple `p`, shared across
@@ -2917,6 +2961,48 @@
               (export mk-a) (export mk-b)))
   (call   mk-b (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: 87 Int64)))
+
+(case "MULTI-EXPORT: among-scalars tuple arg with a LIST result (shared interleaving list-`call`)"
+  (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 Int64) (List Int64))` — a scalar `n` then a tuple `p`, sharing
+           ONE list-returning `call`. The shared value-encode `call` interleaves `n` around the rebuilt tuple,
+           dispatches, then value-encodes the returned List. Driving `mk-a`: `call(handle, 100, (10, 3))` →
+           `(list 100 10 3)`. The among-scalars interleaving now reaches the multi-export list-result core.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list n (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list (. p 0) (. p 1) n)))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (list 100 10 3) (List Int64))))
+
+(case "MULTI-EXPORT: driving the second among-scalars LIST closure (tuple then suffix scalar)"
+  (doc    "The SAME multi-export List component, driving `mk-b` — the tuple fields FIRST then the suffix scalar
+           `n`: `call(handle, 100, (10, 3))` → `(list p.0 p.1 n)` = `(list 10 3 100)`. Confirms both same-sig
+           among-scalars List closures share the one interleaving list-`call`, prefix AND suffix.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list n (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (list (. p 0) (. p 1) n)))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (list 10 3 100) (List Int64))))
+
+(case "MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result"
+  (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 Int64) Bytes)` sharing one bytes-returning `call`. The shared
+           bytes `call` interleaves `n` around the rebuilt tuple, dispatches, copies the returned Bytes out as
+           `list<u8>`. Driving `mk-a`: `call(handle, 100, (10, 3))` → the bytes `(100 10 3)`.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 n) (u8 (. p 0)) (u8 (. p 1)))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (bin (u8 (. p 0)))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (100 10 3) Bytes)))
+
+(case "MULTI-EXPORT: among-scalars tuple arg with a fixed-shape COMPOUND result"
+  (doc    "`mk-a`/`mk-b : (-> Int64 (Tuple Int64 Int64) (Tuple Int64 Int64 Int64))` sharing one value-form
+           `call`. The shared `call` interleaves `n` around the rebuilt arg tuple, dispatches, walks the
+           returned handle into the value-form template. Driving `mk-a`: `call(handle, 100, (10, 3))` →
+           `(tuple 100 10 3)`, decoded by the host to the typed document.")
+  (input  (do (def (mk-a) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (tuple n (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: n Int64) (: p (Tuple Int64 Int64))) (tuple (. p 0) n (. p 1))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: 100 Int64) (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64))))
 
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter

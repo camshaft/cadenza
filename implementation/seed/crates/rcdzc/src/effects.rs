@@ -3917,6 +3917,15 @@ fn subtree_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
     {
         return true;
     }
+    // A LAMBDA VALUE performs nothing when CONSTRUCTED — its body's effects fire only when it is APPLIED
+    // (an `Apply` node the perform/inline arms handle separately). So do NOT descend into a lambda body
+    // here: `(let ((f (fn (x) (+ x (E.op))))) (f 10))` binds a pure lambda value, then the application
+    // `(f 10)` is where the discharged op surfaces (via the inline arm). Descending into the body would
+    // misclassify the pure binding as effectful, declining a foldable let-bound-performing-lambda. (A
+    // lambda that ESCAPES unapplied genuinely performs nothing.)
+    if matches!(resolved_of(db, node), Resolved::Lambda { .. }) {
+        return false;
+    }
     match db.ast.get(node).clone() {
         Struct::List(children) => children.iter().any(|&c| subtree_performs(db, c, ctx)),
         Struct::Atom(_) => false,

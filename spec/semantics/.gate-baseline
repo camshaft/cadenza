@@ -10,6 +10,10 @@ pass	MIXED: a List-returning Tuple-arg closure ALONGSIDE a plain export — driv
 pass	MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export
 pass	MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside a Tuple-arg closure
+pass	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
+pass	MULTI-EXPORT: among-scalars tuple arg with a LIST result (shared interleaving list-`call`)
+pass	MULTI-EXPORT: among-scalars tuple arg with a fixed-shape COMPOUND result
+pass	MULTI-EXPORT: driving the second among-scalars LIST closure (tuple then suffix scalar)
 pass	MULTI-EXPORT: driving the second among-scalars closure (subtract)
 pass	MULTI-EXPORT: two Tuple-arg closures sharing a List-returning `call`
 pass	MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`
@@ -36,6 +40,8 @@ pass	Unit.in to a unit of a different dimension is a compile-time error
 pass	a 32-bit-float closure crosses the host boundary
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
+pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
+pass	a BOOL-field Tuple closure ARG, false discriminant
 pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
@@ -57,6 +63,7 @@ pass	a CBOR simple value that is not a known boolean is classified as not-a-bool
 pass	a CBOR skip steps over a tagged item to the value it wraps
 pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a Char-payload sum value escapes across the boundary in its canonical form
+pass	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
 pass	a Float64 closure captures a Float64 build-time host effect result
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
@@ -66,6 +73,7 @@ pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
 pass	a List-returning closure alongside a plain export — the closure
 pass	a List-returning closure alongside a plain export — the plain
+pass	a MIXED Int-and-Float Tuple closure ARG flattens + rebuilds (box-int + box-float)
 pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
 pass	a MULTI-shot handler arm folds a two-hole body by re-reducing per resume
 pass	a MUTUALLY-recursive effectful group is specialized under a state handler
@@ -443,6 +451,7 @@ pass	a let shadowing a parameter whose initializer references that parameter com
 pass	a let shadowing a parameter with a differently-typed value is not an invalid component
 pass	a let shadowing a parameter with a same-typed value runs, not miscompiles
 pass	a let-bound lambda passed to a returned-closure factory
+pass	a let-bound lambda whose body performs is applied in the handle body
 pass	a let-bound returned closure applied twice folds each application independently
 pass	a let-bound runtime-if list is length-measured with valid wasm
 pass	a let-bound variable derived from a runtime parameter passed as a call argument
@@ -680,6 +689,7 @@ pass	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
 pass	a projected tuple element IS observed, so its trap occurs (the anchor)
+pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a quantity built from an extracted unit is dimensionally checked
 pass	a quantity is constructed from a numeric value and a unit
 pass	a quantity over an exact rational magnitude divides exactly and derives its dimension
@@ -757,6 +767,7 @@ pass	a recursive predicate with the self-call in the then branch is a Bool condi
 pass	a recursive reader decodes a CBOR application tree and evaluates it by head index
 pass	a recursive resolver transforms one runtime sum tree into another, then consumes it
 pass	a recursive resolver whose dead arm builds a trapping compound compiles
+pass	a recursive sum built then folded by a NESTED recursive call composes on every backend
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
 pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
@@ -797,6 +808,8 @@ pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime BigInt remainder takes the dividend's sign
 pass	a runtime Option carrying a user sum is matched by a nested constructor pattern
+pass	a runtime Rational built from a parameter compares by its exact value
+pass	a runtime Rational comparison of a parameter is false when it should be
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bin match binds the tail after a fixed header via a final rest segment
@@ -1585,6 +1598,7 @@ pass	round-trip: an UNANNOTATED inner closure with a List param via the context 
 pass	runtime BigInt addition runs on the arbitrary-precision runtime
 pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime
+pass	runtime Rational arithmetic adds two parameter-built fractions exactly
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
@@ -1713,6 +1727,7 @@ pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuple elements are accessed by index
 pass	tuples are deconstructed by pattern matching
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
+pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity
 pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two adjacent modules declared inside a function body compose
 pass	two constant records with the same fields in different written order are equal

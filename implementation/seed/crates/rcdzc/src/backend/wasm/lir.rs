@@ -360,10 +360,11 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // an i32 local like a bytes/list handle. (B3b wired the runtime ops; a CONSTANT `BigInt` still
         // folds and keeps no slot.)
         Ty::BigInt => Some(ValType::I32),
-        // A `Rational` has NO machine slot yet — B4-0 constant-folds it in the compiler and nothing
-        // constructs a runtime `Rational`; a runtime rational compound (two BigInt children) + its slot
-        // arrive in a later B4 slice, mirroring how `Ty::BigInt` was `None` until B3b. Declines for now.
-        Ty::Rational => None,
+        // A `Rational` is a value-heap compound (a normalized 2-BigInt-handle node — `rational-of`/the
+        // runtime arithmetic return handles), so a runtime `Rational` value (a param, an arithmetic
+        // result) lives in an i32 handle slot, like a BigInt/tuple/list handle (R3b wired the runtime ops).
+        // A CONSTANT `Rational` still folds in `lower` and keeps no slot.
+        Ty::Rational => Some(ValType::I32),
         // A float occupies its width's machine slot: `Float32` → f32, `Float64` → f64. A float literal
         // that crosses the boundary (or a float arithmetic result) lives here.
         Ty::Float(ft) => Some(if ft.ground_width() == 32 {

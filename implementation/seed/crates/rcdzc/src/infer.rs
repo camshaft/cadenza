@@ -672,6 +672,13 @@ fn bits_to_byte_boundary_hint(bits: u32) -> String {
 /// is annotated when its name sits in a `(: name T)` binder (the name's parent is that form); the type
 /// is `T` reduced to a `Ty` by the evaluator (`typeval_of`). `None` for a bare (unannotated) parameter
 /// or an unreducible annotation type — in which case the parameter's type is left open (`Any`).
+///
+/// This binder is the BIDIRECTIONAL boundary where first-class types meet inference: the parameter's type
+/// is SYNTHESIZED by reducing the annotation type-value (`typeval_of` — monomorphization from the concrete
+/// type supplied, e.g. `(: t Type)` → `Ty::Type` for a type-valued parameter), not solved by unification —
+/// so a first-class computable type is reconciled with principal-type inference rather than contradicting it.
+//= spec/capabilities/type-system.md#inference-and-first-class-types-meet-at-a-bidirectional-boundary
+//# A position that binds a type-valued parameter MUST be a bidirectional-checking boundary, at which a type is either synthesized by monomorphization from the concrete type-value supplied or checked against an explicit annotation, rather than solved by unification, so that first-class computable types are reconciled with principal-type inference instead of contradicting it.
 fn param_annot_ty(db: &mut Db, binder: StructId) -> Option<Ty> {
     let parent = db.parent_of(binder)?;
     let tail = db.ast.as_form(parent, ":")?;
@@ -7202,6 +7209,32 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
                         trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), expr_ty = %expr_ty.render_name(), "fault: annotation type mismatch (CDZ0203)");
+                        // This arm reports BOTH a genuine value annotation `(: value T)` the author wrote AND
+                        // a CALL ARGUMENT checked via the parameter's SYNTHESIZED `(: arg paramtype)` wrap
+                        // (`substituted_arg` — step (2) of the lambda-application check). For a call argument
+                        // the word "annotation" is misleading: the author wrote no annotation, they passed a
+                        // wrong-typed value to a parameter. The two are distinguishable: the synthesized wrap
+                        // is a SPANLESS (non-user) node whose `expr` is the USER-written argument, whereas a
+                        // genuine `(: value T)` is a user node (and a β-copied in-body annotation has a
+                        // non-user `expr` too — deduped against its user twin). So `id` non-user + `expr` user
+                        // ⟹ a call argument. Phrase it as "this argument is a Bool, but … expects Int64"
+                        // instead of "annotation type Int64 does not match value type Bool".
+                        let is_call_arg = !db.is_user_node(id) && db.is_user_node(expr);
+                        let mismatch_lead = |verb_tail: &str| {
+                            if is_call_arg {
+                                format!(
+                                    "this argument is {}, but a value of type {} is expected here{verb_tail}",
+                                    expr_ty.render_with_article(),
+                                    annot_ty.render_name(),
+                                )
+                            } else {
+                                format!(
+                                    "annotation type {} does not match value type {}{verb_tail}",
+                                    annot_ty.render_name(),
+                                    expr_ty.render_name(),
+                                )
+                            }
+                        };
                         // The annotation mismatch has a MECHANICAL REPAIR in several cases, each making the
                         // value type-check in ONE shot (the annotation position mirrors the argument
                         // position's coercion fixes). The two LITERAL-RETYPE repairs (a `replace`, not a
@@ -7236,12 +7269,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             out.push(
                                 Reject::coded(
                                     Code::TypeMismatch,
-                                    format!(
-                                        "annotation type {} does not match value type {} — {verb} \
-                                         (`{text}`)",
-                                        annot_ty.render_name(),
-                                        expr_ty.render_name()
-                                    ),
+                                    mismatch_lead(&format!(" — {verb} (`{text}`)")),
                                 )
                                 .at(id)
                                 .with_fix(Fix::replace_heuristic(expr, text)),
@@ -7366,14 +7394,8 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 .or(fn_tail)
                                 .or(collection_tail)
                                 .unwrap_or_default();
-                            let mut reject = Reject::coded(
-                                Code::TypeMismatch,
-                                format!(
-                                    "annotation type {} does not match value type {}{tail}",
-                                    annot_ty.render_name(),
-                                    expr_ty.render_name(),
-                                ),
-                            );
+                            let mut reject =
+                                Reject::coded(Code::TypeMismatch, mismatch_lead(&tail));
                             if let Some((prefix, suffix, verb, _)) = wrap {
                                 reject = reject
                                     .with_fix(Fix::wrap_heuristic(expr, prefix, suffix, verb));
@@ -7554,17 +7576,19 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 out.push(enrich_unbound(db, id, r));
             } else if matches!(
                 r.code,
-                // A LEXICAL well-formedness poison a bare LEAF resolves to — a malformed numeric literal
-                // (`0o17`, `12abc`, an over-i64 bare literal), a float outside the Float64 range, an
-                // unrecognized string escape (CDZ0001), or a char naming a non-scalar (CDZ0002). Like an
-                // unbound name these are UNCONDITIONAL well-formedness (a defect of the token itself,
-                // independent of whether the definition is reached), but `collect_node`'s poison arm only
-                // surfaced `Unbound` — so a malformed literal in a PARAMETERIZED or non-exported body PASSED
-                // `cdz check` while `compile` (on a reachable body) rejected it, the same "check misses a
-                // resolve-only reject on an unreached body" hole M81's pattern accessor / the `(do)`-block
-                // poison close. Surface the coded poison here, anchored at the leaf; `dedup_faults`
-                // collapses it against any copy the emit walk produces at the same node on a reached body.
-                Some(Code::Malformed | Code::BadEscape | Code::BadChar)
+                // A LEXICAL / FORM well-formedness poison a node resolves WHOLE to — a malformed numeric
+                // literal (`0o17`, `12abc`, an over-i64 bare literal), a float outside the Float64 range, an
+                // unrecognized string escape (CDZ0001), a char naming a non-scalar (CDZ0002), or a
+                // malformed `(bin …)` form whose segment list does not resolve (`(bits v -1)` — a
+                // non-natural bit-field width, CDZ0220). Like an unbound name these are UNCONDITIONAL
+                // well-formedness (a defect of the token/form itself, independent of whether the definition
+                // is reached), but `collect_node`'s poison arm only surfaced `Unbound` — so such a defect in
+                // a PARAMETERIZED or non-exported body PASSED `cdz check` while `compile` (on a reached
+                // body) rejected it, the same "check misses a resolve-only reject on an unreached body" hole
+                // M81's pattern accessor / the `(do)`-block poison close. Surface the coded poison here,
+                // anchored at the node; `dedup_faults` collapses it against any copy the emit walk produces
+                // at the same node on a reached body.
+                Some(Code::Malformed | Code::BadEscape | Code::BadChar | Code::IllFormedBinary)
             ) {
                 trace!(target: "rcdzc::infer", node = id.0, code = ?r.code, "fault: lexical well-formedness poison reported");
                 let mut r = r;

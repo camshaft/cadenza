@@ -19,6 +19,13 @@
 //! is what makes an operator generic over the integer type. Nothing here reads a column or an AST node
 //! — it is pure over [`Ty`].
 //!
+//! Because it is pure over [`Ty`] — a non-computational structural type carrying no embedded computation
+//! (any type-VALUE computation is reduced in the evaluator (`eval::typeval_of`) BEFORE it reaches a `Ty`,
+//! at the bidirectional binder boundary) — the variables unification solves never carry a computation
+//! whose reduction it cannot decide.
+//= spec/capabilities/type-system.md#inference-and-first-class-types-meet-at-a-bidirectional-boundary
+//# Unification-based inference MUST range over a non-computational term core, so that the type variables inference solves never carry a computation whose reduction principal-type inference cannot decide.
+//!
 //! Because the solution is ONE substitution shared across a binding's uses, a variable solved at one
 //! occurrence is applied at every other — a parameter used in one position is typed consistently at
 //! every occurrence and every call site (`infer` reads the solved type through this `Subst`). And when

@@ -12870,6 +12870,77 @@ mod match_engine {
     }
 
     #[test]
+    fn a_wrong_typed_call_argument_reads_as_an_argument_not_an_annotation() {
+        // A wrong-typed argument to a user FUNCTION — `(h true)` where `h`'s parameter is `Int64` — is
+        // checked via the parameter's SYNTHESIZED `(: arg paramtype)` wrap, so it shared the value-
+        // annotation site's "annotation type Int64 does not match value type Bool" message. But the author
+        // wrote NO annotation on `true`; they passed a wrong-typed argument. Now a call argument reads
+        // "this argument is a Bool, but a value of type Int64 is expected here" (rustc's "expected `Int64`,
+        // found `Bool`" at an argument), while a GENUINE `(: value T)` keeps the annotation wording. The
+        // discriminator: the synthesized wrap is a non-user node whose `expr` is the user-written argument.
+        let call = reject_full("(module m (def (h (: a Int64)) a) (def (g) (h true)) (export g))")
+            .expect("a wrong-typed call argument rejects");
+        assert_eq!(
+            call.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            call.message
+        );
+        assert!(
+            call.message
+                .contains("this argument is a Bool, but a value of type Int64 is expected here"),
+            "a call argument reads as an argument, not an annotation: {}",
+            call.message
+        );
+        assert!(
+            !call.message.contains("annotation type"),
+            "no misleading 'annotation' wording for a call argument: {}",
+            call.message
+        );
+        // The coercion fix still rides along — `(h 3.0)` where `a : Int64` keeps the drop-`.0` retype.
+        let coerce = reject_full("(module m (def (h (: a Int64)) a) (def (g) (h 3.0)) (export g))")
+            .expect("a coercible wrong-typed argument rejects");
+        assert!(
+            coerce.message.contains("this argument is a Float64")
+                && coerce.message.contains("drop the fractional form"),
+            "the call-argument wording keeps the coercion fix: {}",
+            coerce.message
+        );
+        assert!(
+            coerce.fix.is_some(),
+            "the retype fix rides along: {:?}",
+            coerce.fix
+        );
+        // A GENUINE value annotation `(: value T)` KEEPS the "annotation type" wording (the author DID
+        // write an annotation there).
+        let annot = reject_full("(module m (def (g) (: true Int64)) (export g))")
+            .expect("a genuine annotation mismatch rejects");
+        assert!(
+            annot
+                .message
+                .contains("annotation type Int64 does not match value type Bool"),
+            "a genuine annotation keeps its wording: {}",
+            annot.message
+        );
+        // The per-member structural hint still fires through the call-argument path — a wrong tuple element
+        // in an argument names the position AND reads as an argument.
+        let compound = reject_full(
+            "(module m (def (h (: t (Tuple Int64 Int64))) t) (def (g) (h (tuple 1 true))) (export g))",
+        )
+        .expect("a wrong-typed compound argument rejects");
+        assert!(
+            compound
+                .message
+                .contains("this argument is a (Tuple Int64 Bool)")
+                && compound
+                    .message
+                    .contains("element 1 should be Int64, but this one is Bool"),
+            "the call-argument wording composes with the per-member hint: {}",
+            compound.message
+        );
+    }
+
+    #[test]
     fn a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix() {
         // A `String` supplied where `Bytes` is required — `(Bytes.len "hi")`, or `(f "hi")` for a
         // `(: b Bytes)` parameter — has a TOTAL prelude conversion: wrap in `(String.to-bytes …)` (the
@@ -16372,6 +16443,25 @@ mod match_engine {
             "names the bit total + the padding to the next byte: {}",
             d.message
         );
+        // A NON-NATURAL bit-field width (`(bits v -1)`, `(bits v abc)`) makes the whole `(bin …)` resolve
+        // to a coded Poison, not a `Bin { segs }`. `cdz check` (the Diagnostics query) used to MISS it in
+        // a parameterized/non-exported body — the poison arm surfaced only `Unbound`, not `IllFormedBinary`
+        // — while `compile` rejected it. Now it surfaces in EVERY body.
+        for src in [
+            "(module m (def (g (: v Int64)) (bin (bits v -1))) (export g))",
+            "(module m (def (g (: v Int64)) (bin (bits v abc))) (export g))",
+        ] {
+            let dq = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0220"))
+                .unwrap_or_else(|| panic!("check misses the non-natural bits width for {src}"));
+            assert!(
+                dq.message
+                    .contains("bit-field width must be a compile-time constant natural"),
+                "names the bad width: {}",
+                dq.message
+            );
+        }
     }
 
     #[test]
@@ -43569,6 +43659,53 @@ mod closure_host_resource {
             "expected the collection-bearing-compound-arg decline, got: {:?} / {}",
             err.code,
             err.message
+        );
+    }
+
+    /// A fixed-shape scalar tuple closure ARG whose fields are NOT all `Int64` — a `Bool` field, a `Float`
+    /// field, a narrow int, or a mix — compiles cleanly. Each field's cell rebuild box op (`box-bool` /
+    /// `box-float` / `box-float32` / `box-int`) is named by `TupleArgRebuild::field_box_ops`, and the closure
+    /// `call`'s import-collection pass must register EXACTLY those ops. Before the fix it registered only
+    /// `box-int` (all-int tuples worked because that op was pulled in elsewhere), so a Bool/Float field's box
+    /// op was absent from the import index and `emit_tuple_rebuild`'s `imp(bop)` PANICKED the compiler
+    /// ("rebuild op imported"). Keying the imports off `field_box_ops` makes every field-type mix emit — this
+    /// covers the single-export, mixed (closure + plain export), and among-scalars shapes (the three funcs the
+    /// fix touched; the distinct-sig path already collected its `tuple_box_ops`).
+    #[test]
+    fn a_bool_or_float_field_tuple_closure_arg_compiles() {
+        use crate::testkit::parse;
+        let ok = |src: &str| {
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).unwrap_or_else(
+                |e| panic!("must compile (no rebuild-op panic): {src}\n  got: {e:?}"),
+            );
+        };
+        // A Bool field (single-export direct-call).
+        ok(
+            "(module m (def (main) (fn ((: p (Tuple Int32 Bool))) (if (. p 1) (. p 0) 0))) (export main))",
+        );
+        // A Bool field in the OTHER position.
+        ok("(module m (def (main) (fn ((: p (Tuple Bool Int64))) (. p 1))) (export main))");
+        // Two Float fields.
+        ok("(module m (def (main) (fn ((: p (Tuple Float64 Float64))) (. p 0))) (export main))");
+        // A narrow Float field (box-float32).
+        ok("(module m (def (main) (fn ((: p (Tuple Int32 Float32))) (. p 0))) (export main))");
+        // A mixed int + float tuple (box-int AND box-float in one rebuild).
+        ok("(module m (def (main) (fn ((: p (Tuple Int64 Float64))) (. p 0))) (export main))");
+        // A RECORD arg with a Bool field.
+        ok(
+            "(module m (def (main) (fn ((: r (Record (a Int64) (f Bool)))) (if (. r f) (. r a) 0))) (export main))",
+        );
+        // Among scalar args (prefix + suffix), Bool field — the `single_compound_among_scalars` path.
+        ok(
+            "(module m (def (main) (fn ((: x Int64) (: p (Tuple Int64 Bool)) (: y Int64)) (if (. p 1) (+ x y) (. p 0)))) (export main))",
+        );
+        // MIXED shape: a Bool-field tuple closure export alongside a plain (non-closure) export.
+        ok(
+            "(module m (def (main) (fn ((: p (Tuple Int64 Bool))) (if (. p 1) (. p 0) 0))) (def (plain (: n Int64)) n) (export main) (export plain))",
+        );
+        // All-int must STILL compile (no regression from the added registration).
+        ok(
+            "(module m (def (main) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1)))) (export main))",
         );
     }
 
