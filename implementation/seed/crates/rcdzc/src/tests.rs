@@ -19183,6 +19183,90 @@ mod match_engine {
     }
 
     #[test]
+    fn a_tail_recursive_sum_consumer_compiles_to_a_constant_stack_loop() {
+        // A tail-recursive consumer of a SUM type — `(count n acc) = (match n ((Zero) acc) ((Succ m) (count
+        // m (+ acc 1))))` over `(type Nat (Zero) (Succ Nat))` — is a self-tail-call inside a `Core::MatchSum`
+        // arm (the decision tree's `(Succ m)` leaf). The loop transform now threads tail position into the
+        // sum decision tree (`emit_tail`/`body_has_member_tail_call`/`tail_callees` handle `MatchSum` via
+        // `emit_sum_cont`/`emit_sum_match_arms` + the `sum_cont_*` walkers), so it compiles to ONE `loop`
+        // (constant stack) instead of a stack-growing recursive `call`. Pins the `loop` at the Lir level +
+        // value parity + that a deeply nested nat (which would overflow a recursive stack) counts fine.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function_of;
+        let src = "(module m (type Nat (Zero) (Succ Nat)) \
+                     (def (count (: n Nat) (: acc Int64)) \
+                       (match n ((Zero) acc) ((Succ m) (count m (+ acc 1))))) \
+                     (def (f (: n Nat)) (count n 0)) (export f))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("count").expect("count");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        // `select_function_of` with `self_def = Some(d)` enables the self-recursion loop transform.
+        let code = select_function_of(&mut db, body, &ps, &layout, Some(d))
+            .expect("select")
+            .code;
+        assert!(
+            code.iter().any(|i| matches!(i, Lir::Loop(_))),
+            "the tail sum consumer compiles to a loop, got: {code:?}"
+        );
+        assert!(
+            !code
+                .iter()
+                .any(|i| matches!(i, Lir::Call(_) | Lir::ReturnCall(_))),
+            "no residual self-`call`/`return_call` — the recursion became a loop br, got: {code:?}"
+        );
+
+        // VALUE PARITY + CONSTANT STACK: build a DEPTH-N nat then count it. `N = 200000` would overflow a
+        // recursive stack; the loop counts it fine. count(depth 3) = 3.
+        let prog = |n: i64| {
+            format!(
+                "(module m (type Nat (Zero) (Succ Nat)) \
+                   (def (build (: i Int64) (: acc Nat)) (if (< i 1) acc (build (- i 1) (Succ acc)))) \
+                   (def (count (: n Nat) (: acc Int64)) \
+                     (match n ((Zero) acc) ((Succ m) (count m (+ acc 1))))) \
+                   (def (main) (count (build {n} (Zero)) 0)) (export main))"
+            )
+        };
+        let Some(small) = run_heap_value(&prog(3), vec![]) else {
+            eprintln!("runtime wasm not found; skipping tail sum-consumer loop run");
+            return;
+        };
+        assert_eq!(small, "3", "count(depth 3) via a looping tail sum consumer");
+        assert_eq!(
+            run_heap_value(&prog(200000), vec![]).unwrap(),
+            "200000",
+            "count(depth 200000) runs in constant stack (would overflow if recursive)"
+        );
+
+        // A LINKED-LIST sum — `(type IList (Nil) (Cons (Tuple Int64 IList)))`, folded via a tail
+        // accumulator reading the head `(. p 0)` and recursing on the tail `(. p 1)` — also loops (the
+        // `(Cons p)` arm's self-call is a `MatchSum` tail call). Sum 1..100000 = 5000050000, constant stack.
+        let llist = "(module m (type IList (Nil) (Cons (Tuple Int64 IList))) \
+               (def (build (: i Int64) (: acc IList)) (if (< i 1) acc (build (- i 1) (Cons (tuple i acc))))) \
+               (def (suml (: xs IList) (: acc Int64)) \
+                 (match xs ((Nil) acc) ((Cons p) (suml (. p 1) (+ acc (. p 0)))))) \
+               (def (main) (suml (build 100000 (Nil)) 0)) (export main))";
+        assert_eq!(
+            run_heap_value(llist, vec![]).unwrap(),
+            "5000050000",
+            "a tail linked-list sum loops in constant stack (sum 1..100000)"
+        );
+    }
+
+    #[test]
     fn a_recursive_list_consumer_infers_its_element_via_list_at() {
         // A recursive function whose list PARAMETER is touched ONLY through `List.at` (never a direct
         // operator on the list itself) now infers its element type — before, the `(Some x)` payload binder

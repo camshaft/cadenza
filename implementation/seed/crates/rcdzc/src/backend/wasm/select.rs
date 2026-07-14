@@ -1901,7 +1901,39 @@ fn body_has_member_tail_call(db: &mut Db, id: StructId, members: &[usize]) -> bo
         Core::MatchList { arms, .. } => arms
             .iter()
             .any(|a| body_has_member_tail_call(db, a.body, members)),
+        // A SUM match's decision tree has tail positions at its LEAF/GUARDED bodies — `emit_tail` threads
+        // the loop context into each (a tail self-call in a `(Succ m) → (count m …)` arm iterates the
+        // loop), so a member tail-call in any leaf makes the function loopable. This is what lets a
+        // tail-recursive sum-type consumer `(count n acc) = (match n ((Zero) acc) ((Succ m) (count m (+
+        // acc 1))))` become a constant-stack loop.
+        Core::MatchSum { root, .. } => sum_cont_has_member_tail_call(db, &root, members),
         _ => false,
+    }
+}
+
+/// The `body_has_member_tail_call` recursion over a sum decision tree ([`SumCont`]): a `Leaf`/`Guarded`
+/// BODY is a tail position (a member tail-call there loops); the `Guarded.els`, `LitTest.then_`/`els`, and
+/// `Switch` arm continuations are the remaining sub-matrix, all in the same tail position, so recurse
+/// through them. The guard `cond` / literal `probe` are predicates evaluated BEFORE the body, not tail
+/// positions, so they are not considered.
+fn sum_cont_has_member_tail_call(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    members: &[usize],
+) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => body_has_member_tail_call(db, *body, members),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            body_has_member_tail_call(db, *body, members)
+                || sum_cont_has_member_tail_call(db, els, members)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_cont_has_member_tail_call(db, then_, members)
+                || sum_cont_has_member_tail_call(db, els, members)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| sum_cont_has_member_tail_call(db, &a.cont, members)),
     }
 }
 
@@ -1936,7 +1968,30 @@ fn tail_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
                 tail_callees(db, arm.body, out);
             }
         }
+        Core::MatchSum { root, .. } => sum_cont_tail_callees(db, &root, out),
         _ => {}
+    }
+}
+
+/// The `tail_callees` recursion over a sum decision tree ([`SumCont`]): collect the callees in TAIL
+/// position (the `Leaf`/`Guarded` bodies), descending the same continuations `sum_cont_has_member_tail_call`
+/// tests. The tail-call analogue of that predicate.
+fn sum_cont_tail_callees(db: &mut Db, cont: &crate::core::SumCont, out: &mut Vec<usize>) {
+    match cont {
+        crate::core::SumCont::Leaf(body) => tail_callees(db, *body, out),
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            tail_callees(db, *body, out);
+            sum_cont_tail_callees(db, els, out);
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_cont_tail_callees(db, then_, out);
+            sum_cont_tail_callees(db, els, out);
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            for arm in arms {
+                sum_cont_tail_callees(db, &arm.cont, out);
+            }
+        }
     }
 }
 
@@ -2457,6 +2512,69 @@ fn emit_tail(
                 result_it,
                 &arm_slots,
                 arm_base,
+                high,
+                scratch_ty,
+                layout,
+                out,
+                TailPos::Tail(tl),
+            )
+        }
+        // A SUM match in tail position: dispatch on the discriminant decision tree, each LEAF/GUARDED body
+        // in tail position (a self-tail-call in a `(Succ m) → (count m …)` arm becomes a `return_call` /
+        // loop iteration). Mirrors the non-tail `MatchSum` emit — materialize the scrutinee handle once (a
+        // reusable param/local is re-read cheaply per probe; a computed scrutinee is stashed in a fresh
+        // i32 slot so it is evaluated ONCE) — then `emit_sum_cont_tailable` with `Tail(tl)`. Without this,
+        // `MatchSum` fell through to non-tail `emit`, so a tail-recursive sum consumer never looped (`(count
+        // n acc) = (match n ((Zero) acc) ((Succ m) (count m (+ acc 1))))` stack-recursed).
+        Core::MatchSum { scrutinee, root } => {
+            let block_ty = match type_of(db, id) {
+                Ty::Unit => BlockType::Empty,
+                other => match valtype_of(&other) {
+                    Some(vt) => BlockType::Val(vt),
+                    None => {
+                        return Err(Reject::decline(
+                            "sum match result type has no machine representation",
+                        ));
+                    }
+                },
+            };
+            let result_it = match type_of(db, id) {
+                Ty::Int(rit) => Some(rit),
+                _ => None,
+            };
+            // Same scrutinee discipline as the non-tail `MatchSum` emit: a reusable handle (a param/local
+            // already in a slot) is re-read per probe; a computed one is materialized ONCE into a fresh i32
+            // slot above the high-water so every re-read hits the slot (and its transient scratch never
+            // clashes with the arm bodies at `base`).
+            let (arms_slots, arms_base) = if reusable_handle_src(db, scrutinee, slots) {
+                (slots.clone(), base)
+            } else {
+                let slot = *high;
+                *high = slot + 1;
+                scratch_ty.insert(slot, ValType::I32);
+                emit(
+                    db,
+                    scrutinee,
+                    slots,
+                    slot + 1,
+                    high,
+                    scratch_ty,
+                    layout,
+                    out,
+                )?;
+                out.push(Lir::LocalSet(slot));
+                let mut m = slots.clone();
+                m.insert(scrutinee, slot);
+                (m, (*high).max(slot + 1))
+            };
+            emit_sum_cont(
+                db,
+                scrutinee,
+                &root,
+                result_it,
+                block_ty,
+                &arms_slots,
+                arms_base,
                 high,
                 scratch_ty,
                 layout,
@@ -4637,6 +4755,7 @@ fn emit(
                 scratch_ty,
                 layout,
                 out,
+                TailPos::NonTail,
             )
         }
         // A runtime LIST match → dispatch by LENGTH. Read `vec-len(scrutinee)` once, then a chain of
@@ -6545,9 +6664,21 @@ fn try_emit_disc_br_table(
     let join_from_arm_extra = if has_default_block { 1 } else { 0 };
     for (k, arm) in disc_arms.iter().enumerate() {
         out.push(Lir::End); // close $a_k → its br_table target lands here
+        // The br_table path is only taken in NON-tail position (`emit_sum_match_arms` skips it when
+        // looping — see there), so a continuation here is never a loop iteration.
         emit_sum_cont(
-            db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty, layout,
+            db,
+            scrutinee,
+            &arm.cont,
+            result_it,
+            block_ty,
+            slots,
+            base,
+            high,
+            scratch_ty,
+            layout,
             out,
+            TailPos::NonTail,
         )?;
         out.push(Lir::Br((m - 1 - k as u32) + join_from_arm_extra)); // br to $join, carrying the value
     }
@@ -6556,7 +6687,18 @@ fn try_emit_disc_br_table(
     if let Some(d) = default {
         out.push(Lir::End); // close $default
         emit_sum_cont(
-            db, scrutinee, &d.cont, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+            db,
+            scrutinee,
+            &d.cont,
+            result_it,
+            block_ty,
+            slots,
+            base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+            TailPos::NonTail,
         )?;
     }
     out.push(Lir::End); // close $join
@@ -6585,15 +6727,30 @@ fn emit_sum_match_arms(
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
     out: &mut Emit,
+    tail: TailPos,
 ) -> Result<(), Reject> {
     // BR_TABLE DECISION TREE: a switch that tests ≥3 DISTINCT discriminants dispatches in O(1) via a
     // jump table instead of a linear `if (disc == k)` cascade (the arms below). Sum discriminants are
     // contiguous `0..variant_count`, so the table is dense with no wasted slots. `try_emit_disc_br_table`
     // returns `Some(())` when it emitted the table, `None` to fall through to the linear chain (too few
     // arms, or a shape it does not handle — a leading default, non-distinct discs).
-    if let Some(()) = try_emit_disc_br_table(
-        db, scrutinee, path, arms, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
-    )? {
+    // SKIPPED ONLY FOR A SELF-LOOP (`Tail(Some(tl))`): the table wraps its arm continuations in nested
+    // control-flow BLOCKS (`$join`/`$a_k`), a different block-nesting than the linear `if`-chain; a
+    // self-tail-call compiled as a loop `br tl.depth` inside an arm would need a table-specific depth (not
+    // the `deeper_tail` +1-per-`if` accounting the linear chain uses). The linear chain loops correctly and
+    // covers the common recursive-sum shapes (2-variant Cons/Nil, Succ/Zero, Node/Leaf never hit the
+    // ≥3-disc table anyway), so fall back to it when a self-loop is in play. A `NonTail` match (a sum match
+    // used as an operand) OR a `Tail(None)` one (a non-self-recursive function body — EVERY body is emitted
+    // via `emit_tail`, so this is the common case) keeps the O(1) table: the table's continuations are
+    // emitted `NonTail` (a `return_call` `br`s to `$join` fine — it's frame-replacing, not depth-relative;
+    // and a self-loop `br` never occurs here since there is no loop), so it is byte-identical to the
+    // pre-tail behavior for both.
+    if !matches!(tail, TailPos::Tail(Some(_)))
+        && let Some(()) = try_emit_disc_br_table(
+            db, scrutinee, path, arms, result_it, block_ty, slots, base, high, scratch_ty, layout,
+            out,
+        )?
+    {
         return Ok(());
     }
     match arms.split_first() {
@@ -6601,14 +6758,14 @@ fn emit_sum_match_arms(
             "sum match ran off the end with no covering arm",
         )),
         // A default arm, or the last arm of an exhaustive switch — its probe is redundant, so emit its
-        // continuation unconditionally.
+        // continuation unconditionally (in the SAME tail position as the whole switch — no `if` opened).
         Some((arm, [])) => emit_sum_cont(
             db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty, layout,
-            out,
+            out, tail,
         ),
         Some((arm, _)) if arm.disc.is_none() => emit_sum_cont(
             db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty, layout,
-            out,
+            out, tail,
         ),
         Some((arm, rest)) => {
             let disc = arm.disc.expect("non-None handled above");
@@ -6627,9 +6784,13 @@ fn emit_sum_match_arms(
                 out.push(Lir::I32Eq);
             }
             out.push(Lir::If(block_ty));
+            // The matched arm's continuation and the fall-through switch both sit one `if` deeper — bump
+            // the tail depth so a self-loop `br` inside either targets the loop top (mirrors the scalar
+            // `emit_probe_chain` / list `emit_list_arms_tailable` disc-nesting).
+            let deeper = deeper_tail(tail);
             emit_sum_cont(
                 db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty,
-                layout, out,
+                layout, out, deeper,
             )?;
             // The fall-through switch (the disc-test's ELSE) starts scratch ABOVE the high-water the
             // matched arm's continuation (the THEN) reached, NOT at `base` — the same discipline as the
@@ -6642,7 +6803,7 @@ fn emit_sum_match_arms(
             out.push(Lir::Else);
             emit_sum_match_arms(
                 db, scrutinee, path, rest, result_it, block_ty, slots, else_base, high, scratch_ty,
-                layout, out,
+                layout, out, deeper,
             )?;
             out.push(Lir::End);
             Ok(())
@@ -6654,7 +6815,10 @@ fn emit_sum_match_arms(
 /// match's result width `result_it`, as the scalar-match arms are); a nested SWITCH emits a fresh switch
 /// chain on its deeper sub-value (`emit_sum_match_arms`), which is the decision tree recursing to share
 /// the outer probe. The nested switch's `if`s reuse the SAME `block_ty` (both branches yield the match's
-/// one result type at every depth).
+/// one result type at every depth). `tail` carries the [`TailPos`]: in a TAIL sum match each LEAF/GUARDED
+/// body is a tail position (a self-tail-call there iterates the loop / becomes a `return_call`), and the
+/// nested dispatch bumps the threaded loop `depth` +1 per enclosing `if` (via `deeper_tail`). `NonTail` is
+/// byte-identical to the pre-tail behavior (bodies emit via `emit`).
 #[allow(clippy::too_many_arguments)]
 fn emit_sum_cont(
     db: &mut Db,
@@ -6668,13 +6832,15 @@ fn emit_sum_cont(
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
     out: &mut Emit,
+    tail: TailPos,
 ) -> Result<(), Reject> {
     match cont {
         crate::core::SumCont::Leaf(body) => {
-            if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, *body)) {
-                return emit_operand(db, *body, rit, slots, base, high, scratch_ty, layout, out);
-            }
-            emit(db, *body, slots, base, high, scratch_ty, layout, out)
+            // A bare-`ConstInt` leaf grounds to the result width (never a tail call); otherwise the body is
+            // emitted at the ambient `tail` position — in a tail match a self-tail-call in the body loops.
+            emit_arm_body(
+                db, *body, result_it, slots, base, high, scratch_ty, layout, out, tail,
+            )
         }
         // A GUARDED arm: `if cond then body else <els>`. The guard cond is a boolean (an i32); each of the
         // body and the fall-through `els` produces the match's result type (`block_ty`), grounding a
@@ -6690,17 +6856,16 @@ fn emit_sum_cont(
             // `*high == base`, so this is byte-identical for the common case.
             let body_base = *high;
             out.push(Lir::If(block_ty));
-            if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, *body)) {
-                emit_operand(
-                    db, *body, rit, slots, body_base, high, scratch_ty, layout, out,
-                )?;
-            } else {
-                emit(db, *body, slots, body_base, high, scratch_ty, layout, out)?;
-            }
+            // Both the body and the fall-through `els` sit one `if` deeper — bump the tail depth so a
+            // self-loop `br` from either targets the loop top (mirrors `emit_arm_guarded_body`).
+            let deeper = deeper_tail(tail);
+            emit_arm_body(
+                db, *body, result_it, slots, body_base, high, scratch_ty, layout, out, deeper,
+            )?;
             out.push(Lir::Else);
             emit_sum_cont(
                 db, scrutinee, els, result_it, block_ty, slots, body_base, high, scratch_ty,
-                layout, out,
+                layout, out, deeper,
             )?;
             out.push(Lir::End);
             Ok(())
@@ -6770,9 +6935,11 @@ fn emit_sum_cont(
                 }
             }
             out.push(Lir::If(block_ty));
+            // Both continuations sit one `if` deeper — bump the tail depth (mirrors the guard/switch sites).
+            let deeper = deeper_tail(tail);
             emit_sum_cont(
                 db, scrutinee, then_, result_it, block_ty, slots, base, high, scratch_ty, layout,
-                out,
+                out, deeper,
             )?;
             // The `els` continuation starts scratch above the `then_`'s high-water — same discipline as
             // the disc-switch/guard sites: a `then_` that stashes an i32 heap handle must not have its
@@ -6781,14 +6948,14 @@ fn emit_sum_cont(
             out.push(Lir::Else);
             emit_sum_cont(
                 db, scrutinee, els, result_it, block_ty, slots, els_base, high, scratch_ty, layout,
-                out,
+                out, deeper,
             )?;
             out.push(Lir::End);
             Ok(())
         }
         crate::core::SumCont::Switch { path, arms } => emit_sum_match_arms(
             db, scrutinee, path, arms, result_it, block_ty, slots, base, high, scratch_ty, layout,
-            out,
+            out, tail,
         ),
     }
 }
