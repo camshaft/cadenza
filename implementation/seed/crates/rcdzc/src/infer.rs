@@ -5654,9 +5654,18 @@ fn check_application(
             && !target.same_dimension(&qu)
         {
             trace!(target: "rcdzc::infer", head = head.0, "fault: Unit.in target dimension differs from the quantity's (CDZ0501)");
+            // NAME both units — the quantity's `qu` and the target `target` — instead of the anonymous
+            // "a unit of a different dimension", matching the addition-mismatch message ("meter and
+            // second"). The reader sees WHICH conversion is impossible (`meter → second`) rather than only
+            // that some dimension differs.
             out.push(Reject::coded(
                 Code::DimensionMismatch,
-                "converting a quantity to a unit of a different dimension",
+                format!(
+                    "converting a {} quantity to {} crosses a dimension boundary — units are never \
+                     silently converted across dimensions",
+                    qu.render_human(),
+                    target.render_human(),
+                ),
             ));
         }
         collect(db, args[1], out);

@@ -27898,13 +27898,19 @@ mod match_engine {
         // dimensions — CDZ0501. Unit.in converts WITHIN a dimension, never across one.
         let src = "(do (def (main) ((. Unit in) ((. Unit of) #\"meter\") \
                    ((. Qty of) 3.0 ((. Unit of) #\"second\")))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("converting across dimensions with Unit.in must reject");
         assert_eq!(
-            compile_component(&crate::codec::encode(&parse(src)))
-                .err()
-                .and_then(|d| d.code.as_deref().map(str::to_string))
-                .as_deref(),
+            err.code.as_deref(),
             Some("CDZ0501"),
             "converting across dimensions with Unit.in must reject CDZ0501"
+        );
+        // The message NAMES both units (the source `second` and the target `meter`), matching the
+        // addition-mismatch phrasing — not the terse "a unit of a different dimension".
+        assert!(
+            err.message.contains("second") && err.message.contains("meter"),
+            "the convert-mismatch names both units: {}",
+            err.message
         );
     }
 
