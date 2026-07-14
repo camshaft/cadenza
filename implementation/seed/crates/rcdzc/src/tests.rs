@@ -31353,6 +31353,33 @@ mod stage1 {
     }
 
     #[test]
+    fn the_type_reflection_module_denotes_the_kind_of_types_in_a_type_position() {
+        // Type-valued-parameter vertical, T1: `Type` (the type-reflection module, fields `of`/`eq` =
+        // `type-of`/`type-eq`) used in a TYPE POSITION denotes the KIND OF TYPES, `Ty::Type` — so
+        // `(: t Type)` declares a type-valued parameter. Recognized STRUCTURALLY (its `of` field's
+        // `(meta apply)` is `Prim::TypeOf`), never by the name "Type" (no key outside the prelude). This
+        // revises the prior "`Type` in a bare type position is not a type" stance (`prelude.rs`), giving
+        // the type-valued-parameter model a spellable annotation.
+        use crate::db::Db;
+        use crate::eval::typeval_of;
+        use crate::testkit::parse;
+        use crate::ty::Ty;
+        let mut db = Db::load(parse("(module m (def (main) 0) (export main))"));
+        let type_occ = *db.prelude.get("Type").expect("Type is in the prelude");
+        assert_eq!(
+            typeval_of(&mut db, type_occ),
+            Some(Ty::Type),
+            "the Type reflection module denotes Ty::Type in a type position"
+        );
+        // A ground type name is unaffected — still its own type, not the kind.
+        let int_occ = *db.prelude.get("Int64").expect("Int64 is in the prelude");
+        assert!(
+            matches!(typeval_of(&mut db, int_occ), Some(Ty::Int(_))),
+            "Int64 still denotes the Int64 type, not the kind"
+        );
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the
