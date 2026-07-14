@@ -1438,6 +1438,19 @@ impl Db {
         // spliced-in source resolves like hand-written code). A non-constant/runtime AST argument is left
         // untouched for `resolve` to decline (the compiler does not execute a dynamically-built AST).
         crate::eval_ast::desugar_eval(&mut ast);
+        // Every expansion above (handle desugar, quote reification, eval reconstruction) runs HERE at
+        // load, BEFORE resolve/type/lower/compile — it produces ordinary AST the rest of the pipeline then
+        // type-checks, capability-checks (the manifest is `collect_host_imports` over the EXPANDED AST, so
+        // an expanded form reaches no capability the manifest does not enumerate), and determinism-checks
+        // exactly as if that AST had been written directly. Expansion precedes and feeds the core guarantees.
+        //= spec/capabilities/metaprogramming.md#expansion-precedes-and-feeds-the-core-guarantees
+        //# The expanded representation MUST be subject to type checking exactly as if it had been written directly.
+        //= spec/capabilities/metaprogramming.md#expansion-precedes-and-feeds-the-core-guarantees
+        //# The expanded representation MUST be subject to capability checking exactly as if it had been written directly.
+        //= spec/capabilities/metaprogramming.md#expansion-precedes-and-feeds-the-core-guarantees
+        //# The expanded representation MUST be subject to the determinism guarantees exactly as if it had been written directly.
+        //= spec/capabilities/metaprogramming.md#expansion-precedes-and-feeds-the-core-guarantees
+        //# A macro MUST NOT be able to produce an expanded representation that reaches a capability the program's manifest does not enumerate.
         // ACCUMULATOR INTRODUCTION: rewrite a linear NON-tail recursion (`f n = if base 0 (+ n (f (- n
         // 1)))`) into a tail-recursive accumulator def (which `select`'s loop transform then compiles to a
         // constant-stack `loop`). Synthesizes a fresh accumulator def and re-seeds the original — appending
