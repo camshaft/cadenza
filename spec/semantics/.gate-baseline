@@ -887,10 +887,13 @@ pass	a parameter annotation contradicting its use is rejected
 pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
 pass	a parameterized compound-return export forwards distinct arguments to make
+pass	a parameterized export builds a list of tuples by a runtime-length loop and measures it
 pass	a parameterized export returning a capturing closure is made and called by the host
 pass	a parameterized export returning a multi-argument capturing closure
 pass	a parameterized export returns a built-in Option computed from its argument
 pass	a parameterized export returns a list computed from its argument
+pass	a parameterized export returns a list of lists built from its argument
+pass	a parameterized export returns a list of tuples built from its argument
 pass	a parameterized export returns a record computed from its argument
 pass	a parameterized export returns a runtime BigInt computed from its argument
 pass	a parameterized export returns a runtime Rational computed from its argument
