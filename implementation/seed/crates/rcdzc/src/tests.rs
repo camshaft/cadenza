@@ -12413,17 +12413,38 @@ mod match_engine {
     }
 
     #[test]
-    fn a_negative_into_unsigned_gets_no_widen_fix() {
-        // Widening never rescues a NEGATIVE literal in an UNSIGNED type (no unsigned width holds a
-        // negative), so CDZ0302 stays the honest bare reject — no misleading widen fix. (Switching to a
-        // signed type is a larger intent guess the compiler must not make.)
+    fn a_negative_into_unsigned_offers_the_smallest_signed_type() {
+        // A NEGATIVE literal in an UNSIGNED type cannot fit ANY unsigned width — so the fit is
+        // UNAMBIGUOUS: the value must be SIGNED (rustc makes exactly this suggestion). CDZ0302 now carries
+        // the retype fix to the smallest SIGNED width that holds it — `(: -5 UInt8)` → `Int8`. This is not
+        // a speculative signedness guess: a negative literal has no unsigned reading, so the signed type is
+        // forced. (Contrast the same-sign WIDEN case `(: 300 Int8)` → `Int16` below.)
         let d = reject_full("(module m (def (main) (: -5 UInt8)) (export main))")
             .expect("-5 does not fit UInt8");
         assert_eq!(d.code.as_deref(), Some("CDZ0302"), "got: {}", d.message);
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Int8"),
+            "the smallest signed type holding -5: {}",
+            d.message
+        );
+        // A magnitude too large for Int8 escalates to the next signed width: -200 → Int16.
+        let big = reject_full("(module m (def (main) (: -200 UInt8)) (export main))")
+            .expect("-200 does not fit UInt8");
+        assert_eq!(
+            big.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("Int16"),
+            "-200 needs Int16 (outside Int8's -128..=127): {}",
+            big.message
+        );
+        // A value too large for even Int64 has no signed width → the honest bare reject, no fix.
+        let huge =
+            reject_full("(module m (def (main) (: -99999999999999999999999 UInt8)) (export main))")
+                .expect("a huge negative does not fit UInt8");
         assert!(
-            d.fix.is_none(),
-            "no widen fix for a negative into unsigned: {:?}",
-            d.fix
+            huge.fix.is_none(),
+            "no signed width holds a value beyond Int64: {:?}",
+            huge.fix
         );
     }
 

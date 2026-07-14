@@ -511,16 +511,20 @@ fn literal_width_fault(db: &mut Db, value: StructId, ty_expr: StructId) -> Optio
 }
 
 /// The CDZ0302 reject for an integer literal `v` that overflows the `(signed, width)` type `annot_ty`,
-/// carrying — when possible — a WIDEN fix: replace the annotation `ty_expr` with the SMALLEST aliased
-/// width ({8,16,32,64}) of the same signedness the literal DOES fit (`(: 999 Int8)` → `Int16`), the
-/// rustc-style "value doesn't fit; use a wider type" repair (`spec/capabilities/diagnostics.md` §A
-/// Diagnostic Carries A Route To A Fix). Only a WIDER width is offered (the search starts above `w`) and
-/// only when one fits — a value beyond `Int64`/`UInt64`, or a NEGATIVE into any UNSIGNED width (which no
-/// widening rescues), gets the bare reject: switching signedness is a larger intent guess the compiler
-/// must not make. Replacing the whole `ty_expr` rewrites either spelling — a bare `Int8` or a `(Int 8)`
-/// compound — to the bare `Int16`. Heuristic: widening clears the range fault, but whether the author
-/// meant a wider type (vs. a different literal) is theirs to confirm. Shared by both CDZ0302 literal-range
-/// sites (the value annotation `(: v T)` and the let-binder/param `((: name T) v)`), so both carry the fix.
+/// carrying — when possible — a retype fix: replace the annotation `ty_expr` with the SMALLEST aliased
+/// width ({8,16,32,64}) that DOES fit `v`, the rustc-style "value doesn't fit; use a type that holds it"
+/// repair (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). Two shapes.
+/// SAME-SIGNEDNESS WIDEN: a magnitude too large for the width (`(: 999 Int8)` → `Int16`, `(: 70000
+/// UInt8)` → `UInt32`) takes the smallest wider width of the SAME sign. SIGN FLIP: a NEGATIVE literal in
+/// an UNSIGNED type (`(: -5 UInt8)` → `Int8`) takes the smallest SIGNED width holding `v` — no unsigned
+/// type can EVER hold a negative value, so the fit is UNAMBIGUOUS (rustc makes exactly this suggestion);
+/// this is NOT a speculative signedness guess, since a negative literal has no unsigned reading, so the
+/// signed type is forced, not chosen.
+/// A value beyond `Int64`/`UInt64` (no aliased width fits) gets the bare reject. Replacing the whole
+/// `ty_expr` rewrites either spelling — a bare `Int8` or a `(Int 8)` compound — to the bare `Int16`.
+/// Heuristic: the retype clears the range fault, but whether the author meant a wider/signed type (vs. a
+/// different literal) is theirs to confirm. Shared by both CDZ0302 literal-range sites (the value
+/// annotation `(: v T)` and the let-binder/param `((: name T) v)`), so both carry the fix.
 fn int_out_of_range_reject(
     annot_ty: &Ty,
     signed: bool,
@@ -532,14 +536,22 @@ fn int_out_of_range_reject(
         Code::IntOutOfRange,
         int_out_of_range_message(annot_ty, signed, w),
     );
+    // A NEGATIVE literal annotated with an UNSIGNED type cannot fit ANY unsigned width — the value is
+    // negative, so only a SIGNED type reads it. Offer the smallest signed width that holds it (forced, not
+    // guessed). Otherwise widen within the SAME signedness (the ordinary magnitude-too-large case).
+    let (fix_signed, search_from) = if !signed && v.negative {
+        (true, 0) // any signed width may fit; search all aliased widths
+    } else {
+        (signed, w) // widen: strictly larger widths of the same sign
+    };
     match crate::ty::ALIASED_INT_WIDTHS
         .iter()
         .copied()
-        .filter(|&aw| aw > w)
-        .find(|&aw| v.fits_width(signed, aw))
+        .filter(|&aw| aw > search_from)
+        .find(|&aw| v.fits_width(fix_signed, aw))
     {
         Some(fit) => {
-            let stem = if signed { "Int" } else { "UInt" };
+            let stem = if fix_signed { "Int" } else { "UInt" };
             reject.with_fix(Fix::replace_heuristic(ty_expr, format!("{stem}{fit}")))
         }
         None => reject,
