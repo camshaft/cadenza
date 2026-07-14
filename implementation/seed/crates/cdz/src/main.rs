@@ -1029,46 +1029,140 @@ fn fix_verifies(
 /// non-zero iff any error-severity fault is present (a clean file prints nothing and exits 0) — the
 /// CI-gate / editor-lint shape.
 fn run_check(args: &CheckArgs) -> ExitCode {
-    let (source, arenas, spans) = match load_program_spanned(&args.file) {
-        Ok(v) => v,
+    // Follow the entry file's IMPORT CLOSURE so a cross-file reference (an imported type or definition)
+    // resolves and checks — `cdz check FILE` then sees the SAME linked program the package compile does.
+    // A file that imports nothing loads as a lone file, byte-identical to a standalone check; only a file
+    // carrying an `(import …)` pulls its transitively-imported siblings in. A diagnostic that lands in an
+    // imported library is reported at THAT library's own `path:line:col` via the `link-map` demux below.
+    let files = match load_import_closure(&args.file) {
+        Ok(f) => f,
         Err(e) => {
             eprintln!("{PROG}: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let out = run_sidecar(
-        &arenas,
-        rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics),
-    );
+    // Route through the package/link path whenever the ENTRY declares an `(import …)` — even if it is the
+    // only file loaded (an import naming no sibling). Then `link()` reports the precise "unknown package
+    // file" diagnostic (CDZ0201) instead of the generic "imports are not modeled here" a bare single-file
+    // compile falls back to. A file with NO imports takes the single-file path, byte-identical to before.
+    let is_package = !declared_import_paths(&files[0].arenas).is_empty();
+    let out = if is_package {
+        // Splice all closure files into one program and run Diagnostics over the WHOLE package (so a name
+        // defined in an imported file resolves). `link()` needs the entry named — it is `files[0]`.
+        let mut inputs: Vec<rcdzc::Artifact> = files
+            .iter()
+            .map(|f| {
+                rcdzc::Artifact::new(
+                    rcdzc::Artifact::KIND_AST,
+                    f.name.clone(),
+                    cadenza_syntax::codec::encode(&f.arenas),
+                )
+            })
+            .collect();
+        inputs.push(rcdzc::Artifact::new(
+            rcdzc::sidecar::KIND_SIDECAR,
+            "drive",
+            rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics)]),
+        ));
+        inputs.push(compiler_cli::entry_artifact(&files[0].name));
+        rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]))
+    } else {
+        run_sidecar(
+            &files[0].arenas,
+            rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics),
+        )
+    };
     let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
         report_errors(&out);
         return ExitCode::FAILURE;
     };
     let text = String::from_utf8_lossy(bytes);
     let mut any_error = false;
+    // The package demux table (`link-map`) — absent for a single file, so every node belongs to the
+    // entry with its local id == the global id.
+    let link_map = out
+        .artifact(rcdzc::link::KIND_LINK_MAP)
+        .map(rcdzc::link::decode_link_map)
+        .unwrap_or_default();
+    // One line-start index per file (binary-searched line:col), parallel to `files`.
+    let indices: Vec<_> = files
+        .iter()
+        .map(|f| cadenza_syntax::query::driver::LineIndex::new(&f.source))
+        .collect();
+    // Demux a node id to `(file index, that file's LOCAL id)`. Single file: `(0, id)`. Package: the file
+    // whose `[base, base+count)` global range holds the id, minus the base (`link::FileSpan`). A node in
+    // no file (the synthesized `(do …)` root, or a prelude/β-copy node) demuxes to `None`.
+    let file_of_node = |node: &str| -> Option<(usize, u32)> {
+        let n = node.parse::<u32>().ok()?;
+        if link_map.is_empty() {
+            return Some((0, n));
+        }
+        let fs = link_map
+            .iter()
+            .find(|fs| n >= fs.struct_base && n < fs.struct_base + fs.struct_count)?;
+        let file_ix = files.iter().position(|f| f.name == fs.path)?;
+        Some((file_ix, n - fs.struct_base))
+    };
     // The ORIGINAL program's diagnostic set — the baseline `--verify-fixes` judges each candidate fix
     // against (a fix upgrades to verified only if it clears its fault AND introduces no new error).
-    // Computed once (a recompile), only when `--verify-fixes` is set, so plain `check`/`--json` pay nothing.
-    let baseline_errors: Option<Vec<(String, String, String)>> = if args.verify_fixes {
-        program_diagnostic_keys(&source, is_ml_source(&args.file))
+    // Computed once (a recompile), only when `--verify-fixes` is set AND the check is a single file — a
+    // PACKAGE fix would need re-linking the whole package to verify (a follow-up), so a package fix stays
+    // heuristic unless the compiler already proved it. Single file: byte-identical to before.
+    let baseline_errors: Option<Vec<(String, String, String)>> = if args.verify_fixes && !is_package
+    {
+        program_diagnostic_keys(&files[0].source, is_ml_source(&files[0].path))
     } else {
         None
     };
-    // A node id → its 1-based `(line, col)` start plus its `[from, to)` UTF-8 byte range, via the span
-    // table this process kept. `None` for an unanchored (`-`) or unmapped node. One line-start index
-    // (binary-searched line:col) so a program with MANY diagnostics — each mapped here, some more than
-    // once via the source-order sort key — stays linear instead of O(diags × source_len) (500 unbound
-    // names = 73ms, growing ~2.8×/doubling in the from-start `line_col` scan).
-    let index = cadenza_syntax::query::driver::LineIndex::new(&source);
+    // A node id → its 1-based `(line, col)` start plus its `[from, to)` UTF-8 byte range, in ITS file's
+    // span table. `None` for an unanchored (`-`) or unmapped node. Per-file line indices keep this linear
+    // even when a program has MANY diagnostics (each mapped here, some twice via the source-order sort).
     let span_of = |node: &str| -> Option<(usize, usize, usize, usize)> {
-        let n = node.parse::<u32>().ok()?;
-        let span = spans.get(cadenza_syntax::StructId(n))?;
-        let (l, c) = index.line_col(&source, span.start);
+        let (fi, local) = file_of_node(node)?;
+        let span = files[fi].spans.get(cadenza_syntax::StructId(local))?;
+        let (l, c) = indices[fi].line_col(&files[fi].source, span.start);
         Some((l, c, span.start, span.end))
     };
-    let loc_label = |node: &str| match span_of(node) {
-        Some((l, c, _, _)) => format!("{}:{l}:{c}", args.file),
+    let loc_label = |node: &str| match file_of_node(node) {
+        Some((fi, _)) => match span_of(node) {
+            Some((l, c, _, _)) => format!("{}:{l}:{c}", files[fi].path),
+            None => files[fi].path.clone(),
+        },
         None => args.file.clone(),
+    };
+    // Fix helpers that demux the fix's TARGET node to its file, then apply against that file's own
+    // source / arenas / spans / surface (a fix may land in an imported library, not the entry).
+    let fix_is_ml = |fix_node: &str| -> bool {
+        file_of_node(fix_node)
+            .map(|(fi, _)| is_ml_source(&files[fi].path))
+            .unwrap_or(false)
+    };
+    let do_fix_edits = |kind: &str,
+                        fix_node: &str,
+                        repl: &str|
+     -> Option<Vec<cadenza_syntax::query::textedit::Edit>> {
+        let (fi, local) = file_of_node(fix_node)?;
+        fix_edits(
+            &files[fi].source,
+            &files[fi].arenas,
+            &files[fi].spans,
+            kind,
+            cadenza_syntax::StructId(local),
+            repl,
+            surface_of(&files[fi].path),
+        )
+    };
+    let do_fix_apply = |kind: &str, fix_node: &str, repl: &str| -> Option<String> {
+        let (fi, local) = file_of_node(fix_node)?;
+        apply_fix_to_source(
+            &files[fi].source,
+            &files[fi].arenas,
+            &files[fi].spans,
+            kind,
+            cadenza_syntax::StructId(local),
+            repl,
+            surface_of(&files[fi].path),
+        )
     };
     // REPORT IN SOURCE ORDER (by node start byte), not the sidecar's fault-collection order — the tree
     // walk that gathers faults does not visit strictly left-to-right, so without this a reader sees an
@@ -1117,7 +1211,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         // Treating it as "no fix node" makes both the human `help:` line and the JSON `fix` object omit
         // it uniformly. (`cdz fix` already declines it via the verify re-parse; this stops `check --json`
         // from handing an ML agent an unusable insert.)
-        let fix_node = if fix_kind == "insert" && is_ml_source(&args.file) {
+        let fix_node = if fix_kind == "insert" && fix_is_ml(fix_node) {
             "-"
         } else {
             fix_node
@@ -1128,25 +1222,14 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         // a wrap/coercion/did-you-mean is heuristic there because the compiler does not recompile. Here
         // — where we hold BOTH the source text and the compiler — we CAN: splice the fix in, re-check,
         // and confirm the same-code error is gone (`spec/capabilities/diagnostics.md` §A Confirmed Fix
-        // Is Marked Verified). Only heuristic fixes with a real target span are candidates.
+        // Is Marked Verified). Only heuristic fixes with a real target span are candidates. A PACKAGE
+        // check leaves `baseline_errors` `None` (see above), so a package fix stays heuristic — verifying
+        // it against a single re-parsed file would miss the cross-file context.
         let verified_flag = if fix_verified == "verified" {
             true
-        } else if args.verify_fixes && fix_node != "-" {
-            let is_ml = is_ml_source(&args.file);
-            fix_node
-                .parse::<u32>()
-                .ok()
-                .and_then(|n| {
-                    apply_fix_to_source(
-                        &source,
-                        &arenas,
-                        &spans,
-                        fix_kind,
-                        cadenza_syntax::StructId(n),
-                        fix_repl,
-                        surface_of(&args.file),
-                    )
-                })
+        } else if args.verify_fixes && !is_package && fix_node != "-" {
+            let is_ml = is_ml_source(&files[0].path);
+            do_fix_apply(fix_kind, fix_node, fix_repl)
                 .map(|edited| {
                     fix_verifies(&edited, is_ml, severity, code, baseline_errors.as_deref())
                 })
@@ -1171,6 +1254,12 @@ fn run_check(args: &CheckArgs) -> ExitCode {
                 obj.string("code", code);
             }
             obj.string("message", message);
+            // In a PACKAGE check a diagnostic may belong to an imported file, so name it (the `from`/`to`
+            // byte offsets below are relative to THAT file). A single-file check omits it — byte-identical
+            // to before (the file is implicit, it is `args.file`).
+            if is_package && let Some((fi, _)) = file_of_node(node) {
+                obj.string("file", &files[fi].path);
+            }
             if let Some((l, c, from, to)) = span_of(node) {
                 obj.raw("line", &l.to_string());
                 obj.raw("col", &c.to_string());
@@ -1178,19 +1267,10 @@ fn run_check(args: &CheckArgs) -> ExitCode {
                 obj.raw("to", &to.to_string());
             }
             // Compute the structural patch for the fix (if any). Only when the fix's node parses AND the
-            // patch builds — otherwise the diagnostic carries no `fix` (message-only guidance).
+            // patch builds — otherwise the diagnostic carries no `fix` (message-only guidance). The edits
+            // are relative to the fix's OWN file (which may be an imported library, not the entry).
             let patch = if fix_node != "-" {
-                fix_node.parse::<u32>().ok().and_then(|n| {
-                    fix_edits(
-                        &source,
-                        &arenas,
-                        &spans,
-                        fix_kind,
-                        cadenza_syntax::StructId(n),
-                        fix_repl,
-                        surface_of(&args.file),
-                    )
-                })
+                do_fix_edits(fix_kind, fix_node, fix_repl)
             } else {
                 None
             };
@@ -1741,6 +1821,116 @@ fn load_program(file: &str) -> Result<(String, cadenza_syntax::Arenas), String> 
 /// `check --verify-fixes` re-parse (which must re-read the edited text in the SAME surface).
 fn is_ml_source(file: &str) -> bool {
     file.ends_with(".cdz") || file.ends_with(".ml")
+}
+
+/// One source file loaded for a package check — its on-disk path, its package NAME (the stem an
+/// `(import "name" …)` resolves it by), and its parsed program (source text + arenas + span table).
+/// A cross-file diagnostic's GLOBAL node id demuxes (via the `link-map`) to one of these files, then
+/// its local id maps through THIS file's own `spans` to a `path:line:col`.
+struct LoadedFile {
+    /// On-disk path (what a diagnostic's `path:line:col` prints, and what the reporter's fixes edit).
+    path: String,
+    /// Package name = file stem — the identifier an `(import "stem" …)` names it by, and the `ast`
+    /// artifact name `link()` indexes it under.
+    name: String,
+    source: String,
+    arenas: cadenza_syntax::Arenas,
+    spans: cadenza_syntax::spans::SpanTable,
+}
+
+/// The IMPORT PATHS a top-level program declares — the `"path"` string of each `(import "path" …)`
+/// clause at the program's root. Used to walk a check's import closure (only the files the entry
+/// TRANSITIVELY imports are pulled in, not every sibling in the directory). Reads the arenas directly
+/// (the same shape `link::resolve_import_clause` parses): a root that is a `(do …)` has one item per
+/// child; a bare single top-level form is its own root. A malformed/aliased import (no string path)
+/// contributes nothing here — `link()` reports it as a diagnostic once the file is pulled in.
+fn declared_import_paths(arenas: &cadenza_syntax::Arenas) -> Vec<String> {
+    let root = arenas.root;
+    // The items to scan: a `(do …)` root's children, else the single root form itself.
+    let items: Vec<cadenza_syntax::StructId> = match arenas.as_form(root, "do") {
+        Some(tail) => tail.to_vec(),
+        None => vec![root],
+    };
+    let mut paths = Vec::new();
+    for item in items {
+        if let Some(tail) = arenas.as_form(item, "import")
+            && let Some(&path_id) = tail.first()
+            && let Some(path) = arenas.as_str(path_id)
+        {
+            paths.push(path.to_string());
+        }
+    }
+    paths
+}
+
+/// Resolve an `(import "name" …)` path to a sibling source file in `dir`, trying each source
+/// extension in a fixed order (`.cdz`/`.ml`/`.sexp`/`.sexpr`). Returns the first that exists. `None`
+/// if no sibling file matches (the import is unresolved — `link()` will report the missing module).
+fn resolve_import_file(dir: &std::path::Path, name: &str) -> Option<String> {
+    for ext in [".cdz", ".ml", ".sexp", ".sexpr"] {
+        let candidate = dir.join(format!("{name}{ext}"));
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+/// Load `entry` and the transitive closure of the files it `(import …)`s (resolved as siblings in the
+/// entry's directory). The entry is element 0; the rest are its imported libraries in
+/// breadth-first discovery order (deterministic). A file that fails to load, or an import naming no
+/// sibling file, is SKIPPED here (not fatal) — the compiler then reports the unresolved import as a
+/// normal diagnostic, so `cdz check` still surfaces a helpful error rather than aborting. Dedups by
+/// package name (the import target key), so a diamond or a cycle terminates.
+fn load_import_closure(entry: &str) -> Result<Vec<LoadedFile>, String> {
+    let (source, arenas, spans) = load_program_spanned(entry)?;
+    let dir = std::path::Path::new(entry)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    let mut files = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // A work queue of import paths still to resolve; seed it from the entry's own imports.
+    let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    let entry_name = program_name(entry);
+    seen.insert(entry_name.clone());
+    for p in declared_import_paths(&arenas) {
+        queue.push_back(p);
+    }
+    files.push(LoadedFile {
+        path: entry.to_string(),
+        name: entry_name,
+        source,
+        arenas,
+        spans,
+    });
+
+    while let Some(name) = queue.pop_front() {
+        if !seen.insert(name.clone()) {
+            continue; // already loaded (dedup diamonds / break cycles)
+        }
+        let Some(path) = resolve_import_file(&dir, &name) else {
+            continue; // unresolved import — the compiler reports it as a diagnostic
+        };
+        let (source, arenas, spans) = match load_program_spanned(&path) {
+            Ok(t) => t,
+            // An imported file that itself fails to parse: skip it (its importer will fault on the
+            // missing name). Don't abort the whole check on a library's parse error.
+            Err(_) => continue,
+        };
+        for p in declared_import_paths(&arenas) {
+            queue.push_back(p);
+        }
+        files.push(LoadedFile {
+            path,
+            name,
+            source,
+            arenas,
+            spans,
+        });
+    }
+    Ok(files)
 }
 
 /// Read + parse a program file into its arenas AND span table. Format inferred from the extension
