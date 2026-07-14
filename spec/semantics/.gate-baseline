@@ -223,6 +223,7 @@ pass	a Result carrying a Result is matched by a nested pattern to its inner valu
 pass	a Result pipeline short-circuits on the first Err
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a STRING-result effect op resumes with a string that folds through a concat
+pass	a SUM constructor payload that is a compound built from performs threads and destructures
 pass	a SUM is threaded as a handler's folded state across operations
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
