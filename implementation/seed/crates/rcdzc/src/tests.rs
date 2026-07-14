@@ -11864,7 +11864,7 @@ mod match_engine {
         let mut primes: Vec<u64> = Vec::new();
         let mut x = 2u64;
         while primes.len() < 200 {
-            if primes.iter().all(|&p| x % p != 0) {
+            if primes.iter().all(|&p| !x.is_multiple_of(p)) {
                 primes.push(x);
             }
             x += 1;
@@ -11876,7 +11876,13 @@ mod match_engine {
         // Compare to a constant so the whole thing folds to a scalar `Bool` (a bare Rational has no host
         // render); the equality also folds, exercising the `cmp` after the reducing adds.
         let src = format!("(module m (def (main) (= {expr} (Rational.of 0 1))) (export main))");
-        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&src)));
+        // Through the host-stack guard the bin uses (`host.rs`): the fold/reached-poison walk over a
+        // 200-term chain recurses ~per term, which SIGABRTs a default `cargo test` worker's ≈2 MB stack
+        // (EXIT=101, 0 FAILED) even though it TERMINATES — deep-but-finite frame bloat, not a loop
+        // (`RUST_MIN_STACK=64M` passes). Sizing the stack from `DESCENT_DEPTH_LIMIT` bounds it by depth.
+        let diags = crate::host::run_with_compiler_stack(move || {
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+        });
         assert!(
             diags
                 .iter()

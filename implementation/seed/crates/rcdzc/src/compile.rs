@@ -816,20 +816,37 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // entries named `a`, which the component binary format forbids, so the emitted bytes fail to parse:
     // reject BEFORE emitting rather than miscompile an invalid component (decline-don't-miscompile).
     // Each export clause after the first with a given name is reported, anchored at its clause.
+    // How many exported names each `(export …)` CLAUSE contributes (keyed by the clause occurrence): a
+    // single-name `(export a)` has one, a multi-name `(export a b)` has several. Used to pick what the
+    // duplicate-export delete fix removes — the whole clause vs. just the redundant name.
+    let mut names_per_clause: crate::fxhash::FxHashMap<StructId, usize> =
+        crate::fxhash::FxHashMap::default();
+    for e in &db.exports {
+        *names_per_clause.entry(e.occ).or_insert(0) += 1;
+    }
     let mut seen_exports: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let dup_exports: Vec<(String, StructId)> = db
+    let dup_exports: Vec<(String, StructId, StructId)> = db
         .exports
         .iter()
         .filter(|e| !seen_exports.insert(e.name.as_str()))
-        .map(|e| (e.name.clone(), e.name_occ))
+        .map(|e| (e.name.clone(), e.name_occ, e.occ))
         .collect();
-    for (name, name_occ) in dup_exports {
+    for (name, name_occ, clause_occ) in dup_exports {
         // `name_occ` is a REDUNDANT exported NAME (a later occurrence — the first is not in `dup_exports`).
         // Exporting a name is idempotent in intent: the earlier occurrence already makes it public, so the
-        // direct repair is to DELETE this duplicate NAME. Anchoring + editing the name atom (not the whole
-        // `(export …)` clause) is correct for a multi-name `(export a b a)`: only the redundant `a` is
-        // removed, `b` and the first `a` stay. Verified-clean by `--verify-fixes` (removing a duplicate
-        // export cannot change the public surface — the name stays exported once).
+        // direct repair is to DELETE the redundant export. WHAT to delete depends on the clause's arity:
+        //   - a MULTI-name clause `(export a b a)` → delete just the redundant NAME atom, leaving `b` and
+        //     the first `a` (`(export a b)`).
+        //   - a SINGLE-name clause `(export a)` → delete the WHOLE clause. Deleting only the name would
+        //     leave an empty `(export)`, itself now a CDZ0201 malformed-export reject (a self-defeating
+        //     fix that fails `--verify-fixes` and never applies). Removing the clause leaves exactly the
+        //     earlier `(export a)`.
+        // Either way the public surface is unchanged (the name stays exported once), so the fix verifies.
+        let delete_at = if names_per_clause.get(&clause_occ).copied().unwrap_or(1) > 1 {
+            name_occ
+        } else {
+            clause_occ
+        };
         faults.push(
             Reject::coded(
                 Code::Malformed,
@@ -837,7 +854,7 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             )
             .at(name_occ)
             .with_fix(crate::diag::Fix::delete_heuristic(
-                name_occ,
+                delete_at,
                 format!("remove the duplicate export of `{name}`"),
             )),
         );
