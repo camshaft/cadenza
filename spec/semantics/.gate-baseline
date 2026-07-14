@@ -1316,6 +1316,7 @@ pass	encoding and decoding a constructor-built AST round-trips to an equal value
 pass	encoding and decoding a constructor-built compound AST round-trips
 pass	equality across incompatible dimensions is a compile-time error
 pass	equality applied to one operand is rejected, not a crash
+pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	every not-a-number value is equal to every not-a-number value
 pass	exact rational arithmetic is exact and normalized
 pass	exact rational division is total and exact for a nonzero divisor
@@ -1672,6 +1673,7 @@ pass	tuple access on a record is a type error
 pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuple elements are accessed by index
 pass	tuples are deconstructed by pattern matching
+pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two adjacent modules declared inside a function body compose
 pass	two constant records with the same fields in different written order are equal
 pass	two constant sums with the same payload but different variants are not equal

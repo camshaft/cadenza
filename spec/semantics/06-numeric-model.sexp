@@ -2102,3 +2102,17 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
+
+(case "two BigInt accumulators co-threaded through recursion compute a fibonacci"
+  (doc    "`loop(n, a, b) = if n=0 then a else loop(n-1, b, a+b)` with TWO BigInt accumulators threaded
+           side by side computes fib(10) = 55. Exercises multiple runtime-BigInt params co-threaded through
+           one recursion (each a heap handle at every level, `a+b` a runtime `bigint-add`), a distinct shape
+           from the single-accumulator factorial/doubling loops — pins that several BigInt params materialize
+           + thread correctly at once. fib grows exponentially, so a larger n crosses Int64 (this n keeps
+           the check readable).")
+  (input  (do
+            (def (loop (: n Int64) (: a BigInt) (: b BigInt))
+              (if (= n 0) a (loop (- n 1) b (+ a b))))
+            (def (main) (Int64.of (loop 10 (BigInt.of 0) (BigInt.of 1))))
+            (export main)))
+  (output (: 55 Int64)))
