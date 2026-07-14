@@ -1098,8 +1098,14 @@ the component type. The new work:
 - **✅ NESTED compound ARG AMONG scalars on the MULTI-EXPORT + MIXED paths** (`8b6fc532`, scalar + list results).
   Extracted a shared `nested_sole_or_among_scalars` classifier all 3 emit paths' `nested_tuple` binding calls;
   the multi/mixed `tpre`/`tsuf` + nested scalar branches thread the nested prefix/suffix. No new serializer/
-  envelope. e2e: multi scalar-then-nested (mk-a→1113, mk-b→887), mixed × List. (Distinct-sig nested-among-scalars
-  still declines — its per-group detector doesn't yet take the among-scalars variant; sole-nested works.)
+  envelope. e2e: multi scalar-then-nested (mk-a→1113, mk-b→887), mixed × List.
+- **✅✅ NESTED compound ARG AMONG scalars on the DISTINCT-SIG path — the NESTED-ARG MATRIX IS FULLY CLOSED**
+  (`63065513`). `emit_distinct_sig_resource`'s per-group `group_nested` uses the shared
+  `nested_sole_or_among_scalars`; `arg_vts` = full flattened, `match_vts` = per-arg (compound → i32 cell), the
+  per-group `tuple_arg` carries the nested prefix/suffix so `SigGroupAbi` interleaves the `call-g` functype. No
+  new envelope/serializer. e2e: two DIFFERENT-sig scalar-then-nested → 1113, 1100 (Bool leaf), × List. **A nested
+  fixed-shape compound ARG now crosses on ALL FOUR export shapes (single/multi/mixed/distinct-sig), SOLE or
+  AMONG scalars, for every result shape.**
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (1) **N
   compound args** (two tuple args) — `single_compound_among_scalars` rejects >1 tuple; `TupleArgRebuild` + ~65
