@@ -15792,6 +15792,57 @@ mod match_engine {
         );
     }
 
+    #[test]
+    fn a_member_access_with_the_wrong_operand_count_offers_a_delete_fix_and_names_the_form() {
+        // Member access `(. operand key)` is a fixed-arity form (want 2), so it routes through the SHARED
+        // `fixed_arity_reject` the other fixed-arity forms use — bringing it to fix-parity with the family
+        // (before, it was the one fixed-arity form with a terse fix-less "takes an operand and a key"). A
+        // TOO-MANY access `(. r x y)` (an over-chained member) carries the delete-the-surplus fix; a
+        // TOO-FEW `(. r)` (no key) is message-only. The message names the `(. operand key)` form + the
+        // nested-chain spelling `(. (. r a) b)` so an agent knows how to fix a genuine nested access.
+        let find = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("member access is `(. operand key)`"))
+                .unwrap_or_else(|| panic!("a member-access arity fault is reported for {src}"))
+        };
+        // TOO MANY — delete the surplus key, and the message names the form + the chain spelling.
+        let many = find("(module m (def (f (: r (Record (x Int64)))) (. r x y)) (export f))");
+        assert_eq!(
+            many.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            many.message
+        );
+        assert!(
+            many.message.contains("(. (. r a) b)"),
+            "names the nested-chain spelling: {}",
+            many.message
+        );
+        assert_eq!(
+            many.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::Delete),
+            "a too-many member access carries a delete-the-surplus fix: {:?}",
+            many.fix
+        );
+        // TOO FEW — nothing to delete; supplying the key is not a mechanical edit.
+        let few = find("(module m (def (f (: r (Record (x Int64)))) (. r)) (export f))");
+        assert!(
+            few.fix.is_none(),
+            "a too-few member access has no surplus to delete: {:?}",
+            few.fix
+        );
+        // NO false positive: a well-formed `(. r x)` is clean (no arity fault).
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (f (: r (Record (x Int64)))) (. r x)) (export f))"
+            )))
+            .iter()
+            .any(|d| d.message.contains("member access is `(. operand key)`")),
+            "a well-formed member access raises no arity fault"
+        );
+    }
+
     /// A `let` and a `fn` each take exactly ONE body. A surplus operand after the body —
     /// `(let ((x 1)) x 99)` / `(fn (x) x 99)` — was SILENTLY ACCEPTED (the resolver read only the
     /// bindings/params + the first body, dropping the surplus → a silent miscompile), a likely author slip

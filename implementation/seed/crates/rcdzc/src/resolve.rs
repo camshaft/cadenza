@@ -3999,9 +3999,19 @@ fn withheld_ctor_reject(db: &Db, id: StructId, ty: &str, key: &Symbol) -> Option
 fn resolve_member(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, ".").unwrap_or(&[]);
     if tail.len() != 2 {
-        return Resolved::Poison(Reject::coded(
-            Code::Malformed,
-            "member access takes an operand and a key",
+        // `(. operand key)` is a fixed-arity form (want 2), so route it through the SHARED
+        // `fixed_arity_reject` the other fixed-arity forms (`if`/`and`/`not`/`resume`/`let`/`fn`) use — a
+        // TOO-MANY access (`(. r x y)`, an over-chained member) gets the delete-the-surplus fix (`cdz fix`
+        // removes extras until `(. r x)` remains — for a deeper chain the author writes `(. (. r x) y)`),
+        // and a TOO-FEW access (`(. r)`, no key) keeps a message-only reject (supplying the key is not a
+        // mechanical edit). Before this, member access was the one fixed-arity form with a terse fix-less
+        // message — the fix-parity-across-the-family gap.
+        return Resolved::Poison(fixed_arity_reject(
+            id,
+            tail,
+            2,
+            "member access is `(. operand key)` — an operand and a single key (a field name or a tuple \
+             index); for a nested access chain them: `(. (. r a) b)`",
         ));
     }
     let operand = tail[0];
