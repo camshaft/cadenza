@@ -6,6 +6,10 @@ pass	DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-si
 pass	DISTINCT-SIG: driving the Bool-returning Tuple-arg closure of the distinct-sig pair
 pass	DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List
 pass	DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the direct-call boundary
+pass	MIXED among-scalars: a scalar-then-Tuple closure ALONGSIDE a plain export — driving the closure
+pass	MIXED among-scalars: a scalar-then-Tuple closure with a COMPOUND result ALONGSIDE a plain export
+pass	MIXED among-scalars: a scalar-then-Tuple closure with a LIST result ALONGSIDE a plain export
+pass	MIXED among-scalars: driving the PLAIN export alongside a scalar-then-Tuple closure
 pass	MIXED: a List-returning Tuple-arg closure ALONGSIDE a plain export — driving the closure
 pass	MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export
 pass	MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure
@@ -347,6 +351,7 @@ pass	a float annotation reaches the 32-bit width
 pass	a float in integer-width position is rejected
 pass	a float width outside the admitted set is rejected
 pass	a floating-point literal
+pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
 pass	a function applied to an argument
 pass	a function argument is applied through a recursive higher-order function
 pass	a function binding the same parameter name twice is rejected
@@ -948,6 +953,8 @@ pass	a sum type can mix nullary and payload-carrying variants
 pass	a sum type is declared with named variants
 pass	a sum type variant can carry data
 pass	a sum value annotated as a scalar type is rejected
+pass	a sum variant carrying a Map payload is deconstructed and the map queried
+pass	a sum variant carrying a String payload matches and reads the string
 pass	a sum whose variants are named after target-language keywords constructs and matches
 pass	a sum-match recursion that accumulates a built-in list returns a list
 pass	a sum-payload-wrapped self-application is rejected in bounded time, not a compiler stack overflow
