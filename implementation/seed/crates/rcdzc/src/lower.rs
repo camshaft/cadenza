@@ -4600,6 +4600,42 @@ fn clone_key_expr(db: &mut Db, k: StructId) -> StructId {
 //= spec/capabilities/core-semantics.md#a-map-is-matched-by-key-directed-patterns
 //# Each value binder position MUST be a binder position in the sense of *Patterns Compose*, so a value MAY be bound by any pattern (a wildcard, a name, a tuple pattern, a constructor pattern) matched recursively against the value at that key, and the whole pattern MUST remain linear (`CDZ0102`).
 fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // WELL-FORMEDNESS (before any desugar): each pattern KEY must type-agree with the map's key type. A
+    // `(map ("x" v))` pattern on a `(Map Int64 Int64)` writes a String key where an Int64 is required —
+    // without this the const path folds it to a never-matching arm (`const_compound_eq` String-vs-Int is
+    // `None`) and the RUNTIME path (`desugar_runtime_map_match`) emits a `Map.lookup` that never hits,
+    // both accepting a mistyped key as dead code. Run BEFORE the pre-passes (the runtime desugar rebuilds
+    // the match and recurses, so a check placed after it would never see a runtime map's keys) so BOTH
+    // const and runtime maps reject a wrong-type key: CDZ0201 naming both types, anchored at the key — the
+    // map twin of the scalar-match + list-element pattern-type checks. `Any` key (unsolved) is not checked.
+    if let crate::ty::Ty::Map(key_ty, _) = crate::infer::type_of(db, scrutinee)
+        && !matches!(*key_ty, crate::ty::Ty::Any)
+    {
+        for &(pat, _) in arms {
+            let inner = match db.ast.as_form(pat, "guard") {
+                Some(g) if g.len() == 2 => g[0],
+                _ => pat,
+            };
+            if let Some((pat_entries, _rest)) = crate::resolve::map_pattern_of(db, inner) {
+                for &(k, _) in &pat_entries {
+                    let kt = crate::infer::type_of(db, k);
+                    if !matches!(kt, crate::ty::Ty::Any) && !kt.agrees_with(&key_ty) {
+                        return Core::Poison(
+                            Reject::coded(
+                                Code::Malformed,
+                                format!(
+                                    "this map-pattern key is {}, but the map's keys are {}",
+                                    kt.render_name(),
+                                    key_ty.render_name()
+                                ),
+                            )
+                            .at(k),
+                        );
+                    }
+                }
+            }
+        }
+    }
     // PRE-PASS (value sub-patterns): a non-bare map VALUE sub-pattern `(map ("k" (tuple a b)))` /
     // `(map ("k" (Some v)))` / `(map ("k" 0))` is lifted into the body as `(match __mv (<subpat> body) (_
     // <catch-all>))` on a fresh `__mv` binder. Runs FIRST: the rewritten arm's values are all bare binders,
@@ -4640,16 +4676,6 @@ fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
             "a map match must end in a catch-all (`_` or a whole-map binder) — a map's key set is unbounded",
         ));
     }
-    // The scrutinee map's KEY type — each pattern key must agree with it. A `(map ("x" v))` pattern on a
-    // `(Map Int64 Int64)` writes a String key where an Int64 is required: without this check it silently
-    // never matches (`const_compound_eq` of a String vs an Int is `None` → the arm falls through to the
-    // catch-all), so a mistyped key was accepted as dead code rather than the type error it is — the map
-    // twin of the scalar-match "pattern type … does not match scrutinee type …" check. `Any` (an unsolved
-    // key type) is not checked (the not-yet-constrained treatment a projection of `Any` gets).
-    let scrut_key_ty = match crate::infer::type_of(db, scrutinee) {
-        crate::ty::Ty::Map(k, _) => Some((*k).clone()),
-        _ => None,
-    };
     for &(pat, body) in arms {
         // A bare binder / `_` is a catch-all — it always matches.
         if db.ast.as_name(pat).is_some() {
@@ -4661,28 +4687,6 @@ fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                 "a map match arm that is not a `(map …)` pattern or a binder is not yet supported",
             ));
         };
-        // Each pattern KEY must type-agree with the map's key type — a wrong-type key literal is a
-        // structural mismatch (CDZ0201), not a never-matching arm, anchored at the offending key.
-        if let Some(kt) = &scrut_key_ty
-            && !matches!(kt, crate::ty::Ty::Any)
-        {
-            for &(k, _) in &pat_entries {
-                let key_ty = crate::infer::type_of(db, k);
-                if !matches!(key_ty, crate::ty::Ty::Any) && !key_ty.agrees_with(kt) {
-                    return Core::Poison(
-                        Reject::coded(
-                            Code::Malformed,
-                            format!(
-                                "this map-pattern key is {}, but the map's keys are {}",
-                                key_ty.render_name(),
-                                kt.render_name()
-                            ),
-                        )
-                        .at(k),
-                    );
-                }
-            }
-        }
         // A value sub-pattern MAY be a bare binder OR an IRREFUTABLE nested pattern (`(tuple x y)`, a
         // single-variant `(Mk n)`) whose binders read via `MapField` `value_steps` (resolve descends them).
         // A REFUTABLE value sub-pattern (a literal, a multi-variant ctor `(Some n)`) is DISPATCHED: it is

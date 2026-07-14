@@ -22069,6 +22069,21 @@ mod match_engine {
             10,
             "a well-typed map-pattern key matches and binds its value"
         );
+        // A RUNTIME map (built by a conditional, not a constant `MapNew`) is matched through
+        // `desugar_runtime_map_match`, a SEPARATE path from the const matcher. A wrong-type key there used
+        // to slip past the const-path key check (the runtime desugar returned first); the key check now
+        // runs at the TOP of `lower_match_map`, before the desugar, so a runtime map's wrong-type key is
+        // rejected too.
+        let runtime_bad = "(module m \
+            (def (pick (: b Bool)) \
+              (if b (Map.insert (Map.empty) 1 10) (Map.insert (Map.empty) 2 20))) \
+            (def (look (: m (Map Int64 Int64))) (match m ((map (\"x\" v) .. rest) v) (_ -1))) \
+            (def (main (: b Bool)) (look (pick b))) (export main))";
+        assert_eq!(
+            reject_code(runtime_bad).as_deref(),
+            Some("CDZ0201"),
+            "a RUNTIME map's wrong-type key pattern is rejected too, not silently dead"
+        );
     }
 
     #[test]
