@@ -580,6 +580,7 @@ pass	a list match arm may carry a guard on its element binders
 pass	a list mixing integer and boolean elements is a type error
 pass	a list mixing integer and float elements is a type error
 pass	a list of maps with different keys is homogeneous, not a type error
+pass	a list of maps: a runtime index then looks a runtime key up in the found map
 pass	a list of records with different field sets is a type error
 pass	a list of tuples with different arities is a type error
 pass	a list pattern in a sum-variant payload matches a runtime node by its child count
@@ -613,6 +614,7 @@ pass	a map operation applies to a map passed as a function parameter
 pass	a map pattern binds the rest of the map after the named key
 pass	a map pattern falls through when the key is absent
 pass	a map pattern matches a present key and binds its value
+pass	a map whose value is a list: a runtime lookup then indexes the returned list
 pass	a map with a computed key equals the same map with a constant key
 pass	a map with a duplicate key is a type error
 pass	a map with a user-sum VALUE looks up and matches the stored variant
@@ -1065,9 +1067,11 @@ pass	a sequencing block discards a pure compound intermediate
 pass	a sequencing block discards a pure list intermediate
 pass	a sequencing block whose last form is unit yields unit
 pass	a sequencing block yields the value of its last form
+pass	a set as a map value: runtime membership tested through the lookup
 pass	a set built at run time escapes to the host as its value form
 pass	a set collapses a duplicate element
 pass	a set is constructed from a list of its elements
+pass	a set nested in a tuple compares equal with a runtime element, order-independent
 pass	a set of user-sum elements tests membership by variant
 pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
@@ -1890,6 +1894,7 @@ pass	the length of a byte sequence is its byte count
 pass	the length of a concatenation is the sum of the two lengths
 pass	the length of a fixed-width construction is the sum of its segment widths
 pass	the length of a grown list is its element count
+pass	the length of a list looked up from a map by a runtime key
 pass	the length of a runtime byte sequence is its byte count
 pass	the length of a slice is the slice's byte count
 pass	the maximum Int64 in hexadecimal reads as an integer
