@@ -12563,6 +12563,49 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak once the kept owner drops");
     }
 
+    /// The NESTED-COMPOUND variant of the projection-escape — the `spec@76aa1bdc` UAF shape. The test
+    /// above keeps a FLAT-leaf child; there the free-cascade's "stop at rc>1" has nothing below to wrongly
+    /// free. `76aa1bdc` was a Perceus UAF where a projection extracted a nested-compound child (a boxed sum
+    /// `W.Atom(payload)` — a child WITH its own subtree) out of an aggregate and kept it, but the compiler
+    /// dropped the aggregate anyway → the free-cascade descended into the escaped child and freed its
+    /// subtree (a use-after-free). That was a COMPILER emit bug (fixed compiler-side); the RUNTIME property
+    /// it relies on — `op_drop` of an aggregate whose nested-compound child was dup'd-out (rc≥2) must
+    /// decrement that child and NOT recurse into its subtree — is exercised here: a flat-leaf test can't
+    /// (no subtree to wrongly free). Pins that the cascade stops at a shared child WITH children, leaving
+    /// the whole subtree intact + reclaiming cleanly on the child's own last drop.
+    #[test]
+    fn rc_convention_nested_compound_projection_survives_aggregate_drop() {
+        reset();
+        let before = live_nodes();
+        // r = (tuple W.Atom(42) 7): a nested-compound child (sum + payload = 2 nodes) + a scalar sibling.
+        let nested = op_sum_new(1, boxed_int_leaf(42));
+        let r = op_arr_alloc(2);
+        op_arr_set(r, 0, nested);
+        op_arr_set(r, 1, boxed_int_leaf(7));
+        assert_eq!(
+            live_nodes(),
+            before + 4,
+            "aggregate + nested sum + its payload + scalar sibling"
+        );
+        // Project the NESTED child out and keep it (dup before dropping the aggregate) — the escape.
+        let kept = op_arr_get(r, 0);
+        op_dup(kept); // the escaped nested-compound is now rc=2
+        op_drop(r); // frees r + the scalar sibling; MUST NOT free `kept` or its payload (rc>1 stops the cascade)
+        // The escaped child's WHOLE subtree is intact — reading its payload is not a use-after-free.
+        assert_eq!(
+            op_get_int(op_sum_payload(kept)),
+            42,
+            "the kept nested-compound's payload survives the aggregate drop (no UAF)"
+        );
+        assert_eq!(
+            live_nodes(),
+            before + 2,
+            "only the escaped child + its payload remain (aggregate + sibling freed, subtree NOT freed)"
+        );
+        op_drop(kept); // the escaped owner's last drop reclaims its subtree
+        assert_eq!(live_nodes(), before, "no leak once the escaped child drops");
+    }
+
     /// §3.5 — `match Some(x) => x`: dup the borrowed payload, then drop the scrutinee. Payload
     /// survives; the sum node is reclaimed.
     #[test]
