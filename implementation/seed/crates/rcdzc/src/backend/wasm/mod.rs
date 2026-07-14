@@ -146,6 +146,10 @@ fn crosses_as_resource_escape(ty: &crate::ty::Ty) -> bool {
             | Ty::Bytes
             | Ty::String
             | Ty::Symbol
+            // A BigInt is a heap handle with NO scalar boundary valtype (only the fixed-width int aliases
+            // 8/16/32/64 cross as scalars), so it crosses via the value-form escape like Bytes/String —
+            // the value-encode walk renders it as a KIND_INT leaf (`Shape::BigInt`, descriptor tag 17).
+            | Ty::BigInt
             | Ty::Nominal { .. }
             | Ty::Qty { .. }
     )

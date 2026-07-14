@@ -604,6 +604,9 @@ fn box_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
         | Ty::Set(_)
         | Ty::Bytes
         | Ty::String
+        // A BigInt is already a heap handle (its sign-magnitude leaf — `bigint-of-i64`/arithmetic return
+        // handles), so as a nested element it is stored as-is, exactly like a String/List/Map handle.
+        | Ty::BigInt
         | Ty::Fn(_, _) => Ok(None),
         // A quantity erases to its inner numeric type (`lower` strips the `Qty`), so box it by that inner
         // type — a `(Qty Int64 u)` element boxes exactly as an `Int64` element.
@@ -658,6 +661,8 @@ fn get_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
         | Ty::Set(_)
         | Ty::Bytes
         | Ty::String
+        // A BigInt handle read back from a heap slot is used as-is (dual of `box_op_ty`'s BigInt arm).
+        | Ty::BigInt
         | Ty::Fn(_, _) => Ok(None),
         // A quantity erases to its inner numeric type — unbox by that inner type (the dual of `box_op_ty`).
         Ty::Qty { inner, .. } => get_op_ty(db, inner),

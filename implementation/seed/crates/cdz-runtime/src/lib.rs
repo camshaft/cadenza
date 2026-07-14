@@ -1126,6 +1126,11 @@ enum Shape {
     Str,
     Bytes,
     Unit,
+    /// An arbitrary-precision integer leaf (a runtime `BigInt`, `box_bigint`'s sign-magnitude Raw leaf).
+    /// Rendered via the SAME `KIND_INT` codec leaf as `Int` — the leaf is already arbitrary-width (sign +
+    /// big-endian magnitude bytes, NOT i64-bounded), so a BigInt needs NO new wire kind, only its own
+    /// SHAPE tag (so the walk reads the value via `unbox_bigint`, not `op_get_int` which caps at i64).
+    BigInt,
     /// A Float32 leaf — read with `get-float32` (an `f32`) and rendered as the f32's SHORTEST decimal,
     /// distinct from `Float` (Float64). A Float32 is stored 4-byte (`box-float32`), so its canonical value
     /// form is the f32's, not a promoted f64's (`0.1f32` renders `0.1`, not `0.10000000149011612`).
@@ -1300,6 +1305,7 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
             }
             Shape::Spread(elems)
         }
+        17 => Shape::BigInt, // arbitrary-precision integer leaf (a runtime BigInt), rendered as KIND_INT
         _ => return None,
     })
 }
@@ -1405,6 +1411,23 @@ impl DocBuilder {
         let mag = (v.unsigned_abs()).to_be_bytes();
         let start = mag.iter().position(|&b| b != 0).unwrap_or(mag.len());
         let magnitude = mag[start..].to_vec();
+        self.leaves.push(DocLeaf::Int(neg, magnitude));
+        (self.leaves.len() - 1) as u32
+    }
+    /// A BigInt leaf — the SAME `KIND_INT` codec leaf as `int_leaf`, but for an arbitrary-precision value.
+    /// `Big::to_sign_magnitude_bytes` yields `[sign][LE magnitude…]` (trailing zeros stripped); the codec's
+    /// `DocLeaf::Int` wants (negative, BIG-endian magnitude, leading zeros stripped), so drop the sign
+    /// byte, reverse to big-endian, and trim leading zeros. Zero → empty magnitude (positive), matching
+    /// `int_leaf`'s canonical zero. No i64 bound — the magnitude is however many bytes the value needs.
+    fn bigint_leaf(&mut self, b: &bigint::Big) -> u32 {
+        let sm = b.to_sign_magnitude_bytes(); // [sign][LE mag…]
+        let neg = sm.first().copied().unwrap_or(0) != 0;
+        let mut magnitude: Vec<u8> = sm.get(1..).unwrap_or(&[]).iter().rev().copied().collect();
+        while magnitude.first() == Some(&0) {
+            magnitude.remove(0);
+        }
+        // A zero magnitude is never negative on the wire (matches `int_leaf` + `DocLeaf::Int`'s finish rule).
+        let neg = neg && !magnitude.is_empty();
         self.leaves.push(DocLeaf::Int(neg, magnitude));
         (self.leaves.len() - 1) as u32
     }
@@ -1807,6 +1830,13 @@ fn encode_value(
                     }
                     Shape::Int => {
                         let l = b.int_leaf(op_get_int(h));
+                        out.push(b.atom(l));
+                    }
+                    Shape::BigInt => {
+                        // Read the arbitrary-precision value via `unbox_bigint` (NOT `op_get_int`, which
+                        // caps at i64) and render it as the SAME `KIND_INT` leaf — the leaf is already
+                        // sign + arbitrary-width big-endian magnitude, so no new wire kind is needed.
+                        let l = b.bigint_leaf(&unbox_bigint(h));
                         out.push(b.atom(l));
                     }
                     Shape::Bool => {
@@ -6470,6 +6500,10 @@ mod tests {
                 let l = b.int_leaf(op_get_int(h));
                 b.atom(l)
             }
+            S::BigInt => {
+                let l = b.bigint_leaf(&unbox_bigint(h));
+                b.atom(l)
+            }
             S::Bool => {
                 let l = b.bool_leaf(op_get_bool(h));
                 b.atom(l)
@@ -9916,6 +9950,53 @@ mod tests {
             recon = bigint::Big::zero().sub(&recon);
         }
         assert_eq!(recon.cmp(&big), core::cmp::Ordering::Equal, "KIND_INT leaf reconstructs the exact BigInt");
+    }
+
+    /// The `Shape::BigInt` value-encode arm (B3c, descriptor tag 17): a boxed runtime BigInt escapes via
+    /// `op_value_encode_form`, reading the value with `unbox_bigint` (arbitrary width, NOT i64-capped) and
+    /// rendering the SAME `KIND_INT` leaf as a fixed-width Int. Cover an i64-fitting value, a >i64 value
+    /// (i64::MAX² ≈ 2^126, the whole point), a negative, and zero — byte-identical to the recursive oracle
+    /// each time (the oracle's S::BigInt arm mirrors production), plus the exact KIND_INT sign+magnitude
+    /// for the >i64 case (proving the leaf is not i64-bounded).
+    #[test]
+    fn value_encode_bigint_leaf_via_shape_tag_17() {
+        reset();
+        let before = live_object_count();
+        let desc: &[u8] = &[0x01, 0x11, 0x00]; // table_len=1, [0]=BigInt(tag 17=0x11), root=0
+        let check = |big: &bigint::Big, note: &str| {
+            let h = box_bigint(big);
+            let doc = op_value_encode_form(h, desc).unwrap_or_else(|| panic!("encode {note}"));
+            // Differential vs the recursive oracle (its S::BigInt arm).
+            let descriptor = decode_descriptor(desc).expect("descriptor");
+            let mut b = DocBuilder::default();
+            let root = encode_value_recursive(&descriptor, &mut b, h, descriptor.root, 0).expect("recursive");
+            assert_eq!(doc, b.finish(root), "iterative and recursive BigInt encode agree ({note})");
+            op_drop(h);
+            doc
+        };
+        check(&bigint::Big::from_i64(42), "small positive");
+        check(&bigint::Big::from_i64(-7), "negative");
+        check(&bigint::Big::zero(), "zero");
+        check(&bigint::Big::from_i64(i64::MAX), "i64::MAX boundary");
+        // A >i64 value: i64::MAX² ≈ 2^126. Assert the exact KIND_INT bytes (positive, big-endian magnitude).
+        let max = bigint::Big::from_i64(i64::MAX);
+        let big = max.mul(&max);
+        let doc = check(&big, "i64::MAX² (>i64, multi-limb)");
+        // doc: header(8) · leaf_count(1) · KIND_INT(0=pos) · LEB(len) · BE-magnitude · struct(1) · atom · root.
+        assert_eq!(doc[8], 1, "one leaf");
+        assert_eq!(doc[9], 0, "KIND_INT positive (i64::MAX² > 0)");
+        let len = doc[10] as usize;
+        let be_mag = &doc[11..11 + len];
+        // Reconstruct from the emitted BE magnitude and confirm it equals `big` — the leaf carried the full
+        // >i64 value, not a truncated i64.
+        let mut recon = bigint::Big::zero();
+        let base = bigint::Big::from_i64(256);
+        for &byte in be_mag {
+            recon = recon.mul(&base).add(&bigint::Big::from_i64(byte as i64));
+        }
+        assert_eq!(recon.cmp(&big), core::cmp::Ordering::Equal, "the escaped KIND_INT leaf is the exact 2^126 value");
+        assert!(len > 8, "the magnitude exceeds 8 bytes — a genuinely >i64 BigInt crossed the boundary");
+        assert_eq!(live_object_count(), before, "no leak");
     }
 
     #[test]

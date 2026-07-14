@@ -247,8 +247,9 @@
 ; constant `(BigInt.of x)` widens (exact, never traps — every fixed-width value fits the unbounded type),
 ; and `(Int64.of b)` / `((UInt N).of b)` narrow it back CHECKED (range-checked at compile time on the
 ; constant). Because `IntValue` is already arbitrary-precision, the widening carries any magnitude and the
-; narrowing's range check is exact. (Runtime-valued BigInt arithmetic — the unbounded product above —
-; awaits the runtime limb ops; a bare BigInt crossing the boundary awaits the two's-complement encoding.)
+; narrowing's range check is exact. (A bare CONSTANT BigInt now crosses the host boundary as `(: N BigInt)`
+; via the value-form escape — `Shape::BigInt` reuses the arbitrary-width KIND_INT leaf, no two's-complement
+; needed; the runtime-valued escape awaits the general runtime-heap-return path, like a computed list/map.)
 
 (case "a constant integer widens to BigInt and narrows back through Int64 unchanged"
   (doc    "`(Int64.of (BigInt.of 42))` widens the Int64 42 to a BigInt then narrows it back — the exact
@@ -265,6 +266,22 @@
            unbounded), so a value up to the target's range survives the round-trip.")
   (input  (Int64.of (BigInt.of 9223372036854775807)))
   (output (: 9223372036854775807 Int64)))
+
+(case "a constant BigInt crosses the host boundary as its value form"
+  (doc    "A `main` returning a constant `BigInt` escapes to the host as the value form `(: N BigInt)` —
+           the value-encode walker renders it via `Shape::BigInt` (descriptor tag 17), which reuses the
+           codec's arbitrary-width `KIND_INT` leaf (sign + big-endian magnitude), so NO new wire kind and
+           NO two's-complement form is needed. `(BigInt.of 42)` folds to a constant BigInt and crosses as
+           `(: 42 BigInt)`. This is the bare-BigInt boundary the earlier note said 'awaits' — it is now
+           the same value-form escape a Bytes/String/collection result uses.")
+  (input  (do (def (main) ((. BigInt of) 42)) (export main)))
+  (output (: 42 BigInt)))
+
+(case "a negative constant BigInt crosses the boundary with its sign"
+  (doc    "`(BigInt.of -7)` crosses as `(: -7 BigInt)` — the KIND_INT leaf carries the sign (the canonical
+           form has no negative zero), so a negative BigInt renders correctly at the host boundary.")
+  (input  (do (def (main) ((. BigInt of) -7)) (export main)))
+  (output (: -7 BigInt)))
 
 (case "narrowing a constant BigInt out of the target range is rejected at compile time"
   (doc    "`((UInt 8).of (BigInt.of 300))` narrows a BigInt to `(UInt 8)` (range 0..=255) where 300 does

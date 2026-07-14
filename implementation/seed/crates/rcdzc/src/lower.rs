@@ -5364,6 +5364,10 @@ fn type_node_of(ty: &crate::ty::Ty) -> Option<TypeNode> {
 /// A shape-table entry (indices reference other entries — recursion closes via `Ref`).
 enum ShapeNode {
     Int,
+    /// An arbitrary-precision integer (a runtime `BigInt`). The runtime (descriptor tag 17) reads it via
+    /// `unbox_bigint` and renders the SAME `KIND_INT` leaf as `Int` — the codec leaf is already
+    /// arbitrary-width (sign + big-endian magnitude), so no new wire KIND is needed, only the shape tag.
+    BigInt,
     Bool,
     Float,
     Float32,
@@ -5420,6 +5424,9 @@ impl ShapeTableBuilder {
         use crate::ty::Ty;
         Some(match ty {
             Ty::Int(_) => self.push(ShapeNode::Int),
+            // A runtime BigInt (arbitrary precision) escapes as `ShapeNode::BigInt` — the runtime reads it
+            // via `unbox_bigint` and renders the same arbitrary-width `KIND_INT` leaf as a fixed-width int.
+            Ty::BigInt => self.push(ShapeNode::BigInt),
             Ty::Bool => self.push(ShapeNode::Bool),
             // A FLOAT payload is renderable at BOTH widths: `box_op_ty`/`get_op_ty` box it via its width's
             // leaf (`box-float`/`box-float32`), and the runtime `value-encode` renders a KIND_FLOAT decimal
@@ -5564,6 +5571,7 @@ impl ShapeTableBuilder {
         for node in &self.table {
             match node {
                 ShapeNode::Int => d.push(0),
+                ShapeNode::BigInt => d.push(17), // matches the runtime `decode_shape` tag 17 = BigInt
                 ShapeNode::Bool => d.push(1),
                 ShapeNode::Float => d.push(2), // matches the runtime `decode_shape` tag 2 = Float
                 ShapeNode::Float32 => d.push(14), // matches the runtime `decode_shape` tag 14 = Float32
