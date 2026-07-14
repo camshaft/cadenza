@@ -1169,8 +1169,13 @@ fn cdz_render_at(
     if let Some(inner) = newtypes.get(ty) {
         return cdz_render_at(inner, path, sums, newtypes, helpers, on_path);
     }
-    // `(Tuple T0 T1 …)` → `(tuple …)`.
+    // `(Tuple T0 T1 …)` → `(tuple …)`. The EMPTY tuple `(Tuple)` (a variant's explicit empty-tuple payload,
+    // distinct from `Unit`) renders the literal `(tuple)` — no elements, no `path` read, and NO trailing
+    // space (a `format!("(tuple {})", "")` would render `(tuple )`).
     if let Some(elems) = parse_head_type(ty, "Tuple") {
+        if elems.is_empty() {
+            return "\"(tuple)\".to_string()".to_string();
+        }
         let placeholders = vec!["{}"; elems.len()].join(" ");
         let args: Vec<String> = elems
             .iter()
@@ -1395,8 +1400,12 @@ fn cdz_newtype_descriptors(module: &str) -> std::collections::HashMap<String, St
 fn parse_head_type(ty: &str, head: &str) -> Option<Vec<String>> {
     let inner = ty.strip_prefix('(')?.strip_suffix(')')?.trim();
     let rest = inner.strip_prefix(head)?;
-    // `head` must be a whole token (so `(Tuple …)` doesn't match a hypothetical `(TupleX …)`).
-    if !rest.starts_with(char::is_whitespace) {
+    // `head` must be a WHOLE token: either it is the entire content — `(Tuple)`, the empty tuple, zero args
+    // — or it is followed by whitespace before its args (`(Tuple T0 …)`). The whitespace check alone would
+    // reject the exact-match empty case `(Tuple)` (rest is ""), so a `(Tuple)` return type fell through to a
+    // scalar `Display` of the erased Rust `()` → E0277; and it must still reject a hypothetical `(TupleX …)`
+    // (rest starts with `X`, neither empty nor whitespace-led).
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
         return None;
     }
     Some(split_top_level(rest.trim()))
@@ -2987,5 +2996,28 @@ mod trap_grading_tests {
             s.contains("format!(\"{}\""),
             "a newtype over Int64 renders the scalar: {s}"
         );
+    }
+
+    #[test]
+    fn empty_tuple_type_renders_as_the_literal_tuple() {
+        // An EMPTY tuple `(Tuple)` — a variant's explicit empty-tuple payload (type `(Tuple)`, distinct from
+        // `Unit`) — must render the literal `(tuple)`, NOT fall through to a scalar `Display` of the erased
+        // Rust `()` (which does not implement `Display` → rustc E0277). Two bugs made it fall through:
+        // `parse_head_type("(Tuple)", "Tuple")` returned `None` (its whitespace-after-head guard rejected the
+        // empty exact match), and even matched it would `format!("(tuple )", …)` with a trailing space.
+        let sums = std::collections::HashMap::new();
+        let nt = std::collections::HashMap::new();
+        assert_eq!(
+            parse_head_type("(Tuple)", "Tuple").as_deref(),
+            Some(&[][..]),
+            "an empty (Tuple) parses as a zero-arg Tuple head"
+        );
+        let expr = cdz_render_expr("(Tuple)", &sums, &nt);
+        assert_eq!(
+            expr, "\"(tuple)\".to_string()",
+            "an empty tuple renders the literal `(tuple)`, no path read, no trailing space: {expr}"
+        );
+        // The whole-token guard still rejects a longer head — `(TupleX …)` must NOT match `Tuple`.
+        assert_eq!(parse_head_type("(TupleX A)", "Tuple"), None);
     }
 }

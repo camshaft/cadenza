@@ -488,6 +488,7 @@ pass	a value declaration in a do block is in scope for the following forms
 pass	a variant carrying a RECORD payload constructs and matches
 pass	a variant carrying a record payload escapes to the host
 pass	a variant with a wrong-type payload as a direct match scrutinee is a type error
+pass	a variant with an explicit EMPTY-TUPLE payload keeps its tuple form, distinct from a nullary unit
 pass	a well-formed annotation still checks and accepts a matching type (the control)
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wrong-arity tuple binding pattern is a shape error
