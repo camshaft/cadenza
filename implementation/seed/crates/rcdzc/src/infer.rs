@@ -1075,18 +1075,20 @@ fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out:
         && name.starts_with(|c: char| c.is_ascii_lowercase())
         && matches!(resolved_of(db, ty_expr), Resolved::Poison(_))
     {
-        out.push(
-            Reject::coded(
-                Code::Unbound,
-                format!(
-                    "unbound name `{name}` — a lowercase name in a type position is not a type \
-                     variable here ({lead} names an existing type). Cadenza has no `∀`-binder in an \
-                     annotation; write a GENERIC parameter by leaving it UNANNOTATED — `(def (f x) …)` \
-                     is already polymorphic in `x` — or annotate a concrete type"
-                ),
-            )
-            .at(ty_expr),
-        );
+        out.push(lowercase_type_var_reject(&name, ty_expr, lead));
+        return;
+    }
+    // A COMPOUND type expression carrying a lowercase type-var in a nested position — `(List b)`,
+    // `(Tuple a b)`, `(-> a b)`, `(Map k v)`, `(Record (x a))`. The bare-name branch above only catches a
+    // top-level `(: x a)`; a nested `b` fell to the generic `collect` below, which reported the terse
+    // "unbound name `b`" WITHOUT the "not a type variable here — leave the parameter unannotated" guidance
+    // an ML/Haskell user needs (they read `(List b)` as `List<some type var b>`). Walk the type expr's
+    // nested positions and emit the SAME rich message for each lowercase-unbound leaf, so a nested type-var
+    // gets fix-parity with the top-level one. If any fired, we are done (the enriched rejects replace what
+    // `collect` would have said); otherwise fall through to the ordinary path.
+    let before_tv = out.len();
+    enrich_nested_lowercase_type_vars(db, ty_expr, lead, out);
+    if out.len() != before_tv {
         return;
     }
     let before = out.len();
@@ -1107,6 +1109,58 @@ fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out:
                 )
                 .at(ty_expr),
             );
+        }
+    }
+}
+
+/// The CDZ0101 reject for a LOWERCASE name used as a would-be type variable in a type-annotation position
+/// — the ML/Haskell reflex (`a` read as `∀a`), which Cadenza has no `∀`-binder to scope. Names the actual
+/// route to the polymorphism the author wanted: leave the parameter UNANNOTATED. Shared by the top-level
+/// bare-name case and the NESTED-position walk (`enrich_nested_lowercase_type_vars`), so `(: x a)` and
+/// `(: x (List b))` read identically. `lead` names the site ("a parameter's annotation", etc.).
+fn lowercase_type_var_reject(name: &str, at: StructId, lead: &str) -> Reject {
+    Reject::coded(
+        Code::Unbound,
+        format!(
+            "unbound name `{name}` — a lowercase name in a type position is not a type variable here \
+             ({lead} names an existing type). Cadenza has no `∀`-binder in an annotation; write a \
+             GENERIC parameter by leaving it UNANNOTATED — `(def (f x) …)` is already polymorphic in `x` \
+             — or annotate a concrete type"
+        ),
+    )
+    .at(at)
+}
+
+/// Walk a COMPOUND type-annotation expression's NESTED type positions and emit the rich
+/// [`lowercase_type_var_reject`] for each lowercase name that resolves to nothing — so a type-var nested in
+/// `(List b)` / `(Tuple a b)` / `(-> a b)` / `(Map k v)` gets the SAME "not a type variable here" guidance
+/// the top-level `(: x a)` does, instead of the terse "unbound name `b`" the generic `collect` gives. Only
+/// a bare lowercase name resolving to `Poison` is enriched (an uppercase unknown type, or a name that IS a
+/// value, keeps its own fault). Recurses through the tail elements of a `(head …)` form (the type-argument
+/// positions), NOT the head (`List`/`Map`/`->` are the known ctors); a record-bearing type never reaches
+/// here (the caller's record branch returns first), so there are no field LABELS to skip.
+fn enrich_nested_lowercase_type_vars(
+    db: &mut Db,
+    node: StructId,
+    lead: &str,
+    out: &mut Vec<Reject>,
+) {
+    // A bare NAME node is a leaf — enrich it if it is a lowercase would-be type var resolving to nothing,
+    // then stop (a name has no tail to recurse).
+    if let Some(name) = db.ast.as_name(node).map(str::to_string) {
+        if name.starts_with(|c: char| c.is_ascii_lowercase())
+            && matches!(resolved_of(db, node), Resolved::Poison(_))
+        {
+            out.push(lowercase_type_var_reject(&name, node, lead));
+        }
+        return;
+    }
+    // A compound `(head tail…)` — recurse into the TAIL (the type-argument positions); the head names the
+    // constructor, not a type var.
+    if let crate::ast::Struct::List(kids) = db.ast.get(node) {
+        let kids = kids.clone();
+        for &child in kids.iter().skip(1) {
+            enrich_nested_lowercase_type_vars(db, child, lead, out);
         }
     }
 }
@@ -6009,6 +6063,10 @@ fn check_application(
                     | Ty::Set(_)
                     | Ty::Sum { .. }
                     | Ty::Nominal { .. }
+                    // A first-class TYPE value held against a scalar/text — `(+ Color 1)`, `(< Int64 5)` —
+                    // is a cross-kind clash (no shared arithmetic/order between a type and a number). It
+                    // otherwise leaked the phantom "type mismatch: Int64 and Type" from the generic scheme.
+                    | Ty::Type
             )
         };
         let is_atom = |t: &Ty| is_text(t) || is_scalar(t);
@@ -6029,6 +6087,10 @@ fn check_application(
             // stay on the generic path ("type mismatch: Color and Shape"), a genuine same-kind mismatch. A
             // sum vs a RECORD/LIST/etc. differs in tag → the kind-boundary message, correct.
             Ty::Sum { .. } | Ty::Nominal { .. } => Some(5),
+            // A TYPE value gets its own tag: two Types are the SAME kind (a bare `(= Int64 Int64)` is left
+            // to its own path — type equality is `Type.eq`, not the generic `=`), but a Type vs a compound
+            // differs in tag → the kind-boundary message.
+            Ty::Type => Some(6),
             _ => None,
         };
         let different_compound_kinds = match (compound_kind(&a), compound_kind(&b)) {
@@ -6082,6 +6144,11 @@ fn check_application(
         // fix.) Comparison (`= < >`) on two same sums/nominals is VALID (structural equality / a derived
         // order), so this stays arithmetic-only, and the earlier `nominal_inner_vs` guard already handles a
         // nominal-vs-its-INNER comparison — this is the two-SAME-framing arithmetic case that leaks past.
+        // `Ty::Type` (a first-class TYPE value — `Int64`, a user sum name, `List` used as a value) joins
+        // too: arithmetic on a type is always a type error (there is no `+` on types; type EQUALITY is the
+        // dedicated `Type.eq`, not the bare `=`/`+`). The generic scheme grounds the first operand to Int64
+        // and reports "type mismatch: Int64 and Type" — the same phantom leak (plus a cascading uncoded "a
+        // type value has no runtime form" decline). Naming it "arithmetic is not defined on Type" is honest.
         let text_or_compound_ty = |t: &Ty| {
             matches!(
                 t,
@@ -6096,6 +6163,7 @@ fn check_application(
                     | Ty::Unit
                     | Ty::Sum { .. }
                     | Ty::Nominal { .. }
+                    | Ty::Type
             )
         };
         if is_arith && text_or_compound_ty(&a) && text_or_compound_ty(&b) {

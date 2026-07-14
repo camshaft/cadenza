@@ -153,6 +153,29 @@
             (def (main) (f)) (export main)))
   (error  CDZ0201))
 
+(case "two sibling modules may each define a private helper of the same name"
+  (doc    "The duplicate-definition check is PER-MODULE, not global across a linked package: a module's
+           name set is fixed WITHIN one module (the rejection above), but two SEPARATE files may each carry
+           a private helper of the same name. `lib` defines a private `foo` (`+ x 1`) that its exported
+           `bump` calls; the entry defines its OWN private `foo` (`* x 2`). Each `foo` binds to its own
+           module's definition — `(foo 5)` in the entry is 10 (entry's `* 2`), `(bump 5)` is 6 (lib's `+ 1`
+           via lib's `foo`), summing to 16 — so the two same-named helpers do NOT collide and neither wins
+           the other's calls. The value twin of the per-module TYPE-declaration case (two `Box` types in
+           separate modules); the idiomatic multi-module layout where a shared type module is imported by
+           several passes, each with its own generically-named local helper (`node-count`, `foo`). A global
+           seen-set falsely flagged this as a duplicate (CDZ0201); the check keys on `(file, name)`.")
+  (module "lib"
+    (do
+      (def (foo (: x Int64)) (+ x 1))
+      (def (bump (: x Int64)) (foo x))
+      (export bump)))
+  (input  (do
+            (import "lib" (bump))
+            (def (foo (: x Int64)) (* x 2))
+            (def (main) (+ (foo 5) (bump 5)))
+            (export main)))
+  (output (: 16 Int64)))
+
 ; A duplicate EXPORT clause is the export-side analogue of the duplicate definition above: a module's
 ; exports are a record whose fields are the exported names (core-semantics.md #A Module Evaluates To A
 ; Record Of Its Exports), and a record has a fixed set of field names, so exporting the same name twice
@@ -732,6 +755,32 @@
             (def (main) (to-int (Color.Green)))
             (export main)))
   (output (: 2 Int64)))
+
+(case "a wildcard-exported variant whose name shadows a prelude type is constructible in an importer"
+  (doc    "The prelude-collision case of the wildcard import above: `lib` declares `(type T (Foo Int64)
+           (List (List T)))` — a variant NAMED `List`, which also names a prelude type — and exports it
+           concretely with `(. T *)`. The entry imports `T` and constructs `(T.List (list))`, which `sz`'s
+           `((T.List es) 9)` arm yields 9 for. The constructor selector `T.List` must resolve through `T`'s
+           OWN imported constructor set, NOT as the free prelude name `List`: a member-access tail on a
+           known nominal type is a constructor selector, not a shadowable name. This was wrongly rejected
+           CDZ0214 ('`T`'s constructor `List` is withheld') when the importer resolved the tail to the
+           prelude `List` — not List-specific (a `Bool` variant collided identically) and not construct-only
+           (a match arm failed too), while the SAME construction in the declaring file worked. The
+           non-colliding-names control (`NInt`/`NList`) always ran to 9, pinning the oracle. Pins that an
+           imported type's constructor is reachable through its wildcard export even when its name shadows a
+           prelude type — the shape the compiler port's `Ast` (with `List`/`Bool` variants) needs across
+           files.")
+  (module "lib"
+    (do
+      (type T (Foo Int64) (List (List T)))
+      (def (sz (: n T)) (match n ((T.Foo _) 1) ((T.List es) 9)))
+      (export (. T *))
+      (export sz)))
+  (input  (do
+            (import "lib" (T sz))
+            (def (main) (sz (T.List (list))))
+            (export main)))
+  (output (: 9 Int64)))
 
 ; --- ABSTRACT (opaque) types: export the type HANDLE, keep the CONSTRUCTOR private -----------------
 ; A type declaration's handle and its constructors are INDEPENDENTLY exportable (modules-and-namespaces.md

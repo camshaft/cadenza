@@ -8,12 +8,7 @@
 /// blocked by runtime `String.from-bytes`), tag 3 List (+ child count, then the children back-to-back).
 /// `encode` then `build` is the identity on the STRUCTURE and every Int/Bool value (verified by the
 /// round-trip @tests: node count and Int-leaf sum survive encode→decode exactly).
-type Ast =
-  | Int(Int64)
-  | Str(String)
-  | Bool(Bool)
-  | Name(String)
-  | List(List(Ast))
+import { Ast } from "ast"
 
 /// A one-byte Bytes holding the low 8 bits of `x` (`UInt8.wrap` truncates to a byte).
 def b1(x: Int64) = Bytes.of([UInt8.wrap(x)])

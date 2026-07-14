@@ -1,9 +1,4 @@
-type Ast =
-  | Int(Int64)
-  | Str(String)
-  | Bool(Bool)
-  | Name(String)
-  | List(List(Ast))
+import { Ast } from "ast"
 
 def violations(tbl: Map(String, Int64), node: Ast) = match node with
   | Ast.List(es) => form-violation(tbl, es) + violations-list(tbl, es)

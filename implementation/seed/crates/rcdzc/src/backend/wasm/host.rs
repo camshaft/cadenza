@@ -173,6 +173,12 @@ fn is_extern_heap_type(ty: &Ty) -> bool {
 //# Purity MUST be the empty effect row: an entrypoint that delegates no effect to the host MUST reach no effect that escapes and MUST run to normal termination without suspending, so that an entrypoint's determinism is legible from an empty delegation and an entrypoint whose every reached effect is handled in-program is pure.
 //= spec/capabilities/capabilities-and-effects.md#an-effect-that-does-not-escape-is-discharged-by-a-handler
 //# An effect discharged by an in-program handler MUST NOT appear in the program's manifest, so that only effects that escape to the host — those an entrypoint delegates and no nearer handler discharges — are capabilities.
+// The interposition twin: an effect an enclosing handler FULLY DISCHARGES (without re-performing it) never
+// reaches this reachability walk as a `Core::HostCall` (the handler folded the perform away in `effects`),
+// so it neither imports nor crosses the boundary — an entrypoint whose every otherwise-delegated effect is
+// so interposed is pure with an empty manifest (the run-an-I/O-program-deterministically mechanism).
+//= spec/capabilities/capabilities-and-effects.md#a-handler-may-interpose-on-an-effect-an-entrypoint-would-delegate
+//# An effect that an enclosing handler fully discharges without re-performing it MUST NOT appear in the manifest and MUST NOT reach the boundary, so that an entrypoint whose every otherwise-delegated effect is interposed by a handler is pure with an empty manifest — the mechanism a test harness uses to run an I/O program as a deterministic one.
 // Because the set is derived by REACHABILITY from the exports (`collect_host_imports` runs over
 // `layout.order`, itself a worklist grown from the exports), a linked dependency that no entrypoint
 // reaches contributes no import — dependency resolution never enlarges the required-capability set beyond
@@ -197,6 +203,11 @@ fn is_extern_heap_type(ty: &Ty) -> bool {
 // reproduce the same host-call sequence and the same result.
 //= spec/capabilities/capabilities-and-effects.md#a-run-is-a-deterministic-function-of-its-input-and-responses
 //# A run's observable behavior MUST be a deterministic function of its input and the ordered responses to the host calls it makes, so that the same input and the same responses in the same order reproduce the same host-call sequence and the same result (constitution III).
+// The TERMINAL CONDITION (whether a terminating run ends in a normal result or a trap) is part of that
+// observable behavior, so it too is a deterministic function of input + ordered capability responses:
+// nothing but a reached host op can vary it, and this walk proves those are exactly the manifest's ops.
+//= spec/capabilities/core-semantics.md#a-program-that-terminates-ends-in-one-of-two-terminal-conditions
+//# The terminal condition of a program run that terminates MUST be a deterministic function of its input and its declared capabilities' responses, so that whether a run terminates is a property of the environment that hosts it while the terminal condition of one that does is fixed by the program.
 pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>) {
     // WALK-DEPTH GUARD — the same bound `collect_call_callees` / `collect_closure_codes` hold (see
     // [`crate::db::WALK_DEPTH_LIMIT`]): this walk drives `core_of` at every node, and a non-normalizing

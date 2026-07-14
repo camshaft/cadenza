@@ -78,4 +78,4 @@ def head-name-int-headed-is-none() = match head-name(Ast.List([Ast.Int(9)])) wit
   | Option.Some(_) => trap("head-name of an Int-headed list should be None")
   | Option.None(_) => unit
 
-export { node-count, head-name }
+export { Ast.*, node-count, head-name }

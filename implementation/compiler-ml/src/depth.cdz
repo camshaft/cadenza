@@ -4,12 +4,7 @@
 /// the resolver (`repros/decline-borrow-scope-resolver-test-emit-threshold.cdz`) — a deliberately
 /// scalar-only complement that RUNS. Useful in a real compiler for cost heuristics (inline budget by
 /// subtree size) and recursion-limit / stack-depth guards.
-type Ast =
-  | Int(Int64)
-  | Str(String)
-  | Bool(Bool)
-  | Name(String)
-  | List(List(Ast))
+import { Ast } from "ast"
 
 /// The maximum nesting depth: a leaf is 1, a list is 1 + the deepest child.
 def depth(node: Ast) = match node with

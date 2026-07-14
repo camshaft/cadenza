@@ -1,9 +1,4 @@
-type Ast =
-  | Int(Int64)
-  | Str(String)
-  | Bool(Bool)
-  | Name(String)
-  | List(List(Ast))
+import { Ast } from "ast"
 
 def apply-op(op: String, x: Int64, y: Int64) =
   if op == "+" then x + y else if op == "-" then x - y else if op == "*" then x * y else 0

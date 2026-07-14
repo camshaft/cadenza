@@ -819,6 +819,33 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             );
             continue;
         }
+        // `doc` is a real form, but it documents a definition from INSIDE it — `(def (f …) (doc "…") …)`
+        // (the `///` surface renders exactly there) — NOT as a top-level WRAPPER around the def. A user
+        // who writes `(doc "…" (def (f …) …))` at the top level (a natural guess, since a `//` COMMENT
+        // *does* wrap transparently — `strip_comments` peels it) gets the generic "unbound name `doc`"
+        // PLUS a misleading "export names no definition" cascade (the wrapped `def` is hidden from the
+        // top-level scan). Name the real placement so the author moves the `(doc …)` inside the def,
+        // rather than hunting a `def`/`export` typo the generic keyword-suggestion would propose. A DECLINE
+        // (the wrapped form is invisible, so the program cannot compile either way — outcome unchanged).
+        if head == "doc" {
+            // Coded CDZ0201 (a MALFORMED program — a `(doc …)` in an invalid position), NOT an uncoded
+            // decline: the doc form is a KNOWN construct merely MISPLACED (unlike `import`, an unmodeled
+            // feature), so this is a well-formedness rejection. Coding it also makes it the PREFERRED
+            // primary over the consequent "export names no definition" CDZ0101 (`compile_component` prefers
+            // a coded error; both are coded, and this one — anchored earlier, at the wrapper — sorts first
+            // and names the ROOT, while the export fault is the downstream symptom of the hidden def).
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    "a `(doc …)` documents a definition from INSIDE it — write `(def (name …) (doc \
+                     \"…\") body)`, the shape a `///` doc-comment produces — not as a top-level wrapper \
+                     around the definition (a wrapper hides the definition from the module, so nothing \
+                     is defined or exported)",
+                )
+                .at(occ),
+            );
+            continue;
+        }
         // `pragma` is a recognized MODULE DIRECTIVE, but its `default-integer` effect (fixing bare
         // literals' type) is collected only from the members of a NESTED `(module NAME …)` declaration
         // (one written inside a `(do …)`), not from the program's outermost/root module. A `(pragma …)`
@@ -1031,11 +1058,25 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // per β-copy of an enclosing inlined helper). So it must NOT participate in the duplicate-name check —
     // else a legitimately-once-declared recursive function inlined at a call site would spuriously report
     // "defined more than once". Only genuine (non-internal) user definitions form the fixed name set.
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    //
+    // PER-MODULE (per-file), not global — the same reasoning as the duplicate-TYPE check below: a value-
+    // name set is fixed within ONE module, but two SEPARATE modules of a linked package may each define a
+    // private helper of the same name (`(def node-count …)` in a lib AND in the importing entry — each
+    // module has its own value namespace; a sibling's un-imported def is invisible, so re-using its name
+    // is not a redeclaration). Key the seen-set on `(file, name)` via the same `file_of` identity the
+    // resolver scopes name visibility by (`None` for a single-file program collapses to one bucket — the
+    // flat case is byte-identical to the old global scan). Without the file key, a global scan flagged a
+    // cross-module same-named def as a spurious duplicate — blocking the idiomatic multi-module layout.
+    let mut seen: std::collections::HashSet<(Option<usize>, &str)> =
+        std::collections::HashSet::new();
     let dups: Vec<(String, StructId)> = db
         .defs
         .iter()
-        .filter(|d| !d.internal && !d.name.is_empty() && !seen.insert(d.name.as_str()))
+        .filter(|d| {
+            !d.internal
+                && !d.name.is_empty()
+                && !seen.insert((db.file_of(d.sig_occ), d.name.as_str()))
+        })
         .map(|d| (d.name.clone(), d.sig_occ))
         .collect();
     for (name, sig_occ) in dups {
@@ -2618,6 +2659,19 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             && r.message
                 .contains(crate::diag::DIFFERENT_TYPES_COMPARISON_MARKER)
     });
+    // Likewise: a TUPLE accessed by NAME — `(. (tuple 1 2) foo)` — is rejected by `infer` with the precise,
+    // actionable "a tuple is accessed by position, not by name `foo` — use a numeric index …" at the def.
+    // When that def is CALLED from an exported body, the emit path's reached-poison walk lowers the reduced
+    // `(. (tuple 1 2) foo)`, which cannot fold, and returns the BARE "member access requires a record"
+    // decline at the CALL SITE — a DIFFERENT node with a DIFFERENT (weaker) message than the infer reject,
+    // so neither the same-node dedup nor the reduced-body baseline-diff (which matches on message) collapses
+    // it. It is the SAME defect reached again through lowering. Drop the bare decline program-wide when the
+    // tuple-by-position reject is present, keeping the precise infer message as the ONE primary. The bare
+    // decline (no ", found <T>") is emitted ONLY by lowering — `infer`'s own non-record message always names
+    // the type ("… requires a record, found Int64") — so this cannot swallow a genuine standalone primary.
+    let has_tuple_by_name_reject = faults
+        .iter()
+        .any(|r| r.message.contains(crate::diag::TUPLE_BY_NAME_MARKER));
     // Likewise: a `handle` whose HEAD names a VALUE (`(handle foo …)`) is rejected CDZ0201 at the head. The
     // head is desugared into each arm's `(. foo op)` projection, so the value head ALSO leaks a CDZ0201
     // "member access requires a record, found <T>" (from `(. foo op)`) and the uncoded fold-decline — both
@@ -2944,6 +2998,14 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
                 && r.is_decline()
                 && r.message.contains(crate::diag::COMPOUND_COMPARISON_DECLINE)
             {
+                return false;
+            }
+            // A tuple accessed by NAME whose def is CALLED (`(. (tuple …) foo)` in a called body) leaks the
+            // bare "member access requires a record" decline at the call site through the reached-poison
+            // walk — the same defect the precise "a tuple is accessed by position" reject already names at
+            // the def. Drop the bare decline (an EXACT match — the lowering form has no ", found <T>" tail,
+            // which infer's own non-record message always carries, so this never hides a genuine primary).
+            if has_tuple_by_name_reject && r.message == crate::diag::MEMBER_NOT_RECORD_DECLINE {
                 return false;
             }
             // A `handle` whose HEAD is not an effect leaks a consequent from the desugared `(. head op)`

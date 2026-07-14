@@ -108,13 +108,31 @@ export default function Symbols() {
 
       <Exercise
         id="symbols:2"
-        prompt={<>Intern the text <C>"go"</C> and confirm it equals <C>#"go"</C> — the answer is <C>1</C>.</>}
-        starter={`(def (main)
-  (if (= (Symbol.of ?) #"go") 1 0))`}
-        solution={`(def (main)
-  (if (= (Symbol.of "go") #"go") 1 0))`}
+        prompt={
+          <>
+            A symbol is an ordinary value, so a function can <em>return</em> one, not just test it.{" "}
+            <C>next</C> advances a traffic light around its cycle: red turns to green, green to yellow,
+            yellow back to red. The green and yellow cases are written — fill the hole with the symbol{" "}
+            red becomes, so <C>(next #"red")</C> is <C>#"green"</C> and the check gives <C>1</C>.
+          </>
+        }
+        starter={`(def (next light)
+  (if (= light #"red") ?
+    (if (= light #"green") #"yellow"
+      #"red")))
+(def (main) (if (= (next #"red") #"green") 1 0))`}
+        solution={`(def (next light)
+  (if (= light #"red") #"green"
+    (if (= light #"green") #"yellow"
+      #"red")))
+(def (main) (if (= (next #"red") #"green") 1 0))`}
         expected="1"
-        hint={<>Pass the string <C>"go"</C> to <C>Symbol.of</C> — interning it gives the symbol <C>#"go"</C>.</>}
+        hint={
+          <>
+            The hole is the value the function <em>hands back</em> for red — a symbol literal, <C>#"green"</C>.
+            The result is a symbol like any other, which the check then compares against <C>#"green"</C>.
+          </>
+        }
       />
     </article>
   );

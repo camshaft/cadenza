@@ -1,9 +1,4 @@
-type Ast =
-  | Int(Int64)
-  | Str(String)
-  | Bool(Bool)
-  | Name(String)
-  | List(List(Ast))
+import { Ast } from "ast"
 
 def digit(x: Int64) = match x with
   | 0 => "0"

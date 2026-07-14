@@ -1608,15 +1608,98 @@ fn fix_edits(
     repl: &str,
     surface: cadenza_syntax::convert::Format,
 ) -> Option<Vec<cadenza_syntax::query::textedit::Edit>> {
-    let new = fix_new(old, kind, target, repl)?;
     let span_of = |t: &cadenza_syntax::query::Tree| -> Option<(usize, usize)> {
         t.origin()
             .and_then(|id| spans.get(id))
             .map(|s| (s.start, s.end))
     };
+    // Diff only the CHANGED SUBTREE, not the whole program. A fix touches one node (`replace`/`wrap`/
+    // `insert` at the target; `delete` in the target's parent list), and `edits_preserving` reports edits
+    // only within the changed span — so diffing `(old_subtree, new_subtree)` yields the SAME edits as
+    // diffing the whole `(old, new)` tree, but walks O(subtree) instead of O(program). Computing a fix PER
+    // diagnostic over the whole tree was O(fixes × program) = O(N²) on a file with many fixable warnings (a
+    // wide match with N unused-binder arms: N `transform_target` whole-tree rebuilds, each deep-cloning the
+    // other N−1 arms). `localized_change` finds the target's subtree + builds only ITS replacement.
+    let (old_sub, new_sub) = localized_change(old, kind, target, repl)?;
     Some(cadenza_syntax::query::textedit::edits_preserving(
-        source, old, &new, &span_of, surface,
+        source, old_sub, &new_sub, &span_of, surface,
     ))
+}
+
+/// The smallest `(old_subtree, new_subtree)` pair whose structural diff yields a fix's byte edits — the
+/// CHANGED subtree, not the whole program. `replace`/`wrap`/`insert` change the TARGET node itself, so its
+/// subtree is the diff root; `delete` removes the target from its PARENT list, so the parent is the root.
+/// Because `edits_preserving` emits edits only within the changed span, diffing this local pair is
+/// byte-identical to diffing the whole tree — at O(subtree) not O(program). Returns a BORROW of the old
+/// subtree (into `old`) + the freshly built new subtree. `None` if the target (or, for delete, its parent)
+/// is not found, or the payload does not parse.
+fn localized_change<'t>(
+    old: &'t cadenza_syntax::query::Tree,
+    kind: &str,
+    target: cadenza_syntax::StructId,
+    repl: &str,
+) -> Option<(&'t cadenza_syntax::query::Tree, cadenza_syntax::query::Tree)> {
+    use cadenza_syntax::query::Tree;
+    if kind == "delete" {
+        // Delete edits the PARENT list (the target vanishes from its children). Diff the parent subtree.
+        let parent = find_parent_of(old, target)?;
+        let new_parent = delete_target(parent, target)?;
+        return Some((parent, new_parent));
+    }
+    // `replace`/`wrap`/`insert` change the target node in place — its subtree is the diff root.
+    let node = find_by_origin(old, target)?;
+    let new_node = match kind {
+        "replace" => parse_fragment(repl)?,
+        "wrap" => {
+            let ctor = parse_fragment(repl)?;
+            substitute_hole(&ctor, node)
+        }
+        "insert" => {
+            let Tree::List(children, origin) = node else {
+                return None;
+            };
+            let mut children = children.clone();
+            for arm in split_top_forms(repl) {
+                children.push(parse_fragment(&arm)?);
+            }
+            Tree::List(children, *origin)
+        }
+        _ => return None,
+    };
+    Some((node, new_node))
+}
+
+/// The subtree at `origin` within `tree` (by provenance id) — a borrow, no clone. `None` if absent.
+fn find_by_origin(
+    tree: &cadenza_syntax::query::Tree,
+    origin: cadenza_syntax::StructId,
+) -> Option<&cadenza_syntax::query::Tree> {
+    use cadenza_syntax::query::Tree;
+    if tree.origin() == Some(origin) {
+        return Some(tree);
+    }
+    match tree {
+        Tree::Atom(..) => None,
+        Tree::List(items, _) => items.iter().find_map(|c| find_by_origin(c, origin)),
+    }
+}
+
+/// The LIST node that directly contains a child whose origin is `target` — the node a `delete` edits.
+/// `None` if no list holds `target` as a direct child.
+fn find_parent_of(
+    tree: &cadenza_syntax::query::Tree,
+    target: cadenza_syntax::StructId,
+) -> Option<&cadenza_syntax::query::Tree> {
+    use cadenza_syntax::query::Tree;
+    match tree {
+        Tree::Atom(..) => None,
+        Tree::List(items, _) => {
+            if items.iter().any(|c| c.origin() == Some(target)) {
+                return Some(tree);
+            }
+            items.iter().find_map(|c| find_parent_of(c, target))
+        }
+    }
 }
 
 /// Build the `(old, new)` tree pair a fix transforms — the shared core of [`apply_fix_to_source`] and
@@ -3566,6 +3649,70 @@ fn build_relational_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn localized_change_diffs_only_the_target_subtree_not_the_whole_program() {
+        // REGRESSION (perf): `cdz check` computes each fixable diagnostic's byte-edits via
+        // `fix_edits`, which previously built the WHOLE new tree (`transform_target`, deep-cloning every
+        // untouched sibling) and diffed it against the whole old tree — O(program) PER fix. A file with N
+        // fixable warnings (a WIDE match with N unused-binder arms) was thus O(N²) (a 800-arm match: 372ms).
+        // FIX: `localized_change` returns only the CHANGED subtree pair `(target_node, replacement)` — a
+        // fix touches one node, and `edits_preserving` emits edits only within the changed span, so diffing
+        // the local pair is byte-identical to diffing the whole tree, at O(target-subtree) not O(program).
+        //
+        // Lock it in structurally: for a `replace` fix on a target deep in a WIDE tree, `old_sub` is the
+        // target's OWN small subtree — its node count is independent of the surrounding program width (a
+        // revert to diffing the whole tree would make it the program size). Build `(root c0 c1 … target)`
+        // with N wide sibling subtrees + a shallow `target` atom, and assert the diffed subtree is tiny.
+        use cadenza_syntax::query::Tree;
+        use cadenza_syntax::{StructId, ast::Leaf};
+        fn count(t: &Tree) -> usize {
+            match t {
+                Tree::Atom(..) => 1,
+                Tree::List(items, _) => 1 + items.iter().map(count).sum::<usize>(),
+            }
+        }
+        fn sibling(width: usize, next: &mut u32) -> Tree {
+            // A `(f a0 a1 … a{width})` list — a wide sibling subtree that must NOT be diffed.
+            let mut kids = Vec::new();
+            for _ in 0..width {
+                let id = *next;
+                *next += 1;
+                kids.push(Tree::Atom(Leaf::Name("a".to_string()), Some(StructId(id))));
+            }
+            Tree::List(kids, Some(StructId(*next)))
+        }
+        let build = |n_sibs: usize, sib_width: usize| -> (Tree, StructId) {
+            let mut next = 1000u32;
+            let mut kids = Vec::new();
+            for _ in 0..n_sibs {
+                kids.push(sibling(sib_width, &mut next));
+                next += 1;
+            }
+            let target = StructId(1);
+            kids.push(Tree::Atom(Leaf::Name("y".to_string()), Some(target)));
+            (Tree::List(kids, Some(StructId(0))), target)
+        };
+        // A `replace y → _y` fix. `old_sub` must be just the `y` atom (1 node), regardless of the N wide
+        // siblings around it.
+        let (small, tgt_s) = build(4, 4);
+        let (big, tgt_b) = build(400, 8);
+        let (os_small, _) = localized_change(&small, "replace", tgt_s, "_y").expect("found");
+        let (os_big, _) = localized_change(&big, "replace", tgt_b, "_y").expect("found");
+        assert_eq!(
+            count(os_small),
+            1,
+            "the target atom is the whole diffed subtree"
+        );
+        assert_eq!(
+            count(os_small),
+            count(os_big),
+            "the diffed subtree is the TARGET's ({} nodes), independent of program width — a revert to \
+             diffing the whole tree would scale with the {}-sibling program",
+            count(os_small),
+            400
+        );
+    }
 
     #[test]
     fn transform_target_does_not_clone_untouched_subtrees() {
