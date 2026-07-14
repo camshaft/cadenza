@@ -193,6 +193,7 @@ pass	a Rational-payload sum value escapes across the boundary in its canonical f
 pass	a Result built by an if with the Err branch first type-checks
 pass	a Result carrying a Result is matched by a nested pattern to its inner value
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
+pass	a STRING-result effect op resumes with a string that folds through a concat
 pass	a SUM is threaded as a handler's folded state across operations
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
@@ -604,6 +605,7 @@ pass	a later declaration in a do block sees an earlier one
 pass	a later let binding sees an earlier one in the same let
 pass	a later let binding sees an earlier pattern's binders
 pass	a le pattern segment reads a fixed-width integer little-endian
+pass	a leading nested-list element dispatches on the inner list's length
 pass	a left shift by a floating-point count does not silently promote
 pass	a left shift by the bit width or more traps rather than wrapping
 pass	a left shift that overflows Int64 traps like multiplication
@@ -694,6 +696,9 @@ pass	a map pattern falls through when the key is absent
 pass	a map pattern matches a present key and binds its value
 pass	a map threaded as a recursive accumulator is grown then measured
 pass	a map whose value is a list: a runtime lookup then indexes the returned list
+pass	a map with a String value is looked up and its value compared in the arm
+pass	a map with a String value: a missing key takes the None arm
+pass	a map with a String value: the looked-up value's byte length is read in the arm
 pass	a map with a computed key equals the same map with a constant key
 pass	a map with a duplicate key is a type error
 pass	a map with a user-sum VALUE looks up and matches the stored variant
@@ -703,6 +708,7 @@ pass	a map with values of two different types is a type error
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
 pass	a match arm mixes a payload LITERAL, a wildcard, and a nested-Option pattern
+pass	a match arm's DESTRUCTURED payload is the argument to a perform in that arm's body
 pass	a match binder over a narrow scrutinee returns the bound value
 pass	a match not covering the scrutinee is a compile-time rejection
 pass	a match on a BigInt with a single catch-all binder binds and uses it
@@ -1708,6 +1714,7 @@ pass	equality across incompatible dimensions is a compile-time error
 pass	equality applied to one operand is rejected, not a crash
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	eval is optional for macros and interactive use
+pass	eval of a quasiquote splicing a compile-time-known value
 pass	every not-a-number value is equal to every not-a-number value
 pass	exact rational arithmetic is exact and normalized
 pass	exact rational division is total and exact for a nonzero divisor

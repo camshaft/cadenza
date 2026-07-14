@@ -1164,6 +1164,7 @@ todo	encoding and decoding a constructor-built AST round-trips to an equal value
 todo	encoding and decoding a constructor-built compound AST round-trips
 todo	equality across incompatible dimensions is a compile-time error
 pass	eval is optional for macros and interactive use
+pass	eval of a quasiquote splicing a compile-time-known value
 todo	eval on malformed AST traps
 todo	every not-a-number value is equal to every not-a-number value
 todo	exact rational arithmetic is exact and normalized

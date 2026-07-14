@@ -1232,6 +1232,50 @@
             (export main)))
   (output (: 0 Int64)))
 
+; A STRING used as a Map VALUE — the symbol-table idiom (a name maps to a canonical name / type string /
+; opcode mnemonic), the string companion of the sum-/list-/set-valued map cases. The looked-up String is
+; consumed WITHIN the lookup's match arm: compared by `=` to a literal, or measured. (Returning the
+; looked-up String across a function boundary and THEN comparing it is a separate backend-ownership limit,
+; tracked outside the corpus; consuming it in the arm — what a resolver does in place — is realized.)
+
+(case "a map with a String value is looked up and its value compared in the arm"
+  (doc    "A `(Map String String)` used as a symbol table — `{\"add\"↦\"plus\", \"neg\"↦\"minus\"}` — looked
+           up by an `if`-selected key, and the returned String value compared to a literal WITHIN the match
+           arm: `((Some s) (if (= s \"plus\") 1 2))`. b=true → key \"add\" → \"plus\" → 1; b=false → key
+           \"neg\" → \"minus\" → 2. Pins that a String composes as a map VALUE, retrieved through the Option
+           lookup and compared in place — the resolver's name→canonical lookup-then-compare idiom, the
+           String companion of the sum-valued map case above.")
+  (input  (do
+            (def (canon (: b Bool))
+              (let ((m (Map.insert (Map.insert (map) "add" "plus") "neg" "minus")))
+                (match (Map.lookup m (if b "add" "neg")) ((Some s) (if (= s "plus") 1 2)) (None -1))))
+            (def (main (: b Bool)) (canon b)) (export main)))
+  (call   main (: true Bool)) (output (: 1 Int64))
+  (call   main (: false Bool)) (output (: 2 Int64)))
+
+(case "a map with a String value: a missing key takes the None arm"
+  (doc    "The absent companion: looking up a key the String-valued map does not hold takes the `None` arm
+           → -1, rather than a stored value (map lookup is total). Pins that a String-valued map's miss is
+           the ordinary absent optional, alongside the hit case above.")
+  (input  (do
+            (def (main)
+              (let ((m (Map.insert (map) "add" "plus")))
+                (match (Map.lookup m "sub") ((Some s) (String.byte-len s)) (None -1))))
+            (export main)))
+  (output (: -1 Int64)))
+
+(case "a map with a String value: the looked-up value's byte length is read in the arm"
+  (doc    "The looked-up String value is consumed non-comparatively too: `((Some s) (String.byte-len s))`
+           measures the found value — key \"a\" holds \"hello\" (5 bytes). Pins that a String map value is a
+           genuine usable String handle in the arm (measured here), not only comparable — the String
+           companion of the list-valued-map `List.len` case.")
+  (input  (do
+            (def (main)
+              (let ((m (Map.insert (Map.insert (map) "a" "hello") "b" "hi")))
+                (match (Map.lookup m "a") ((Some s) (String.byte-len s)) (None -1))))
+            (export main)))
+  (output (: 5 Int64)))
+
 (case "a map KEYED by a user sum looks up by the variant"
   (doc    "A user sum used as a Map KEY — `(Map.insert Map.empty (C.R) 42)` keys the entry by the variant
            `C.R`, and `(Map.lookup … (C.R))` finds it by structural key equality (the same equality that
@@ -2208,6 +2252,23 @@
                 (_                               -1)))
             (def (main) (first-len (list (list 1 2 3) (list 4 5)))) (export main)))
   (output (: 3 Int64)))
+
+(case "a leading nested-list element dispatches on the inner list's length"
+  (doc    "A nested list element with LEADING positions `(list (list a .. r1) .. r2)` dispatches on the
+           INNER list's length — `(list a .. r1)` matches only a NON-empty inner list (it binds the inner
+           head `a`), so it is length-REFUTABLE (unlike the zero-leading `(list .. r1)`). The outer
+           length-dispatch matcher tests only the OUTER length, so this desugars to a fresh binder + an
+           INNER-length guard `(>= (List.len __ne) 1)` + a body re-match binding `a`: an inner list too
+           short FAILS the guard and FALLS THROUGH to the next arm (never a trap). Like any guarded arm it
+           is excluded from length-coverage, so a `_` catch-all stays required. `head-of-first (list (list
+           7 9) (list 8))` → the first sublist is non-empty → binds its head `a`=7.")
+  (input  (do
+            (def (head-of-first (: xss (List (List Int64))))
+              (match xss
+                ((list (list a .. r1) .. r2) a)
+                (_                           -1)))
+            (def (main) (head-of-first (list (list 7 9) (list 8)))) (export main)))
+  (output (: 7 Int64)))
 
 (case "a list match arm may carry a guard on its element binders"
   (doc    "A list-pattern arm MAY carry a `(guard <list-pattern> <cond>)` guard, exactly as a scalar or sum

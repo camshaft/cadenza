@@ -1778,6 +1778,13 @@ fn list_push_type_lambda(ast: &mut Arenas) -> StructId {
 
 /// The type-lambda `(fn (a) (-> (List a) (-> (List a) (List a))))` for `List.concat` — `∀a. (List a) →
 /// (List a) → (List a)`: concatenate two lists of the same element type.
+///
+/// The single quantified `a` in BOTH operand positions is what makes concatenation defined only when the
+/// two operands share one element type — HM unification rejects `(List Int64) ++ (List Bool)` — and the
+/// result `(List a)` is a list of that same type. The empty-list identity (`[] ++ xs = xs = xs ++ []`) is
+/// the runtime `vec-concat` rope's own law (concatenating an empty rope returns the other operand).
+//= spec/capabilities/collections-and-text.md#a-list-is-grown-by-functional-construction
+//# Concatenation MUST be defined only when both operands share one element type — the result is a list of that type — consistent with *A List Is An Ordered Homogeneous Sequence*; concatenating with the empty list on either side MUST yield a list equal to the other operand.
 fn list_concat_type_lambda(ast: &mut Arenas) -> StructId {
     let list_r = list_a_type(ast);
     let list_2 = list_a_type(ast);

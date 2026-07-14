@@ -18022,6 +18022,91 @@ mod match_engine {
     }
 
     #[test]
+    fn a_non_type_argument_in_a_type_constructor_names_the_position() {
+        // A type-CONSTRUCTOR form with a well-formed NON-TYPE in a type-argument position — `(List 5)`,
+        // `(Tuple Int64 5)`, `(-> Int64 5)`, `(Map 5 Int64)` — read as the flat "requires a type, but found
+        // a non-type" over the WHOLE form, saying neither WHICH element is wrong nor anchoring at it. Now it
+        // names the specific position (element / key / value / result / parameter) and anchors the fault at
+        // the offending element. (A NESTED wrong-arity ctor keeps its own arity message; an unbound name
+        // keeps CDZ0101; a bare literal `(: x 5)` — no ctor form — keeps the flat message.)
+        for (src, want, anchor) in [
+            (
+                "(module m (def (g (: x (List 5))) x) (export g))",
+                "the element type must be a type, but this is a value",
+                "5",
+            ),
+            (
+                "(module m (def (g (: x (Set 5))) x) (export g))",
+                "the element type must be a type, but this is a value",
+                "5",
+            ),
+            (
+                "(module m (def (g (: x (Tuple Int64 5))) x) (export g))",
+                "element 1's type must be a type, but this is a value",
+                "5",
+            ),
+            (
+                "(module m (def (g (: m (Map 5 Int64))) m) (export g))",
+                "the key type must be a type, but this is a value",
+                "5",
+            ),
+            (
+                "(module m (def (g (: m (Map Int64 5))) m) (export g))",
+                "the value type must be a type, but this is a value",
+                "5",
+            ),
+            (
+                "(module m (def (g (: f (-> Int64 5))) f) (export g))",
+                "the result type must be a type, but this is a value",
+                "5",
+            ),
+            (
+                "(module m (def (g (: f (-> 5 Int64))) f) (export g))",
+                "parameter 0's type must be a type, but this is a value",
+                "5",
+            ),
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| panic!("{src} rejects"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message.contains(want),
+                "names the position:\n  expected substring: {want}\n  got: {}",
+                d.message
+            );
+            // The fault ANCHORS at the offending element (its span), not the whole form — the `--json`
+            // byte range is computed from the anchored node.
+            let node = d.node.expect("the reject anchors at a node");
+            assert!(node > 0, "anchors at a real node for {src}");
+            let _ = anchor;
+        }
+        // NO regression: an UNBOUND name in a type-argument position keeps CDZ0101 (its own fault), a nested
+        // WRONG-ARITY ctor keeps its arity message, and a valid type raises nothing.
+        let unbound = reject_full("(module m (def (g (: x (List Nonesuch))) x) (export g))")
+            .expect("(List Nonesuch) rejects");
+        assert_eq!(
+            unbound.code.as_deref(),
+            Some("CDZ0101"),
+            "an unbound type argument stays CDZ0101: {}",
+            unbound.message
+        );
+        let nested_arity =
+            reject_full("(module m (def (g (: x (List (Map Int64)))) x) (export g))")
+                .expect("(List (Map Int64)) rejects");
+        assert!(
+            nested_arity
+                .message
+                .contains("`Map` takes 2 type arguments"),
+            "a nested wrong-arity ctor keeps its arity message: {}",
+            nested_arity.message
+        );
+        assert!(
+            reject_full("(module m (def (g (: x (List Int64))) x) (export g))")
+                .is_none_or(|d| { !d.message.contains("must be a type, but this is a value") }),
+            "a valid (List Int64) raises no non-type-argument fault"
+        );
+    }
+
+    #[test]
     fn a_user_generic_sum_with_the_wrong_type_arg_count_names_its_expected_arity() {
         // A USER generic sum applied to the wrong number of type args — `(Box Int64 Bool)` where `(type Box
         // (W a) …)` declares ONE type parameter — REDUCES to a `Ty::Sum` (silently dropping the extra arg),
@@ -21278,15 +21363,14 @@ mod match_engine {
     }
 
     #[test]
-    fn a_nested_list_element_binds_the_zero_leading_rest_form_and_declines_a_leading_one() {
+    fn a_nested_list_element_dispatches_by_inner_length() {
         // A list element MAY itself be a nested LIST pattern (`core-semantics.md §145`: "an element MAY
-        // itself be … a nested element pattern"). The binder RESOLUTION now descends a nested `(list …)`
-        // element (`find_leading_binder_in_list_pattern` → `find_binder_in_list`), so a body reference to a
-        // nested element binder no longer reports CDZ0101. Before, only tuple/ctor elements descended.
+        // itself be … a nested element pattern"). The binder RESOLUTION descends a nested `(list …)` element
+        // (`find_leading_binder_in_list_pattern` → `find_binder_in_list`); before, only tuple/ctor elements
+        // descended (CDZ0101 in the body).
         //
-        // IRREFUTABLE (accepted): the ZERO-LEADING rest form `(list (list .. r1) .. r2)` — the inner
-        // `(list .. r1)` matches EVERY inner list (its `RestFrom(0)` reads the whole inner list, safe even
-        // when empty), so it composes with the length-dispatch matcher with no inner-length test.
+        // ZERO-LEADING rest form `(list (list .. r1) .. r2)` — the inner `(list .. r1)` matches EVERY inner
+        // list (`RestFrom(0)` reads the whole inner list, safe when empty), irrefutable, no inner-length test.
         assert!(
             reject_code(
                 "(module m (def (f (: xs (List (List Int64)))) \
@@ -21296,9 +21380,6 @@ mod match_engine {
             .is_none(),
             "a zero-leading nested rest-list element is irrefutable and its inner rest binder resolves"
         );
-        // And it is SOUND on an EMPTY inner list — it MATCHES (not traps) and reads the inner rest as the
-        // empty list (length 0). This is the whole point of gating the leading form below: the zero-leading
-        // form never reads a leading `Elem(i)` that could be out of bounds.
         if let Some(v) = run_heap_value(
             "(module m (def (f (: xs (List (List Int64)))) \
                (match xs ((list (list .. r1) .. r2) ((. List len) r1)) (_ -1))) \
@@ -21310,27 +21391,67 @@ mod match_engine {
                 "the zero-leading nested rest binds the empty inner list (len 0), no trap"
             );
         }
-        // REFUTABLE (declined, NOT a latent trap): a LEADING-element nested list `(list (list a .. r1) ..
-        // r2)` is length-refutable — `(list a .. r1)` misses the EMPTY inner list, and the length-dispatch
-        // matcher tests only the OUTER length, so binding `a` = `Elem(i), Elem(0)` on an empty inner list
-        // would TRAP instead of falling through. Until an inner-length guard lands (the list-element
-        // analogue of the Inc-11/12 refutable-element desugars), this DECLINES honestly (codeless).
-        let decline = reject_full(
-            "(module m (def (f (: xs (List (List Int64)))) \
-               (match xs ((list (list a .. r1) .. r2) a) (_ -1))) \
-             (def (main) (f (list (list 1)))) (export main))",
-        )
-        .expect("a leading-element nested list blocks compilation");
-        assert_eq!(
-            decline.code, None,
-            "a leading-element nested list declines (no code) — an inner-length guard is unbuilt"
-        );
+        // LEADING-element nested list `(list (list a .. r1) .. r2)` — length-REFUTABLE (misses the EMPTY
+        // inner list). It now DISPATCHES by the INNER list's length: desugars to a fresh binder + an
+        // inner-length guard `(>= (List.len __ne) 1)` + a body re-match binding `a`. It compiles, and on a
+        // NON-empty inner list binds the inner head; on an EMPTY inner list the guard fails → FALL THROUGH
+        // to the catch-all (NOT a trap — the whole point of the guard).
         assert!(
-            decline
-                .message
-                .contains("nested list element with leading positions"),
-            "the decline names the leading-nested-list limit: {}",
-            decline.message
+            reject_code(
+                "(module m (def (f (: xs (List (List Int64)))) \
+                   (match xs ((list (list a .. r1) .. r2) a) (_ -1))) \
+                 (def (main) (f (list (list 1)))) (export main))"
+            )
+            .is_none(),
+            "a leading nested-list element now compiles (dispatches by inner length)"
+        );
+        // RUN, RUNTIME scrutinee: a non-empty inner list binds the inner head; an empty inner list falls to
+        // the catch-all. `first-head (list (list k 9) (list 8))` → k (inner head of the first sublist);
+        // `first-head (list (list) …)` → -1 (empty inner → guard fails → catch-all).
+        let Some(v) = run_heap_value(
+            "(module m (def (first-head (: xss (List (List Int64)))) \
+               (match xss ((list (list a .. r1) .. r2) a) (_ -1))) \
+             (def (main (: k Int64)) (first-head (list (list k 9) (list 8)))) (export main))",
+            vec!["7".to_string()],
+        ) else {
+            eprintln!("runtime wasm not found; skipping nested-list inner-length run");
+            return;
+        };
+        assert_eq!(v, "7", "a non-empty inner list binds its head");
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (first-head (: xss (List (List Int64)))) \
+                   (match xss ((list (list a .. r1) .. r2) a) (_ -1))) \
+                 (def (main) (first-head (list (list) (list 8)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "-1",
+            "an EMPTY inner list fails the inner-length guard and falls through (no trap)"
+        );
+        // A nested FIXED-arity inner list `(list a b)` dispatches on the EXACT inner length (=2): a length-2
+        // inner list binds a,b; a length-3 inner list falls through. `pair (list (list 3 4))` → 7.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (pair (: xss (List (List Int64)))) \
+                   (match xss ((list (list a b) .. r2) (+ a b)) (_ -1))) \
+                 (def (main (: x Int64)) (pair (list (list x 4)))) (export main))",
+                vec!["3".to_string()],
+            )
+            .unwrap(),
+            "7",
+            "a fixed-arity inner list binds when the inner length matches exactly"
+        );
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (pair (: xss (List (List Int64)))) \
+                   (match xss ((list (list a b) .. r2) (+ a b)) (_ -1))) \
+                 (def (main) (pair (list (list 1 2 3)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "-1",
+            "a longer inner list fails the exact-length guard and falls through"
         );
     }
 
@@ -24738,6 +24859,59 @@ mod match_engine {
             10,
             "(eval (quote (+ (* 2 3) 4))) reconstructs a nested form and folds to 10"
         );
+    }
+
+    #[test]
+    fn eval_of_a_quasiquote_splices_a_compile_time_known_value() {
+        use crate::testkit::parse;
+        // 12-metaprogramming §Eval Is Optional / §Quasiquote: eval a quasiquoted form whose unquote splices
+        // a compile-time-known VALUE (not just a bare literal). `desugar_eval` reconstructs `(eval AST)` to
+        // source; an active unquote lifts its live operand into `(Ast.Int <e>)`, so reconstruction unwraps
+        // it back to `<e>`. A NON-literal unquote (a let/def-bound name, a computed const) once left the
+        // eval un-desugared → its head `eval` reported a misleading "unbound name `eval`". The
+        // reconstructed source must reach the eval's enclosing scope, so the desugar blanks the dead
+        // reified-argument wrappers, leaving the spliced operand parented at the eval position.
+        for (src, want, what) in [
+            (
+                "(module m (def (main) (let ((x 3)) (eval (quasiquote (+ (unquote x) 4))))) (export main))",
+                7,
+                "a let-bound splice",
+            ),
+            (
+                "(module m (def x 3) (def (main) (eval (quasiquote (+ (unquote x) 4)))) (export main))",
+                7,
+                "a def-const splice",
+            ),
+            (
+                "(module m (def (main) (eval (quasiquote (+ (unquote (+ 1 2)) 4)))) (export main))",
+                7,
+                "a computed-const splice",
+            ),
+            (
+                "(module m (def (main) (eval (quasiquote (+ (unquote 3) 4)))) (export main))",
+                7,
+                "a literal splice (the always-worked control)",
+            ),
+            (
+                "(module m (def (main) (let ((x 3) (y 10)) (eval (quasiquote (+ (unquote x) (unquote y)))))) (export main))",
+                13,
+                "two let-bound splices",
+            ),
+            (
+                "(module m (def (main) (let ((x 5)) (+ 1 (eval (quasiquote (* (unquote x) 2)))))) (export main))",
+                11,
+                "an eval-of-splice nested inside a larger expression",
+            ),
+        ] {
+            assert_eq!(
+                run_returns::<i64>(
+                    &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
+                    "main"
+                ),
+                want,
+                "eval of a quasiquote splicing a compile-time value — {what}"
+            );
+        }
     }
 
     #[test]
@@ -29118,6 +29292,50 @@ mod diagnostics {
             ),
             "the list-path malformed-guard CDZ0201 anchors at the guard pattern, not the match"
         );
+    }
+
+    /// A value-position type fault anchors at the offending SUB-EXPRESSION, not the enclosing form: an
+    /// `if` with a non-Bool condition points at the CONDITION (`5` in `(if 5 …)`); an `and`/`or`/`not` with
+    /// a non-Bool operand points at the OPERAND; a variant constructor applied to a wrong-type payload
+    /// points at the ARGUMENT. Each reject carries its faulting sub-node explicitly (`.at(cond)` /
+    /// `.at(operand)` / `.at(arg)`); without it, the `collect` walk stamped the coarse enclosing-form node.
+    #[test]
+    fn a_value_position_type_fault_anchors_at_the_sub_expression() {
+        // The reported node is a LEAF ATOM (the `5`/`7`/`"hi"` sub-expression), not the enclosing List form.
+        fn anchor_is_atom(src: &str) -> bool {
+            let ast = parse(src);
+            let bytes = crate::codec::encode(&ast);
+            let out = compile(
+                &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+                &[Target::Wasm],
+            );
+            let d = out
+                .diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .expect("an error");
+            let node = d.node.expect("the fault carries an anchor node");
+            let db = Db::load(parse(src));
+            matches!(db.ast.get(StructId(node)), crate::ast::Struct::Atom(_))
+        }
+        // `if` condition, `and`/`or`/`not` operand, and a ctor payload all anchor at the offending atom.
+        for (src, what) in [
+            ("(module m (def (f) (if 5 1 2)) (export f))", "if condition"),
+            (
+                "(module m (def (f (: p Bool)) (and p 5)) (export f))",
+                "and operand",
+            ),
+            ("(module m (def (f) (not 7)) (export f))", "not operand"),
+            (
+                "(module m (type P (Mk Int64)) (def (f) (P.Mk \"hi\")) (export f))",
+                "ctor payload",
+            ),
+        ] {
+            assert!(
+                anchor_is_atom(src),
+                "the {what} fault anchors at the offending atom, not the enclosing form"
+            );
+        }
     }
 
     /// An ANONYMOUS-lambda `(fn (x) …)` parameter never referenced in the body is unused — like an unused
@@ -37832,6 +38050,69 @@ mod stage1 {
     }
 
     #[test]
+    fn ty_has_free_var_walks_a_shared_record_type_once() {
+        // REGRESSION (perf): `infer::type_of`'s memoization guard runs `!t.has_free_var()` on EVERY node's
+        // solved type. For a parameter annotated with an N-field record, referenced from N sites, each
+        // reference's `type_of` walked the whole O(N) record type → O(N²) (the `pp` shape: N=6400 grew
+        // ~3×/dbl, `has_free_var` ~41% self). The record type's field `BTreeMap` is an IMMUTABLE `Rc` shared
+        // across all those references. FIX: `infer::ty_has_free_var` caches the verdict per payload `Rc`
+        // address (`Db::ty_has_free_var`), so the O(N) walk happens ONCE per record type, not once per
+        // reference. Total fields walked is then O(N), not O(N²).
+        //
+        // The shape: `use` takes a P-field record parameter and projects every field once — each `(. r fi)`
+        // demands `type_of(r)` = the record type, whose guard would re-walk all P fields absent the cache.
+        // Deterministic counter (a pure function of the program), so no min-of-runs.
+        fn proj_param_src(p: usize) -> String {
+            let fields_ty: String = (0..p)
+                .map(|i| format!("(f{i} Int64)"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            fn tree(items: &[String]) -> String {
+                if items.len() == 1 {
+                    return items[0].clone();
+                }
+                let m = items.len() / 2;
+                format!("(+ {} {})", tree(&items[..m]), tree(&items[m..]))
+            }
+            let projs: Vec<String> = (0..p).map(|i| format!("(. r f{i})")).collect();
+            format!(
+                "(module m (def (use (: r (Record {fields_ty}))) {}) \
+                   (def (main) 0) (export main))",
+                tree(&projs)
+            )
+        }
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&proj_param_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide record-param projection compiles with no error diagnostics: {diags:?}"
+        );
+        fn elems_walked(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::TY_HAS_FREE_VAR_ELEMS_WALKED.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::TY_HAS_FREE_VAR_ELEMS_WALKED.with(|c| c.get())
+            })
+        }
+        // The `has_free_var` walk over the P-field record type must total O(P) elements, not O(P²). The
+        // record type may be walked from a couple of distinct `Rc`s (the param annotation may be reduced
+        // more than once before the type_of memo settles), so allow a small constant multiple of P; that is
+        // still far below the O(P²) a per-reference re-walk would produce. `> 0` proves the cached path ran
+        // (a revert to a bare `t.has_free_var()` in the guard leaves this counter at 0 → the test fails).
+        let p = 400usize;
+        let walked = elems_walked(&proj_param_src(p));
+        assert!(
+            walked > 0 && walked <= (p as u64) * 8,
+            "the `type_of` guard's free-var check on a P-field record referenced P times must walk O(P) \
+             fields via the per-`Rc` cache, not O(P²) (was a full re-walk per reference): P={p} walked \
+             {walked} fields (expected 0 < n ≤ {}); the O(P²) re-walk was ~{}",
+            (p as u64) * 8,
+            (p as u64) * (p as u64)
+        );
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the
@@ -38687,6 +38968,54 @@ mod stage1 {
                 .iter()
                 .any(|i| matches!(i, Lir::CallImport("arr-alloc"))),
             "no arr-alloc call for a nullary variant's unit payload, got: {code:?}"
+        );
+    }
+
+    #[test]
+    fn list_at_none_arm_pushes_the_inline_unit_constant_not_an_arr_alloc_call() {
+        // A runtime `List.at` builds its `None` (OOB) box with the inline-unit CONSTANT (`IMM_UNIT`) for the
+        // nullary payload, NOT a runtime `arr-alloc(0)` CALL — parity with the `SumNew` nullary path. `f`'s
+        // body reads `xs` via `vec-get` (no arr-alloc of its own), so after the fix the ENTIRE `f` body has
+        // ZERO `arr-alloc` calls and DOES contain `ConstI32(IMM_UNIT)` (the None payload). `arr-alloc(0)`
+        // returns exactly `imm_unit()`, so the constant is the same handle `sum-new`/`sum-disc` would see.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::runtime_abi::IMM_UNIT;
+        use crate::db::Db;
+        let ast = crate::testkit::parse(
+            "(module m \
+               (def (f (: xs (List Int64)) (: i Int64)) \
+                  (match ((. List at) xs i) ((Some v) v) ((None _) -1))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("def f");
+        let sig = db.defs[d].params.clone();
+        let params: Vec<_> = sig
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+            .expect("select")
+            .code;
+        assert!(
+            code.iter()
+                .any(|i| matches!(i, Lir::ConstI32(v) if *v == IMM_UNIT as i32)),
+            "List.at's None arm pushes the inline-unit constant, got: {code:?}"
+        );
+        assert!(
+            !code
+                .iter()
+                .any(|i| matches!(i, Lir::CallImport("arr-alloc"))),
+            "List.at's None arm emits no arr-alloc call for its unit payload, got: {code:?}"
         );
     }
 

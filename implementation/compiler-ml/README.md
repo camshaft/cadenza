@@ -71,6 +71,8 @@ top. Current `src/` modules (each with same-file `@test`s — 29 tests total):
   `Map String Ast` environment with its `Ast`, recursively. Stresses a compound-VALUED `Map`.
 - `src/check.cdz` — an arity checker: counts call-forms `(Name op arg…)` whose arg count differs from
   `op`'s declared arity in a `Map String Int64` arity table (recursing into every child).
+- `src/eval.cdz` — an evaluator: reduces an arithmetic `Ast` (`+`/`-`/`*` over `Int` leaves) to a
+  `BigInt` result, recursively (so `1e9 * 1e9` doesn't overflow — it uses arbitrary precision).
 
 Planned, following the rcdzc pipeline: decode (binary AST → `Ast`) · resolve · infer (Hindley-Milner)
 · lower (→ core) · encode/emit. The compiler is fundamentally bytes → bytes.
@@ -238,3 +240,13 @@ are the sharp edges.
   miscompiles only past a per-module def/test-count THRESHOLD (passes standalone). Surfaced building
   `src/subst.cdz`; both sidestepped by checking a result's SHAPE (`match … ((Ast.Name _) …)`) instead
   of `String ==`-ing an extracted payload.
+
+- **OPEN (seed `rcdzc` — GAP/BUG): quasiquote `unquote` of an already-`Ast` value is rejected.**
+  `repros/reject-unquote-of-an-ast-value.sexp`. `(quasiquote (+ (unquote sub) 1))` with `sub : Ast` →
+  CDZ0201 "a variant constructor's payload has declared type Int64, but a value of type Ast was
+  applied". `(unquote n)` where `n` is a plain `Int64`/literal WORKS (wrapped as `Ast.Int`); only an
+  already-`Ast` value fails — `unquote` wraps by the template slot's leaf type instead of splicing an
+  Ast node as-is. metaprogramming.md says `,<expr>` inserts its RESULT at that position; when the result
+  IS an Ast, that should splice the node. Blocks the canonical AST-building macro (embed a computed
+  subtree). Confirmed WORKING otherwise: quote structural `=`, walking a quoted form via own `Ast`
+  match, quoted Ast escaping to host, `unquote-splice` of a list, `(unquote <plain-value>)`.

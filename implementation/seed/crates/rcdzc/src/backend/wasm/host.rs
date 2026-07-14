@@ -191,6 +191,12 @@ fn is_extern_heap_type(ty: &Ty) -> bool {
 // never introduces a nondeterminism source the program did not obtain through a declared capability.
 //= constitution.md#iii-the-compiler-introduces-no-undeclared-nondeterminism
 //# The compiler MUST NOT introduce into a component a source of nondeterminism that the program did not obtain through a declared capability.
+// Because the ONLY nondeterminism a run can reach is a host op in this manifest (every other operation is
+// a pure deterministic function of its inputs), a run's observable behavior is fixed by its input plus the
+// ordered responses the host gives those calls — the same input and the same responses in the same order
+// reproduce the same host-call sequence and the same result.
+//= spec/capabilities/capabilities-and-effects.md#a-run-is-a-deterministic-function-of-its-input-and-responses
+//# A run's observable behavior MUST be a deterministic function of its input and the ordered responses to the host calls it makes, so that the same input and the same responses in the same order reproduce the same host-call sequence and the same result (constitution III).
 pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>) {
     // WALK-DEPTH GUARD — the same bound `collect_call_callees` / `collect_closure_codes` hold (see
     // [`crate::db::WALK_DEPTH_LIMIT`]): this walk drives `core_of` at every node, and a non-normalizing
