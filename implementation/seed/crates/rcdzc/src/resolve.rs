@@ -2923,6 +2923,9 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             // `BigInt` — the arbitrary-precision integer leaf, paired with `encode_ty`'s `BigInt` arm so
             // a `BigInt` nested in a compound type-value round-trips faithfully (not collapsing to `Unit`).
             "BigInt" => Some(Ty::BigInt),
+            // `Rational` — the exact-rational leaf, paired with `encode_ty`'s `Rational` arm so a
+            // `Rational` nested in a compound type-value round-trips faithfully (not collapsing to `Unit`).
+            "Rational" => Some(Ty::Rational),
             "Float32" => Some(Ty::Float(crate::ty::FloatTy::fixed(32))),
             "Float64" => Some(Ty::Float(crate::ty::FloatTy::fixed(64))),
             _ => None,

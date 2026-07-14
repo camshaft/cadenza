@@ -6427,12 +6427,17 @@ fn member_access(b: &mut crate::ast::Builder, operand: &str, key: &str) -> Struc
 fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId> {
     use crate::ty::Ty;
     match ty {
-        // A scalar's type surface is its name atom. `String`/`Char`/`Symbol`/`BigInt` are monomorphic
-        // named types too, so their surface is the bare `String`/`Char`/`Symbol`/`BigInt` atom
+        // A scalar's type surface is its name atom. `String`/`Char`/`Symbol`/`BigInt`/`Rational` are
+        // monomorphic named types too, so their surface is the bare `String`/…/`Rational` atom
         // (`render_name`).
-        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Char | Ty::Symbol | Ty::BigInt => {
-            Some(b.name(ty.render_name()))
-        }
+        Ty::Int(_)
+        | Ty::Bool
+        | Ty::Unit
+        | Ty::String
+        | Ty::Char
+        | Ty::Symbol
+        | Ty::BigInt
+        | Ty::Rational => Some(b.name(ty.render_name())),
         // A sum's type surface: the bare NAME for a monomorphic sum (`(: (Neg unit) Sign)`), or the
         // STRUCTURED application `(Option Int64)` for a generic instantiation — a `(NAME arg…)` list, so
         // the args round-trip as separate nodes (not one spaced-out name atom). Matches `render_name`'s
@@ -9015,9 +9020,11 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::SymbolToString
         // `BigIntTy` is a ground type-value builder (bare `BigInt` in type position → `Ty::BigInt`),
         // and `BigIntOf` is the unary widening conversion (folds in its own arm above) — neither is an
-        // integer BINARY operation, like `StringTy`/`SymbolTy`/`SymbolOf`.
+        // integer BINARY operation, like `StringTy`/`SymbolTy`/`SymbolOf`. `RationalTy` is likewise a
+        // ground type-value builder (bare `Rational` → `Ty::Rational`), not an integer binary op.
         | Prim::BigIntTy
         | Prim::BigIntOf
+        | Prim::RationalTy
         // The unit/quantity prims are compile-time unit builders / erasing quantity ops — never an
         // integer binary operation (a `Qty.of`/`Qty.value` lowers to its value argument, a unit builder
         // is reduced away by `eval`), so they never reach this integer fold.
@@ -10618,11 +10625,14 @@ fn ty_heap_walkable(db: &mut Db, ty: &crate::ty::Ty, seen: &mut Vec<StructId>) -
         // non-canonical rope (see the `String` note above), so it declines until `bytes-compact`-on-compare.
         // A `BigInt` will be canonical-byte-form-walkable once its runtime leaf exists (B3) — B0 adds the
         // type only and constructs none, so it declines here for now (a constant `BigInt` `=` folds in the
-        // compiler at B1; a runtime `BigInt` `=` is wired with the runtime limb library).
+        // compiler at B1; a runtime `BigInt` `=` is wired with the runtime limb library). A `Rational`
+        // likewise: a constant `Rational` `=` folds in the compiler (B4-1), a runtime rational compound
+        // walk is a later B4 slice — declines here for now.
         Ty::List(_)
         | Ty::Bytes
         | Ty::Char
         | Ty::BigInt
+        | Ty::Rational
         | Ty::Float(_)
         | Ty::Fn(_, _)
         | Ty::Type
@@ -13052,6 +13062,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::StringTy => "String",
         Prim::BigIntTy => "BigInt",
         Prim::BigIntOf => "bigint-of",
+        Prim::RationalTy => "Rational",
         Prim::CharTy => "Char",
         Prim::CharToInt => "char-to-int",
         Prim::CharFromInt => "char-from-int",

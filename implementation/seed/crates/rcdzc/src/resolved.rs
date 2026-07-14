@@ -217,6 +217,11 @@ pub enum Prim {
     /// (`Int64.of`/`(UInt N).of` from a `BigInt`, checked/trapping) is the existing `CheckedOf` extended to
     /// a `BigInt` source, not a new prim.
     BigIntOf,
+    /// The ground `Rational` type-value — held in the `Rational` module record's `(meta t)`, so bare
+    /// `Rational` in type position reduces to `Ty::Rational` (a NULLARY type, like `BigInt`; the
+    /// `Rational` module also carries the `of`/`of-int`/`value` operation fields, but this is its type
+    /// role). `ground_type` maps it. B4-0 adds the type-position prim (byte-neutral, no ops yet).
+    RationalTy,
     /// `Symbol.of` — INTERN a String into a Symbol (`String → Symbol`, 17-symbols). A constant string
     /// FOLDS to a constant symbol (represented as the underlying `Core::ConstStr` at type `Ty::Symbol` —
     /// the identity is content-derived), so `(= (Symbol.of "a") (Symbol.of "a"))` folds via the shared
@@ -670,6 +675,7 @@ impl Prim {
             "Unit" => Some(Prim::UnitTy),
             "String" => Some(Prim::StringTy),
             "BigInt" => Some(Prim::BigIntTy),
+            "Rational" => Some(Prim::RationalTy),
             "Char" => Some(Prim::CharTy),
             "char-to-int" => Some(Prim::CharToInt),
             "char-from-int" => Some(Prim::CharFromInt),
@@ -819,6 +825,7 @@ impl Prim {
             Prim::CharTy => Some(crate::ty::Ty::Char),
             Prim::SymbolTy => Some(crate::ty::Ty::Symbol),
             Prim::BigIntTy => Some(crate::ty::Ty::BigInt),
+            Prim::RationalTy => Some(crate::ty::Ty::Rational),
             _ => None,
         }
     }

@@ -116,6 +116,7 @@ impl Subst {
             | Ty::Char
             | Ty::Symbol
             | Ty::BigInt
+            | Ty::Rational
             | Ty::Type
             | Ty::Any => ty.clone(),
         }
@@ -320,6 +321,9 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
         // `BigInt` is monomorphic — it unifies only with itself, NEVER with a fixed-width `Ty::Int` (no
         // silent promotion: an `Int64`/`BigInt` mix falls to `mismatch` below, CDZ0301).
         (Ty::BigInt, Ty::BigInt) => Ok(()),
+        // `Rational` is monomorphic — it unifies only with itself, NEVER with an integer or a `BigInt` (no
+        // silent promotion: a `Rational`/integer mix falls to `mismatch` below, CDZ0301).
+        (Ty::Rational, Ty::Rational) => Ok(()),
         // Two floats unify iff their WIDTHS unify — reusing the integer `unify_width` (a width variable is
         // a width variable). So `Float32`/`Float64` are distinct (two fixed widths conflict → CDZ0301),
         // a deferred/variable float width solves. A float does NOT unify with `Ty::Int` (it falls to the
@@ -502,6 +506,7 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
         | Ty::Char
         | Ty::Symbol
         | Ty::BigInt
+        | Ty::Rational
         | Ty::Type
         | Ty::Any => false,
     }
@@ -522,7 +527,7 @@ fn mismatch(a: &Ty, b: &Ty) -> Reject {
     // states it "falls to `mismatch` … CDZ0301", so `BigInt` must count as numeric here (else it fell to
     // the generic CDZ0203, missing the "convert explicitly with `BigInt.of`" story). A non-numeric
     // conflict (`Bool` vs `Int64`) stays the general CDZ0203.
-    let is_numeric = |t: &Ty| matches!(t, Ty::Int(_) | Ty::Float(_) | Ty::BigInt);
+    let is_numeric = |t: &Ty| matches!(t, Ty::Int(_) | Ty::Float(_) | Ty::BigInt | Ty::Rational);
     let both_numeric = is_numeric(a) && is_numeric(b);
     if both_numeric {
         // Two different numeric types — the no-silent-promotion rule (CDZ0301). Name the RULE and point
@@ -714,6 +719,7 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
         | Ty::Char
         | Ty::Symbol
         | Ty::BigInt
+        | Ty::Rational
         | Ty::Type
         | Ty::Any => ty.clone(),
     }
@@ -840,6 +846,7 @@ fn freshen_free_go(
         | Ty::Char
         | Ty::Symbol
         | Ty::BigInt
+        | Ty::Rational
         | Ty::Type
         | Ty::Any => ty.clone(),
     }

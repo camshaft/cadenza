@@ -20032,6 +20032,36 @@ mod match_engine {
     }
 
     #[test]
+    fn a_rational_type_round_trips_through_encode_and_decode() {
+        // B4-0 SAFETY (the DESIGN-bigint doc §10 mandatory test, the Ty::Qty lesson): `Ty::Rational` MUST
+        // survive the `Ty → type-value AST → Ty` round-trip. A MISSING `encode_ty`/`decode_ty` arm would
+        // silently encode `Rational` as `Unit` (the catch-all) — mis-typing any `(… → Rational)` scheme.
+        // Test bare `Rational` AND `Rational` NESTED in a compound (where a missing arm bites).
+        use crate::db::Db;
+        use crate::eval::{encode_typeval, typeval_of};
+        use crate::testkit::parse;
+        use crate::ty::Ty;
+        let ast = parse("(module m (def (main) 0) (export main))");
+        let mut db = Db::load(ast);
+        let cases = vec![
+            Ty::Rational,
+            Ty::Tuple(vec![Ty::Rational, Ty::int64()].into()),
+            Ty::List(Box::new(Ty::Rational)),
+        ];
+        for ty in cases {
+            let node = encode_typeval(&mut db, &ty);
+            let decoded = typeval_of(&mut db, node)
+                .unwrap_or_else(|| panic!("a {} type-value must decode", ty.render_name()));
+            assert_eq!(
+                decoded,
+                ty,
+                "a {} type MUST survive the encode/decode round-trip (a missing arm would encode it as Unit)",
+                ty.render_name()
+            );
+        }
+    }
+
+    #[test]
     fn a_bigint_fixed_int_mix_is_the_numeric_no_promotion_error_cdz0301() {
         // `(+ (BigInt.of n) 1)` mixes a BigInt with a fixed Int64 — the numeric model's no-silent-
         // promotion rule, so CDZ0301 "no implicit conversion between numeric types", NOT the generic

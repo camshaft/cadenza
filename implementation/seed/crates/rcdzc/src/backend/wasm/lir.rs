@@ -360,6 +360,10 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // an i32 local like a bytes/list handle. (B3b wired the runtime ops; a CONSTANT `BigInt` still
         // folds and keeps no slot.)
         Ty::BigInt => Some(ValType::I32),
+        // A `Rational` has NO machine slot yet — B4-0 constant-folds it in the compiler and nothing
+        // constructs a runtime `Rational`; a runtime rational compound (two BigInt children) + its slot
+        // arrive in a later B4 slice, mirroring how `Ty::BigInt` was `None` until B3b. Declines for now.
+        Ty::Rational => None,
         // A float occupies its width's machine slot: `Float32` → f32, `Float64` → f64. A float literal
         // that crosses the boundary (or a float arithmetic result) lives here.
         Ty::Float(ft) => Some(if ft.ground_width() == 32 {
@@ -494,6 +498,10 @@ pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
         // boundary declines cleanly for now (`None`), like the compound types that escape via `encode()`,
         // rather than mapping to a wrong primitive. It is NOT a primitive valtype in any case.
         Ty::BigInt => None,
+        // A `Rational` has no primitive boundary valtype (a later B4 slice crosses it as a
+        // `record { numerator: list<u8>, denominator: list<u8> }` value-form, like BigInt's list<u8>).
+        // Declines cleanly for now.
+        Ty::Rational => None,
         // A float crosses the component boundary as its width's primitive: `Float32` → `f32`, `Float64`
         // → `f64`. Both admitted widths ({32,64}) have a faithful component-model float primitive.
         Ty::Float(ft) => Some(if ft.ground_width() == 32 {
