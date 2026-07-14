@@ -100,6 +100,7 @@ pass	a NESTED Tuple ARG (a tuple containing a tuple) crosses the direct-call bou
 pass	a NESTED Tuple ARG with a narrow Bool leaf crosses the direct-call boundary
 pass	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
+pass	a NON-tail-resumptive arm projects a tuple parameter twice in its pure one-hole context
 pass	a NaN nested in a list compares equal under the canonical byte form
 pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form

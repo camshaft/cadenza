@@ -1554,6 +1554,24 @@
                 (Add.sum (record (a 3) (b 4))))) (export main)))
   (output (: 7 Int64)))
 
+(case "a NON-tail-resumptive arm projects a tuple parameter twice in its pure one-hole context"
+  (doc    "The compound-parameter case through the NON-tail-resumptive (pure one-hole) fold path rather than
+           the tail-resumptive threading path. The arm `(+ 1 (resume (+ (* (. p 0) 100) (. p 1)) s))` resumes
+           NON-tail (the resume is inside `+ 1`), so its delimited continuation is folded as a pure one-hole
+           context: the perform IS the whole body (`C = []`), so `(resume v s)` yields `v` and the arm value
+           is `(+ 1 v)`. The resume value projects the bound tuple parameter `p` TWICE — `(* (. p 0) 100)`
+           and `(. p 1)` — over the PURE argument `(tuple 3 4)`, so `v = 304` and the handle yields
+           `(+ 1 304)` = 305. Pins that the pure-one-hole substitution binds a compound op parameter and
+           tolerates projecting it multiple times when the argument is pure (a pure argument copied per
+           projection duplicates no effect — the same soundness the tail-path duplication guard enforces,
+           here satisfied because the argument reaches no perform).")
+  (input  (do
+            (effect Add (op sum (-> (Tuple Int64 Int64) Int64)))
+            (def (main)
+              (handle Add 0 ((sum (p) s (+ 1 (resume (+ (* (. p 0) 100) (. p 1)) s))))
+                (Add.sum (tuple 3 4)))) (export main)))
+  (output (: 305 Int64)))
+
 ; The SAME spec sentence has a second half: performing an operation must "YIELD the operation's declared
 ; RESULT type" (capabilities-and-effects.md #Performing An Operation Is Typed And Contributes To The Row).
 ; A handler arm resumes the continuation with the value the operation yields — `(resume <value> <state>)`
