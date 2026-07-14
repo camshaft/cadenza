@@ -466,6 +466,12 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
 ///
 //= constitution.md#vii-strong-static-typing-is-mandatory
 //# The compiler MUST reject a program that is not well-typed rather than emit a component carrying a deferred type error.
+///
+//= constitution.md#vii-strong-static-typing-is-mandatory
+//# The seed compiler generation MUST realize the static-typing obligations of this section rather than defer them, because under the two-compiler bootstrap it compiles programs to components rather than evaluating them dynamically, so the dynamic-evaluation basis on which a seed generation formerly deferred typing no longer holds.
+///
+//= constitution.md#vii-strong-static-typing-is-mandatory
+//# A program that is not well-typed MUST be rejected with the machine-readable diagnostic code for the type rule it violates, so that a type rejection is a compile-time event every generation makes rather than a runtime outcome only a dynamic evaluator would exhibit.
 /// Collect the TYPE-EXPRESSION POSITIONS to validate within a variant payload type expression at `occ`,
 /// pushing `(position, params)` for each. A `(Record (field Type)…)` form descends only into each field
 /// pair's TYPE (the second element) — a record type's field NAME is a label, never a global type, so it
