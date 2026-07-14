@@ -713,6 +713,7 @@ pass	a pattern that binds the same name twice is rejected
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
 pass	a perform in a taken if-branch threads its state to the continuation after the if
 pass	a perform in a taken match-arm threads its state to the continuation after the match
+pass	a performed operation composes as a RECORD field value that is then projected
 pass	a performed operation composes under a projection and a negation
 pass	a performed operation is the scrutinee of a match that dispatches on its result
 pass	a performed operation whose result is a sum is matched on its variant
@@ -1810,6 +1811,7 @@ pass	two module functions are mutually recursive
 pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
+pass	two performs bound by nested lets thread the handler state in order
 pass	two rationals denoting the same number are equal regardless of how they were written
 pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk

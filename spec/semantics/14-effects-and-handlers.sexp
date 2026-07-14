@@ -808,6 +808,37 @@
                 (. (tuple (Fresh.next) (Fresh.next)) 1))) (export main)))
   (output (: 1 Int64)))
 
+(case "a performed operation composes as a RECORD field value that is then projected"
+  (doc    "The record-constructor companion of the tuple/projection case: a perform in a RECORD FIELD VALUE
+           is a strict, unconditional position, so it composes and the surrounding projection is a pure
+           one-hole context. `(. (record (x (Ask.get)) (y 3)) x)` builds a record whose `x` field is the
+           performed value, then projects `x` — `C = (. (record (x []) (y 3)) x)`, a strongly-pure context
+           around the single perform. `Ask.get` resumes 7, so the record is `{x: 7, y: 3}` and the projection
+           yields 7. Pins that the fold threads through a record field the same as a tuple element — a
+           performed value is an ordinary sub-expression in a compound constructor.")
+  (input  (do
+            (effect Ask (op get (-> Unit Int64)))
+            (def (main)
+              (handle Ask 0 ((get (u) s (resume 7 s)))
+                (. (record (x (Ask.get)) (y 3)) x))) (export main)))
+  (output (: 7 Int64)))
+
+(case "two performs bound by nested lets thread the handler state in order"
+  (doc    "Two performs on the strict spine, each BOUND by its own `let`, thread the handler state in
+           evaluation order across the binds. `(let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b)))` under a
+           counter that hands back `s` and threads `s + 10` (seeded 0): the first `Ask.get` binds `a = 0`
+           (state → 10), the second binds `b = 10` (state → 20), so `(+ a b)` = `(+ 0 10)` = 10. The `let`
+           inits run unconditionally in sequence — a strict spine the threading fold walks left to right —
+           so each perform sees the state the previous one advanced, not the seed. Pins sequential
+           state-threading through a chain of let bindings (had the state not threaded, both reads would be
+           0 and the sum 0), the essential shape of a pass pulling several fresh values in a row.")
+  (input  (do
+            (effect Ask (op get (-> Unit Int64)))
+            (def (main)
+              (handle Ask 0 ((get (u) s (resume s (+ s 10))))
+                (let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b))))) (export main)))
+  (output (: 10 Int64)))
+
 ; --- A perform inside an if/match BRANCH threads its state OUT to the continuation after the conditional.
 ; A branch's state advance is not local to the branch: the code following the conditional must run against
 ; the branch's POST-state, not the pre-branch state. Because only one branch runs, the state after the
