@@ -495,6 +495,7 @@ pass	a guarded variant arm falls through when the guard fails
 pass	a guarded wildcard arm falls through to a tail-recursive call
 pass	a handle body reads an enclosing function parameter
 pass	a handle whose head names a value rather than an effect is rejected
+pass	a handle's TUPLE value pairing a scalar with a built list escapes and is destructured
 pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm consumes its resume value through an effect-free helper call
 pass	a handler arm for an operation the effect does not declare is rejected
@@ -909,6 +910,7 @@ pass	a recursive sum recurses THROUGH a record-typed payload
 pass	a recursive sum type works with pattern matching
 pass	a recursive user sum built in a lib is folded by the entry over the imported type
 pass	a recursive user sum type is built at run time and renders its variant names
+pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
 pass	a recursive-sum payload projected more than once folds to a scalar
 pass	a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT
 pass	a recursively-built binary tree renders its full runtime structure
