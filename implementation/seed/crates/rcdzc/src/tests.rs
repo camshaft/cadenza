@@ -28013,6 +28013,47 @@ mod stage1 {
     }
 
     #[test]
+    fn two_abortive_performs_on_a_strict_spine_the_first_wins() {
+        // E4 abortive FIRST-WINS (a MISCOMPILE regression). Two abortive performs on one strict spine —
+        // `(+ (Bail.bail 7) (Bail.bail 9))` — evaluate LEFT-TO-RIGHT, and an abort ABANDONS the rest, so the
+        // FIRST (leftmost) abort wins → 7; the second `(Bail.bail 9)` never runs. The fold threads operands
+        // in evaluation order and records each abort in a shared `abort_value` cell — but it kept threading
+        // PAST the first abort, so the second perform OVERWROTE the cell and the handle yielded 9 (a
+        // miscompile). Fix: once the cell is set, a later abort does not overwrite it (first wins).
+        let two = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (+ (Bail.bail 7) (Bail.bail 9)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(two)))
+                    .expect("two abortive performs compile"),
+                "main"
+            ),
+            7,
+            "the FIRST (leftmost, evaluated-first) abort wins — never the second"
+        );
+        // Three performs, and the abort value READING the seed state, both still take the FIRST abort.
+        let three = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle Bail 0 ((bail (n) s n)) (+ (Bail.bail 7) (+ (Bail.bail 8) (Bail.bail 9))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(three))).expect("compiles"),
+                "main"
+            ),
+            7
+        );
+        let reads_state = "(do (effect Bail (op bail (-> Int64 Int64))) \
+                   (def (main) (handle Bail 5 ((bail (n) s (+ n s))) (+ (Bail.bail 7) (Bail.bail 9)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(reads_state))).expect("compiles"),
+                "main"
+            ),
+            12,
+            "the first abort's value (7) plus the seed state (5) = 12; the second abort is dead"
+        );
+    }
+
+    #[test]
     fn an_abort_in_a_compound_typed_body_declines_rather_than_miscompiles() {
         // E4 abort-value / handle-body TYPE-CONSISTENCY (a MISCOMPILE regression). An abort makes its arm
         // value the WHOLE handle's value, so the value must have the handle body's type. `(tuple 1

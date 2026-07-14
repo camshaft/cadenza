@@ -1688,6 +1688,7 @@ pass	updating a list slot with an element of a different type is a type error
 pass	updating a record field changes its type to the new value's
 pass	updating a record field replaces its value
 pass	updating an absent record field is rejected
+pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins
 pass	wrapping addition of in-range operands is ordinary addition
 pass	wrapping addition wraps modulo two to the sixty-fourth on overflow
 pass	wrapping arithmetic algebraic identities hold at the range boundaries
