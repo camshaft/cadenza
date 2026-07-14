@@ -12336,13 +12336,39 @@ mod match_engine {
         );
 
         // NO false positive: a well-formed single OR multi-name export produces no malformed-export fault.
+        // A CONSTRUCTOR-EXPORT `(export (. T A))` / `(export (. T *))` (the opaque-types surface) is ALSO
+        // well-formed — it was regressed to the misleading "an export names a definition" when opaque types
+        // landed (the ctor-export shape is valid in the linker but `malformed_exports` only knew bare
+        // names). It must NOT be flagged.
         for ok in [
             "(module m (def (g) 1) (export g))",
             "(module m (def (a) 1) (def (b) 2) (export a b))",
+            "(module m (type T (A) (B)) (export (. T A)) (def (main) 1) (export main))",
+            "(module m (type T (A) (B)) (export (. T *)) (def (main) 1) (export main))",
         ] {
             assert!(
                 find_export_fault(ok).is_none(),
-                "a well-formed export is not flagged: {ok}"
+                "a well-formed export (incl. a ctor-export) is not flagged: {ok}"
+            );
+        }
+        // A MALFORMED ctor-export — `(. T)` with no ctor, `(. T A B)` with too many segments — gets the
+        // CONSTRUCTOR-EXPORT-specific message (naming the valid forms), NOT the generic "an export names a
+        // definition", and NO bogus `.`-head replace fix.
+        for bad in [
+            "(module m (type T (A) (B)) (export (. T)) (def (main) 1) (export main))",
+            "(module m (type T (A) (B)) (export (. T A B)) (def (main) 1) (export main))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(bad)))
+                .into_iter()
+                .find(|d| d.message.contains("a constructor-export is"))
+                .unwrap_or_else(|| {
+                    panic!("a malformed ctor-export names the ctor-export form: {bad}")
+                });
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert!(
+                d.fix.is_none(),
+                "a malformed ctor-export offers no bogus `.` fix: {:?}",
+                d.fix
             );
         }
     }

@@ -2619,13 +2619,29 @@ impl Db {
                 continue;
             }
             for &s in tail {
-                if self.ast.as_name(s).is_none() {
+                // A bare NAME `(export g)` is well-formed; so is a CONSTRUCTOR-EXPORT `(. T A)` / `(. T *)`
+                // (the opaque-types surface — the handle plus a named constructor, or the wildcard). A
+                // non-name element that is NOT a well-formed ctor-export is the malformed case.
+                if self.ast.as_name(s).is_none() && !is_ctor_export_shape(&self.ast, s) {
                     out.push((item, Some(s)));
                 }
             }
         }
         out
     }
+}
+
+/// Whether `s` is a well-formed CONSTRUCTOR-EXPORT element — the opaque-types export surface `(. T A)`
+/// (the handle + the named constructor `A`) or `(. T *)` (the handle + ALL constructors, the wildcard).
+/// A `(. type ctor)` list whose BOTH segments are names (the ctor may be the reserved `*`). Mirrors
+/// `link::as_ctor_export`'s shape recognition, shared so `db::malformed_exports` treats a valid
+/// ctor-export as well-formed (not the misleading "an export names a definition") while the linker reads
+/// its visibility. A `(. T)` / `(. T A B)` / a non-name segment is NOT this shape (a genuinely malformed
+/// export element).
+fn is_ctor_export_shape(ast: &Arenas, s: StructId) -> bool {
+    ast.as_form(s, ".").is_some_and(|tail| {
+        tail.len() == 2 && ast.as_name(tail[0]).is_some() && ast.as_name(tail[1]).is_some()
+    })
 }
 
 /// Build the parent index AND the child-position index in one pass: for each structure occurrence,

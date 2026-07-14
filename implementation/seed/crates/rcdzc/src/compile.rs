@@ -1816,18 +1816,30 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         // Anchor at the BAD ELEMENT when there is one (so a `(export a 5)` points at `5`, not the whole
         // clause); fall back to the clause for an empty `(export)`.
         let anchor = bad_arg.unwrap_or(occ);
-        let mut reject = Reject::coded(
-            Code::Malformed,
+        // A bad element whose head is `.` is a MALFORMED CONSTRUCTOR-EXPORT — the author wrote `(. …)`
+        // intending the opaque-types surface `(export (. T A))` / `(export (. T *))` but got the shape
+        // wrong (a `(. T)` with no ctor, a `(. T A B)` with too many segments). Name THAT form, not the
+        // generic "an export names a definition" (which reads as "only bare names allowed" — false, a
+        // ctor-export is valid) — and offer NO `.`-head replace fix (which would be nonsense). A non-`.`
+        // bad element keeps the generic message + its head-name replace fix.
+        let is_ctor_export_attempt = bad_arg.is_some_and(|a| db.ast.head_name(a) == Some("."));
+        let message = if is_ctor_export_attempt {
+            "a constructor-export is `(export (. T A))` (the handle + constructor `A`) or `(export \
+             (. T *))` (the handle + all constructors) — this `(. …)` form is neither"
+                .to_string()
+        } else {
             "an export names a definition — write `(export <name>)`, e.g. `(export main)` \
              (an export clause is one or more bare definition names)"
-                .to_string(),
-        )
-        .at(anchor);
+                .to_string()
+        };
+        let mut reject = Reject::coded(Code::Malformed, message).at(anchor);
         // When the bad element is a compound whose HEAD is a name — `(export (g x))` — the author most
         // likely meant to export `g`; offer replacing that element with the bare `<head>`. A non-name
         // atom (`(export 5)`, the `5` in `(export a 5)`) or an empty `(export)` has no name to recover →
-        // message only (the author drops or replaces it).
-        if let Some(arg) = bad_arg
+        // message only. A `.`-headed ctor-export attempt gets NO fix (the head `.` is not a name to
+        // recover, and which valid ctor-export shape was meant is a guess).
+        if !is_ctor_export_attempt
+            && let Some(arg) = bad_arg
             && let Some(head) = db.ast.head_name(arg)
         {
             reject = reject.with_fix(crate::diag::Fix::replace_heuristic(arg, head.to_string()));
