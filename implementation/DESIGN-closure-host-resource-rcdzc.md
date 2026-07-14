@@ -633,15 +633,26 @@ the component type. The new work:
   returned handle via `emit_hole_fill`. (2) `envelope::ClosureConsumeAbi.ret_is_bytes` now means "crosses as
   `list<u8>`" (byte-rope OR compound) → the round-trip envelope's Memory/Realloc lift is unchanged. (3)
   `emit_roundtrip_resource` per-consumer `ret_template`; imports `get-bool`. `cdz-run` already try-decodes.
-  +7 corpus. (Distinct-sig ROUND-TRIP compound is the one remaining compound sub-shape, `ret_template: None`
-  on that path today.)
-- **REMAINING (all optional, none blocking):** a compound result on the DISTINCT-SIG round-trip path (the
-  single-resource round-trip + all producer-side shapes are done); a VARIABLE-LENGTH list/map/set closure
-  result (needs a runtime looping value-form walker, like the runtime-Bytes escape but recursing over
-  elements); a compound closure ARG (host→guest decode — harder); a closure TRANSFORMER (`own<t>` both
-  directions — cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call handle. **The entire
-  byte-rope (`Bytes`/`String`) result surface is DONE across all shapes; a fixed-shape compound result is
-  DONE on single/multi/mixed/distinct-sig/round-trip.**
+  +7 corpus.
+- **✅ COMPOUND result on the DISTINCT-SIG ROUND-TRIP path COMPLETE `@679a1f4d` — the FIXED-SHAPE
+  compound-result surface is CLOSED.** Producers/consumers of DIFFERENT signatures where a consumer RETURNS a
+  fixed-shape compound now cross: each such consumer returns `list<u8>` carrying the value form (its own
+  per-consumer template). This was the last fixed-shape compound-result gap — the compound result now works
+  across EVERY closure shape (single/multi/mixed/distinct-sig/round-trip/distinct-sig-round-trip). A compound
+  consumer coexists with a scalar consumer, another compound consumer of a different sig, and a byte-rope
+  consumer. Pieces: (1) `serialize::distinct_sig_roundtrip_core_module` — each compound consumer's template
+  gets its own 4-aligned data-section region; byte-rope consumers write PAST all compound data
+  (`bytes_out_off`); shared memory + `cabi_realloc` whenever any consumer crosses as `list<u8>`; a `flat_cons`
+  counter indexes the per-consumer data placement in group order; a compound consumer wrapper walks the body's
+  returned handle via `emit_hole_fill`. (2) `emit_distinct_sig_roundtrip_resource` — per-consumer
+  `ret_template`; `ClosureConsumeAbi.ret_is_bytes` now = "crosses as `list<u8>`" (byte-rope OR compound). (3)
+  `cdz-run` already try-decodes. +5 corpus (compound + scalar consumer of another sig; two compound consumers
+  of different sigs — tuple + record; compound + byte-rope consumer of different sigs).
+- **REMAINING (all optional, none blocking):** a VARIABLE-LENGTH list/map/set closure result (needs a runtime
+  looping value-form walker, like the runtime-Bytes escape but recursing over elements); a compound closure
+  ARG (host→guest decode — harder); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the
+  wasmtime-blocked `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`) result surface
+  AND the entire fixed-shape compound (tuple/record/sum) result surface are DONE across ALL closure shapes.**
 
 ## Risks / open questions
 
