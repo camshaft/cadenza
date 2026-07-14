@@ -8213,13 +8213,16 @@ fn emit_shift(
         _ => return Err(Reject::decline("not a shift op")),
     });
     if matches!(op, Prim::Shl) {
-        // GUARD ELISION: a `<<` by a CONSTANT count whose result interval provably stays in the type
-        // (`(<< (& x 15) 2)` = [0,60] fits Int64) needs neither the overflow round-trip nor the
-        // range-check. Only for a constant `k` — interval analysis needs a fixed shift amount.
+        // GUARD ELISION: a `<<` whose result interval provably stays in the type needs neither the overflow
+        // round-trip nor the range-check. For a CONSTANT count `(<< (& x 15) 2)` = [0,60] the fixed shift
+        // amount drives `shl_provably_in_range`. For a RUNTIME count whose RANGE is known — the masked-count
+        // idiom `(<< (& x 15) (& k 3))`, value [0,15] × count [0,7] → max 1920 — the dynamic variant bounds
+        // the result by the count's max shift (`shl_provably_in_range_dynamic`).
         let elide = const_count.is_some_and(|k| {
             (0..m.width as i64).contains(&k)
                 && crate::lower::shl_provably_in_range(db, lhs, k as u32)
-        });
+        }) || (const_count.is_none()
+            && crate::lower::shl_provably_in_range_dynamic(db, lhs, rhs));
         if elide {
             // The machine `shl` result is already on the stack (no round-trip needs `$r`) — nothing to do.
         } else {

@@ -10029,6 +10029,55 @@ pub(crate) fn shl_provably_in_range(db: &mut Db, val: StructId, k: u32) -> bool 
     rlo >= tmin as i128 && rhi <= tmax as i128
 }
 
+/// The RUNTIME-COUNT companion of [`shl_provably_in_range`]: whether `(<< val count)` provably stays in
+/// `val`'s type for a count whose range is only known at compile time (not a fixed constant) — the
+/// masked-count idiom `(<< (& x 15) (& k 3))`, where `val ∈ [0,15]` and `count ∈ [0,7]` gives a max
+/// `15 << 7 = 1920` that fits. Requires BOTH the value's `closed_range` `[vlo, vhi]` AND the count's
+/// `value_range` `[clo, chi]` to be known, with a valid count range `0 <= clo <= chi < width` (an
+/// out-of-range count is a genuine trap the guard must keep). `<<` is monotonic in the value for a fixed
+/// nonneg count, so the result's bounding box is spanned by the four corners `{vlo,vhi} << {clo,chi}`
+/// (a negative `vlo` shifts MORE negative as the count grows; a positive `vhi` shifts MORE positive);
+/// the box fits iff its min ≥ tmin and max ≤ tmax. All in i128 (a real interval × count < width never
+/// overflows i128). Returns false on any unknown bound (keep the overflow round-trip).
+pub(crate) fn shl_provably_in_range_dynamic(db: &mut Db, val: StructId, count: StructId) -> bool {
+    let crate::ty::Ty::Int(it) = crate::infer::type_of(db, val) else {
+        return false;
+    };
+    let (Some(tmin), Some(tmax)) = (match resolved_int_bounds(it) {
+        Some(b) => b,
+        None => return false,
+    }) else {
+        return false;
+    };
+    let crate::ty::Width::Fixed(width) = it.width else {
+        return false;
+    };
+    // The count must have a known, VALID range `[clo, chi]` with `0 <= clo` and `chi < width` — an
+    // out-of-range count still traps (its guard is handled separately), so we only reason about the
+    // in-range shift amounts here.
+    let Some((clo, chi)) = value_range(db, count) else {
+        return false;
+    };
+    let Some(chi) = chi else { return false };
+    if clo < 0 || chi < 0 || chi >= width as i64 {
+        return false;
+    }
+    let Some((vlo, vhi)) = closed_range(db, val) else {
+        return false;
+    };
+    // `<<` by a fixed nonneg count is monotonic in the value AND (in magnitude) in the count, so the
+    // result's bounding box corners are `{vlo, vhi} << {clo, chi}`.
+    let corners = [
+        (vlo as i128) << clo,
+        (vlo as i128) << chi,
+        (vhi as i128) << clo,
+        (vhi as i128) << chi,
+    ];
+    let rlo = corners.iter().copied().min().unwrap();
+    let rhi = corners.iter().copied().max().unwrap();
+    rlo >= tmin as i128 && rhi <= tmax as i128
+}
+
 /// Whether the divisor at `id` could be `-1`. The narrow-signed-division range-check exists SOLELY for
 /// the `MIN_N / -1` overflow (the only quotient that leaves the type); if the divisor provably is NOT
 /// `-1`, that check is dead. Returns `true` (keep the check) unless the divisor's range EXCLUDES `-1` —

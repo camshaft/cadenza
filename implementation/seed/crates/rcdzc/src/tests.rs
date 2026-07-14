@@ -5866,6 +5866,96 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_left_shift_of_bounded_value_by_bounded_count_elides_the_overflow_guard() {
+        // `<<`'s overflow round-trip (`shr ; ne ; if unreachable`) is elided when BOTH the value's range
+        // and the count's range are known and the worst-case shift provably fits the type — the masked
+        // idiom `(<< (& x 15) (& k 3))`: value [0,15] × count [0,7] → max 1920, fits Int64. The dynamic
+        // companion of the constant-count `shl_provably_in_range`. Kept when either operand's range is
+        // unknown or the bounding box overflows.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // The `<<` overflow round-trip is the `i64.ne` (shift-back comparison) + its `unreachable`.
+        let has_overflow_guard = |code: &[Lir]| code.iter().any(|i| matches!(i, Lir::I64Ne));
+        // Bounded value × bounded count → ELIDED (no i64.ne).
+        assert!(
+            !has_overflow_guard(&lir("(: x Int64) (: k Int64)", "(<< (& x 15) (& k 3))")),
+            "masked value × masked count elides the overflow guard"
+        );
+        // BARE value (unknown range) × masked count → KEPT (value could be huge).
+        assert!(
+            has_overflow_guard(&lir("(: x Int64) (: k Int64)", "(<< x (& k 3))")),
+            "an unbounded value keeps the overflow guard"
+        );
+        // Bounded value × BARE count (unknown range) → KEPT (count could be huge).
+        assert!(
+            has_overflow_guard(&lir("(: x Int64) (: k Int64)", "(<< (& x 15) k)")),
+            "an unbounded count keeps the overflow guard"
+        );
+        // Bounded but the bounding box OVERFLOWS the type: value [0, 2^33-1] × count [0,31] → ~2^64 > i64.
+        assert!(
+            has_overflow_guard(&lir(
+                "(: x Int64) (: k Int64)",
+                "(<< (& x 8589934591) (& k 31))"
+            )),
+            "a bounding box that overflows keeps the guard"
+        );
+
+        // VALUE PARITY (mask semantics preserved, incl. count-wrap when k&3 wraps).
+        use wasmtime::component::Val;
+        let f = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: x Int64) (: k Int64)) (<< (& x 15) (& k 3))) (export f))",
+        )))
+        .expect("compile");
+        for (x, k) in [(15i64, 3i64), (7, 2), (1, 7), (255, 10), (15, 8)] {
+            assert_eq!(
+                run_returns_with::<i64>(&f, "f", &[Val::S64(x), Val::S64(k)]),
+                (x & 15) << (k & 3),
+                "@x={x},k={k}"
+            );
+        }
+        // A negative-valued bounded operand stays sound (four-corner box): [-7,0] << [0,3] fits Int8.
+        assert_eq!(
+            run::<i8>(
+                "(: x Int8) (: k Int8)",
+                "(<< (- 0 (& x 7)) (& k 2))",
+                &[Val::S8(7), Val::S8(2)]
+            ),
+            -28
+        );
+        // TRAP SAFETY: the overflowing bounding-box case still traps at a genuinely-overflowing input.
+        assert!(traps(
+            "(: x Int64) (: k Int64)",
+            "(<< (& x 8589934591) (& k 31))",
+            &[Val::S64(8589934591), Val::S64(31)]
+        ));
+    }
+
+    #[test]
     fn runtime_shift_with_a_nested_value_operand() {
         // `(<< (+ a b) c)` — the shift's VALUE operand is a nested checked add, so `emit_operand_into`
         // routes it through `emit_checked_arith_to` writing the shift's value slot directly. Both the
