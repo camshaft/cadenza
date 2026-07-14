@@ -1322,6 +1322,48 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             .at(occ),
         );
     }
+    // A MALFORMED EFFECT CLAUSE — a clause that is NOT an `(op …)` operation. An effect's members are its
+    // operations, `(op <name> (-> …))` (`capabilities-and-effects.md` §An Effect Declaration Names The
+    // Effect And Types Its Operations). `scan_effect_decl` SILENTLY DROPS any clause whose head is not
+    // `op` (a bare literal `(effect E 5)`, a non-`op`-headed list `(effect E (foo …))`) AND an `(op)` with
+    // no name at all (its `op_tail.first()` is `None`) — so a typo'd/garbled operation vanishes and the
+    // effect looks like it has fewer ops than written (a match/handle over it then wrongly type-checks as
+    // exhaustive — a correctness hazard, the effect analogue of the malformed-variant scan-drop). Reject
+    // each such clause CDZ0201 at the clause. A leading `(doc "…")` clause is TOLERATED (the doc affordance
+    // effects share with defs — silently ignored, not a fault). Walked over the raw `(effect …)` AST tail
+    // (the scanned `ops` already dropped the bad ones), for USER effect declarations only.
+    let effect_decl_occs: Vec<StructId> = db
+        .effect_decls
+        .iter()
+        .filter(|e| db.is_user_node(e.occ))
+        .map(|e| e.occ)
+        .collect();
+    for occ in effect_decl_occs {
+        let Some(tail) = db.ast.as_form(occ, "effect").map(<[_]>::to_vec) else {
+            continue;
+        };
+        // tail[0] is the effect NAME; tail[1..] are its clauses — each must be an `(op …)` (or a tolerated
+        // `(doc …)`).
+        for &clause in tail.iter().skip(1) {
+            let head = db.ast.head_name(clause);
+            // A well-shaped `(op …)` clause is validated by the nameless-ops / op-type checks; a `(doc …)`
+            // clause is tolerated. Anything else (a bare atom, a non-op/doc-headed list, an `(op)` with no
+            // name) never registered an operation — reject it here.
+            let is_op =
+                head == Some("op") && db.ast.as_form(clause, "op").is_some_and(|t| !t.is_empty());
+            let is_doc = head == Some("doc");
+            if !is_op && !is_doc {
+                faults.push(
+                    Reject::coded(
+                        Code::Malformed,
+                        "an effect clause must be an operation `(op <name> (-> Arg… Result))` — this is \
+                         not one, so it declares no operation",
+                    )
+                    .at(clause),
+                );
+            }
+        }
+    }
     // A `handle` HEAD THAT NAMES A VALUE. `(handle foo 0 …)` where `foo` is a `(def foo …)` value — the head
     // must name an EFFECT (the arms ARE that effect's operations). The desugar folds the head into each
     // arm's `(. foo op)` projection, so a value head surfaces only as a LEAKY cascade — "member access

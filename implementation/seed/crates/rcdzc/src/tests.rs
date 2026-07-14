@@ -33197,6 +33197,58 @@ mod stage1 {
         );
     }
 
+    /// A MALFORMED EFFECT CLAUSE — one that is not an `(op …)` operation — is CDZ0201, not silently
+    /// dropped. `scan_effect_decl` skips any clause whose head is not `op` (a bare literal `(effect E 5)`,
+    /// a non-`op`-headed list `(effect E (foo …))`) and an `(op)` with no name, so a garbled operation
+    /// vanished and the effect looked like it had fewer ops than written (a handle/match over it then
+    /// wrongly type-checks as exhaustive — the effect analogue of the malformed-variant scan-drop). A
+    /// leading `(doc "…")` clause is TOLERATED (the doc affordance effects share with defs).
+    #[test]
+    fn a_malformed_effect_clause_is_cdz0201() {
+        use crate::testkit::parse;
+        for src in [
+            "(module m (effect E 5) (def (main) 1) (export main))",
+            "(module m (effect E (foo (-> Unit Int64))) (def (main) 1) (export main))",
+            "(module m (effect E (op)) (def (main) 1) (export main))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("an effect clause must be an operation"))
+                .unwrap_or_else(|| panic!("a malformed effect clause must be rejected: {src}"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        }
+        // NO FALSE POSITIVE: a well-formed effect, and one carrying a leading `(doc …)` clause, are clean.
+        for ok in [
+            "(module m (effect E (op get (-> Unit Int64))) \
+             (def (main) (handle E 0 ((get () s (resume 5 s))) (E.get))) (export main))",
+            "(module m (effect E (doc \"the effect\") (op get (-> Unit Int64))) \
+             (def (main) (handle E 0 ((get () s (resume 5 s))) (E.get))) (export main))",
+        ] {
+            let bad = crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                .into_iter()
+                .find(|d| d.message.contains("an effect clause must be an operation"));
+            assert!(
+                bad.is_none(),
+                "a well-formed effect must not be flagged: {ok} -> {bad:?}"
+            );
+        }
+        // A `(op 5 …)` (a well-shaped op clause with a NON-NAME name) keeps its more-specific "must be
+        // named" reject — it IS an `(op …)` clause, so the generic clause check does not fire on it.
+        let named = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (effect E (op 5 (-> Unit Int64))) (def (main) 1) (export main))",
+        )));
+        assert!(
+            named
+                .iter()
+                .any(|d| d.message.contains("an effect operation must be named"))
+                && !named
+                    .iter()
+                    .any(|d| d.message.contains("an effect clause must be an operation")),
+            "a non-name op keeps the specific 'must be named' reject, not the generic clause one: {:?}",
+            named.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
     /// A `host` is exactly `(host (<effect>…) <body>)`. A host with TOO MANY operands —
     /// `(host (E) body extra)` — was SILENTLY ACCEPTED: `resolve_host` read only the effect list and body,
     /// dropping the surplus (a silent miscompile, the `host` analogue of the too-many `resume`/fixed-arity
