@@ -110,6 +110,8 @@ pub fn abi_val_type(ty: &Ty) -> Option<AbiValType> {
 //# A compiled component MUST make the host calls its observable behavior records only through the host functions the program's manifest enumerates.
 //= spec/capabilities/self-hosting-surface.md#host-calls-reach-the-host-through-the-manifest-s-capabilities
 //# A compiled component MUST NOT make a host call through a host function the program's manifest does not enumerate.
+//= spec/contracts/build-tool-interface.md#the-tool-produces-a-component-a-manifest-and-diagnostics
+//# The component the build tool produces MUST have imports that mirror the manifest it produces, as fixed by the host-interface-binding contract.
 pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>) {
     match core_of(db, id) {
         Core::HostCall {

@@ -5574,6 +5574,20 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         //# The type of an arithmetic result MUST be determined by the operand types and the operation, not by an implicit widening the author did not write.
         Resolved::Apply { head, args } => {
             check_application(db, id, head, &args, out);
+            // OPERATOR-ARITY WELL-FORMEDNESS: a fixed-arity binary operator applied to a count other than 2
+            // (an over-application `(+ n 1 2)`/`(< n 1 2)`/`(+. x 1.0 2.0)`, or an under-application `(+ n)`)
+            // has a clear operator-specific CDZ0201 "+ takes exactly 2 operands" — but it is produced ONLY
+            // by the emit-path lowering walk (`collect_reached_poisons`, nullary-exported bodies), so `check`
+            // on a PARAMETERIZED body saw only `check_application`'s GENERIC CDZ0203 ("applied N arguments to
+            // a function of arity M …") for the over-application and NOTHING for the under-application, while
+            // `compile` rejected both. Surface the operator message here, where `collect` visits every
+            // application — the binop-arity twin of the pattern-fault accessor. `binop_arity_fault` fires
+            // purely on the argument COUNT (the language has no unary operator form), so it is no false alarm
+            // over an unreached body; on the over-application its CDZ0201 delete fix targets the same surplus
+            // node as the CDZ0203, so `dedup_faults` keeps this clearer message and drops the generic sibling.
+            if let Some(r) = crate::lower::binop_arity_fault(db, id) {
+                out.push(r);
+            }
             // Descend into the HEAD (an unbound head like `frobnicate` is a scope error caught here)
             // and each operand for their own faults.
             collect(db, head, out);

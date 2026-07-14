@@ -336,6 +336,23 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 100 (Amb.flip)))) (export main)))
   (output (: 111 Int64)))
 
+(case "a one-shot handler arm folds a body with TWO performs by re-reducing the continuation"
+  (doc    "The general one-shot arm extends past a single hole to a body with SEVERAL discharged performs,
+           when the arm resumes EXACTLY ONCE. In a DEEP handler `resume v s'` returns into the continuation
+           `C[v]` with the handler STILL ACTIVE, so a further perform in `C[v]` is handled too — the resume
+           re-reduces the continuation: `resume v s' = handle(s', arms, C[v])`. Here the body is
+           `(+ (Amb.flip) (Amb.flip))`: the leading flip has continuation `C = (+ [] (Amb.flip))`;
+           `(resume 10 s)` re-reduces `C[10] = (+ 10 (Amb.flip))`, itself a pure one-hole context that folds
+           to `(+ 1 (+ 10 10))` = 21; the outer arm `(+ 1 (resume 10 s))` then evaluates to `(+ 1 21)` = 22.
+           Each re-reduction removes one perform, so it terminates. Because the arm resumes ONCE, the
+           continuation is spliced once — no effect is duplicated, so no reified continuation is needed. A
+           MULTI-shot arm over a performing continuation still awaits the frame machinery.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ (Amb.flip) (Amb.flip)))) (export main)))
+  (output (: 22 Int64)))
+
 (case "a handler arm that resumes NON-tail folds when the perform is in an if condition"
   (doc    "The pure one-hole continuation extends into an `if` CONDITION — a strict, always-evaluated-first
            position, so the continuation `C = (if (< [] 5) 1 2)` is uniform (the branches run only AFTER the
