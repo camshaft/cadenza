@@ -13440,6 +13440,49 @@ mod tests {
         assert_eq!(live_nodes(), before);
     }
 
+    /// The KEY-CANONICALIZATION contract that map/set keys rest on: `champ_eq`/`champ_hash` compare a
+    /// node's PHYSICAL bytes (fast — NO flatten on the hot key path), so a rope Bytes/String value and its
+    /// flat twin are NOT `champ_eq`-equal (different physical shape). The design keeps this correct by the
+    /// COMPILER `bytes-compact`ing a rope key BEFORE insert (champ-map-set-design §canonical-except-rope).
+    /// So the runtime's half of the contract is: **`bytes-compact` of a rope MUST yield a leaf that is
+    /// `champ_eq` AND `champ_hash`-identical to the flat twin of the same content** — else the compiler's
+    /// compact-before-insert wouldn't actually canonicalize the key and a rope-vs-flat key would still
+    /// mis-dedup. Pin BOTH halves: (1) a rope is champ_eq-DISTINCT from its flat twin (the physical-bytes
+    /// design — a rope key WITHOUT compaction would be a wrong key, the tripwire); (2) compact makes it
+    /// champ_eq + champ_hash-IDENTICAL to the flat twin (the runtime guarantee the compiler relies on).
+    #[test]
+    fn compact_makes_a_rope_key_canonical_champ_eq_and_hash_match_the_flat_twin() {
+        reset();
+        let before = live_nodes();
+        let content = b"the-quick-brown-fox"; // > INLINE_RAW_CAP so the flat twin is a Heap leaf too
+        let flat = bytes_leaf(content);
+        // A rope of the SAME content, split across a seam mid-word.
+        let rope = op_bytes_concat(bytes_leaf(&content[..7]), bytes_leaf(&content[7..]));
+        // (1) TRIPWIRE: before compaction the rope is a DIFFERENT physical shape → NOT champ_eq to the flat
+        // twin (this is WHY the compiler must compact a rope key; a raw rope key would mis-key).
+        assert!(
+            !champ_eq(rope, flat),
+            "a rope is champ_eq-DISTINCT from its flat twin (physical-bytes compare — the reason keys are compacted)"
+        );
+        // (2) THE GUARANTEE: compact the rope → now champ_eq AND champ_hash-identical to the flat twin, so
+        // the compiler's compact-before-insert genuinely canonicalizes a String/Bytes key.
+        let compacted = op_bytes_compact(rope);
+        assert!(
+            champ_eq(compacted, flat),
+            "a COMPACTED rope is champ_eq to its flat twin — the runtime half of the key-canonicalization contract"
+        );
+        assert_eq!(
+            champ_hash(compacted),
+            champ_hash(flat),
+            "a compacted rope hashes IDENTICALLY to its flat twin (equal keys must hash equal or a map mis-buckets)"
+        );
+        // And the two are interchangeable as a SET element: inserting both dedups to size 1.
+        let s = op_set_insert(op_set_insert(op_set_empty(), compacted), flat);
+        assert_eq!(op_set_size(s), 1, "a compacted rope and its flat twin are the SAME set element");
+        op_drop(s);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
     #[test]
     fn rope_slice_content_matches_copy_over_many_offsets() {
         reset();
