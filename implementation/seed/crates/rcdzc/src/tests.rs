@@ -28204,15 +28204,41 @@ mod stage1 {
     }
 
     #[test]
-    fn two_performs_in_the_handle_body_decline_the_pure_one_hole_fold() {
-        // ADVERSARIAL: the pure one-hole fold requires EXACTLY ONE discharged perform on the spine. Two
-        // performs `(+ (Amb.flip) (Amb.flip))` is a TWO-hole context — `pure_hole` returns Impure and the
-        // fold declines (this needs sequential state threading / real continuations, not a single splice).
+    fn two_performs_in_the_handle_body_fold_via_the_one_shot_refold() {
+        // E5 TWO-HOLE (general one-shot): `(+ (Amb.flip) (Amb.flip))` under a ONE-SHOT non-tail arm
+        // `(+ 1 (resume 10 s))` folds by RE-REDUCING the continuation. In a DEEP handler, `resume v s'`
+        // returns into `C[v]` WITH THE HANDLER STILL ACTIVE, so the SECOND flip in `C[v]` is handled too:
+        // leading flip → `C1 = (+ □ (Amb.flip))`; resume 10 → reduce_handle of `(+ 10 (Amb.flip))` (a pure
+        // one-hole → `(+ 1 (+ 10 10))` = 21); the outer arm `(+ 1 21)` = 22. Each refold removes one
+        // perform, so it terminates. (Was previously a clean decline; the refold makes it fold.)
         let src = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ (Amb.flip) (Amb.flip)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a one-shot two-hole body folds via the refold"),
+                "main"
+            ),
+            22
+        );
+        // THREE holes compose the same way (the refold recurses): 1+(1+(1+30)) with each flip=10 → 33.
+        let three = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ (Amb.flip) (+ (Amb.flip) (Amb.flip))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(three)))
+                    .expect("a three-hole one-shot body folds via the refold"),
+                "main"
+            ),
+            33
+        );
+        // MULTI-shot two-hole STILL DECLINES: splicing a continuation that itself performs, more than once,
+        // duplicates the inner effect — the frame vertical's job, not the frame-free refold.
+        let multi = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Amb.flip) (Amb.flip)))) (export main))";
         assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "two performs in the handle body must decline the single-hole fold"
+            compile_component(&crate::codec::encode(&parse(multi))).is_err(),
+            "a MULTI-shot two-hole body must decline (a performing continuation spliced twice)"
         );
     }
 
