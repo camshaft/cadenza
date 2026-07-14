@@ -245,6 +245,7 @@ pass	a decimal kilobyte and a binary kibibyte are distinct units of one dimensio
 pass	a decimal kilobyte and a binary kibibyte convert distinctly over Int64
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
 pass	a declaration in a do block shadows an outer binding
+pass	a deep balanced tree is built and folded to a scalar, consuming both children
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
 pass	a deeper nested call chain still folds in linear time near the inliner limit
 pass	a deeply nested constant expression compiles or declines without crashing
@@ -1014,6 +1015,7 @@ pass	an annotated tuple-pattern parameter still checks its annotation against th
 pass	an annotated value takes a narrower integer width
 pass	an annotation by a reflected type that contradicts the value is rejected
 pass	an annotation that contradicts the value is rejected
+pass	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 pass	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
 pass	an arithmetic operator with a single operand is rejected, not a crash
@@ -1719,7 +1721,6 @@ todo	a plain record compared to a nominal record of the same shape is a type err
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
 todo	an arbitrary-precision integer multiplication does not overflow
-todo	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 todo	an explicit annotation overrides the default-integer pragma
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result

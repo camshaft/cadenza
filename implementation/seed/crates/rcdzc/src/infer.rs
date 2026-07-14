@@ -6305,6 +6305,16 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             ty_expr,
                         ));
                     }
+                } else if matches!(resolved_of(db, expr), Resolved::Int(_))
+                    && matches!(annot_ty, Ty::BigInt)
+                {
+                    // A bare integer LITERAL annotated `BigInt` is a GROUNDING — the same "Annotations
+                    // Constrain" rule as `(: 200 UInt8)`, but there is NO range check: `BigInt` is
+                    // unbounded, so EVERY literal fits (`(: 100000000000000000000 BigInt)` — a value no
+                    // fixed width holds — is exactly an exact BigInt). The literal's `IntValue` already
+                    // carries the arbitrary-precision magnitude; only the static type widens to
+                    // `Ty::BigInt` (the annot node's type, from `type_of`'s `Annot` arm). No fault.
+                    trace!(target: "rcdzc::infer", node = id.0, "integer literal annotated BigInt — grounds to BigInt (unbounded, always fits)");
                 } else if let (
                     Ty::Qty {
                         inner: ai,
