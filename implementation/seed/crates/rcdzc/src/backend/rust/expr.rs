@@ -1394,7 +1394,10 @@ fn emit_sum_payload(
             }
             // `[Payload, Elem(i)]` — the i-th payload of a multi-payload variant (or the i-th tuple element
             // of a single tuple-typed payload). A constant `SumNew`'s payloads are indexed directly.
-            [crate::core::PathStep::Payload, crate::core::PathStep::Elem(i)] => {
+            [
+                crate::core::PathStep::Payload,
+                crate::core::PathStep::Elem(i),
+            ] => {
                 if let Some(&p) = payloads.get(*i) {
                     return emit(db, p, env, ctx);
                 }

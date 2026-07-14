@@ -16602,7 +16602,11 @@ mod match_engine {
             "(: (and (<= x 5) (>= x 5)) Bool)",
             "(: (and (>= 5 x) (<= 5 x)) Bool)",
         ] {
-            assert_eq!(counts(&lir("(: x Int64)", body)), (1, 0), "collapse: {body}");
+            assert_eq!(
+                counts(&lir("(: x Int64)", body)),
+                (1, 0),
+                "collapse: {body}"
+            );
         }
         // NON-collapse (kept as 2 ordering compares, 0 eq): different constants (a real range), and the
         // exclusive width-2 point (deliberately conservative — needs a synthesized `c` + range guard).
@@ -16628,22 +16632,37 @@ mod match_engine {
         };
         let sgn = f("Int64", "(if (and (>= x 5) (<= x 5)) 1 0)");
         for (x, want) in [(4, 0), (5, 1), (6, 0)] {
-            assert_eq!(run_returns_with::<i64>(&sgn, "f", &[Val::S64(x)]), want, "signed @{x}");
+            assert_eq!(
+                run_returns_with::<i64>(&sgn, "f", &[Val::S64(x)]),
+                want,
+                "signed @{x}"
+            );
         }
         let uns = f("UInt64", "(if (and (>= x 5) (<= x 5)) 1 0)");
         for (x, want) in [(4u64, 0), (5, 1), (6, 0)] {
-            assert_eq!(run_returns_with::<i64>(&uns, "f", &[Val::U64(x)]), want, "unsigned @{x}");
+            assert_eq!(
+                run_returns_with::<i64>(&uns, "f", &[Val::U64(x)]),
+                want,
+                "unsigned @{x}"
+            );
         }
         let neg = f("Int64", "(if (and (>= x -3) (<= x -3)) 1 0)");
         for (x, want) in [(-2, 0), (-3, 1), (-4, 0)] {
-            assert_eq!(run_returns_with::<i64>(&neg, "f", &[Val::S64(x)]), want, "negative @{x}");
+            assert_eq!(
+                run_returns_with::<i64>(&neg, "f", &[Val::S64(x)]),
+                want,
+                "negative @{x}"
+            );
         }
         // TRAP SAFETY: a trapping operand in the collapsed pair still traps (the DISCARDED second bound's
         // trap is preserved by the `is_trap_free` gate — here both bounds share the trapping `/`).
         let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
             "(module m (def (f (: z Int64)) (if (and (>= (/ 100 z) 5) (<= (/ 100 z) 5)) 1 0)) (export f))"
         ))).expect("compile");
-        assert!(call_traps(&tb, "f", &[Val::S64(0)]), "trapping operand keeps its trap");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0)]),
+            "trapping operand keeps its trap"
+        );
     }
 
     #[test]
@@ -19327,10 +19346,16 @@ mod diagnostics {
     /// component WAS produced (a warning must ride alongside a success, never a denial).
     fn warnings_of(src: &str) -> Vec<crate::abi::Diagnostic> {
         let bytes = crate::codec::encode(&parse(src));
-        let out = compile(
-            &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
-            &[Target::Wasm],
-        );
+        // Through the SAME host-stack guard the bin uses (`host.rs`) — a dead NON-NORMALIZING binding
+        // (`((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))`) recurses deep during the fold before the reduction
+        // work-budget declines, and would SIGABRT a default `cargo test` worker's ≈2 MB stack. Sizing the
+        // stack from `DESCENT_DEPTH_LIMIT` lets the budget guard — not the native stack — bound it.
+        let out = crate::host::run_with_compiler_stack(|| {
+            compile(
+                &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
+                &[Target::Wasm],
+            )
+        });
         assert!(
             out.artifact(Target::Wasm.artifact_kind()).is_some(),
             "a warning must accompany a PRODUCED component, but compilation failed: {:?}",
@@ -19378,8 +19403,7 @@ mod diagnostics {
         // reducing dead code), while the SAME term USED is the hard CDZ0999 error.
         // `warnings_of` asserts the component WAS produced (dead code elided → it compiles) and returns
         // the warnings; exactly one CDZ0305 dead-computation warning (CDZ0306 unused-`y` rides alongside).
-        let src =
-            "(module m (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) 0)) (export main))";
+        let src = "(module m (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) 0)) (export main))";
         let dead: Vec<_> = warnings_of(src)
             .into_iter()
             .filter(|d| d.code.as_deref() == Some("CDZ0305"))
@@ -19395,12 +19419,19 @@ mod diagnostics {
             dead[0].message
         );
         // The SAME term USED is a hard CDZ0999 error (the component is DENIED, not merely warned).
-        let used =
-            "(module m (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) y)) (export main))";
-        let out = compile(
-            &[Artifact::new(Artifact::KIND_AST, "m", crate::codec::encode(&parse(used)))],
-            &[Target::Wasm],
-        );
+        let used = "(module m (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) y)) (export main))";
+        // Same host-stack guard as `warnings_of` above — the USED non-normalizing term recurses just as
+        // deep during the fold, so this direct `compile` must not run on the default test stack either.
+        let out = crate::host::run_with_compiler_stack(|| {
+            compile(
+                &[Artifact::new(
+                    Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(used)),
+                )],
+                &[Target::Wasm],
+            )
+        });
         assert!(
             out.artifact(Target::Wasm.artifact_kind()).is_none()
                 && out

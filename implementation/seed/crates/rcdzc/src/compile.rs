@@ -721,9 +721,7 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         .type_decls
         .iter()
         .filter(|t| db.is_user_node(t.occ))
-        .filter(|t| {
-            !t.name.is_empty() && !seen_types.insert((db.file_of(t.occ), t.name.as_str()))
-        })
+        .filter(|t| !t.name.is_empty() && !seen_types.insert((db.file_of(t.occ), t.name.as_str())))
         .map(|t| (t.name.clone(), t.occ))
         .collect();
     for (name, occ) in dup_types {
