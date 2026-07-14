@@ -200,3 +200,17 @@ Set of/contains, generic `id` at multiple types, nested generic newtypes, `Resul
 recursion, bit ops, string equality/ordering, div/mod, big match dispatch, `String.to-bytes`, nullary
 compound-return escape (tuple/record/recursive-sum/list). The compiler is broadly solid; the gaps above
 are the sharp edges.
+
+- **OPEN (seed `rcdzc` — GAP + misleading diagnostic): a polymorphic type annotation with an unbound
+  signature type variable is rejected.** `repros/reject-polymorphic-type-annotation.sexp`: `(def (len
+  (: l (Lst a))) …)` → CDZ0203 "`Lst` is a type, not a function" + CDZ0101 "unbound name `a`". No form
+  binds a signature's type variables, so `(Lst a)` can't be written as a param type. The UNANNOTATED
+  `(def (len l) …)` works and monomorphizes at every element type (the idiomatic spelling); a CONCRETE
+  `(: l (Lst Int64))` works too — only a type-VARIABLE annotation fails. Two asks: (1) bind a
+  signature's type vars so `(: l (Lst a))` resolves; (2) the diagnostic mis-reads `(Lst a)` as a call —
+  it should say "a polymorphic annotation needs `a` bound." Impact: generic passes drop the annotation.
+- More confirmed WORKING (loop iter 1): `quote` building a built-in `Ast` (metaprogramming); effects +
+  handlers (a state counter via `handle E init with | op(a,s) => resume(v,s') in …`); recursive-generic
+  `Lst` length + `Lst of Lst` (unannotated) monomorphized at Int AND String; `Map String → user-sum`
+  lookup+match; `Set` union/difference/contains/len (String-keyed). ⚠ minor: `Set.len` vs `Map.size`
+  (inconsistent op name for the same "count" concept).
