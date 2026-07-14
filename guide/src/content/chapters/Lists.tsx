@@ -172,25 +172,27 @@ export default function Lists() {
         id="lists:3"
         prompt={
           <>
-            Complete the recursive step of <C>sum</C> with a list pattern. The empty case is done; in the
-            non-empty arm, add the first element <C>x</C> to the sum of the <C>rest</C>. Over{" "}
-            <C>(list 1 2 3 4)</C> the total is <C>10</C>.
+            Here's the same fold shape as <C>sum</C>, but <em>multiplying</em> — and this time the recursive
+            step is written for you; the <em>empty</em> case is the hole. What should <C>prod</C> of the
+            empty list be, so that folding <C>(list 1 2 3 4)</C> gives <C>24</C>? Fill in the base case.
           </>
         }
-        starter={`(def (sum xs)
+        starter={`(def (prod xs)
   (match xs
-    ((list) 0)
-    ((list x .. rest) (+ x ?))))
-(def (main) (sum (list 1 2 3 4)))`}
-        solution={`(def (sum xs)
+    ((list) ?)
+    ((list x .. rest) (* x (prod rest)))))
+(def (main) (prod (list 1 2 3 4)))`}
+        solution={`(def (prod xs)
   (match xs
-    ((list) 0)
-    ((list x .. rest) (+ x (sum rest)))))
-(def (main) (sum (list 1 2 3 4)))`}
-        expected="10"
+    ((list) 1)
+    ((list x .. rest) (* x (prod rest)))))
+(def (main) (prod (list 1 2 3 4)))`}
+        expected="24"
         hint={
           <>
-            "The sum of the rest" is <C>sum</C> applied to the <C>rest</C> binder: <C>(sum rest)</C>.
+            The base case has to be the value that leaves a product unchanged — multiply by it and nothing
+            happens. For <C>+</C> that identity was <C>0</C>; for <C>*</C> it's <C>1</C>. (Try <C>0</C> and
+            watch the whole product collapse to <C>0</C>.)
           </>
         }
       />
