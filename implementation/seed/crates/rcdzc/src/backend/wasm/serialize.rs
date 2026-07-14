@@ -1831,6 +1831,7 @@ pub fn closure_value_resource_core_module(
         template,
         layout,
         false,
+        None,
     )
 }
 
@@ -1838,6 +1839,11 @@ pub fn closure_value_resource_core_module(
 /// result). When TRUE the `call` uses the borrow-lift's rep directly (no `resource.rep`) and does NOT drop
 /// the cell (repeatable; the `t-dtor` reclaims). The transient COMPOUND handle the closure returns is still
 /// dropped after the walk (guest-owned scratch, separate from the cell). `false` = own/self-drop, byte-identical.
+///
+/// `tuple_arg`: `Some(rebuild)` when the closure's single argument is a fixed-shape scalar tuple/record that
+/// crossed FLATTENED — the `call` rebuilds the cell from the flattened fields ([`emit_tuple_rebuild`]) before
+/// `call_indirect` and drops it after ([`emit_tuple_rebuilt_drop`]). `arg_vts` is the flattened field vts.
+/// `None` = the scalar-arg path (byte-identical).
 #[allow(clippy::too_many_arguments)]
 pub fn closure_value_resource_core_module_borrow(
     funcs: &[SelectedFunc],
@@ -1849,6 +1855,7 @@ pub fn closure_value_resource_core_module_borrow(
     template: &crate::lower::ValueFormTemplate,
     layout: &Layout,
     call_borrow: bool,
+    tuple_arg: Option<&TupleArgRebuild>,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -2023,15 +2030,19 @@ pub fn closure_value_resource_core_module_borrow(
     // call(self, args…): dispatch the lifted closure → a COMPOUND heap handle, drop the cell, then walk the
     // handle to fill the value-form template holes in memory, drop the handle, return the retptr.
     {
-        // Params: 0 = self, 1..1+arity = args. Locals: cell(i32), rep(i32 = the compound handle), scratch(i64).
+        // Params: 0 = self, 1..1+arity = args. Locals — the i32 group FIRST (cell, rep, and for a flattened
+        // tuple arg the rebuilt-arg-cell `tuple`), THEN the i64 `scratch`. So `scratch`'s index depends on how
+        // many i32 locals precede it: cell=1+arity, rep=cell+1, [tuple=rep+1], scratch=(1+arity)+n_i32.
         let arity = arg_vts.len() as u32;
         let cell = 1 + arity;
         let rep = cell + 1;
-        let scratch = rep + 1;
+        let n_i32: u32 = if tuple_arg.is_some() { 3 } else { 2 };
+        let tuple_local = rep + 1; // only valid when tuple_arg.is_some() (the 3rd i32)
+        let scratch = cell + n_i32; // the i64, after all i32 locals
         let mut inner = Vec::new();
-        // two local groups: 2 × i32 (cell, rep) then 1 × i64 (scratch).
+        // two local groups: n_i32 × i32 (cell, rep, [tuple]) then 1 × i64 (scratch).
         inner.extend_from_slice(&wasm_vec(2, &{
-            let mut g = uleb_bytes(2);
+            let mut g = uleb_bytes(n_i32 as u64);
             g.push(wasm_abi::CORE_I32);
             let mut g2 = uleb_bytes(1);
             g2.push(wasm_abi::CORE_I64);
@@ -2053,10 +2064,15 @@ pub fn closure_value_resource_core_module_borrow(
             uleb128(f_rrep as u64, &mut inner);
         }
         set(cell, &mut inner);
-        // dispatch: push env(cell) + args, read the code slot, call_indirect → the compound handle.
+        // dispatch: push env(cell) + args (or the REBUILT tuple-arg cell), read the code slot, call_indirect →
+        // the compound handle.
         get(cell, &mut inner);
-        for a in 0..arity {
-            get(1 + a, &mut inner);
+        if let Some(rebuild) = tuple_arg {
+            emit_tuple_rebuild(rebuild, tuple_local, &imp, &mut inner);
+        } else {
+            for a in 0..arity {
+                get(1 + a, &mut inner);
+            }
         }
         get(cell, &mut inner);
         inner.push(op::I32_CONST);
@@ -2070,6 +2086,11 @@ pub fn closure_value_resource_core_module_borrow(
         uleb128(lifted_type_idx as u64, &mut inner);
         uleb128(0, &mut inner); // table 0
         set(rep, &mut inner); // the closure's compound-handle result
+        // The rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally), before
+        // walking the result. Separate from the closure cell + the compound result handle.
+        if tuple_arg.is_some() {
+            emit_tuple_rebuilt_drop(tuple_local, &imp, &mut inner);
+        }
         // OWN: drop the closure cell now (release). BORROW: host keeps the cell (repeatable), dtor reclaims —
         // do NOT drop here. The transient compound handle `rep` is separate and dropped after the walk.
         if !call_borrow {
