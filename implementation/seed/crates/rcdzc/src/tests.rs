@@ -21966,6 +21966,46 @@ mod match_engine {
     }
 
     #[test]
+    fn a_map_pattern_key_of_the_wrong_type_is_a_type_error() {
+        // A `(map ("x" v))` pattern on a `(Map Int64 Int64)` writes a String key where an Int64 is
+        // required. Before, `const_compound_eq` of a String vs an Int returned `None` (not equal), so the
+        // arm silently never matched and fell through to the catch-all — a mistyped key accepted as dead
+        // code. It is now a CDZ0201 naming both types, anchored at the offending key (the map twin of the
+        // scalar-match "pattern type … does not match scrutinee type …").
+        let d = reject_full(
+            "(module m (def (main) (match (map (1 10) (2 20)) ((map (\"x\" v)) v) (_ 0))) (export main))",
+        )
+        .expect("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("map-pattern key is String")
+                && d.message.contains("the map's keys are Int64"),
+            "names both key types: {}",
+            d.message
+        );
+        // The symmetric case (an Int pattern on String keys) is likewise rejected.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (match (map (\"a\" 10)) ((map (5 v)) v) (_ 0))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201")
+        );
+        // NO OVER-REJECTION: a correctly-typed key pattern compiles + runs (Int key on an Int-keyed map).
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (main) (match (map (1 10) (2 20)) ((map (1 v)) v) (_ 0))) (export main))"
+                )))
+                .expect("compile"),
+                "main"
+            ),
+            10,
+            "a well-typed map-pattern key matches and binds its value"
+        );
+    }
+
+    #[test]
     fn a_map_value_sub_pattern_may_be_a_literal() {
         // A map-pattern VALUE sub-pattern MAY be a refutable LITERAL — `(map ("a" 0) …)` matches only a map
         // whose value at "a" is 0. `desugar_map_value_subpatterns` lifts it into the body as `(match __mv (0
