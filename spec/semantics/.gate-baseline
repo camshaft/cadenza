@@ -458,6 +458,8 @@ pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value
 pass	a guard over a variant pattern gates on the payload
 pass	a guard sees the names its pattern binds and arms are tried in order
 pass	a guarded arm is selected when its guard holds
+pass	a guarded list-match arm body reads its element binder
+pass	a guarded list-match arm whose guard fails falls through to the catch-all
 pass	a guarded variant arm falls through when the guard fails
 pass	a guarded wildcard arm falls through to a tail-recursive call
 pass	a handle body reads an enclosing function parameter
