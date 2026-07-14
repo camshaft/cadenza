@@ -1097,6 +1097,8 @@ pass	a runtime right shift by the bit width or more traps
 pass	a runtime scrutinee matching no arm traps
 pass	a runtime scrutinee of one sum type rejects a foreign sum's pattern
 pass	a runtime scrutinee selects a non-first literal arm
+pass	a runtime set-difference result escapes to the host as its value form
+pass	a runtime set-union result escapes to the host as its value form
 pass	a runtime string bound from a sum payload compares equal to a string parameter
 pass	a runtime string compared against a literal folds against the literal side
 pass	a runtime string equality selects a branch by comparing a parameter to a literal
