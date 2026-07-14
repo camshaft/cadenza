@@ -31298,6 +31298,29 @@ mod stage1 {
             .expect_err("duplicate definition must reject")
             .message;
         assert!(msg.contains("more than once"), "got: {msg}");
+        // It carries a DELETE fix removing the WHOLE redundant `(def …)` form — the def analogue of the
+        // duplicate-variant / -type / -export / -operation delete fix (which all delete the redundant
+        // declaration). The `node` the delete targets is the second def's FORM (its parent), not just the
+        // signature, so applying it removes the entire redundant definition.
+        let mut db = crate::db::Db::load(parse("(module m (def (g) 1) (def (g) 2) (export g))"));
+        let d = crate::diagnostics(&mut db)
+            .into_iter()
+            .find(|d| d.message.contains("defined more than once"))
+            .expect("a duplicate def is reported");
+        let fix = d.fix.as_ref().expect("carries a delete-the-duplicate fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Delete);
+        assert!(
+            fix.label.contains("remove the duplicate definition of `g`"),
+            "the fix names the redundant definition: {}",
+            fix.label
+        );
+        // The delete targets the whole `(def (g) 2)` FORM — the parent of the signature `(g)`, not the
+        // signature alone — so applying it leaves the first def and is well-formed. `node` is that form's id.
+        let target = crate::ast::StructId(fix.node);
+        assert!(
+            matches!(db.ast.as_form(target, "def"), Some(_)),
+            "the delete target is the `(def …)` form, not the bare signature"
+        );
         // Two DISTINCT named defs are fine — not a false duplicate.
         assert_eq!(
             run_returns::<i64>(

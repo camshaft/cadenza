@@ -937,12 +937,24 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         .map(|d| (d.name.clone(), d.sig_occ))
         .collect();
     for (name, sig_occ) in dups {
+        // Each definition after the first with a given name is a REDUNDANT declaration — DELETE it (the
+        // first already binds the name; a module's names are a fixed set). The delete target is the whole
+        // `(def <sig> <body>)` FORM (the parent of the signature occurrence), so the fix removes the entire
+        // redundant definition, not just its signature — the def analogue of the duplicate-variant / -type
+        // / -export / -operation delete fixes. A `sig_occ` with no parent (a malformed shape) anchors + is
+        // deleted at the signature itself. Heuristic: deleting the LATER def is the direct resolution, but
+        // the author may have meant to keep the second and rename/remove the first — so an agent confirms.
+        let delete_at = db.parent_of(sig_occ).unwrap_or(sig_occ);
         faults.push(
             Reject::coded(
                 Code::Malformed,
                 format!("`{name}` is defined more than once (a module has a fixed set of names)"),
             )
-            .at(sig_occ),
+            .at(sig_occ)
+            .with_fix(crate::diag::Fix::delete_heuristic(
+                delete_at,
+                format!("remove the duplicate definition of `{name}`"),
+            )),
         );
     }
     // DUPLICATE EXPORT. A module's exports are a record whose fields are the exported names
