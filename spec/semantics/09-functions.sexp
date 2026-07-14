@@ -3037,3 +3037,47 @@
             (def (main) (s (list 1 2 3) 0))
             (export main)))
   (output (: 6 Int64)))
+
+; INLINE POLICY — `inline-never` / `inline-always` (`DESIGN-…-monomorphization` Addendum 4). The compiler
+; lowers by β-reduction, so the DEFAULT is always-inline; `inline-never` forces a def to be emitted as ONE
+; real function and CALLED (never inlined), controlling code size. It COMPOSES with `const`/generics —
+; "avoid the inline but still get polymorphism": an `inline-never` def with a `const` dictionary param
+; still inlines the dict into a per-instantiation specialized copy (direct op, no runtime dispatch) and
+; emits that copy once. `inline-always` is the (currently inert) opposite; on a recursive def it is a
+; contradiction (recursion can't inline) → rejected.
+
+(case "an inline-never definition is emitted once and called"
+  (doc    "`big` is marked `inline-never`, so instead of β-reducing at each call site it is emitted as one
+           real function and called. Observable via the VALUE (the emission strategy does not change
+           semantics): `big(x) = x*7 + x*11 + x*13`, `big(2) + big(3)` = 62 + 93 = 155. The point is that
+           `big`'s body is emitted ONCE (one function, two calls) rather than duplicated per call site.")
+  (input  (do
+            (inline-never (def (big (: x Int64)) (+ (* x 7) (+ (* x 11) (* x 13)))))
+            (def (main) (+ (big 2) (big 3)))
+            (export main)))
+  (output (: 155 Int64)))
+
+(case "an inline-never definition with a const dictionary still monomorphizes the dictionary"
+  (doc    "`inline-never` COMPOSES with a `const` dictionary parameter (`avoid the inline but keep
+           polymorphism`): `apply2` is emitted ONCE per distinct dictionary with the dictionary's `op`
+           INLINED (no runtime record, no indirect dispatch) — the dictionary is compile-time-erased — and
+           that specialized function is CALLED at each use rather than the whole body being inlined.
+           `apply2` applies `d.op` twice; with `op = (+ n 10)`: `5 → 25`, `100 → 120`; 25 + 120 = 145.")
+  (input  (do
+            (inline-never
+              (def (apply2 (const (: d (Record (op (-> Int64 Int64))))) (: x Int64))
+                ((. d op) ((. d op) x))))
+            (def (main) (+ (apply2 (record (op (fn (n) (+ n 10)))) 5)
+                           (apply2 (record (op (fn (n) (+ n 10)))) 100)))
+            (export main)))
+  (output (: 145 Int64)))
+
+(case "inline-always on a recursive definition is rejected"
+  (doc    "`inline-always` asks the compiler to always fold a def at its call sites, but a RECURSIVE def
+           cannot inline (it would inline without end; it is always emitted as one function). The marker is
+           therefore a contradiction and is rejected (CDZ0201). The rejection is the program's outcome.")
+  (input  (do
+            (inline-always (def (loop-n (: n Int64)) (if (= n 0) 0 (loop-n (- n 1)))))
+            (def (main) (loop-n 5))
+            (export main)))
+  (error  CDZ0201))

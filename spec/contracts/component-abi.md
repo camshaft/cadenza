@@ -74,8 +74,8 @@
 > **Contract version: 5.** Version 5 adds the cross-component shared-runtime value transport (§Cadenza
 > Components Composed Against A Shared Runtime Exchange Values As Handles): when two separately-derived
 > Cadenza components are composed against one value-heap runtime instance, a compound value passes between
-> them as an opaque handle of the well-known `value` resource type the runtime interface publishes, rather
-> than being marshaled into a component-model aggregate at each hop, so that a value crosses between Cadenza
+> them as an opaque handle into that shared runtime (its concrete boundary form fixed at the declared-default
+> location), rather than being marshaled into a component-model aggregate at each hop, so that a value crosses between Cadenza
 > components with no serialization while remaining meaningful only within the one shared runtime instance
 > that owns it (§The Value-Heap Runtime, §A Runtime Value Crosses As An Opaque Handle). This is the internal
 > composition representation for a value crossing between Cadenza components; the external marshaling
@@ -217,11 +217,11 @@ The text the compiler-emitted rendering produces MUST be the value's canonical t
 
 ### Cadenza Components Composed Against A Shared Runtime Exchange Values As Handles
 
-Two or more separately-derived Cadenza components that a host composes against a single value-heap runtime instance MUST exchange a compound value that crosses between them as an opaque handle of the well-known `value` resource type, rather than by marshaling the value into a component-model aggregate at the crossing, so that a value passes between Cadenza components with no serialization and the shared runtime that owns the value is the one place its representation lives.
+Two or more separately-derived Cadenza components that a host composes against a single value-heap runtime instance MUST exchange a compound value that crosses between them as an opaque handle into that shared runtime, rather than by marshaling the value into a component-model aggregate at the crossing, so that a value passes between Cadenza components with no serialization and the shared runtime that owns the value is the one place its representation lives.
 
 A scalar value that crosses between such components MUST cross by its component-model scalar representation and not as a handle, so that only a value the runtime owns is carried by handle and a scalar carries no runtime dependency.
 
-The `value` resource type by which a handle crosses MUST be a single well-known type the value-heap runtime interface publishes and every composed component imports, so that a handle one component produces is a value of the same resource type another component accepts and the transport needs no per-type resource.
+The opaque handle by which a compound value crosses MUST be interpretable only by the shared runtime — the same runtime handle a program exchanges with the runtime across its internal boundary (§A Runtime Value Crosses As An Opaque Handle) — so that a handle one component produces is a value the other accepts without either dereferencing it, and the concrete boundary form of that handle (a runtime handle valtype, or a well-known `value` resource type the runtime interface publishes) is fixed at the declared-default location rather than by this contract.
 
 ### A Cross-Component Handle Is Meaningful Only In The Shared Runtime Instance
 

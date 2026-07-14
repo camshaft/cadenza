@@ -302,13 +302,45 @@ composition; no wasmparser in the compile path, no external interface artifact n
   reads element 0 back through the shared instance → 42.** cdz-run refactor + test-only; gate 1932 pass / 0
   fail / 0 regressions (the ordinary single-component run path is unchanged). This is the prerequisite for
   a `value` handle crossing.
-- **X5b — a compound value crosses as a `value` handle (NEXT).** Extend X3/X4b: a compound arg crosses as
-  `borrow<value>`, a compound result as `own<value>`. B builds a `List` on the shared heap (X5a), hands the
-  handle to A as `borrow<value>`; A reads it via the runtime accessors as its statically-known `(List
-  Int64)`; A returns a `value` B receives. **Reuses the round-trip rep/borrow mechanics wholesale** (§3) +
-  the shared instance (X5a). This is where "any runtime value crosses multiple Cadenza components without
-  serialization" lands. Then widen across the value matrix (String/Bytes/Map/Set/Tuple/Record/Sum/BigInt/
-  Rational/nested) as the closures result-matrix was widened — each a small coverage brick.
+- **X5b — a compound value crosses as a shared handle. ✅ DONE (`spec`) — THE PAYOFF.** A runtime
+  compound crosses between peers as its opaque `u32` heap handle over the shared runtime (X5a), NO
+  serialization. Pieces: (1) `host::extern_abi_val_type` maps a runtime-owned compound
+  (tuple/record/sum/list/map/set/string/bytes/bigint/rational + erased nominal/qty) to `AbiValType::U32`
+  (the handle), a scalar to its scalar rep — so `collect_extern_imports` carries a compound arg/result as
+  the handle instead of dropping it. (2) `envelope::assemble_extern_runtime` — the peer analogue of
+  `assemble_host_runtime`: imports the peer interface (as `"peer"`) AND the runtime (as `"heap"`), for a
+  consumer that receives a compound handle and INSPECTS it (a projection imports `arr-get`/`get-int`).
+  (3) `serialize::core_module_with_extern_runtime` + `core_module_impl` reordered extern-FIRST (`0..e`
+  peer, `e..e+k` runtime; extern+host never coexist so host/`CallHostImport` unaffected — byte-neutral,
+  gate 1938/0/0). (4) `emit` lifts the extern+runtime decline → routes to the fusion core+envelope. **Proven
+  e2e (`x5b_*`): a peer builds a runtime `(tuple x x)` and returns the handle; a SOURCE consumer `(extern
+  "cadenza:pairs/api" (pair (-> Int64 (Tuple Int64 Int64)))) … (. (pair x) 0)` receives it as its static
+  type over the shared runtime → main(7) = 7.** 🔑 ABI clause softened: a compound crosses as "an opaque
+  handle into the shared runtime" (concrete form — runtime handle valtype or a `value` resource — a
+  declared-default choice), matching how the runtime already backs handles as bare `u32`. SCOPE: the
+  compound crosses as the u32 handle; widening the value matrix + the PROVIDER-side compound export from
+  SOURCE (currently the source provider hits the parameterized-heap-return limit; a hand-built peer proved
+  the consumer side) are follow-ups (X5c).
+- **X5c — provider-side compound export from source. ✅ DONE (`spec`).** A source PROVIDER returning a
+  runtime compound now publishes it as a `u32` handle through its interface. Pieces: (1) the host
+  resource-escape is SKIPPED for a provider (`db.component_name.is_none()` guard) — a compound crosses to a
+  peer as a handle, not the host `list<u8>` escape; (2) the boundary-export loop, for a provider, maps a
+  compound result/param to its `u32` handle (`host::extern_abi_val_type`); (3) `envelope::assemble_provider_runtime`
+  — a provider whose exports BUILD runtime values (imports the runtime) bundles the lifted funcs into the
+  interface instance (the `assemble_with_imports` + `assemble_provider` fusion); `emit` routes a provider to
+  it when `imports` non-empty, else the bare `assemble_provider`. **Proven e2e (`x5c_*`): BOTH sides from
+  source — a provider `(def (pair (: x Int64)) (tuple x x)) (export pair)` (component-name cadenza:pairs/api)
+  + a consumer `(extern "cadenza:pairs/api" (pair (-> Int64 (Tuple Int64 Int64)))) … (. (pair x) 0)` →
+  main(9) = 9.** 🪤 byte bug fixed by `wasm-tools print`: the bundled instance is component-instance 1 (the
+  imported runtime instance is 0), so export index 1, not 0. Byte-neutral (provider paths fire only when
+  `component_name` set — gate 1953/0/0).
+- **X5d — value-matrix widening coverage. ✅ DONE (`spec`, test-only).** `extern_abi_val_type` maps every
+  runtime-owned type to the u32 handle uniformly, so String/List/Record (and by construction Map/Set/Sum/
+  nested) cross the SAME shared-handle way with no new machinery. Locked in by `x5d_*` (all two-source):
+  a `(List Int64)` (consumer reads `List.len` → 2), a runtime `String` (consumer reads `String.byte-len`),
+  a `(Record (a …) (b …))` (consumer reads field `b`). REMAINING (follow-up, non-blocking): own/borrow
+  RECLAMATION across the boundary (a handle a peer produces + the consumer drops — leak-free discipline,
+  the `heap_operand_ownership` analogue), and Map/Set/Sum/nested explicit coverage.
 
 **X6+ — widenings (optional, non-blocking):** own-vs-borrow policy corners; N-component graphs (a diamond
 import); a value's lifetime across a multi-hop call chain (A→B→C sharing one heap); the outermost

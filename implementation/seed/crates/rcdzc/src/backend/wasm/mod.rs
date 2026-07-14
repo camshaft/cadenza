@@ -215,7 +215,12 @@ pub fn emit(
     // single nullary-export case takes the resource shape; any other (multi-export, parameterized) falls
     // through and declines below with the arity/parameter diagnosis (`crosses_as_resource_escape` there too,
     // so the message names the real constraint, not the type).
-    if let [e] = &layout.exports[..]
+    // A PROVIDER (X5c, `db.component_name` set) publishes its exports to a PEER over the shared runtime,
+    // so a compound result crosses as its `u32` handle through the provider interface — NOT as the HOST
+    // resource-escape (which serializes to `list<u8>` and declines a parameterized heap return). Skip the
+    // escape for a provider; a compound export takes the provider path below.
+    if db.component_name.is_none()
+        && let [e] = &layout.exports[..]
         && crosses_as_resource_escape(&e.result)
     {
         let body = def_body(db, e.def)?;
@@ -464,10 +469,13 @@ pub fn emit(
         let body = def_body(db, def)?;
         host::collect_extern_imports(db, body, &mut extern_imports);
     }
-    if !extern_imports.is_empty() && (!host_imports.is_empty() || !imports.is_empty()) {
+    // An extern import composed with a HOST effect is not yet emitted (a consumer that both binds a peer
+    // AND delegates a host effect — a further fusion). An extern + the value-heap RUNTIME (a consumer that
+    // receives a compound `value` handle from a peer and inspects it) IS emitted (X5, `assemble_extern_runtime`).
+    if !extern_imports.is_empty() && !host_imports.is_empty() {
         return Err(Reject::decline(
-            "a cross-component extern import composed with a host effect or the value-heap runtime is \
-             not yet emitted (the extern + host/runtime import fusion is a later increment)",
+            "a cross-component extern import composed with a host effect is not yet emitted \
+             (the extern + host import fusion is a later increment)",
         ));
     }
     // A program mixing a host effect AND the value-heap runtime composes BOTH import spaces
@@ -568,8 +576,13 @@ pub fn emit(
     // A HOST-delegating program threads its host imports through the core module's import section (from
     // module `"host"`, ahead of any runtime op); an ordinary program takes the runtime-only path
     // (byte-identical to before).
-    let mut core = if !extern_imports.is_empty() {
-        // X4b-3: an extern-ONLY program (guarded above) — the core imports its peer ops from `"peer"`.
+    let mut core = if !extern_imports.is_empty() && !imports.is_empty() {
+        // X5: a consumer binding a peer AND using the value-heap runtime (it inspects a compound handle
+        // the peer returned) — the core imports peer ops from `"peer"` AND runtime ops from `"heap"`.
+        serialize::core_module_with_extern_runtime(&funcs, &extern_imports, &imports, layout)
+            .map_err(Reject::decline)?
+    } else if !extern_imports.is_empty() {
+        // X4b-3: an extern-ONLY program — the core imports its peer ops from `"peer"`.
         serialize::core_module_with_extern(&funcs, &extern_imports, layout)
             .map_err(Reject::decline)?
     } else if host_imports.is_empty() {
@@ -600,8 +613,34 @@ pub fn emit(
     // Build the component-boundary export list (each export's parameter + result valtypes) and
     // assemble the envelope. Export `k` in the layout lifts core func `k` (exports first, in order).
     let multi_export = layout.exports.len() > 1;
+    let is_provider = db.component_name.is_some();
     let mut boundary: Vec<BoundaryExport> = Vec::new();
     for e in &layout.exports {
+        // A PROVIDER export whose result is a runtime-owned COMPOUND crosses to a PEER as its opaque `u32`
+        // HANDLE over the shared runtime (X5c) — NOT the host resource-escape (skipped above for a
+        // provider) and NOT a decline. Its parameters likewise: a scalar by its scalar rep, a compound by
+        // its handle. `extern_abi_val_type` unifies the two; `Unit` params are elided.
+        if is_provider && let Some(v) = host::extern_abi_val_type(&e.result) {
+            let mut params = Vec::new();
+            for (_, ty) in &e.params {
+                if matches!(ty, crate::ty::Ty::Unit) {
+                    continue;
+                }
+                let av = host::extern_abi_val_type(ty).ok_or_else(|| {
+                    Reject::decline(format!(
+                        "a provider parameter `{}` has no cross-component boundary representation",
+                        ty.render_name()
+                    ))
+                })?;
+                params.push(av.comp_byte());
+            }
+            boundary.push(BoundaryExport {
+                name: e.name.clone(),
+                params,
+                result: crate::backend::wasm::envelope::BoundaryResult::Primitive(v.comp_byte()),
+            });
+            continue;
+        }
         // The export's RESULT crosses as a `BoundaryResult`: unit → None, a scalar → its primitive
         // byte. A HEAP value (a compound OR a String/list/bytes/map/set/symbol/quantity/newtype — every
         // `crosses_as_resource_escape` type) does not cross on THIS multi-export path — the single nullary
@@ -787,6 +826,21 @@ pub fn emit(
                 core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
             })
             .collect();
+        // A consumer that ALSO uses the value-heap runtime (it inspects a compound `value` handle the
+        // peer returned) composes BOTH imports — `assemble_extern_runtime` imports the peer (as `"peer"`)
+        // AND the runtime (as `"heap"`), matching the core's dual import (X5). Otherwise the peer-only
+        // envelope (X3).
+        if !imports.is_empty() {
+            let import_name = runtime_import_name();
+            return Ok(envelope::assemble_extern_runtime(
+                &core,
+                &boundary,
+                &iface,
+                &extern_fns,
+                &imports,
+                &import_name,
+            ));
+        }
         return Ok(envelope::assemble_extern(
             &core,
             &boundary,
@@ -795,18 +849,28 @@ pub fn emit(
         ));
     }
 
-    // A PROVIDER (X4b) publishes its scalar boundary exports as a named INTERFACE INSTANCE (the name the
-    // `component-name` request supplied, stored on the Db) so a peer's `(extern "iface" …)` binds to it.
-    // Only the bare scalar case this increment: no runtime import, and every export scalar/unit (a
-    // compound export as an interface member is a later increment). Otherwise fall through to the ordinary
-    // top-level-export envelope.
+    // A PROVIDER (X4b/X5c) publishes its boundary exports as a named INTERFACE INSTANCE (the name the
+    // `component-name` request supplied, stored on the Db) so a peer's `(extern "iface" …)` binds to it. A
+    // scalar export crosses by value; a runtime COMPOUND export crosses as its `u32` handle (the boundary
+    // loop above already set that). A provider whose exports build runtime values imports the runtime, so
+    // it takes the provider+runtime envelope; a bare (no-runtime) provider the plain provider envelope.
+    // (A `list<u8>`/Bytes result is the host resource-escape shape, never a peer handle — excluded.)
     if let Some(iface) = db.component_name.clone()
-        && imports.is_empty()
         && boundary
             .iter()
             .all(|e| e.result != envelope::BoundaryResult::Bytes)
     {
-        return Ok(envelope::assemble_provider(&core, &boundary, &iface));
+        if imports.is_empty() {
+            return Ok(envelope::assemble_provider(&core, &boundary, &iface));
+        }
+        let import_name = runtime_import_name();
+        return Ok(envelope::assemble_provider_runtime(
+            &core,
+            &boundary,
+            &imports,
+            &import_name,
+            &iface,
+        ));
     }
 
     // The versioned runtime import name (`cadenza:runtime/heap@0.0.0+<hash>`) — the name the runtime
@@ -3795,33 +3859,15 @@ fn emit_distinct_sig_resource(
         } else {
             single_compound_among_scalars(arg_tys.as_slice())
         };
-        // A SOLE NESTED fixed-shape compound arg (a tuple/record with a tuple/record field): detected when the
-        // flat `group_tuple_arg` is None. The per-group `call-<g>` rebuilds the nested cell recursively; the
-        // per-group envelope mints the inner `tuple<…>` types by index from `shape`.
-        #[allow(clippy::type_complexity)]
-        let group_nested: Option<(
-            Vec<crate::backend::wasm::lir::ValType>,
-            serialize::TupleArgRebuild,
-            Vec<crate::backend::wasm::envelope::TupleFieldShape>,
-        )> = if group_tuple_arg.is_none() && arg_tys.len() == 1 {
-            nested_fixed_shape_tuple_arg(&arg_tys[0]).and_then(|(_lb, lv, rf, shape)| {
-                let has_nested = shape.iter().any(|f| {
-                    matches!(
-                        f,
-                        crate::backend::wasm::envelope::TupleFieldShape::Nested(_)
-                    )
-                });
-                has_nested.then_some((
-                    lv,
-                    serialize::TupleArgRebuild {
-                        fields: rf,
-                        base_param: 1,
-                    },
-                    shape,
-                ))
-            })
-        } else {
+        // A NESTED fixed-shape compound arg (a tuple/record with a tuple/record field) — SOLE or among scalars:
+        // detected when the flat `group_tuple_arg` is None. The per-group `call-<g>` rebuilds the nested cell
+        // recursively (interleaving prefix/suffix scalars); the per-group envelope mints the inner `tuple<…>`
+        // types by index from `shape` + interleaves the prefix/suffix boundary bytes. `NestedCompoundArgBoundary`
+        // = (leaf_bytes [unused], full flattened vts, rebuild, shape, prefix bytes, suffix bytes).
+        let group_nested: Option<NestedCompoundArgBoundary> = if group_tuple_arg.is_some() {
             None
+        } else {
+            nested_sole_or_among_scalars(arg_tys.as_slice())
         };
         let arg_bytes: Vec<u8> = if group_tuple_arg.is_some() || group_nested.is_some() {
             Vec::new() // the flattened tuple fields are carried by `tuple_arg`/`nested_shape`
@@ -3867,8 +3913,8 @@ fn emit_distinct_sig_resource(
         // fields, suffix scalars), else each arg's own valtype.
         let arg_vts: Vec<ValType> = if let Some((_, all_vts, _, _, _)) = &group_tuple_arg {
             all_vts.clone()
-        } else if let Some((leaf_vts, _, _)) = &group_nested {
-            leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
+        } else if let Some((_, all_vts, _, _, _, _)) = &group_nested {
+            all_vts.clone() // prefix scalars, then the nested tuple's depth-first leaves, then suffix scalars
         } else {
             arg_tys
                 .iter()
@@ -3886,13 +3932,13 @@ fn emit_distinct_sig_resource(
         // The lifted lambda's own param shape: it takes each ARG's OWN valtype — a tuple arg is ONE i32
         // tuple-cell handle (the `call-<g>` wrapper rebuilds it from the flattened fields), scalars are
         // themselves. So `match_vts` is per-arg (NOT the flattened boundary fields in `arg_vts`).
-        let match_vts: Vec<ValType> = if group_tuple_arg.is_some() {
+        let match_vts: Vec<ValType> = if group_tuple_arg.is_some() || group_nested.is_some() {
+            // Each ARG's OWN lambda-param valtype: a fixed-shape tuple/record (flat OR nested) is ONE i32 cell
+            // handle the `call-<g>` wrapper rebuilds; a scalar is its own valtype.
             arg_tys
                 .iter()
                 .map(|t| {
-                    // A fixed-shape tuple/record arg → the ONE i32 cell handle the lambda takes; a scalar → its
-                    // own valtype.
-                    if tuple_field_abi(t).is_some() {
+                    if tuple_field_abi(t).is_some() || nested_fixed_shape_tuple_arg(t).is_some() {
                         Some(ValType::I32)
                     } else {
                         valtype_of(t)
@@ -3900,19 +3946,18 @@ fn emit_distinct_sig_resource(
                     .ok_or_else(|| Reject::decline("closure arg has no machine valtype"))
                 })
                 .collect::<Result<_, _>>()?
-        } else if group_nested.is_some() {
-            // A sole nested tuple/record arg is ONE i32 cell handle to the lambda (the `call-<g>` wrapper
-            // rebuilds it recursively from the flattened leaves).
-            vec![ValType::I32]
         } else {
             arg_vts.clone()
         };
-        // A nested group carries its recursive rebuild in `tuple_arg` (field_bytes unused) + its shape in
-        // `nested_shape`; a flat group carries the field bytes + rebuild in `tuple_arg`, `nested_shape` None.
-        let nested_shape = group_nested.as_ref().map(|(_, _, shape)| shape.clone());
+        // A nested group carries its recursive rebuild + prefix/suffix in `tuple_arg` (field_bytes unused) + its
+        // shape in `nested_shape`; a flat group carries the field bytes + rebuild in `tuple_arg`, `nested_shape`
+        // None.
+        let nested_shape = group_nested
+            .as_ref()
+            .map(|(_, _, _, shape, _, _)| shape.clone());
         let tuple_arg = group_tuple_arg
             .map(|(fb, _, pre, suf, rb)| (fb, pre, suf, rb))
-            .or_else(|| group_nested.map(|(_, rb, _)| (Vec::new(), Vec::new(), Vec::new(), rb)));
+            .or_else(|| group_nested.map(|(_, _, rb, _, pre, suf)| (Vec::new(), pre, suf, rb)));
         ginfos.push(GroupInfo {
             arg_vts,
             ret_vt,

@@ -1077,6 +1077,50 @@
               (handle Diag (list) ((emit (v) s (resume unit (List.push s v))) (collect (u) s (resume s s))) (List.len (walk 3)))) (export main)))
   (output (: 3 Int64)))
 
+(case "a recursive effectful walk BUILDS a list as its return value, one fresh element per step"
+  (doc    "The list is the recursion's RETURN VALUE (not handler state, unlike the accumulator case above):
+           a recursive `build` reads a fresh index and CONSES it onto the list the rest of the walk returns.
+           The perform is bound in a `let` BEFORE the self-call — `(let ((v (Idx.next))) ((. List push)
+           (build (- n 1)) v))` — so `v` reads PRE-recursion state (the sound ordering; a perform AFTER the
+           self-call would read the recursion's out-state, which the single-return specialization cannot
+           carry and correctly declines). `Idx` seeded 1 threads `s + 1`, so the three steps read 1, 2, 3 —
+           three fresh elements — and `(List.len (build 3))` = 3. Pins that effect-context specialization
+           lowers a list-BUILDING recursive walk (the shape of a compiler pass collecting fresh names into a
+           list as it descends), with the built list crossing to a `List.len` readout via the value heap.")
+  (input  (do
+            (effect Idx (op next (-> Unit Int64)))
+            (def (build (: n Int64))
+              (if (= n 0)
+                  (list)
+                  (let ((v (Idx.next)))
+                    ((. List push) (build (- n 1)) v))))
+            (def (main)
+              (handle Idx 1 ((next (u) s (resume s (+ s 1))))
+                ((. List len) (build 3)))) (export main)))
+  (output (: 3 Int64)))
+
+(case "the heap list a handle BUILDS escapes the handle and is consumed outside it"
+  (doc    "The handle's VALUE is a heap list, and it flows OUT of the handle into the enclosing scope. Unlike
+           the case above (which reads `List.len` INSIDE the handle body), here the `handle` expression is
+           bound to `xs` in an enclosing `let` and consumed AFTER the handle: `(let ((xs (handle Idx 1 …
+           (build 3)))) ((. List len) xs))`. So the effect-built list is the handle's result value, lives on
+           the value heap, and is a first-class value the surrounding computation reads — the essential shape
+           of a compiler PHASE that runs an effectful walk and hands its collected result (a list of fresh
+           names / diagnostics) to the next phase. `Idx` seeded 1 threads `s + 1`, the walk collects three
+           elements, and the outside `List.len xs` = 3. Pins that a handle's heap-value result crosses the
+           handle boundary intact.")
+  (input  (do
+            (effect Idx (op next (-> Unit Int64)))
+            (def (build (: n Int64))
+              (if (= n 0)
+                  (list)
+                  (let ((v (Idx.next)))
+                    ((. List push) (build (- n 1)) v))))
+            (def (main)
+              (let ((xs (handle Idx 1 ((next (u) s (resume s (+ s 1)))) (build 3))))
+                ((. List len) xs))) (export main)))
+  (output (: 3 Int64)))
+
 ; A RECURSIVE effectful walk whose handler arm resumes WITH THE STATE ITSELF and threads a CHANGED state
 ; `(resume s (+ s 1))` — the exact combination (recursion × a state-threading arm whose resume VALUE is
 ; the state) that leaked a compiler-internal specialization name. The recursive-def specialization

@@ -1054,6 +1054,19 @@ impl Arenas {
         }
     }
 
+    /// If `id` is an `Atom` of a decimal/float literal, its `Decimal`. The float analogue of [`as_int`],
+    /// used by `default-fraction` literal-marking (an exact default grounds a written decimal `0.5` to
+    /// `1/2`, so a decimal literal is marked alongside an integer one).
+    pub fn as_float(&self, id: StructId) -> Option<&Decimal> {
+        match self.get(id) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::Float(d) => Some(d),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// If `id` is an `Atom` of a string literal, its contents.
     pub fn as_str(&self, id: StructId) -> Option<&str> {
         match self.get(id) {

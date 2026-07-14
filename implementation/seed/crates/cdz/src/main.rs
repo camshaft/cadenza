@@ -102,6 +102,11 @@ enum Cmd {
     /// hover. Resolves the offset to a node, then to the definition it is or references, and prints that
     /// definition's `(doc "…")` text. The doc companion of `cdz type-at`/`cdz def`.
     DocAt(DocAtOffsetArgs),
+    /// Every CONCRETE INSTANTIATION of a generic / ad-hoc-polymorphic definition NAME in FILE — the
+    /// monomorphized functions one source definition becomes. Reports each specialization's concrete
+    /// arguments (a recursive generic at each element type, a type-valued-parameter def at each type, and
+    /// a `const` dictionary parameter at each concrete dictionary — the ad-hoc-polymorphism case).
+    Instantiations(InstantiationsArgs),
 }
 
 fn main() -> ExitCode {
@@ -134,6 +139,7 @@ fn main() -> ExitCode {
         Cmd::Highlight(a) => run_highlight(&a),
         Cmd::Doc(a) => run_doc(&a),
         Cmd::DocAt(a) => run_doc_at(&a),
+        Cmd::Instantiations(a) => run_instantiations(&a),
     }
 }
 
@@ -448,6 +454,14 @@ struct ScopeArgs {
 
 #[derive(clap::Args)]
 struct ExportsArgs {
+    /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
+    file: String,
+}
+
+#[derive(clap::Args)]
+struct InstantiationsArgs {
+    /// The generic / ad-hoc-polymorphic definition name whose concrete instantiations to enumerate.
+    name: String,
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
 }
@@ -1557,6 +1571,72 @@ fn run_exports(args: &ExportsArgs) -> ExitCode {
             None => args.file.clone(),
         };
         println!("{loc}: {name} : {ty}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// `cdz instantiations NAME FILE` — every concrete monomorphization of the generic / ad-hoc-polymorphic
+/// definition NAME. Drives `Query::Instantiations`, which forces monomorphization over the whole program
+/// then reads the instantiation record, and prints one line per instance:
+/// `file:line:col: NAME[args…] → spec-name`. The location is the SOURCE definition's name occurrence (so
+/// it points at the generic being instantiated); the args are the concrete per-parameter instantiation
+/// (a runtime param `name: TYPE`, an erased compile-time param `const name = VALUE` — e.g. the concrete
+/// dictionary an ad-hoc-polymorphic call baked in). A NON-generic (never-specialized) definition — or an
+/// unknown name — instantiates nothing and reports so.
+fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
+    let (source, arenas, spans) = match load_program_spanned(&args.file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::Instantiations {
+            name: args.name.clone(),
+        }),
+    );
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_INSTANTIATIONS) else {
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    let text = String::from_utf8_lossy(bytes);
+    if text.trim().is_empty() {
+        eprintln!(
+            "{PROG}: `{}` has no concrete instantiations in {} \
+             (not a generic / ad-hoc-polymorphic definition, or never instantiated)",
+            args.name, args.file
+        );
+        return ExitCode::SUCCESS;
+    }
+    // Each line is `spec-name<TAB>def-name-node-id<TAB>arg;arg;…`. Map the def-name node to a location so
+    // the report points at the generic definition; the args render as `NAME[arg, arg, …]`.
+    let index = cadenza_syntax::query::driver::LineIndex::new(&source);
+    for line in text.lines() {
+        let mut cols = line.splitn(3, '\t');
+        let (spec, node, arglist) = match (cols.next(), cols.next(), cols.next()) {
+            (Some(s), Some(n), Some(a)) => (s, n, a),
+            _ => continue,
+        };
+        let loc = match node
+            .parse::<u32>()
+            .ok()
+            .and_then(|d| spans.get(cadenza_syntax::StructId(d)))
+        {
+            Some(span) => {
+                let (l, c) = index.line_col(&source, span.start);
+                format!("{}:{l}:{c}", args.file)
+            }
+            None => args.file.clone(),
+        };
+        // `;`-joined arg descriptions → a readable `[a, b, c]`; an empty arglist (a nullary generic) → `[]`.
+        let pretty = arglist
+            .split(';')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("{loc}: {}[{pretty}] → {spec}", args.name);
     }
     ExitCode::SUCCESS
 }

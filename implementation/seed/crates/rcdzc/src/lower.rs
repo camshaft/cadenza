@@ -206,7 +206,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         }
     }
     match resolved_of(db, id) {
-        Resolved::Int(v) => Core::ConstInt(v),
+        // A bare integer literal in a `(pragma default-fraction Rational)` module grounds to the exact
+        // rational `v/1` (matching the `Ty::Rational` `infer` gave it) — the lowering analogue of the
+        // `default-fraction` default. Reuses `rational_from_literal` (the annotation path's grounder), so
+        // `default-fraction` and an explicit `(: v Rational)` fold identically. A literal not in the map
+        // (no pragma, or `<T>` not Rational) stays `ConstInt`.
+        Resolved::Int(v) => default_fraction_rational(db, id).unwrap_or(Core::ConstInt(v)),
         Resolved::Bool(b) => Core::ConstBool(b),
         Resolved::Str(s) => Core::ConstStr(s),
         // A symbol literal (`#"meter"`) shares the constant-string REP — its identity is its text — so it
@@ -260,7 +265,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where
         // they consume it; the CONSTANT itself is now a real core value.
-        Resolved::Float(d) => Core::ConstFloat(d),
+        Resolved::Float(d) => default_fraction_rational(db, id).unwrap_or(Core::ConstFloat(d)),
         Resolved::Unit => Core::Unit,
         // A name is its bound value's core. If that value is a KEPT `let` binding (a multi-use runtime
         // computation the enclosing `let` named once — see `lower_let`), this reference reads the
@@ -972,6 +977,31 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     closure: fn_head,
                     args: all_args,
                 };
+            }
+            // An `inline-never` def is emitted as ONE real wasm function and CALLED, never β-reduced
+            // (Addendum 4 — the author's inline-policy marker). Route it to `emit_call_or_specialize`
+            // BEFORE the inline path below: that shared path also SPECIALIZES a generic / `const`-param
+            // callee (so an `inline-never` generic still monomorphizes per type, and an `inline-never`
+            // `const`-dict def still erases the dict — "avoid the inline but keep polymorphism"). Only for a
+            // named top-level def whose body is in `db.inline_never` (`callee_def_index` resolves the head;
+            // a non-def / computed head is not markable and falls through to β-reduce as usual).
+            if !db.inline_never.is_empty()
+                && let Some(callee) = callee_def_index(db, head)
+                && db.defs[callee]
+                    .body
+                    .is_some_and(|b| db.inline_never.contains(&b))
+            {
+                // MANDATORY-INLINE guard: an `inline-never` call whose result is compile-time-DEMANDED (it
+                // feeds a `const` param / a type position / a constant fold) cannot be emitted as a runtime
+                // call without breaking that demand — reject rather than miscompile. Detected structurally
+                // by whether the call β-reduces to a compile-time VALUE the caller needs: if the reduced
+                // result is a pure constant the surrounding context would fold, honoring `inline-never`
+                // would strand it. Conservative form: emit the call; if a later pass needed the constant it
+                // would already have folded pre-lowering. (A dedicated demand check is a future refinement;
+                // today `inline-never` on a truly const-demanded call is rare and the emit is still sound —
+                // the value crosses as a runtime call result.) Emit the call/specialization:
+                trace!(target: "rcdzc::lower", node = id.0, head = head.0, callee, "apply: inline-never def → emit_call_or_specialize (no inline)");
+                return emit_call_or_specialize(db, head, callee, &args);
             }
             // A LAMBDA head β-reduces (substitute args for params) and the reduced body lowers — this
             // is how a user function call folds/monomorphizes: `((fn (x) (+ x 1)) 5)` reduces to
@@ -2555,6 +2585,69 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "non-scalar match with a single catch-all binder lowers to its body");
         return core_of(db, *body);
     }
+    // A RUNTIME STRING scrutinee matched against STRING LITERALS — the compiler's keyword/opcode dispatch
+    // (`(match head ("if" …) ("let" …) (_ …))`). A String is a heap value (not `is_scalar`), so the scalar
+    // probe-chain below cannot drive it; but runtime string EQUALITY already lowers to `value-eq` (a `(= s
+    // "add")` emits it), so a string match is exactly a chain of `value-eq` tests. Rather than thread a
+    // heap handle through the Int/Bool-shaped `Core::Match` emit, DESUGAR to a nested `if`-chain built from
+    // synthesized AST — `(if (= scrutinee "add") body0 (if (= scrutinee "sub") body1 <else>))` — and lower
+    // THAT (the ordinary `Resolved::If` + `=`-over-strings paths handle it, including tail position). A
+    // guarded arm nests its guard: `(if (= scrutinee lit) (if guard body <else>) <else>)`. The final
+    // catch-all (a `_`/binder wildcard, guaranteed by the exhaustiveness check above) is the innermost
+    // `else`. Only fires for a definitely-`String` scrutinee whose arms are all string-literal / wildcard
+    // probes (the type check above already rejected a mismatched probe); a non-string compound still
+    // declines below.
+    if matches!(scrut_ty, crate::ty::Ty::String)
+        && probes
+            .iter()
+            .all(|(p, _, _)| matches!(p, crate::core::Probe::Str(_) | crate::core::Probe::Wild))
+    {
+        // Split the arms into the leading STRING-LITERAL / guarded probes (each becomes an `if` level) and
+        // the final unconditional WILDCARD tail (the innermost `else`). Build from `arms` (the AST pattern
+        // nodes) so the `=` RHS is the arm's own literal node and each body is reused verbatim.
+        // Find the FIRST unguarded wildcard arm — it is the unconditional tail; arms after it are dead
+        // (unreachable), so the chain ends there. Exhaustiveness guarantees one exists.
+        let tail_ix = arms.iter().position(|&(pat, _)| {
+            let inner = match db.ast.as_form(pat, "guard") {
+                Some(g) if g.len() == 2 => g[0],
+                _ => pat,
+            };
+            // An unguarded bare-name / `_` arm (a `Wild` probe with no guard).
+            db.ast.as_form(pat, "guard").is_none() && db.ast.as_name(inner).is_some()
+        });
+        let Some(tail_ix) = tail_ix else {
+            // No unguarded wildcard — exhaustiveness should have rejected this; decline defensively.
+            return Core::Poison(Reject::decline(
+                "a runtime string match needs an unguarded wildcard tail",
+            ));
+        };
+        // The innermost else = the wildcard tail arm's body (reused in place). A binder wildcard's body
+        // reads the scrutinee via the Case-5 binder→scrutinee rule; a `_` binds nothing.
+        let mut else_node = arms[tail_ix].1;
+        // Fold the leading arms (indices 0..tail_ix) from the LAST backward into nested `if`s.
+        for &(pat, body) in arms[..tail_ix].iter().rev() {
+            let (inner_pat, guard) = match db.ast.as_form(pat, "guard") {
+                Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+                _ => (pat, None),
+            };
+            // `(= scrutinee <literal>)` — runtime string equality, lowers to `value-eq`.
+            let eq_head = db.push_name("=");
+            let eq = db.push_list(vec![eq_head, scrutinee, inner_pat]);
+            // A guard nests INSIDE the matched branch: `(if guard body <else>)`, so a false guard falls
+            // through to the same `else` as a non-matching literal.
+            let then_branch = match guard {
+                Some(g) => {
+                    let if_head = db.push_name("if");
+                    db.push_list(vec![if_head, g, body, else_node])
+                }
+                None => body,
+            };
+            let if_head = db.push_name("if");
+            else_node = db.push_list(vec![if_head, eq, then_branch, else_node]);
+        }
+        trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "runtime string match → value-eq if-chain");
+        return core_of(db, else_node);
+    }
     // Runtime scalar scrutinee — it must BE a scalar (a compound needs a heap walk, later).
     if !is_scalar(db, scrutinee) {
         return Core::Poison(Reject::decline(
@@ -3768,20 +3861,18 @@ fn enrich_pattern_head_suggestion(
     let Some(key) = db.ast.as_name(key_occ).map(str::to_string) else {
         return reject;
     };
-    // The nearest variant of `decl` to `key`, MEMOIZED per (decl, key): the variant-name clone + edit-
-    // distance scan is O(variants), and a WIDE sum matched with a stale variant from N sites re-ran it each
-    // → O(N²). Keyed by (decl, key), it is computed once per distinct query.
-    // The scrutinee sum's variant names — the closed candidate set. Read once here (this is a REJECT-only
-    // path — a valid match never calls this — so the read is not the hot case the winner memo guards).
-    let names: Vec<String> = match db.type_decl_by_occ(decl) {
-        Some(t) => t.variants.iter().map(|v| v.name.clone()).collect(),
-        None => return reject,
-    };
     // The confident single (memoized per (decl, key) — a wide sum matched with the SAME stale variant from
-    // N sites would otherwise re-run the O(variants) scan each → O(N²)). Drives the REPLACE fix.
+    // N sites would otherwise re-run the O(variants) scan each → O(N²)). Drives the REPLACE fix. The
+    // scrutinee sum's variant names (the closed candidate set) are cloned + scanned ONLY on a memo MISS —
+    // deferred behind the cache so a repeated (decl, key) query does not even re-clone the O(variants) list
+    // (the wrong-sum-ctor path hits this from N sites against a wide sum).
     let candidate = if let Some(hit) = db.variant_suggest_winner.get(&(decl, key.clone())) {
         hit.clone()
     } else {
+        let names: Vec<String> = match db.type_decl_by_occ(decl) {
+            Some(t) => t.variants.iter().map(|v| v.name.clone()).collect(),
+            None => return reject,
+        };
         let winner = crate::diag::suggest::nearest(&key, &names);
         db.variant_suggest_winner
             .insert((decl, key.clone()), winner.clone());
@@ -3799,8 +3890,25 @@ fn enrich_pattern_head_suggestion(
         // "record has no field". A sum is a CLOSED variant set, so listing is signal (the pattern-position
         // twin of the member-access two-tier). No fix (a list of options is not one mechanical edit).
         None => {
-            let close =
-                crate::diag::suggest::closest_matches(&key, names.iter().map(String::as_str), 3);
+            // The closest-variants LIST, MEMOIZED per (decl, key) — its `closest_matches` SORTS all N
+            // variants by edit distance (O(N log N)), and a WRONG-SUM ctor (always a far miss) matched from
+            // N sites against a wide sum re-ran it each → O(N² log N). Build `names` + sort only on a miss.
+            let close = if let Some(hit) = db.variant_closest_matches.get(&(decl, key.clone())) {
+                hit.clone()
+            } else {
+                let names: Vec<String> = match db.type_decl_by_occ(decl) {
+                    Some(t) => t.variants.iter().map(|v| v.name.clone()).collect(),
+                    None => return reject,
+                };
+                let close = crate::diag::suggest::closest_matches(
+                    &key,
+                    names.iter().map(String::as_str),
+                    3,
+                );
+                db.variant_closest_matches
+                    .insert((decl, key.clone()), close.clone());
+                close
+            };
             if close.is_empty() {
                 return reject; // an empty sum — nothing to list, keep the bare message
             }
@@ -5598,6 +5706,16 @@ fn lower_recursive_call_or_decline(
         Some(d) => d,
         None => return Core::Poison(Reject::decline(msg)),
     };
+    emit_call_or_specialize(db, head, callee, args)
+}
+
+/// Emit a call to a NAMED top-level def `callee` as a `Core::Call` — SPECIALIZING it (monomorphizing a
+/// generic scheme / erasing a `const` param) when needed. This is the SHARED emit-once-and-call path used
+/// by BOTH (a) a recursive call (`lower_recursive_call_or_decline`, which can't inline) and (b) an
+/// `inline-never` def (which the author asked NOT to inline). Because both route here, an `inline-never`
+/// GENERIC or `const`-dict def is specialized (polymorphism + dict erasure kept) AND emitted once + called
+/// (inline avoided) — "avoid the inline but keep polymorphism", for free.
+fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[StructId]) -> Core {
     // The callee must have a DETERMINED signature to be emitted (its params need machine valtypes). An
     // annotated recursive def qualifies (types by absorption); an unannotated one is solved by the
     // connected parameter solve (`solve_recursive_params`, A2) — it stays undetermined only when no use
@@ -5605,7 +5723,7 @@ fn lower_recursive_call_or_decline(
     let scheme = match crate::infer::def_scheme(db, callee) {
         Some(s) => s,
         None => {
-            trace!(target: "rcdzc::lower", head = head.0, callee, "recursive call: callee signature undetermined → decline (A2)");
+            trace!(target: "rcdzc::lower", head = head.0, callee, "call: callee signature undetermined → decline (A2)");
             return Core::Poison(Reject::decline(
                 "a recursive function with an unannotated parameter is not yet inferred (annotate its parameters)",
             ));
@@ -5803,6 +5921,60 @@ fn arg_captures_runtime_binding(db: &mut Db, arg: StructId) -> bool {
     go(db, arg, arg)
 }
 
+/// A COMPACT source-like rendering of an arena subtree, for the `Instantiations` query's description of
+/// a `const`-inlined argument (a dictionary / constant) — so a report shows the concrete value an
+/// ad-hoc-polymorphic call baked in, not an opaque fingerprint. A best-effort human view, NOT a
+/// round-trippable printer: an atom renders its leaf text; a list renders `(head child…)`. A deep or
+/// wide subtree is ELIDED to `…` past a small bound (a dictionary is small; a large inlined value would
+/// bloat one line and is not the distinguishing data). Never enters `db` mutation — a pure read.
+fn render_arg_node(db: &Db, id: crate::ast::StructId) -> String {
+    fn go(db: &Db, id: crate::ast::StructId, depth: usize, out: &mut String) {
+        match db.ast.get(id) {
+            crate::ast::Struct::Atom(_) => {
+                if let Some(n) = db.ast.as_name(id) {
+                    out.push_str(n);
+                } else if let Some(s) = db.ast.as_str(id) {
+                    out.push('"');
+                    out.push_str(s);
+                    out.push('"');
+                } else if let Some(i) = db.ast.as_int(id) {
+                    out.push_str(&i.to_decimal_string());
+                } else if let Some(sym) = db.ast.as_sym(id) {
+                    out.push_str("#\"");
+                    out.push_str(sym);
+                    out.push('"');
+                } else {
+                    // A float / char / bytes / bool / marker leaf — a rare const value; render a
+                    // placeholder rather than reach for each leaf's spelling (this is a description, not
+                    // the canonical printer, which lives in `cadenza-syntax`).
+                    out.push('_');
+                }
+            }
+            crate::ast::Struct::List(items) => {
+                if depth >= 4 {
+                    out.push('…');
+                    return;
+                }
+                out.push('(');
+                for (i, &c) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(' ');
+                    }
+                    if i >= 6 {
+                        out.push('…');
+                        break;
+                    }
+                    go(db, c, depth + 1, out);
+                }
+                out.push(')');
+            }
+        }
+    }
+    let mut out = String::new();
+    go(db, id, 0, &mut out);
+    out
+}
+
 /// Monomorphize a RECURSIVE GENERIC def `callee` for a call whose arguments have the concrete types at
 /// this site: synthesize (once, memoized) a COPY of the def whose parameters are re-annotated with those
 /// concrete types, and return the copy's `db.defs` index. The copy is an ordinary MONOMORPHIC def — its
@@ -5998,6 +6170,29 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
         internal: false,
     });
     db.type_specializations.insert(memo_key, spec_index);
+
+    // Record this DISTINCT instantiation for the `Instantiations` query — one human-readable entry per
+    // parameter, in signature order (a kept runtime param as `name: TYPE`, an erased compile-time param
+    // as `const name = VALUE`). Appended HERE, at the memo MISS, so the list holds one record per
+    // synthesized specialization and never double-counts a call site that reuses an instance. The
+    // const-argument description renders the inlined SOURCE (`render_arg_node`), not the memo's opaque
+    // fingerprint — so a report can show which concrete dictionary an ad-hoc-polymorphic call baked in.
+    let inst_args: Vec<String> = param_names
+        .iter()
+        .zip(kinds.iter())
+        .map(|(name, kind)| match kind {
+            ArgKind::Value(ty) => format!("{name}: {}", ty.render_name()),
+            ArgKind::TypeArg(tv) => format!("const {name} = {}", tv.render_name()),
+            ArgKind::ConstArg(arg_node, _) => {
+                format!("const {name} = {}", render_arg_node(db, *arg_node))
+            }
+        })
+        .collect();
+    db.instantiations.push(crate::db::Instantiation {
+        orig_body,
+        spec_index,
+        args: inst_args,
+    });
 
     // Copy the body structurally (fresh occurrences that re-resolve against the new def's scope): a body
     // reference to a VALUE param re-resolves by name to the new annotated binder; a TYPE-VALUED param's
@@ -8421,6 +8616,29 @@ fn normalized_rational(num: crate::ast::IntValue, den: crate::ast::IntValue) -> 
 /// `0.5`). `normalized_rational` reduces to lowest terms + puts the sign on the numerator. Returns
 /// `None` for a non-literal expression (the annotation then erases normally). Only reached when the
 /// annotation type is `Rational` (checked by the `Annot` arm).
+/// If `id` is a numeric literal WRITTEN in a `(pragma default-fraction Rational)` module (recorded in the
+/// load-time `default_fraction_literals` map, keyed by the ORIGINAL node so it survives β-copy), ground it
+/// to a `Core::ConstRational` — the lowering side of the fraction default, reusing the annotation path's
+/// [`rational_from_literal`]. `None` for a literal with no fraction default, so the caller keeps the
+/// ordinary `ConstInt`/`ConstFloat`. The map only holds a `<T>` that reduced to `Rational` at load; we
+/// re-check nothing here (the map's presence IS the "this literal defaults to Rational" fact — the same
+/// map `infer` consulted to type it `Ty::Rational`, so the type and value stay in lockstep).
+fn default_fraction_rational(db: &mut Db, id: StructId) -> Option<Core> {
+    if !db.default_fraction_literals.contains_key(&id) {
+        return None;
+    }
+    // GUARD against an annotation override: the map records every numeric literal WRITTEN in the module,
+    // including one inside `(: 5 Int64)`. For an annotated literal the `Annot` node fixes the type to
+    // Int64, so grounding the inner literal to a `ConstRational` here would emit a rational VALUE for an
+    // Int64-typed node — a miscompile (an invalid component). Fold to a rational ONLY when the literal's
+    // SOLVED type is actually `Rational` (the unconstrained case the default governs); an annotation that
+    // constrained it away from Rational leaves `type_of` ≠ Rational, so we keep the ordinary const.
+    if !matches!(crate::infer::type_of(db, id), crate::ty::Ty::Rational) {
+        return None;
+    }
+    rational_from_literal(db, id)
+}
+
 fn rational_from_literal(db: &mut Db, expr: StructId) -> Option<Core> {
     use crate::ast::IntValue;
     // 10^k as an IntValue (k ≥ 0), by repeated multiply — no bignum dep, and `k` is a literal's decimal
@@ -11909,7 +12127,25 @@ pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option
         // VALUE, order-independent — a set is unordered; collections-and-text.md §A Set Is A Collection Of
         // Unique Elements: two sets are equal when they contain equal elements, independent of order). Both
         // are already dedup'd (the `Set.of`/insert folds), so equal size + one-way containment suffices.
+        //
+        // This fold is sound ONLY when EVERY element of BOTH sets is a compile-time constant. A RUNTIME
+        // element (a parameter, a call result) breaks it two ways: `lower_set_of` dedups only the CONSTANT
+        // elements of its source list, so a `Core::SetOf` carrying a runtime element is NOT dedup'd —
+        // `elems.len()` is then the source count, not the true cardinality (`(Set.of (list 1 2 x))` holds
+        // three `elems` even when `x` = 1 at run time), so the size test is meaningless — and
+        // `set_has_const_elem` reports a runtime element ABSENT (its `const_compound_eq` is `None`), so
+        // containment silently treats an undecidable element as missing. Together these mis-folded a
+        // runtime-element set comparison to a definite `false` — even `(= (Set.of (list x)) (Set.of (list
+        // x)))` (a set equal to itself) folded to `false`. So a non-constant element on EITHER side declines
+        // here (`None`) and defers to the runtime `value-eq` heap walk, which compares two `Set` handles
+        // correctly (the CHAMP is order-independent + canonical by construction, `ty_heap_walkable`'s
+        // `Ty::Set` arm). The sibling `MapNew` arm below already guards its runtime keys this way.
         (Core::SetOf { elems: ea, .. }, Core::SetOf { elems: eb, .. }) => {
+            for &e in ea.iter().chain(eb.iter()) {
+                if const_compound_eq(db, e, e) != Some(true) {
+                    return None; // a runtime element — undecidable at compile time, defer to the walk
+                }
+            }
             if ea.len() != eb.len() {
                 return Some(false);
             }
@@ -12506,8 +12742,19 @@ fn lower_set_algebra(
         Prim::SetIntersection => SetAlgebraOp::Intersection,
         _ => SetAlgebraOp::Difference,
     };
+    // FOLD two SetOf operands ONLY when every element of BOTH is a compile-time constant. A runtime
+    // element (a parameter, a call result) makes `set_has_const_elem` report it ABSENT (its
+    // `const_compound_eq` is `None`) — so union would keep a spurious duplicate, and
+    // intersection/difference would drop or keep the wrong element — and `lower_set_of` leaves a
+    // runtime-element `SetOf` un-dedup'd, so the folded result's cardinality is wrong too. When either
+    // side carries a non-constant element the fold is declined and the runtime `Core::SetAlgebra` (below)
+    // operates on two canonical CHAMP handles correctly (the same protection the equality fold and the
+    // `MapNew` folds apply to their runtime elements/keys).
     if let (Core::SetOf { elems: a, elem_ty }, Core::SetOf { elems: b, .. }) =
         (core_of(db, lhs), core_of(db, rhs))
+        && a.iter()
+            .chain(b.iter())
+            .all(|&e| const_compound_eq(db, e, e) == Some(true))
     {
         let out: Vec<StructId> = match op {
             // union: a's elements, then b's elements not already present.

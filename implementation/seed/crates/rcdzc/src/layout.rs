@@ -398,6 +398,32 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
     ))
 }
 
+/// Force MONOMORPHIZATION to run over the whole program — lower EVERY definition body, so
+/// `type_specialize` fires at every recursive-generic / type-valued / `const` call and
+/// `db.instantiations` holds the complete instantiation set. This is the driver behind the
+/// `Instantiations` query: unlike [`compute`], it does not gate on `(export …)` (a query is TOTAL — it
+/// answers even for a module with no export) and it does not stop at the reachable set (an instantiation
+/// under an unreachable-but-well-formed def is still a real instantiation the query should report — the
+/// same "every def body, reachable or not" totality the diagnostics pass has). Lowering a body is
+/// idempotent and memoized (the `core` column caches each node), so this is safe to call after `compute`
+/// or on its own, and a second call adds nothing. Deterministic: walks `db.defs` in index order.
+///
+/// The walk reuses [`collect_call_callees`] purely for its side effect — it drives `core_of` over every
+/// sub-position of a body, which is what triggers `type_specialize`; the collected callee vec is
+/// discarded. As `type_specialize` appends specialized defs to `db.defs`, the range grows; a plain index
+/// loop over the growing `len()` also lowers each freshly-synthesized specialization's body (closing over
+/// transitive instantiations a specialization itself introduces).
+pub fn force_monomorphize(db: &mut Db) {
+    let mut i = 0;
+    while i < db.defs.len() {
+        if let Some(body) = db.defs[i].body {
+            let mut sink = Vec::new();
+            collect_call_callees(db, body, &mut sink);
+        }
+        i += 1;
+    }
+}
+
 /// Collect the funcref-table slots (`Core::Closure { code }`) a body BUILDS, into `out` — the closure
 /// analogue of [`collect_call_callees`]. A closure value reaching a reachable body means its lifted
 /// function is genuinely used (so it must be emitted with a real body + its table entry); a lambda in

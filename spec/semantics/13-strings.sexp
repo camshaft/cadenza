@@ -118,6 +118,20 @@
   (input  (match "café" ("cafe" 1) ("café" 2) (_ 9)))
   (output (: 2 Int64)))
 
+(case "a RUNTIME string scrutinee matches string literals by equality"
+  (doc    "The RUNTIME companion of the constant string match above — THE compiler head-dispatch idiom: a
+           `match` over a String chosen at run time, against string-LITERAL patterns. `op`'s scrutinee `s`
+           is a runtime String (selected by a Bool, so it does not fold to a constant), matched `(match s
+           (\"add\" 1) (\"sub\" 2) (_ 0))`. A String is a heap value, so this is not a scalar probe chain;
+           it lowers to a chain of `(= s literal)` runtime string-equality tests (`value-eq`, the same
+           equality `=` uses), the wildcard the tail. `op(if true \"add\" \"sub\")` = `op(\"add\")` selects
+           the `\"add\"` arm → 1. Pins that a compiler can dispatch on a runtime keyword/opcode name by
+           pattern, not only on a compile-time-constant string.")
+  (input  (do
+            (def (op (: s String)) (match s ("add" 1) ("sub" 2) (_ 0)))
+            (def (main) (op (if true "add" "sub"))) (export main)))
+  (output (: 1 Int64)))
+
 ; --- The empty string is an ordinary String value ---------------------------------------
 ; `""` is the zero-length string — a first-class String the compiler needs (an empty error message, an
 ; empty name). Its length is 0 (counted in Unicode scalar values, of which it has none), it is equal
@@ -790,3 +804,49 @@
            of the Char order case.")
   (input  (= #\a #\a))
   (output (: true Bool)))
+
+; --- String operations at RUN TIME: a string not fixed at compile time ---------------------------------
+; The string cases above operate on CONSTANT string literals, so their lengths / slices / concatenations
+; fold at compile time. A string chosen at run time — an `(if …)` selecting between two literals produces
+; ONE `String` handle unified from both branches, whose identity is known only at run time — exercises the
+; runtime query path: the length op reads the actual handle, not a folded constant. These pin that path,
+; the string analogue of the runtime-index `List.at` and runtime-key `Map.lookup` cases. (`String.byte-len`
+; and `String.at`/`String.concat` accept a runtime string; `String.scalar-len` on a runtime string and
+; `String.slice` with a runtime bound are later increments the seed declines — not witnessed here.)
+
+(case "the byte length of a run-time-selected string reads the actual handle"
+  (doc    "`(String.byte-len (if b \"hello\" \"hi\"))` — the `if` selects one of two literals at run time,
+           yielding one `String` handle whose length is not a compile-time constant. `b`=true → \"hello\"
+           (5 bytes), `b`=false → \"hi\" (2 bytes). Pins that `String.byte-len` reads the runtime handle's
+           length rather than folding a constant, the string companion of runtime `List.len`.")
+  (input  (do (def (main (: b Bool)) (String.byte-len (if b "hello" "hi"))) (export main)))
+  (call   main (: true Bool)) (output (: 5 Int64))
+  (call   main (: false Bool)) (output (: 2 Int64)))
+
+(case "the byte length of a run-time multibyte string exceeds its scalar length"
+  (doc    "`(String.byte-len (if b \"café\" \"ab\"))` = 5 for \"café\" — the é is a 2-byte UTF-8 scalar, so
+           the BYTE length (5) exceeds the 4 SCALARS (collections-and-text.md — byte length counts the
+           UTF-8 encoding, not the scalars). Pins that the runtime byte-length op counts encoded bytes on a
+           string whose content is decided at run time, not the scalar count.")
+  (input  (do (def (main (: b Bool)) (String.byte-len (if b "café" "ab"))) (export main)))
+  (call   main (: true Bool)) (output (: 5 Int64))
+  (call   main (: false Bool)) (output (: 2 Int64)))
+
+(case "a run-time-index scalar read is present in bounds and absent out of bounds"
+  (doc    "`(String.at \"abc\" i)` at a run-time index reads the one-scalar substring at scalar position
+           `i` — total (collections-and-text.md #A String's Scalars Are Addressable): in bounds → `(Some
+           <one-scalar string>)` (i=0 → \"a\", byte-len 1), out of bounds → `None` (i=5 → -1), never a trap.
+           The string companion of the runtime-index `List.at`; the index is a parameter, so the read runs
+           on the value heap rather than folding.")
+  (input  (do (def (main (: i Int64)) (match (String.at "abc" i) ((Some s) (String.byte-len s)) (None -1))) (export main)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64)) (output (: -1 Int64)))
+
+(case "concatenation with a run-time-selected operand joins the actual strings"
+  (doc    "`(String.concat (if b \"ab\" \"abcd\") \"z\")` joins a run-time-selected left operand with a
+           constant right one; the result's byte length is 3 for \"ab\"+\"z\" and 5 for \"abcd\"+\"z\". Pins
+           that `String.concat` joins the ACTUAL runtime string (not a folded constant) — the total binary
+           join the compiler itself uses to build messages, exercised with a non-constant operand.")
+  (input  (do (def (main (: b Bool)) (String.byte-len (String.concat (if b "ab" "abcd") "z"))) (export main)))
+  (call   main (: true Bool)) (output (: 3 Int64))
+  (call   main (: false Bool)) (output (: 5 Int64)))

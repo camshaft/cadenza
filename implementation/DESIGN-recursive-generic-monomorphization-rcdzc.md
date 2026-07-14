@@ -515,10 +515,17 @@ the callee's own), closing the caller-capture gap the `own`-only check missed.
 
 # ADDENDUM 4: INLINE POLICY — `inline-never` / `inline-always`, default always-inline, heuristic deferred
 
-Status: DESIGN (operator: design now, build later — the compiler-port pivot takes priority). Operator's
-concern (2026-07-14): the compiler inlines EVERY non-recursive call unconditionally, so a helper called
-N times emits its body N times (verified: a 5-mul helper called 3× → 15 muls in the module). Wanted:
-author control over inlining, in the Rust `inline`/`inline(never)`/`inline(always)` spirit.
+Status: LANDED (`inline-never` fully; `inline-always` recorded + conflict-rejected, inert until the
+heuristic; cost heuristic still deferred). Operator's concern (2026-07-14): the compiler inlines EVERY
+non-recursive call unconditionally, so a helper called N times emits its body N times (verified: a 5-mul
+helper called 3× → 15 muls). Wanted: author control over inlining, in the Rust
+`inline`/`inline(never)`/`inline(always)` spirit. AS BUILT: `strip_inline_policy` load pass →
+`db.inline_never`/`db.inline_always`; `lower.rs` routes an `inline_never` call to the shared
+`emit_call_or_specialize` (factored out of `lower_recursive_call_or_decline`) so it emits-once-and-calls
+AND still specializes a generic/`const` callee; `compile.rs` rejects `inline-always` on a recursive def
+(CDZ0201); `cadenza-syntax` printer+parser do `inline-never`/`inline-always def …` (round-trips). Verified:
+`inline-never big` ×2 → 3 muls not 6; `inline-never`+`const` dict → 0 `call_indirect`, one fn per distinct
+dict; `inline-always` on recursion → CDZ0201.
 
 ## Why Cadenza is NOT Rust here (this reframes the whole feature)
 In Rust, codegen emits CALLS and inlining is an OPTIMIZATION on top. In Cadenza, the compiler LOWERS BY

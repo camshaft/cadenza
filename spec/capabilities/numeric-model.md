@@ -91,6 +91,18 @@ Declaring a default integer literal type MUST only determine the type an otherwi
 
 An explicit type annotation or other constraint on an integer literal MUST take precedence over the module's declared default integer literal type.
 
+### A Module May Declare Its Default Fraction Literal Type
+
+A module MAY declare, through a module directive (modules-and-namespaces.md §"A Module Directive Is Drawn From A Fixed Set"), that a numeric literal with no other constraint takes an exact fraction type within that module, so that ordinary arithmetic in that module is exact by default.
+
+When a module declares no default fraction literal type, a numeric literal with no other constraint MUST take the numeric model's default numeric type for its written form (an integer literal the default integer type, a decimal literal the default floating-point type).
+
+The type named by a default-fraction-literal directive MUST be an exact rational type the numeric model admits, and a directive naming a type that is not an exact rational type MUST be rejected with the machine-readable diagnostic for that unsatisfied constraint.
+
+A declared default fraction literal type MUST apply to both an integer-written literal and a decimal-written literal with no other constraint: an integer literal takes the whole value (a denominator of one) and a decimal literal takes the exact fraction its written digits denote, with no rounding.
+
+The definition-site rule and the fixes-a-type-not-a-conversion rule for a default integer literal type MUST apply equally to a default fraction literal type: the default in force is the one declared by the module in which the literal is written, it introduces no implicit conversion between numeric types, and an explicit annotation or other constraint on the literal takes precedence.
+
 ## Exactness
 
 ### Exact Arithmetic Is Exact

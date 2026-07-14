@@ -1098,13 +1098,28 @@ the component type. The new work:
 - **✅ NESTED compound ARG AMONG scalars on the MULTI-EXPORT + MIXED paths** (`8b6fc532`, scalar + list results).
   Extracted a shared `nested_sole_or_among_scalars` classifier all 3 emit paths' `nested_tuple` binding calls;
   the multi/mixed `tpre`/`tsuf` + nested scalar branches thread the nested prefix/suffix. No new serializer/
-  envelope. e2e: multi scalar-then-nested (mk-a→1113, mk-b→887), mixed × List. (Distinct-sig nested-among-scalars
-  still declines — its per-group detector doesn't yet take the among-scalars variant; sole-nested works.)
+  envelope. e2e: multi scalar-then-nested (mk-a→1113, mk-b→887), mixed × List.
+- **✅✅ NESTED compound ARG AMONG scalars on the DISTINCT-SIG path — the NESTED-ARG MATRIX IS FULLY CLOSED**
+  (`63065513`). `emit_distinct_sig_resource`'s per-group `group_nested` uses the shared
+  `nested_sole_or_among_scalars`; `arg_vts` = full flattened, `match_vts` = per-arg (compound → i32 cell), the
+  per-group `tuple_arg` carries the nested prefix/suffix so `SigGroupAbi` interleaves the `call-g` functype. No
+  new envelope/serializer. e2e: two DIFFERENT-sig scalar-then-nested → 1113, 1100 (Bool leaf), × List. **A nested
+  fixed-shape compound ARG now crosses on ALL FOUR export shapes (single/multi/mixed/distinct-sig), SOLE or
+  AMONG scalars, for every result shape.**
+- **✅ DEEPER direct-call compound RESULT shapes witnessed** (`dcedfc29`, corpus-only). The value-form template
+  + value-encode walker descend arbitrarily + compose with the arg rebuild — a nested record result, a
+  Tuple-arg × nested-tuple result, a tuple-with-a-List (compound-with-collection), a nested-arg × nested-result,
+  a Sum-of-tuple, and a List-of-tuples all cross + decode on the direct-call path (all ALREADY worked; corpus
+  lagged). The direct-call RESULT surface is as deep as the arg surface.
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (1) **N
-  compound args** (two tuple args) — `single_compound_among_scalars` rejects >1 tuple; `TupleArgRebuild` + ~65
-  envelope sites + 16 `tuple_defined_type` mint sites assume EXACTLY ONE tuple; a `Vec<TupleArgRebuild>`
-  generalization is a large multi-tick vertical. (2) a **SUM
+  compound args** (two tuple args) — 🏗️ VERTICAL STARTED: brick 1 (`d4099fad`, oracle
+  `two_fixed_shape_tuple_closure_args_cross_by_independent_flattening`) PROVES two `tuple<s64,s64>` args flatten
+  INDEPENDENTLY to 4 core params (no `value-decode` — an impl gap, not an ABI wall). Remaining bricks:
+  generalize the classifier + boundary types from ONE tuple to a `Vec<TupleArgRebuild>` (one per tuple at its
+  own `base_param`), generalize `emit_closure_call_args` to push N rebuilds interleaved with scalars, + mint N
+  `tuple<…>` types in the envelope (like the nested `mint_tuple_type_nested` running-counter approach). A large
+  multi-tick vertical (~16 functype sites), decompose like nested-compound. (2) a **SUM
   (Option) direct-call arg** (needs host→guest decode of
   the discriminant+payload). (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
   does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works for all of
