@@ -178,6 +178,22 @@ impl<'a> Parser<'a> {
         self.atom(Leaf::Name(name.into()), span)
     }
 
+    /// Classify a numeric token's text into a value node, DESUGARING a `100N`/`0.5R` type suffix to
+    /// the annotation `(: <literal> BigInt|Rational)` — the ML twin of the sexpr reader's suffix
+    /// desugar, so a suffixed literal reads to the SAME arena on both surfaces. A bare number stays a
+    /// plain atom. The `Suffixed` leaf is kept as the value child so the printer re-emits the suffix.
+    fn numeric_atom(&mut self, text: &str, span: Span) -> StructId {
+        match literal::classify_word(text) {
+            leaf @ Leaf::Suffixed { kind, .. } => {
+                let colon = self.name(":", span);
+                let value = self.atom(leaf, span);
+                let ty = self.name(kind.type_name(), span);
+                self.list(vec![colon, value, ty], span)
+            }
+            leaf => self.atom(leaf, span),
+        }
+    }
+
     /// An `Atom` of a STRING literal with source `span` — used as the HEAD of a compound-value literal
     /// so it desugars to the primitive CONSTRUCTOR (`[1 2]` → `("list" 1 2)`, `(a, b)` → `("tuple" a
     /// b)`). A string head is the unshadowable primitive: unlike a NAME head (`(list …)`), it is not a
@@ -658,8 +674,18 @@ impl<'a> Parser<'a> {
         match self.kind() {
             Kind::Int | Kind::Float => {
                 let t = self.bump().unwrap();
-                let num = self.atom(literal::classify_word(self.text(t)), span);
-                self.maybe_quantity_literal(num, span)
+                let text = self.text(t).to_string();
+                let num = self.numeric_atom(&text, span);
+                // A TYPE-SUFFIXED literal desugared to a `(: … …)` annotation is NOT a quantity magnitude
+                // (`100N feet` is meaningless — a suffix selects a numeric type, not a unit); only a BARE
+                // number takes the `<num> <unit>` quantity sugar. A suffix is glued (no space), so the
+                // two never both apply to one literal; guard on the suffix so a following name is not
+                // mis-eaten as a unit.
+                if matches!(literal::classify_word(&text), Leaf::Suffixed { .. }) {
+                    num
+                } else {
+                    self.maybe_quantity_literal(num, span)
+                }
             }
             Kind::Str => {
                 let t = self.bump().unwrap();
@@ -1623,7 +1649,10 @@ impl<'a> Parser<'a> {
         match self.kind() {
             Kind::Int | Kind::Float => {
                 let t = self.bump().unwrap();
-                self.atom(literal::classify_word(self.text(t)), span)
+                let text = self.text(t).to_string();
+                // A suffixed literal pattern (`100N`) desugars to `(: 100 BigInt)` here too, so a match
+                // on a big/rational literal reads consistently with a value position.
+                self.numeric_atom(&text, span)
             }
             Kind::Str => {
                 let t = self.bump().unwrap();

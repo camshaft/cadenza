@@ -125,6 +125,15 @@ const KIND_BAD_ESCAPE: u8 = 12;
 const KIND_CHAR: u8 = 13;
 const KIND_BAD_CHAR: u8 = 14;
 const KIND_SYM: u8 = 15;
+// A TYPE-SUFFIXED numeric literal (`100N`/`0.5R`) from the syntax surface. The COMPILER has no
+// `Suffixed` leaf variant: the reader already DESUGARED a suffixed atom to `(: <literal> BigInt|
+// Rational)`, so the compiler needs only the bare literal. This tag therefore decodes to a plain
+// `Int`/`Float` leaf (the suffix is dropped — its type role is carried by the surrounding annotation).
+const KIND_SUFFIXED: u8 = 16;
+const SUFFIX_BIGINT: u8 = 0;
+const SUFFIX_RATIONAL: u8 = 1;
+const BODY_INT: u8 = 0;
+const BODY_FLOAT: u8 = 1;
 
 const TAG_ATOM: u8 = 0;
 const TAG_LIST: u8 = 1;
@@ -356,6 +365,51 @@ fn read_leaf(r: &mut Reader) -> Option<Leaf> {
         KIND_BAD_ESCAPE => Leaf::BadEscape(read_string(r)?.chars().next()?),
         KIND_CHAR => Leaf::Char(read_string(r)?.chars().next()?),
         KIND_BAD_CHAR => Leaf::BadChar(read_string(r)?),
+        // A TYPE-SUFFIXED literal decodes to its BARE `Int`/`Float` leaf: the suffix's type role was
+        // already applied by the reader's desugar to `(: <literal> BigInt|Rational)`, so the compiler
+        // only needs the value. Skip the suffix byte, then read the body exactly as the int/float arms.
+        KIND_SUFFIXED => {
+            // Skip (but validate) the suffix byte — its type role is carried by the reader's `(: …)`
+            // wrap, so the compiler only needs the body.
+            match r.byte()? {
+                SUFFIX_BIGINT | SUFFIX_RATIONAL => {}
+                _ => return None,
+            }
+            match r.byte()? {
+                BODY_INT => {
+                    let (neg, radix) = match r.byte()? {
+                        KIND_INT_POS_DEC => (false, Radix::Dec),
+                        KIND_INT_POS_HEX => (false, Radix::Hex),
+                        KIND_INT_POS_BIN => (false, Radix::Bin),
+                        KIND_INT_NEG_DEC => (true, Radix::Dec),
+                        KIND_INT_NEG_HEX => (true, Radix::Hex),
+                        KIND_INT_NEG_BIN => (true, Radix::Bin),
+                        _ => return None,
+                    };
+                    let len = r.read_var_len()?;
+                    let mag = r.take(len)?;
+                    Leaf::Int {
+                        value: IntValue {
+                            negative: neg,
+                            magnitude: mag.to_vec(),
+                        },
+                        radix,
+                    }
+                }
+                BODY_FLOAT => {
+                    let negative = read_bool(r)?;
+                    let exponent = r.read_i64_be()?;
+                    let sig_len = r.read_var_len()?;
+                    let mag = r.take(sig_len)?;
+                    Leaf::Float(Decimal {
+                        negative,
+                        significand: mag.to_vec(),
+                        exponent,
+                    })
+                }
+                _ => return None,
+            }
+        }
         _ => return None,
     })
 }

@@ -460,6 +460,17 @@ impl<'a> Lexer<'a> {
                 }
             }
         }
+        // A glued TYPE SUFFIX (`100N`, `0.5R`): a single `N`/`R` letter immediately after the number,
+        // with NO intervening space, is part of THIS token so `classify_word` sees `100N` whole and
+        // builds a `Suffixed` leaf. A SPACE before the letter (`5 R`) is a separate token — on the ML
+        // surface that stays quantity-literal sugar (a unit named `R`). Only take the suffix when what
+        // follows it cannot CONTINUE an identifier, so a bare `100N` suffixes but a `100Nx` does not
+        // (the whole token then fails the numeric parse and falls through to a `Name`, rejected — never
+        // a silent mis-read). The token keeps its `Int`/`Float` kind; `classify_word` re-parses the
+        // body together with the suffix letter.
+        if matches!(self.peek(), Some('N' | 'R')) && !self.peek2().is_some_and(is_ident_continue) {
+            end = self.bump().unwrap().span; // consume the N/R suffix
+        }
         let kind = if is_float { Kind::Float } else { Kind::Int };
         Token {
             kind,

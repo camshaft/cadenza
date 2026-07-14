@@ -73,7 +73,7 @@
 //! is an optional strengthening of the same check — the refuse-on-mismatch guarantee holds today, and
 //! swapping the tag's content is a drop-in change.
 
-use crate::ast::{Arenas, Decimal, Leaf, LeafId, Radix, Struct, StructId};
+use crate::ast::{Arenas, Decimal, Leaf, LeafId, Radix, Struct, StructId, SuffixBody, SuffixKind};
 use crate::leb128::{self, Reader};
 use num_bigint::{BigInt, Sign};
 
@@ -94,6 +94,13 @@ const KIND_BAD_ESCAPE: u8 = 12;
 const KIND_CHAR: u8 = 13;
 const KIND_BAD_CHAR: u8 = 14;
 const KIND_SYM: u8 = 15;
+// A TYPE-SUFFIXED numeric literal (`100N`/`0.5R`). Payload: one suffix byte (`SUFFIX_*`), one
+// body-shape byte (`BODY_*`), then the body encoded as a bare int/float would be.
+const KIND_SUFFIXED: u8 = 16;
+const SUFFIX_BIGINT: u8 = 0;
+const SUFFIX_RATIONAL: u8 = 1;
+const BODY_INT: u8 = 0;
+const BODY_FLOAT: u8 = 1;
 
 const TAG_ATOM: u8 = 0;
 const TAG_LIST: u8 = 1;
@@ -208,6 +215,32 @@ fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
             out.push(KIND_BAD_ESCAPE);
             let mut buf = [0u8; 4];
             write_bytes(out, c.encode_utf8(&mut buf).as_bytes());
+        }
+        // A TYPE-SUFFIXED numeric literal: a suffix byte, a body-shape byte, then the body encoded
+        // exactly as a bare `Int`/`Float` leaf would be (so `read_leaf` reuses the same body decode).
+        Leaf::Suffixed { value, kind } => {
+            out.push(KIND_SUFFIXED);
+            out.push(match kind {
+                SuffixKind::BigInt => SUFFIX_BIGINT,
+                SuffixKind::Rational => SUFFIX_RATIONAL,
+            });
+            match value {
+                SuffixBody::Int { value, radix } => {
+                    out.push(BODY_INT);
+                    let (sign, mag) = value.to_bytes_be();
+                    out.push(int_kind(sign, *radix));
+                    leb128::write_u64(out, mag.len() as u64);
+                    out.extend_from_slice(&mag);
+                }
+                SuffixBody::Float(d) => {
+                    out.push(BODY_FLOAT);
+                    out.push(d.negative as u8);
+                    leb128::write_i64_be(out, d.exponent);
+                    let (_sign, mag) = d.significand.to_bytes_be();
+                    leb128::write_u64(out, mag.len() as u64);
+                    out.extend_from_slice(&mag);
+                }
+            }
         }
     }
 }
@@ -331,6 +364,54 @@ fn read_leaf(r: &mut Reader) -> Option<Leaf> {
         KIND_BAD_ESCAPE => Leaf::BadEscape(read_string(r)?.chars().next()?),
         KIND_CHAR => Leaf::Char(read_string(r)?.chars().next()?),
         KIND_BAD_CHAR => Leaf::BadChar(read_string(r)?),
+        // A TYPE-SUFFIXED numeric literal: the suffix byte, a body-shape byte, then the body encoded
+        // as a bare int/float (the same layout `write_leaf` emits and the int/float arms above read).
+        KIND_SUFFIXED => {
+            let kind = match r.byte()? {
+                SUFFIX_BIGINT => SuffixKind::BigInt,
+                SUFFIX_RATIONAL => SuffixKind::Rational,
+                _ => return None,
+            };
+            let value = match r.byte()? {
+                BODY_INT => {
+                    let (neg, radix) = int_kind_parts(r.byte()?)?;
+                    let len = r.read_var_len()?;
+                    let mag = r.take(len)?;
+                    let sign = if neg { Sign::Minus } else { Sign::Plus };
+                    SuffixBody::Int {
+                        value: BigInt::from_bytes_be(sign, mag),
+                        radix,
+                    }
+                }
+                BODY_FLOAT => {
+                    let negative = read_bool(r)?;
+                    let exponent = r.read_i64_be()?;
+                    let sig_len = r.read_var_len()?;
+                    let mag = r.take(sig_len)?;
+                    SuffixBody::Float(Decimal {
+                        negative,
+                        significand: BigInt::from_bytes_be(Sign::Plus, mag),
+                        exponent,
+                    })
+                }
+                _ => return None,
+            };
+            Leaf::Suffixed { value, kind }
+        }
+        _ => return None,
+    })
+}
+
+/// The (sign, radix) an int kind tag encodes — the inverse of [`int_kind`], for the suffixed-literal
+/// body decode (which reuses the bare-int kind byte). `None` for a non-int tag.
+fn int_kind_parts(kind: u8) -> Option<(bool, Radix)> {
+    Some(match kind {
+        KIND_INT_POS_DEC => (false, Radix::Dec),
+        KIND_INT_POS_HEX => (false, Radix::Hex),
+        KIND_INT_POS_BIN => (false, Radix::Bin),
+        KIND_INT_NEG_DEC => (true, Radix::Dec),
+        KIND_INT_NEG_HEX => (true, Radix::Hex),
+        KIND_INT_NEG_BIN => (true, Radix::Bin),
         _ => return None,
     })
 }

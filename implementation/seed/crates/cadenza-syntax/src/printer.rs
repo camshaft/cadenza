@@ -242,6 +242,9 @@ impl<'a> Printer<'a> {
             // ML lexer's `#\` path) to the same leaf.
             Leaf::Char(c) => self.doc.word(literal::render_char(*c)),
             Leaf::BadChar(s) => self.doc.word(format!("#\\{s}")),
+            // A TYPE-SUFFIXED literal renders `<body><suffix>` (`100N`, `0.5R`) — re-reads (via the ML
+            // lexer's glued-suffix scan) to the same leaf.
+            Leaf::Suffixed { value, kind } => self.doc.word(literal::render_suffixed(value, *kind)),
         }
     }
 
@@ -314,6 +317,17 @@ impl<'a> Printer<'a> {
         let args = &items[1..];
 
         if let Some(head) = head {
+            // ---- type-suffix resugar: `(: <suffixed> BigInt|Rational)` -> the bare `100N`/`0.5R` ----
+            // The reader desugars a type suffix to this annotation; print just the suffixed atom (the
+            // suffix carries the type). A bare `(: 100 BigInt)` value-output (plain `Int` child) is NOT
+            // matched and still prints as an explicit annotation.
+            if head == ":"
+                && args.len() == 2
+                && let Struct::Atom(l) = self.a.get(args[0])
+                && matches!(self.a.leaf(*l), Leaf::Suffixed { .. })
+            {
+                return self.expr(args[0], parent_prec);
+            }
             // ---- function type `(-> A B)` -> `A -> B` (right-associative) ----
             if head == "->" && args.len() == 2 {
                 return self.arrow(args[0], args[1], parent_prec);

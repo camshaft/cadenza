@@ -164,6 +164,14 @@ fn print_node(a: &Arenas, id: StructId, out: &mut String) {
     match a.get(id) {
         Struct::Atom(l) => print_leaf(a.leaf(*l), out),
         Struct::List(items) => {
+            // RESUGAR: a `(: <suffixed-literal> BigInt|Rational)` node is the desugared form of a type
+            // suffix (`100N`), so print just the suffixed atom — the suffix already carries the type.
+            // (A bare `(: 100 BigInt)` value-output, whose value child is a plain `Int` not a
+            // `Suffixed`, is NOT matched, so it still prints the explicit annotation.)
+            if let Some(atom) = suffixed_annotation_atom(a, items) {
+                print_node(a, atom, out);
+                return;
+            }
             out.push('(');
             for (i, &child) in items.iter().enumerate() {
                 if i > 0 {
@@ -173,6 +181,19 @@ fn print_node(a: &Arenas, id: StructId, out: &mut String) {
             }
             out.push(')');
         }
+    }
+}
+
+/// If `items` is a `(: <atom> <type>)` annotation whose value child is a `Leaf::Suffixed`, return that
+/// atom's id (the printer resugars it back to the bare `100N`/`0.5R` form). Else `None`. Shared by the
+/// single-line and pretty s-expr printers so both resugar identically.
+fn suffixed_annotation_atom(a: &Arenas, items: &[StructId]) -> Option<StructId> {
+    if items.len() != 3 || a.as_name(items[0]) != Some(":") {
+        return None;
+    }
+    match a.get(items[1]) {
+        Struct::Atom(l) if matches!(a.leaf(*l), Leaf::Suffixed { .. }) => Some(items[1]),
+        _ => None,
     }
 }
 
@@ -231,6 +252,12 @@ fn pretty_node(a: &Arenas, id: StructId, doc: &mut Doc, top: bool) {
             // The reader never produces an empty list; render defensively as `()`.
             if items.is_empty() {
                 doc.word("()");
+                return;
+            }
+            // RESUGAR a desugared type-suffix `(: <suffixed> BigInt|Rational)` to the bare `100N` atom
+            // (same rule as the single-line printer, so both round-trip identically).
+            if let Some(atom) = suffixed_annotation_atom(a, items) {
+                pretty_node(a, atom, doc, false);
                 return;
             }
             // A consistent box: `(head child…)` stays flat when it fits `width`, else EVERY inter-
@@ -316,6 +343,10 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
         Leaf::BadChar(s) => {
             out.push_str("#\\");
             out.push_str(s);
+        }
+        // A TYPE-SUFFIXED literal renders `<body><suffix>` (`100N`, `0.5R`) — re-reads to the same leaf.
+        Leaf::Suffixed { value, kind } => {
+            out.push_str(&crate::literal::render_suffixed(value, *kind))
         }
     }
 }
@@ -804,6 +835,17 @@ impl<'a, 'b> Reader<'a, 'b> {
         // a hit). `classify_word_nonname` returns `Some` only for the number/bool kinds, so a bare name
         // never allocates on the common repeated-identifier path.
         match crate::literal::classify_word_nonname(tok) {
+            // A TYPE-SUFFIXED numeric literal (`100N`, `0.5R`) DESUGARS to the annotation `(: <literal>
+            // BigInt|Rational)` — a suffix IS a terse annotation, so all typing/grounding reuses the
+            // annotation path (and the compiler's codec decodes the `Suffixed` leaf straight to a plain
+            // `Int`/`Float`, seeing exactly `(: 100 BigInt)`). The `Suffixed` atom is kept as the value
+            // child so the PRINTER re-emits the suffix. The whole `(: … …)` list covers the token span.
+            Some(leaf @ Leaf::Suffixed { kind, .. }) => {
+                let colon = self.mk_name(":", span);
+                let value = self.mk_atom_leaf(leaf, span);
+                let ty = self.mk_name(kind.type_name(), span);
+                self.mk_list(vec![colon, value, ty], span)
+            }
             Some(leaf) => self.mk_atom_leaf(leaf, span),
             None => {
                 let id = self.b.leaf_name(tok);

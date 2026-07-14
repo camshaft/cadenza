@@ -70,6 +70,70 @@ pub enum Leaf {
     /// §A Char Is A Single Unicode Scalar Value): a `char` cannot hold a surrogate, so the reader records
     /// the offending spelling here rather than fabricating an invalid scalar. Holds the literal's text.
     BadChar(String),
+    /// A numeric literal carrying an explicit TYPE SUFFIX (`100N`, `0.5R`) — the Rust-style opt-in that
+    /// selects an unbounded/exact numeric type per-literal instead of the fixed-width default. `N`
+    /// selects `BigInt`, `R` selects `Rational`; the body is an ordinary integer or float literal
+    /// (`0xFFN`, `1_000N`, `5R`, `1.25R`, `12e2R`). The reader DESUGARS a suffixed atom to the
+    /// annotation `(: <this-leaf> BigInt|Rational)` so all typing/grounding reuses the annotation path
+    /// (a suffix IS a terse annotation) — and the compiler's codec decodes this leaf straight to a
+    /// plain `Int`/`Float`, so the compiler never needs a distinct variant. This leaf exists on the
+    /// SYNTAX side purely so the PRINTER re-emits the suffix (`100N`, not `(: 100 BigInt)`): its printed
+    /// form is DISTINCT from a value-output annotation over a bare literal (which prints `(: 100
+    /// BigInt)`), which is why a self-describing marker leaf — not a bare `Int` — is required. Holds the
+    /// body value and which type the suffix selects.
+    Suffixed {
+        value: SuffixBody,
+        kind: SuffixKind,
+    },
+}
+
+/// The numeric body a type suffix decorates — an exact integer (with its display radix) or an exact
+/// width-free decimal, the same two shapes the bare `Int`/`Float` leaves carry.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum SuffixBody {
+    Int { value: BigInt, radix: Radix },
+    Float(Decimal),
+}
+
+/// The type a numeric literal suffix selects: `N` → `BigInt` (unbounded integer), `R` → `Rational`
+/// (exact rational). A closed set — the lexer accepts only these two suffix letters.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum SuffixKind {
+    /// `N` — an arbitrary-precision `BigInt`.
+    BigInt,
+    /// `R` — an exact `Rational`.
+    Rational,
+}
+
+impl SuffixKind {
+    /// The suffix character (`N`/`R`) this kind renders with — the dual of the lexer's suffix scan, so
+    /// a suffixed leaf round-trips to text that re-reads to the same leaf.
+    pub fn suffix_char(self) -> char {
+        match self {
+            SuffixKind::BigInt => 'N',
+            SuffixKind::Rational => 'R',
+        }
+    }
+
+    /// The annotation TYPE NAME (`BigInt`/`Rational`) a suffix desugars to — the type in the
+    /// `(: <literal> <type>)` form the reader builds so typing reuses the annotation-grounding path.
+    pub fn type_name(self) -> &'static str {
+        match self {
+            SuffixKind::BigInt => "BigInt",
+            SuffixKind::Rational => "Rational",
+        }
+    }
+
+    /// Classify a single trailing suffix character into its kind, or `None` if it is not a suffix
+    /// letter. The lexer/classifier's suffix set is exactly `{N, R}` — CASE-SENSITIVE (lowercase `n`/`r`
+    /// is not a suffix, keeping one canonical spelling).
+    pub fn from_char(c: char) -> Option<SuffixKind> {
+        match c {
+            'N' => Some(SuffixKind::BigInt),
+            'R' => Some(SuffixKind::Rational),
+            _ => None,
+        }
+    }
 }
 
 /// The base an integer literal's text used. Display-only — it does not change the value.

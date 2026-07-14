@@ -177,6 +177,44 @@
   (input  (+ (: 0.5 Rational) (Rational.of 1 3)))
   (output (: 5/6 Rational)))
 
+(case "an N-suffixed integer literal is a BigInt"
+  (doc    "The `N` type suffix (`100N`) selects `BigInt` per-literal — the Rust-style opt-in that reads
+           as a terse `(: 100 BigInt)` annotation. Being EXPLICIT: a bare `100` stays a fixed-width
+           default; you write `N` to ask for the unbounded integer. `100N` is exactly 100 as a BigInt.")
+  (input  100N)
+  (output (: 100 BigInt)))
+
+(case "an N suffix lets a huge literal need no annotation"
+  (doc    "`100000000000000000000N` — a value no fixed width holds — is a BigInt via the suffix alone,
+           no `(: … BigInt)` wrapper. The suffix is the concise spelling of the annotation grounding.")
+  (input  100000000000000000000N)
+  (output (: 100000000000000000000 BigInt)))
+
+(case "N-suffixed literals compose under BigInt arithmetic"
+  (doc    "`(+ 100N 1N)` = 101 as a BigInt: each suffixed literal is a real BigInt value, so the exact
+           `+` runs over them — the math 'just works' over the suffixed spelling exactly as over
+           `(BigInt.of …)`.")
+  (input  (+ 100N 1N))
+  (output (: 101 BigInt)))
+
+(case "an R-suffixed integer literal is that integer over one"
+  (doc    "The `R` type suffix (`5R`) selects `Rational`: an integer body grounds to `5/1`, the terse
+           form of `(: 5 Rational)`.")
+  (input  5R)
+  (output (: 5/1 Rational)))
+
+(case "an R-suffixed decimal literal is its exact fraction"
+  (doc    "`0.5R` is EXACTLY 1/2 — the `R` suffix over a decimal body grounds to the exact rational
+           (the decimal is captured exactly, so no float rounding). `0.5R` reads as `(: 0.5 Rational)`.")
+  (input  0.5R)
+  (output (: 1/2 Rational)))
+
+(case "an R-suffixed literal composes with exact rational arithmetic"
+  (doc    "`(+ 0.5R (Rational.of 1 3))` = 1/2 + 1/3 = 5/6 exactly — the suffixed literal flows into the
+           exact `+` just like the explicit constructor, so both spellings denote one kind of value.")
+  (input  (+ 0.5R (Rational.of 1 3)))
+  (output (: 5/6 Rational)))
+
 (case "a decimal literal annotated Rational equals its explicit constructor form"
   (doc    "`(= (: 1.25 Rational) (Rational.of 5 4))` is true — the decimal grounding 1.25 -> 5/4 is the
            SAME normalized value the constructor builds, so the two spellings denote one rational.")

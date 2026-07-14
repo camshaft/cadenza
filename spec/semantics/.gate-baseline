@@ -30,6 +30,7 @@ pass	MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`
 pass	MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg
 pass	MULTI-EXPORT: two nested-Tuple-arg closures share one call — driving the sum
 pass	MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`
+pass	N-suffixed literals compose under BigInt arithmetic
 pass	Ok carrying a Some keeps both variant tags
 pass	Qty.unit recovers a derived unit
 pass	Qty.unit recovers a quantity's unit to build another quantity of the same unit
@@ -1168,10 +1169,15 @@ pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
+pass	an N suffix lets a huge literal need no annotation
+pass	an N-suffixed integer literal is a BigInt
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
 pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option carrying a Result is matched across two different sum types
+pass	an R-suffixed decimal literal is its exact fraction
+pass	an R-suffixed integer literal is that integer over one
+pass	an R-suffixed literal composes with exact rational arithmetic
 pass	an SI decimal prefix scales a unit by a power of ten
 pass	an abortive handler abandons a host call in the path it discards
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
