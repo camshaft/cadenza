@@ -32136,6 +32136,48 @@ mod stage1 {
     }
 
     #[test]
+    fn a_misspelled_field_in_a_record_argument_offers_a_rename() {
+        // The ARGUMENT-position twin of the variant-ctor record typo (and the `(. r yy)` member-access
+        // did-you-mean): a record LITERAL passed to a `(: r (Record …))` PARAMETER with one field a
+        // plausible typo of the expected one — `(g (record (fooo 1)))` for a `(Record (foo Int64))` param —
+        // names the field-set difference AND offers the RENAME fix on the misspelled key. Previously the
+        // argument site named the difference but declined the fix the variant-ctor site already gave.
+        let src = "(module m (def (g (: r (Record (foo Int64)))) (. r foo)) \
+                   (def (main) (g (record (fooo 1)))) (export main))";
+        let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        assert!(
+            d.message.contains("missing field `foo`") && d.message.contains("no such field `fooo`"),
+            "names the field-set difference: {}",
+            d.message
+        );
+        let fix = d.fix.as_ref().expect("a rename fix is carried");
+        assert!(
+            fix.replacement.contains("foo"),
+            "the fix renames the typo'd field to `foo`: {:?}",
+            fix.replacement
+        );
+        // The renamed argument compiles.
+        let fixed = "(module m (def (g (: r (Record (foo Int64)))) (. r foo)) \
+                     (def (main) (g (record (foo 1)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(fixed))).is_ok(),
+            "the renamed record argument compiles"
+        );
+        // NO false rename: a genuinely-MISSING field (not a typo of a supplied one) gets the message, no fix.
+        let missing = "(module m (def (g (: r (Record (x Int64) (y Int64)))) (. r x)) \
+                       (def (main) (g (record (x 1)))) (export main))";
+        let dm =
+            compile_component(&crate::codec::encode(&parse(missing))).expect_err("must reject");
+        assert!(
+            dm.message.contains("missing field `y`") && dm.fix.is_none(),
+            "a genuinely-missing field gets no rename fix: {} fix={:?}",
+            dm.message,
+            dm.fix
+        );
+    }
+
+    #[test]
     fn a_field_with_no_close_match_lists_the_available_fields() {
         // No field is within the edit-distance cutoff of `zzzzzz` — so instead of a CONFIDENT "did you
         // mean?" (which would be a baseless guess) OR a bare dead-end "no field" message, the diagnostic

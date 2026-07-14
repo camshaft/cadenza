@@ -9147,18 +9147,23 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 || collection_tail.is_some()
                                 || sum_tail.is_some()
                             {
-                                // A same-shape compound whose single differing leaf is a numeric literal —
-                                // `(record (x 5))` vs `(Record (x Float64))`, `(tuple 1 2)` vs `(Tuple
-                                // Int64 Float64)`, `(list 5)` vs `(List Float64)`. The structural-delta tail
-                                // NAMES the leaf; give it the SAME one-shot coercion fix a bare `(: 5
-                                // Float64)` gets, anchored at the inner value node (`compound_inner_coercion_
-                                // fix` drills the written literal in lockstep with the type delta). Fix-parity
-                                // under a wrapper (M116's annotation-site twin): a directly-written compound
-                                // literal is editable; a non-literal / non-numeric leaf yields None (message
-                                // only).
-                                if let Some(fix) =
+                                // A MISSPELLED FIELD in a written record literal passed where a specific
+                                // record type is expected — `(g (record (fooo 1)))` for a `(: r (Record (foo
+                                // Int64)))` param — is a one-shot RENAME (`fooo` → `foo`), the argument-
+                                // position twin of the member-access `(. r fooo)` did-you-mean fix. Tried
+                                // FIRST (a field-SET typo, not a leaf-type coercion); `record_field_typo_fix`
+                                // fires only on a confident single extra↔missing pairing over a directly-
+                                // written literal, so it never mis-guesses an ambiguous multi-field slip.
+                                // Otherwise the same-shape compound whose single differing leaf is a numeric
+                                // literal gets the coercion fix (`(record (x 5))` vs `(Record (x Float64))` →
+                                // retype `5`→`5.0`), via `compound_inner_coercion_fix` (M116). A non-literal /
+                                // non-numeric leaf yields None (message only).
+                                if let Some(fix) = record_field_typo_fix(
+                                    db, &annot_ty, &expr_ty, expr,
+                                )
+                                .or_else(|| {
                                     compound_inner_coercion_fix(db, expr, &annot_ty, &expr_ty)
-                                {
+                                }) {
                                     reject = reject.with_fix(fix);
                                 }
                             }
