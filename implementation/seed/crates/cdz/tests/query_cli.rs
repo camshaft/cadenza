@@ -1376,6 +1376,32 @@ fn a_misspelled_export_carries_an_applicable_replace_fix_end_to_end() {
 }
 
 #[test]
+fn fix_all_applies_a_mistyped_top_level_keyword_swap_end_to_end() {
+    // A top-level declaration-keyword typo (`(exprot f)` for `export`) reports "unbound name … did you
+    // mean `export`?" AND carries a replace fix on the head — a code-less DECLINE that nonetheless carries
+    // a targeted, verifiable fix. `cdz fix --all` now applies it (the candidacy gate is on the fix's target
+    // node, not the code, and `--verify-fixes` still proves the edit clears the fault), so the file is
+    // repaired to `(export f)` and re-checks clean.
+    let dir = scratch_dir("kw_typo");
+    let f = dir.join("prog.sexp");
+    std::fs::write(&f, "(module m (def (f) 1) (exprot f))\n").unwrap();
+    let (ok, _, stderr) = run(&["fix", "--all", f.to_str().unwrap()], "");
+    assert!(ok, "fix succeeds: {stderr}");
+    assert!(
+        stderr.contains("applied 1 fix"),
+        "reports the count: {stderr}"
+    );
+    let repaired = std::fs::read_to_string(&f).unwrap();
+    assert!(
+        repaired.contains("(export f)") && !repaired.contains("exprot"),
+        "the keyword was swapped: {repaired}"
+    );
+    let (ok2, _, _) = run(&["check", f.to_str().unwrap()], "");
+    assert!(ok2, "the repaired file has no errors: {repaired}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_redundant_match_arm_carries_a_delete_fix_that_fix_all_applies() {
     // A WARNING that carries a machine-applicable fix, surfaced end-to-end: an unreachable match arm
     // (CDZ0213) now carries a `delete` fix. `--json` emits the deletion as an `edits` array; `fix --all`

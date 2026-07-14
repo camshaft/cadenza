@@ -10049,6 +10049,50 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mistyped_top_level_keyword_suggests_the_keyword_and_carries_a_replace_fix() {
+        // A top-level `(head …)` form whose head is a near-miss for a DECLARATION KEYWORD (`exprot`→
+        // `export`, `deff`→`def`) is a mistyped keyword — the likeliest intent in a declaration position.
+        // It now names the intended keyword AND carries a REPLACE fix on the head occurrence, the same
+        // closed-set "did you mean?"-with-fix the export-name / pragma-key sites give (the candidate pool
+        // is `TOP_LEVEL_KEYWORDS`, so the suggestion can never name a keyword the grammar rejects). This is
+        // a code-less DECLINE (a top-level unbound head declines the whole program), so it is found by
+        // message, not code.
+        let find = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("at the top level"))
+                .expect("a top-level unknown head is reported")
+        };
+        let d = find("(module m (def (f) 1) (exprot f))");
+        assert!(
+            d.message.contains("did you mean `export`?"),
+            "names the keyword, not a value def: {}",
+            d.message
+        );
+        let fix = d.fix.as_ref().expect("carries a replace fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(fix.replacement, "export", "swaps the head to the keyword");
+        // `deff` → `def` (the head is the FIRST form, not the export).
+        let d2 = find("(module m (deff (f) 1) (export f))");
+        assert!(d2.message.contains("did you mean `def`?"), "{}", d2.message);
+        assert_eq!(d2.fix.as_ref().map(|f| f.replacement.as_str()), Some("def"));
+        // NO OVERREACH: an unknown top-level head that is NOT close to any keyword (`improt`, `frobnicate`)
+        // keeps the defined-name hint and carries NO keyword fix — a baseless keyword swap is worse than
+        // none.
+        let far = find("(module m (improt x) (def (f) 1) (export f))");
+        assert!(
+            !far.message.contains("did you mean `"),
+            "no baseless keyword suggestion: {}",
+            far.message
+        );
+        assert!(
+            far.fix.is_none(),
+            "no fix for a non-keyword head: {:?}",
+            far.fix
+        );
+    }
+
+    #[test]
     fn an_unannotated_context_typed_closure_param_carries_its_narrow_width_to_the_const_fold() {
         // WRONG-VALUE regression: an UNANNOTATED closure param typed narrow from its storage context's
         // arrow (`app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n) …))`) recovered the arrow's param
