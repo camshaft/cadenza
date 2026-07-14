@@ -85,6 +85,7 @@ pass	TWO Tuple args with a fixed-shape COMPOUND result
 pass	TWO Tuple args with a scalar BETWEEN them (tuple, scalar, tuple)
 pass	TWO performs in an if condition both fold on the strict-first spine
 pass	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
+pass	Type is a first-class value bound to a name and flowed to a type position
 pass	Type.eq compares a reflected type against a written type
 pass	Type.eq distinguishes quantities by their unit
 pass	Type.eq is false for values of different types
@@ -2141,7 +2142,6 @@ pass	wrapping-add on a runtime UInt8 wraps modulo 256
 pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary
 pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64
-todo	Type is a first-class value
 todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a match on an open sum omitting the open-tail arm is rejected
