@@ -2756,3 +2756,36 @@
   (input  (do (def (double n) (* n 2)) (def (add a b) (+ a b))
               (def (main) (|> (|> 5 double) (add 1))) (export main)))
   (output (: 11 Int64)))
+
+; RECURSIVE-GENERIC MONOMORPHIZATION — a recursive function used at more than one type is INSTANTIATED
+; more than once. A non-recursive generic function already monomorphizes by inlining (β-reduction at each
+; call site IS specialization); a RECURSIVE one cannot inline (it would not terminate), so it lowers to a
+; real function. When such a function is GENERIC — a parameter the body only threads, never constraining
+; to a concrete type — the compiler synthesizes ONE specialized copy per distinct concrete instantiation
+; (`glossary.md §Monomorphization`: "concrete specializations by the same compile-time reduction … done
+; before emitting a component interface because generics do not cross the boundary"). Each copy emits as
+; an ordinary monomorphic function with its own machine valtypes; two calls at the SAME type share one.
+
+(case "a recursive generic function is instantiated at two different types"
+  (doc    "`loopn` counts `n` down, threading `x` UNCHANGED — so `x` is generic (the body never fixes its
+           type). Called at Int64 (`(loopn 3 40)` → 40, an i64 slot) AND at String (`(loopn 2 \"hi\")` →
+           \"hi\", an i32 heap handle), it is MONOMORPHIZED into two functions with distinct machine
+           signatures. Before recursive-generic monomorphization the second use was rejected CDZ0203
+           (`x` pinned to Int64 by the first call). `byte-len(\"hi\") = 2`, so `40 + 2 = 42`.")
+  (input  (do
+            (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x)))
+            (def (main) (+ (loopn 3 40) (String.byte-len (loopn 2 "hi"))))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a recursive generic function called at one type twice shares a single instantiation"
+  (doc    "The dedup companion: `loopn` called at Int64 in BOTH `(loopn 3 40)` and `(loopn 2 2)` is
+           instantiated ONCE — the two calls share a single monomorphic function (keyed by the concrete
+           type), not two copies. `40 + 2 = 42`. Pins that monomorphization is per-TYPE, not per-call:
+           the same instantiation is reused, so a program that calls a generic recursive helper at one
+           type many times emits one function for it.")
+  (input  (do
+            (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x)))
+            (def (main) (+ (loopn 3 40) (loopn 2 2)))
+            (export main)))
+  (output (: 42 Int64)))

@@ -898,6 +898,17 @@ pub struct Db {
     /// index of the synthesized specialization, so the same call under the same context reuses one def.
     pub(crate) effect_specializations: crate::fxhash::FxHashMap<(StructId, String), usize>,
 
+    /// Memo of TYPE MONOMORPHIZATIONS (`crate::lower`, recursive-generic monomorphization): a recursive
+    /// GENERIC function called at concrete argument types is emitted ONCE per `(def-body-occ,
+    /// instantiation-key)` as a synthesized copy whose parameters are re-annotated with the concrete
+    /// types (`DESIGN-recursive-generic-monomorphization-rcdzc.md`). The key is the recursive callee's
+    /// body occurrence plus a RENDERED concrete-signature identity (the instantiated param types joined
+    /// — NOT `format!("{:?}", body)`); the value is the `db.defs` index of the synthesized copy, so the
+    /// same def called at the same types reuses one function. A non-recursive call inlines (never reaches
+    /// here); a monomorphic recursive def has no free scheme var (never specializes). Empty for a program
+    /// with no recursive-generic call — byte-identical to before.
+    pub(crate) type_specializations: crate::fxhash::FxHashMap<(StructId, String), usize>,
+
     /// TRANSIENT flow-sensitive value-range REFINEMENTS, active only during wasm emit. A stack of
     /// frames, each mapping a variable's binder occurrence (a `Core::Param`/`LocalRef` `binder`) to a
     /// range `[lo, hi]` KNOWN to hold in the current control-flow branch (`hi = None` = unbounded above).
@@ -1188,6 +1199,7 @@ impl Db {
             types: Column::new(),
             core: Column::new(),
             effect_specializations: crate::fxhash::FxHashMap::default(),
+            type_specializations: crate::fxhash::FxHashMap::default(),
             range_refinements: Vec::new(),
         };
         // NEWTYPE ERASURE: materialize, once, which declared sums are erasable NEWTYPES and their

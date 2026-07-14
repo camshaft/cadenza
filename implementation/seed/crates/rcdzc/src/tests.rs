@@ -23388,6 +23388,57 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_generic_function_is_instantiated_per_type() {
+        // 09-functions "a recursive generic function is instantiated at two different types": `loopn`
+        // threads `x` UNCHANGED, so `x` is GENERIC (the body never fixes its type). A non-recursive
+        // generic inlines (monomorphizes) at each call site; a RECURSIVE one cannot, so it lowers to a
+        // real function. Called at Int64 (`(loopn 3 40)` → 40) AND String (`(loopn 2 "hi")` → "hi"), the
+        // compiler MONOMORPHIZES it into two functions with distinct machine signatures (i64→i64 and
+        // i32-handle→i32-handle) — `lower::type_specialize` synthesizes one copy per concrete
+        // instantiation, re-annotating the generic param. Before, the second use was rejected CDZ0203
+        // (`x` pinned to Int64 by the first call). `40 + byte-len("hi") = 40 + 2 = 42`. Uses the value
+        // heap (the String "hi"), so it SKIPS (not fails) when the runtime store is absent.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
+               (def (main) (+ (loopn 3 40) (String.byte-len (loopn 2 \"hi\")))) (export main))",
+        )))
+        .expect("a recursive generic instantiated at Int64 and String compiles");
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping recursive-generic monomorphization run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(v) => {
+                assert_eq!(v, "42", "loopn instantiated at both Int64 and String")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
+    }
+
+    #[test]
+    fn a_recursive_generic_instantiation_dedups_per_type() {
+        // The dedup companion (09-functions "a recursive generic function called at one type twice shares
+        // a single instantiation"): `loopn` called at Int64 in BOTH `(loopn 3 40)` and `(loopn 2 2)` is
+        // monomorphized ONCE — the two calls share a single function (the specialization memo is keyed by
+        // the concrete instantiation type, so the same type reuses one copy). This is a pure-scalar
+        // program (no heap), so it runs without the value-heap store. `40 + 2 = 42`.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
+               (def (main) (+ (loopn 3 40) (loopn 2 2))) (export main))",
+        )))
+        .expect("a recursive generic at one type twice dedups to one instantiation");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
+    }
+
+    #[test]
     fn a_top_level_value_definition_binds_a_name() {
         // 11-modules "a top-level value definition binds a name usable by the program's functions": a
         // bare-name `(def NAME VALUE)` at the top level (signature is a NAME atom, not a `(sig param…)`

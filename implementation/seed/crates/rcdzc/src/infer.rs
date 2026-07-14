@@ -1090,12 +1090,33 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
         }
     }
 
+    // RECURSIVE-GENERIC MONOMORPHIZATION: a parameter the body only THREADS (its body-solved type is
+    // still a free var) AND that callers invoke at TWO OR MORE distinct concrete types is GENERIC — it
+    // must NOT be pinned to the first caller's type (which would make a second-type call a spurious
+    // CDZ0203). Detect those positions from the body-solved types + the call-site type spread; leave each
+    // a canonical `Ty::Var` so a call-site arg of any type unifies with it, and `lower` monomorphizes the
+    // call to a per-instantiation copy (`DESIGN-recursive-generic-monomorphization-rcdzc.md`). A param
+    // called at ≤1 type stays MONOMORPHIC (seeded below exactly as before — byte-identical).
+    let body_solved: Vec<Ty> = param_binders.iter().map(|(_, v)| subst.apply(v)).collect();
+    let generic_positions = db.defs[def]
+        .body
+        .map(|b| generic_param_positions(db, def, b, &body_solved))
+        .unwrap_or_default();
+
     // Ground each parameter: apply the substitution, FILL any remaining hole (`Any`/free `Var`) from the
     // call-site argument type — a plain unify cannot repair an `Any` (`Any` absorbs), so `fill_holes`
     // merges the determined call-site type into the open positions while keeping the body-pinned parts —
     // then default a still-unsolved NUMERIC variable to the signed-64 integer (a bare literal's default)
     // and leave anything else `Any` (genuinely unconstrained — no call site fixed it).
     for (i, (binder, var)) in param_binders.into_iter().enumerate() {
+        // A GENERIC position stays a fresh canonical `Ty::Var` (quantified in the scheme): do not seed it
+        // from a call site (which would pin it to ONE type) and do not ground it to `Any`.
+        if generic_positions.contains(&i) {
+            let gv = Ty::Var(fresh.var());
+            trace!(target: "rcdzc::infer", def, binder = binder.0, "A2: recursive param is GENERIC (monomorphized per call site)");
+            db.param_types.insert(binder, gv);
+            continue;
+        }
         let mut solved = subst.apply(&var);
         if (solved.has_free_var() || solved.has_any())
             && let Some(Some(at)) = call_seed_arg_tys.get(i)
@@ -1169,6 +1190,68 @@ fn call_site_arg_types(db: &mut Db, def: usize, own_body: StructId) -> Vec<Optio
         }
     }
     out
+}
+
+/// The per-position set of DISTINCT concrete argument types a NON-recursive caller supplies to `def` —
+/// the raw material for deciding a parameter is GENERIC (recursive-generic monomorphization). Unlike
+/// `call_site_arg_types` (which takes the FIRST determined type per position to seed a monomorphic
+/// signature), this collects EVERY distinct determined type at each position, so a position invoked at
+/// two different types (`(loopn 3 a)` : Int64 and `(loopn 2 "hi")` : String) is detected as generic.
+/// `own_body` is `def`'s body, skipped (a self-call's args reference the very params being solved). A
+/// read-only scan over the call-site index; only DETERMINED (non-`Any`/non-`Var`) types are recorded.
+fn call_site_distinct_arg_types(db: &mut Db, def: usize, own_body: StructId) -> Vec<Vec<Ty>> {
+    ensure_call_site_index(db);
+    let call_args: Vec<Vec<StructId>> = db
+        .call_sites_by_callee
+        .as_ref()
+        .and_then(|m| m.get(&def))
+        .map(|sites| {
+            sites
+                .iter()
+                .filter(|(caller_body, _)| *caller_body != own_body)
+                .map(|(_, args)| args.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let arity = call_args.iter().map(Vec::len).max().unwrap_or(0);
+    let mut out: Vec<Vec<Ty>> = vec![Vec::new(); arity];
+    for args in &call_args {
+        for (i, &arg) in args.iter().enumerate() {
+            let t = type_of(db, arg);
+            if !matches!(t, Ty::Any | Ty::Var(_)) && !out[i].contains(&t) {
+                out[i].push(t);
+            }
+        }
+    }
+    out
+}
+
+/// The parameter POSITIONS of recursive def `def` that are GENUINELY GENERIC — a parameter the body
+/// only threads (its body-solved type `solved[i]` is still a free `Var`, so NO operator/self-call pinned
+/// it to a concrete type) AND that the callers invoke at TWO OR MORE distinct concrete types. Such a
+/// parameter must NOT be pinned to the first call site's type (the monomorphic-seeding default): doing so
+/// makes a second call at a different type a spurious CDZ0203. Instead it stays a quantified var in the
+/// scheme, and `lower` monomorphizes the call by synthesizing a per-instantiation copy. A parameter
+/// called at ONE type (or zero — an unexported generic library def) is NOT generic here: it seeds
+/// monomorphically exactly as before (byte-identical). `solved` is the body-solved param type vector
+/// (post-`subst.apply`), indexed by parameter position.
+fn generic_param_positions(db: &mut Db, def: usize, body: StructId, solved: &[Ty]) -> Vec<usize> {
+    // A position is a candidate only if the body left it a free var (threaded, never constrained). A
+    // position the body already pinned to a concrete type is monomorphic — leave it alone.
+    let candidates: Vec<usize> = solved
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.has_free_var())
+        .map(|(i, _)| i)
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let distinct = call_site_distinct_arg_types(db, def, body);
+    candidates
+        .into_iter()
+        .filter(|&i| distinct.get(i).is_some_and(|tys| tys.len() >= 2))
+        .collect()
 }
 
 fn arg_is_other_def_param(db: &mut Db, arg: StructId) -> Option<(usize, usize)> {
@@ -1962,11 +2045,25 @@ fn compute_def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
     for pt in param_tys.into_iter().rev() {
         ty = Ty::Fn(Box::new(pt), Box::new(ty));
     }
-    // A1 schemes are MONOMORPHIC (every param has a concrete annotated type; nothing is quantified).
-    // Real let-generalization — quantifying a free variable a parameter's type still carries — arrives
-    // with the connected solve (A2), which is where a polymorphic def signature becomes meaningful.
-    trace!(target: "rcdzc::infer", def, scheme = %ty.render_name(), "def_scheme: determined monomorphic signature");
-    Some(Scheme::mono(ty))
+    // GENERALIZE: quantify over every free type variable the signature still carries — a recursive-generic
+    // parameter the body only threads is left a `Ty::Var` by the A2 solve (see `generic_param_positions`),
+    // so the scheme is `∀a. … a … a` and each call site `instantiate`s it fresh (recursive-generic
+    // monomorphization; `unify::instantiate` freshens the bound vars). A signature with NO free var
+    // generalizes to `Scheme::mono` exactly as before (`ty_vars` empty) — the monomorphic recursive case
+    // is byte-identical. Only whole-type vars are quantified; a numeric width/sign grounds to a default.
+    let mut ty_vars = Vec::new();
+    ty.collect_free_vars(&mut ty_vars);
+    if ty_vars.is_empty() {
+        trace!(target: "rcdzc::infer", def, scheme = %ty.render_name(), "def_scheme: determined monomorphic signature");
+        return Some(Scheme::mono(ty));
+    }
+    trace!(target: "rcdzc::infer", def, scheme = %ty.render_name(), quantified = ty_vars.len(), "def_scheme: generalized polymorphic signature (recursive-generic)");
+    Some(Scheme {
+        ty_vars,
+        width_vars: Vec::new(),
+        sign_vars: Vec::new(),
+        ty,
+    })
 }
 
 /// The result type of applying `head` to `args` — the ONE generic application rule. Read the head's

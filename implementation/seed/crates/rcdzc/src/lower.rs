@@ -5183,17 +5183,145 @@ fn lower_recursive_call_or_decline(
     // annotated recursive def qualifies (types by absorption); an unannotated one is solved by the
     // connected parameter solve (`solve_recursive_params`, A2) — it stays undetermined only when no use
     // in the body constrains a parameter (it grounds to `Any`), in which case the call still declines.
-    if crate::infer::def_scheme(db, callee).is_none() {
-        trace!(target: "rcdzc::lower", head = head.0, callee, "recursive call: callee signature undetermined → decline (A2)");
-        return Core::Poison(Reject::decline(
-            "a recursive function with an unannotated parameter is not yet inferred (annotate its parameters)",
-        ));
+    let scheme = match crate::infer::def_scheme(db, callee) {
+        Some(s) => s,
+        None => {
+            trace!(target: "rcdzc::lower", head = head.0, callee, "recursive call: callee signature undetermined → decline (A2)");
+            return Core::Poison(Reject::decline(
+                "a recursive function with an unannotated parameter is not yet inferred (annotate its parameters)",
+            ));
+        }
+    };
+    // RECURSIVE-GENERIC MONOMORPHIZATION. A GENERIC scheme (`ty_vars` non-empty — a parameter the body
+    // only threads, generalized in `compute_def_scheme`) has no machine representation for its generic
+    // params. Monomorphize THIS call: synthesize (or reuse) a copy of the callee whose generic params are
+    // re-annotated with the concrete argument types at this site, and call THAT
+    // (`DESIGN-recursive-generic-monomorphization-rcdzc.md`). The same def called at another type gets its
+    // own copy; both emit as ordinary monomorphic functions. A MONOMORPHIC scheme (`ty_vars` empty) takes
+    // the byte-identical `Core::Call { callee }` path below.
+    if !scheme.ty_vars.is_empty() {
+        return match type_specialize(db, callee, args) {
+            Some(spec) => {
+                trace!(target: "rcdzc::lower", head = head.0, callee, spec, "recursive-generic call → monomorphized Core::Call");
+                Core::Call {
+                    callee: spec,
+                    args: args.to_vec(),
+                }
+            }
+            None => Core::Poison(Reject::decline(
+                "a recursive generic function could not be monomorphized at this call (an argument type is undetermined)",
+            )),
+        };
     }
     trace!(target: "rcdzc::lower", head = head.0, callee, args = args.len(), "recursive call → Core::Call");
     Core::Call {
         callee,
         args: args.to_vec(),
     }
+}
+
+/// Monomorphize a RECURSIVE GENERIC def `callee` for a call whose arguments have the concrete types at
+/// this site: synthesize (once, memoized) a COPY of the def whose parameters are re-annotated with those
+/// concrete types, and return the copy's `db.defs` index. The copy is an ordinary MONOMORPHIC def — its
+/// `def_scheme`/`def_params` give it concrete machine valtypes, and `layout` emits it as its own function
+/// (reached via the `Core::Call` this returns). A self-call inside the copied body re-resolves to the
+/// original def by name and, threaded with the same-typed args, re-enters here and hits the memo — so the
+/// recursion points at the specialization itself, exactly as `effects::specialize_recursive` closes its
+/// own recursion. Keyed by `(callee-body, concrete-signature-string)` so the same def at the same types
+/// reuses ONE function (byte-identical copies dedup by construction — same key). Returns `None` if an
+/// argument type is undetermined (`Any`/a free `Var`) — the call declines rather than baking a loose
+/// annotation. Modeled on `effects::specialize_recursive` (minus the trailing state params).
+fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<usize> {
+    let orig_body = db.defs[callee].body?;
+    // The concrete argument type at each position — the instantiation. Every one must be DETERMINED (a
+    // loose `Any`/`Var` annotation would mistype the copied body). `type_of` on the arg occurrence reads
+    // the caller-side type the argument was solved to.
+    let mut arg_tys: Vec<crate::ty::Ty> = Vec::with_capacity(args.len());
+    for &a in args {
+        let t = crate::infer::type_of(db, a);
+        if matches!(t, crate::ty::Ty::Any) || t.has_free_var() {
+            return None;
+        }
+        arg_tys.push(t);
+    }
+    // MEMO KEY: the def's body occurrence + the rendered concrete signature. Two calls at the same types
+    // share ONE specialization; two byte-identical instantiations (e.g. the same type twice) collapse.
+    let key: String = arg_tys
+        .iter()
+        .map(|t| t.render_name())
+        .collect::<Vec<_>>()
+        .join(",");
+    let memo_key = (orig_body, key);
+    if let Some(&idx) = db.type_specializations.get(&memo_key) {
+        return Some(idx);
+    }
+
+    // The original parameter binders — each a bare name `p` or an annotated `(: p T)`. Extract each NAME,
+    // and re-annotate it with the concrete arg type at that position. An annotated param keeps its
+    // (concrete) annotation via the arg type, which must AGREE (the call already type-checked against the
+    // scheme). A non-name binder is unsupported (declines).
+    let orig_params = db.defs[callee].params.clone();
+    if orig_params.len() != arg_tys.len() {
+        return None; // a partial/over-application never reaches a recursive-generic Core::Call
+    }
+    let mut param_names: Vec<String> = Vec::with_capacity(orig_params.len());
+    for &p in &orig_params {
+        let name = match db.ast.as_name(p) {
+            Some(n) => n.to_string(),
+            None => match db.ast.as_form(p, ":").and_then(|t| t.first().copied()) {
+                Some(name_occ) => db.ast.as_name(name_occ)?.to_string(),
+                None => return None,
+            },
+        };
+        param_names.push(name);
+    }
+
+    // The specialized NAME — unique per (def, instantiation). `#` makes it unspellable in source (no user
+    // collision); the def-count suffix keeps distinct specializations distinct.
+    let base = db.defs[callee].name.clone();
+    let spec_name = format!("{base}#mono{}", db.defs.len());
+
+    // Build the specialized signature `(spec (: p0 T0) (: p1 T1) …)` — EVERY param annotated with its
+    // concrete instantiation type, so the copied body types + emits with real machine valtypes.
+    let spec_name_atom = db.push_name(&spec_name);
+    let mut sig_children = vec![spec_name_atom];
+    for (name, ty) in param_names.iter().zip(arg_tys.iter()) {
+        let name_atom = db.push_name(name);
+        let ty_expr = crate::eval::encode_typeval(db, ty);
+        let colon = db.push_name(":");
+        sig_children.push(db.push_list(vec![colon, name_atom, ty_expr]));
+    }
+    let sig = db.push_list(sig_children.clone());
+    let spec_params: Vec<StructId> = sig_children[1..].to_vec();
+
+    // RESERVE the def NOW (body filled after the copy) + MEMOIZE — so the recursive self-call inside the
+    // copied body, re-entering `type_specialize` with the same instantiation, hits the memo and names THIS
+    // spec (closing the recursion at the specialization, not the generic original).
+    let spec_index = db.defs.len();
+    db.push_specialized_def(crate::db::Def {
+        name: spec_name.clone(),
+        sig_occ: sig,
+        params: spec_params.clone(),
+        body: None,
+        internal: false,
+    });
+    db.type_specializations.insert(memo_key, spec_index);
+
+    // Copy the body structurally (fresh occurrences that re-resolve against the new def's scope): a body
+    // reference to a param re-resolves by name to the new annotated binder; a self-call `(callee …)`
+    // re-resolves by name to the ORIGINAL def and, lowered with the same-typed args, re-enters here → memo.
+    let spec_body = crate::eval::copy_structural_pub(db, orig_body);
+
+    // Wrap in a real `(def (spec params…) body)` arena node so the parent index links param → sig → def
+    // (`is_param_occurrence` walks that chain; `binder_in` resolves a body reference against the sig).
+    let def_head = db.push_name("def");
+    let _def_form = db.push_list(vec![def_head, sig, spec_body]);
+
+    db.fill_specialized_def(spec_index, spec_params, spec_body);
+    // Register any do-local recursive functions the copy introduced (the copy-time twin of load-time
+    // registration), so a nested recursive call in the copied body lowers to a `Core::Call`.
+    db.register_reduced_callables(spec_body);
+    Some(spec_index)
 }
 
 /// The `db.defs` index of the top-level def an application head names, if any — following a `Ref` to a
