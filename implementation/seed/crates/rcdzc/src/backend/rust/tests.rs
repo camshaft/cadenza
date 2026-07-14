@@ -323,6 +323,38 @@ fn a_recursive_export_emits_a_self_calling_fn() {
 }
 
 #[test]
+fn an_inlined_do_local_recursive_fn_uniques_its_name_per_copy() {
+    // A helper with a do-local recursive worker, called from MORE THAN ONE site: the helper's body is
+    // β-copied per call, each copy carrying its OWN `fac` DEFINITION (a distinct `db.defs` index) but the
+    // SAME source name. Emitting both as a top-level `fn fac` collides (rustc E0428 "the name `fac` is
+    // defined multiple times") — the wasm backend never collides because a function's identity there is its
+    // INDEX. `fn_ident` uniques each colliding copy by its def index (`fac_<n>`), consistently at the
+    // declaration AND the recursive self-call, so the artifact builds and each copy recurses into itself.
+    // Export under a non-`main` name (`run`) so the round-trip driver's own `fn main` does not collide with
+    // the emitted export (`rustc_run` splices the module beside a driver `fn main`, not under `mod prog`).
+    let rs = compile_rust(
+        "(module m (def (helper x) (do (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))) (fac x))) \
+                    (def (run) (+ (helper 5) (helper 3))) (export run))",
+    );
+    // No two identically-named `fn fac(` may be emitted (that is the E0428 the fix removes).
+    assert_eq!(
+        rs.matches("fn fac(").count(),
+        0,
+        "no two identically-named `fn fac` may be emitted (E0428):\n{rs}"
+    );
+    // Each inlined copy gets its own uniqued `fn fac_<def>` declaration — two distinct declarations.
+    let decls = rs.matches("fn fac_").count();
+    assert!(
+        decls >= 2,
+        "each inlined copy gets its own uniqued `fn fac_<n>` declaration (got {decls}):\n{rs}"
+    );
+    // End-to-end: the emitted crate BUILDS and runs to fac(5)+fac(3) = 120+6 = 126 (the E0428 is gone).
+    if let Some(out) = rustc_run(&rs, "run()") {
+        assert_eq!(out, "126", "the uniqued crate builds and runs:\n{rs}");
+    }
+}
+
+#[test]
 fn mutual_tail_recursion_compiles_to_a_shared_dispatch_loop() {
     // `even`/`odd` are a same-signature mutual-tail-recursion SCC → each emits a SHARED `which`-dispatch
     // loop (no cross-calls, no Box::pin): a tail call to the other member sets `which` + shared locals +

@@ -53,6 +53,10 @@ type Env = HashMap<StructId, String>;
 #[derive(Clone)]
 pub struct Ctx<'a> {
     pub mode: Mode,
+    /// The boundary layout — read by a `Core::Call` to derive the callee's UNIQUED Rust `fn` ident
+    /// ([`super::fn_ident`]), so a call to a β-copied do-local worker names ITS copy, matching the copy's
+    /// declaration (the two agree because both go through `fn_ident`, which suffixes a colliding def index).
+    pub layout: &'a Layout,
     /// `Some` iff the function being emitted is compiled as a `loop` (it tail-calls into its own tail-
     /// recursion group). A tail call to a group member reassigns the shared parameter locals (+ the
     /// `which` state, for a mutual group) and `continue`s instead of recursing; every other tail
@@ -124,7 +128,7 @@ pub fn emit_body(
     body: StructId,
     params: &[(StructId, Ty)],
     self_def: usize,
-    _layout: &Layout,
+    layout: &Layout,
     mode: Mode,
 ) -> Result<String, Reject> {
     // The tail-recursion group this function belongs to, compiled as a shared `loop` (§keeps deep tail
@@ -137,7 +141,7 @@ pub fn emit_body(
         loop_group(db, self_def)
     };
     if !members.is_empty() {
-        return emit_loop_body(db, params, self_def, &members, mode);
+        return emit_loop_body(db, params, self_def, &members, layout, mode);
     }
     // No loop: render the body directly.
     let mut env: Env = HashMap::new();
@@ -146,6 +150,7 @@ pub fn emit_body(
     }
     let ctx = Ctx {
         mode,
+        layout,
         loop_group: None,
         sum_binds: Vec::new(),
         sum_path_types: Vec::new(),
@@ -163,6 +168,7 @@ fn emit_loop_body(
     params: &[(StructId, Ty)],
     self_def: usize,
     members: &[usize],
+    layout: &Layout,
     mode: Mode,
 ) -> Result<String, Reject> {
     let shared_params: Vec<String> = (0..params.len()).map(|i| format!("__p{i}")).collect();
@@ -177,6 +183,7 @@ fn emit_loop_body(
     };
     let ctx = Ctx {
         mode,
+        layout,
         loop_group: Some(&group),
         sum_binds: Vec::new(),
         sum_path_types: Vec::new(),
@@ -679,7 +686,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     _ => rendered.push(emit(db, a, env, ctx)?),
                 }
             }
-            let ident = super::sanitize_ident(&name);
+            // The callee ident via `fn_ident` — the SAME uniqued name its declaration emits, so a call to a
+            // β-copied do-local worker names ITS copy (`fac_7`), not a sibling copy's identically-named fn.
+            let ident = super::fn_ident(db, ctx.layout, callee);
             if ctx.mode.is_async() {
                 // Async/gas mode: thread `env` as the callee's first argument, and `Box::pin(…).await`
                 // the call. The pin is what makes a RECURSIVE `async fn` well-sized (a recursive future

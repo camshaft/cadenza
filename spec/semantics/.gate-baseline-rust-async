@@ -338,6 +338,8 @@ pass	a record with a runtime field is returned as a program result
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 pass	a recursive def computes over its argument
 pass	a recursive def with a match base case computes over its argument
+pass	a recursive do-local function nested in an inlined helper recurses
+pass	a recursive do-local function survives two inlinings of its helper
 pass	a recursive function counts down through a stateful effect and bails at zero
 pass	a recursive function sums a range it walks by performing a fresh-index effect
 pass	a recursive function threads two nested handlers' states at once

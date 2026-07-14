@@ -221,10 +221,11 @@ fn emit_signature(
     // passed to detect a self-call).
     let body_src = expr::emit_body(db, body, params, def, layout, mode)?;
     let vis = if public { "pub " } else { "" };
-    // The function NAME is sanitized to a valid Rust identifier (`sum-to` → `sum_to`) — the SAME
-    // mapping a `Core::Call` uses at the call site, so the declaration and every call agree. (A `-` is
-    // the idiomatic Cadenza word separator but not a Rust ident char.)
-    let ident = sanitize_ident(name);
+    // The function NAME via `fn_ident` — sanitized (`sum-to` → `sum_to`) and UNIQUED per definition when a
+    // β-copied do-local worker would otherwise emit two `fn`s of the same name (E0428). The SAME mapping a
+    // `Core::Call` uses at the call site (it also calls `fn_ident`), so the declaration and every call
+    // agree — including a recursive self-call, which resolves to this def and so re-derives this ident.
+    let ident = fn_ident(db, layout, def);
     // A machine-readable note of the fn's CADENZA result type — its `render_name` (e.g. `Int64`,
     // `(Tuple Int64 Bool)`, `(Record (a Int64) (b Int64))`). The Rust return type erases the structural
     // detail a boundary render needs (field NAMES, `Tuple`-vs-`Record` distinction), so a consumer that
@@ -279,6 +280,52 @@ pub(crate) fn sanitize_ident(name: &str) -> String {
         s.push('_');
     }
     s
+}
+
+/// The Rust `fn` identifier for a reachable definition — the ONE name both the declaration
+/// ([`emit_fn`]/[`emit_export`]) and every `Core::Call` to it must agree on.
+///
+/// An EXPORT keeps its verbatim boundary name (it crosses the crate edge; export names are unique). A
+/// non-export uses [`sanitize_ident`], UNIQUED per definition when its sanitized name COLLIDES with another
+/// emitted definition's. The collision arises from β-copying: a helper with a do-local recursive worker
+/// (`def helper(x) = (def (fac n) …); fac(x)`) called from N sites is inlined N times, each copy carrying
+/// its OWN `fac` DEFINITION (a distinct `db.defs` index) but the SAME source name — so N `fn fac` at module
+/// scope, which rustc rejects (E0428 "the name `fac` is defined multiple times"). The wasm backend never
+/// collides because a function's identity there is its INDEX, not its name; the Rust backend must likewise
+/// give each colliding copy a distinct name. Suffixing the def INDEX (`fac_7`) is deterministic and unique,
+/// and — read identically at the declaration and the call site — keeps the recursive self-call pointing at
+/// its own copy. A def whose name is unique among the emitted set is left un-suffixed (the common case, so
+/// ordinary programs are byte-identical).
+pub(crate) fn fn_ident(db: &Db, layout: &crate::layout::Layout, def: usize) -> String {
+    // The Rust identifier for ANY def is its SANITIZED name (`sum-to` → `sum_to`) — the `-` etc. that
+    // Cadenza allows are not Rust ident chars, so a boundary name is still sanitized for the emitted `fn`.
+    let base = match layout.export_plan(def) {
+        Some(e) => sanitize_ident(&e.name),
+        None => sanitize_ident(&db.defs[def].name),
+    };
+    // An EXPORT is never suffixed: export names are unique, its `pub fn` name is the crate's public entry,
+    // and a call to it (from another def) must name it stably. Only a NON-export can collide (a β-copied
+    // do-local worker inlined at N sites yields N same-named definitions), so only it disambiguates.
+    if layout.export_plan(def).is_some() {
+        return base;
+    }
+    // Does ANY other emitted definition resolve to the same sanitized ident? If so, this non-export must
+    // disambiguate against it (whether the other is an export or another β-copy).
+    let collides = layout.order.iter().any(|&other| {
+        other != def
+            && base
+                == match layout.export_plan(other) {
+                    Some(e) => sanitize_ident(&e.name),
+                    None => sanitize_ident(&db.defs[other].name),
+                }
+    });
+    if collides {
+        // The def index is a stable per-definition unique key (the wasm backend's function-index identity,
+        // surfaced here as a name suffix). Underscore-joined so it stays a valid identifier.
+        format!("{base}_{def}")
+    } else {
+        base
+    }
 }
 
 #[cfg(test)]
