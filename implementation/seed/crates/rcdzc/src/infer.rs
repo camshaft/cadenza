@@ -3170,6 +3170,40 @@ fn tuple_arity_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     None
 }
 
+/// An actionable message TAIL when `actual` is a FUNCTION value used where a NON-function `expected` is
+/// required — the "forgot to call it" slip. A partial application `(h 1)` (h takes 2) or a bare function
+/// name `h` used as a value has type `(-> … …)`; the generic "type mismatch: Int64 and (-> Int64 Int64)"
+/// reads like an internal clash and never says the value is simply an UNAPPLIED function. This names the
+/// slip and how to fix it — SUPPLY the missing arguments (rustc's "you might have forgotten to call this
+/// function"). Fires ONLY when applying the function to its remaining N argument(s) would yield the
+/// expected type (the fully-applied result `agrees_with` expected) — then "just apply it" is the true
+/// repair. If the fully-applied result would STILL differ (a deeper mismatch), there is no "call it"
+/// story, so no hint (honest-no-fix). No mechanical `Fix` — we cannot know WHICH argument values the
+/// author meant — so this is a tail only, like `option_payload_mismatch_hint`. `expected` must be a
+/// DEFINITE non-function (not a `Var`/`Any` that could still unify with the arrow, and not a `Fn` — a
+/// fn-vs-fn signature mismatch is a real clash reported on its own terms, not a missing application).
+fn fn_not_applied_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+    if !matches!(actual, Ty::Fn(..)) || matches!(expected, Ty::Fn(..) | Ty::Var(_) | Ty::Any) {
+        return None;
+    }
+    // Peel the curried arrows: how many arguments remain, and what the fully-applied result would be.
+    let mut result = actual;
+    let mut remaining = 0usize;
+    while let Ty::Fn(_, r) = result {
+        remaining += 1;
+        result = r;
+    }
+    if !result.agrees_with(expected) {
+        return None; // supplying the args would not produce the expected type — no "just call it" fix
+    }
+    let plural = if remaining == 1 { "" } else { "s" };
+    Some(format!(
+        " — the value is a function that hasn't been fully applied; apply it to {remaining} more \
+         argument{plural} to get {}",
+        expected.render_with_article()
+    ))
+}
+
 /// The `(prefix, suffix, verb)` of a prelude CONVERSION that turns a value of type `actual` into the
 /// `expected` type in ONE shot — the coercion-wrap repair for a mismatch the numeric model / text model
 /// has a total conversion for. Today: `String` where `Bytes` is wanted → `(String.to-bytes …)` (the total
@@ -5108,6 +5142,18 @@ fn check_application(
                             reject = reject.with_fix(fix);
                         }
                         out.push(reject);
+                    } else if let Some(hint) = fn_not_applied_hint(&sparam, &sat) {
+                        // The ARGUMENT is an UNAPPLIED function where a non-function param is wanted — a
+                        // partial application `(+ (h 1) 2)` (h takes 2, applied to 1) passed to `+`, which
+                        // wants an Int64. This falls through the bare-operator path to the generic unify
+                        // "Int64 and (-> Int64 Int64) must be the same type here" (an internal-clash read).
+                        // Append the "forgot to call it — apply N more argument(s)" hint, the arg-site twin
+                        // of the annotation-mismatch fn hint. No mechanical fix (which values were meant is
+                        // unknown), so tail only, added to the unify-produced message.
+                        out.push(Reject {
+                            message: format!("{}{hint}", reject.message),
+                            ..reject
+                        });
                     } else {
                         out.push(reject);
                     }
@@ -6971,11 +7017,25 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             } else {
                                 None
                             };
+                            // The value is an UNAPPLIED function where a non-function is annotated — a
+                            // partial application `(h 1)` or a bare fn name `h` used as a value. The
+                            // "annotation Int64 does not match value (-> Int64 Int64)" render never says
+                            // the value is simply a function you forgot to finish calling; name the slip
+                            // and how many arguments remain. Tail only (no mechanical fix — which argument
+                            // values were meant is unknown), after the wrap/option/record chain found none.
+                            let fn_tail =
+                                if wrap.is_none() && option_tail.is_none() && record_tail.is_none()
+                                {
+                                    fn_not_applied_hint(&annot_ty, &expr_ty)
+                                } else {
+                                    None
+                                };
                             let tail = wrap
                                 .as_ref()
                                 .map(|w| w.3.clone())
                                 .or(option_tail)
                                 .or(record_tail)
+                                .or(fn_tail)
                                 .unwrap_or_default();
                             let mut reject = Reject::coded(
                                 Code::TypeMismatch,
