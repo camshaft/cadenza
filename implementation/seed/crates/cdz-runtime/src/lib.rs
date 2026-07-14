@@ -15692,6 +15692,118 @@ mod tests {
             .for_each(|desc| assert_encode_is_total(desc));
     }
 
+    // ── The eq ⟹ hash ⟹ cmp contract over ARBITRARY heterogeneous compound trees ────────────────
+    // EVERY map/set key rests on: structurally-equal values (distinct nodes) are `champ_eq`, hash
+    // IDENTICALLY (`champ_hash`), and compare Equal (`champ_key_cmp`) — a violation silently corrupts keys
+    // (a lookup misses its own entry, or two distinct keys collapse). The fixed-shape tests
+    // (`champ_hash_matches_naive_reference`, `champ_key_cmp_is_consistent_with_eq`) cover hand-built
+    // shapes; the map/set fuzzes cover int/string/tuple keys. NONE fuzzes the contract over RANDOM nested
+    // MIXED structures (tuple-of-sum-of-bytes-of-float …). Build a tree from random bytes TWICE (distinct
+    // nodes) and assert the three agree; also that a byte-DIFFERENT tree is not-eq with consistent cmp.
+
+    /// Build a compound value tree from `bytes` (a cursor into them), bounded by `budget` nodes and
+    /// `depth`. Deterministic: the same byte prefix builds the same structure, so two calls give
+    /// structurally-identical, distinct-node twins. Returns (handle, bytes_consumed_advances via the
+    /// shared cursor). Leaves when out of budget/bytes/depth.
+    fn build_rand_value(bytes: &[u8], cur: &mut usize, budget: &mut u32, depth: u32) -> Handle {
+        let tag = if *cur < bytes.len() { bytes[*cur] } else { 0 };
+        *cur += 1;
+        // A small scalar payload byte (deterministic from the stream).
+        let p = if *cur < bytes.len() { bytes[*cur] } else { 0 };
+        *cur += 1;
+        // Out of budget/depth → force a scalar leaf so the tree is finite.
+        let allow_compound = *budget > 2 && depth < 5;
+        *budget = budget.saturating_sub(1);
+        match tag % if allow_compound { 9 } else { 6 } {
+            0 => op_box_int(p as i64 - 128),        // small signed int (incl. negatives)
+            1 => op_box_bool(p & 1 == 0),
+            2 => op_arr_alloc(0),                   // unit (inline)
+            3 => op_str_new(alloc::format!("s{}", p % 7)), // one of a few strings (dedup/collision)
+            4 => {
+                // a small bytes leaf
+                let b = op_bytes_alloc((p % 4) as u32);
+                for i in 0..(p % 4) as u32 {
+                    op_bytes_set(b, i, (p.wrapping_add(i as u8)) as u32);
+                }
+                b
+            }
+            5 => op_box_float(((p % 5) as f64) - 2.0), // a few finite floats incl. negative
+            6 => {
+                // a 2-tuple of sub-values
+                let a = build_rand_value(bytes, cur, budget, depth + 1);
+                let b = build_rand_value(bytes, cur, budget, depth + 1);
+                let t = op_arr_alloc(2);
+                op_arr_set(t, 0, a);
+                op_arr_set(t, 1, b);
+                t
+            }
+            7 => {
+                // a sum with a single sub-value payload, disc in 0..3
+                let payload = build_rand_value(bytes, cur, budget, depth + 1);
+                op_sum_new((p % 3) as u32, payload)
+            }
+            _ => {
+                // a 3-tuple (records/wider products)
+                let a = build_rand_value(bytes, cur, budget, depth + 1);
+                let b = build_rand_value(bytes, cur, budget, depth + 1);
+                let c = build_rand_value(bytes, cur, budget, depth + 1);
+                let t = op_arr_alloc(3);
+                op_arr_set(t, 0, a);
+                op_arr_set(t, 1, b);
+                op_arr_set(t, 2, c);
+                t
+            }
+        }
+    }
+
+    #[test]
+    fn prop_eq_hash_cmp_contract_over_random_compound_trees() {
+        bolero::check!().with_type::<Vec<u8>>().for_each(|bytes| {
+            reset();
+            let before = live_nodes();
+            // Twin A and B: same bytes → structurally identical, DISTINCT nodes.
+            let (mut ca, mut cb) = (0usize, 0usize);
+            let (mut ba, mut bb) = (64u32, 64u32);
+            let a = build_rand_value(bytes, &mut ca, &mut ba, 0);
+            let b = build_rand_value(bytes, &mut cb, &mut bb, 0);
+            // (1) structurally-equal distinct-node twins: eq, hash-equal, cmp Equal.
+            assert!(champ_eq(a, b), "structurally-identical twins are champ_eq");
+            assert_eq!(champ_hash(a), champ_hash(b), "…and hash identically (the map-key contract)");
+            assert_eq!(champ_key_cmp(a, b), core::cmp::Ordering::Equal, "…and champ_key_cmp Equal");
+            // self-consistency: a value equals itself, hashes stably, cmp Equal to itself.
+            assert!(champ_eq(a, a));
+            assert_eq!(champ_hash(a), champ_hash(a));
+            assert_eq!(champ_key_cmp(a, a), core::cmp::Ordering::Equal);
+            // (2) a tree from DIFFERENT bytes: whenever champ_key_cmp says Equal, champ_eq must agree, and
+            // when not-Equal, champ_eq must be false — cmp and eq never disagree (order/eq consistency).
+            let mut flipped = bytes.clone();
+            if let Some(first) = flipped.first_mut() {
+                *first = first.wrapping_add(1); // perturb the shape/scalar
+            } else {
+                flipped.push(1);
+            }
+            let (mut cc, mut bc) = (0usize, 64u32);
+            let c = build_rand_value(&flipped, &mut cc, &mut bc, 0);
+            let cmp_ac = champ_key_cmp(a, c);
+            let eq_ac = champ_eq(a, c);
+            assert_eq!(
+                cmp_ac == core::cmp::Ordering::Equal,
+                eq_ac,
+                "champ_key_cmp Equal IFF champ_eq — order and equality must never disagree"
+            );
+            if eq_ac {
+                // if they did come out equal, the hash contract still holds.
+                assert_eq!(champ_hash(a), champ_hash(c), "eq ⟹ hash-equal (perturbed tree)");
+            }
+            // antisymmetry: cmp(a,c) is the reverse of cmp(c,a).
+            assert_eq!(cmp_ac.reverse(), champ_key_cmp(c, a), "champ_key_cmp is antisymmetric");
+            op_drop(a);
+            op_drop(b);
+            op_drop(c);
+            assert_eq!(live_nodes(), before, "no leak building/comparing random trees");
+        });
+    }
+
     // ── U6: FBIP rc==1 in-place cursor advance for map-iter-next / set-iter-next ────────────────
     // Load-bearing: (1) a forked/peeked/teed cursor (rc>1) stays INDEPENDENT — advancing one owner
     // must not disturb the other (aliasing catcher); (2) a unique (rc==1) walk allocates ZERO new
