@@ -4723,6 +4723,41 @@
   (call   main (: 7 Int64))
   (output (: 7 Int64)))
 
+(case "a sum with FOUR type parameters instantiates and matches each at a distinct type"
+  (doc    "A generic sum with FOUR type parameters — `(type Quad (Mk a b c d) (Z))` — whose one payload
+           variant uses ALL four, instantiated at MIXED types `(Quad Int64 Bool Int64 Bool)`. The match
+           binds `w x y z` at `Int64 Bool Int64 Bool` respectively and combines them (`+ w (if x 10 0) y (if
+           z 100 0)`). `(f (Mk 1 true 5 false))` = 1 + 10 + 5 + 0 = 16. Pins that a generic sum scales to
+           several type parameters, each instantiated independently (the existing generic-sum cases use one
+           or two params) — per-parameter payload typing tracks four distinct axes.")
+  (input  (do
+            (type Quad (Mk a b c d) (Z))
+            (def (f (: q (Quad Int64 Bool Int64 Bool)))
+              (match q ((Quad.Mk w x y z) (+ w (+ (if x 10 0) (+ y (if z 100 0))))) ((Quad.Z) -1)))
+            (def (main (: k Int64)) (f (Quad.Mk k true 5 false)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 1 Int64))
+  (output (: 16 Int64)))
+
+(case "a built-in Result whose two type arguments DIFFER is matched on both variants"
+  (doc    "A `Result Int64 Bool` — the Ok payload is `Int64`, the Err payload is `Bool`, so the sum's two
+           type arguments DIFFER (unlike a `Result Int64 Int64`). Both arms exercise their own type: the
+           `Ok n` arm yields the Int64, the `Err b` arm uses the Bool (`(if b 1 0)`). `(f 9)` builds `Some
+           (Ok 9)` → 9. Pins that a Result carries and deconstructs two DISTINCT payload types across its
+           variants — per-variant payload typing, not one shared type.")
+  (input  (do
+            (def (f (: k Int64))
+              (match (Option.Some (Result.Ok k))
+                ((Option.Some (Result.Ok n))  n)
+                ((Option.Some (Result.Err b)) (if b 1 0))
+                ((Option.None)                -1)))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 9 Int64))
+  (output (: 9 Int64)))
+
 (case "constructor pattern binders capture the payload uniformly"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant: the pattern `(Some x)` binds `x` to the payload (42); the pattern
