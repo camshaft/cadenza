@@ -1590,8 +1590,13 @@ fn load_program_spanned(
         // cascade into spurious downstream faults, so it is a genuine error the user must fix first). The
         // parser RECOVERS (it never aborts), so several may print; the compile still proceeds over the
         // recovered arena, exactly as before — only the wording changes.
+        // ONE line-start index over the source, so each error's line:col is a binary search, not a
+        // from-start newline scan — a broken ML file recovers N cascading errors (a mid-edit unmatched
+        // token yields ~5 per line), and the per-error from-start `line_col` made rendering them
+        // O(errors × source_len) = O(N²) (2003 errors over a 3200-line file = 549ms, ~97% in `line_col`).
+        let index = cadenza_syntax::query::driver::LineIndex::new(&source);
         for e in &parsed.errors {
-            let (line, col) = cadenza_syntax::query::driver::line_col(&source, e.span.start);
+            let (line, col) = index.line_col(&source, e.span.start);
             eprintln!("{file}:{line}:{col}: error: {}", e.message);
         }
         // CANONICALIZE the ML arena + REMAP its span table to the canonical ids. The ML reader builds

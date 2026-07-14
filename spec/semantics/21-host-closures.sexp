@@ -1884,3 +1884,48 @@
               (export a) (export b) (export c)))
   (call   c (: 9 Int64))
   (output (: ((. Set of) (list 9)) (Set Int64))))
+
+; A VARIABLE-LENGTH collection (List/Map/Set) closure RESULT on the MIXED path — a collection-returning
+; closure exported ALONGSIDE a plain non-closure export. The closure crosses via the resource envelope
+; (`make-<name>` + a shared value-encode `call` returning the value form as `list<u8>`); each plain export
+; rides as an ordinary top-level component func. Same value-encode core as the multi-export collection path,
+; with the plain-export slots the mixed shape threads.
+
+(case "a List-returning closure alongside a plain export — the closure"
+  (doc    "`mk : () -> (-> Int64 (List Int64))` returns `(list n n+1)`, alongside a plain `two : () -> 2`.
+           `call(mk-handle, 5)` value-encodes the returned list → `(: (list 5 6) (List Int64))`. Pins the
+           variable-length collection result on the MIXED path (closure + plain export).")
+  (input  (do (def (mk) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   mk (: 5 Int64))
+  (output (: (list 5 6) (List Int64))))
+
+(case "a List-returning closure alongside a plain export — the plain"
+  (doc    "The SAME mixed program, calling the plain `two` → 2 (a bare scalar, NOT a value-form document).
+           Confirms the plain top-level export is reachable when a collection-result closure shares the
+           component.")
+  (input  (do (def (mk) (fn ((: n Int64)) (list n (+ n 1))))
+              (def (two) 2)
+              (export mk) (export two)))
+  (call   two)
+  (output (: 2 Int64)))
+
+(case "a Map-returning closure alongside a parameterized plain export — the closure"
+  (doc    "`mk : () -> (-> Int64 (Map Int64 Int64))` returns `(map (1 n) (2 2n))`, beside a parameterized
+           plain `inc : (Int64) -> Int64`. `call(mk-handle, 10)` → `(: (map (1 10) (2 20)) (Map Int64
+           Int64))` in canonical key order.")
+  (input  (do (def (mk) (fn ((: n Int64)) (map (1 n) (2 (* n 2)))))
+              (def (inc (: x Int64)) (+ x 1))
+              (export mk) (export inc)))
+  (call   mk (: 10 Int64))
+  (output (: (map (1 10) (2 20)) (Map Int64 Int64))))
+
+(case "a Map-returning closure alongside a parameterized plain export — the plain"
+  (doc    "The SAME program, calling `inc(41)` = 42. Pins the parameterized plain export reachable beside a
+           Map-result closure.")
+  (input  (do (def (mk) (fn ((: n Int64)) (map (1 n) (2 (* n 2)))))
+              (def (inc (: x Int64)) (+ x 1))
+              (export mk) (export inc)))
+  (call   inc (: 41 Int64))
+  (output (: 42 Int64)))

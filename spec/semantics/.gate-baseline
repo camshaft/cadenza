@@ -496,6 +496,7 @@ pass	a nested application of a let-bound lambda resolves each argument at its ca
 pass	a nested call chain whose callee duplicates its parameter folds without exponential blowup
 pass	a nested chain of function calls compiles in linear time and folds to a constant
 pass	a nested constructor in a multi-payload position destructures two levels
+pass	a nested constructor pattern dispatches a RUNTIME two-sum value
 pass	a nested constructor payload that misses the inner variant falls through to the outer sibling
 pass	a nested constructor value dispatches on both tags in a match
 pass	a nested element kind mismatch in equality is a type error
@@ -1239,6 +1240,10 @@ pass	modulo by zero traps
 pass	modulo gives the remainder
 pass	modulo of an integer and a float does not silently promote
 pass	multi-argument application is curried application
+pass	multi-export Set-result closures — the singleton one
+pass	multi-export Set-result closures — three sharing one call
+pass	multi-export collection result — the first list closure
+pass	multi-export collection result — the second list closure
 pass	multi-export compound result — the first closure's tuple
 pass	multi-export compound result — the second closure's tuple
 pass	multi-export compound result — three capturing closures share one call

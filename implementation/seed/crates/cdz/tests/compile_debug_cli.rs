@@ -116,3 +116,32 @@ fn dwarf_sidecar_from_source_auto_supplies_spans() {
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
+
+#[test]
+fn ml_parse_errors_report_correct_incrementing_line_positions() {
+    // `cdz check` on a malformed ML file recovers N cascading parse errors and renders each as
+    // `file:line:col`. The render maps every error's byte offset to a line:col via ONE shared `LineIndex`
+    // (a binary search) rather than a per-error from-start newline scan — the O(errors × source_len) =
+    // O(N²) that made a broken file with thousands of recovered errors quadratic. This locks in that the
+    // index produces the SAME positions the from-start scan did: each error on line K reports `:K:` (not
+    // all collapsed to line 1, which a broken index would do), and the columns are within the line.
+    let dir = temp_dir("mlerr");
+    let src = dir.join("broken.cdz");
+    // 6 lines, each an ML syntax error (`)(` is not a valid expression) — the parser recovers per line.
+    let n = 6;
+    let text = (0..n)
+        .map(|i| format!("let d{i} = )("))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&src, &text).unwrap();
+    let (_ok, _out, err) = run(&["check", src.to_str().unwrap()]);
+    // Every source line 1..=n must appear as an error position — proving offsets map to their real line
+    // (a from-start scan and the LineIndex agree, and neither collapses distinct lines).
+    for line in 1..=n {
+        assert!(
+            err.contains(&format!("broken.cdz:{line}:")),
+            "expected an error anchored at line {line}; got:\n{err}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

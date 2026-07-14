@@ -1791,6 +1791,12 @@ pub fn match_nonexhaustive_fault(db: &mut Db, id: StructId) -> Option<Reject> {
 //= spec/capabilities/core-semantics.md#matching-is-exhaustive-or-rejected
 //# A match whose patterns do not cover every value of the scrutinee's type MUST be a compile-time error.
 ///
+/// The arms are tried TOP-TO-BOTTOM: a constant scrutinee selects the FIRST arm whose probe it satisfies
+/// and lowers only that arm's body, and a runtime scrutinee emits a probe chain that takes the first
+/// matching arm — first-match-wins, as the corpus defines.
+//= spec/capabilities/core-semantics.md#matching-is-exhaustive-or-rejected
+//# A match MUST evaluate the branch of the first pattern that matches the scrutinee, as defined by the corpus.
+///
 /// A wildcard/binder tail covers the rest, and for an OPEN type (an integer) it is the only cover — no
 /// finite literal set exhausts the integers. A FINITE type is exhausted by its literals instead: a Bool
 /// scrutinee covered by both a `true` arm and a `false` arm needs no wildcard. A match that covers

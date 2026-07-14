@@ -1208,8 +1208,16 @@ fn int_ty_of(db: &mut Db, id: StructId) -> IntTy {
 /// range (a compiler bug — a `SumNew` always carries a sum type + an in-range disc).
 fn sum_variant_path(db: &mut Db, id: StructId, disc: u32) -> Result<String, Reject> {
     let ty = type_of(db, id);
-    let decl_occ = match ty {
-        Ty::Sum { decl, .. } => decl,
+    sum_variant_path_of_ty(db, &ty, disc)
+}
+
+/// The Rust `<Enum>::<Variant>` path for the `disc`-th variant of the sum TYPE `ty` — the type-keyed core
+/// of [`sum_variant_path`] (which reads the type off a node). Split out so a nested switch can name a
+/// variant of a sub-value's type. Declines if `ty` is not a sum, its enum is not representable (a
+/// recursive/unrepresentable sum has no Rust type), or the disc is out of range.
+fn sum_variant_path_of_ty(db: &mut Db, ty: &Ty, disc: u32) -> Result<String, Reject> {
+    let decl_occ = match ty.strip_nominal() {
+        Ty::Sum { decl, .. } => *decl,
         _ => return Err(Reject::decline("sum construction node is not a sum type")),
     };
     // The sum's enum must have EMITTED — a recursive/unrepresentable sum has no Rust type, so naming
@@ -1217,7 +1225,7 @@ fn sum_variant_path(db: &mut Db, id: StructId, disc: u32) -> Result<String, Reje
     // a sum ANYWHERE IN A BODY (not just a signature): the fold can inline a helper that builds a
     // non-representable sum as a discarded intermediate (`(. (tuple (NLit 5) 9) 1)` keeps only the Int64,
     // but still constructs `Node::NLit`), which the signature-level `sum_representable` guard cannot see.
-    if !super::enums::sum_representable(db, &ty) {
+    if !super::enums::sum_representable(db, ty) {
         return Err(Reject::decline(
             "a construct/match of a sum with no emitted Rust enum (recursive/unrepresentable)",
         ));
@@ -1232,6 +1240,22 @@ fn sum_variant_path(db: &mut Db, id: StructId, disc: u32) -> Result<String, Reje
         .ok_or_else(|| Reject::decline("sum discriminant out of range"))?;
     let vname = types::sum_ident(&variant.name);
     Ok(format!("{enum_name}::{vname}"))
+}
+
+/// The payload type of a sum's variant 0 (the shape a `Payload` path step descends into) — `None` for a
+/// nullary or unresolvable variant. Substitutes the sum's actual type args into the variant's generic
+/// payload (`Option Int64`'s `Some` payload is `Int64`, not `?0`). The rust-backend twin of the wasm
+/// backend's `sum_single_payload_ty`; used by `ty_at_sum_path` to walk a nested switch's subject type.
+fn sum_disc0_payload_ty(db: &mut Db, sum: &Ty) -> Option<Ty> {
+    let stripped = sum.strip_nominal().clone();
+    let Ty::Sum { decl, .. } = &stripped else {
+        return None;
+    };
+    let ctor = {
+        let td = db.type_decl_by_occ(*decl)?;
+        td.variants.first()?.ctor?
+    };
+    crate::infer::payload_ty_at_instantiation(db, ctor, &stripped)
 }
 
 /// Emit a sum MATCH → a Rust `match` on the scrutinee. The `root` continuation is normally a
@@ -1255,84 +1279,176 @@ fn emit_sum_match(
     ctx: &Ctx,
 ) -> Result<String, Reject> {
     // The root is normally a Switch on the scrutinee's own discriminant (path empty). A non-root-Switch
-    // continuation (a disc-folded nested Switch, a Guarded arm, or a bare Leaf) is a shape this slice does
-    // not yet render — decline.
-    let (path, arms) = match root {
-        crate::core::SumCont::Switch { path, arms } if path.is_empty() => (path, arms),
-        crate::core::SumCont::Switch { .. } => {
-            return Err(Reject::decline(
-                "a disc-folded nested sum switch is not yet rendered by the Rust backend",
-            ));
+    // continuation (a Guarded arm or a bare Leaf as the ROOT) is a shape this slice does not yet render —
+    // decline. A `Switch` root (empty or a disc-folded deeper path) recurses through `emit_sum_switch`.
+    match root {
+        crate::core::SumCont::Switch { path, arms } => {
+            emit_sum_switch(db, scrutinee, path, arms, env, ctx)
         }
-        crate::core::SumCont::Guarded { .. } => {
-            return Err(Reject::decline(
-                "a sum-scrutinee guard is not yet rendered by the Rust backend",
-            ));
-        }
-        crate::core::SumCont::Leaf(_) => {
-            return Err(Reject::decline(
-                "a bare-leaf sum match is not yet rendered by the Rust backend",
-            ));
-        }
-        crate::core::SumCont::LitTest { .. } => {
-            return Err(Reject::decline(
-                "a literal-payload sum pattern is not yet rendered by the Rust backend",
-            ));
-        }
+        crate::core::SumCont::Guarded { .. } => Err(Reject::decline(
+            "a sum-scrutinee guard is not yet rendered by the Rust backend",
+        )),
+        crate::core::SumCont::Leaf(_) => Err(Reject::decline(
+            "a bare-leaf sum match is not yet rendered by the Rust backend",
+        )),
+        crate::core::SumCont::LitTest { .. } => Err(Reject::decline(
+            "a literal-payload sum pattern is not yet rendered by the Rust backend",
+        )),
+    }
+}
+
+/// Emit a `Switch` on the sub-value of `scrutinee` at `sw_path` — a Rust `match` dispatching on each
+/// arm's discriminant. The switched-on VALUE is the scrutinee itself for the root (`sw_path == []`) or the
+/// payload the enclosing arm bound for a NESTED switch (`sw_path` reads it via `emit_sum_payload`, which
+/// resolves the parent arm's `__pay` binding). Each arm binds its own payload (`__pay{i}` at `sw_path +
+/// [Payload]`) and recurses on its continuation: a `Leaf` emits the body, a nested `Switch` emits an inner
+/// `match` (a nested constructor pattern like `(Some (Ok n))` — the outer switches Some/None, the Some
+/// arm's continuation switches Ok/Err of the payload). Guarded / literal-payload continuations are still
+/// declined (a later slice). This is what lets a RUNTIME nested sum match render on the Rust backend, the
+/// two-compiler companion of the wasm decision-tree walk.
+fn emit_sum_switch(
+    db: &mut Db,
+    scrutinee: StructId,
+    sw_path: &[crate::core::PathStep],
+    arms: &[crate::core::SumArm],
+    env: &Env,
+    ctx: &Ctx,
+) -> Result<String, Reject> {
+    // The value this switch dispatches on: the scrutinee (root, empty path) or the sub-value at `sw_path`
+    // (a nested switch — read the enclosing arm's payload binding). `emit_sum_payload` folds a constant
+    // scrutinee or reads the bound `__pay` name.
+    let subject = if sw_path.is_empty() {
+        emit(db, scrutinee, env, ctx)?
+    } else {
+        emit_sum_payload(db, scrutinee, scrutinee, sw_path, env, ctx)?
     };
-    let _ = path;
-    let scrut = emit(db, scrutinee, env, ctx)?;
-    let mut out = format!("match {scrut} {{ ");
+    let mut out = format!("match {subject} {{ ");
     for (i, arm) in arms.iter().enumerate() {
-        // A leaf body; a nested switch or a guarded arm declines (deferred).
-        let body = match &arm.cont {
-            crate::core::SumCont::Leaf(b) => *b,
-            crate::core::SumCont::Switch { .. } => {
-                return Err(Reject::decline(
-                    "a nested sum-match decision tree is not yet rendered by the Rust backend",
-                ));
-            }
-            crate::core::SumCont::Guarded { .. } => {
-                return Err(Reject::decline(
-                    "a guarded sum-match arm is not yet rendered by the Rust backend",
-                ));
-            }
-            crate::core::SumCont::LitTest { .. } => {
-                return Err(Reject::decline(
-                    "a literal-payload sum pattern is not yet rendered by the Rust backend",
-                ));
-            }
-        };
         match arm.disc {
             Some(disc) => {
-                // `<Enum>::<Variant>(binder) => body`. The payload binder is a fresh `__pay{i}` the body's
-                // `SumPayload { scrutinee, [Payload] }` resolves to; a nullary variant binds nothing.
-                let vpath = sum_variant_path(db, scrutinee, disc)?;
-                let arity = variant_payload_arity(db, scrutinee, disc);
+                // `<Enum>::<Variant>(binder) => cont`. The payload binder is a fresh `__pay_{path}_{i}` the
+                // arm's `SumPayload { scrutinee, sw_path + [Payload] (…) }` resolves to; a nullary variant
+                // binds nothing. The bind's path is FROM THE ROOT scrutinee (`sw_path + [Payload]`), so a
+                // deeper `SumPayload` (a binder in this arm's body, or a nested switch's subject) resolves.
+                let vpath = sum_variant_path_at(db, scrutinee, sw_path, disc)?;
+                let arity = variant_payload_arity_at(db, scrutinee, sw_path, disc);
                 let (pat_tail, arm_ctx) = if arity == 0 {
                     (String::new(), ctx.clone())
                 } else {
-                    let name = format!("__pay{i}");
+                    let name = format!("__pay_{}_{i}", sw_path.len());
+                    let mut payload_path = sw_path.to_vec();
+                    payload_path.push(crate::core::PathStep::Payload);
                     let mut c = ctx.clone();
                     c.sum_binds.push(SumBind {
                         scrutinee,
-                        path: vec![crate::core::PathStep::Payload],
+                        path: payload_path,
                         name: name.clone(),
                     });
                     (format!("({name})"), c)
                 };
-                let b = emit(db, body, env, &arm_ctx)?;
-                out.push_str(&format!("{vpath}{pat_tail} => {b}, "));
+                let cont = emit_sum_cont(db, scrutinee, &arm.cont, env, &arm_ctx)?;
+                out.push_str(&format!("{vpath}{pat_tail} => {cont}, "));
             }
             None => {
-                // The default (wildcard) tail.
-                let b = emit(db, body, env, ctx)?;
-                out.push_str(&format!("_ => {b}, "));
+                // The default (wildcard) tail. Its continuation is emitted in the OUTER ctx (no payload
+                // bound — a wildcard arm binds nothing of the switched variant).
+                let cont = emit_sum_cont(db, scrutinee, &arm.cont, env, ctx)?;
+                out.push_str(&format!("_ => {cont}, "));
             }
         }
     }
     out.push('}');
     Ok(out)
+}
+
+/// Emit an arm's CONTINUATION: a `Leaf` is the arm body (an ordinary expression); a nested `Switch`
+/// recurses through [`emit_sum_switch`] (a nested constructor pattern). Guarded / literal-payload
+/// continuations are declined (a later slice) — the same shapes the root rejects.
+fn emit_sum_cont(
+    db: &mut Db,
+    scrutinee: StructId,
+    cont: &crate::core::SumCont,
+    env: &Env,
+    ctx: &Ctx,
+) -> Result<String, Reject> {
+    match cont {
+        crate::core::SumCont::Leaf(b) => emit(db, *b, env, ctx),
+        crate::core::SumCont::Switch { path, arms } => {
+            emit_sum_switch(db, scrutinee, path, arms, env, ctx)
+        }
+        crate::core::SumCont::Guarded { .. } => Err(Reject::decline(
+            "a guarded sum-match arm is not yet rendered by the Rust backend",
+        )),
+        crate::core::SumCont::LitTest { .. } => Err(Reject::decline(
+            "a literal-payload sum pattern is not yet rendered by the Rust backend",
+        )),
+    }
+}
+
+/// The Rust `<Enum>::<Variant>` path for the `disc`-th variant of the sum at sub-value `sw_path` of
+/// `scrutinee` — [`sum_variant_path`] generalized to a nested position. The sub-value's TYPE is the
+/// scrutinee's type walked down `sw_path`; the variant path is read from that type's declaration.
+fn sum_variant_path_at(
+    db: &mut Db,
+    scrutinee: StructId,
+    sw_path: &[crate::core::PathStep],
+    disc: u32,
+) -> Result<String, Reject> {
+    let sub_ty = ty_at_sum_path(db, scrutinee, sw_path);
+    sum_variant_path_of_ty(db, &sub_ty, disc)
+}
+
+/// The payload arity of the `disc`-th variant of the sum at sub-value `sw_path` — [`variant_payload_arity`]
+/// generalized to a nested position (reads the sub-value's type's declaration).
+fn variant_payload_arity_at(
+    db: &mut Db,
+    scrutinee: StructId,
+    sw_path: &[crate::core::PathStep],
+    disc: u32,
+) -> usize {
+    let sub_ty = ty_at_sum_path(db, scrutinee, sw_path);
+    let decl_occ = match sub_ty {
+        Ty::Sum { decl, .. } => decl,
+        Ty::Nominal { decl, .. } => decl,
+        _ => return 0,
+    };
+    match db.type_decl_by_occ(decl_occ) {
+        Some(decl) => decl
+            .variants
+            .get(disc as usize)
+            .map(|v| v.payloads.len())
+            .unwrap_or(0),
+        None => 0,
+    }
+}
+
+/// The TYPE of the sub-value reached by walking `sw_path` from `scrutinee`'s type — a `Payload` step
+/// descends a variant's payload (the sum's disc-0 single payload at its instantiation, or a nominal's
+/// inner), an `Elem(i)` a tuple element. Returns `Ty::Any` on an unwalkable path (the caller then reads
+/// arity 0 / declines). Enough for the nested-sum-switch subject: a nested switch's `path` ends at a sum
+/// sub-value, so the walk reaches a `Ty::Sum` whose declaration names the variant.
+fn ty_at_sum_path(db: &mut Db, scrutinee: StructId, sw_path: &[crate::core::PathStep]) -> Ty {
+    let mut ty = type_of(db, scrutinee);
+    for step in sw_path {
+        ty = match step {
+            crate::core::PathStep::Payload => match ty.strip_nominal() {
+                Ty::Sum { .. } => match sum_disc0_payload_ty(db, &ty) {
+                    Some(t) => t,
+                    None => return Ty::Any,
+                },
+                Ty::Nominal { inner, .. } => (**inner).clone(),
+                _ => return Ty::Any,
+            },
+            crate::core::PathStep::Elem(i) => match ty.strip_nominal() {
+                Ty::Tuple(elems) => match elems.get(*i) {
+                    Some(t) => t.clone(),
+                    None => return Ty::Any,
+                },
+                _ => return Ty::Any,
+            },
+        };
+    }
+    ty
 }
 
 /// The payload ARITY of the `disc`-th variant of the sum the value at `id` has — how many payload types
