@@ -15976,6 +15976,63 @@ mod match_engine {
     }
 
     #[test]
+    fn a_prelude_type_constructor_with_the_wrong_arity_names_its_expected_argument_count() {
+        // A prelude type CONSTRUCTOR applied to the wrong number of type arguments — `(List Int64 Int64)`
+        // (List takes 1), `(Map Int64)` (Map takes 2), `(Set Int64 Bool)` (Set takes 1) — reduces to NO
+        // type-value (`reduce_ctor` rejects the arity), so it read as the generic "a parameter's annotation
+        // requires a type, but found a non-type" — misleading, since `List`/`Map`/`Set` ARE type
+        // constructors, just misapplied. Now the message names the constructor + its expected vs supplied
+        // arity and spells the fix (rustc's "this type takes N generic arguments but M were supplied").
+        for (src, expect) in [
+            (
+                "(module m (def (g (: xs (List Int64 Int64))) xs) (export g))",
+                "`List` takes 1 type argument, but 2 were supplied — write `(List Elem)`",
+            ),
+            (
+                "(module m (def (g (: mp (Map Int64))) mp) (export g))",
+                "`Map` takes 2 type arguments, but 1 was supplied — write `(Map Key Value)`",
+            ),
+            (
+                "(module m (def (g (: s (Set Int64 Bool))) s) (export g))",
+                "`Set` takes 1 type argument, but 2 were supplied — write `(Set Elem)`",
+            ),
+            // The value-annotation site routes through the same helper.
+            (
+                "(module m (def (g) (: 5 (List Int64 Int64))) (export g))",
+                "`List` takes 1 type argument, but 2 were supplied — write `(List Elem)`",
+            ),
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| panic!("{src} rejects"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message.contains(expect),
+                "names the ctor arity + fix:\n  expected substring: {expect}\n  got: {}",
+                d.message
+            );
+        }
+        // The CORRECT arity raises no arity/type fault — `(: n (List Int64))` used in a body type-checks
+        // (a bare param body may still decline at the value-heap boundary, but never with the arity/"not a
+        // type" CDZ0203). And a genuine non-type (a literal) keeps the generic "requires a type" message —
+        // the arity naming fires ONLY for a misapplied type constructor.
+        let ok = reject_full(
+            "(module m (def (g (: n (List Int64))) (match n ((list) 0) ((list x .. r) x))) (export g))",
+        );
+        assert!(
+            ok.as_ref().is_none_or(
+                |d| !d.message.contains("takes") && !d.message.contains("requires a type")
+            ),
+            "the correct arity `(List Int64)` raises no arity/type fault: {ok:?}"
+        );
+        let lit = reject_full("(module m (def (g (: n 5)) n) (export g))")
+            .expect("a literal annotation rejects");
+        assert!(
+            lit.message.contains("requires a type") && !lit.message.contains("takes"),
+            "a genuine non-type keeps the generic message: {}",
+            lit.message
+        );
+    }
+
+    #[test]
     fn applying_a_non_function_reports_one_error_not_a_shadowing_decline() {
         // Applying a non-function must be ONE primary `error:` — the coded `cannot apply a value of
         // type … — it is not a function` — NOT that reject PLUS the emit path's uncoded "value is not

@@ -730,6 +730,44 @@ fn non_type_annotation_message(db: &Db, ty_expr: StructId, lead: &str) -> String
     }
 }
 
+/// An ARITY-specific message when the annotation type is a prelude type CONSTRUCTOR applied to the WRONG
+/// number of arguments — `(List Int64 Int64)` (List takes 1), `(Map Int64)` (Map takes 2), `(Set Int64
+/// Bool)` (Set takes 1). Such a form reduces to NO type-value (`reduce_ctor` rejects the arity), so the
+/// generic `non_type_annotation_message` calls it "a non-type" — misleading, since `List`/`Map`/`Set` ARE
+/// type constructors, just misapplied. This names the constructor + its expected vs supplied arity
+/// (rustc's "this type takes N generic arguments but M were supplied"). `None` unless `ty_expr` is a
+/// `(Head arg…)` application whose head is a known type constructor (`List`/`Set` = 1, `Map` = 2) AND the
+/// argument count differs — every other non-type keeps the generic message. Reads the head's ctor
+/// identity via `meta_apply_of` (GENERIC — the prim carries the arity, no hard-coded name match on the
+/// source spelling).
+fn type_ctor_arity_message(db: &mut Db, ty_expr: StructId) -> Option<String> {
+    let children = match db.ast.get(ty_expr) {
+        crate::ast::Struct::List(cs) if cs.len() >= 2 => cs.to_vec(),
+        _ => return None,
+    };
+    let head = children[0];
+    let supplied = children.len() - 1;
+    let (name, expected) = match crate::eval::meta_apply_of(db, head)? {
+        crate::resolved::Prim::ListCtor => ("List", 1),
+        crate::resolved::Prim::SetCtor => ("Set", 1),
+        crate::resolved::Prim::MapCtor => ("Map", 2),
+        _ => return None,
+    };
+    if supplied == expected {
+        return None; // correct arity — a different fault (a non-type argument) surfaces elsewhere
+    }
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    Some(format!(
+        "`{name}` takes {expected} type argument{}, but {supplied} {} supplied — write `({name} {})`",
+        plural(expected),
+        if supplied == 1 { "was" } else { "were" },
+        match name {
+            "Map" => "Key Value",
+            _ => "Elem",
+        },
+    ))
+}
+
 /// Faults in a DEF PARAMETER's annotation `(: name T)` — the signature-side companion of the value
 /// annotation checked in `collect_node`. A parameter's TYPE OPERAND `T` must denote a TYPE; a non-type
 /// (an unbound name, a value, a malformed type application `(Int64 Int64)`) is REJECTED, not
@@ -788,13 +826,12 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
         collect(db, ty_expr, out);
         if out.len() == before {
             trace!(target: "rcdzc::infer", param = param.0, "fault: parameter annotation type is not a type (CDZ0203)");
-            out.push(
-                Reject::coded(
-                    Code::TypeMismatch,
-                    non_type_annotation_message(db, ty_expr, "a parameter's annotation"),
-                )
-                .at(ty_expr),
-            );
+            // A misapplied prelude type CONSTRUCTOR (`(List Int64 Int64)`) names its arity; any other
+            // non-type keeps the generic "requires a type" message.
+            let message = type_ctor_arity_message(db, ty_expr).unwrap_or_else(|| {
+                non_type_annotation_message(db, ty_expr, "a parameter's annotation")
+            });
+            out.push(Reject::coded(Code::TypeMismatch, message).at(ty_expr));
         }
     }
 }
@@ -7505,14 +7542,16 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect(db, ty_expr, out);
                 if out.len() == before {
                     trace!(target: "rcdzc::infer", node = id.0, "fault: annotation type position is not a type (CDZ0203)");
-                    out.push(Reject::coded(
-                        Code::TypeMismatch,
+                    // A misapplied prelude type CONSTRUCTOR (`(: 5 (List Int64 Int64))`) names its arity;
+                    // any other non-type keeps the generic "requires a type" message.
+                    let message = type_ctor_arity_message(db, ty_expr).unwrap_or_else(|| {
                         non_type_annotation_message(
                             db,
                             ty_expr,
                             "the type position of an annotation",
-                        ),
-                    ));
+                        )
+                    });
+                    out.push(Reject::coded(Code::TypeMismatch, message));
                 }
             }
             // A FLOAT LITERAL annotated `Float32` that OVERFLOWS the Float32 range — `(: 1.0e300 Float32)`
