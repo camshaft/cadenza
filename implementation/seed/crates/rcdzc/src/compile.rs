@@ -459,6 +459,32 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
 ///
 //= constitution.md#vii-strong-static-typing-is-mandatory
 //# The compiler MUST reject a program that is not well-typed rather than emit a component carrying a deferred type error.
+/// Whether the type-expression subtree at `id` contains a `(Record …)` form (at any depth). A record
+/// TYPE's field NAMES are not global names, so validating a record-typed variant payload out of its
+/// declaration context mis-resolves them as unbound — the variant-payload type check skips such payloads
+/// (they are checked at construction/match instead) to avoid a spurious `unbound name` on a field name.
+fn payload_contains_record_form(db: &Db, id: StructId) -> bool {
+    if db.ast.head_name(id) == Some("Record") {
+        return true;
+    }
+    match db.ast.get(id) {
+        crate::ast::Struct::List(children) => children
+            .iter()
+            .any(|&c| payload_contains_record_form(db, c)),
+        _ => false,
+    }
+}
+
+/// The first backtick-quoted substring of `msg` (`` unbound name `x` `` → `x`), or `None` if there is no
+/// `` `…` `` pair. Used to read the offending NAME out of a coded message when the `Reject` carries only
+/// the rendered string (the variant-payload check filters a type-parameter's unbound-name fault by name).
+fn unbacktick(msg: &str) -> Option<&str> {
+    let start = msg.find('`')? + 1;
+    let rest = &msg[start..];
+    let end = rest.find('`')?;
+    Some(&rest[..end])
+}
+
 fn collect_faults(db: &mut Db) -> Vec<Reject> {
     let mut faults = Vec::new();
     // UNMODELED TOP-LEVEL FORM. A top-level `(head …)` whose head resolves to NOTHING — neither a
@@ -809,6 +835,81 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     let all_params: Vec<StructId> = db.defs.iter().flat_map(|d| d.params.clone()).collect();
     for p in &all_params {
         crate::infer::param_annotation_faults(db, *p, &mut faults);
+    }
+    // Validate every VARIANT PAYLOAD TYPE. A garbage type in a variant payload — `(type C (A Nonesuch))`,
+    // `(type C (A (List Nonesuch)))` — was silently accepted: the unknown name resolved to nothing and the
+    // variant was mis-typed (`A` treated as NULLARY, its payload dropped — `(C.A x)` then reports "a
+    // nullary variant takes the unit value"), a correctness gap. This is the declaration-site companion of
+    // the parameter/value-annotation type check: a payload type position REQUIRES a real type, exactly as
+    // an annotation does. The resolver already handles self-recursion (`(Cons Int64 T)`), mutual/forward
+    // references, and generic self-application (`(Node (Tuple Tree Tree))`) — those resolve to real types,
+    // so only a genuinely UNKNOWN name faults. A bare type-PARAMETER name (`a` in `(Some a)`, recorded in
+    // the decl's `params`) is a valid payload and is skipped — it is NOT a global type. Collected per
+    // payload across ALL type declarations so a garbage payload type is caught whether or not constructed.
+    let type_payloads: Vec<(StructId, Vec<String>)> = db
+        .type_decls
+        .iter()
+        .flat_map(|d| {
+            let params = d.params.clone();
+            d.variants
+                .iter()
+                .flat_map(|v| v.payloads.clone())
+                .map(move |occ| (occ, params.clone()))
+        })
+        .collect();
+    for (payload, params) in &type_payloads {
+        // A bare payload that is one of the declaration's type PARAMETERS is valid (a type variable, not a
+        // global type) — skip it entirely (its `typeval_of` is None but it is not an error).
+        if let Some(name) = db.ast.as_name(*payload)
+            && params.iter().any(|p| p == name)
+        {
+            continue;
+        }
+        // CONSERVATIVELY SKIP a payload that contains a `(Record …)` type form. A record TYPE's field NAMES
+        // (`(Record (val a))`) are resolved as value names by the out-of-context `type_errors` walk here,
+        // surfacing a spurious `unbound name \`val\`` that is neither an unknown type nor a param — so a
+        // record-typed payload cannot be validated by this walk without false positives. Records are checked
+        // where CONSTRUCTED/matched anyway; skip them here rather than risk a false reject. (The
+        // high-value cases — a bare unknown name, `(List Nonesuch)`, `(Tuple … Nonesuch)`, a plain type
+        // application — carry no field names and validate cleanly.)
+        if payload_contains_record_form(db, *payload) {
+            continue;
+        }
+        // The operand denotes a type → fine (self/mutual/forward refs + nested generics resolve). Otherwise
+        // surface its OWN faults (an unbound name → CDZ0101, recursing into a compound `(List Nonesuch)`);
+        // if none surfaced (a well-formed non-type), add the "requires a type" reject, mirroring the
+        // parameter/value-annotation check.
+        if crate::eval::typeval_of(db, *payload).is_none() {
+            let raw = type_errors(db, *payload);
+            let raw_count = raw.len();
+            // Drop an unbound-name fault whose name is one of THIS declaration's type PARAMETERS — a NESTED
+            // param use (`(Node (Tuple a a))`, `(Tuple a Nonesuch)`) resolves its bare `a` as unbound here
+            // (the payload is validated outside the decl's param scope), but a free name recorded in
+            // `params` IS a type variable, not an unknown type. `Nonesuch` (not a param) still faults. The
+            // name is the backtick-quoted identifier in the `unbound name \`x\`` message.
+            let kept: Vec<Reject> = raw
+                .into_iter()
+                .filter(|f| {
+                    f.code != Some(Code::Unbound)
+                        || unbacktick(&f.message).is_none_or(|n| !params.iter().any(|p| p == n))
+                })
+                .collect();
+            if !kept.is_empty() {
+                // A real fault survived (an unknown name / malformed sub-type) — surface it.
+                faults.extend(kept);
+            } else if raw_count == 0 {
+                // No faults at all AND not a type — a well-formed NON-type payload (a literal, a value).
+                // (When faults were surfaced but ALL were param names, the payload IS a valid parametric
+                // type like `(Tuple a a)` — no fallback.)
+                faults.push(
+                    Reject::coded(
+                        Code::TypeMismatch,
+                        "a variant payload requires a type, but found a non-type",
+                    )
+                    .at(*payload),
+                );
+            }
+        }
     }
     // DUPLICATE PARAMETER NAME. A function's parameter list is a BINDER POSITION, so it must be LINEAR
     // exactly as a pattern is (core-semantics.md §Patterns Compose: "A pattern MUST bind each name at

@@ -19071,6 +19071,53 @@ mod match_engine {
     }
 
     #[test]
+    fn an_unknown_type_in_a_variant_payload_is_rejected() {
+        // A garbage type in a variant PAYLOAD — `(type C (A Nonesuch))` — was silently accepted (the
+        // unknown name resolved to nothing and `A` was mis-typed as NULLARY, its payload dropped). Now the
+        // declaration-site check rejects it CDZ0101, the same as an unknown type in a param/value
+        // annotation. Nested in a `(List …)`/`(Tuple …)` too.
+        for src in [
+            "(module m (type C (A Nonesuch)) (def (main) 0) (export main))",
+            "(module m (type C (A (List Nonesuch))) (def (main) 0) (export main))",
+            "(module m (type P (Node (Tuple a Nonesuch)) (Leaf)) (def (main) 0) (export main))",
+        ] {
+            let err = compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err("an unknown type in a variant payload must be rejected");
+            assert_eq!(err.code.as_deref(), Some("CDZ0101"), "got: {}", err.message);
+            assert!(
+                err.message.contains("Nonesuch"),
+                "names the unknown payload type: {}",
+                err.message
+            );
+        }
+        // A payload that is a well-formed NON-type (a literal) → the "requires a type" reject.
+        let lit = compile_component(&crate::codec::encode(&parse(
+            "(module m (type C (A 5)) (def (main) 0) (export main))",
+        )))
+        .expect_err("a non-type payload must be rejected");
+        assert_eq!(lit.code.as_deref(), Some("CDZ0203"), "got: {}", lit.message);
+
+        // NO false positive on the valid parametric / recursive / known payloads — these MUST compile:
+        // a bare type param, a param nested in a tuple, self-recursion, mutual/forward refs, generic self,
+        // a known concrete type, and (conservatively skipped) a record payload mentioning a param.
+        for ok in [
+            "(module m (type Opt (Some a) (Non)) (def (main) 0) (export main))",
+            "(module m (type P (Node (Tuple a a)) (Leaf)) (def (main) 0) (export main))",
+            "(module m (type T (Nil) (Cons Int64 T)) (def (main) 0) (export main))",
+            "(module m (type A (MkA B)) (type B (MkB A)) (def (main) 0) (export main))",
+            "(module m (type Tree (Leaf a) (Node (Tuple Tree Tree))) (def (main) 0) (export main))",
+            "(module m (type C (A Int64)) (def (main) 0) (export main))",
+            "(module m (type Box (B (Record (val a))) N) \
+               (def (main) (match (Box.B (record (val 7))) ((Box.B r) (. r val)) (Box.N 0))) (export main))",
+        ] {
+            assert!(
+                compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
+                "a valid parametric/recursive/known variant payload must compile: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn a_false_variant_guard_shields_a_trapping_body() {
         // The variant-guard short-circuit (core-semantics.md §Boolean Connectives Short-Circuit applied to
         // a guarded arm): a guarded arm's BODY is evaluated only when the guard HOLDS. `(guard (Some x) (>
