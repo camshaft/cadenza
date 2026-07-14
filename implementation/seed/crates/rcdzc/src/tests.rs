@@ -36694,6 +36694,52 @@ mod stage1 {
     }
 
     #[test]
+    fn an_over_applied_op_in_a_handle_reports_one_error_not_a_reducibility_decline() {
+        // An OVER-APPLIED operation performed inside a handle — `(E.set 1 2)` for a 1-arg `op set` — is
+        // CDZ0203 "`E.set` takes 1 argument, but 2 were given" (with a delete fix). The over-application
+        // ALSO makes the handler unfoldable, so `lower` returns the uncoded "not yet reducible" DECLINE — a
+        // CONSEQUENCE of the arity error, not an independent limit. `dedup_faults` now drops that decline
+        // when a member-op over-application reject is present (joining the malformed-handler / resume-result
+        // / arm-arity triggers), so the mistyped perform is ONE actionable error.
+        let src = "(do (effect E (op set (-> Int64 Unit))) \
+                   (def (main) (handle E 0 ((set (a) s (resume unit s))) (E.set 1 2))) (export main))";
+        let ds = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+        let errors: Vec<&crate::abi::Diagnostic> = ds
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "an over-applied op in a handle = one error, got: {:?}",
+            ds.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            errors[0].code.as_deref() == Some("CDZ0203")
+                && errors[0]
+                    .message
+                    .contains("takes 1 argument, but 2 were given"),
+            "the one error is the arity reject: {}",
+            errors[0].message
+        );
+        assert!(
+            !ds.iter()
+                .any(|d| d.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE),
+            "the consequent fold-decline is dropped"
+        );
+        // NO OVER-SUPPRESSION: a VALID perform under the same handle compiles clean.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(do (effect E (op set (-> Int64 Unit))) \
+                 (def (main) (handle E 0 ((set (a) s (resume unit s))) (E.set 1))) (export main))"
+            )))
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+            "a well-formed perform under the handle compiles"
+        );
+    }
+
+    #[test]
     fn a_perform_in_a_match_guard_declines_honestly_not_no_enclosing_handler() {
         // A perform inside a match-arm GUARD condition, under a `handle` that discharges it, is a position
         // the effect-routing/distribution walks do NOT descend (they route the scrutinee + arm bodies, not
