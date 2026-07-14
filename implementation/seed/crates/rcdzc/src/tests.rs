@@ -35831,6 +35831,26 @@ mod stage1 {
             "a genuine top-level stray resume is still flagged: {:?}",
             dstray.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+        // (d) A STRAY resume that is ALSO malformed (missing next-state, or too many operands) reports the
+        // PLACEMENT error as the ONE primary — its placement is the root defect, so the misleading arity
+        // message ("has no next-state", which reads as if adding an argument would fix it) is suppressed.
+        for bad in [
+            "(module m (def (main) (resume 5)) (export main))", // missing next-state AND stray
+            "(module m (def (main) (resume 5 6 7)) (export main))", // too many AND stray
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(bad)));
+            assert!(
+                d.iter()
+                    .any(|x| x.message.contains("no enclosing handler arm")),
+                "a stray+malformed resume reports the placement error: {:?}",
+                d.iter().map(|x| &x.message).collect::<Vec<_>>()
+            );
+            assert!(
+                !d.iter().any(|x| x.message.starts_with("this resume has")),
+                "the misleading arity message is suppressed for a STRAY resume: {:?}",
+                d.iter().map(|x| &x.message).collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]
