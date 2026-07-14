@@ -295,6 +295,16 @@ pub(crate) const REDUCE_NODE_BUDGET: u64 = 1_000_000;
 /// [`REDUCE_DEPTH_LIMIT`] for the evaluator's own recursion.
 pub(crate) const DESCENT_DEPTH_LIMIT: u32 = 1024;
 
+/// The bound on a LAYOUT core-tree WALK's own recursion depth ([`Db::walk_depth`]) — the backstop against a
+/// native stack overflow when a walk (`collect_call_callees`, `collect_closure_codes`) descends a deep
+/// memoized `Core::SumNew`/compound chain a non-normalizing self-application materializes. Separate from
+/// [`DESCENT_DEPTH_LIMIT`] because a walk sits ON TOP of `core_of`'s own descent (each walk node calls
+/// `core_of`), so the two counters must not share — but the same magnitude is right (both bound native
+/// recursion against the same worker stack, sized in `host.rs` from `DESCENT_DEPTH_LIMIT`). A valid program
+/// never nests core this deep (`core_of` would itself decline it first); a pathological chain is clipped
+/// here so `layout::compute` completes and `collect_faults` reports the coded decline.
+pub(crate) const WALK_DEPTH_LIMIT: u32 = 1024;
+
 /// An RAII guard for one active β-reduction: holds the reduction depth bumped for its lifetime and
 /// decrements it on drop, so the depth exactly reflects the reductions currently on the stack. Held by
 /// the evaluator across the reduce-and-evaluate of a lambda application.
@@ -591,6 +601,18 @@ pub struct Db {
     /// [`DESCENT_DEPTH_LIMIT`].
     pub(crate) descent_depth: u32,
 
+    /// The current recursive-descent depth of a LAYOUT core-tree WALK (`collect_call_callees`,
+    /// `collect_closure_codes`) — a SEPARATE counter from [`descent_depth`], deliberately NOT shared. These
+    /// walks call [`crate::lower::core_of`] at each node (which uses `descent_depth` for its OWN recursion),
+    /// so folding the walk depth into `descent_depth` would inflate `core_of`'s view and spuriously decline
+    /// a valid program whose core is moderately deep. This counter bounds ONLY the walk's own native
+    /// recursion: a non-normalizing self-application in a sum-constructor payload materializes a
+    /// `Core::SumNew` chain the walk would otherwise descend until the native stack overflows (the walk
+    /// lazily β-reduces one payload level per `core_of`, unbounded by the reduction-DEPTH guard). Past
+    /// [`WALK_DEPTH_LIMIT`] the walk stops descending — the program is rejected by `collect_faults` anyway,
+    /// so a clipped reachable set changes no accepted program. Bumped/restored around each walk recursion.
+    pub(crate) walk_depth: u32,
+
     /// Set true when a `collect` subtree hit a depth/reduction LIMIT (the descent-depth backstop, or a
     /// reduction that could not proceed because `enter_reduction` was exhausted). A limit-clipped walk is
     /// PARTIAL — it declined early rather than seeing the node's true faults — so its result must NOT be
@@ -785,6 +807,14 @@ pub struct Db {
     /// `(name, class)`, the pool winner is computed once per distinct query; the per-node lexical tier is
     /// combined against it afterward (a tiny scan). A pure function of the program + query.
     pub(crate) suggest_pool_winner: crate::fxhash::FxHashMap<(String, u8), Option<String>>,
+
+    /// Memo of the nearest VARIANT name of a scrutinee sum to a mistyped match-pattern head — keyed by
+    /// `(sum-decl occ, mistyped-key)`. `lower::enrich_pattern_head_suggestion` clones the sum's variant
+    /// names + edit-distance-scans them per bad pattern; a WIDE sum (N variants) matched with a stale
+    /// variant name from N sites (a renamed variant still named at many match arms) re-ran that O(variants)
+    /// scan each → O(N²). Keyed by `(decl, key)`, the winner is computed once per distinct query. A pure
+    /// function of the sum declaration + the mistyped key. The variant-suggest twin of `suggest_pool_winner`.
+    pub(crate) variant_suggest_winner: crate::fxhash::FxHashMap<(StructId, String), Option<String>>,
 
     /// CAPTURED-reference occurrences: a body reference inside a lifted lambda that names a FREE VARIABLE
     /// (a binding from the lambda's creation scope), mapped to `(capture index, solved type)`. Recorded
@@ -1082,6 +1112,7 @@ impl Db {
             reduce_depth: 0,
             reduce_nodes: 0,
             descent_depth: 0,
+            walk_depth: 0,
             collect_limited: false,
             build_cache: crate::fxhash::FxHashMap::default(),
             recursive: crate::fxhash::FxHashMap::default(),
@@ -1100,6 +1131,7 @@ impl Db {
             sum_out_edges: crate::fxhash::FxHashMap::default(),
             suggest_pool: [None, None, None],
             suggest_pool_winner: crate::fxhash::FxHashMap::default(),
+            variant_suggest_winner: crate::fxhash::FxHashMap::default(),
             captured_ref: crate::fxhash::FxHashMap::default(),
             resolved_subtrees: crate::fxhash::FxHashSet::default(),
             def_schemes: crate::fxhash::FxHashMap::default(),

@@ -86,6 +86,25 @@ export default function Data() {
         }
       />
 
+      <Exercise
+        id="data:2"
+        prompt={
+          <>
+            A tuple is reached by <em>position</em>, not name. Use the <C>.</C> accessor with an index to
+            pull the middle element out of <C>(tuple 7 8 9)</C> — counting from zero, that's <C>8</C>.
+          </>
+        }
+        starter={`(. (tuple 7 8 9) ?)`}
+        solution={`(. (tuple 7 8 9) 1)`}
+        expected="8"
+        hint={
+          <>
+            Tuple indices start at <C>0</C>, so the middle of three elements is index <C>1</C> — a{" "}
+            <em>number</em>, where the record above used a name.
+          </>
+        }
+      />
+
       <P>
         That's the vocabulary. Next we'll <em>use</em> it — passing records into functions, nesting
         them, and reaching in for the pieces — in <strong>Working with records &amp; tuples</strong>.

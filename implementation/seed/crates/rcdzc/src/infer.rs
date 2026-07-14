@@ -893,6 +893,34 @@ pub(crate) fn expected_arrow_for_lambda(db: &mut Db, lambda: StructId) -> Option
     {
         return Some(t);
     }
+    // (3b) A FUNCTION-VALUED head that is NOT itself a lambda/def — a VARIABLE bound to a function type,
+    //      e.g. a higher-order PARAMETER `g : (-> (-> A B) R)` applied `(g lambda)`. Path (3) can't read it
+    //      (`lambda_params_of` needs `head` to be a lambda/def), but `head`'s OWN type IS the arrow
+    //      `A0 → … → R`; the lambda fills argument slot `arg_ix`, so its expected type is `A_{arg_ix}`. Peel
+    //      `type_of(head)` by `arg_ix` arrows and take that domain if it is itself an arrow. This lets an
+    //      UNANNOTATED inner closure `(fn (p) …)` passed to a higher-order closure parameter recover its
+    //      param type (e.g. `p : (Tuple …)`) from the parameter's declared arrow, instead of solving `Any`
+    //      and declining "a closure's parameter type has no machine representation" (a bare `(fn (p) (. p 0))`
+    //      in `(g (fn (p) …))`). A non-arrow head type, or a slot that is not an arrow, recovers nothing.
+    {
+        let mut cur = type_of(db, head);
+        let mut peeled_ok = true;
+        for _ in 0..arg_ix {
+            match cur {
+                Ty::Fn(_, r) => cur = *r,
+                _ => {
+                    peeled_ok = false;
+                    break;
+                }
+            }
+        }
+        if peeled_ok
+            && let Ty::Fn(p, _) = cur
+            && matches!(*p, Ty::Fn(_, _))
+        {
+            return Some(*p);
+        }
+    }
     None
 }
 

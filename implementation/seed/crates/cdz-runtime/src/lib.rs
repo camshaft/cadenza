@@ -9652,6 +9652,68 @@ mod tests {
         op_drop(under);
     }
 
+    /// The `op_bigint_*` glue on genuinely LARGE, MULTI-LIMB (>i64) values. Every other bigint test enters
+    /// via `op_bigint_of_i64` (≤64-bit), so the box/unbox of a multi-limb magnitude — several 4-byte limbs,
+    /// trailing-zero stripping ACROSS limb boundaries, the sign byte — and arithmetic PRODUCING/CONSUMING
+    /// >i64 values were untested through the heap. `bigint.rs` differential-tests the limb arithmetic vs
+    /// num-bigint, but NOT the heap round-trip. Build large `Big`s directly, box them, run the WIT ops, and
+    /// check the result unboxes to the value the library computes — pinning that the leaf byte codec and
+    /// each op thread multi-limb operands correctly. (B3b will emit exactly these >i64 BigInts.)
+    #[test]
+    fn bigint_ops_on_large_multi_limb_values_through_the_heap() {
+        reset();
+        let before = live_object_count();
+        // Big multi-limb operands: p ≈ 2^126 (i64::MAX squared) and q ≈ 2^190 — both well beyond i64,
+        // spanning several base-2³² limbs so the box/unbox exercises multi-limb magnitude bytes.
+        let max = bigint::Big::from_i64(i64::MAX);
+        let p = max.mul(&max); // ~2^126, positive
+        let neg_p = bigint::Big::zero().sub(&p); // -p, exercises the sign byte on a multi-limb magnitude
+        let q = p.mul(&max); // ~2^189
+        // Round-trip each through the heap leaf: unbox(box(x)) == x by value (cmp == Equal).
+        for b in [&p, &neg_p, &q, &bigint::Big::from_i64(0)] {
+            let h = box_bigint(b);
+            assert!(!is_immediate(h), "a large BigInt is a heap leaf");
+            assert_eq!(unbox_bigint(h).cmp(b), core::cmp::Ordering::Equal, "box/unbox round-trip");
+            op_drop(h);
+        }
+        // Each WIT op on boxed large operands must unbox to the library's direct result (canonical bytes).
+        let check = |op: fn(Handle, Handle) -> Handle, a: &bigint::Big, b: &bigint::Big, want: &bigint::Big, name: &str| {
+            let (ha, hb) = (box_bigint(a), box_bigint(b));
+            let hr = op(ha, hb);
+            assert_eq!(unbox_bigint(hr).cmp(want), core::cmp::Ordering::Equal, "large bigint {name}");
+            // canonical: the op result's leaf bytes equal a freshly-boxed `want`'s (champ_eq / same key).
+            let hw = box_bigint(want);
+            assert!(champ_eq(hr, hw), "large bigint {name} leaf is canonical (champ_eq to a fresh box)");
+            op_drop(ha);
+            op_drop(hb);
+            op_drop(hr);
+            op_drop(hw);
+        };
+        check(op_bigint_add, &p, &q, &p.add(&q), "add");
+        check(op_bigint_sub, &p, &q, &p.sub(&q), "sub (goes negative)");
+        check(op_bigint_mul, &p, &q, &p.mul(&q), "mul (~2^315)");
+        let (dq, _dr) = q.divmod(&p).unwrap();
+        check(op_bigint_div, &q, &p, &dq, "div (multi-limb quotient)");
+        // cmp on large operands: p < q, q > p, p == p.
+        let (hp, hq) = (box_bigint(&p), box_bigint(&q));
+        assert_eq!(op_bigint_cmp(hp, hq), -1, "p < q");
+        assert_eq!(op_bigint_cmp(hq, hp), 1, "q > p");
+        let hp2 = box_bigint(&p);
+        assert_eq!(op_bigint_cmp(hp, hp2), 0, "p == p");
+        // A large value does NOT narrow to i64 (traps) — the checked narrow's out-of-range path on a
+        // genuinely-multi-limb value (the i64-boundary test only reached exactly ±1 past the edge).
+        let hp3 = box_bigint(&p);
+        assert!(
+            std::panic::catch_unwind(|| op_bigint_to_i64_checked(hp3)).is_err(),
+            "a ~2^126 BigInt traps the i64 checked narrow"
+        );
+        op_drop(hp);
+        op_drop(hq);
+        op_drop(hp2);
+        op_drop(hp3);
+        assert_eq!(live_object_count(), before, "no leak across the large-value ops");
+    }
+
     #[test]
     fn inline_int_negative_behavioral_roundtrip() {
         reset();

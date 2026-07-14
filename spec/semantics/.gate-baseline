@@ -793,6 +793,7 @@ pass	a sum type is declared with named variants
 pass	a sum type variant can carry data
 pass	a sum value annotated as a scalar type is rejected
 pass	a sum-match recursion that accumulates a built-in list returns a list
+pass	a sum-payload-wrapped self-application is rejected in bounded time, not a compiler stack overflow
 pass	a sum-type value is constructed through a variant
 pass	a sum-type value is deconstructed by an exhaustive match
 pass	a symbol compared to a string is a type error
@@ -1553,7 +1554,7 @@ todo	Ast.decode decodes bytes that arrive as a function argument
 todo	Ast.encode and Ast.decode round-trip
 todo	Type is a first-class value
 todo	a UInt32 addition that overflows the 32-bit width traps
-todo	a build-time delegated effect whose result a returned closure captures does not escape
+pass	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 todo	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 todo	a default-integer pragma makes a bare literal take the declared integer type

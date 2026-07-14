@@ -4270,6 +4270,116 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_if_with_a_boolean_constant_branch_needing_a_negated_condition_becomes_a_connective() {
+        // The OTHER two if-with-one-boolean-constant patterns, where the constant flips the connective's
+        // condition to `(not c)`:
+        //   `(if c a true)`  IS `(or (not c) a)`   — else is the `true`
+        //   `(if c false b)` IS `(and (not c) b)`  — then is the `false`
+        // Emits `i32.eqz` (the negation) + `i32.or`/`i32.and`, no `select`/`if`, and joins the boolean-algebra
+        // fold family: `(if (> x 10) (< x 5) true)` → `(or (<= x 10) (< x 5))` (the `(not (> x 10))` folds to
+        // `(<= x 10)`). Same trap/tail-call discipline as the sibling two patterns.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(if c a true)` → `(or (not c) a)`: an `i32.eqz` (the negation) + `i32.or`, no `select`/`if`.
+        let or_neg = lir("(: c Bool) (: a Bool)", "(if c a true)");
+        assert!(
+            or_neg.iter().any(|i| matches!(i, Lir::I32Eqz))
+                && or_neg.iter().any(|i| matches!(i, Lir::I32Or))
+                && !or_neg.iter().any(|i| matches!(i, Lir::Select | Lir::If(_))),
+            "(if c a true) → (or (not c) a), got: {or_neg:?}"
+        );
+        // `(if c false b)` → `(and (not c) b)`: an `i32.eqz` + `i32.and`, no `select`/`if`.
+        let and_neg = lir("(: c Bool) (: b Bool)", "(if c false b)");
+        assert!(
+            and_neg.iter().any(|i| matches!(i, Lir::I32Eqz))
+                && and_neg.iter().any(|i| matches!(i, Lir::I32And))
+                && !and_neg
+                    .iter()
+                    .any(|i| matches!(i, Lir::Select | Lir::If(_))),
+            "(if c false b) → (and (not c) b), got: {and_neg:?}"
+        );
+        // FOLD FAMILY: `(if (> x 10) (< x 5) true)` → `(or (<= x 10) (< x 5))` — the negation folds into the
+        // complementary op (`le_s`), so there is NO `i32.eqz` and NO `if`/`select`, just two compares + `or`.
+        let folded = lir("(: x Int64)", "(if (> x 10) (< x 5) true)");
+        assert!(
+            folded.iter().any(|i| matches!(i, Lir::I64LeS))
+                && folded.iter().any(|i| matches!(i, Lir::I32Or))
+                && !folded
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32Eqz | Lir::Select | Lir::If(_))),
+            "(if (> x 10) (< x 5) true) → (or (<= x 10) (< x 5)), got: {folded:?}"
+        );
+
+        // VALUE PARITY over the truth tables.
+        for (c, a) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(
+                run::<bool>(
+                    "(: c Bool) (: a Bool)",
+                    "(if c a true)",
+                    &[Val::Bool(c), Val::Bool(a)]
+                ),
+                if c { a } else { true },
+                "(if c a true) @{c},{a}"
+            );
+            assert_eq!(
+                run::<bool>(
+                    "(: c Bool) (: b Bool)",
+                    "(if c false b)",
+                    &[Val::Bool(c), Val::Bool(a)]
+                ),
+                if c { false } else { a },
+                "(if c false b) @{c},{a}"
+            );
+        }
+
+        // TRAP SHIELDING: `(if c (> (/ 10 n) 0) true)` = `(or (not c) (> (/ 10 n) 0))` — the guarded `/` is
+        // reached only when c is true (so `(not c)` is false); c=false short-circuits, no trap.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: c Bool) (: n Int64)) (if (if c (> (/ 10 n) 0) true) 1 0)) (export f))",
+        )))
+        .expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&tb, "f", &[Val::Bool(false), Val::S64(0)]),
+            1,
+            "c=false short-circuits the trapping branch"
+        );
+        assert!(
+            call_traps(&tb, "f", &[Val::Bool(true), Val::S64(0)]),
+            "c=true reaches the trapping branch"
+        );
+
+        // TAIL-CALL VETO: a recursive call in the guarded branch keeps the `if` (loop transform must win).
+        let rec = "(module m (def (rec (: n Int64)) (if (= n 0) true (if (< n 0) (rec (- n 1)) true))) (export rec))";
+        let rc =
+            compile_component(&crate::codec::encode(&crate::testkit::parse(rec))).expect("compile");
+        assert!(run_returns_with::<bool>(&rc, "rec", &[Val::S64(0)]));
+        assert!(run_returns_with::<bool>(&rc, "rec", &[Val::S64(3)]));
+    }
+
+    #[test]
     fn a_nested_if_sharing_an_arm_flattens_to_one_if_on_a_combined_condition() {
         // IF-TOWER FLATTENING: two nested `if`s sharing an arm collapse to ONE `if` on a combined condition.
         //   `(if c1 x (if c2 x y))` → `(if (or c1 c2) x y)`  (shared THEN arm `x`)
@@ -12787,6 +12897,35 @@ mod match_engine {
                 .as_deref(),
             Some("CDZ0201")
         );
+        // The non-exhaustive list match now carries an ADD-ARM fix, like the scalar/sum case. FIXED-only
+        // (no catch-all) → append a wildcard `(_ (trap "TODO"))` covering every remaining length.
+        let find = |body: &str| {
+            let src = format!("(module m (def (f (: xs (List Int64))) {body}) (export f))");
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0210"))
+                .unwrap_or_else(|| panic!("expected CDZ0210 for {body}"))
+        };
+        let no_catchall = find("(match xs ((list) 0) ((list a) a))");
+        assert_eq!(
+            no_catchall.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("(_ (trap \"TODO\"))"),
+            "fixed-only list match adds a wildcard arm: {}",
+            no_catchall.message
+        );
+        assert_eq!(
+            no_catchall.fix.as_ref().map(|f| f.kind),
+            Some(crate::abi::FixKind::InsertInto)
+        );
+        // A REST pattern that leaves the EMPTY list uncovered (`(list a .. r)` covers length ≥ 1) →
+        // append the specific missing arm `((list) (trap "TODO"))`.
+        let missing_empty = find("(match xs ((list a .. r) a))");
+        assert_eq!(
+            missing_empty.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("((list) (trap \"TODO\"))"),
+            "a rest pattern missing the empty case adds `((list) …)`: {}",
+            missing_empty.message
+        );
     }
 
     #[test]
@@ -20096,6 +20235,42 @@ mod diagnostics {
             !far.message.contains("did you mean"),
             "no spurious suggestion for a far typo: {}",
             far.message
+        );
+    }
+
+    #[test]
+    fn many_match_patterns_typoing_one_variant_suggest_the_memoized_winner() {
+        // The nearest-variant suggestion for a mistyped match-pattern head is MEMOIZED per (sum-decl,
+        // mistyped-key), so a WIDE sum matched with a stale variant name from N sites (a renamed variant
+        // still named at N match arms) shares one edit-distance scan instead of re-running it each — the
+        // O(N²) fix. N defs each match `(T.V0x)` (a typo of `V0`) on an 8-variant sum. The identical
+        // (code, message) faults dedup in the surfaced set, but every one exercises the memoized lookup
+        // during lowering; this locks in that the memo yields the CORRECT winner `V0` (not a stale/empty
+        // answer) — a wrong memo key or a mis-combined result would surface a different variant or none.
+        let n = 15;
+        let variants = (0..8)
+            .map(|i| format!("V{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let defs = (0..n)
+            .map(|i| format!("(def (d{i} (: t T)) (match t ((T.V0x) {i}) (_ -1)))"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let src =
+            format!("(module m (type T {variants}) {defs} (def (main) (d0 (T.V0))) (export main))");
+        let mut db = crate::db::Db::load(parse(&src));
+        let sugg: Vec<String> = crate::diagnostics(&mut db)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("CDZ0201"))
+            .filter_map(|d| d.fix.map(|f| f.replacement))
+            .collect();
+        assert!(
+            !sugg.is_empty(),
+            "the typo'd `V0x` pattern is reported: {sugg:?}"
+        );
+        assert!(
+            sugg.iter().all(|s| s == "V0"),
+            "every surfaced suggestion is the memoized winner `V0`: {sugg:?}"
         );
     }
 
@@ -29285,6 +29460,46 @@ mod stage1 {
     }
 
     #[test]
+    fn a_sum_payload_wrapped_self_application_declines_not_a_stack_overflow() {
+        // The SUM-CONSTRUCTOR-payload sibling of the tuple/record shape above: `(fn v (Some (v v)))` applied
+        // to a copy of itself. `cdz check` (inference) already declines CDZ0999 (the reduction budget), but
+        // `cdz compile` HUNG — the LAYOUT reachability walks (`collect_call_callees`/`collect_closure_codes`)
+        // descend a `Core::SumNew` payload by calling `core_of`, which β-reduces one more level per call
+        // WITHOUT holding the reduction-DEPTH guard (unlike tuple lowering), materializing an unbounded
+        // `Core::SumNew` chain the walk descends in ONE native recursion until the stack OVERFLOWS. The fix
+        // bounds those walks with a DEDICATED `walk_depth` counter (not `core_of`'s `descent_depth`, which
+        // the walk also drives — sharing would spuriously decline a valid moderately-deep program). Past the
+        // limit the walk stops descending; `collect_faults` then reports the coded CDZ0999 decline. The
+        // property is 'never crash' — TERMINATE with a coded rejection on `compile`, not just `check`.
+        let some = "(module m (def (main) ((fn (v0) (Some (v0 v0))) (fn (v2) (Some (v2 v2))))) (export main))";
+        let reject = compile_component(&crate::codec::encode(&parse(some)))
+            .expect_err("a Some-payload-wrapped self-application must decline, not crash");
+        assert_eq!(
+            reject.code.as_deref(),
+            Some("CDZ0999"),
+            "a sum-payload diverging reduction declines at the resource bound (CDZ0999): {} / {:?}",
+            reject.message,
+            reject.code
+        );
+        // `(Ok (v v))` is the same class (a different built-in sum), and a user MULTI-payload variant
+        // `(P (v v) 1)` too — both must TERMINATE with a coded rejection (the user one surfaces a CDZ0201
+        // payload-type conflict before the blowup, which is fine: a prompt diagnostic, not a hang).
+        for src in [
+            "(module m (def (main) ((fn (v0) (Ok (v0 v0))) (fn (v2) (Ok (v2 v2))))) (export main))",
+            "(module m (type B (P Int64 Int64)) (def (main) ((fn (v0) (P (v0 v0) 1)) (fn (v2) (P (v2 v2) 1)))) (export main))",
+        ] {
+            let reject = compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err("a sum-payload self-application must decline, not crash");
+            assert!(
+                reject.code.is_some(),
+                "a sum-payload diverging reduction is a coded decline, not a crash: {} / {:?}",
+                reject.message,
+                reject.code
+            );
+        }
+    }
+
+    #[test]
     fn a_pathologically_deep_expression_declines_not_crashes() {
         // A `(+ 1 (+ 1 …))` nest far past the recursive-descent depth bound must DECLINE (a
         // resource-limit rejection) rather than overflow the stack and abort — a completes-or-declines,
@@ -36299,6 +36514,138 @@ mod closure_host_resource {
             .expect("host-composed closure-resource core module validates");
     }
 
+    /// BRICK (c): the HOST+runtime closure-resource ENVELOPE (`envelope::assemble_closure_host_runtime_resource`)
+    /// wraps the brick-(b) core into a VALID component that wasmtime parses. The component imports BOTH the
+    /// host effect interface (as `host`) AND the value-heap runtime (as `heap`), aliases+lowers both op
+    /// sets, threads them into the program instance, and re-exports the `make`/`call` closure interface —
+    /// the fusion of `assemble_closure_resource` (closure machinery) + `assemble_host_runtime` (dual import).
+    /// This pins the component-index arithmetic (host instance-type 0, runtime 1, resource type 2, own/make/
+    /// call types 3..6, make/call comp funcs h+k/h+k+1, core instances host 0 / heap 3 / program 4). The
+    /// `emit_closure_resource` wiring that drives real programs through it is the next brick.
+    #[test]
+    fn closure_host_runtime_resource_envelope_is_a_valid_component() {
+        use crate::backend::wasm::host::{HostImport, HostParam};
+        use crate::backend::wasm::lir::{Lir, ValType};
+        use crate::backend::wasm::runtime_abi::OPS;
+        use crate::backend::wasm::select::SelectedFunc;
+        use crate::layout::{ExportPlan, Layout};
+        use crate::lower::LiftedLambda;
+        use crate::ty::{IntTy, Ty};
+
+        let s64 = Ty::Int(IntTy::fixed(true, 64));
+        let host_fns_imp = vec![HostImport {
+            effect: "log".to_string(),
+            op: "emit".to_string(),
+            params: Vec::<HostParam>::new(),
+            result: None, // () -> () — leaves nothing on the stack
+        }];
+        let imports = vec![
+            OPS.arr_alloc,
+            OPS.arr_get,
+            OPS.arr_set,
+            OPS.box_int,
+            OPS.drop,
+            OPS.get_int,
+        ];
+        let h = host_fns_imp.len();
+        let fn_ty = Ty::Fn(Box::new(s64.clone()), Box::new(s64.clone()));
+        let export_body = SelectedFunc {
+            params: vec![],
+            ret: fn_ty.clone(),
+            code: vec![
+                Lir::CallHostImport(0), // log.emit() (host func 0)
+                Lir::ConstI32(1),
+                Lir::CallImport("arr-alloc"),
+                Lir::ConstI32(0),
+                Lir::ConstI64(0),
+                Lir::CallImport("box-int"),
+                Lir::CallImport("arr-set"),
+            ],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let lifted_body = SelectedFunc {
+            params: vec![ValType::I32, ValType::I64],
+            ret: s64.clone(),
+            code: vec![Lir::LocalGet(1), Lir::ConstI64(1), Lir::I64Add],
+            declared: vec![],
+            src_body: None,
+            locals: vec![],
+            scopes: vec![],
+            stmt_lines: vec![],
+        };
+        let funcs = vec![export_body, lifted_body];
+        let export = ExportPlan {
+            name: "main".to_string(),
+            def: 0,
+            body: crate::ast::StructId(0),
+            params: vec![],
+            result: fn_ty.clone(),
+        };
+        let lifted = LiftedLambda {
+            body: crate::ast::StructId(0),
+            params: vec![(crate::ast::StructId(0), s64.clone())],
+            ret_ty: s64.clone(),
+            captures: vec![],
+        };
+        let import_base = (h + imports.len() + 2) as u32;
+        let layout =
+            Layout::with_lifted(vec![export], vec![0], import_base, vec![lifted], vec![true]);
+        let export_abs = import_base;
+        let lifted_type_idx = layout.lifted_type_index(0, import_base);
+
+        let core = crate::backend::wasm::serialize::multi_closure_resource_core_module_with_host(
+            &funcs,
+            &imports,
+            &host_fns_imp,
+            &[crate::backend::wasm::serialize::ClosureMake {
+                export_name: "make".to_string(),
+                export_abs,
+                param_vts: vec![],
+            }],
+            &[],
+            &[ValType::I64],
+            ValType::I64,
+            lifted_type_idx,
+            &layout,
+        )
+        .expect("host-composed closure core serializes");
+
+        // The envelope needs `HostFn` (with the op's COMPONENT functype). A nullary Unit-result op's
+        // comp functype item is `COMP_FUNCTYPE_FORM, 0 params, 0x01 0x00 (no result)`.
+        let comp_ft = {
+            use crate::backend::wasm::wasm_abi;
+            let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+            item.extend_from_slice(&[0x00]); // 0 params
+            item.extend_from_slice(&[0x01, 0x00]); // no result
+            item
+        };
+        let host_fns = vec![crate::backend::wasm::envelope::HostFn {
+            op: "emit".to_string(),
+            comp_functype: comp_ft,
+            core_functype: Vec::new(),
+        }];
+        let dtor = crate::backend::wasm::serialize::resource_dtor_module_with_drop();
+        let s64_comp = crate::backend::wasm::runtime_abi::AbiValType::S64.comp_byte();
+        let component = crate::backend::wasm::envelope::assemble_closure_host_runtime_resource(
+            &core,
+            &dtor,
+            &imports,
+            "cadenza:runtime/heap@0.0.0",
+            "log",
+            &host_fns,
+            &[],         // nullary make (no export params)
+            &[s64_comp], // one s64 closure arg (component primitive byte)
+            s64_comp,    // s64 result (component primitive byte)
+        );
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::from_binary(&engine, &component)
+            .expect("the host+runtime closure-resource component must be valid");
+    }
+
     /// COMPOUND-RESULT compiler serializer: `serialize::closure_bytes_resource_core_module` — the production
     /// core a closure whose result is a runtime `Bytes` emits — is structurally valid. The closure body
     /// `(env, x) -> Bytes` builds a 2-byte `[x, x+1]` (`bytes-alloc`/`bytes-set`); `call` dispatches it via
@@ -37477,39 +37824,48 @@ mod closure_host_resource {
     }
 
     /// A closure export whose BUILD-TIME code delegates a host effect — `(host (ask) (let ((v (ask.ask)))
-    /// (fn (x) (+ x v))))` — is VALID (the `ask.ask` is discharged while the delegation is in scope; the
-    /// returned closure is effect-free, capturing only the plain result). It is NOT the CDZ0406 escape (the
-    /// perform is make-time, not in the lifted body). But the closure-resource emit path does not yet import
-    /// the host interface, so it declines — now HONESTLY, naming the feature, NOT with the internal "not in
-    /// the host-import set" message (documented "a compiler bug"). A plain capturing closure (no host) still
-    /// emits, and the CDZ0406 escape (perform IN the closure body) still fires — the make-time decline must
-    /// not swallow either.
+    /// (fn (x) (+ x v))))` — now COMPILES to a VALID component (brick d: the closure-resource emit composes
+    /// the host interface via `multi_closure_resource_core_module_with_host` +
+    /// `assemble_closure_host_runtime_resource`). The `ask.ask` is discharged make-time while the delegation
+    /// is in scope; the returned closure captures only the plain result. Verified across capture positions
+    /// (let-init, operand-feeding-a-capture, one-of-several-captures) — all emit valid components. The
+    /// CDZ0406 ESCAPE (perform IN the lifted body) still REJECTS — the closure-capture emit only composes a
+    /// make-time host call, never a call-time one. (The end-to-end value — `call(3)` = 13 with `ask.ask`→10
+    /// — is the corpus case "a build-time delegated effect whose result a returned closure captures does not
+    /// escape".)
     #[test]
-    fn a_closure_export_delegating_a_build_time_effect_declines_honestly() {
+    fn a_closure_export_delegating_a_build_time_effect_emits_a_valid_component() {
         use crate::testkit::parse;
-        let src = "(do (effect ask (op ask (-> Unit Int64))) \
-                   (def (main) (host (ask) (let ((v (ask.ask))) (fn ((: x Int64)) (+ x v))))) (export main))";
-        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
-            "a closure export with a build-time host effect is not yet emitted — must decline",
+        let engine = wasmtime::Engine::default();
+        let emits_valid = |src: &str, what: &str| {
+            let bytes = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+                .unwrap_or_else(|e| panic!("{what} must emit, got decline: {}", e.message));
+            wasmtime::component::Component::from_binary(&engine, &bytes)
+                .unwrap_or_else(|e| panic!("{what} must be a VALID component: {e}"));
+        };
+        // The canonical case + two other capture positions — all now emit valid components.
+        emits_valid(
+            "(do (effect ask (op ask (-> Unit Int64))) \
+             (def (main) (host (ask) (let ((v (ask.ask))) (fn ((: x Int64)) (+ x v))))) (export main))",
+            "a let-init build-time host capture",
         );
-        assert!(
-            err.message.contains("ask.ask")
-                && err.message.contains("closure export")
-                && err.message.contains("not yet emitted"),
-            "expected an honest feature-limitation decline naming the op, got: {}",
-            err.message
+        emits_valid(
+            "(do (effect ask (op ask (-> Unit Int64))) \
+             (def (main) (host (ask) (let ((v (+ (ask.ask) 1))) (fn ((: x Int64)) (+ x v))))) (export main))",
+            "a host call in an operand feeding a capture",
         );
-        assert!(
-            !err.message.contains("not in the host-import set"),
-            "must NOT surface the internal-invariant \"compiler bug\" message, got: {}",
-            err.message
+        emits_valid(
+            "(do (effect ask (op ask (-> Unit Int64))) \
+             (def (main) (host (ask) (let ((a (ask.ask)) (b 5)) (fn ((: x Int64)) (+ (+ x a) b))))) (export main))",
+            "one of several captures performing",
         );
-        // A PLAIN capturing closure (no host) still emits.
-        let plain = "(do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder))";
-        crate::compile::compile_component(&crate::codec::encode(&parse(plain)))
-            .expect("a plain capturing closure still emits (the make-time decline is host-gated)");
-        // The CDZ0406 ESCAPE (perform INSIDE the closure body) still fires — not swallowed by the make-time
-        // decline (which scans the EXPORT body; the escape scans the LIFTED body).
+        // A PLAIN capturing closure (no host) still emits (unaffected by the host route).
+        emits_valid(
+            "(do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder))",
+            "a plain capturing closure",
+        );
+        // The CDZ0406 ESCAPE (perform INSIDE the closure BODY) still REJECTS — the host-composition route
+        // only fires for a make-time (export-body) host call, never a call-time (lifted-body) one.
         let escape = "(do (effect ask (op ask (-> Unit Int64))) \
                    (def (main) (host (ask) (fn ((: x Int64)) (+ x (ask.ask))))) (export main))";
         let esc_err = crate::compile::compile_component(&crate::codec::encode(&parse(escape)))
@@ -37521,37 +37877,6 @@ mod closure_host_resource {
             esc_err.code,
             esc_err.message
         );
-        // The honest decline covers the make-time host call in ANY capture position — the export-body scan
-        // is a structural AST descent, so a host call nested in an operand feeding a capture, or one of
-        // several captures, is caught just as a bare let-init is. Regression guard: none may leak the
-        // internal "not in the host-import set" message.
-        for (what, src) in [
-            (
-                "a host call in an operand feeding a capture",
-                "(do (effect ask (op ask (-> Unit Int64))) \
-                 (def (main) (host (ask) (let ((v (+ (ask.ask) 1))) (fn ((: x Int64)) (+ x v))))) (export main))",
-            ),
-            (
-                "one of several captures performing",
-                "(do (effect ask (op ask (-> Unit Int64))) \
-                 (def (main) (host (ask) (let ((a (ask.ask)) (b 5)) (fn ((: x Int64)) (+ (+ x a) b))))) (export main))",
-            ),
-        ] {
-            let e = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-                .expect_err(
-                    "a make-time host call in a closure export is not yet emitted — must decline",
-                );
-            assert!(
-                !e.message.contains("not in the host-import set"),
-                "{what} must decline honestly, not with the internal message, got: {}",
-                e.message
-            );
-            assert!(
-                e.message.contains("ask.ask") && e.message.contains("not yet emitted"),
-                "{what} must name the op + feature limitation, got: {}",
-                e.message
-            );
-        }
     }
 
     /// A host operation with a STRING (or compound) RESULT has no component boundary form this compiler
