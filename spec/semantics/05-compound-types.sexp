@@ -5966,6 +5966,18 @@
   (call   main (: 1 Int64)) (output (: 99 Int64))
   (call   main (: 5 Int64)) (output (: 99 Int64)))
 
+(case "the new map from a runtime-key take has the key removed"
+  (doc    "The take-side companion of the swap-new-map case above: the SECOND tuple element of `Map.take` is
+           the NEW map, with the taken key REMOVED. Taking key `k` from a two-entry map `{1↦10, 2↦20}` and
+           measuring the resulting map's size — k=1 (present) → the map drops to size 1, k=9 (absent) → the
+           map is unchanged at size 2 (removal is total). Pins that `Map.take` produces a USABLE resulting
+           map handle (agreeing with the plain `Map.remove`), not only a reported dropped value — the
+           value-yielding remove's `.1` is re-queryable, driven by the runtime key.")
+  (input  (do (def (main (: k Int64))
+                (Map.size (. (Map.take (Map.insert (Map.insert Map.empty 1 10) 2 20) k) 1))) (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 9 Int64)) (output (: 2 Int64)))
+
 ; A map operation applies to a map that arrives through a FUNCTION PARAMETER, not only a map constructed
 ; inline in the same expression. Every OTHER heap collection already supports this — `(def (f xs) (List.len
 ; xs))`, `(def (f b) (Bytes.len b))`, and `(def (f s) (String.byte-len s))` all compile and run when the

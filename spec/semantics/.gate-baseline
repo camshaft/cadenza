@@ -2010,6 +2010,7 @@ pass	the minimum signed 8-bit value is its per-width bound
 pass	the module entrypoint is the def named main regardless of its position
 pass	the negative power agrees with dividing into the dimensionless one
 pass	the new map from a runtime-key swap holds the new value at that key
+pass	the new map from a runtime-key take has the key removed
 pass	the nullary-first if returns the None arm on the base path
 pass	the number of elements counts distinct elements
 pass	the other parity of a mutually-recursive pair
