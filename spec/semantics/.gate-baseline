@@ -16,8 +16,11 @@ pass	MIXED among-scalars: a scalar-then-Tuple closure with a LIST result ALONGSI
 pass	MIXED among-scalars: driving the PLAIN export alongside a scalar-then-Tuple closure
 pass	MIXED: a List-returning Tuple-arg closure ALONGSIDE a plain export — driving the closure
 pass	MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export
+pass	MIXED: a nested-Tuple-arg closure (scalar result) ALONGSIDE a plain export — driving the closure
+pass	MIXED: a nested-Tuple-arg closure with a LIST result ALONGSIDE a plain export
 pass	MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside a Tuple-arg closure
+pass	MIXED: driving the PLAIN export alongside a nested-Tuple-arg closure
 pass	MULTI-EXPORT: a nested-Tuple-arg closure with a LIST result
 pass	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
 pass	MULTI-EXPORT: among-scalars tuple arg with a LIST result (shared interleaving list-`call`)
