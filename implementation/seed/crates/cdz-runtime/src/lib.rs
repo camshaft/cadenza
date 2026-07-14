@@ -9139,6 +9139,27 @@ mod tests {
 
     // ── Inline tagged-immediate helpers (producers: op_box_int fixnum / op_box_bool / op_arr_alloc(0)) ─────
 
+    /// LAYOUT GUARD: `Node` is paid by EVERY heap value, so its size is load-bearing for allocation +
+    /// cache behavior. There is otherwise no signal if a change bloats it (a new field, a widened
+    /// `Handles`/`Raw` variant). Pin the NATIVE-host sizes so a structural regression is caught in the
+    /// std test suite. ⚠ These are the 64-bit NATIVE sizes (`Handle` = `*mut Node` = 8, `Vec` = 24); the
+    /// SHIPPED wasm32 layout is smaller (`Handle` = 4, `Vec` = 12) — this test can't run on wasm, but the
+    /// native size moves TOGETHER with wasm for STRUCTURAL changes (an added field / a wider enum variant
+    /// bloats both), which is the regression worth catching. Node=64 is already minimal for its fields:
+    /// `rc:u32`(4) + `Handles`(32) + `Raw`(24) = 60, padded to 64 for the 8-alignment `Handles`/`Raw`
+    /// require — the 4-byte pad after `rc` is unavoidable. If you INTEND to change the layout, update
+    /// these + re-measure the wasm hash impact.
+    #[test]
+    fn node_layout_sizes_are_pinned_native() {
+        use core::mem::size_of;
+        assert_eq!(size_of::<Node>(), 64, "Node size changed — a bloat is paid by every heap value");
+        assert_eq!(size_of::<Handles>(), 32, "Handles size changed (inline [Handle;2] arm + tag, or Vec)");
+        assert_eq!(size_of::<Raw>(), 24, "Raw size changed (inline [u8;12]+len arm, or Vec)");
+        assert_eq!(size_of::<Handle>(), 8, "Handle is a single native pointer");
+        // The inline-raw cap is the CHAMP header size — the largest hot raw that must stay inline.
+        assert_eq!(INLINE_RAW_CAP, 12, "INLINE_RAW_CAP must fit a CHAMP header inline");
+    }
+
     /// `read_u32_at` has two paths — a fast in-bounds 4-byte window read and a zero-padded fallback for
     /// a short/absent raw. This locks their EQUIVALENCE at the boundary: both must yield the same
     /// little-endian value where 4 bytes exist, and zero-pad missing high bytes. It is the hottest
