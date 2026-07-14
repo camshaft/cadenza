@@ -1004,12 +1004,12 @@ pub enum Resolved {
     /// and a field lookup is O(log n), not a linear scan. The labels are symbols (never resolved); the
     /// values resolve on demand. A duplicate label is a `Poison` before construction (a record's field
     /// names are a set — `core-semantics.md` §A Record Has A Fixed Set Of Named Fields).
-    /// (`fields` behind an `Arc` so CLONING a `Resolved::Record` — which `resolved_of` does on every
+    /// (`fields` behind an `Rc` so CLONING a `Resolved::Record` — which `resolved_of` does on every
     /// memoized read — is a refcount bump, not a deep map copy. A record read field-by-field
     /// (`member_value` re-clones the operand's resolved form per access) was O(N²) in map clone;
-    /// mirrors the `Ty::Record` Arc choice, faithful to Cadenza's ref-counted port target.)
+    /// mirrors the `Ty::Record` Rc choice, faithful to Cadenza's ref-counted port target.)
     Record {
-        fields: std::sync::Arc<BTreeMap<Symbol, StructId>>,
+        fields: std::rc::Rc<BTreeMap<Symbol, StructId>>,
     },
     /// Member access `(. operand key)` — the ONE generic projection. `key` is a label read from the
     /// key occurrence's spelling, NOT resolved (`prelude-and-resolution.md` §Member Access Is One
@@ -1024,15 +1024,15 @@ pub enum Resolved {
     /// its type (a tuple of different arity or a differently-typed position is a different type —
     /// `type-system.md` §The Structural Types Are Record, Tuple, And Sum). Distinct from `Record` (named
     /// fields): a tuple is accessed by POSITION (`Proj`), a record by NAME (`Member`).
-    /// (`elems` behind an `Arc<[StructId]>` so cloning a `Resolved::Tuple` is O(1) — same rationale as
+    /// (`elems` behind an `Rc<[StructId]>` so cloning a `Resolved::Tuple` is O(1) — same rationale as
     /// `Record`; a tuple projected element-by-element re-clones the operand's resolved form per access.)
-    Tuple { elems: std::sync::Arc<[StructId]> },
+    Tuple { elems: std::rc::Rc<[StructId]> },
     /// A LIST literal `(list e0 e1 …)` — a HOMOGENEOUS variable-length sequence. The elements are AST
     /// occurrences in order (resolved on demand); every element's type unifies to ONE element type (a
     /// mixed list is ill-typed — CDZ0203), so its type is `Ty::List(elem)`. Distinct from `Tuple` (a
     /// fixed-arity product with per-position types): a list's length is a runtime property and all
     /// elements share a type. Built on the persistent `vec-*` heap at run time.
-    List { elems: std::sync::Arc<[StructId]> },
+    List { elems: std::rc::Rc<[StructId]> },
     /// A MAP literal `(map (k v) …)` — a persistent association of keys to values. Each entry is a
     /// `(key-occ, value-occ)` PAIR of ORDINARY VALUE occurrences — the key is NOT a compile-time label
     /// (unlike a `Record` field, read by `read_key` into a `Symbol`): it is an expression resolved in
@@ -1043,7 +1043,7 @@ pub enum Resolved {
     /// (the keyset is runtime data, unlike a record's fixed field set). Built on the persistent CHAMP
     /// `map-*` heap at run time; a later duplicate key overwrites (keys compared by value).
     Map {
-        entries: std::sync::Arc<[(StructId, StructId)]>,
+        entries: std::rc::Rc<[(StructId, StructId)]>,
     },
     /// The SUB-VALUE a MAP PATTERN's binder binds. A map pattern `(map (k p) … .. rest)` is a KEY-DIRECTED
     /// lookup (ask-61, core-semantics.md §A Map Is Matched By Key-Directed Patterns): a VALUE binder `p` at
@@ -1059,7 +1059,7 @@ pub enum Resolved {
         /// `Some(key)`: a VALUE binder at `key`. `None`: the REST binder (scrutinee minus `named`).
         key: Option<StructId>,
         /// The keys the pattern NAMES — removed to form the rest map. Empty for a value binder.
-        named: std::sync::Arc<[StructId]>,
+        named: std::rc::Rc<[StructId]>,
     },
     /// A tuple PROJECTION `(. operand N)` — member access whose key is an INTEGER literal selects the
     /// element at position `index` (0-based). The integer key is what distinguishes a positional tuple
@@ -1078,11 +1078,11 @@ pub enum Resolved {
     /// to its arm (resolve Case 6), the sum analogue of the scalar Case 5 — but binding a nested payload.
     SumPayload {
         scrutinee: StructId,
-        steps: std::sync::Arc<[crate::core::PathStep]>,
+        steps: std::rc::Rc<[crate::core::PathStep]>,
         /// The variant-constructor head at EACH `Payload` step, in order — so inference can walk the
         /// scrutinee's type level by level (each head's `(-> payload Sum)` gives the next sub-value's
         /// type at that instantiation). The last head encloses the binder. One entry per `Payload` step.
-        heads: std::sync::Arc<[StructId]>,
+        heads: std::rc::Rc<[StructId]>,
     },
     /// A NATIVE primitive value — what a prelude `(intrinsic …)` node resolves to (an arithmetic
     /// operation or a type constructor). The irreducible bottom a `Meta.apply` names; carried as a
@@ -1095,14 +1095,14 @@ pub enum Resolved {
     /// user function — dispatch is by the head value's meta channel, never its spelling
     /// (`prelude-and-resolution.md` §A Form Whose Head Is Not A Grammar Name Is Dispatched By The Kind
     /// Of Value Its Head Resolves To).
-    /// (`args` behind an `Arc<[StructId]>` so CLONING a `Resolved::Apply` — which `resolved_of` does on
+    /// (`args` behind an `Rc<[StructId]>` so CLONING a `Resolved::Apply` — which `resolved_of` does on
     /// EVERY memoized read — is a refcount bump, not a fresh heap `Vec`. An application is the most
     /// common node in operator-heavy / call-heavy programs, and every inline re-reads it; the per-clone
     /// `Vec` alloc/free was a top allocation source in the profile. Same rationale as the `Tuple`/
-    /// `Record`/`Lambda.params` Arc choice.)
+    /// `Record`/`Lambda.params` Rc choice.)
     Apply {
         head: StructId,
-        args: std::sync::Arc<[StructId]>,
+        args: std::rc::Rc<[StructId]>,
     },
     /// A TYPE ANNOTATION `(: expr ty_expr)` — the value of `expr`, with its type CONSTRAINED to the
     /// type `ty_expr` denotes. The annotation is transparent to the value: `(: e T)` evaluates and
@@ -1131,10 +1131,10 @@ pub enum Resolved {
     /// scheme" is just a compile-time lambda from a type/width to a type — instantiation is applying
     /// it to a fresh variable. Params are the binder-name occurrences; `body` is the body occurrence.
     Lambda {
-        // `params` behind an `Arc<[StructId]>` so cloning a `Resolved::Lambda` is a refcount bump; a
+        // `params` behind an `Rc<[StructId]>` so cloning a `Resolved::Lambda` is a refcount bump; a
         // def name resolving to its lambda is read once per call site, and `resolved_of` clones on
         // every read. Same rationale as `Record`/`Tuple`.
-        params: std::sync::Arc<[StructId]>,
+        params: std::rc::Rc<[StructId]>,
         body: StructId,
     },
     /// A `(handle INIT (ARM…) BODY)` — an in-program effect handler establishing a context for `body`
@@ -1163,13 +1163,13 @@ pub enum Resolved {
     //# A handler MUST evaluate to the value of its body, with the state it accumulated observable only through the operations the effect declares, so that reading the accumulated state is the same mechanism as any other operation and a handler needs no separate result form. Mutation is the instance of this that reads and updates the threaded state, so that a program expresses mutable-looking computation without the value heap becoming mutable.
     Handle {
         init: StructId,
-        /// The handler arms, behind an `Arc` so CLONING a `Resolved::Handle` (which `resolved_of` does on
+        /// The handler arms, behind an `Rc` so CLONING a `Resolved::Handle` (which `resolved_of` does on
         /// every memo read) is a refcount bump, not a deep `Vec<HandleArm>` copy — each `HandleArm` itself
         /// holds a `params: Vec`, so an N-arm handler's clone was O(N). A perform's `perform_host_target`
         /// walks PARENTS (`resolved_of` each) to find its enclosing `(host …)`, passing THROUGH the N-arm
         /// handle node every time — so re-cloning its arms per walk made a wide handler O(N²). Mirrors the
-        /// `Arc` on `Tuple`/`List`/`Apply` and `Core::Record` for the identical clone-on-read reason.
-        arms: std::sync::Arc<[HandleArm]>,
+        /// `Rc` on `Tuple`/`List`/`Apply` and `Core::Record` for the identical clone-on-read reason.
+        arms: std::rc::Rc<[HandleArm]>,
         body: StructId,
     },
     /// A resumption `(resume VALUE NEXT-STATE)` inside a handler arm — hand `value` back to the point that
@@ -1215,7 +1215,7 @@ pub enum Resolved {
     /// segment's width to compute this one's byte offset).
     BinField {
         scrutinee: StructId,
-        segs: std::sync::Arc<[Segment]>,
+        segs: std::rc::Rc<[Segment]>,
         seg_index: usize,
     },
     /// A produced "no": an unrecognized head, a malformed form, an unbound name, or an unmodeled

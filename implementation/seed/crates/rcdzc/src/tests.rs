@@ -1379,12 +1379,12 @@ fn each_parameter_of_a_wide_signature_resolves_to_its_own_binder() {
 }
 
 /// A WIDE record read field-by-field compiles correctly AND cheaply — the correctness guard for
-/// `Core::Record`'s `Arc<BTreeMap>` field map (cloning a `Core::Record` is a refcount bump, not a deep
+/// `Core::Record`'s `Rc<BTreeMap>` field map (cloning a `Core::Record` is a refcount bump, not a deep
 /// map copy). `core_of` clones the record's `Core` on every memo read, and the recursive Core-tree walks
 /// (`collect_host_arg_strings`, layout, select) re-read it per node, so an owned map made a record read
 /// field-by-field O(N²) (32 fields here; at 3200 it was ~2.8s, ~50% in `BTreeMap::clone`). The value must
 /// still be exact: build a 32-field record and sum every field — `f_i = i`, so the total is
-/// `0+1+…+31 = 496`. A dropped/misindexed field (or a shared-Arc aliasing bug) would compute a wrong sum.
+/// `0+1+…+31 = 496`. A dropped/misindexed field (or a shared-Rc aliasing bug) would compute a wrong sum.
 #[test]
 fn a_wide_record_read_field_by_field_sums_correctly() {
     use crate::testkit::parse;
@@ -11550,7 +11550,7 @@ mod match_engine {
         // sibling arms don't share a mutation. A deeply-NESTED pattern `(Some (Some … x))` descends `depth`
         // levels with a map that grows one entry per level, each value a `Ty` itself O(depth) deep — so the
         // per-level clone was O(depth²) and the whole build O(depth³) (depth-400: 7.5s, 52% in `Ty::clone`).
-        // Two fixes: (1) `PathTypes` values are `Arc<Ty>` (the per-level map clone is a pointer-bump per
+        // Two fixes: (1) `PathTypes` values are `Rc<Ty>` (the per-level map clone is a pointer-bump per
         // entry, not a deep `Ty` copy); (2) `const_at_path`'s per-step nominal-newtype check reads only the
         // type KIND via `infer::type_is_nominal` instead of cloning the whole `Ty`. Depth 60 would have been
         // well into the superlinear regime; that it lowers AND evaluates correctly is the gate.
@@ -11585,14 +11585,14 @@ mod match_engine {
 
     #[test]
     fn a_deeply_nested_match_lowers_without_a_cubic_constraint_reclone() {
-        // REGRESSION (perf): even after the `PathTypes` `Arc<Ty>` fix (see
+        // REGRESSION (perf): even after the `PathTypes` `Rc<Ty>` fix (see
         // `a_deeply_nested_option_pattern_lowers_in_bounded_time`), `lower::build_tree` stayed O(depth³) on
         // a deeply-nested pattern via TWO further per-level whole-structure re-clones: (a) the PARTITION
         // loop rebuilt every surviving row's `constraints` list — each a `Vec<PathStep>` path — at every
         // one of `depth` levels (an O(depth)-long path deep-copied `depth` times = O(depth³)); (b)
         // `extend_path_types` CLONED THE WHOLE growing `path_types` map per arm per level. Three fixes:
-        // the constraint/lit-test PATH is now `Arc<[PathStep]>` (per-level clone = pointer bump, like
-        // `PathTypes`' `Arc<Ty>`), `build_tree` threads ONE shared `&mut PathTypes` with scoped
+        // the constraint/lit-test PATH is now `Rc<[PathStep]>` (per-level clone = pointer bump, like
+        // `PathTypes`' `Rc<Ty>`), `build_tree` threads ONE shared `&mut PathTypes` with scoped
         // insert/restore instead of a per-arm map clone, and `shallowest_path` selects by reference.
         //
         // The guard is the GROWTH RATIO across a depth doubling, not an absolute wall-clock bound — a ratio
@@ -31500,10 +31500,10 @@ mod stage1 {
     #[test]
     fn a_wide_record_argument_unifies_across_many_calls_in_bounded_time() {
         // REGRESSION (perf): `unify` applies the substitution to BOTH operands on entry, and `Subst::apply`
-        // REBUILT a `Ty::Record`'s whole field map (`.iter().map(apply).collect()` into a fresh `Arc`) even
+        // REBUILT a `Ty::Record`'s whole field map (`.iter().map(apply).collect()` into a fresh `Rc`) even
         // when the type held no substitutable variable. So passing a WIDE (W-field) GROUND record argument
         // to a function called N times rebuilt the W-field map at every call site → O(W × calls). FIX: a
-        // GROUND fast-path in `apply` (`Ty::is_ground` → return the input's cheap Arc clone), turning the
+        // GROUND fast-path in `apply` (`Ty::is_ground` → return the input's cheap Rc clone), turning the
         // per-call cost from an allocate-and-rebuild into a read-only check. This binds one wide record and
         // passes it through a function W=N=200 times — well into the old quadratic regime; it must type,
         // compile, and RETURN the projected field (k0 = 0), in bounded time.
@@ -51556,4 +51556,47 @@ mod cross_component_oracle {
             cdz_run::Outcome::Trap(t) => panic!("both-sides-from-source run trapped: {t}"),
         }
     }
+}
+
+/// The IR types (`Resolved`/`Ty`/`Core`) carry their variable-length payloads behind `Rc<[…]>`, NOT
+/// `Arc<[…]>` — a deliberate PERFORMANCE choice, not an oversight. The entire compile runs on a SINGLE
+/// scoped worker thread (`host::run_with_compiler_stack`, whose `F: Send`/`T: Send` bounds constrain only
+/// the closure and its `CompileOutput` result — a `Vec<Artifact>` + `Vec<Diagnostic>`, holding no IR), so
+/// a `Db` and every `Resolved`/`Ty`/`Core` value lives and dies on that one thread. The memoized queries
+/// (`resolved_of`/`type_of`/`core_of`) return BY VALUE, cloning the payload's smart pointer on every
+/// memo-hit; with `Arc` that clone is an ATOMIC inc + drop, and a `perf` profile of a wide program
+/// (thousands of defs) measured those atomics (`__aarch64_ldadd8_rel`/`_relax`) at ~14% of the whole
+/// compile. `Rc` makes the refcount a plain non-atomic add — sound because nothing shares an IR value
+/// across threads — which erased that 14% (and cut `Resolved::clone` self-time roughly in half),
+/// ~1.09× faster end-to-end on the 3200-def shape.
+///
+/// This is a COMPILE-TIME lock-in: an enum with any `Rc<[T]>` field is `!Send`, so a `<T as
+/// AmbiguousIfSend<_>>::MARKER` path resolves unambiguously. A WHOLESALE revert to `Arc<[…]>` — the
+/// realistic regression vector, a blanket `Rc`→`Arc` swap to make the compiler multi-threaded, which
+/// silently reintroduces the atomic traffic (a `StructId`/`Ty` payload is `Send`, so an `Arc` of it is
+/// `Send`) — makes the enum `Send`, makes `MARKER` AMBIGUOUS (both trait impls apply, E0283), and fails
+/// the crate to compile. This is the noise-free regression signal a wall-clock test could never give for
+/// a clone-cost change diluted across the rest of `check`. (Precise scope: a type is `Send` only when
+/// EVERY field is `Send`, so this catches a full revert of all payloads on a given enum, not a single
+/// field flipped back to `Arc` while its siblings stay `Rc` — a partial flip reintroduces only that one
+/// variant's atomics and is not a realistic accidental change.)
+#[cfg(test)]
+mod ir_payloads_stay_rc_backed_not_arc {
+    /// `MARKER` is unambiguous ONLY for a `!Send` type: the blanket impl always applies, the `Send`-gated
+    /// impl applies only for a `Send` type — so a `Send` type has TWO candidate impls and the path is
+    /// ambiguous (E0283). The classic `static_assertions::assert_not_impl_all!(T: Send)` idiom, inlined so
+    /// the crate needs no extra dependency.
+    trait AmbiguousIfSend<A> {
+        const MARKER: () = ();
+    }
+    impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+    impl<T: ?Sized + Send> AmbiguousIfSend<u8> for T {}
+
+    // Naming `MARKER` forces impl selection; the path resolves iff the type is `!Send` (Rc-backed).
+    // Evaluating each associated const in an ANONYMOUS `const _` item IS the compile-time assertion — the
+    // crate fails to compile if any of these types becomes `Send` (a wholesale `Arc` revert). `const _`
+    // never triggers dead-code (unnamed) and needs no runtime test — it is checked at every build.
+    const _: () = <crate::resolved::Resolved as AmbiguousIfSend<_>>::MARKER;
+    const _: () = <crate::ty::Ty as AmbiguousIfSend<_>>::MARKER;
+    const _: () = <crate::core::Core as AmbiguousIfSend<_>>::MARKER;
 }

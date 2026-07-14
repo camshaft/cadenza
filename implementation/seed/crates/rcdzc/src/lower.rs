@@ -368,8 +368,8 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             }
         }
         // A record value — kept as a compound; folds away only when a member reads a field of it.
-        // `Resolved::Record.fields` and `Core::Record.fields` are BOTH `Arc<BTreeMap<…>>`, so SHARE the
-        // map by an Arc clone (a refcount bump) — no O(fields) copy at all, and `Core::Record`'s own
+        // `Resolved::Record.fields` and `Core::Record.fields` are BOTH `Rc<BTreeMap<…>>`, so SHARE the
+        // map by an Rc clone (a refcount bump) — no O(fields) copy at all, and `Core::Record`'s own
         // per-read clone is likewise O(1).
         Resolved::Record { fields } => {
             let vals: Vec<StructId> = fields.values().copied().collect();
@@ -3572,7 +3572,7 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     }
     // Compile the matrix into a decision tree rooted at the scrutinee (path `[]`, type `scrut_ty`).
     let mut path_types: PathTypes = std::collections::HashMap::new();
-    path_types.insert(Vec::new(), std::sync::Arc::new(scrut_ty));
+    path_types.insert(Vec::new(), std::rc::Rc::new(scrut_ty));
     match build_tree(db, scrutinee, &rows, &mut path_types) {
         // The whole match reduces to one body (a top-level catch-all, or a fully constant-folded tree).
         Ok(crate::core::SumCont::Leaf(body)) => core_of(db, body),
@@ -3587,13 +3587,13 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     }
 }
 
-/// A match-decision PATH shared across nesting levels — an `Arc<[PathStep]>`, not a bare `Vec`:
+/// A match-decision PATH shared across nesting levels — an `Rc<[PathStep]>`, not a bare `Vec`:
 /// `build_tree`'s partition loop re-clones every surviving row's constraint/lit-test paths at EACH nesting
 /// level, and `build_tree` recurses once per level. With `Vec<PathStep>` paths a deeply-nested pattern
 /// (`(Some (Some … x))`) deep-copied its O(depth)-long paths at every one of `depth` levels = O(depth³) (a
-/// depth-800 nested match: ~2s, ~37% in `Vec::clone`). `Arc` makes each per-level path clone a pointer
-/// bump, dropping the rebuild to O(depth²). (Same fix as `PathTypes`' `Arc<Ty>` values.)
-type MatchPath = std::sync::Arc<[crate::core::PathStep]>;
+/// depth-800 nested match: ~2s, ~37% in `Vec::clone`). `Rc` makes each per-level path clone a pointer
+/// bump, dropping the rebuild to O(depth²). (Same fix as `PathTypes`' `Rc<Ty>` values.)
+type MatchPath = std::rc::Rc<[crate::core::PathStep]>;
 /// A discriminant CONSTRAINT: the sub-value at this `MatchPath` must have this variant discriminant.
 type PathConstraint = (MatchPath, u32);
 /// A LITERAL test: the sub-value at this `MatchPath` must equal this literal probe.
@@ -4714,21 +4714,20 @@ fn variant_disc_by_name(db: &mut Db, ty: &crate::ty::Ty, name: &str) -> Option<u
 /// that variant's payload type at `switch_path + [Payload]`). Keyed per-branch (not global), because the
 /// SAME path under different parent variants has different types (`Result`'s `[Payload]` is `a` in the
 /// `Ok` arm, `e` in the `Err` arm) — a global map would collide; a branch-local one is always consistent.
-// The value at each path is an `Arc<Ty>`, NOT a bare `Ty`. `build_tree` threads ONE shared map with scoped
+// The value at each path is an `Rc<Ty>`, NOT a bare `Ty`. `build_tree` threads ONE shared map with scoped
 // insert/restore per arm (see its arm loop): entering a variant arm inserts the arm's payload-path types
 // (recording each key's prior value), recurses, then restores — so sibling arms don't share a mutation
-// without cloning the whole map. An `Arc<Ty>` value keeps a restored prior entry a pointer-bump rather than
+// without cloning the whole map. An `Rc<Ty>` value keeps a restored prior entry a pointer-bump rather than
 // a deep `Ty` copy. (An earlier version CLONED the whole map per arm per level → O(depth³) on a nested
-// pattern; the shared-map + `Arc`-path fixes dropped that whole factor.)
-type PathTypes =
-    std::collections::HashMap<Vec<crate::core::PathStep>, std::sync::Arc<crate::ty::Ty>>;
+// pattern; the shared-map + `Rc`-path fixes dropped that whole factor.)
+type PathTypes = std::collections::HashMap<Vec<crate::core::PathStep>, std::rc::Rc<crate::ty::Ty>>;
 /// A path-type ADDITION a variant arm makes: `(path, sub-value type)`. `path` is a plain `Vec` (a `Vec` key
-/// the `PathTypes` map owns), the type an `Arc` (shared, so a restore is a pointer bump).
-type PathTypeEntry = (Vec<crate::core::PathStep>, std::sync::Arc<crate::ty::Ty>);
+/// the `PathTypes` map owns), the type an `Rc` (shared, so a restore is a pointer bump).
+type PathTypeEntry = (Vec<crate::core::PathStep>, std::rc::Rc<crate::ty::Ty>);
 /// A saved-for-restore `PathTypes` slot: the key, and its value BEFORE the arm's insert (`None` = absent).
 type PathTypeRestore = (
     Vec<crate::core::PathStep>,
-    Option<std::sync::Arc<crate::ty::Ty>>,
+    Option<std::rc::Rc<crate::ty::Ty>>,
 );
 
 /// Compile a pattern MATRIX (`rows`) into a decision-tree CONTINUATION for the value at `scrutinee`. If
@@ -4874,10 +4873,10 @@ fn build_tree(
     // sum-payload descent seeded it. (`path_types` still wins where present — a variant payload's
     // instantiated type is more precise than a raw type-walk.)
     let switch_path = shallowest_path(rows);
-    // The switch sub-value's type, as an `Arc` — the seeded case SHARES the map's `Arc` (a pointer bump,
+    // The switch sub-value's type, as an `Rc` — the seeded case SHARES the map's `Rc` (a pointer bump,
     // not a deep clone of an O(depth)-nested `Ty`), so descending a deeply-nested pattern does not re-clone
     // the growing type at every level. The computed fallback wraps its fresh `Ty` once.
-    let sub_ty: std::sync::Arc<crate::ty::Ty> = match path_types.get(&switch_path[..]) {
+    let sub_ty: std::rc::Rc<crate::ty::Ty> = match path_types.get(&switch_path[..]) {
         Some(t) => t.clone(),
         // Not seeded exactly: try a raw type-walk from the scrutinee, then (for a path that descends
         // through a boxed-sum `Payload` a raw walk can't cross) walk the SUFFIX from the longest seeded
@@ -4886,7 +4885,7 @@ fn build_tree(
         None => match type_at_path(db, scrutinee, &switch_path)
             .or_else(|| type_from_seeded_prefix(path_types, &switch_path))
         {
-            Some(t) => std::sync::Arc::new(t),
+            Some(t) => std::rc::Rc::new(t),
             None => {
                 return Err(Reject::decline(
                     "compound match switch path has no solved type",
@@ -5214,25 +5213,25 @@ fn path_type_additions(
             for (i, elem_ty) in elems.iter().enumerate() {
                 let mut elem_path = child.clone();
                 elem_path.push(crate::core::PathStep::Elem(i));
-                out.push((elem_path, std::sync::Arc::new(elem_ty.clone())));
+                out.push((elem_path, std::rc::Rc::new(elem_ty.clone())));
             }
         }
-        out.push((child, std::sync::Arc::new(payload_ty)));
+        out.push((child, std::rc::Rc::new(payload_ty)));
     }
     out
 }
 
 /// The shallowest (shortest, then by `path_cmp`) path any row constrains — the switch site. Returns a
-/// SHARED `Arc<[PathStep]>` (a pointer-bump clone of the winner), not a fresh `Vec`: the old code cloned
+/// SHARED `Rc<[PathStep]>` (a pointer-bump clone of the winner), not a fresh `Vec`: the old code cloned
 /// EVERY path just to `min_by` them, which — since `build_tree` recurses once per pattern level — re-cloned
 /// the O(depth)-long constraint paths at every level = O(depth³). Selecting by reference + returning the
-/// winner's `Arc` makes each call an O(constraints × path-len) COMPARE with no path deep-copy.
+/// winner's `Rc` makes each call an O(constraints × path-len) COMPARE with no path deep-copy.
 fn shallowest_path(rows: &[MatchRow]) -> MatchPath {
     rows.iter()
         .flat_map(|r| r.constraints.iter().map(|(p, _)| p))
         .min_by(|a, b| a.len().cmp(&b.len()).then_with(|| path_cmp(a, b)))
         .cloned()
-        .unwrap_or_else(|| std::sync::Arc::from(&[][..]))
+        .unwrap_or_else(|| std::rc::Rc::from(&[][..]))
 }
 
 /// A total order on paths for a deterministic switch choice (Payload < Elem < RestFrom, each by index).
@@ -13641,7 +13640,7 @@ fn lower_record_project(
         .collect();
     trace!(target: "rcdzc::fold", node = id.0, n = kept.len(), drop, "record project/without folds a constant record to its result fields");
     Core::Record {
-        fields: std::sync::Arc::new(kept),
+        fields: std::rc::Rc::new(kept),
     }
 }
 
@@ -13661,7 +13660,7 @@ fn lower_record_merge(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Co
             }
             trace!(target: "rcdzc::fold", node = id.0, n = union.len(), "Record.merge folds two constant records to their union");
             Core::Record {
-                fields: std::sync::Arc::new(union),
+                fields: std::rc::Rc::new(union),
             }
         }
         _ => Core::Poison(Reject::decline(
@@ -13695,7 +13694,7 @@ fn lower_record_insert(db: &mut Db, id: StructId, record: StructId, pair: Struct
     out.insert(label, value);
     trace!(target: "rcdzc::fold", node = id.0, n = out.len(), "Record.extend/with folds an insert into a constant record");
     Core::Record {
-        fields: std::sync::Arc::new(out),
+        fields: std::rc::Rc::new(out),
     }
 }
 
@@ -13739,9 +13738,9 @@ fn lower_record_pop(db: &mut Db, id: StructId, record: StructId, name: StructId)
     let rest_record = synth_core(
         db,
         Core::Record {
-            fields: std::sync::Arc::new(rest),
+            fields: std::rc::Rc::new(rest),
         },
-        crate::ty::Ty::Record(std::sync::Arc::new(rest_ty)),
+        crate::ty::Ty::Record(std::rc::Rc::new(rest_ty)),
     );
     trace!(target: "rcdzc::fold", node = id.0, "Record.pop folds to a (value, remaining-record) tuple");
     Core::Tuple {

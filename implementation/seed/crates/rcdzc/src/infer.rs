@@ -211,7 +211,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                     let t = type_of(db, value);
                     field_tys.insert(label.clone(), t);
                 }
-                Ty::Record(std::sync::Arc::new(field_tys))
+                Ty::Record(std::rc::Rc::new(field_tys))
             }
         }
         // Member access — the field's type is the type of the field's VALUE, found by reducing the
@@ -263,7 +263,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             }
             Ty::Map(Box::new(key_ty), Box::new(val_ty))
         }
-        // (Arc<[Ty]> collects directly from the element iterator — a refcounted immutable slice.)
+        // (Rc<[Ty]> collects directly from the element iterator — a refcounted immutable slice.)
         // A tuple projection's type is the operand tuple's element type AT `index`. An operand that is
         // not a tuple, or an index outside its arity, has no element type — typed `Any` here so it does
         // not cascade; the actual fault (CDZ0201) is reported by `type_errors`.
@@ -2543,7 +2543,7 @@ fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId
                 for (label, &value) in fields.iter() {
                     field_tys.insert(label.clone(), type_of(db, value));
                 }
-                Ty::Record(std::sync::Arc::new(field_tys))
+                Ty::Record(std::rc::Rc::new(field_tys))
             }
             // A malformed field list has no well-formed record type — `Any`; the fault is reported by
             // `type_errors`.
@@ -2750,7 +2750,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                 kept.insert(label.clone(), ty.clone());
             }
         }
-        return Ty::Record(std::sync::Arc::new(kept));
+        return Ty::Record(std::rc::Rc::new(kept));
     }
     // `Record.without r (b)` — `r` MINUS the named fields (the complement of `project`). The result is a
     // NEW record type keeping every field of `r` whose label is NOT named. Same literal field-name list;
@@ -2768,7 +2768,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             .filter(|(k, _)| !drop.contains(*k))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        return Ty::Record(std::sync::Arc::new(kept));
+        return Ty::Record(std::rc::Rc::new(kept));
     }
     // `Record.merge a b` — the UNION of two records' fields. The result is a NEW record type with every
     // field of BOTH operands. The field sets MUST be disjoint (a shared name is CDZ0211, reported by
@@ -2785,7 +2785,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         for (k, v) in b.iter() {
             union.insert(k.clone(), v.clone());
         }
-        return Ty::Record(std::sync::Arc::new(union));
+        return Ty::Record(std::rc::Rc::new(union));
     }
     // `Record.extend r (z v)` / `Record.with r (z v)` — ADD (extend) or REPLACE (with) field `z` with the
     // VALUE `v`'s type. Both yield a NEW record type = `r`'s fields with `z ↦ typeof(v)` inserted (an
@@ -2808,7 +2808,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         let mut out: std::collections::BTreeMap<_, _> =
             fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         out.insert(label, type_of(db, value));
-        return Ty::Record(std::sync::Arc::new(out));
+        return Ty::Record(std::rc::Rc::new(out));
     }
     // `Record.pop r z` — yields `(tuple (. r z) (r without z))`: the field's value paired with the record
     // of the remaining fields (`type-system.md` §A Record Is Reduced By Dropping A Named Set Of Its
@@ -2826,8 +2826,8 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             .filter(|(k, _)| **k != label)
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let rest_ty = Ty::Record(std::sync::Arc::new(rest));
-        return Ty::Tuple(std::sync::Arc::from([field_ty, rest_ty]));
+        let rest_ty = Ty::Record(std::rc::Rc::new(rest));
+        return Ty::Tuple(std::rc::Rc::from([field_ty, rest_ty]));
     }
     // Each `Tuple.*` positional row op below derives a NEW `Ty::Tuple` (or `Ty::Unit` for the empty
     // prefix) from the OPERANDS' element types — cat sums the arities, split-at/pop partition — so the
@@ -2869,7 +2869,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         let k = k as usize;
         let prefix = tuple_or_unit(&elems[..k]);
         let suffix = tuple_or_unit(&elems[k..]);
-        return Ty::Tuple(std::sync::Arc::from([prefix, suffix]));
+        return Ty::Tuple(std::rc::Rc::from([prefix, suffix]));
     }
     // `Tuple.pop t` — element 0 off: `(tuple (. t 0) <rest>)`. Result `(Tuple <e0> (Tuple <rest…>))`. A
     // non-tuple or empty-tuple operand falls through (Any); the arity-≥1 requirement is `check_application`'s.
@@ -2879,7 +2879,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         && !elems.is_empty()
     {
         let rest = tuple_or_unit(&elems[1..]);
-        return Ty::Tuple(std::sync::Arc::from([elems[0].clone(), rest]));
+        return Ty::Tuple(std::rc::Rc::from([elems[0].clone(), rest]));
     }
     // `Type.of e` — compile-time type reflection. The application itself has type `Type` (it IS a
     // type-value, like `(Qty T u)` / `(-> A B)` in type position); the type-value it REDUCES to (via
@@ -4847,7 +4847,7 @@ pub(crate) fn check_unknown_units(db: &mut Db, out: &mut Vec<Reject>) {
         // `resolved_ref` (a BORROW, not a `resolved_of` clone): this scans EVERY node of every program, and
         // the vast majority are not `Apply`, so cloning the whole `Resolved` per node just to test the
         // variant was pure churn (on a large unit-FREE program this whole pass was ~30% of compile). The
-        // `head` is Copy; `args.first()` is read through the borrow (no `args` Arc clone needed here).
+        // `head` is Copy; `args.first()` is read through the borrow (no `args` Rc clone needed here).
         let (head, name_occ) = match crate::resolve::resolved_ref(db, id) {
             crate::resolved::Resolved::Apply { head, args } => match args.first() {
                 Some(&name_occ) => (*head, name_occ),

@@ -541,7 +541,7 @@ pub enum Ty {
     /// A record: a fixed SET of named fields, each with its own type. Held as a canonically-ordered
     /// `BTreeMap` so two records of the same field-set are the SAME type regardless of the order the
     /// fields were written (`core-semantics.md` §A Record Has A Fixed Set Of Named Fields), and a
-    /// field's type is looked up by name in O(log n). Wrapped in an `Arc` so CLONING a `Ty::Record`
+    /// field's type is looked up by name in O(log n). Wrapped in an `Rc` so CLONING a `Ty::Record`
     /// (which `type_of` does on every memo read) is a refcount bump, not a deep map copy — a wide
     /// record read field-by-field was O(N²) in map clone. Faithful to the Cadenza port target, which
     /// is ref-counted throughout (a shared immutable value = one refcounted allocation).
@@ -555,16 +555,16 @@ pub enum Ty {
     //# A program MUST be able to form a structural type — a record of named fields, a tuple of positional elements, or a sum of named variants — whose identity is its shape, equal to any type of the same shape.
     //= spec/capabilities/type-system.md#the-structural-types-are-record-tuple-and-sum
     //# A structural type's shape MUST be its constituent types in their defining positions — a record's field names with their types, a tuple's element types in order, a sum's variant names with their payload types — so that two structural types are equal exactly when those constituents coincide.
-    Record(std::sync::Arc<std::collections::BTreeMap<crate::resolved::Symbol, Ty>>),
+    Record(std::rc::Rc<std::collections::BTreeMap<crate::resolved::Symbol, Ty>>),
     /// A tuple: a fixed-ARITY POSITIONAL product, each position with its own type. The arity AND the
     /// per-position types ARE the type — a tuple of a different arity, or with a differently-typed
     /// position, is a DIFFERENT type (`type-system.md` §The Structural Types Are Record, Tuple, And
     /// Sum). Distinct from `Record` (a set of NAMED fields): a tuple is projected by position. Held
-    /// behind an `Arc<[Ty]>` (an immutable shared slice) so cloning a `Ty::Tuple` is a refcount bump,
+    /// behind an `Rc<[Ty]>` (an immutable shared slice) so cloning a `Ty::Tuple` is a refcount bump,
     /// not a deep element copy: an N-element tuple type read once per projection (N projections off one
     /// shared tuple) was O(N²) in `Vec<Ty>` clone. Indexing/iterating are unchanged (it derefs to a
     /// slice); only construction differs (`.collect::<Vec<_>>().into()` or `vec![…].into()`).
-    Tuple(std::sync::Arc<[Ty]>),
+    Tuple(std::rc::Rc<[Ty]>),
     /// A LIST: a homogeneous, variable-length sequence of one ELEMENT type. Unlike a tuple (fixed arity,
     /// per-position type), a list's length is a runtime property and every element shares ONE type — so
     /// `(list 1 true)` (mixed) is ill-typed (the elements do not unify) and `(list)` is a list of a
@@ -719,7 +719,7 @@ pub enum Ty {
     /// their FQNs differ, even with identical structure and identical local name `Foo`). This is also
     /// IMPORT-SAFE by construction: package linking splices each file's arena into one `Db`, so every
     /// imported declaration keeps its own `StructId` — the "A's Foo ≠ B's Foo" property survives with
-    /// no module-path plumbing. (It is the columns-model realization of the seed's `Arc::ptr_eq`
+    /// no module-path plumbing. (It is the columns-model realization of the seed's `Rc::ptr_eq`
     /// identity — physical declaration identity, expressed as the node id everything is already keyed
     /// by.) `name` is the declared LOCAL name, carried for rendering (`(: (Some 5) Option)`) only;
     /// `decl` alone decides equality (a `decl` determines its `name`).
@@ -1020,7 +1020,7 @@ impl Ty {
                             (k.clone(), t)
                         })
                         .collect();
-                    Ty::Record(std::sync::Arc::new(merged))
+                    Ty::Record(std::rc::Rc::new(merged))
                 }
                 _ => self.clone(),
             },
@@ -1048,7 +1048,7 @@ impl Ty {
     /// Whether this type is fully GROUND — contains NO substitutable variable of ANY kind (a type `Var`,
     /// an integer/float `Width::Var`, or a `Sign::Var`). A ground type is a FIXPOINT of `Subst::apply`
     /// (applying any substitution returns it unchanged), so `apply` short-circuits on it — cloning the
-    /// (Arc-shared) type is then a refcount bump, not a deep rebuild of a wide `Record`/`Tuple`/`Sum`.
+    /// (Rc-shared) type is then a refcount bump, not a deep rebuild of a wide `Record`/`Tuple`/`Sum`.
     /// STRONGER than `!has_free_var()`: that ignores width/sign vars (a `Ty::Int` with a `Width::Var` has
     /// no free TYPE var yet is not ground), which would make an `apply` fast-path keyed on it INCORRECT.
     pub fn is_ground(&self) -> bool {
@@ -1347,7 +1347,7 @@ impl Ty {
                         (k.clone(), t)
                     })
                     .collect();
-                Ty::Record(std::sync::Arc::new(joined))
+                Ty::Record(std::rc::Rc::new(joined))
             }
             // Two agreeing tuples join position-wise (same arity, guaranteed by `agrees_with`).
             (Ty::Tuple(a), Ty::Tuple(b)) if self.agrees_with(other) => {

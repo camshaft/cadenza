@@ -3986,7 +3986,7 @@ fn subst_template_vars(template: &crate::ty::Ty, args: &[crate::ty::Ty]) -> crat
             Box::new(subst_template_vars(p, args)),
             Box::new(subst_template_vars(r, args)),
         ),
-        Ty::Record(fields) => Ty::Record(std::sync::Arc::new(
+        Ty::Record(fields) => Ty::Record(std::rc::Rc::new(
             fields
                 .iter()
                 .map(|(k, t)| (k.clone(), subst_template_vars(t, args)))

@@ -3218,7 +3218,7 @@ fn resolve_pipeline(db: &Db, id: StructId) -> Resolved {
     // Otherwise apply `rhs` itself to `lhs` (a bare function name, a projected method, …).
     Resolved::Apply {
         head: rhs,
-        args: std::sync::Arc::from([lhs]),
+        args: std::rc::Rc::from([lhs]),
     }
 }
 
@@ -3760,7 +3760,7 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
                 let t = decode_ty(db, items[1])?;
                 fields.insert(crate::resolved::Symbol::plain(name), t);
             }
-            Some(Ty::Record(std::sync::Arc::new(fields)))
+            Some(Ty::Record(std::rc::Rc::new(fields)))
         }
         _ => None,
     }
@@ -3854,9 +3854,9 @@ fn resolve_lambda(db: &Db, id: StructId) -> Resolved {
             ));
         }
     };
-    // The parameter occurrences (each a bare name). Collected into the `Arc<[StructId]>` the variant
+    // The parameter occurrences (each a bare name). Collected into the `Rc<[StructId]>` the variant
     // holds (a refcounted slice — cloning the lambda is then O(1)).
-    let params: std::sync::Arc<[StructId]> = match db.ast.get(params_occ) {
+    let params: std::rc::Rc<[StructId]> = match db.ast.get(params_occ) {
         Struct::List(ps) => ps.clone().into(),
         _ => {
             return Resolved::Poison(Reject::coded(
@@ -3893,7 +3893,7 @@ fn resolve_record(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_ctor_form(id, "record").unwrap_or(&[]);
     match read_record_fields(db, tail) {
         Ok(fields) => Resolved::Record {
-            fields: std::sync::Arc::new(fields),
+            fields: std::rc::Rc::new(fields),
         },
         Err(reject) => Resolved::Poison(reject),
     }
@@ -4053,7 +4053,7 @@ fn tuple_index(value: &crate::ast::IntValue) -> Option<usize> {
 /// elements — it is the empty product, which coincides with unit; but the reader writes `()` for unit,
 /// so a written `(tuple)` is kept as a zero-element tuple here and typed as such (its arity is 0).
 fn resolve_tuple(db: &Db, id: StructId) -> Resolved {
-    let elems: std::sync::Arc<[StructId]> = db.ast.as_ctor_form(id, "tuple").unwrap_or(&[]).into();
+    let elems: std::rc::Rc<[StructId]> = db.ast.as_ctor_form(id, "tuple").unwrap_or(&[]).into();
     Resolved::Tuple { elems }
 }
 
@@ -4062,7 +4062,7 @@ fn resolve_tuple(db: &Db, id: StructId) -> Resolved {
 /// element type — `infer`/`type_errors` enforce homogeneity). An empty `(list)` has no elements — a
 /// list of a deferred element type.
 fn resolve_list(db: &Db, id: StructId) -> Resolved {
-    let elems: std::sync::Arc<[StructId]> = db.ast.as_ctor_form(id, "list").unwrap_or(&[]).into();
+    let elems: std::rc::Rc<[StructId]> = db.ast.as_ctor_form(id, "list").unwrap_or(&[]).into();
     Resolved::List { elems }
 }
 
