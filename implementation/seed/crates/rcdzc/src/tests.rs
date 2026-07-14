@@ -1951,6 +1951,58 @@ impl ComposedRuntime {
         out[0].clone()
     }
 
+    /// Like [`closure_make_call_named`] but `call`s the named make's handle TWICE via the SHARED `call`,
+    /// returning both results. Proves the multi-export shared `call` is a repeatable `borrow<t>` method — one
+    /// `make-<name>` handle serves repeated calls (an `own<t>` shared call would consume it on the first).
+    fn closure_make_call_named_twice(
+        &mut self,
+        make_name: &str,
+        make_args: &[wasmtime::component::Val],
+        call_args_1: &[wasmtime::component::Val],
+        call_args_2: &[wasmtime::component::Val],
+    ) -> (wasmtime::component::Val, wasmtime::component::Val) {
+        use wasmtime::component::Val;
+        let iface = self
+            .program
+            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
+            .expect("closure interface exported");
+        let make_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), make_name)
+            .unwrap_or_else(|| panic!("closure `{make_name}` exported"));
+        let call_idx = self
+            .program
+            .get_export_index(&mut self.store, Some(&iface), "call")
+            .expect("closure `call` exported");
+        let make = self
+            .program
+            .get_func(&mut self.store, make_idx)
+            .expect("make func");
+        let call = self
+            .program
+            .get_func(&mut self.store, call_idx)
+            .expect("call func");
+        let mut handle = [Val::Bool(false)];
+        make.call(&mut self.store, make_args, &mut handle)
+            .expect("make call");
+        make.post_return(&mut self.store).expect("make post_return");
+        let mut args1 = vec![handle[0].clone()];
+        args1.extend_from_slice(call_args_1);
+        let mut out1 = [Val::Bool(false)];
+        call.call(&mut self.store, &args1, &mut out1)
+            .expect("first shared call");
+        call.post_return(&mut self.store)
+            .expect("first post_return");
+        let mut args2 = vec![handle[0].clone()];
+        args2.extend_from_slice(call_args_2);
+        let mut out2 = [Val::Bool(false)];
+        call.call(&mut self.store, &args2, &mut out2)
+            .expect("second shared call on the SAME handle (borrow<t> keeps it live)");
+        call.post_return(&mut self.store)
+            .expect("second post_return");
+        (out1[0].clone(), out2[0].clone())
+    }
+
     /// ROUND-TRIP driver (C-HOST-4): call a PRODUCER export by name (`producer(make_args…)` → a closure
     /// resource handle the host holds), then thread that handle BACK into a CONSUMER export
     /// (`consumer(handle, consume_args…)` → the result). Both are plain funcs in `cadenza:closure/exports`.
@@ -38729,6 +38781,35 @@ mod closure_host_resource {
             rt.closure_make_call_named("make-triple", &[], &[Val::S64(5)]),
             Val::S64(15),
             "make-triple then the shared call(5) = 15 — the same call dispatches the other closure"
+        );
+    }
+
+    /// C-HOST-6, multi-export: the SHARED `call` of a multi-export closure program is a repeatable
+    /// `borrow<t>` method — one `make-<name>` handle serves repeated calls through the one shared `call`
+    /// (an `own<t>` shared call would consume it on the first, trapping the second "unknown handle index").
+    /// `#[ignore]` — needs the runtime wasm in the store (`cargo xtask build`).
+    #[test]
+    #[ignore]
+    fn a_multi_export_shared_borrow_call_is_repeatable() {
+        use crate::testkit::parse;
+        use wasmtime::component::Val;
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
+            return;
+        };
+        let src = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
+                   (def (triple) (fn ((: x Int64)) (* x 3))) (export inc) (export triple))";
+        let program =
+            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let mut rt = super::ComposedRuntime::new(&program, &runtime);
+        // ONE make-inc handle, called TWICE through the shared `call`: (+ x 1) on 5 then 40 → 6, 41.
+        let (first, second) =
+            rt.closure_make_call_named_twice("make-inc", &[], &[Val::S64(5)], &[Val::S64(40)]);
+        assert_eq!(first, Val::S64(6), "shared call(5) on make-inc = 6");
+        assert_eq!(
+            second,
+            Val::S64(41),
+            "the SAME make-inc handle, shared call(40) = 41 — borrow<t> keeps it live (repeatable)"
         );
     }
 

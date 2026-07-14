@@ -2198,7 +2198,10 @@ fn emit_multi_closure_resource(
             &[],
         ));
     }
-    let main_core = serialize::multi_closure_resource_core_module(
+    // C-HOST-6: the ONE shared scalar `call` takes `borrow<t>`, so each make's handle is repeatable (the
+    // host keeps it across calls; the `t-dtor` reclaims). Same borrow posture as the single-export scalar
+    // `call` — the value-form multi paths above keep own/self-drop (a later widening).
+    let main_core = serialize::multi_closure_resource_core_module_borrow(
         &funcs,
         &imports,
         &ser_makes,
@@ -2207,9 +2210,10 @@ fn emit_multi_closure_resource(
         ret_vt,
         lifted_type_idx,
         &layout,
+        true,
     )
     .map_err(Reject::decline)?;
-    Ok(envelope::assemble_multi_closure_resource(
+    Ok(envelope::assemble_multi_closure_resource_borrow(
         &main_core,
         &dtor_core,
         &imports,
@@ -2217,6 +2221,7 @@ fn emit_multi_closure_resource(
         &abi_makes,
         &arg_bytes,
         result_byte,
+        true,
     ))
 }
 
@@ -2583,7 +2588,9 @@ fn emit_mixed_closure_resource(
             &abi_plain,
         ));
     }
-    let main_core = serialize::multi_closure_resource_core_module(
+    // C-HOST-6: the shared scalar `call` takes `borrow<t>` (repeatable — each make's handle survives across
+    // calls; the `t-dtor` reclaims). The plain exports ride alongside unaffected.
+    let main_core = serialize::multi_closure_resource_core_module_borrow(
         &funcs,
         &imports,
         &ser_makes,
@@ -2592,9 +2599,10 @@ fn emit_mixed_closure_resource(
         ret_vt,
         lifted_type_idx,
         &layout,
+        true,
     )
     .map_err(Reject::decline)?;
-    Ok(envelope::assemble_mixed_closure_resource(
+    Ok(envelope::assemble_mixed_closure_resource_borrow(
         &main_core,
         &dtor_core,
         &imports,
@@ -2603,6 +2611,7 @@ fn emit_mixed_closure_resource(
         &arg_bytes,
         result_byte,
         &abi_plain,
+        true,
     ))
 }
 

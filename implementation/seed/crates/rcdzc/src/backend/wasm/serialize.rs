@@ -3371,7 +3371,36 @@ pub fn multi_closure_resource_core_module(
     lifted_type_idx: u32,
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    multi_closure_resource_core_module_with_host(
+    multi_closure_resource_core_module_borrow(
+        funcs,
+        imports,
+        makes,
+        plain,
+        arg_vts,
+        ret_vt,
+        lifted_type_idx,
+        layout,
+        false,
+    )
+}
+
+/// [`multi_closure_resource_core_module`] with a `call_borrow` switch — the multi-export scalar shared-`call`
+/// front to [`multi_closure_resource_core_module_with_host_borrow`]. `call_borrow = true` makes the ONE
+/// shared `call` a repeatable `borrow<t>` method (each make's handle survives across calls; the `t-dtor`
+/// reclaims on drop); `false` the shipped own/self-drop shared `call`.
+#[allow(clippy::too_many_arguments)]
+pub fn multi_closure_resource_core_module_borrow(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    makes: &[ClosureMake],
+    plain: &[PlainExport],
+    arg_vts: &[ValType],
+    ret_vt: ValType,
+    lifted_type_idx: u32,
+    layout: &Layout,
+    call_borrow: bool,
+) -> Result<Vec<u8>, String> {
+    multi_closure_resource_core_module_with_host_borrow(
         funcs,
         imports,
         &[],
@@ -3381,6 +3410,7 @@ pub fn multi_closure_resource_core_module(
         ret_vt,
         lifted_type_idx,
         layout,
+        call_borrow,
     )
 }
 

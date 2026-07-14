@@ -370,6 +370,21 @@
   (call   triple (: 5 Int64))
   (output (: 15 Int64)))
 
+; The multi-export SHARED `call` is a repeatable `borrow<t>` method too (C-HOST-6): one `make-<name>` handle
+; serves repeated calls through the one shared `call` (the host keeps it; the `t-dtor` reclaims on drop). The
+; gate drives one `(call …)`; the repeatability is pinned by `a_multi_export_shared_borrow_call_is_repeatable`
+; (one `make-inc` handle, shared `call(5)`=6 then `call(40)`=41).
+
+(case "a multi-export shared call is a repeatable (borrow<t>) callback"
+  (doc    "The SAME two-export program witnessed as a borrow<t> shared call: `make-inc()` → a handle the host
+           keeps, then the shared `call(5)` = 6. `call` borrows the handle (does NOT consume it), so the same
+           handle serves repeated calls through the one shared `call` (proven twice-over in the unit test).")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1)))
+              (def (triple) (fn ((: x Int64)) (* x 3)))
+              (export inc) (export triple)))
+  (call   inc (: 5 Int64))
+  (output (: 6 Int64)))
+
 (case "a multi-export set of parameterized capturing closures is driven per export"
   (doc    "Three closure exports that each CAPTURE their param: `add` (+ x k), `mul` (* x k), `sub` (- x k),
            all `(Int64) -> (-> Int64 Int64)`. Calling `mul` drives `make-mul(4)` (capturing k=4) then
