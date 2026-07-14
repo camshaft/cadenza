@@ -13013,6 +13013,28 @@ mod match_engine {
             "no coercion fix for a non-numeric leaf: {:?}",
             boolish.fix
         );
+        // A MAP entry's VALUE / KEY numeric leaf is covered too — `(map (1 5))` vs `(Map Int64 Float64)`
+        // retypes the value `5`→`5.0`; vs `(Map Float64 Int64)` retypes the key `1`→`1.0`.
+        let mapval = reject_full(
+            "(module m (def (h (: m (Map Int64 Float64))) m) (def (g) (h (map (1 5)))) (export g))",
+        )
+        .expect("a map with an Int value where Float wanted rejects");
+        assert_eq!(
+            mapval.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("5.0"),
+            "retypes the map VALUE leaf: {}",
+            mapval.message
+        );
+        let mapkey = reject_full(
+            "(module m (def (h (: m (Map Float64 Int64))) m) (def (g) (h (map (1 5)))) (export g))",
+        )
+        .expect("a map with an Int key where Float wanted rejects");
+        assert_eq!(
+            mapkey.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("1.0"),
+            "retypes the map KEY leaf: {}",
+            mapkey.message
+        );
     }
 
     #[test]

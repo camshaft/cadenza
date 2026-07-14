@@ -3396,6 +3396,50 @@ fn compound_inner_coercion_fix(
                         .or_else(|| numeric_text_coercion_fix(db, &we, &ge, e))
                 })
         }
+        (Ty::Map(wk, wv), Ty::Map(gk, gv)) => {
+            // A map is homogeneous on each axis. Retype the FIRST entry's KEY (if the key axis differs) or
+            // VALUE (if the value axis differs) whose inner numeric a coercion bridges — mirroring the
+            // collection-axis hint (`collection_element_mismatch_hint` reports KEY before VALUE). The
+            // entries are `(key-occ, value-occ)` pairs of the written `(map (k v) …)` literal.
+            let key_diff = !wk.agrees_with(gk);
+            let (wt, gt) = if key_diff {
+                ((**wk).clone(), (**gk).clone())
+            } else if !wv.agrees_with(gv) {
+                ((**wv).clone(), (**gv).clone())
+            } else {
+                return None;
+            };
+            map_entry_nodes(db, expr)?.iter().find_map(|&(k, v)| {
+                let node = if key_diff { k } else { v };
+                compound_inner_coercion_fix(db, node, &wt, &gt)
+                    .or_else(|| numeric_text_coercion_fix(db, &wt, &gt, node))
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The ordered `(key-node, value-node)` entries of a directly-written MAP literal `expr` — both the
+/// `Resolved::Map` primitive form and the `map` NAME-alias application (`Apply` of `Prim::MapNew`, whose
+/// args are the `(k v)` entry-pair lists). `None` when `expr` is not a written map literal. Lets
+/// `compound_inner_coercion_fix` reach a map key/value leaf regardless of which map spelling was used.
+fn map_entry_nodes(db: &mut Db, expr: StructId) -> Option<Vec<(StructId, StructId)>> {
+    match resolved_of(db, expr) {
+        Resolved::Map { entries } => Some(entries.to_vec()),
+        Resolved::Apply { head, args }
+            if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::MapNew) =>
+        {
+            // Each arg is a `(key value)` two-element entry list — read its two children.
+            args.iter()
+                .map(|&pair| match db.ast.get(pair) {
+                    crate::ast::Struct::List(kids) => match kids.as_slice() {
+                        [k, v] => Some((*k, *v)),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect()
+        }
         _ => None,
     }
 }
