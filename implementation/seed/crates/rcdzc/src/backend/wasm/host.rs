@@ -100,6 +100,8 @@ pub fn abi_val_type(ty: &Ty) -> Option<AbiValType> {
 //# The compiler MUST NOT emit a manifest entry for which no corresponding import is generated.
 //= spec/contracts/host-interface-binding.md#the-manifest-is-a-projection-of-the-escaping-effect-row
 //# A program's escaping effect row MUST equal the set of host functions it imports, where the escaping row is the union of the effects its entrypoints delegate to the host that no nearer handler discharges (capabilities-and-effects.md §A Host Import Is A Boundary Effect And The Manifest Is Its Row), so that the manifest is a projection of that delegated row rather than a separately-asserted list and an effect an enclosing handler fully interposes before a delegation generates no import.
+//= spec/contracts/host-interface-binding.md#a-host-import-is-a-wit-typed-function-the-manifest-enumerates
+//# A component's imports MUST be host functions declared in the WIT-shaped world it targets, each bound only when the manifest enumerates it.
 pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>) {
     match core_of(db, id) {
         Core::HostCall {
@@ -112,6 +114,17 @@ pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>
             // `Unit` arg/result is elided (no boundary slot). A STRING arg is `HostParam::Str` (crosses as
             // `string`, core `(ptr,len)`); a scalar arg maps its `AbiValType`. A parameter whose type is
             // neither (a compound) makes the op undelegable — the envelope declines at assembly.
+            //
+            // The import carries a COMPLETE WIT-typed signature built from the op's own declared types —
+            // parameters from the arg types, result from `result` — with NOTHING injected: no extra
+            // parameter, no resume/continuation argument, no state, and no error/outcome arm the operation
+            // did not itself declare. So a delegated `(op nm (-> P… R))` becomes the import `nm` whose
+            // params are `P…` and whose result is `R` verbatim — the WIT import contract is exactly the
+            // effect operation's type.
+            //= spec/contracts/host-interface-binding.md#a-host-import-is-a-wit-typed-function-the-manifest-enumerates
+            //# An imported host function MUST carry a complete WIT-typed signature — its parameter types, its result type, and its error type — sufficient for the compiler to emit that import into the component's world without consulting anything outside the program's source.
+            //= spec/contracts/host-interface-binding.md#a-host-import-is-a-wit-typed-function-the-manifest-enumerates
+            //# A host-delegated effect operation MUST appear as its declared signature verbatim: an operation `(op nm (-> P… R))` an entrypoint delegates MUST become the imported function `nm` whose parameters are `P…` and whose result is `R`, with the compiler injecting no additional parameter, no resume or continuation argument, no state, and no error or outcome arm the operation did not itself declare, so that the WIT import contract is exactly the effect operation's type and a host implements precisely what the program declared.
             let mut params = Vec::new();
             for &a in &args {
                 let at = crate::infer::type_of(db, a);
