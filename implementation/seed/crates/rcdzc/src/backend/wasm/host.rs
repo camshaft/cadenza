@@ -118,6 +118,19 @@ pub fn abi_val_type(ty: &Ty) -> Option<AbiValType> {
 //# Purity MUST be the empty effect row: an entrypoint that delegates no effect to the host MUST reach no effect that escapes and MUST run to normal termination without suspending, so that an entrypoint's determinism is legible from an empty delegation and an entrypoint whose every reached effect is handled in-program is pure.
 //= spec/capabilities/capabilities-and-effects.md#an-effect-that-does-not-escape-is-discharged-by-a-handler
 //# An effect discharged by an in-program handler MUST NOT appear in the program's manifest, so that only effects that escape to the host — those an entrypoint delegates and no nearer handler discharges — are capabilities.
+// Because the set is derived by REACHABILITY from the exports (`collect_host_imports` runs over
+// `layout.order`, itself a worklist grown from the exports), a linked dependency that no entrypoint
+// reaches contributes no import — dependency resolution never enlarges the required-capability set beyond
+// the union the entrypoints reach.
+//= spec/capabilities/modules-and-namespaces.md#resolution-introduces-no-authority
+//# The set of capabilities a program requires MUST NOT be enlarged by dependency resolution beyond the union its entrypoints delegate to the host, so that pulling in a dependency that declares or performs an effect grants no authority unless an entrypoint delegates that effect (capabilities-and-effects.md §The Program Manifest Is The Union Of Its Entrypoints' Delegations).
+// A host op is the ONLY source of nondeterminism a program can reach, and every reached host op appears
+// in this set — so a program's determinism is legible from its manifest, and the compiler grants no
+// nondeterminism source the program did not delegate (it emits an import only for a reached, delegated op).
+//= spec/contracts/host-interface-binding.md#the-manifest-makes-nondeterminism-legible
+//# An operation whose result is a source of nondeterminism MUST be reachable only through a capability the manifest enumerates, so that a program's determinism is legible from its manifest.
+//= spec/contracts/host-interface-binding.md#the-manifest-makes-nondeterminism-legible
+//# The compiler MUST NOT grant a program a source of nondeterminism the program did not declare as a capability.
 pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>) {
     match core_of(db, id) {
         Core::HostCall {
