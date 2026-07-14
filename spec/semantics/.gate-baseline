@@ -636,6 +636,9 @@ pass	a let-bound variable passed as a function-call argument resolves at the cal
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
 pass	a linear non-tail recursion over a non-associative operator preserves its exact result
 pass	a list annotated with the wrong element type is rejected
+pass	a list arm with one constructor element binds its payload and its bare siblings
+pass	a list arm's constructor element at a non-head position
+pass	a list arm's constructor element that does not match the tag falls through
 pass	a list built at run time by a push-loop escapes to the host
 pass	a list built by a recursive push-loop is then iterated by index
 pass	a list built by a runtime-length loop has that many elements
@@ -653,6 +656,7 @@ pass	a list of tuples with different arities is a type error
 pass	a list pattern in a sum-variant payload matches a runtime node by its child count
 pass	a list value consumed by two operations in one function is not freed early
 pass	a list with a runtime element is returned as a program result
+pass	a list-arm constructor element over a runtime-built list
 pass	a list-carrying recursion whose base arm does a fallible indexed read compiles
 pass	a list-concatenating helper threads lists through a call
 pass	a literal in a let binder is refutable and rejected
