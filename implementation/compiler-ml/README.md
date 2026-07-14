@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 130 tests total across 15 modules):
+top. Current `src/` modules (each with same-file `@test`s — 139 tests total across 16 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -112,6 +112,12 @@ top. Current `src/` modules (each with same-file `@test`s — 130 tests total ac
   effectful loop (that shape specializes + runs; a mutually-recursive effectful group with the perform
   in a separate branch does NOT yet — see the log). 8 `@test`s (closed-form sums, a custom start, a
   draw-count via a constant-handback handler).
+- `src/collect.cdz` — a leaf-collecting analysis returning a RECORD `{ count, vals }` (the number of
+  `Num` leaves and their values) built bottom-up in one traversal. Stresses a record carrying a heap
+  `List` field, CONSTRUCTED per node and THREADED (concatenated) through the recursion, then projected —
+  the record-of-results shape a real analysis returns. Confirmed WORKING (no new bug): record values +
+  the heap-list field survive the recursion exactly (a `count == vals-length` invariant test). 9
+  `@test`s.
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
