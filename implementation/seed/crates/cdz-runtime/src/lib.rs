@@ -10635,7 +10635,39 @@ mod tests {
     /// `rc:u32`(4) + `Handles`(32) + `Raw`(24) = 60, padded to 64 for the 8-alignment `Handles`/`Raw`
     /// require — the 4-byte pad after `rc` is unavoidable. If you INTEND to change the layout, update
     /// these + re-measure the wasm hash impact.
-#[test]
+    /// The `cdz-abi` section constant `CDZ_ABI_IMM_UNIT` — which `xtask codegen` extracts and the compiler
+    /// emits as `IMM_UNIT` — MUST be the exact little-endian `u32` bit pattern of `imm_unit()`. The two are
+    /// INDEPENDENT hard-coded `0b0010` literals (one in `imm_unit()`, one in the `cdz-abi` static) linked by
+    /// nothing but this test. The stakes rose with `spec@5d9a1dc1`: the compiler now emits `IMM_UNIT`
+    /// DIRECTLY as the `None`-arm result of `List.at`/`Map.lookup`/`String.at`/`Bytes.at` (replacing a
+    /// runtime `arr-alloc(0)` CALL that computed the value from `imm_unit()`). So if a future immediate-tag
+    /// rework changed `imm_unit()`'s encoding WITHOUT updating `CDZ_ABI_IMM_UNIT`, every miss of those four
+    /// common ops would return a MALFORMED "unit" the runtime misreads (a silent miscompile) — where before
+    /// the runtime recomputed the correct value at the call. `arr-alloc(0)` also returns `imm_unit()`, so
+    /// this pins the whole "empty compound / nullary payload == the inline unit constant" ABI contract the
+    /// compiler leans on. (Native test: read the bits via `.0 as usize as u32`; `Handle::to_u32` is
+    /// wasm32-only.)
+    #[test]
+    fn cdz_abi_imm_unit_constant_matches_imm_unit_bits() {
+        let unit_bits = imm_unit().0 as usize as u32;
+        assert_eq!(
+            unit_bits.to_le_bytes(),
+            CDZ_ABI_IMM_UNIT,
+            "the `cdz-abi` IMM_UNIT constant the compiler emits ({CDZ_ABI_IMM_UNIT:?}) MUST equal \
+             imm_unit()'s LE bit pattern ({:?}) — a divergence miscompiles the None arm of \
+             List.at/Map.lookup/String.at/Bytes.at (spec@5d9a1dc1 emits IMM_UNIT there directly)",
+            unit_bits.to_le_bytes()
+        );
+        // The whole contract the emit relies on: op_arr_alloc(0) IS the inline unit, byte-identical to the
+        // constant. A 0-length array, an empty tuple/record — all the inline unit immediate.
+        assert_eq!(
+            op_arr_alloc(0).0 as usize as u32,
+            unit_bits,
+            "op_arr_alloc(0) must be the same inline unit the IMM_UNIT constant denotes"
+        );
+    }
+
+    #[test]
     fn node_layout_sizes_are_pinned_native() {
         use core::mem::size_of;
         assert_eq!(size_of::<Node>(), 64, "Node size changed — a bloat is paid by every heap value");
