@@ -634,6 +634,34 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 7 Int64)))
 
+; A self-tail loop that threads a (node, cursor) pair — a BOXED-SUM accumulator `(. r 0)` AND a cursor
+; `(. r 1)`, BOTH projected from the same tuple returned by an `if`-builder — must thread each projection
+; into its own loop slot. These pin that shape (the byte-decode reader loop): the accumulator carries the
+; last-read sum node and the cursor advances, projected from the builder's tuple each step. (This was a
+; slot-aliasing wrong-value miscompile — one projection read the other's slot; now fixed. Its invalid-wasm
+; sibling and the fallible-read-in-base variant, both fixed, are pinned above.)
+
+(case "a tail loop threads a boxed-sum accumulator and a cursor projected from one builder tuple"
+  (doc    "A `(node, cursor)` decode loop: `one` returns `(tuple (W.Atom <byte>) (+ pos 1))` from an `if`,
+           and `loop` threads BOTH projections — the boxed-sum node `(. r 0)` as the `last` accumulator and
+           the cursor `(. r 1)` as the position. Over b\"\\x05\\x07\\x09\" iterating three times from a
+           boundary-parameter start, `last` ends holding `(W.Atom 9)` (the byte at position 2), and `wval`
+           extracts 9. Pins that a self-tail loop threading a projected boxed-sum accumulator alongside a
+           projected cursor reads each projection from its own slot — the reader-loop shape. (Was a
+           slot-aliasing wrong value — the accumulator read the cursor's slot, returning 0; now correct.)")
+  (input  (do
+            (type W (Atom Int64) (Zero))
+            (def (one (: b Bytes) (: pos Int64))
+              (if (= (Option.expect (Bytes.at b pos) "t") 5)
+                (tuple ((. W Atom) (Option.expect (Bytes.at b pos) "v")) (+ pos 1))
+                (tuple ((. W Atom) (Option.expect (Bytes.at b pos) "v")) (+ pos 1))))
+            (def (loop (: b Bytes) (: n Int64) (: pos Int64) (: last W))
+              (if (= n 0) last (let ((r (one b pos))) (loop b (- n 1) (. r 1) (. r 0)))))
+            (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Zero) _) 0)))
+            (def (main (: pos Int64)) (wval (loop b"\x05\x07\x09" 3 pos ((. W Atom) 0))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 9 Int64)))
+
 (case "a chained access through an if-of-records composes and shields the untaken branch's trap"
   (doc    "The access-into-if fold COMPOSES through a chain: `(. (. (if b R1 R2) a) x)` reads field `a`
            (itself a record) from the if-selected record, then field `x` from that — the projection sinks
