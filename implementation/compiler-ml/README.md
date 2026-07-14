@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 262 tests total across 28 modules):
+top. Current `src/` modules (each with same-file `@test`s — 269 tests total across 29 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -191,6 +191,14 @@ top. Current `src/` modules (each with same-file `@test`s — 262 tests total ac
   `Bool`); a custom type like `Expr` crosses files fine via `export { Expr.* }` (wildcard ctors) +
   `import { Expr } from "…"`. This retires the port's long-standing single-file limitation for
   non-colliding types.
+- `src/peephole.cdz` — a PEEPHOLE OPTIMIZER over the `Instr` stream (imported cross-file from `codegen`,
+  a TWO-HOP chain peephole → codegen → parse). It constant-folds a `Push a, Push b, BinOp o` triple to a
+  single `Push (a op b)` and ITERATES to a fixpoint, so a fully-constant program collapses to one
+  instruction. Stresses multi-element list-window matching + a fixpoint loop; correctness is checked
+  against `codegen.exec` (`exec(optimize p) == exec(p)` — optimizing never changes the value, and a
+  constant program optimizes to exactly ONE push). 7 `@test`s. Confirmed WORKING — the transitive
+  two-hop import + fixpoint iteration are correct. (Finding G below was surfaced while probing the
+  optimizer's List ops, not by the optimizer itself.)
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -292,6 +300,21 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   over-dup leaks — so a seed-agent job; the repro carries the exact missing dup). Blocks ANY pass building
   a modified collection while still needing the original (a diff, "with one more binding", a before/after)
   — including `src/interp.cdz`'s withheld `interp-shadow-restores`.
+
+- **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value, iter 37): `List.concat` corrupts its still-live
+  LHS where `List.push` does NOT — a DISTINCT face of the still-live-binding family.**
+  `repros/miscompile-concat-consumes-still-live-lhs-then-element-read.sexp`.
+  `let xs = [5,7] in (List.len (List.concat xs [9])) + (e xs 0)` (where `e xs i = List.at xs i or -1`)
+  returns **3**, not 8 — after `concat` consumes `xs`, the later `List.at xs 0` reads as if `xs` is EMPTY.
+  🔑 DISCRIMINATOR: the IDENTICAL shape with `List.push` instead of `List.concat` computes CORRECTLY (8) —
+  so `push` (`vec-push`) dup-guards its still-live list operand but `concat` (`vec-concat`) does not. SHARP
+  (each necessary): the op is `List.concat`; `xs` is a still-live `let` binding (a param is safe); the
+  survivor is an ELEMENT read via `List.at` reached AFTER the concat (reading `xs`'s LENGTH after is
+  correct; reading `xs[0]` BEFORE the concat is correct — ORDER-SENSITIVE); a SECOND `concat xs …` is also
+  correct (the LHS handle is not freed — its element ARRAY reads empty), so it is an rc/dup-timing bug on
+  the element array, not a use-after-free. Root: the `Core::ListConcat` emit (backend/wasm/select.rs) omits
+  the `dup` of a `LocalRef`/`Param` LHS still read later — same missing-dup defect as the push/insert
+  length face (which `push` was patched for, `concat` not). Repro + its push-twin isolate the exact op.
 
 - **OPEN (seed `rcdzc` — ML SURFACE GAP, iter 34): a tuple TYPE written `(A, B)` is rejected — must be
   `Tuple(A, B)`.** `repros/reject-ml-tuple-type-paren-comma-spelling.cdz`. `def f(p: (Int64, Int64)) =

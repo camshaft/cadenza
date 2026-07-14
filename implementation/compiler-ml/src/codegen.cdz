@@ -134,4 +134,4 @@ def cg-deep-left-assoc() =
   let ts = [Tok.TNum(100), Tok.TOp(47), Tok.TNum(5), Tok.TOp(47), Tok.TNum(2)] in
   if compile-and-run(parse(ts)) == 10 then unit else trap("100/5/2=10 end-to-end")
 
-export { compile, exec, compile-and-run, code-size }
+export { Instr.*, compile, exec, compile-and-run, code-size }
