@@ -3556,6 +3556,15 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
                 if name.starts_with('_') || referenced.contains(&name) {
                     continue;
                 }
+                // `arm_pattern_binders` is deliberately SYNTACTIC — it does NOT resolve ctor-vs-binder, so a
+                // bare NULLARY VARIANT CONSTRUCTOR pattern (`D` in `((A) 1) ((B) 2) (D …)`, or a bare `None`)
+                // arrives here looking like an unused binder. It binds NOTHING (it is a refutable ctor
+                // match), so it can't be "unused" — flagging it and auto-prefixing `_D` would silently
+                // DOWNGRADE the precise variant arm to a catch-all wildcard. Skip it, matching the
+                // ctor-vs-binder authority `lower::collect_pattern_binders` uses (`eval::variant_disc_of`).
+                if crate::eval::variant_disc_of(db, name_occ).is_some() {
+                    continue;
+                }
                 binders.push(Binder {
                     name_occ,
                     target: name_occ,
