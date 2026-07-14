@@ -131,6 +131,11 @@ pub fn abi_val_type(ty: &Ty) -> Option<AbiValType> {
 //# An operation whose result is a source of nondeterminism MUST be reachable only through a capability the manifest enumerates, so that a program's determinism is legible from its manifest.
 //= spec/contracts/host-interface-binding.md#the-manifest-makes-nondeterminism-legible
 //# The compiler MUST NOT grant a program a source of nondeterminism the program did not declare as a capability.
+// This is the reachability-based enforcement of constitution III: a host op is the only nondeterminism
+// source a program can reach, and one is imported only when a reached body delegates it — so the compiler
+// never introduces a nondeterminism source the program did not obtain through a declared capability.
+//= constitution.md#iii-the-compiler-introduces-no-undeclared-nondeterminism
+//# The compiler MUST NOT introduce into a component a source of nondeterminism that the program did not obtain through a declared capability.
 pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>) {
     match core_of(db, id) {
         Core::HostCall {
