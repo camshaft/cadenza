@@ -2751,6 +2751,8 @@ pub(crate) fn check_binding_pattern(
     // CDZ0203, `(: x Bool) = 5`), then recurse on `<pat>` so the inner pattern's own well-formedness
     // (irrefutable / linear / right shape) is still checked. A generic/deferred value type (`Any`, an
     // unsolved var) agrees with any annotation — the annotation grounds it, no contradiction.
+    //= spec/capabilities/core-semantics.md#a-binding-position-accepts-an-irrefutable-pattern
+    //# A binding pattern MAY carry a type annotation `(: <pattern> <Type>)`, which constrains the bound value's type while the inner pattern binds its names, in accordance with *Annotations Constrain, Never Contradict* (`type-system.md`): the annotation participates in inference as an added constraint, and a value whose type cannot satisfy it MUST be a compile-time error (`CDZ0203`), exactly as a value annotation `(: <expression> <Type>)` is.
     if let Some(ann) = db.ast.as_form(pat, ":")
         && ann.len() == 2
     {

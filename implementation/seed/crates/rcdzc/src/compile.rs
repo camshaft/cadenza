@@ -14,7 +14,14 @@
 //! condition, a `let` binding and body, arithmetic/comparison/conversion operands, a call's
 //! arguments, a match scrutinee, and tuple/record/sum construction — but NOT a conditional's branches
 //! or a match arm's body, so a fault shielded by an untaken branch stays a runtime trap rather than
-//! failing the build (`reference-compiler.md` §Reachability Is A Consequence Of Reduction).
+//! failing the build (`reference-compiler.md` §Reachability Is A Consequence Of Reduction). These are
+//! exactly the OBSERVED positions — a value flows to the result, a host call, or an operation that
+//! inspects it — so a trap in an observed computation is not elided: its computation is evaluated (or,
+//! for a compile-provable trap, faults the build here) rather than skipped.
+//= spec/capabilities/core-semantics.md#a-trap-occurs-only-where-its-computation-is-observed
+//# A trap MUST occur when the computation that would raise it is observed — when its value flows to the program's result, to a host call, or to an operation that inspects it (an arithmetic or comparison operand, an `if` condition, a match scrutinee, a projected tuple element or record field, a referenced binding, or an argument bound to a parameter the function body uses).
+//= spec/capabilities/core-semantics.md#a-trap-occurs-only-where-its-computation-is-observed
+//# A computation whose value is observed in this sense MUST be evaluated, so its trap MUST occur.
 
 use crate::abi::{Artifact, CompileOutput, Diagnostic, Severity};
 use crate::ast::StructId;
