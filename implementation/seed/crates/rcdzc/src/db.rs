@@ -733,6 +733,13 @@ pub struct Db {
     /// program with no runtime closure — byte-identical to before. `DESIGN-runtime-closures-rcdzc.md` §3.
     pub(crate) lifted: Vec<crate::lower::LiftedLambda>,
 
+    /// `body occurrence → its slot in [`lifted`]` — the O(1) dedup index for [`Db::lift_lambda`]. Lifting
+    /// deduplicates by the lambda's `body` (one slot per distinct lambda), and the lookup was a LINEAR scan
+    /// of `lifted` per lift → O(N²) for a program that lifts N distinct closures (a list/tuple of N escaping
+    /// lambdas: ~N²/2 scan iterations — 18M at N=6400). This map makes each dedup O(1); kept in lockstep
+    /// with `lifted` (an entry is inserted exactly when a new lambda is pushed).
+    pub(crate) lifted_by_body: crate::fxhash::FxHashMap<StructId, usize>,
+
     /// CAPTURED-reference occurrences: a body reference inside a lifted lambda that names a FREE VARIABLE
     /// (a binding from the lambda's creation scope), mapped to `(capture index, solved type)`. Recorded
     /// by `lower::lower_lambda_value` when the lambda is lifted; read when the LIFTED body is lowered so
@@ -1028,6 +1035,7 @@ impl Db {
             rec_worklist: Vec::new(),
             kept_bindings: crate::fxhash::FxHashSet::default(),
             lifted: Vec::new(),
+            lifted_by_body: crate::fxhash::FxHashMap::default(),
             captured_ref: crate::fxhash::FxHashMap::default(),
             resolved_subtrees: crate::fxhash::FxHashSet::default(),
             def_schemes: crate::fxhash::FxHashMap::default(),
@@ -1248,11 +1256,16 @@ impl Db {
     ///
     /// [`lifted`]: Db::lifted
     pub fn lift_lambda(&mut self, lam: crate::lower::LiftedLambda) -> usize {
-        if let Some(pos) = self.lifted.iter().position(|l| l.body == lam.body) {
+        // Dedup by the lambda's `body` occurrence via the O(1) index (was a linear scan of `lifted` →
+        // O(N²) for N distinct lifted closures). The index and `lifted` stay in lockstep: a body already
+        // present returns its slot; a new one is pushed and indexed at its position.
+        if let Some(&pos) = self.lifted_by_body.get(&lam.body) {
             return pos;
         }
+        let pos = self.lifted.len();
+        self.lifted_by_body.insert(lam.body, pos);
         self.lifted.push(lam);
-        self.lifted.len() - 1
+        pos
     }
 
     /// Whether the lexical-scope SKIP index covers `id` — true for a load-time node (its entry is

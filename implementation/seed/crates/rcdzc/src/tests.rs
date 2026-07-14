@@ -27517,6 +27517,38 @@ mod stage1 {
     }
 
     #[test]
+    fn lambda_lifting_dedups_by_body_and_gives_distinct_lambdas_distinct_slots() {
+        // `Db::lift_lambda` dedups by the lambda's `body` occurrence via an O(1) index (was a linear scan
+        // of `db.lifted` per lift → O(N²) for a program lifting N distinct closures). This locks in the two
+        // invariants the index must preserve: (a) N DISTINCT escaping lambdas get N distinct table slots
+        // (no false dedup — a fresh body → a new slot), and (b) the SAME lambda body reached twice keeps ONE
+        // slot (real dedup — the memo the index replaces). Read `db.lifted` after lowering.
+        use crate::testkit::parse;
+        // (a) A list of 8 DISTINCT escaping closures → 8 lifted entries, each a distinct body occurrence.
+        let lams = (0..8)
+            .map(|i| format!("(fn (a{i}) (+ a{i} {i}))"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let src = format!("(module m (def (main) (let ((fs (list {lams}))) 0)) (export main))");
+        let mut db = crate::db::Db::load(parse(&src));
+        // Drive lowering (fills `db.lifted`) — `diagnostics` runs the full pipeline over the program.
+        let _ = crate::diagnostics(&mut db);
+        assert_eq!(
+            db.lifted.len(),
+            8,
+            "8 distinct escaping closures lift to 8 distinct slots (no false dedup)"
+        );
+        let mut bodies: Vec<u32> = db.lifted.iter().map(|l| l.body.0).collect();
+        bodies.sort_unstable();
+        bodies.dedup();
+        assert_eq!(
+            bodies.len(),
+            8,
+            "each lifted slot has a distinct body occurrence"
+        );
+    }
+
+    #[test]
     fn a_multi_param_closure_applies_at_full_arity() {
         // A TWO-parameter lambda VALUE `(fn (a b) (+ a b))` passed to a recursive HOF and applied at
         // full arity `(g i i)`. It lifts to a `(env, a, b) -> result` function and applies via ONE
