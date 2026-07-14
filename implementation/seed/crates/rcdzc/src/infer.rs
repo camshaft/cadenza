@@ -664,6 +664,23 @@ fn int_width_range(signed: bool, w: u32) -> Option<String> {
 /// "subtracting", "comparing" — so the message reads as an action ("adding quantities of incompatible
 /// dimension"). `prim` is the operator's [`crate::resolved::Prim`] (the `is_additive` set: `+`/`-` plus
 /// the comparisons); anything else (or an unrecognized head) falls back to the neutral "combining".
+/// The prelude OPERATION-MODULE name for a collection or text type — `List`/`Map`/`Set`/`String`/`Bytes`
+/// — whose fields are its operations (reached by member access `(. List at)`). Used to redirect a NAMED
+/// member access on such a value (`(. xs foo)`, which is not a field read — these are not records) to the
+/// module operation form. `None` for a type with no such operation module (a record has real fields, a
+/// tuple is positional, a scalar/sum has no member-access operations). The module name matches the type's
+/// own render (`List`/`Map`/`Set`/`String`/`Bytes`), so `(. <Module> <op>)` names a real prelude module.
+fn collection_or_text_module(ty: &Ty) -> Option<&'static str> {
+    match ty {
+        Ty::List(_) => Some("List"),
+        Ty::Map(..) => Some("Map"),
+        Ty::Set(_) => Some("Set"),
+        Ty::String => Some("String"),
+        Ty::Bytes => Some("Bytes"),
+        _ => None,
+    }
+}
+
 fn additive_op_gerund(prim: Option<crate::resolved::Prim>) -> &'static str {
     use crate::resolved::Prim;
     match prim {
@@ -6898,15 +6915,48 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 ),
                             ))
                         }
+                        // A COLLECTION or TEXT value accessed by NAME — `(. xs foo)` on a `(List …)`, a
+                        // `(Map …)`, `(Set …)`, `String`, `Bytes`. These are NOT field-bearing records: a
+                        // field NAME reads nothing off them. Their operations live on the type MODULE and
+                        // take the value as the FIRST argument — `(. List at)`/`Map.lookup`/`Set.contains`/
+                        // `String.len` — so the generic "requires a record" reads as a dead end when the fix
+                        // is a module operation. Name the module + the value-first call form so the reader
+                        // reaches for `((. List at) xs …)` (rustc's "method not found; the operations are on
+                        // the type"). Only for a value with such a module; other non-records keep the plain
+                        // message.
                         other => {
-                            trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: member access on a non-record (CDZ0201)");
-                            out.push(Reject::coded(
-                                Code::Malformed,
-                                format!(
-                                    "member access requires a record, found {}",
-                                    other.render_name()
-                                ),
-                            ))
+                            // A COLLECTION or TEXT value accessed by NAME — `(. xs foo)` on a `(List …)`,
+                            // `(Map …)`, `(Set …)`, `String`, `Bytes` — is not a field read (these are not
+                            // records). Its operations live on the type MODULE and take the value as the
+                            // FIRST argument, so name the module + the `((. Module op) value …)` form
+                            // instead of the dead-end "requires a record". Any other non-record (a scalar, a
+                            // sum) has no operation module → keep the plain message.
+                            let reject = match collection_or_text_module(other) {
+                                Some(module) => {
+                                    trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: named member access on a collection/text value (CDZ0201)");
+                                    Reject::coded(
+                                        Code::Malformed,
+                                        format!(
+                                            "a {} value has no field `{}` — its operations live on the \
+                                             `{module}` module and take the value as the first argument, \
+                                             e.g. `((. {module} <op>) <value> …)`",
+                                            other.render_name(),
+                                            key.name,
+                                        ),
+                                    )
+                                }
+                                None => {
+                                    trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: member access on a non-record (CDZ0201)");
+                                    Reject::coded(
+                                        Code::Malformed,
+                                        format!(
+                                            "member access requires a record, found {}",
+                                            other.render_name()
+                                        ),
+                                    )
+                                }
+                            };
+                            out.push(reject)
                         }
                     }
                 }
