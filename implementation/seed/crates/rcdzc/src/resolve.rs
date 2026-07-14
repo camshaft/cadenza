@@ -218,6 +218,20 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                     // scoped name), so it resolves normally (the map-key-is-a-value rule, on the pattern side).
                     trace!(target: "rcdzc::resolve", node = id.0, %n, "name → map-pattern binder (inert)");
                     Resolved::Unit
+                } else if is_variant_pattern_binder_occurrence(db, id) {
+                    // A VARIANT-PAYLOAD binder occurrence IN THE PATTERN position — the `n` in `((W.V n) …)`
+                    // or a nested `((W.V (Option.Some n)) …)`. It NAMES A BINDING, not a value (a body
+                    // reference resolves to a `SumPayload` reading the scrutinee's payload, `binder_in` Case
+                    // 6). Inert here — the SAME treatment list/map pattern binders get — so an EAGER subtree
+                    // walk (`resolve_subtree`, run to pin call-site arguments before β-reduction) does NOT
+                    // resolve it via `resolve_name`. Without this, a payload binder that SHADOWS an enclosing
+                    // param (`(def (f (: n Int64)) (match … ((W.V n) n) …))`, `f` reached via a CALL) had its
+                    // pattern occurrence `n` bound to the PARAM by the eager walk, corrupting the pattern head
+                    // detection (`lower` then saw a bound value, not a fresh binder → "not a variant
+                    // constructor" / a spurious CDZ0101). A body reference is unaffected (Case 6 still wins,
+                    // nearest-scope, giving the payload binder over the param).
+                    trace!(target: "rcdzc::resolve", node = id.0, %n, "name → variant-payload binder (inert)");
+                    Resolved::Unit
                 } else if is_grammar_form_head_occurrence(db, id) {
                     // A GRAMMAR keyword in head position (`def`/`let`/`do`/…): a syntactic keyword TOKEN,
                     // NOT a value reference. Its enclosing form is dispatched by `head_name`, which never
@@ -1573,6 +1587,105 @@ fn list_pattern_rest_binds(
 /// looked-up value) so walking the arm's pattern never reports them unbound. (A body reference to a
 /// leading binder resolves to `SumPayload` via Case 6l; the rest binder is inert until a used-sublist
 /// increment.) Mirrors the arm/scrutinee shape `list_pattern_element_binds` requires.
+/// Whether `id` is a bare-NAME binder occurrence inside an arm's VARIANT/TUPLE PATTERN — the `n` in
+/// `((W.V n) …)`, `((W.V (Option.Some n)) …)`, or a tuple-payload `((P.Mk a b) …)`. Such an occurrence
+/// NAMES A BINDING, not a value, so it must resolve INERT (like a list/map pattern binder) — otherwise an
+/// eager subtree walk resolves it via `resolve_name` and, if it shadows an enclosing param, binds it to
+/// that param, corrupting the pattern. Ascends to the enclosing arm's PATTERN (the first element of a
+/// 2-element arm under a `(match …)`), then confirms `id` is reached as a payload BINDER by walking the
+/// pattern with `find_binder_in_pattern`/`find_binder_in_tuple` (the same walkers `binder_in` Case 6 uses),
+/// so it agrees exactly with where a body reference would resolve. A pattern HEAD (`(. W V)`'s parts, a
+/// bare variant name), a literal, `_`, or a KEY/value position of a list/map pattern (their own inert
+/// cases handle those) is NOT reported here.
+fn is_variant_pattern_binder_occurrence(db: &Db, id: StructId) -> bool {
+    // `id` must be a bare name (not `_`). Find the enclosing ARM PATTERN: ascend until a node that is the
+    // FIRST element of a 2-element arm under a `(match …)`. Bounded by a small hop count (patterns are
+    // shallow); a reference in an arm BODY never ascends through the pattern, so this only fires in-pattern.
+    let Some(nm) = db.ast.as_name(id) else {
+        return false;
+    };
+    if nm == "_" {
+        return false;
+    }
+    // Walk up from `id` to the arm's pattern node (the child of the arm that the pattern subtree roots at).
+    let mut node = id;
+    let mut hops = 0;
+    while hops < 64 {
+        let Some(parent) = db.parent_of(node) else {
+            return false;
+        };
+        // Is `parent` a match arm `(pattern body)` with `node` as its PATTERN (first element)?
+        if let Struct::List(pb) = db.ast.get(parent)
+            && pb.len() == 2
+            && pb[0] == node
+            && let Some(gp) = db.parent_of(parent)
+            && let Some(mtail) = db.ast.as_form(gp, "match")
+            && mtail.first().copied() != Some(parent)
+            && mtail.contains(&parent)
+        {
+            // `node` is the arm's pattern. A GUARD wrapper `(guard <inner-pattern> <cond>)` binds via its
+            // INNER pattern — but the guard COND is a VALUE expression that READS the binders (`(> n 5)`),
+            // so a reference reached from the COND must resolve NORMALLY (Case 5g/6 gives it the payload),
+            // NOT inert. Only treat `id` inert if it sits in the INNER PATTERN, not the cond: unwrap the
+            // guard and require the ascent to have come UP THROUGH the inner pattern (i.e. `id` is within
+            // `g[0]`, not `g[1]`). Detected by re-descending: the binder walk over the inner pattern only
+            // finds `id`'s name when `id` is genuinely a pattern binder, but a cond reference to the same
+            // name would ALSO match by name — so gate on structural containment in the inner pattern.
+            let pattern = match db.ast.as_form(node, "guard") {
+                Some(g) if g.len() == 2 => {
+                    // `id` must be inside the inner pattern `g[0]`, not the cond `g[1]`. The ascent path
+                    // from `id` passed through some child of `node`; if that child is the cond, bail.
+                    if node_contains(db, g[1], id) {
+                        return false; // `id` is in the guard COND — a value reference, resolve normally.
+                    }
+                    g[0]
+                }
+                _ => node,
+            };
+            // Confirm `id`'s NAME is bound as a payload binder in the pattern — the same walk `binder_in`
+            // Case 6 uses. `id` is known to sit in the pattern subtree (not the body — a body reference
+            // ascends from `pb[1]`, never making `node == pb[0]`), so a name match IS this occurrence.
+            let mut path = Vec::new();
+            let mut heads = Vec::new();
+            let binds = find_binder_in_pattern(db, pattern, nm, &mut path, &mut heads)
+                || (is_tuple_pattern(db, pattern) && {
+                    let mut p = Vec::new();
+                    let mut h = Vec::new();
+                    find_binder_in_tuple(db, pattern, nm, &mut p, &mut h)
+                });
+            if !binds {
+                return false;
+            }
+            // Fire the INERT classification ONLY when the name would OTHERWISE resolve to an OUTER binding
+            // (a genuine SHADOW) — the exact bug condition. A NON-shadowing payload binder keeps its prior
+            // resolution (it never fell to an outer name, so the eager walk was harmless + the constant-fold
+            // path that maps the binder to its payload value stays intact). `lookup_scope` from the ENCLOSING
+            // form (the arm's parent — skip the arm itself so we see only OUTER binders, not this pattern)
+            // finding a binder for `nm` means shadowing. This preserves every prior case and inerts only the
+            // shadowing pattern binder the `resolve_subtree` walk would misbind to the outer param.
+            let shadows = db
+                .parent_of(parent)
+                .and_then(|outer| lookup_scope(db, outer, nm))
+                .is_some();
+            return shadows;
+        }
+        node = parent;
+        hops += 1;
+    }
+    false
+}
+
+/// Whether `needle` is `root` or a transitive child of `root` — a bounded structural containment check.
+fn node_contains(db: &Db, root: StructId, needle: StructId) -> bool {
+    if root == needle {
+        return true;
+    }
+    if let Struct::List(children) = db.ast.get(root) {
+        return children.iter().any(|&c| node_contains(db, c, needle));
+    }
+    false
+}
+
 fn is_list_pattern_element_occurrence(db: &Db, id: StructId) -> bool {
     let Some(list) = db.parent_of(id) else {
         return false;

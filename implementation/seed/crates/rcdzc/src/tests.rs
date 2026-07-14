@@ -1587,6 +1587,44 @@ fn a_let_binder_shadowing_a_parameter_is_not_substituted() {
     );
 }
 
+#[test]
+fn a_variant_payload_binder_shadowing_a_param_in_a_called_def_binds_the_payload() {
+    // REGRESSION: a VARIANT-PAYLOAD binder that shadows the enclosing def's param, in a def reached via a
+    // CALL, was misresolved. `(def (f (: n Int64)) (match (W.V (+ n 1)) ((W.V n) n) ((W.Z) 0)))` binds the
+    // payload as `n` in the `(W.V n)` arm, shadowing the param `n`. When `f` is CALLED (`(main) (f k)`),
+    // the call path runs `resolve_subtree` over the callee body to pin arguments before β-reduction — and
+    // that eager walk resolved the PATTERN occurrence `n` via `resolve_name`, binding it to the PARAM `n`
+    // (an in-scope outer binding). That corrupted the pattern head detection → "not a variant constructor"
+    // / a spurious CDZ0101. An EXPORTED-directly `f` (no call, no `resolve_subtree`) was unaffected, so the
+    // bug only showed for a helper. Fix: a variant-payload binder occurrence that SHADOWS an outer binding
+    // resolves INERT (like a list/map pattern binder), so the eager walk can't misbind it; a body reference
+    // still resolves to the payload (Case 6, nearest-scope). The arm binder must bind the PAYLOAD, not the
+    // param: `f(5)` → `(W.V (5+1))` matched `(W.V n)` → n = 6 (NOT the param 5). The bug was a
+    // compile-time REJECT (the pattern head detection broke), so COMPILING is the precise guard here; the
+    // RUN (that the binder binds the payload, not the param) is exercised by the corpus case
+    // "a variant-payload binder shadowing a param in a called def binds the payload" (which links the
+    // value-heap runtime a sum construction needs).
+    use crate::testkit::parse;
+    let src = "(module m (type W (V Int64) (Z)) \
+                 (def (f (: n Int64)) (match (W.V (+ n 1)) ((W.V n) n) ((W.Z) 0))) \
+                 (def (main (: k Int64)) (f k)) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+        "a variant-payload binder shadowing the def param, in a CALLED def, must COMPILE (was a spurious \
+         reject: the eager call-site subtree walk bound the pattern occurrence to the shadowed param)"
+    );
+
+    // A MULTI-PAYLOAD variant binder shadowing the param, also called: `(P.Mk a b)` binds `a` to the
+    // FIRST payload, shadowing the param `a`.
+    let multi = "(module m (type P (Mk Int64 Int64) (Z)) \
+                   (def (f (: a Int64)) (match (P.Mk (+ a 1) 5) ((P.Mk a b) (+ a b)) ((P.Z) 0))) \
+                   (def (main (: k Int64)) (f k)) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(multi))).is_ok(),
+        "a multi-payload arm binder shadowing the def param, in a called def, must COMPILE"
+    );
+}
+
 // ── value-heap H2c: a STATIC (fully-constant) tuple pays NO per-call heap cost (§2d) ─────────────
 //
 // The operator directive: get the static heap-value path right FIRST — a constant compound must never
