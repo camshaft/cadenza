@@ -2088,3 +2088,17 @@
             (export main)))
   (call   main (: 6 Int64))
   (output (: 36 Int64)))
+
+(case "narrowing a BigInt-valued if back to Int64 works over both branches"
+  (doc    "`(Int64.of (if (= (BigInt.of a) (BigInt.of 0)) (BigInt.of 1) (BigInt.of a)))` — an `if` whose
+           BOTH branches yield a BigInt, narrowed back to Int64: a=0 → 1, a=5 → 5. `Int64.of`
+           (`bigint-to-i64-checked`) BORROWS its operand, so the emit drops each owned-temporary branch
+           result; each branch is a constant BigInt that materializes to a fresh owned handle, so the
+           if-operand's ownership is provable (both branches Owned) — before, `Int64.of` of a BigInt-valued
+           `if` declined `ownership … cannot yet prove` because a constant-BigInt branch was unclassified.")
+  (input  (do
+            (def (main (: a Int64))
+              (Int64.of (if (= (BigInt.of a) (BigInt.of 0)) (BigInt.of 1) (BigInt.of a))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))

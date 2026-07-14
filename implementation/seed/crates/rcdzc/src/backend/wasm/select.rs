@@ -5436,6 +5436,11 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         | Core::BigIntOfI64 { .. }
         | Core::BigIntBinOp { .. }
         | Core::Call { .. } => Ok(HandleOwnership::Owned),
+        // A CONSTANT typed `BigInt` materializes to a FRESH owned handle at `emit` (the `Core::ConstInt`
+        // arm routes a BigInt-typed constant through `bigint-of-i64`), exactly like `ConstStr` above — so
+        // as a borrowing-op operand it is Owned and the emit drops it. This is what lets `Int64.of (if c
+        // (BigInt.of 1) (BigInt.of 2))` narrow a BigInt-valued `if` whose branches are constant BigInts.
+        Core::ConstInt(_) if matches!(type_of(db, id), Ty::BigInt) => Ok(HandleOwnership::Owned),
         // A reference to a parameter or a kept `let`-binding — the owner elsewhere reclaims it.
         Core::Param { .. } | Core::LocalRef { .. } => Ok(HandleOwnership::Borrowed),
         // A payload/element READ (`sum-payload`/`arr-get`) BORROWS its operand — the enclosing compound
