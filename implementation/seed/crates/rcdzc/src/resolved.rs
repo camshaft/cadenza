@@ -227,6 +227,16 @@ pub enum Prim {
     /// denominator strictly positive. A ZERO denominator has no value → TRAPS ("rational with zero
     /// denominator"). A CONSTANT pair FOLDS to a normalized `Core::ConstRational`; a runtime operand
     /// declines until the runtime rational compound (a later B4 slice). B4-1.
+    ///
+    /// The canonical normalized form (lowest terms + fixed sign placement) makes two rationals denoting
+    /// the same number share one representation, and it is a deterministic function of the numerator and
+    /// denominator; a zero denominator fails at this construction point rather than producing a value.
+    //= spec/capabilities/numeric-model.md#an-exact-rational-has-a-canonical-normalized-form
+    //# An exact rational value MUST be maintained in a canonical normalized form, so that two rationals denoting the same number have one representation and one canonical byte form.
+    //= spec/capabilities/numeric-model.md#an-exact-rational-has-a-canonical-normalized-form
+    //# The normalization of an exact rational MUST reduce it to lowest terms and fix the placement of its sign, so that its canonical form is a deterministic function of the number it denotes rather than of how it was constructed.
+    //= spec/capabilities/numeric-model.md#a-rational-with-a-zero-denominator-is-not-a-value
+    //# Constructing an exact rational with a zero denominator MUST fail at a defined point rather than produce a value, because a rational with a zero denominator denotes no number.
     RationalOf,
     /// `Rational.of-int n` — the WHOLE rational `n/1` from a fixed-width integer (`(Int a) → Rational`).
     /// The explicit integer→rational crossing (never an implicit promotion — a `Rational`/integer mix is

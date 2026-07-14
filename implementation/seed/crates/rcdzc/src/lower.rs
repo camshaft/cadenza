@@ -7781,6 +7781,12 @@ fn const_rational_of(
 /// propagates. The formulas keep the result normalized (`normalized_rational` re-reduces): `a/b + c/d =
 /// (ad+cb)/(bd)`, `a/b - c/d = (ad-cb)/(bd)`, `a/b * c/d = (ac)/(bd)`, `a/b ÷ c/d = (ad)/(bc)` (division
 /// by `0/1` → a zero denominator → trap, exactly `Rational.of`'s zero-denom trap).
+///
+/// `Rational` is a declared-EXACT numeric type, and this arithmetic loses NO precision: it works over
+/// `IntValue` bignum numerators/denominators (no fixed width to overflow, no rounding), so an exact
+/// rational operation's result is the exact number.
+//= spec/capabilities/numeric-model.md#exact-arithmetic-is-exact
+//# An operation on values of a numeric type declared exact MUST NOT lose precision.
 fn lower_rational_arith(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, lhs) {
         return Core::Poison(r);
