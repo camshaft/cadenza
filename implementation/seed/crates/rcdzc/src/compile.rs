@@ -1600,6 +1600,29 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             );
             continue;
         }
+        // A type-value NESTED in a compound result — `(def (main) (tuple Int64 5))` returns `(Tuple Type
+        // Int64)`. A type-value is compile-time-only (`type-system.md §226`: a type-value never flows from
+        // runtime data), so a compound CARRYING one cannot cross the boundary either. Without this the emit
+        // path declines through the same uncoded no-runtime-form cascade with no coded, actionable reject.
+        // Report ONE coded CDZ0201 here; the message embeds `TYPE_EXPORT_MARKER` ("is a TYPE, not a runtime
+        // value") so `dedup_faults` drops the downstream declines exactly as for the bare type-valued
+        // export. The bare `Ty::Type` case above is handled first, so this is only a NESTED occurrence.
+        if ty.has_type_value() {
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    format!(
+                        "export `{name}`: a {} is a TYPE, not a runtime value — the {} carries a type, \
+                         which is compile-time only and cannot cross the component boundary (a type-value \
+                         never flows into runtime data; store a value of the type, not the type itself)",
+                        ty.render_name(),
+                        ty.render_name()
+                    ),
+                )
+                .at(occ),
+            );
+            continue;
+        }
         // An EFFECT-VALUED export — `(def (main) E)` exports a bare effect name. An effect is not a runtime
         // value; its body's type is the effect's SYNTHESIZED record, so evaluating it leaked a 4-error
         // cascade of internal errors ("unknown intrinsic", unbound `effect-op`/`effect`, nullary-lambda-no-

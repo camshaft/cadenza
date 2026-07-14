@@ -11645,6 +11645,57 @@ mod match_engine {
     }
 
     #[test]
+    fn a_type_stored_in_a_compound_result_reports_one_coded_error() {
+        // Type-valued-parameter vertical, T4: a type-value NESTED in a compound result — `(def (main)
+        // (tuple Int64 5))` returns `(Tuple Type Int64)`. A type-value is compile-time-only
+        // (`type-system.md §226`: a type-value never flows from runtime data), so a compound carrying one
+        // cannot cross the boundary. Like the BARE type export, this must be ONE coded CDZ0201 (naming the
+        // compound), not the four uncoded no-runtime-form declines the emit path leaks. `ty.has_type_value`
+        // detects the nested `Ty::Type`; the message embeds the `TYPE_EXPORT_MARKER` so `dedup_faults`
+        // drops the downstream declines.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (def (main) (tuple Int64 5)) (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "a type stored in a compound result = one error, got: {:?}",
+            out.diagnostics
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("CDZ0201"));
+        assert!(
+            errors[0].message.contains("is a TYPE, not a runtime value"),
+            "the surviving error names the real cause: {}",
+            errors[0].message
+        );
+        // None of the no-runtime-form declines accompany it (dedup dropped them).
+        assert!(
+            !out.diagnostics.iter().any(|d| {
+                matches!(
+                    d.message.as_str(),
+                    crate::diag::TYPE_VALUE_NO_RUNTIME_DECLINE
+                        | crate::diag::NULLARY_LAMBDA_NO_CLOSURE_DECLINE
+                        | crate::diag::PRIM_AS_VALUE_DECLINE
+                )
+            }),
+            "the no-runtime-form declines must not accompany the coded reject: {:?}",
+            out.diagnostics
+        );
+    }
+
+    #[test]
     fn an_effect_valued_export_reports_one_clean_error_not_a_leaked_cascade() {
         // Exporting a bare EFFECT name — `(def (main) E)` — evaluates the effect's SYNTHESIZED record,
         // which leaked a 4-error cascade of INTERNAL errors ("unknown intrinsic", `unbound name effect-op`,

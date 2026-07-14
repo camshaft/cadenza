@@ -942,6 +942,39 @@ impl Ty {
         }
     }
 
+    /// Whether this type contains a TYPE-VALUE (`Ty::Type`, the kind of types) anywhere — itself, or
+    /// nested in a compound (`(Tuple Type Int64)`, `(List Type)`, a record field, a sum/nominal arg). A
+    /// type-value is COMPILE-TIME ONLY (`type-system.md §226`: a type-value never flows from runtime data),
+    /// so a value whose type contains one cannot reach a runtime slot / cross the boundary — the check
+    /// `compile::collect_faults` uses to report ONE coded reject for a type stored in a compound (rather
+    /// than the emit path's uncoded no-runtime-form cascade). Structurally mirrors [`has_any`].
+    pub fn has_type_value(&self) -> bool {
+        match self {
+            Ty::Type => true,
+            Ty::Fn(p, r) => p.has_type_value() || r.has_type_value(),
+            Ty::Tuple(elems) => elems.iter().any(|t| t.has_type_value()),
+            Ty::List(elem) | Ty::Set(elem) => elem.has_type_value(),
+            Ty::Map(k, v) => k.has_type_value() || v.has_type_value(),
+            Ty::Record(fields) => fields.values().any(|t| t.has_type_value()),
+            Ty::Sum { args, .. } | Ty::Nominal { args, .. } => {
+                args.iter().any(|t| t.has_type_value())
+            }
+            Ty::Qty { inner, .. } => inner.has_type_value(),
+            Ty::Var(_)
+            | Ty::Any
+            | Ty::Int(_)
+            | Ty::Bool
+            | Ty::Unit
+            | Ty::Bytes
+            | Ty::String
+            | Ty::Char
+            | Ty::Symbol
+            | Ty::BigInt
+            | Ty::Rational
+            | Ty::Float(_) => false,
+        }
+    }
+
     /// Fill this type's HOLES (`Any` / a free `Var`) with the corresponding part of `concrete` — a
     /// structural merge that keeps `self`'s already-determined parts and takes `concrete`'s only where
     /// `self` is unconstrained. Used by call-site seeding: a body-solved param `(Tuple Int64 Any)` merged
