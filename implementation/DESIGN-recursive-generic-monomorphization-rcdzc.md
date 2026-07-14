@@ -510,3 +510,66 @@ helpers) is DELETED — erasure is now driven purely by the `const` DECLARATION 
 by `strip_const_params` at load), which also subsumes the `Ty::Type` type-valued-parameter case. Soundness:
 `arg_captures_runtime_binding` rejects a `const` arg that captures ANY enclosing runtime param (not just
 the callee's own), closing the caller-capture gap the `own`-only check missed.
+
+---
+
+# ADDENDUM 4: `opaque` definitions — the INVERSE of inlining (emit once, don't inline)
+
+Status: DESIGN (operator: design now, build later — the compiler-port pivot takes priority). Operator's
+concern (2026-07-14): the compiler inlines EVERY non-recursive call unconditionally, so a helper called
+N times emits its body N times (verified: a 5-mul helper called 3× → 15 muls in the module). `opaque`
+gives the author control over that — the inverse of `const`.
+
+## The problem (measured)
+A non-recursive user call ALWAYS β-reduces at the call site (`lower.rs` ~943, `apply_lambda` → inline the
+reduced body). Great for folding, but code size grows with (call sites × body size), and there is no way
+to say "keep this a real function." (A recursive def is already emitted once — it CAN'T inline — so this
+is only about non-recursive defs.)
+
+## The surface — an `opaque` def marker
+`opaque` wraps a definition to mean "emit as ONE real wasm function; every call is a `Core::Call`, never
+inlined":
+```
+(opaque (def (big x) (+ (* x 7) …)))     ; s-expr
+opaque def big(x) = (x * 7) + …          ; ML
+```
+Chosen (over a call-site `(no-inline …)` or a full optimization barrier): a def-level marker is the common
+need, local, and SYMMETRIC with `const` — where `const` says "fold me away", `opaque` says "keep me a
+function". This addendum is code-LAYOUT control (emit-once), NOT an analysis barrier — the compiler may
+still reason about `big`'s type/result; it just does not duplicate its body. (A full black-box-to-analysis
+barrier is a heavier, separate feature; deferred.)
+
+## Why it's small — it REUSES the recursive-call emission path
+The `Core::Call` machinery already exists for recursion: `lower_recursive_call_or_decline` emits a
+`Core::Call { callee }`, `layout` reaches the callee and emits it once, `def_scheme` gives the callee its
+signature. An `opaque` NON-recursive def rides the SAME path. Seams (mirroring `const`/`strip_def_docs`):
+1. **`db.rs strip_opaque_defs`** — a load pass (like `strip_const_params`) unwraps `(opaque (def …))` →
+   `(def …)` in place and records the def's body occurrence in a new `db.opaque_defs: FxHashSet<StructId>`
+   (keyed by body occ, the identity `lower`/`layout` already use). Every downstream reader sees a plain
+   `(def …)`; opacity lives only in the set.
+2. **`lower.rs` the apply path (~943)** — BEFORE β-reducing a lambda head, if the callee's body is in
+   `db.opaque_defs` (via `callee_def_index`), route to `lower_recursive_call_or_decline`-style emission: a
+   `Core::Call { callee, args }` (requiring `def_scheme(callee).is_some()` — an opaque def needs a
+   determined signature, exactly like a recursive one; an unannotated undetermined-param opaque def
+   declines "annotate its parameters", the same message).
+3. **`layout`** — no change: a `Core::Call` to the opaque def already grows the reachable set + emits it
+   once. `def_params`/`select_function` emit its body once with its solved param types.
+4. **`cadenza-syntax` printer + parser** — emit/accept `opaque` before a `def` (mirrors the `const` param
+   work): the printer prefixes `opaque `, the parser accepts a leading `opaque` keyword on a def. Round-trip.
+
+## Interactions to pin at build time
+- **`const` + `opaque`** — a `const` PARAM on an `opaque` def is fine (the param is still erased at
+  instantiation; the RESIDUAL specialized copy is opaque = emitted once per instantiation, not inlined).
+  An `opaque` def with no const params is just emit-once.
+- **Generics** — an `opaque` GENERIC def (a free scheme var) still monomorphizes per type (each
+  specialization is a real emitted function); `opaque` only stops the *inline*, not the *specialize*.
+- **A NULLARY opaque def** — today a nullary non-exported def inlines at its (one) call; `opaque` keeps it
+  a function. Low value but consistent.
+- **Effects** — an opaque def that performs an effect still needs its handler in scope; opacity is about
+  emission, not effect routing. Likely a clean decline if it complicates the handler specialization
+  (`effects::specialize_recursive` already emits real functions).
+
+## Gate targets (when built)
+`(opaque (def (big x) …))` called 3× → the module has ONE `big` function + 3 `Core::Call`s (5 muls, not
+15); an un-marked `big` stays fully inlined (byte-identical to today); `opaque` round-trips s-expr↔ML;
+an opaque generic still monomorphizes per type.
