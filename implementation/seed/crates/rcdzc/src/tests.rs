@@ -8883,6 +8883,64 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_wide_let_decides_keeps_in_one_pass_not_per_binding() {
+        // REGRESSION (perf): `lower::lower_let` decides, per binding, whether to KEEP it as a named
+        // `Core::Let` slot or copy-propagate — via `should_keep_binding`, which walked the binding's whole
+        // SCOPE (later inits + body) counting references (`uses_in`) and checking whole-value escape
+        // (`ref_escapes_whole`). For a WIDE `let` (N bindings, body O(N)) that was O(bindings × body) =
+        // O(N²) (`cdz check` on N constant-list bindings each read once: 800→1600 grew ~3.6×). FIX: collect
+        // every binding's use facts (count + whole-value-escape) in ONE walk of the whole region
+        // (`collect_binding_uses` → `BindingUses`); `let*` scoping means a ref to a binding appears only in
+        // LATER inits + body, so the whole-region count is each binding's exact in-scope count. Per-binding
+        // decisions become O(1) lookups → the pass is O(N).
+        //
+        // Correctness: the fold still produces the right value (a constant list read through an element
+        // binder folds; a multi-use runtime binding is named). Byte-identical emit verified out-of-band.
+        fn wide_listlet(n: usize) -> String {
+            let binds: String = (0..n)
+                .map(|i| format!("(l{i} (list {i} {}))", i + 1))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let reads: String = (0..n)
+                .map(|i| format!("(v{i} (match l{i} ((list a .. _) a) (_ 0)))"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("(module m (def (main) (let ({binds} {reads}) v0)) (export main))")
+        }
+        // A small instance evaluates correctly (first element of the first list = 0).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_listlet(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide constant-list `let` type-checks: {diags:?}"
+        );
+        // Growth guard: `cdz check` at width N vs 2N. The per-binding scope walk drove an 800→1600 ratio of
+        // ~3.6× (O(N²)); the single-pass collect makes it ~1.2× (linear). Paired back-to-back timings, MIN
+        // ratio, so transient contention under the parallel harness cancels (the technique
+        // `scope_resolution_deep_let_chain` uses). Threshold 2.5× sits between the two regimes.
+        fn check_ms(src: &str) -> f64 {
+            let start = std::time::Instant::now();
+            let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            start.elapsed().as_secs_f64() * 1000.0
+        }
+        let (narrow, wide) = (wide_listlet(800), wide_listlet(1600));
+        check_ms(&narrow); // warm lazy one-time init before the first timed pair
+        let mut best = f64::INFINITY;
+        for _ in 0..6 {
+            let t800 = check_ms(&narrow);
+            let t1600 = check_ms(&wide);
+            best = best.min(t1600 / t800.max(0.1));
+        }
+        assert!(
+            best < 2.5,
+            "a wide `let`'s keep-decision must scale linearly (was O(N²) via a per-binding \
+             `should_keep_binding` scope walk; now one `collect_binding_uses` pass): width 800→1600 grew \
+             {best:.1}× (min paired ratio); linear is ~2×, the per-binding walk was ~3.6×"
+        );
+    }
+
+    #[test]
     fn a_multi_use_binding_of_a_comparison_names_the_bool() {
         // The named value need not be an integer — a runtime comparison used twice is named too (its
         // slot is an i32). `(let ((p (< a b))) (if p (if p 1 2) 3))` — `p` used twice. a<b true → the
