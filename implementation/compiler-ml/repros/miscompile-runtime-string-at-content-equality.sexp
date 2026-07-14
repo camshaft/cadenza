@@ -22,6 +22,23 @@
 ;; likely compares its rope identity / offset rather than its bytes), OR it returns the wrong slice.
 ;; (`byte-len` of the result is correctly 1, and it equals itself, which is why the breakage is silent.)
 ;;
+;; ⚠⚠ NARROWED (iter 39, 2026-07-14) — a sibling PARTIALLY FIXED this: every STRAIGHT-LINE case above now
+;; computes CORRECTLY. Re-verified:
+;;       at(runtime 1) == "a"           → TRUE  (was false)   -- single compare, no loop
+;;       at(runtime 1) == at(runtime 3) → TRUE  (was false)   -- two String.at, sequenced
+;;       chk(s,0) + chk(s,1) via a helper called twice          → 2 (correct)
+;;       two `at`+`==` let-sequenced in one fn                  → 2 (correct)
+;; The REMAINING failure is LOOP-CONTEXT ONLY: `String.at(s,i) == c` inside a SELF-RECURSIVE loop where
+;; `s` is threaded as a parameter returns FALSE every iteration — even the FIRST iteration's compare fails
+;; (so it is not "s consumed after the first use"; the char `String.at` returns is a valid `Some` of
+;; byte-len 1, but the `==` yields false). `count-a "banana"` (this `main`, the loop form) STILL returns 0.
+;; Minimal survivor: `def cnt(s,i,acc) = if i==2 then acc else (match (String.at s i) ((Some c) (cnt s (+ i 1)
+;; (if (= c "a") (+ acc 1) acc))) ((None _) acc)); cnt "aa" 0 0` → 0, want 2. So the residual defect is the
+;; `value-eq`/`bytes-compact` of a `String.at` slice specifically on the LOOP-TRANSFORMED body (the
+;; straight-line emit now compacts correctly; the loop back-edge path does not). This is the last mile of
+;; the two-layer fix below — the loop-transform emit of `select.rs` needs the same slice-compact the
+;; straight-line path got.
+;;
 ;; IMPACT: char-by-char scanning of a runtime String is the core of a LEXER — `(= (String.at s i) "(")`
 ;; to classify a character is exactly this shape. It silently never matches, so a hand-written tokenizer
 ;; over a runtime string cannot be built until runtime `String.at` equality is content-correct.
