@@ -1650,6 +1650,7 @@ pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the round trip tracks the produced closure's captured value
 pass	the runtime-if list takes its else branch and measures that length
+pass	the same declared effect is handled in-program by one entrypoint and delegated by another
 pass	the same function called under two handlers is discharged by each in turn
 pass	the same-core-shape sibling dispatches ITS body, not the first
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes

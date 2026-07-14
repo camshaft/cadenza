@@ -1401,6 +1401,24 @@
               (+ (Ask.ask) 1)) (export main)))
   (error  CDZ0401))
 
+(case "the same declared effect is handled in-program by one entrypoint and delegated by another"
+  (doc    "Host-binding is a ROUTING decision made at the entrypoint, not a declaration-time property
+           (capabilities-and-effects.md #Host-Binding Is A Routing Decision Made At The Entrypoint): an
+           effect declaration is a routing-agnostic contract, so ONE `(effect E …)` may be handled entirely
+           in-program by one entrypoint AND delegated to the host by another, in the SAME program. Here
+           `handled` wraps `(E.ask)` in a `(handle E …)` that resumes 42 — E is discharged in-program and
+           does NOT enter the manifest for this entrypoint; `delegated` performs `(E.ask)` under `(host (E)
+           …)` — E escapes to the boundary and IS a capability there. `handled()` = 42, deterministically,
+           with no host response needed; the routing is decided by the enclosing handler/delegation, never by
+           `E`'s declaration.")
+  (input  (do
+            (effect E (op ask (-> Unit Int64)))
+            (def (handled) (handle E 0 ((ask (u) s (resume 42 s))) (E.ask)))
+            (def (delegated) (host (E) (E.ask)))
+            (export handled) (export delegated)))
+  (call   handled)
+  (output (: 42 Int64)))
+
 (case "a program that delegates no effect is pure and never suspends"
   (doc    "Witnesses capabilities-and-effects.md #Purity Is The Empty Effect Row: a program that reaches
            no effect it must route runs straight to normal termination, makes no host call, and has an
