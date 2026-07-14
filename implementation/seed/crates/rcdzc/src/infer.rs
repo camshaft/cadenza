@@ -3715,9 +3715,9 @@ fn check_application(
             out.push(Reject::coded(
                 Code::Malformed,
                 format!(
-                    "a {} and a {} are different types (this operation is not defined across that kind boundary)",
-                    a.render_name(),
-                    b.render_name()
+                    "{} and {} are different types (this operation is not defined across that kind boundary)",
+                    a.render_with_article(),
+                    b.render_with_article()
                 ),
             ));
             for &arg in args {

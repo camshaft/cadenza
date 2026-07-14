@@ -22006,6 +22006,53 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_cross_kind_operator_clash_uses_the_correct_indefinite_article() {
+        use crate::ty::{FloatTy, IntTy, Ty};
+        // `Ty::render_with_article` prefixes the correct indefinite article for a message that reads
+        // "<this> and <that> are different types". The article keys off the type's SOUND: the signed
+        // integers (`Int…`, "eye-nt") take `an`; `UInt…` ("yoo") and every other name take `a`. A naive
+        // first-letter rule would wrongly say "an UInt8", so this must be sound-based.
+        assert_eq!(
+            Ty::Int(IntTy::fixed(true, 64)).render_with_article(),
+            "an Int64"
+        );
+        assert_eq!(
+            Ty::Int(IntTy::fixed(true, 32)).render_with_article(),
+            "an Int32"
+        );
+        assert_eq!(
+            Ty::Int(IntTy::fixed(false, 8)).render_with_article(),
+            "a UInt8"
+        );
+        assert_eq!(Ty::Float(FloatTy::f64()).render_with_article(), "a Float64");
+        assert_eq!(Ty::Bool.render_with_article(), "a Bool");
+        assert_eq!(Ty::String.render_with_article(), "a String");
+
+        // The cross-kind operator clash message uses it — `(< 1 "x")` reads "an Int64 and a String …",
+        // NOT the old ungrammatical "a Int64 and a String …".
+        let d = first_error("(module m (def (main) (< 1 \"x\")) (export main))");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message
+                .contains("an Int64 and a String are different types"),
+            "cross-kind clash names both operands with correct articles: {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("a Int64"),
+            "no ungrammatical `a Int64`: {}",
+            d.message
+        );
+        // A UInt8 operand keeps `a` (the "yoo" sound), confirming the rule is sound-based not letter-based.
+        let du = first_error("(module m (def (g (: n UInt8)) (< n \"x\")) (export g))");
+        assert!(
+            du.message.contains("a UInt8 and a String"),
+            "UInt8 keeps `a` (yoo sound): {}",
+            du.message
+        );
+    }
+
+    #[test]
     fn a_match_pattern_head_naming_a_non_variant_suggests_the_nearest_variant() {
         // A qualified match-pattern head `(. Sum Q)` where `Q` is not a variant of the scrutinee sum —
         // `((C.Alph) …)` on `(type C (Alpha) (Beta))` — is CDZ0201 "record has no field `Alph`" (a sum's
