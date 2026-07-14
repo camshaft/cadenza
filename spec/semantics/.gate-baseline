@@ -2032,6 +2032,7 @@ todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host wo
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
 todo	a nominal record compared to a plain record of the same shape is a type error
+todo	a perform in a match-arm guard is discharged by the enclosing handle
 todo	a plain record compared to a nominal record of the same shape is a type error
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
