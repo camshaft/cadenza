@@ -602,6 +602,13 @@ pub const OVER_APPLICATION_DECLINE: &str = "applied more arguments than the func
 /// without pinning the count-bearing text.
 pub const OVER_APPLICATION_MARKER: &str = "arguments to a function of arity";
 
+/// A stable SUBSTRING unique to the BUILT-IN-OPERATION wrong-arity decline (`<op> is applied at the wrong
+/// arity — a built-in operation must be applied to exactly its arguments …`, in `lower`). Fires on BOTH
+/// an under-application (no coded sibling — the decline is the primary "no") and an OVER-application
+/// (where `infer`'s coded CDZ0203 over-application reject is primary — then this decline is redundant).
+/// `dedup_faults` matches this to drop the decline ONLY when that coded over-application reject is present.
+pub const BUILTIN_WRONG_ARITY_DECLINE: &str = "a built-in operation must be applied to exactly";
+
 /// A stable SUBSTRING unique to the coded CDZ0201 resume-value/result-type mismatch (`a handler resumes
 /// with a value of type X but the operation's result type is Y`). An ill-typed resume ALSO makes the
 /// handler unfoldable, so `lower` emits the uncoded [`HANDLER_NOT_REDUCIBLE_DECLINE`] alongside — a

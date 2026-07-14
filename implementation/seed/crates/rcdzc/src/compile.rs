@@ -1284,6 +1284,18 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             {
                 return false;
             }
+            // The BUILT-IN-OPERATION wrong-arity decline (`<op> is applied at the wrong arity …`, from
+            // `lower`) fires on both an under- and an OVER-application. On an over-application `infer`'s
+            // coded CDZ0203 is the primary "no" (carrying the delete-surplus fix), so drop this weaker
+            // decline — one primary error for `(Map.size m x)`, not a coded reject shadowed by a decline.
+            // On an UNDER-application there is no such coded reject, so `has_over_application_reject` is
+            // false and the decline is KEPT (it is the only report of the missing argument).
+            if has_over_application_reject
+                && r.is_decline()
+                && r.message.contains(crate::diag::BUILTIN_WRONG_ARITY_DECLINE)
+            {
+                return false;
+            }
             if (has_malformed_handler_reject || has_resume_result_reject)
                 && r.is_decline()
                 && r.message == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE
