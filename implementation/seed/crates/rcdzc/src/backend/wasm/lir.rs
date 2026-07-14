@@ -353,12 +353,11 @@ pub fn valtype_of(ty: &Ty) -> Option<ValType> {
         // same slot a `String` uses. A CONSTANT symbol folds (no runtime slot this increment); this is
         // the slot a runtime symbol handle would occupy.
         Ty::Symbol => Some(ValType::I32),
-        // A `BigInt` will be a value-heap leaf — an i32 HANDLE to its sign-magnitude limb array (the
-        // `Bytes`-leaf slot). B0 adds the TYPE only (byte-neutral); nothing constructs a `BigInt` yet, so
-        // no `BigInt`-typed value reaches a real slot. A constant `BigInt` folds (B1); the runtime handle
-        // slot arrives with the runtime limb library (B3). Until then a runtime-slot `BigInt` declines
-        // cleanly — `None`, like `Char` — never inventing a heap rep B0 has not built.
-        Ty::BigInt => None,
+        // A `BigInt` is a value-heap leaf — an i32 HANDLE to its sign-magnitude limb array (the
+        // `Bytes`-leaf slot), so a runtime `BigInt` value (a param/local, an arithmetic result) lives in
+        // an i32 local like a bytes/list handle. (B3b wired the runtime ops; a CONSTANT `BigInt` still
+        // folds and keeps no slot.)
+        Ty::BigInt => Some(ValType::I32),
         // A float occupies its width's machine slot: `Float32` → f32, `Float64` → f64. A float literal
         // that crosses the boundary (or a float arithmetic result) lives here.
         Ty::Float(ft) => Some(if ft.ground_width() == 32 {

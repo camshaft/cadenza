@@ -1066,6 +1066,17 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: quantity float arithmetic (inner Float)");
                     lower_float_arith(db, id, fprim, &args)
                 }
+                // A `+`/`-`/`*`/`/` over BIGINT operands — the unbounded arithmetic. A constant pair folds
+                // exactly via `num-bigint` (the value never overflows — the point of the type); a runtime
+                // operand emits the runtime `bigint-add`/`-sub`/`-mul`/`-div` (B3b). Checked before the
+                // generic int-arith path (which would range-check/trap against a fixed width — wrong for an
+                // unbounded BigInt). Dispatch on the OPERAND type being `Ty::BigInt`, like the float arm.
+                Some(prim @ (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div))
+                    if args.len() == 2 && bigint_operand(db, &args) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: BigInt arithmetic");
+                    lower_bigint_arith(db, prim, args[0], args[1])
+                }
                 Some(prim) if prim.is_arith() => {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: arithmetic prim");
                     lower_arith(db, prim, &args)
@@ -1387,14 +1398,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // `BigInt.of x` — the EXACT widening from a fixed-width integer to `BigInt`. A CONSTANT
                 // source folds to the SAME `Core::ConstInt` node retyped `Ty::BigInt` (its `IntValue` is
                 // already `num-bigint`-backed and unbounded — the value is unchanged, only the static type
-                // widens), exactly as `Symbol.of` keeps its `Core::ConstStr`. A runtime source declines
-                // until the runtime limb ops (B3) — never a wrong answer.
+                // widens), exactly as `Symbol.of` keeps its `Core::ConstStr`. A RUNTIME source emits
+                // `bigint-of-i64` (B3b) — the value's i64 slot widened into a BigInt heap leaf.
                 Some(Prim::BigIntOf) if args.len() == 1 => match core_of(db, args[0]) {
                     c @ Core::ConstInt(_) => c,
                     Core::Poison(r) => Core::Poison(r),
-                    _ => Core::Poison(Reject::decline(
-                        "BigInt.of on a runtime integer is not yet emitted (constant integers only)",
-                    )),
+                    _ => Core::BigIntOfI64 { value: args[0] },
                 },
                 // `Symbol.to-string` — recover a Symbol's content String (`Symbol → String`, the inverse of
                 // `Symbol.of`). A constant symbol IS its `Core::ConstStr`, so this folds to that same node
@@ -7001,6 +7010,42 @@ fn binop_arity_reject(op: Prim, args: &[StructId]) -> Reject {
         ));
     }
     reject
+}
+
+/// True iff either operand of a binary op has solved type `Ty::BigInt` — the signal to route `+`/`-`/
+/// `*`/`/` to the runtime BigInt arithmetic instead of the fixed-width int fold. (A `BigInt`/fixed mix
+/// never reaches lowering — `check_application` rejected it CDZ0301 — so if ONE operand is a BigInt the
+/// other is too.)
+fn bigint_operand(db: &mut Db, args: &[StructId]) -> bool {
+    args.iter()
+        .any(|&a| matches!(crate::infer::type_of(db, a), crate::ty::Ty::BigInt))
+}
+
+/// Lower a BigInt `+`/`-`/`*`/`/` to a runtime `Core::BigIntBinOp` (the runtime `bigint-*` op). Unlike
+/// fixed-width arithmetic, this does NOT constant-fold: exact BigInt arithmetic needs compiler-side
+/// bignum (rcdzc deliberately has no bignum crate — `IntValue` carries the value but not arithmetic), so
+/// the unbounded arithmetic runs at RUN TIME via the runtime `Big` limb library (B3a). A poison operand
+/// propagates. `div` traps on a zero divisor at run time (numeric-model — an unbounded range gives `n/0`
+/// no value); the never-trapping add/sub/mul grow the magnitude as needed.
+fn lower_bigint_arith(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Core {
+    if let Core::Poison(r) = core_of(db, lhs) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, rhs) {
+        return Core::Poison(r);
+    }
+    let big_op = match op {
+        Prim::Add => crate::core::BigIntOp::Add,
+        Prim::Sub => crate::core::BigIntOp::Sub,
+        Prim::Mul => crate::core::BigIntOp::Mul,
+        Prim::Div => crate::core::BigIntOp::Div,
+        _ => return Core::Poison(Reject::decline("not a BigInt arithmetic op")),
+    };
+    Core::BigIntBinOp {
+        op: big_op,
+        lhs,
+        rhs,
+    }
 }
 
 fn lower_arith(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
@@ -12618,6 +12663,16 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
         // A runtime operand: emit the mask-and-reinterpret at selection (the target is read off this
         // node's solved type there, the same `type_of(id)` used here).
         _ => {
+            // `Int64.of b` / `(UInt N).of b` on a RUNTIME `BigInt` `b` — the checked narrowing back to a
+            // fixed width, emitted as the runtime `bigint-to-i64-checked` (traps out of range at run time,
+            // B3b). The runtime op checks the i64 range; a narrower target's over-range value is a runtime
+            // concern the op will refine later (a constant over-range narrowing is already CDZ0302 at
+            // compile time, B1). Checked before the generic runtime-of decline below.
+            if matches!(op, Prim::CheckedOf)
+                && matches!(crate::infer::type_of(db, args[0]), crate::ty::Ty::BigInt)
+            {
+                return Core::BigIntToI64 { operand: args[0] };
+            }
             // `T.of` on a RUNTIME operand needs a range-check-then-trap emitted at select — not yet built,
             // so decline rather than emit a truncating `Convert` (that would be `wrap`'s semantics — a
             // MISCOMPILE for `of`, silently keeping the low bits where `of` must trap). No corpus case

@@ -2389,6 +2389,21 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         {
             let a = type_of(db, args[0]);
             let b = type_of(db, args[1]);
+            // A `+`/`-`/`*`/`/` over BIGINT operands is `BigInt` — the unbounded arithmetic, NOT the
+            // fixed-width int scheme (whose `∀a. (Int a) → …` would reject a `BigInt` operand). `lower`
+            // routes it to the runtime `bigint-*` op (or folds a constant). A `BigInt`/fixed mix is
+            // rejected in `check_application` (CDZ0301), so if one operand is `BigInt` the well-typed
+            // case has both — return `BigInt`. (Comparison over BigInt is `Bool`, via the generic path.)
+            if matches!(
+                prim,
+                crate::resolved::Prim::Add
+                    | crate::resolved::Prim::Sub
+                    | crate::resolved::Prim::Mul
+                    | crate::resolved::Prim::Div
+            ) && (matches!(a, Ty::BigInt) || matches!(b, Ty::BigInt))
+            {
+                return Ty::BigInt;
+            }
             let a_qty = matches!(a, Ty::Qty { .. });
             let b_qty = matches!(b, Ty::Qty { .. });
             if a_qty || b_qty {
@@ -3701,6 +3716,36 @@ fn check_application(
         // against `(Int a)` → a spurious CDZ0203). Skip the fault check, descend for operand faults, and
         // return — the result unit is computed in `apply_type`.
         if is_multiplicative && any_qty {
+            for &arg in args {
+                collect(db, arg, out);
+            }
+            return;
+        }
+        // A `+`/`-`/`*`/`/` over BIGINT operands is the unbounded arithmetic — well-typed, but the
+        // operator's `∀a. (Int a) → …` scheme does NOT accept a `BigInt`, so the generic scheme-unify
+        // below would spuriously reject it CDZ0301. Skip it (both operands are BigInt in the well-typed
+        // case; `lower` routes to the runtime bigint op), descend for operand faults, and return. A
+        // genuine `BigInt`/fixed MIX still faults: `agrees_with` is false, so `type_of` gave one operand
+        // BigInt and the other a fixed Int — the mismatch is caught by the operand check here.
+        if (is_additive || is_multiplicative)
+            && (matches!(a0, Ty::BigInt) || matches!(b0, Ty::BigInt))
+        {
+            // A mix (one BigInt, one non-BigInt-non-Any) is the no-promotion error CDZ0301.
+            let a_big = matches!(a0, Ty::BigInt);
+            let b_big = matches!(b0, Ty::BigInt);
+            let a_ok = a_big || matches!(a0, Ty::Any);
+            let b_ok = b_big || matches!(b0, Ty::Any);
+            if !(a_ok && b_ok) {
+                out.push(Reject::coded(
+                    Code::NumericMismatch,
+                    format!(
+                        "no implicit conversion between numeric types {} and {} — convert explicitly \
+                         (Cadenza never silently promotes a numeric type)",
+                        a0.render_name(),
+                        b0.render_name()
+                    ),
+                ));
+            }
             for &arg in args {
                 collect(db, arg, out);
             }

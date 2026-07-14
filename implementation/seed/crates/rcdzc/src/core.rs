@@ -75,6 +75,17 @@ pub enum SetAlgebraOp {
     Difference,
 }
 
+/// Which runtime BigInt binary ARITHMETIC op a [`Core::BigIntBinOp`] performs — `+`/`-`/`*`/`/` mapped to
+/// the runtime `bigint-add`/`-sub`/`-mul`/`-div`. (Comparison lowers through `bigint-cmp` + a fixed
+/// compare in `lower`, so it is not one of these — this enum is arithmetic-only, producing a BigInt.)
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum BigIntOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
 /// One arm of a [`Core::MatchList`] — a LENGTH condition on the list scrutinee plus a body. The backend
 /// tests the conditions in arm order against `vec-len(scrutinee)`; the first satisfied arm's body runs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -370,6 +381,26 @@ pub enum Core {
     /// both, empty is the identity). Present when the pair is not both compile-time-visible constants (a
     /// constant pair folds to a `Core::BytesOf` in `lower`). The byte companion of `Core::ListConcat`.
     BytesConcat { lhs: StructId, rhs: StructId },
+    /// `BigInt.of x` on a RUNTIME fixed-width integer — widen `x` (an i64-slot value) into a `BigInt`
+    /// heap leaf via the runtime `bigint-of-i64` op. A CONSTANT source folds to `Core::ConstInt` retyped
+    /// `BigInt` in `lower` (B1) and never reaches here; this is the runtime path (B3b).
+    BigIntOfI64 { value: StructId },
+    /// `Int64.of b` / `(UInt N).of b` on a RUNTIME `BigInt` `b` — the checked narrowing back to a
+    /// fixed width via `bigint-to-i64-checked` (traps out of range at run time). The `width`/`signed` of
+    /// the target refine the range the runtime op checks against once narrower-than-i64 checking lands;
+    /// today the runtime checks the i64 range and a narrower target's over-range constant is already
+    /// rejected at compile time (B1). A constant `BigInt` source folds in `lower`.
+    BigIntToI64 { operand: StructId },
+    /// A runtime BigInt BINARY op — `+`/`-`/`*`/`/` (the runtime `bigint-add`/`-sub`/`-mul`/`-div`) or a
+    /// comparison lowered through `bigint-cmp`. Present when at least one operand is a runtime `BigInt`
+    /// (a constant pair folds via `num-bigint` in `lower`). Produces a `BigInt` handle for arithmetic;
+    /// the comparison forms wrap `bigint-cmp` + a fixed compare (built in `lower`, so this arm is
+    /// arithmetic-only). `div` traps on a zero divisor at run time.
+    BigIntBinOp {
+        op: BigIntOp,
+        lhs: StructId,
+        rhs: StructId,
+    },
     /// A `(bin <seg>…)` CONSTRUCTION with at least one RUNTIME segment value (an all-constant `(bin …)`
     /// folds to a `Core::BytesOf` in `lower`). Builds a `Bytes` on the rope heap at run time: each
     /// fixed-width integer segment range-checks its value against the segment (trap "binary value does not

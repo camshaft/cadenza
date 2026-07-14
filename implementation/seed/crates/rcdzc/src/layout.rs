@@ -423,10 +423,13 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         | Core::ValueEq { lhs, rhs }
         | Core::And { lhs, rhs, .. }
         | Core::ListConcat { lhs, rhs }
-        | Core::BytesConcat { lhs, rhs } => {
+        | Core::BytesConcat { lhs, rhs }
+        | Core::BigIntBinOp { lhs, rhs, .. } => {
             collect_closure_codes(db, lhs, out);
             collect_closure_codes(db, rhs, out);
         }
+        Core::BigIntOfI64 { value } => collect_closure_codes(db, value, out),
+        Core::BigIntToI64 { operand } => collect_closure_codes(db, operand, out),
         Core::ListPush { list, elem } => {
             collect_closure_codes(db, list, out);
             collect_closure_codes(db, elem, out);
@@ -709,6 +712,12 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, lhs, out);
             collect_call_callees(db, rhs, out);
         }
+        crate::core::Core::BigIntBinOp { lhs, rhs, .. } => {
+            collect_call_callees(db, lhs, out);
+            collect_call_callees(db, rhs, out);
+        }
+        crate::core::Core::BigIntOfI64 { value } => collect_call_callees(db, value, out),
+        crate::core::Core::BigIntToI64 { operand } => collect_call_callees(db, operand, out),
         crate::core::Core::BytesSlice {
             bytes, start, len, ..
         } => {

@@ -171,6 +171,18 @@ const OP_BYTES_LEN: &str = "bytes-len";
 const OP_BYTES_GET: &str = "bytes-get";
 /// `bytes-concat(a, b) -> handle` — a then b (consumes both, empty is the identity).
 const OP_BYTES_CONCAT: &str = "bytes-concat";
+/// The runtime BigInt ops (B3a) the compiler emits for RUNTIME-valued BigInt (a constant folds in
+/// `lower`). Boxed sign-magnitude heap leaves; add/sub/mul never trap, div traps on zero, to-i64-checked
+/// traps out of range. Spellings MUST match `runtime.wit` / the generated `runtime_abi.rs` table.
+const OP_BIGINT_OF_I64: &str = "bigint-of-i64";
+const OP_BIGINT_TO_I64_CHECKED: &str = "bigint-to-i64-checked";
+const OP_BIGINT_ADD: &str = "bigint-add";
+const OP_BIGINT_SUB: &str = "bigint-sub";
+const OP_BIGINT_MUL: &str = "bigint-mul";
+const OP_BIGINT_DIV: &str = "bigint-div";
+// (`bigint-cmp` is exposed by the runtime for BigInt comparison; the compiler wires `<`/`>`/`=` to it in
+// the next slice. The op stays in the runtime ABI regardless — it is a runtime capability, not gated on
+// the compiler emitting it yet.)
 /// `bytes-slice(buf, start, len) -> handle` — `len` bytes from `start` (consumes buf; `start+len >
 /// bytes-len` TRAPS, so the caller bounds-checks first and returns `None` instead).
 const OP_BYTES_SLICE: &str = "bytes-slice";
@@ -330,6 +342,14 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::BytesConcat { lhs, rhs } => {
             binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
         }
+        // The runtime BigInt ops CONSUME their operand handles (`bigint-add`/… take ownership, like
+        // `bytes-concat`), so a binding used as an operand escapes into the result. `bigint-of-i64`'s
+        // operand is an i64 scalar (no heap ref); `to-i64-checked`/the arithmetic take BigInt handles.
+        Core::BigIntBinOp { lhs, rhs, .. } => {
+            binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
+        }
+        Core::BigIntOfI64 { value } => binding_escapes(db, value, binder, false),
+        Core::BigIntToI64 { operand } => binding_escapes(db, operand, binder, false),
         Core::BytesSlice {
             bytes, start, len, ..
         } => {
@@ -1077,6 +1097,24 @@ pub fn collect_used_ops(
         // via `bytes-len` then builds `Some(bytes-slice)` (a Bytes HANDLE, no box) / `None` (`arr-alloc(0)`).
         Core::BytesConcat { lhs, rhs } => {
             out.insert(OP_BYTES_CONCAT);
+            collect_used_ops(db, lhs, out);
+            collect_used_ops(db, rhs, out);
+        }
+        Core::BigIntOfI64 { value } => {
+            out.insert(OP_BIGINT_OF_I64);
+            collect_used_ops(db, value, out);
+        }
+        Core::BigIntToI64 { operand } => {
+            out.insert(OP_BIGINT_TO_I64_CHECKED);
+            collect_used_ops(db, operand, out);
+        }
+        Core::BigIntBinOp { op, lhs, rhs } => {
+            out.insert(match op {
+                crate::core::BigIntOp::Add => OP_BIGINT_ADD,
+                crate::core::BigIntOp::Sub => OP_BIGINT_SUB,
+                crate::core::BigIntOp::Mul => OP_BIGINT_MUL,
+                crate::core::BigIntOp::Div => OP_BIGINT_DIV,
+            });
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
         }
@@ -3686,6 +3724,30 @@ fn emit(
             emit(db, lhs, slots, base, high, scratch_ty, layout, out)?; // [a]
             emit(db, rhs, slots, base, high, scratch_ty, layout, out)?; // [a, b]
             out.push(Lir::CallImport(OP_BYTES_CONCAT)); // → [a++b]
+            Ok(())
+        }
+        // `BigInt.of x` on a runtime i64 — widen to a BigInt heap leaf (an i32 handle).
+        Core::BigIntOfI64 { value } => {
+            emit(db, value, slots, base, high, scratch_ty, layout, out)?; // [x : i64]
+            out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // → [bigint handle : i32]
+            Ok(())
+        }
+        // `Int64.of b` on a runtime BigInt — checked narrow back to i64 (traps out of range at run time).
+        Core::BigIntToI64 { operand } => {
+            emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [b : i32 handle]
+            out.push(Lir::CallImport(OP_BIGINT_TO_I64_CHECKED)); // → [i64]
+            Ok(())
+        }
+        // A runtime BigInt `+`/`-`/`*`/`/` — emit both handles, call the op (→ a new BigInt handle).
+        Core::BigIntBinOp { op, lhs, rhs } => {
+            emit(db, lhs, slots, base, high, scratch_ty, layout, out)?; // [a : i32]
+            emit(db, rhs, slots, base, high, scratch_ty, layout, out)?; // [a, b]
+            out.push(Lir::CallImport(match op {
+                crate::core::BigIntOp::Add => OP_BIGINT_ADD,
+                crate::core::BigIntOp::Sub => OP_BIGINT_SUB,
+                crate::core::BigIntOp::Mul => OP_BIGINT_MUL,
+                crate::core::BigIntOp::Div => OP_BIGINT_DIV,
+            })); // → [result handle : i32]
             Ok(())
         }
         // `Bytes.compact(b)` — emit the handle, `bytes-compact` (consumes it, returns a content-equal one).
