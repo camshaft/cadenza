@@ -234,6 +234,7 @@ pass	a default-integer pragma naming a non-integer type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
 pass	a delegated capability is not itself an export field
 pass	a delegated effect performed inside an intra-program handler
+pass	a delegated host effect composes with the value-heap runtime
 pass	a delegation naming an effect that is never reached is rejected as latent authority
 pass	a dependent size of zero binds an empty body and leaves the rest untouched
 pass	a dependent-size segment binds exactly the number of bytes an earlier segment named
