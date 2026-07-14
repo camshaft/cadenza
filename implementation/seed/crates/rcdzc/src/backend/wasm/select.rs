@@ -2572,6 +2572,16 @@ fn is_cse_shareable(db: &mut Db, id: StructId) -> bool {
         Core::Convert { operand, .. } | Core::Not { operand } | Core::Proj { operand, .. } => {
             is_cse_shareable(db, operand)
         }
+        // A COLLECTION COUNT (`List.len`/`Bytes.len`/`Map.size`/`Set.len`) is a TOTAL O(1) BORROWING read
+        // returning a SCALAR (a `vec-len`/`bytes-len`/`champ-size` runtime import — no refcount change, no
+        // effect, deterministic). Sharing two identical counts of the same collection is observably
+        // identical to reading twice (same value, no trap), and the RESULT is a scalar so the caller's
+        // `is_heap_type` filter admits it (we CSE the count, not the collection handle). The operand must
+        // itself be shareable (a param handle / another shareable read) so the read is well-formed at the
+        // hoist point. Mirrors `is_trap_free`'s treatment of these counts.
+        Core::ListLen { operand } | Core::BytesLen { operand } => is_cse_shareable(db, operand),
+        Core::MapSize { map } => is_cse_shareable(db, map),
+        Core::SetLen { set } => is_cse_shareable(db, set),
         Core::SumPayload { scrutinee, .. } => is_cse_shareable(db, scrutinee),
         Core::If {
             cond, then_, else_, ..
@@ -8819,6 +8829,15 @@ fn core_eq(db: &mut Db, a: StructId, b: StructId) -> bool {
                 index: iy,
             },
         ) => ix == iy && core_eq(db, px, py),
+        // A COLLECTION COUNT (`List.len`/`Bytes.len`/`Map.size`/`Set.len`) is a TOTAL O(1) BORROWING read
+        // returning a SCALAR — pure, no rc change, deterministic — so two counts of an equal collection
+        // yield the same value and share safely (the count analogue of `Proj`/`SumPayload`). This lets CSE
+        // compute a repeated `(List.len xs)` — a `vec-len` runtime import — ONCE across `(+ (len xs) (* (len
+        // xs) 3))`. Each takes ONE operand handle; equal iff those handles are `core_eq`.
+        (Core::ListLen { operand: ox }, Core::ListLen { operand: oy })
+        | (Core::BytesLen { operand: ox }, Core::BytesLen { operand: oy }) => core_eq(db, ox, oy),
+        (Core::MapSize { map: mx }, Core::MapSize { map: my }) => core_eq(db, mx, my),
+        (Core::SetLen { set: sx }, Core::SetLen { set: sy }) => core_eq(db, sx, sy),
         // A sum-variant payload read: equal iff the SAME path off an equal (runtime) scrutinee — the
         // pattern-binder analogue of `Proj`. `sum-payload`/`get-*` BORROW the handle and are pure (no rc
         // change, no effect), so two reads of the same payload yield the same value; sharing them lets the
@@ -11153,6 +11172,32 @@ mod tests {
             f.code.iter().filter(|i| **i == Lir::I64Mul).count(),
             2,
             "a branch-only shared `(* a b)` (no dominating occurrence) is NOT hoisted, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn cse_shares_a_repeated_collection_count() {
+        // `(List.len xs)` is a TOTAL O(1) BORROWING scalar read (a `vec-len` runtime import — no rc change,
+        // deterministic). Two identical counts of the same list param `(+ (List.len xs) (* (List.len xs) 3))`
+        // are `core_eq` and dominate (straight-line body), so CSE computes the `vec-len` ONCE and shares it
+        // → exactly ONE `vec-len` CallImport (was two). `xs` is a real PARAM (a list handle live up front),
+        // so the read is well-formed at the hoist point. Selects `f` directly (its param is an i32 handle).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: xs (List Int64))) (+ ((. List len) xs) (* ((. List len) xs) 3))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code
+                .iter()
+                .filter(|i| matches!(i, Lir::CallImport(op) if *op == OP_VEC_LEN))
+                .count(),
+            1,
+            "a repeated `(List.len xs)` is computed once and shared, got: {:?}",
             f.code
         );
     }
