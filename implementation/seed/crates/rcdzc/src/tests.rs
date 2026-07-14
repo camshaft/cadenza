@@ -2170,6 +2170,60 @@ fn runtime_value_eq_leaves_no_live_objects() {
     );
 }
 
+/// RUNTIME BIGINT ARITHMETIC leaves no live objects — the refcount discipline for the borrowing BigInt
+/// ops. The runtime `bigint-add`/…/`to-i64-checked` BORROW their operands (`unbox_bigint` reads without
+/// consuming) and return a FRESH box (or a scalar), the `value-eq` shape — NOT the consuming
+/// `bytes-concat` shape. So the emit (`emit_bigint_borrow_*`) must DROP each OWNED-temporary operand
+/// after the borrowing call while leaving a borrowed param/local to its owner. Two shapes:
+///   (a) OWNED operands — `(+ (BigInt.of a) (BigInt.of b))`: both `BigInt.of` results are fresh temporaries
+///       the `+` must drop after borrowing; the sum is narrowed and returned as a scalar.
+///   (b) BORROWED operand — `(let ((big (BigInt.of a))) (/ (* big big) big))`: `big` is a `let`-binding
+///       borrowed by three ops; the ops must NOT drop it (the `let` reclaims it once) — a double-free
+///       would corrupt the heap, a missed drop would leak. The `* big big` result IS an owned temporary
+///       `/` drops.
+/// Both must net to 0 live cells. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn runtime_bigint_arithmetic_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[bigint-leak] debug-counters runtime not in the store; skipping balance probe");
+        return;
+    };
+    // (a) two OWNED BigInt operands + one result, all runtime.
+    let src = "(module m \
+                 (def (main (: a Int64) (: b Int64)) \
+                    (Int64.of (+ (BigInt.of a) (BigInt.of b)))) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(rt.call("main", &[Val::S64(40), Val::S64(2)]), Val::S64(42));
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "bigint-arith leak: the two owned `BigInt.of` operands must be dropped after the borrowing add"
+    );
+
+    // (b) the overflow-intermediate flagship, where `big` is a `let`-binding BORROWED by three ops.
+    let src2 = "(module m \
+                  (def (main (: a Int64)) \
+                     (let ((big (BigInt.of a))) (Int64.of (/ (* big big) big)))) (export main))";
+    let program2 = compile_component(&crate::codec::encode(&parse(src2))).expect("compile");
+    let mut rt2 = ComposedRuntime::new(&program2, &runtime_bytes);
+    assert_eq!(
+        rt2.call("main", &[Val::S64(5_000_000_000)]),
+        Val::S64(5_000_000_000),
+        "the unbounded intermediate narrows back"
+    );
+    assert_eq!(
+        rt2.live_objects(),
+        0,
+        "bigint borrow leak/double-free: `big` (borrowed by `*`/`/`, dropped by the `let`) plus the owned \
+         `(* big big)` temporary (dropped by `/`) must net to 0 live cells"
+    );
+}
+
 /// RUNTIME STRUCTURAL EQUALITY, BORROWED operand: a `let`-bound list compared by `=` (a BORROW) leaves
 /// no cell leaked or double-freed. `xs = (build 3)` is compared to a fresh `(build 3)` (an OWNED
 /// temporary `value-eq` drops); the result is a scalar `1`, so `xs` is used ONLY as the borrowed

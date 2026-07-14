@@ -342,14 +342,19 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
         Core::BytesConcat { lhs, rhs } => {
             binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
         }
-        // The runtime BigInt ops CONSUME their operand handles (`bigint-add`/… take ownership, like
-        // `bytes-concat`), so a binding used as an operand escapes into the result. `bigint-of-i64`'s
-        // operand is an i64 scalar (no heap ref); `to-i64-checked`/the arithmetic take BigInt handles.
+        // The runtime BigInt ops BORROW their operand handles (`bigint-add`/…/`to-i64-checked` `unbox_
+        // bigint`-read without consuming, then the `emit_bigint_borrow_*` helpers drop only an OWNED
+        // temporary), so — like `value-eq` — a binding used DIRECTLY as an operand does NOT escape (the
+        // enclosing `let` still drops it). A binding that flows into a CONSTRUCTED/owned operand (e.g.
+        // `(+ (BigInt.of x) y)` where `x` feeds a `BigInt.of`) DOES escape into that owned temporary,
+        // which the op then drops — the `tail_borrowed: true` borrow-in-tail computes exactly this (a
+        // direct `LocalRef` borrows; a producer arm resets to consuming). `bigint-of-i64`'s operand is an
+        // i64 scalar (no heap ref) — always consuming, `false`.
         Core::BigIntBinOp { lhs, rhs, .. } => {
-            binding_escapes(db, lhs, binder, false) || binding_escapes(db, rhs, binder, false)
+            binding_escapes(db, lhs, binder, true) || binding_escapes(db, rhs, binder, true)
         }
         Core::BigIntOfI64 { value } => binding_escapes(db, value, binder, false),
-        Core::BigIntToI64 { operand } => binding_escapes(db, operand, binder, false),
+        Core::BigIntToI64 { operand } => binding_escapes(db, operand, binder, true),
         Core::BytesSlice {
             bytes, start, len, ..
         } => {
@@ -1100,12 +1105,16 @@ pub fn collect_used_ops(
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
         }
+        // `bigint-of-i64` mints a leaf from an i64 scalar — no handle operand, no drop.
         Core::BigIntOfI64 { value } => {
             out.insert(OP_BIGINT_OF_I64);
             collect_used_ops(db, value, out);
         }
+        // The borrowing BigInt ops also import `drop` (to reclaim an OWNED-temporary handle operand after
+        // the borrowing call — see the `emit_bigint_borrow_*` helpers).
         Core::BigIntToI64 { operand } => {
             out.insert(OP_BIGINT_TO_I64_CHECKED);
+            out.insert(OP_DROP);
             collect_used_ops(db, operand, out);
         }
         Core::BigIntBinOp { op, lhs, rhs } => {
@@ -1115,6 +1124,7 @@ pub fn collect_used_ops(
                 crate::core::BigIntOp::Mul => OP_BIGINT_MUL,
                 crate::core::BigIntOp::Div => OP_BIGINT_DIV,
             });
+            out.insert(OP_DROP);
             collect_used_ops(db, lhs, out);
             collect_used_ops(db, rhs, out);
         }
@@ -3726,29 +3736,39 @@ fn emit(
             out.push(Lir::CallImport(OP_BYTES_CONCAT)); // → [a++b]
             Ok(())
         }
-        // `BigInt.of x` on a runtime i64 — widen to a BigInt heap leaf (an i32 handle).
+        // `BigInt.of x` on a runtime i64 — widen to a BigInt heap leaf (an i32 handle). `x` is an i64
+        // SCALAR (no heap ref), so nothing to drop — a fresh owned handle is left on the stack.
         Core::BigIntOfI64 { value } => {
             emit(db, value, slots, base, high, scratch_ty, layout, out)?; // [x : i64]
             out.push(Lir::CallImport(OP_BIGINT_OF_I64)); // → [bigint handle : i32]
             Ok(())
         }
         // `Int64.of b` on a runtime BigInt — checked narrow back to i64 (traps out of range at run time).
-        Core::BigIntToI64 { operand } => {
-            emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [b : i32 handle]
-            out.push(Lir::CallImport(OP_BIGINT_TO_I64_CHECKED)); // → [i64]
-            Ok(())
-        }
-        // A runtime BigInt `+`/`-`/`*`/`/` — emit both handles, call the op (→ a new BigInt handle).
+        // `bigint-to-i64-checked` BORROWS its operand (`unbox_bigint` reads without consuming) and returns
+        // an i64 scalar, so an OWNED-temporary operand must be dropped after the read (a borrowed param/
+        // local is left to its owner) — the `value-eq` reclamation discipline for a borrowing op.
+        Core::BigIntToI64 { operand } => emit_bigint_borrow_unary(
+            db,
+            operand,
+            OP_BIGINT_TO_I64_CHECKED,
+            high,
+            slots,
+            scratch_ty,
+            layout,
+            out,
+        ),
+        // A runtime BigInt `+`/`-`/`*`/`/` — the runtime op BORROWS both operand handles (`unbox_bigint`)
+        // and returns a FRESH owned result handle, so each OWNED-temporary operand is dropped after the
+        // call while the new result is kept. A borrowed param/local operand is NOT dropped (its owner
+        // reclaims it). Same borrow-and-reclaim shape as `value-eq`, but the result is a handle to keep.
         Core::BigIntBinOp { op, lhs, rhs } => {
-            emit(db, lhs, slots, base, high, scratch_ty, layout, out)?; // [a : i32]
-            emit(db, rhs, slots, base, high, scratch_ty, layout, out)?; // [a, b]
-            out.push(Lir::CallImport(match op {
+            let import = match op {
                 crate::core::BigIntOp::Add => OP_BIGINT_ADD,
                 crate::core::BigIntOp::Sub => OP_BIGINT_SUB,
                 crate::core::BigIntOp::Mul => OP_BIGINT_MUL,
                 crate::core::BigIntOp::Div => OP_BIGINT_DIV,
-            })); // → [result handle : i32]
-            Ok(())
+            };
+            emit_bigint_borrow_binary(db, lhs, rhs, import, high, slots, scratch_ty, layout, out)
         }
         // `Bytes.compact(b)` — emit the handle, `bytes-compact` (consumes it, returns a content-equal one).
         Core::BytesCompact { operand } => {
@@ -4536,8 +4556,8 @@ fn emit(
         // (an `if`/`match`/`let` that may return a borrowed sub-value) DECLINES — reject, never a leak or
         // a double-free.
         Core::ValueEq { lhs, rhs } => {
-            let lo = value_eq_operand_ownership(db, lhs)?;
-            let ro = value_eq_operand_ownership(db, rhs)?;
+            let lo = heap_operand_ownership(db, lhs)?;
+            let ro = heap_operand_ownership(db, rhs)?;
             // Two i32 scratch slots for the operand handles, above the running high-water (they must not
             // clash with an operand emit's own transient scratch — a `Call` arg's i64 guard slot).
             let slot_l = *high;
@@ -5251,12 +5271,15 @@ enum HandleOwnership {
     Borrowed,
 }
 
-/// Classify a `value-eq` OPERAND's handle ownership, or DECLINE (`Err`) a shape whose ownership this
+/// Classify a BORROWING op's handle OPERAND ownership, or DECLINE (`Err`) a shape whose ownership this
 /// analysis cannot prove — reject-don't-miscompile: a wrong guess would leak or double-free the heap.
-/// A constructor / call is `Owned`; a parameter / kept-local reference is `Borrowed`. An `if`/`match`/
-/// `let` is classified by its result sub-expression(s) — but ONLY when every branch agrees (a mixed
-/// owned/borrowed result cannot be dropped uniformly, so it declines). Anything else declines.
-fn value_eq_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, Reject> {
+/// Used by every op that BORROWS a heap operand and returns a fresh/scalar result (so the emit must drop
+/// each OWNED-temporary operand but leave a borrowed reference to its owner): `value-eq` and the runtime
+/// BigInt ops (`bigint-add`/…/`bigint-cmp`/`bigint-to-i64-checked`, which `unbox_bigint`-BORROW their
+/// operands). A constructor / call is `Owned`; a parameter / kept-local reference is `Borrowed`. An `if`/
+/// `match`/`let` is classified by its result sub-expression(s) — but ONLY when every branch agrees (a
+/// mixed owned/borrowed result cannot be dropped uniformly, so it declines). Anything else declines.
+fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, Reject> {
     match core_of(db, id) {
         // Constructors and calls produce a fresh owned reference (ownership transfers out). A map
         // construction/update (`map-empty`+inserts, `map-insert`, `map-remove`) returns a fresh owned
@@ -5280,6 +5303,13 @@ fn value_eq_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnersh
         | Core::SetInsert { .. }
         | Core::SetRemove { .. }
         | Core::SetAlgebra { .. }
+        // A BigInt PRODUCER returns a fresh owned handle: `bigint-of-i64` mints a leaf, and each
+        // `bigint-add`/`-sub`/`-mul`/`-div` re-boxes a normalized result (the operands are borrowed, the
+        // result is new). So a BigInt operand that is itself the result of another BigInt op is owned —
+        // the enclosing op drops it after borrowing. (`BigIntToI64` returns an i64 scalar, never a handle,
+        // so it is not a heap operand and never reaches here.)
+        | Core::BigIntOfI64 { .. }
+        | Core::BigIntBinOp { .. }
         | Core::Call { .. } => Ok(HandleOwnership::Owned),
         // A reference to a parameter or a kept `let`-binding — the owner elsewhere reclaims it.
         Core::Param { .. } | Core::LocalRef { .. } => Ok(HandleOwnership::Borrowed),
@@ -5294,17 +5324,93 @@ fn value_eq_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnersh
         // Control flow: each result branch must agree on ownership (so the single post-compare drop is
         // correct on every path). `if` — both arms; `let` — its body. A disagreement declines.
         Core::If { then_, else_, .. } => {
-            let t = value_eq_operand_ownership(db, then_)?;
-            let e = value_eq_operand_ownership(db, else_)?;
+            let t = heap_operand_ownership(db, then_)?;
+            let e = heap_operand_ownership(db, else_)?;
             (t == e)
                 .then_some(t)
-                .ok_or_else(|| Reject::decline("value-eq operand's branches disagree on ownership"))
+                .ok_or_else(|| Reject::decline("borrowing op operand's branches disagree on ownership"))
         }
-        Core::Let { body, .. } => value_eq_operand_ownership(db, body),
+        Core::Let { body, .. } => heap_operand_ownership(db, body),
         _ => Err(Reject::decline(
-            "value-eq operand has an ownership this backend cannot yet prove",
+            "borrowing op operand has an ownership this backend cannot yet prove",
         )),
     }
+}
+
+/// Emit a UNARY runtime BigInt op that BORROWS its handle operand and returns a scalar (`bigint-to-i64-
+/// checked`). The op reads the operand without consuming it, so an OWNED-temporary operand must be
+/// DROPPED after the call (a borrowed param/local is left to its owner) — the `value-eq` reclamation
+/// discipline. `tee` the operand into a scratch slot (kept on the stack for the call AND remembered for a
+/// possible drop), call the op (which pops the borrowed handle and pushes the scalar), then drop the
+/// remembered handle if it was owned. Declines (via `heap_operand_ownership`) an operand whose ownership
+/// cannot be proved — reject, never a leak or double-free.
+#[allow(clippy::too_many_arguments)]
+fn emit_bigint_borrow_unary(
+    db: &mut Db,
+    operand: StructId,
+    import: &'static str,
+    high: &mut u32,
+    slots: &HashMap<StructId, u32>,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let o = heap_operand_ownership(db, operand)?;
+    let slot = *high;
+    *high = slot + 1;
+    scratch_ty.insert(slot, ValType::I32);
+    let op_base = *high;
+    emit(db, operand, slots, op_base, high, scratch_ty, layout, out)?; // [h : i32]
+    out.push(Lir::LocalTee(slot));
+    out.push(Lir::CallImport(import)); // pops the borrowed handle → [scalar]
+    if o == HandleOwnership::Owned {
+        out.push(Lir::LocalGet(slot));
+        out.push(Lir::CallImport(OP_DROP));
+    }
+    Ok(())
+}
+
+/// Emit a BINARY runtime BigInt op that BORROWS both handle operands and returns a FRESH owned result
+/// handle (`bigint-add`/`-sub`/`-mul`/`-div`, and — the next slice — `bigint-cmp`, which returns a scalar
+/// instead; both leave the operands to be reclaimed by this emit). Each OWNED-temporary operand is
+/// dropped after the call while the result stays on the stack; a borrowed param/local is left to its
+/// owner. Same shape as the `value-eq` emit, but the result (a handle or a scalar) is kept rather than
+/// discarded. Two i32 scratch slots hold the operand handles for the possible drops; the operands emit
+/// above the running high-water so neither reuses the other's transient scratch at a different width.
+#[allow(clippy::too_many_arguments)]
+fn emit_bigint_borrow_binary(
+    db: &mut Db,
+    lhs: StructId,
+    rhs: StructId,
+    import: &'static str,
+    high: &mut u32,
+    slots: &HashMap<StructId, u32>,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let lo = heap_operand_ownership(db, lhs)?;
+    let ro = heap_operand_ownership(db, rhs)?;
+    let slot_l = *high;
+    let slot_r = *high + 1;
+    *high = slot_r + 1;
+    scratch_ty.insert(slot_l, ValType::I32);
+    scratch_ty.insert(slot_r, ValType::I32);
+    let op_base = *high;
+    emit(db, lhs, slots, op_base, high, scratch_ty, layout, out)?; // [a : i32]
+    out.push(Lir::LocalTee(slot_l));
+    emit(db, rhs, slots, op_base, high, scratch_ty, layout, out)?; // [a, b : i32]
+    out.push(Lir::LocalTee(slot_r));
+    out.push(Lir::CallImport(import)); // pops both borrowed handles → [result]
+    if lo == HandleOwnership::Owned {
+        out.push(Lir::LocalGet(slot_l));
+        out.push(Lir::CallImport(OP_DROP));
+    }
+    if ro == HandleOwnership::Owned {
+        out.push(Lir::LocalGet(slot_r));
+        out.push(Lir::CallImport(OP_DROP));
+    }
+    Ok(())
 }
 
 fn reusable_scalar_src(
