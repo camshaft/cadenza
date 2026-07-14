@@ -330,6 +330,7 @@ pass	a function-typed parameter annotation's result type is checked against the 
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
+pass	a generic sum whose payload NESTS the parameter escapes with the instantiated inner type
 pass	a generic sum with TWO type parameters instantiates each independently
 pass	a generic sum with a type parameter inside a record payload constructs and projects
 pass	a generic sum with a type parameter inside a tuple payload constructs and destructures
@@ -741,6 +742,7 @@ pass	a round-trip consumer binds the applied closure through a let
 pass	a round-trip consumer takes the non-applying match arm
 pass	a round-trip consumer that does NOT apply the closure on the taken branch
 pass	a run's result is a deterministic function of a host call's recorded response
+pass	a runtime BigInt accumulator threaded through recursion grows past Int64
 pass	a runtime BigInt comparison sees an intermediate that overflows Int64
 pass	a runtime BigInt divide crosses the host boundary as its truncated quotient
 pass	a runtime BigInt intermediate that overflows Int64 does not trap

@@ -1211,9 +1211,15 @@ pub fn collect_used_ops(
             collect_used_ops(db, rhs, out);
         }
         Core::Convert { operand, .. } | Core::Not { operand } => collect_used_ops(db, operand, out),
-        Core::Call { args, .. } => {
-            for arg in args {
-                collect_used_ops(db, arg, out);
+        Core::Call { callee, args } => {
+            // A CONSTANT-BigInt argument for a BigInt PARAMETER is materialized via `bigint-of-i64` in
+            // `emit_call_args` (else it would push a raw `i64.const` where the callee wants an i32 handle),
+            // so declare that import here to match the emit.
+            for (i, arg) in args.iter().enumerate() {
+                if callee_param_is_bigint(db, callee, i) && const_bigint_materializes(db, *arg) {
+                    out.insert(OP_BIGINT_OF_I64);
+                }
+                collect_used_ops(db, *arg, out);
             }
         }
         // A HOST CALL: mirror the `emit` arm's arg handling EXACTLY. A `Ty::String` argument is marshalled
@@ -8681,6 +8687,26 @@ fn callee_param_int_tys(db: &mut Db, callee: usize) -> Vec<Option<IntTy>> {
         .collect()
 }
 
+/// Whether the callee's `i`th parameter has type `Ty::BigInt` — used by `emit_call_args` to MATERIALIZE a
+/// constant-BigInt argument as a heap handle (`bigint-of-i64`) rather than emit it as a raw `i64.const`.
+/// A `BigInt` param's machine slot is an i32 handle (`valtype_of(Ty::BigInt)`); a folded constant BigInt
+/// argument (`(BigInt.of 1)` in a call like `(loop n (BigInt.of 1))`) is a `Core::ConstInt` that would
+/// otherwise `emit` as a bare `i64.const`, pushing an i64 where the callee expects an i32 → an invalid
+/// module. The materialization is the same one `emit_bigint_operand` does for a `bigint-*` op operand.
+fn callee_param_is_bigint(db: &mut Db, callee: usize, i: usize) -> bool {
+    let Some(d) = db.defs.get(callee) else {
+        return false;
+    };
+    let Some(&p) = d.params.clone().get(i) else {
+        return false;
+    };
+    let binder = match db.ast.as_form(p, ":").and_then(|t| t.first().copied()) {
+        Some(name_occ) => name_occ,
+        None => p,
+    };
+    matches!(type_of(db, binder), Ty::BigInt)
+}
+
 /// Emit a `Core::Call`'s arguments, GROUNDING each bare-literal integer argument to its parameter's
 /// machine width (`emit_operand`), so a narrow (i32-slot) parameter never receives a default-i64 literal.
 /// A non-integer parameter, or an argument past the known parameters, emits normally. Shared by the
@@ -8708,6 +8734,23 @@ fn emit_call_args(
     for (i, &arg) in args.iter().enumerate() {
         match param_its.get(i).copied().flatten() {
             Some(it) => emit_operand(db, arg, it, slots, arg_base, high, scratch_ty, layout, out)?,
+            // A BIGINT parameter takes an i32 HANDLE. A CONSTANT-BigInt argument (a folded `Core::ConstInt`
+            // typed BigInt — `(loop n (BigInt.of 1))`) would otherwise `emit` as a bare `i64.const`,
+            // pushing an i64 where the callee expects an i32 handle → an invalid module (the recursion-
+            // accumulator miscompile). Materialize it as a fresh BigInt leaf (`bigint-of-i64`), the same
+            // as a `bigint-*` op operand; the callee consumes the handle. A RUNTIME BigInt argument (a
+            // param/local ref, or a `bigint-*` result) is already an i32 handle — emit it normally.
+            None if callee_param_is_bigint(db, callee, i) && const_bigint_materializes(db, arg) => {
+                if let Core::ConstInt(v) = core_of(db, arg)
+                    && let Some(x) = v.to_i64()
+                {
+                    out.push(Lir::ConstI64(x));
+                    out.push(Lir::CallImport(OP_BIGINT_OF_I64));
+                } else {
+                    // `const_bigint_materializes` guaranteed a fits-i64 ConstInt; unreachable otherwise.
+                    emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?;
+                }
+            }
             None => emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?,
         }
         arg_base = *high;
