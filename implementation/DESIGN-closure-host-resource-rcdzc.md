@@ -1055,6 +1055,11 @@ the component type. The new work:
 - **✅ tuple-arg field-type variety witnessed** (`ef863bb3`, corpus-only). The flatten/rebuild is field-type
   agnostic: FLOAT fields (→4.0), MIXED widths (Int32+Int64→42), a Bool among ints (→110, box-bool), and a
   single-variant NOMINAL over a tuple (erases to the tuple, §156 kind-agnostic peel — supply the bare tuple).
+- **✅ direct-call tuple-arg × RESULT matrix filled: String + Sum results** (`1ef864ed`, corpus-only). A
+  sole-tuple-arg closure composes with a String result (byte-rope core, → bytes) AND a Sum/Option result
+  (value-encode walker, → `(Some 5)`) — the matrix now covers scalar / byte-rope (Bytes+String) / fixed-
+  compound / collection (List+Map) / sum. (A Char tuple field declines project-wide: `valtype_of(Ty::Char)=None`
+  — no runtime Char slot yet, cross-cutting, not closure-specific.)
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (1) **N
   compound args** (two tuple args) + (2) **NESTED compound fields** (a tuple/record inside a tuple/record) —
