@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 307 tests total across 33 modules):
+top. Current `src/` modules (each with same-file `@test`s — 317 tests total across 34 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -231,6 +231,16 @@ top. Current `src/` modules (each with same-file `@test`s — 307 tests total ac
   WORKING. (A `Map`-env interpreter with SHADOWING is the UNSAFE cousin — it trips the still-live-binding
   miscompile; see `repros/miscompile-env-interpreter-shadow-corrupts-outer-binding.cdz`, so this optimizer
   stays a pure rewrite.)
+- `src/ssa.cdz` — an SSA LINEARIZER: flatten the arithmetic `Expr` (cross-file from `parse`) into a
+  straight-line list of THREE-ADDRESS instructions (`Lit(dst, v)` / `Op(dst, opcode, ra, rb)`), each
+  defining a fresh SSA register — the pre-register-allocation form a real backend lowers to. Mints fresh
+  register ids by THREADING A COUNTER through the result (`(reg, next, instrs)` triple), NOT a `Fresh`
+  effect: the effect-based gensym over a two-child tree needs two sibling recursive calls under a
+  state-threading handler, which the tail-resumptive fold declines (see
+  `repros/decline-effect-state-across-sibling-recursive-calls.cdz`) — pure counter-threading is the
+  correct portable design. An `interp` over the instruction list (a `Map Int64 Int64` register file)
+  re-executes the SSA form and must agree with `parse`'s tree-walking `run`. 10 `@test`s. Confirmed
+  WORKING (registers dense 0..n-1, instr-count == node-count, SSA eval == tree-walk).
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP
@@ -374,32 +384,28 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   the `dup` of a `LocalRef`/`Param` LHS still read later — same missing-dup defect as the push/insert
   length face (which `push` was patched for, `concat` not). Repro + its push-twin isolate the exact op.
 
-- **OPEN (seed `rcdzc` — EFFECT MISCOMPILE, silent wrong value, iter 38): a self-recursive effectful fn
-  with TWO sibling recursive calls in a match arm does not thread the handler state between the siblings.**
-  `repros/miscompile-effect-state-not-threaded-across-sibling-recursive-calls.cdz`. `walk (Node Leaf Leaf)`
+- **OPEN (seed `rcdzc` — EFFECT DECLINE, iter 38; ⚠ UPGRADED from a silent miscompile to an honest decline
+  iter 43): a self-recursive effectful fn with TWO sibling recursive calls in a match arm does not thread
+  the handler state between the siblings.** `repros/decline-effect-state-across-sibling-recursive-calls.cdz`.
+  ⚠ At iter 38 this SILENTLY returned 0; a sibling's tail-resumptive-fold change now REJECTS the shape
+  ("not yet reducible by the tail-resumptive fold") — a SAFETY IMPROVEMENT (the wrong value is gone).
+  `walk (Node Leaf Leaf)`
   under `handle Fresh(0) | next(s) => resume(s, s+1)` (arm: `let a = walk(l) in let b = walk(r) in a + b`)
-  should draw id 0 then id 1 → 1; it RETURNS **0** (both leaves draw id 0 — the second sibling call resumes
-  from the INITIAL state, not the state the first left). SHARP (each necessary): TWO sibling recursive
+  should draw id 0 then id 1 → 1; it once RETURNED **0** (both leaves drew id 0 — the second sibling call
+  resumed from the INITIAL state), now DECLINES. SHARP (each necessary): TWO sibling recursive
   calls in one arm (a SINGLE recursive call threads correctly); a STATE-THREADING handler (a
   constant-handback `resume(1, s)` counts the draws CORRECTLY — 2 — so the draws happen, only the state
   threading is lost); a self-call inside a `match` arm (two calls to a SEPARATE effectful fn thread fine,
-  and a single self-recursive draw loop threads fine — `fresh.cdz`). The tell: the BARE `walk(l) + walk(r)`
-  arm DECLINES honestly ("not yet reducible by the tail-resumptive fold") but the let-sequenced form
-  MISCOMPILES — the fold accepts a shape it cannot correctly thread. Root: the tail-resumptive
-  specialization in `effects.rs` (same area as the iter-15/17 mutual-split-branch decline + `#eff3$s0`
-  mangled-name leak, but here a SELF-recursive fn, silent). WORKAROUND: keep the effect on a SINGLE
-  recursive spine ("flatten pure, then gensym") — `src/label.cdz` does this.
+  and a single self-recursive draw loop threads fine — `fresh.cdz`). Root: the tail-resumptive
+  specialization in `effects.rs` (same area as the iter-15/17 mutual-split-branch decline). WORKAROUND for
+  a linearizer: thread a COUNTER through the RESULT (pure), not a `Fresh` handler — `src/ssa.cdz` does this.
 
-- **OPEN (seed `rcdzc` — EFFECT DECLINE, not a miscompile, iter 38): performing an effect op directly as
-  an ELEMENT of a tuple/list/record constructor is not yet reducible by the tail-resumptive fold.**
-  `repros/decline-effect-perform-inside-a-compound-constructor.cdz`. `let p = (Fresh.next(), Fresh.next())`
-  → "this handler is not yet reducible by the tail-resumptive fold" (no recursion needed; a single perform
-  element declines too). CONTRAST — a perform WORKS in an arith operand (`Fresh.next() + Fresh.next()`), a
-  call arg (`twice(Fresh.next())`), a sum-ctor payload (`W.Mk(Fresh.next())`), and let-bound before a tail
-  self-call. WORKAROUND: prefetch each perform into a `let`, then build the tuple/list/record from the
-  bound vars (`let a = Fresh.next() in let b = Fresh.next() in (a, b)` works). Fix locus: extend the
-  reducible set in `effects.rs` to a perform in a `Tuple`/`ListNew`/`Record` element (hoist like the
-  arith/call/sum cases it already handles). Honest decline (`cdz check` clean, `cdz compile` declines).
+- ✅ **FIXED (iter 43, siblings incl. `@b2af1244`): performing an effect op directly as an ELEMENT of a
+  tuple/list/record constructor.** `repros/fixed-effect-perform-inside-a-compound-constructor.cdz` (was
+  `decline-…`). `let p = (Fresh.next(), Fresh.next())` and the list/record forms now COMPILE and thread the
+  handler state correctly (tuple → (0,1), record fields left-to-right). The tail-resumptive fold's reducible
+  set was extended to `Tuple`/`ListNew`/`Record` elements. A perform still works in an arith operand / call
+  arg / sum-ctor payload as before. (The remaining effect gap is the sibling-recursive-call one above.)
 
 - **OPEN (seed `rcdzc` — ML SURFACE GAP, iter 34): a tuple TYPE written `(A, B)` is rejected — must be
   `Tuple(A, B)`.** `repros/reject-ml-tuple-type-paren-comma-spelling.cdz`. `def f(p: (Int64, Int64)) =
