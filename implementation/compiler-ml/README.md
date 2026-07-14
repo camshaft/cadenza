@@ -238,3 +238,13 @@ are the sharp edges.
   miscompiles only past a per-module def/test-count THRESHOLD (passes standalone). Surfaced building
   `src/subst.cdz`; both sidestepped by checking a result's SHAPE (`match … ((Ast.Name _) …)`) instead
   of `String ==`-ing an extracted payload.
+
+- **OPEN (seed `rcdzc` — GAP/BUG): quasiquote `unquote` of an already-`Ast` value is rejected.**
+  `repros/reject-unquote-of-an-ast-value.sexp`. `(quasiquote (+ (unquote sub) 1))` with `sub : Ast` →
+  CDZ0201 "a variant constructor's payload has declared type Int64, but a value of type Ast was
+  applied". `(unquote n)` where `n` is a plain `Int64`/literal WORKS (wrapped as `Ast.Int`); only an
+  already-`Ast` value fails — `unquote` wraps by the template slot's leaf type instead of splicing an
+  Ast node as-is. metaprogramming.md says `,<expr>` inserts its RESULT at that position; when the result
+  IS an Ast, that should splice the node. Blocks the canonical AST-building macro (embed a computed
+  subtree). Confirmed WORKING otherwise: quote structural `=`, walking a quoted form via own `Ast`
+  match, quoted Ast escaping to host, `unquote-splice` of a list, `(unquote <plain-value>)`.
