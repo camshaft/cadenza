@@ -399,7 +399,14 @@ fn compile_guard(t: &Tree) -> Result<Guard, PatternError> {
             "is-bool" => Ok(Guard::IsBool),
             "is-atom" => Ok(Guard::IsAtom),
             "is-list" => Ok(Guard::IsList),
-            other => Err(PatternError(format!("unknown guard `{other}`"))),
+            // An unknown bare-name guard — the guard vocabulary is a small CLOSED set, so LIST it (like the
+            // string-escape message lists the escape set). A near-typo (`is-litera` for `is-literal`) is
+            // then obvious from the list, and the message doubles as documentation of what a guard can be.
+            other => Err(PatternError(format!(
+                "unknown guard `{other}` — a guard is one of `is-literal` `is-name` `is-int` `is-float` \
+                 `is-str` `is-bool` `is-atom` `is-list`, or a form `(head-is NAME)` / `(matches PAT)` / \
+                 `(not GUARD)`"
+            ))),
         };
     }
     // A guard form: `(head-is NAME)`, `(matches PAT)`, `(not GUARD)`.
@@ -3574,6 +3581,13 @@ mod tests {
     fn unknown_guard_is_rejected_at_compile_time() {
         let e = Pattern::compile("(f ,(x is-frobnicated))").unwrap_err();
         assert!(e.0.contains("unknown guard"), "got {e}");
+        // The message LISTS the guard vocabulary (a closed set), so a near-typo (`is-litera` for
+        // `is-literal`) is obvious and the message documents what a guard can be.
+        let near = Pattern::compile("(f ,(x is-litera))").unwrap_err();
+        assert!(
+            near.0.contains("is-literal") && near.0.contains("(head-is NAME)"),
+            "the unknown-guard message lists the valid guards: {near}"
+        );
     }
 
     #[test]

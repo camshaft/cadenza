@@ -375,6 +375,16 @@ fn copy_subtree(ast: &mut Arenas, node: StructId) -> StructId {
 // perform becomes the arm's resume VALUE, and the arm's next-STATE threads forward to the rest of the
 // handled region. `select` then sees only ordinary `Core`.
 //
+// A performance in BODY is discharged by the ENCLOSING handler active in dynamic extent (a perform its
+// caller wraps, or the same code under two handlers, is discharged by each in turn), and WHICH handler
+// is fixed STATICALLY here — by monomorphizing the enclosing handler context over the closed effect row
+// into a compile-time constant — so handler resolution is dynamic in extent yet a deterministic function
+// of the source with no runtime handler search:
+//= spec/capabilities/capabilities-and-effects.md#handler-resolution-is-dynamic-in-extent-and-statically-determined
+//# A raised effect operation MUST be discharged by the nearest handler enclosing it in dynamic extent — the nearest handler active along the run's call chain, not the nearest handler lexically enclosing the performing function's definition — so that a function may perform an operation its caller discharges and the same function called under two different handlers is discharged by each in turn.
+//= spec/capabilities/capabilities-and-effects.md#handler-resolution-is-dynamic-in-extent-and-statically-determined
+//# Which handler discharges each performance MUST be determined statically at compile time by monomorphizing the enclosing handler context over the closed effect row, so that handler resolution is dynamic in extent yet a deterministic function of the source (constitution III) with no runtime handler search.
+//
 // This is realized as a SOURCE-TO-SOURCE rewrite in the arena: `reduce_handle` produces a new BODY
 // occurrence with every perform replaced, which `lower` then lowers by the ordinary path. State is
 // threaded by an EVALUATION-ORDER walk carrying the "current state expression" — a perform reads the

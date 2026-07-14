@@ -2051,6 +2051,16 @@
             (export main)))
   (output (: 15511210043330985984000000 BigInt)))
 
+(case "a BigInt is usable as a set element, deduplicated by its arbitrary-precision value"
+  (doc    "`(Set.len (Set.of (list (BigInt.of 5) (BigInt.of 5) (BigInt.of 7))))` = 2: a set of BigInt
+           elements DEDUPLICATES by value — the two `5`s collapse to one (the CHAMP set hashes/compares
+           each element over its canonical sign-magnitude bytes, `champ_hash`/`champ_eq`, the same raw-byte
+           basis as a Bytes/String element), leaving `{5, 7}` of size 2. The set companion of the
+           BigInt-map-key case; pins that a BigInt is a first-class set element (a constant element
+           materializes as a heap handle at the insert site, not a raw i64).")
+  (input  (Set.len (Set.of (list (BigInt.of 5) (BigInt.of 5) (BigInt.of 7)))))
+  (output (: 2 Int64)))
+
 (case "a BigInt is usable as a map key, matched by its arbitrary-precision value"
   (doc    "`(Map.lookup (Map.insert (Map.insert Map.empty (BigInt.of 100) 1) (BigInt.of 200) 2) (BigInt.of
            200))` = `Some 2`: a BigInt KEY is inserted and looked up by VALUE — the CHAMP map hashes and

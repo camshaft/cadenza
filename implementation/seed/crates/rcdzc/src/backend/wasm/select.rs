@@ -618,6 +618,16 @@ fn box_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
         // finite `Ty::Sum`-back-edged compound (a handle), boxed as-is. This is what lets a newtype value
         // (incl. a recursive one's self-referential cell) sit in a tuple/sum/collection slot.
         Ty::Nominal { inner, .. } => box_op_ty(db, inner),
+        // A FREE var / `Any` element — inference never determined this position's type. That happens ONLY
+        // when NO value ever flows through it: a DEAD match arm (`(match (Some (Ok x)) … ((Err e) e) …)`
+        // where no `Err` is ever built leaves the Err type a free var, and its `e` read is unreachable), or
+        // a phantom parameter. Ground it to the uniform i64 heap cell (`box-int`) — the SAME default a
+        // deferred integer width takes: since no value observably flows, any consistent representation is
+        // correct, and the unreachable read/store just needs SOME valid op to emit. This lets a program
+        // that MATCHES an un-built variant (a total match on a `Result` only ever `Ok`) compile, rather
+        // than declining the dead arm's phantom-typed payload read. (A LIVE value never has a free-var
+        // type here — inference would have solved it — so this cannot mask a real unresolved-type bug.)
+        Ty::Var(_) | Ty::Any => Ok(Some(OP_BOX_INT)),
         other => Err(Reject::decline(format!(
             "a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()
@@ -671,6 +681,11 @@ fn get_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
         // A NOMINAL newtype erases to its inner — unbox by the inner type (the dual of `box_op_ty`'s
         // Nominal arm), so a newtype value read back from a heap slot uses the right unbox.
         Ty::Nominal { inner, .. } => get_op_ty(db, inner),
+        // A FREE var / `Any` projection — a DEAD arm reading an un-built variant's phantom payload (the dual
+        // of `box_op_ty`'s free-var arm). Ground to `get-int` (the i64 cell): the read is unreachable (no
+        // value of this type ever flows), so the op only needs to be VALID, not value-correct. This lets a
+        // total match on a partly-un-built sum (`(Result C ?)` only ever `Ok`) compile its dead `Err` arm.
+        Ty::Var(_) | Ty::Any => Ok(Some(OP_GET_INT)),
         other => Err(Reject::decline(format!(
             "projecting a tuple element of type {} needs the value heap (not yet built)",
             other.render_name()

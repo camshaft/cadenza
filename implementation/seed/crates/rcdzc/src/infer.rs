@@ -3074,6 +3074,18 @@ fn wrap_variant_for(db: &mut Db, expected: &Ty, actual: &Ty) -> Option<String> {
 /// plus a single type argument (the `(Option a)` prelude shape), payload compared by `agrees_with` so a
 /// deferred/`Any` payload still matches. An honest "match it" route where no one-shot spelling exists —
 /// the diagnostic-carries-a-route-to-a-fix rule of `spec/capabilities/diagnostics.md`.
+/// The `(module, member)` names of an application head that is a `(. Module member)` MEMBER ACCESS with
+/// BOTH parts bare names — `(. List push)` → `("List", "push")`. Used to name a prelude operation in a
+/// wrong-argument-type diagnostic ("`List.push` expects an argument of type …"), instead of the generic
+/// unify mismatch. `None` when the head is not that shape (a bare operator atom `+`, a user-fn name, a
+/// computed head) — those take their own diagnostic paths, so this fires only for a member-op call.
+fn member_op_head_name(db: &Db, head: StructId) -> Option<(String, String)> {
+    let tail = db.ast.as_form(head, ".")?;
+    let module = db.ast.as_name(*tail.first()?)?.to_string();
+    let member = db.ast.as_name(*tail.get(1)?)?.to_string();
+    Some((module, member))
+}
+
 fn option_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     if let Ty::Sum { name, args, .. } = actual
         && name == "Option"
@@ -4911,6 +4923,30 @@ fn check_application(
                             format!(
                                 "operation {op} expects an argument of type {}, but a value of type {} \
                                  was performed",
+                                sparam.render_name(),
+                                sat.render_name()
+                            ),
+                        );
+                        if let Some(fix) = numeric_text_coercion_fix(db, &sparam, &sat, arg) {
+                            reject = reject.with_fix(fix);
+                        }
+                        out.push(reject);
+                    } else if let Some((module, member)) = member_op_head_name(db, head) {
+                        // A wrong-type argument to a NAMED PRELUDE MEMBER OP — `(List.push xs true)`,
+                        // `(Int64.of s)`, `(String.slice s true 2)`. The head is a `(. Module member)`
+                        // access, so the generic unify mismatch ("Int64 and Bool must be the same type
+                        // here") reads like an internal clash — it does not say WHICH operation wanted
+                        // WHAT. Name the operation and its expected argument type, the prelude-op analogue
+                        // of the sibling's effect-op perform message + the variant-ctor payload message.
+                        // (Only fires when the head is a `(. Module member)` with both parts names — a bare
+                        // operator `+`/`<` reads fine already and takes the earlier float/numeric branches;
+                        // a user-fn call takes the annotation-mismatch path, never this generic else.) The
+                        // coercion fix (`(Int64.of …)` etc.) still rides along when one applies.
+                        let mut reject = Reject::coded(
+                            Code::TypeMismatch,
+                            format!(
+                                "`{module}.{member}` expects an argument of type {}, but a value of \
+                                 type {} was given",
                                 sparam.render_name(),
                                 sat.render_name()
                             ),

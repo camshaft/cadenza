@@ -2615,6 +2615,28 @@
   (call   mk-diff (: (tuple 10 3) (Tuple Int64 Int64)))
   (output (: 7 Int64)))
 
+(case "MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export"
+  (doc    "The direct-call fixed-shape compound-arg path extends to the MIXED shape: a tuple-arg closure
+           factory `mk : (-> (Tuple Int64 Int64) Int64)` crosses via the resource envelope's `make`+shared
+           `call` (the `call` takes a native `tuple<s64,s64>` rebuilt from the flattened fields) WHILE a
+           plain (non-closure) export `twice` rides alongside as an ordinary top-level component func. Both
+           coexist in one component. Driving the CLOSURE: `make()` → handle, `call(handle, (3, 4))` → 7.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk) (export twice)))
+  (call   mk (: (tuple 3 4) (Tuple Int64 Int64)))
+  (output (: 7 Int64)))
+
+(case "MIXED: driving the PLAIN export alongside a Tuple-arg closure"
+  (doc    "The SAME mixed component as above, but the trial drives the PLAIN export `twice` (an ordinary
+           top-level func) — proving it coexists with the tuple-arg closure interface and is reachable by
+           name. `twice(21)` → 42. Companion to the closure-driving trial above.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
+              (def (twice (: n Int64)) (* n 2))
+              (export mk) (export twice)))
+  (call   twice (: 21 Int64))
+  (output (: 42 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner
