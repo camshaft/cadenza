@@ -786,6 +786,14 @@ the component type. The new work:
   Result Err-pinned / a Result reaching both variants / a tuple-of-list). **The closure-RESULT matrix now
   reaches EVERY value-encodable type — scalar, byte-rope, fixed compound, collection, SUM, and
   compound-containing-collection — across every closure shape.**
+- **✅ COMPOSED round-trip surface LOCKED IN `@86c9fa0c` (corpus-only).** The argument surface (every
+  machine-representable type, incl. higher-order closure-typed args) and the result surface (every
+  value-encodable type) COMPOSE freely, across single-sig and distinct-sig grouping — verified end-to-end with
+  adversarial cases: a Map whose value is a list; an Option of a tuple; a list of tuples; a higher-order arg
+  composed with a Sum result; a distinct-sig round-trip pairing a Sum-result consumer with a collection-result
+  consumer. +6 corpus. **The ROUND-TRIP closure surface is SATURATED — every remaining gap is DIRECT-CALL
+  host→guest transfer (a closure/compound the HOST supplies over the boundary, blocked on a nonexistent
+  `value-decode` runtime op + a closure-resource-into-a-call ABI) or the `borrow<t>`/transformer frontier.**
 - **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG on the DIRECT-CALL path
   (the HOST supplies it over the boundary — a compound needs a `value-decode` runtime op that does not exist;
   a closure needs a closure-resource passed INTO a call); a closure TRANSFORMER (`own<t>` both directions —
