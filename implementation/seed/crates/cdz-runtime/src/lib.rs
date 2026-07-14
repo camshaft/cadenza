@@ -16415,6 +16415,72 @@ mod tests {
         );
     }
 
+    /// TRIPWIRE + COORDINATION CONTRACT for the compiler agent wiring `Map.fold`/`Map.keys`/`to-list`.
+    /// The runtime cursor (`map-iter`/`-next`/`-key`) walks the CHAMP in HASH order — deterministic and
+    /// insert-order-independent (pinned above), which satisfies HALF of the spec's *Map Iteration Is
+    /// Deterministic*: "a deterministic order derived from the keys, not from insertion order." BUT the
+    /// spec has a SECOND clause: "The order in which a map's entries are visited MUST AGREE with the order
+    /// its canonical byte form places them in" (collections-and-text.md §Map Iteration Is Deterministic,
+    /// cited at rcdzc lower.rs ~8207). The canonical byte form orders keys by `canonical_scalar_order`
+    /// (NUMERIC for ints, lexicographic for strings — what value-encode renders + what `Map.fold` output
+    /// must match). HASH order ≠ canonical order, so a `Map.fold`/`keys` emitted directly over the raw
+    /// cursor would VIOLATE the spec AND disagree with the same map's own `print`/value-encode output.
+    /// This test PINS that the two orders differ (so the discrepancy can't be forgotten) and documents the
+    /// contract: when iteration is exposed to the language, the compiler MUST re-sort the cursor output
+    /// through the canonical order (the runtime already does this internally in `map_entries_canonical`;
+    /// the alternative is a future canonical-order runtime cursor op — a coordination decision, NOT a
+    /// silent hash-order fold). If a future change makes the cursor ITSELF canonical-ordered, this test
+    /// will flip — update it (and the compiler emit) together; do not just delete the assertion.
+    #[test]
+    fn map_cursor_is_hash_order_which_differs_from_canonical_render_order() {
+        reset();
+        let before = live_nodes();
+        // Keys whose CHAMP hash order differs from numeric order (256's LE bytes, spread magnitudes).
+        let keyvals = [
+            (256i64, 2560i64),
+            (1, 10),
+            (3, 30),
+            (2, 20),
+            (100, 1000),
+            (7, 70),
+        ];
+        let mut m = op_map_empty();
+        for &(k, v) in &keyvals {
+            m = op_map_insert(m, op_box_int(k), op_box_int(v));
+        }
+        // (A) the runtime cursor's visiting order.
+        let mut cursor_keys: Vec<i64> = Vec::new();
+        let mut cur = op_map_iter(m);
+        loop {
+            let k = op_map_iter_key(cur);
+            if k == Handle::NULL {
+                break;
+            }
+            cursor_keys.push(op_get_int(k));
+            cur = op_map_iter_next(cur);
+        }
+        op_drop(cur);
+        // (B) the canonical byte-form key order = value-encode's sort = ascending numeric.
+        let mut canonical_keys: Vec<i64> = keyvals.iter().map(|&(k, _)| k).collect();
+        canonical_keys.sort_unstable();
+        // The cursor visits EVERY key exactly once (a correct, complete traversal)…
+        let mut cursor_sorted = cursor_keys.clone();
+        cursor_sorted.sort_unstable();
+        assert_eq!(
+            cursor_sorted, canonical_keys,
+            "the cursor visits exactly the map's keys (complete traversal)"
+        );
+        // …but NOT in canonical order — this is the contract gap the doc-comment describes.
+        assert_ne!(
+            cursor_keys, canonical_keys,
+            "the cursor walks HASH order, which for these keys differs from the canonical (numeric) byte-\
+             form order — a `Map.fold`/`keys` over the raw cursor would violate *Map Iteration Is \
+             Deterministic*'s agree-with-canonical clause; the compiler must re-sort when exposing iteration"
+        );
+        op_drop(m);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
     #[test]
     fn map_iter_fork_independence() {
         reset();
