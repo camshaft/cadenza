@@ -4270,6 +4270,116 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_if_with_a_boolean_constant_branch_needing_a_negated_condition_becomes_a_connective() {
+        // The OTHER two if-with-one-boolean-constant patterns, where the constant flips the connective's
+        // condition to `(not c)`:
+        //   `(if c a true)`  IS `(or (not c) a)`   — else is the `true`
+        //   `(if c false b)` IS `(and (not c) b)`  — then is the `false`
+        // Emits `i32.eqz` (the negation) + `i32.or`/`i32.and`, no `select`/`if`, and joins the boolean-algebra
+        // fold family: `(if (> x 10) (< x 5) true)` → `(or (<= x 10) (< x 5))` (the `(not (> x 10))` folds to
+        // `(<= x 10)`). Same trap/tail-call discipline as the sibling two patterns.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let src = format!("(module m (def (f {params}) {body}) (def (main) 0) (export main))");
+            let mut db = crate::db::Db::load(crate::testkit::parse(&src));
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // `(if c a true)` → `(or (not c) a)`: an `i32.eqz` (the negation) + `i32.or`, no `select`/`if`.
+        let or_neg = lir("(: c Bool) (: a Bool)", "(if c a true)");
+        assert!(
+            or_neg.iter().any(|i| matches!(i, Lir::I32Eqz))
+                && or_neg.iter().any(|i| matches!(i, Lir::I32Or))
+                && !or_neg.iter().any(|i| matches!(i, Lir::Select | Lir::If(_))),
+            "(if c a true) → (or (not c) a), got: {or_neg:?}"
+        );
+        // `(if c false b)` → `(and (not c) b)`: an `i32.eqz` + `i32.and`, no `select`/`if`.
+        let and_neg = lir("(: c Bool) (: b Bool)", "(if c false b)");
+        assert!(
+            and_neg.iter().any(|i| matches!(i, Lir::I32Eqz))
+                && and_neg.iter().any(|i| matches!(i, Lir::I32And))
+                && !and_neg
+                    .iter()
+                    .any(|i| matches!(i, Lir::Select | Lir::If(_))),
+            "(if c false b) → (and (not c) b), got: {and_neg:?}"
+        );
+        // FOLD FAMILY: `(if (> x 10) (< x 5) true)` → `(or (<= x 10) (< x 5))` — the negation folds into the
+        // complementary op (`le_s`), so there is NO `i32.eqz` and NO `if`/`select`, just two compares + `or`.
+        let folded = lir("(: x Int64)", "(if (> x 10) (< x 5) true)");
+        assert!(
+            folded.iter().any(|i| matches!(i, Lir::I64LeS))
+                && folded.iter().any(|i| matches!(i, Lir::I32Or))
+                && !folded
+                    .iter()
+                    .any(|i| matches!(i, Lir::I32Eqz | Lir::Select | Lir::If(_))),
+            "(if (> x 10) (< x 5) true) → (or (<= x 10) (< x 5)), got: {folded:?}"
+        );
+
+        // VALUE PARITY over the truth tables.
+        for (c, a) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(
+                run::<bool>(
+                    "(: c Bool) (: a Bool)",
+                    "(if c a true)",
+                    &[Val::Bool(c), Val::Bool(a)]
+                ),
+                if c { a } else { true },
+                "(if c a true) @{c},{a}"
+            );
+            assert_eq!(
+                run::<bool>(
+                    "(: c Bool) (: b Bool)",
+                    "(if c false b)",
+                    &[Val::Bool(c), Val::Bool(a)]
+                ),
+                if c { false } else { a },
+                "(if c false b) @{c},{a}"
+            );
+        }
+
+        // TRAP SHIELDING: `(if c (> (/ 10 n) 0) true)` = `(or (not c) (> (/ 10 n) 0))` — the guarded `/` is
+        // reached only when c is true (so `(not c)` is false); c=false short-circuits, no trap.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: c Bool) (: n Int64)) (if (if c (> (/ 10 n) 0) true) 1 0)) (export f))",
+        )))
+        .expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&tb, "f", &[Val::Bool(false), Val::S64(0)]),
+            1,
+            "c=false short-circuits the trapping branch"
+        );
+        assert!(
+            call_traps(&tb, "f", &[Val::Bool(true), Val::S64(0)]),
+            "c=true reaches the trapping branch"
+        );
+
+        // TAIL-CALL VETO: a recursive call in the guarded branch keeps the `if` (loop transform must win).
+        let rec = "(module m (def (rec (: n Int64)) (if (= n 0) true (if (< n 0) (rec (- n 1)) true))) (export rec))";
+        let rc =
+            compile_component(&crate::codec::encode(&crate::testkit::parse(rec))).expect("compile");
+        assert!(run_returns_with::<bool>(&rc, "rec", &[Val::S64(0)]));
+        assert!(run_returns_with::<bool>(&rc, "rec", &[Val::S64(3)]));
+    }
+
+    #[test]
     fn a_nested_if_sharing_an_arm_flattens_to_one_if_on_a_combined_condition() {
         // IF-TOWER FLATTENING: two nested `if`s sharing an arm collapse to ONE `if` on a combined condition.
         //   `(if c1 x (if c2 x y))` → `(if (or c1 c2) x y)`  (shared THEN arm `x`)

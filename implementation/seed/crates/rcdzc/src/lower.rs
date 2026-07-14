@@ -634,6 +634,33 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, "(if c true b) → (or c b)");
                     fold_short_circuit(db, cond, else_, false)
                 }
+                // The OTHER two if-with-one-boolean-constant patterns, where the constant is in the position
+                // that flips the connective's condition to `(not c)`:
+                //   `(if c a true)`  IS `(or (not c) a)`  — else is `true` (result is true unless c holds
+                //       and a fails), so `(not c)` short-circuits the `or` to true when c is false.
+                //   `(if c false b)` IS `(and (not c) b)` — then is `false` (result is false unless c fails
+                //       and b holds), so `(not c)` short-circuits the `and` to false when c is true.
+                // Same soundness as the two above: `(not c)` is the always-evaluated short-circuit LHS (c's
+                // trap is preserved; `not` is total), and the runtime branch is the guarded RHS, evaluated
+                // on exactly the original's deciding polarity. The negated condition is synthesized and
+                // routed through `fold_short_circuit`, so `(not c)` folds (`(not (> x 10))`→`(<= x 10)`) and
+                // the whole thing joins the boolean-algebra fold family — e.g. `(if (> x 10) (< x 5) true)`
+                // → `(or (<= x 10) (< x 5))` → `(<= x 10)` (subsumption). Same tail-call veto on the guarded
+                // runtime branch.
+                _ if matches!(core_of(db, else_), Core::ConstBool(true))
+                    && !tail_positions_have_call(db, then_) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, "(if c a true) → (or (not c) a)");
+                    let not_c = synth_core(db, Core::Not { operand: cond }, crate::ty::Ty::Bool);
+                    fold_short_circuit(db, not_c, then_, false)
+                }
+                _ if matches!(core_of(db, then_), Core::ConstBool(false))
+                    && !tail_positions_have_call(db, else_) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, "(if c false b) → (and (not c) b)");
+                    let not_c = synth_core(db, Core::Not { operand: cond }, crate::ty::Ty::Bool);
+                    fold_short_circuit(db, not_c, else_, true)
+                }
                 // IF-TOWER FLATTENING (shared-arm condition combination). Two nested `if`s that share an
                 // arm collapse to ONE `if` on a COMBINED condition, replacing a nested branch with a single
                 // (backend-selectable-branchless) decision:
