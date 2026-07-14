@@ -393,6 +393,24 @@ pub fn emit(
         let body = def_body(db, def)?;
         host::collect_host_imports(db, body, &mut host_imports);
     }
+    // A host op whose BOUNDARY SIGNATURE this increment cannot emit (a String/compound RESULT, or a
+    // compound ARGUMENT) is collected with `result: None` (indistinguishable from a Unit result) and would
+    // then hit `select`'s INTERNAL "not in the host-import set" path — a message documented as "a compiler
+    // bug" surfacing for a valid-but-unsupported program. Diagnose it HONESTLY here, naming the real
+    // limitation, before selection. (A scalar/Unit result + scalar/String/Unit args stay on the emit path.)
+    if !host_imports.is_empty() {
+        for &def in &layout.order {
+            let body = def_body(db, def)?;
+            if let Some((op, pos, ty)) = host::first_unrepresentable_host_op(db, body) {
+                return Err(Reject::decline(format!(
+                    "the host operation `{op}` has a {pos} of type `{ty}`, which has no component \
+                     boundary form this compiler emits yet (only scalar and unit results, and \
+                     scalar/string/unit arguments, cross the host boundary; a string or compound result \
+                     is a later increment)"
+                )));
+            }
+        }
+    }
     if !host_imports.is_empty() && !imports.is_empty() {
         return Err(Reject::decline(
             "a program that both delegates a host effect AND uses the value-heap runtime is not yet \

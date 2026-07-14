@@ -35218,6 +35218,43 @@ mod closure_host_resource {
         );
     }
 
+    /// A host operation with a STRING (or compound) RESULT has no component boundary form this compiler
+    /// emits yet — its result was collected as `result: None` (indistinguishable from a Unit result), then
+    /// selection hit the INTERNAL "not in the host-import set" path, a message documented as "a compiler
+    /// bug" surfacing for a VALID-but-unsupported program. It now declines HONESTLY at emit, naming the
+    /// operation, the offending position (`result`), the type, and the feature limitation — never the
+    /// internal-invariant message. (A scalar/unit result stays on the emit path — verified separately.)
+    #[test]
+    fn a_host_op_with_a_string_result_declines_with_an_honest_message() {
+        use crate::testkit::parse;
+        // A host op with a STRING RESULT whose value is CONSUMED to a scalar (so the EXPORT is a scalar, and
+        // the program flows through the main `emit` path, not the value-escape resource path): `String.len`
+        // of the host's String result. The op still has no scalar boundary form for its String result.
+        let src = "(do (effect ask (op greet (-> Unit String))) \
+                   (def (main) (host (ask) (String.byte-len (ask.greet)))) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a host op returning a String has no boundary form yet — must decline");
+        assert!(
+            err.message.contains("greet")
+                && err.message.contains("result")
+                && err.message.contains("String")
+                && err.message.contains("no component"),
+            "expected an honest feature-limitation decline naming the op/position/type, got: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("not in the host-import set"),
+            "must NOT surface the internal-invariant \"compiler bug\" message, got: {}",
+            err.message
+        );
+        // A SCALAR-result host op still compiles (the honest decline must not over-reject).
+        let ok = "(do (effect ask (op ask (-> Unit Int64))) \
+                  (def (main) (host (ask) (+ (ask.ask) 1))) (export main))";
+        crate::compile::compile_component(&crate::codec::encode(&parse(ok))).expect(
+            "a scalar-result host op still compiles (the honest decline is result-type-gated)",
+        );
+    }
+
     /// MULTI-EXPORT closures COMPILE for the same-signature (one resource type, shared `call`), the
     /// DISTINCT-signature (N resource types, per-group `call-g<n>`), AND the MIXED shape (closures ALONGSIDE
     /// a plain non-closure export — the closures via the resource envelope, the plain export as an ordinary
