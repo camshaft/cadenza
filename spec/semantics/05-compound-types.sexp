@@ -2462,6 +2462,24 @@
   (call   main)
   (output (: 6 Int64)))
 
+(case "a sum whose variants are named after target-language keywords constructs and matches"
+  (doc    "A user sum is free to name its variants whatever the language permits — including words that are
+           KEYWORDS in a compilation target. `(type W (fn Int64) (struct Int64) (enum))` names its variants
+           `fn`/`struct`/`enum` (Rust keywords). Construction `(W.fn 5)` and the match arms resolve by the
+           variant's Cadenza identity, and the value discriminates → 5 (the `fn` arm). Pins that a variant
+           name is a Cadenza identifier decided by the source, NOT constrained by any backend's reserved
+           words — a backend that maps names to its own syntax must ESCAPE a keyword collision (the Rust
+           backend emits `r#fn` for a raw-escapable keyword and a `cdz_kw_`-prefixed identifier for a
+           non-escapable one like `Self`), never reject or miscompile the well-formed program.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (fn Int64) (struct Int64) (enum))
+            (def (f (: w W)) (match w ((W.fn n) n) ((W.struct n) (* n 2)) ((W.enum) 0)))
+            (def (main) (f (W.fn 5)))
+            (export main)))
+  (call   main)
+  (output (: 5 Int64)))
+
 (case "a nested constructor in a multi-payload position destructures two levels"
   (doc    "A variant pattern in a multi-payload slot — `(Cons h (Cons h2 rest))` — switches TWO levels: the
            inner `Cons` sits in the tail position `[Payload, Elem(1)]`, whose sub-value type is registered
