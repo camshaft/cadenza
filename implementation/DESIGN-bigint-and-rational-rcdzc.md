@@ -4,10 +4,25 @@
 prerequisite. do deep research on the best way to do that and write up a document for design and impl
 plan."* This is the design + increment plan.
 
-> **STATUS (2026-07-13):** B0 (`Ty::BigInt` through the closed universe) and B1 (`BigInt.of` +
-> constant folding + checked `Int64.of`-back) are LANDED on `spec`. The RUNTIME limb library
-> (`cdz-runtime/src/bigint.rs`: add/sub/mul/divmod/gcd/cmp + boundary encodings) is being built in
-> PARALLEL by separate cron-driven agents (landed `05dbcc46`/`cbda83a0`/`4e577d7c`).
+> **STATUS (2026-07-14): the runtime BigInt vertical is COMPLETE.** Landed on `spec`:
+> - B0 (`Ty::BigInt` through the closed universe) + B1 (`BigInt.of` constant folding + checked
+>   `Int64.of`-back) — pure compiler.
+> - The RUNTIME limb library (`cdz-runtime/src/bigint.rs`: add/sub/mul/divmod/gcd/cmp + sign-magnitude +
+>   two's-complement byte forms; differential-tested vs num-bigint).
+> - B3a (WIT ops `bigint-of-i64`/`to-i64-checked`/`add`/`sub`/`mul`/`div`/`rem`/`cmp`).
+> - B3b (the compiler EMITS runtime `+`/`-`/`*`/`/` for runtime-valued BigInt) — **plus the refcount fix:
+>   the runtime ops BORROW their operands (like `value-eq`), so the emit drops each owned-temporary
+>   operand; `heap_operand_ownership` + `emit_bigint_borrow_{unary,binary}`. 0 live objects (was leaking).**
+> - B3c (comparison `<`/`>`/`<=`/`>=`/`=` via `bigint-cmp` + a signed compare-with-zero) + `%` remainder.
+> - B3c+ (a CONSTANT BigInt used as a runtime op OPERAND materializes inline via `bigint-of-i64` when it
+>   fits i64 — `emit_bigint_operand`; a beyond-i64 constant leaf stays a B4 concern).
+> - The host-boundary escape (a constant BigInt result renders `(: N BigInt)` via the codec KIND_INT leaf,
+>   `Shape::BigInt` tag 17).
+>
+> REMAINING for BigInt: only OPTIONAL widenings (a runtime-COMPUTED BigInt escape — blocked on the general
+> runtime-heap-return path, NOT BigInt-specific; an arbitrary-magnitude constant BigInt leaf builder for a
+> beyond-i64 literal operand). The NEXT vertical is **B4 (`Ty::Rational` on top of `Big`)**, which unblocks
+> the 9 remaining units `todo` cases.
 >
 > ✅ **B2 (`Ty::Rational`) OWNERSHIP: handed to the BigInt track (operator decision, 2026-07-13).**
 > Rational is fundamentally a bignum feature — a normalized pair of big-integers, whose constant fold
