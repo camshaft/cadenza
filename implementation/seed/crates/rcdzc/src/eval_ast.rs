@@ -43,6 +43,16 @@ struct EvalPlan {
 
 /// Desugar every `(eval AST)` whose argument is a compile-time-visible `Ast` construction into the source
 /// form that AST denotes (see the module docs). A non-reconstructable argument is left for `resolve`.
+///
+/// The compiler does NOT require `eval` to compile programs, and it does NOT execute a dynamically-built
+/// AST: only a COMPILE-TIME-VISIBLE `Ast` construction is reconstructed to source; a runtime/non-constant
+/// AST argument is left for `resolve` to decline. And because `eval` folds the reconstructed source
+/// through the ordinary compile-time path (the SAME tier as generic reduction, monomorphization, and
+/// constant folding), there is one place the meaning of compile-time computation lives.
+//= spec/capabilities/metaprogramming.md#eval-is-optional-for-macros-and-interactive-use
+//# The compiler MUST NOT require `eval` to compile programs — the compiler constructs and analyzes AST but does not execute dynamically-constructed AST.
+//= spec/capabilities/metaprogramming.md#compile-time-evaluation-is-one-tier
+//# Macro expansion, generic reduction, monomorphization, and constant folding MUST be the same compile-time evaluation mechanism rather than separate subsystems, so that there is one place the meaning of compile-time computation lives and the four cannot drift apart.
 pub fn desugar_eval(ast: &mut Arenas) {
     // Only ORIGINAL nodes can be a source `(eval …)`; reconstruction APPENDS, so bound the scan.
     let original_len = ast.structure.len() as u32;
