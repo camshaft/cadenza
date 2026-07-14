@@ -2637,6 +2637,29 @@
   (call   twice (: 21 Int64))
   (output (: 42 Int64)))
 
+(case "DISTINCT-SIG: two Tuple-arg closures of DIFFERENT signatures each cross the direct-call boundary"
+  (doc    "The direct-call fixed-shape compound-arg path extends to the DISTINCT-SIGNATURE shape: two
+           closures taking the SAME `(Tuple Int64 Int64)` arg but returning DIFFERENT types (`mk-sum` → Int64,
+           `mk-eq` → Bool) cross as TWO resource types, each with its own `make-<name>` + `call-g<n>`. Each
+           group's `call-g<n>` takes a native `tuple<s64,s64>` rebuilt from the flattened fields (per-group
+           `TupleArgRebuild`). Driving the Int64 group: `make-sum()` → handle, `call(handle, (3, 4))` → 7.
+           (The Bool group is exercised by the companion trial.)")
+  (input  (do (def (mk-sum) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
+              (def (mk-eq) (fn ((: p (Tuple Int64 Int64))) (= (. p 0) (. p 1))))
+              (export mk-sum) (export mk-eq)))
+  (call   mk-sum (: (tuple 3 4) (Tuple Int64 Int64)))
+  (output (: 7 Int64)))
+
+(case "DISTINCT-SIG: driving the Bool-returning Tuple-arg closure of the distinct-sig pair"
+  (doc    "The SAME distinct-sig component, driving the Bool group `mk-eq : (-> (Tuple Int64 Int64) Bool)` —
+           its own resource type + `call-g<n>` taking a `tuple<s64,s64>`. `make-eq()` → handle,
+           `call(handle, (5, 5))` → `(= (. p 0) (. p 1))` = true. Companion to the Int64-group trial above.")
+  (input  (do (def (mk-sum) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
+              (def (mk-eq) (fn ((: p (Tuple Int64 Int64))) (= (. p 0) (. p 1))))
+              (export mk-sum) (export mk-eq)))
+  (call   mk-eq (: (tuple 5 5) (Tuple Int64 Int64)))
+  (output (: true Bool)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner

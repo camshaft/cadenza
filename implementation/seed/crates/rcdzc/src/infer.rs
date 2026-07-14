@@ -3185,6 +3185,22 @@ fn total_conversion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, 
             ")".to_string(),
             "encode the string to its UTF-8 bytes with `String.to-bytes`".to_string(),
         )),
+        // A fixed-width integer where a BigInt is expected — `(+ (BigInt.of 5) 3)`. `BigInt.of : ∀a.
+        // (Int a) → BigInt` is TOTAL (every fixed int fits the unbounded BigInt), so wrapping the int
+        // operand repairs the numeric mix in one shot — the BigInt twin of the int-width `.of` coercion.
+        (Ty::BigInt, Ty::Int(_)) => Some((
+            "(BigInt.of ".to_string(),
+            ")".to_string(),
+            "convert the integer to a BigInt with `BigInt.of`".to_string(),
+        )),
+        // A fixed-width integer where a Rational is expected — `(+ r 1)`, `r : Rational`. `Rational.of-int
+        // : ∀a. (Int a) → Rational` is TOTAL (the whole rational `n/1`), so wrapping the int operand
+        // repairs the mix in one shot — the Rational twin.
+        (Ty::Rational, Ty::Int(_)) => Some((
+            "(Rational.of-int ".to_string(),
+            ")".to_string(),
+            "convert the integer to a Rational with `Rational.of-int`".to_string(),
+        )),
         _ => None,
     }
 }
@@ -4211,7 +4227,7 @@ fn check_application(
             let a_ok = a_big || matches!(a0, Ty::Any);
             let b_ok = b_big || matches!(b0, Ty::Any);
             if !(a_ok && b_ok) {
-                out.push(Reject::coded(
+                let mut reject = Reject::coded(
                     Code::NumericMismatch,
                     format!(
                         "no implicit conversion between numeric types {} and {} — convert explicitly \
@@ -4219,7 +4235,20 @@ fn check_application(
                         a0.render_name(),
                         b0.render_name()
                     ),
-                ));
+                );
+                // Offer the total `(BigInt.of …)` wrap on the FIXED-int operand — the one operand that is
+                // a fixed integer where the other is a BigInt (`(+ (BigInt.of 5) 3)` → wrap `3`). The same
+                // "same repair wherever the mismatch surfaces" the int-width/float coercions give, extended
+                // to the BigInt boundary. Only when exactly one side is BigInt and the other a fixed int.
+                let (fix_arg, other) = if a_big {
+                    (args[1], &b0)
+                } else {
+                    (args[0], &a0)
+                };
+                if let Some(fix) = numeric_text_coercion_fix(db, &Ty::BigInt, other, fix_arg) {
+                    reject = reject.with_fix(fix);
+                }
+                out.push(reject);
             }
             for &arg in args {
                 collect(db, arg, out);
@@ -4245,7 +4274,7 @@ fn check_application(
             let a_ok = a_rat || matches!(a0, Ty::Any);
             let b_ok = b_rat || matches!(b0, Ty::Any);
             if !(a_ok && b_ok) {
-                out.push(Reject::coded(
+                let mut reject = Reject::coded(
                     Code::NumericMismatch,
                     format!(
                         "no implicit conversion between numeric types {} and {} — convert explicitly \
@@ -4253,7 +4282,18 @@ fn check_application(
                         a0.render_name(),
                         b0.render_name()
                     ),
-                ));
+                );
+                // The Rational twin of the BigInt wrap above: offer `(Rational.of-int …)` on the fixed-int
+                // operand where the other side is a Rational (`(+ r 1)` → wrap `1`).
+                let (fix_arg, other) = if a_rat {
+                    (args[1], &b0)
+                } else {
+                    (args[0], &a0)
+                };
+                if let Some(fix) = numeric_text_coercion_fix(db, &Ty::Rational, other, fix_arg) {
+                    reject = reject.with_fix(fix);
+                }
+                out.push(reject);
             }
             for &arg in args {
                 collect(db, arg, out);

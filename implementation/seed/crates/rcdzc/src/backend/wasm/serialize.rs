@@ -3883,6 +3883,13 @@ pub struct SigGroup {
     /// PAST all compound-template data (`bytes_out_off`), so a compound group + a collection group + a
     /// byte-rope group never collide. Mutually exclusive with `ret_is_bytes`/`ret_template`.
     pub ret_descriptor: Option<Vec<u8>>,
+    /// `Some(rebuild)` when this group's closure takes a single FIXED-SHAPE SCALAR tuple/record ARGUMENT (the
+    /// direct-call compound-arg path). The arg crossed the boundary FLATTENED into its N scalar fields (core
+    /// params `1..1+N` of `call-<g>`), so the group's SCALAR `call-<g>` rebuilds the tuple cell from them
+    /// (`arr-alloc N` + per field box/`arr-set`) before `call_indirect`, then drops the rebuilt cell (an owned
+    /// per-call temporary). `arg_vts` for such a group is the FLATTENED field valtypes. This increment
+    /// supports it only on a SCALAR-result group (`ret_is_bytes`/`ret_template`/`ret_descriptor` all `None`).
+    pub tuple_arg: Option<TupleArgRebuild>,
 }
 
 /// The DISTINCT-SIGNATURE multi-export core module: closures of G DIFFERENT signatures cross as G resource
@@ -4443,9 +4450,14 @@ pub fn distinct_sig_resource_core_module(
             ci32(bytes_ret_off as i64, &mut inner);
             inner.push(op::END);
         } else {
+            // A tuple-arg group needs a SECOND i32 local for the rebuilt tuple cell (the closure's single
+            // argument, reassembled from the flattened field params); a plain scalar group needs just the
+            // closure-cell local.
             let cell_local = 1 + arity;
+            let tuple_local = cell_local + 1;
+            let n_locals = if gr.tuple_arg.is_some() { 2 } else { 1 };
             inner.extend_from_slice(&wasm_vec(1, &{
-                let mut gl = uleb_bytes(1);
+                let mut gl = uleb_bytes(n_locals as u64);
                 gl.push(wasm_abi::CORE_I32);
                 gl
             }));
@@ -4460,9 +4472,42 @@ pub fn distinct_sig_resource_core_module(
             uleb128(cell_local as u64, &mut inner);
             inner.push(op::LOCAL_GET);
             uleb128(cell_local as u64, &mut inner);
-            for a in 0..arity {
-                inner.push(op::LOCAL_GET);
-                uleb128((1 + a) as u64, &mut inner);
+            if let Some(rebuild) = &gr.tuple_arg {
+                // Direct-call compound arg: the tuple crossed FLATTENED into its N fields (core params
+                // `1..1+N`). Rebuild the cell (`arr-alloc N` + per field: index, param, box, `arr-set`; FBIP
+                // array threaded on the stack) and push the single handle — the exact single-export tuple-arg
+                // shape. Stash it in `tuple_local` for the post-dispatch drop (an owned per-call temporary).
+                let nfields = rebuild.field_box_ops.len();
+                inner.push(op::I32_CONST);
+                crate::backend::wasm::encode::sleb128(nfields as i64, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("arr-alloc"), &mut inner); // [env, arr]
+                for (i, box_op) in rebuild.field_box_ops.iter().enumerate() {
+                    inner.push(op::I32_CONST);
+                    crate::backend::wasm::encode::sleb128(i as i64, &mut inner); // [env, arr, i]
+                    inner.push(op::LOCAL_GET);
+                    uleb128((1 + i) as u64, &mut inner); // the flattened field → [env, arr, i, field]
+                    if let Some(bop) = box_op {
+                        if let Some(signed) = rebuild.field_extend_signed[i] {
+                            inner.push(if signed {
+                                op::I64_EXTEND_I32_S
+                            } else {
+                                op::I64_EXTEND_I32_U
+                            });
+                        }
+                        inner.push(op::CALL);
+                        uleb128(imp(bop), &mut inner);
+                    }
+                    inner.push(op::CALL);
+                    uleb128(imp("arr-set"), &mut inner); // → [env, arr]
+                }
+                inner.push(op::LOCAL_TEE);
+                uleb128(tuple_local as u64, &mut inner); // [env, arr]
+            } else {
+                for a in 0..arity {
+                    inner.push(op::LOCAL_GET);
+                    uleb128((1 + a) as u64, &mut inner);
+                }
             }
             inner.push(op::LOCAL_GET);
             uleb128(cell_local as u64, &mut inner);
@@ -4485,6 +4530,14 @@ pub fn distinct_sig_resource_core_module(
             if !call_borrow {
                 inner.push(op::LOCAL_GET);
                 uleb128(cell_local as u64, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner);
+            }
+            // The rebuilt tuple-arg cell is an owned per-call temporary — drop it UNCONDITIONALLY after
+            // dispatch (both own + borrow), balancing its `arr-alloc`.
+            if gr.tuple_arg.is_some() {
+                inner.push(op::LOCAL_GET);
+                uleb128(tuple_local as u64, &mut inner);
                 inner.push(op::CALL);
                 uleb128(imp("drop"), &mut inner);
             }

@@ -9974,6 +9974,11 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
             _ => None,
         },
         (Core::ConstBool(a), Core::ConstBool(b)) => Some(a.cmp(&b)),
+        // Two strings order LEXICOGRAPHICALLY by their Unicode scalar sequences. `String::cmp` compares the
+        // UTF-8 bytes, and UTF-8 byte order coincides with scalar-value order, so this is exactly the
+        // scalar-sequence lexicographic order the spec fixes (`"a" < "ab" < "b"`).
+        //= spec/capabilities/collections-and-text.md#string-comparison-is-defined-on-scalar-values
+        //# An ordering over strings MUST be the lexicographic order of their Unicode scalar value sequences.
         (Core::ConstStr(a), Core::ConstStr(b)) => Some(a.cmp(&b)),
         // Two chars order by scalar value (`compare #\a #\b` → Less).
         (Core::ConstChar(a), Core::ConstChar(b)) => Some((a as u32).cmp(&(b as u32))),

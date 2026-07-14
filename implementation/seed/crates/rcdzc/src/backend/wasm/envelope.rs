@@ -2987,6 +2987,11 @@ pub struct SigGroupAbi {
     /// what bytes fill it. When any group crosses as `list<u8>`, the whole distinct-sig component gains a
     /// shared memory + `cabi_realloc` alias.
     pub ret_is_bytes: bool,
+    /// `Some(field_bytes)` when this group's closure takes a single FIXED-SHAPE SCALAR tuple/record ARGUMENT
+    /// (the direct-call compound-arg path): its `call-<g>` functype's single argument is a native component
+    /// `tuple<field_bytes…>` (minted just before the functype on both import + export sides), NOT `arg_bytes`'s
+    /// inline scalars. `None` = the scalar-arg path (byte-identical). Only on a SCALAR-result group this cut.
+    pub tuple_arg_bytes: Option<Vec<u8>>,
 }
 
 /// One SIGNATURE GROUP's boundary shape for the distinct-signature ROUND-TRIP envelope: its producers
@@ -3081,6 +3086,14 @@ pub fn assemble_distinct_sig_resource_mixed_borrow(
     // types; `any_bytes` gates the shared memory/realloc plumbing.
     let n_bytes = groups.iter().filter(|gr| gr.ret_is_bytes).count();
     let any_bytes = n_bytes > 0;
+    // A tuple-ARG group's `call-<g>` argument is a native component `tuple<…>` (a DEFINED type minted just
+    // before the call functype), so it also adds ONE extra component type (own<t> + tuple + functype = 3, vs
+    // a scalar-arg call's own<t> + functype = 2) — exactly like a byte-rope group's extra list<u8> type.
+    // `n_tuple` counts those extra tuple types (a group is never both byte-rope-result AND tuple-arg this cut).
+    let n_tuple = groups
+        .iter()
+        .filter(|gr| gr.tuple_arg_bytes.is_some())
+        .count();
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
 
@@ -3285,6 +3298,19 @@ pub fn assemble_distinct_sig_resource_mixed_borrow(
                 ));
                 fn_functype.push(ti + 2);
                 ti += 3;
+            } else if let Some(fields) = &gr.tuple_arg_bytes {
+                // call-<g>: own/borrow<t_g> (ti) + tuple<…> (ti+1) + `(self, tuple) -> R` functype.
+                items.extend_from_slice(&call_handle(rty));
+                let own_ty = ti;
+                let tup_ty = ti + 1;
+                items.extend_from_slice(&tuple_defined_type(fields));
+                items.extend_from_slice(&closure_call_tuple_arg_functype(
+                    own_ty,
+                    tup_ty,
+                    gr.result_byte,
+                ));
+                fn_functype.push(ti + 2);
+                ti += 3;
             } else {
                 // call-<g>: own/borrow<t_g> + scalar call functype.
                 items.extend_from_slice(&call_handle(rty));
@@ -3301,7 +3327,7 @@ pub fn assemble_distinct_sig_resource_mixed_borrow(
         }
         section(
             sec::COMPONENT_TYPE,
-            &wasm_vec(2 * total_fns + n_bytes + np, &items),
+            &wasm_vec(2 * total_fns + n_bytes + n_tuple + np, &items),
         )
     });
     // sec 8: lift each fn (its core func) against its functype → comp funcs k..k+total_fns; a byte-rope call
@@ -4516,6 +4542,26 @@ fn resource_inner_component_distinct_sig_borrow(
                 &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
             ));
             ty += 3;
+        } else if let Some(fields) = &gr.tuple_arg_bytes {
+            // call-<gi> : (self: handle<t_gi>, p: tuple<…>) -> R  → handle + tuple + functype.
+            let own_ty = ty;
+            let tup_ty = ty + 1;
+            let ft_ty = ty + 2;
+            out.extend_from_slice(&{
+                let mut items = call_handle(gi as u32);
+                items.extend_from_slice(&tuple_defined_type(fields));
+                items.extend_from_slice(&closure_call_tuple_arg_functype(
+                    own_ty,
+                    tup_ty,
+                    gr.result_byte,
+                ));
+                section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+            });
+            out.extend_from_slice(&section(
+                sec::COMPONENT_IMPORT,
+                &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
+            ));
+            ty += 3;
         } else {
             // call-<gi> : (self: own/borrow<t_gi>, args…) -> R  → handle<t_gi> + functype.
             let own_ty = ty;
@@ -4573,6 +4619,25 @@ fn resource_inner_component_distinct_sig_borrow(
                 let mut items = call_handle(exp_rty);
                 items.extend_from_slice(&list_u8_defined_type());
                 items.extend_from_slice(&closure_call_list_functype(ti, &gr.arg_bytes, ti + 1));
+                section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+            });
+            out.extend_from_slice(&section(
+                sec::COMPONENT_EXPORT,
+                &wasm_vec(
+                    1,
+                    &export_func_ascribed_item(&format!("call-g{gi}"), f as u32, ti + 2),
+                ),
+            ));
+            ti += 3;
+        } else if let Some(fields) = &gr.tuple_arg_bytes {
+            out.extend_from_slice(&{
+                let mut items = call_handle(exp_rty);
+                items.extend_from_slice(&tuple_defined_type(fields));
+                items.extend_from_slice(&closure_call_tuple_arg_functype(
+                    ti,
+                    ti + 1,
+                    gr.result_byte,
+                ));
                 section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
             });
             out.extend_from_slice(&section(

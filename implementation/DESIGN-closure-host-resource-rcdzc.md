@@ -919,13 +919,24 @@ the component type. The new work:
   resource` detects the tuple arg, feeds flattened field vts, routes the scalar tail to the tuple serializer +
   mixed-tuple envelope with plain exports alongside. Corpus: `mk` (tuple-arg closure) + `twice` (plain) in one
   component — closure `call(handle,(3,4))`→7 AND plain `twice(21)`→42, both e2e. gate 1734p/0f.
+- **✅✅ DIRECT-CALL FIXED-SHAPE COMPOUND ARG on the DISTINCT-SIG path** (`@5ddf1f28`, baseline `@63c0e7ac`).
+  Closures of DIFFERENT signatures each taking a fixed-shape scalar tuple/record arg → G resource types, each
+  make + `call-g<n>` taking a native `tuple<…>` rebuilt from the flattened fields. `SigGroup.tuple_arg` +
+  `SigGroupAbi.tuple_arg_bytes`: the scalar `call-g` body rebuilds the cell (per-group), both per-group
+  `call-g<n>` functype sites (outer lift + inner re-export, import & export phases) mint the tuple type
+  advancing the running type counter by 3 (like a byte-rope group's list<u8>), `n_tuple` in the outer item
+  count. 🪤 the representative-lifted-slot match is on the lambda's OWN param shape (`match_vts` = `[I32]`, the
+  tuple-cell handle) NOT the flattened `arg_vts` — else "no matching lifted lambda". A tuple arg + a byte-rope/
+  compound/collection result declines cleanly. Corpus: mk-sum(→Int64) + mk-eq(→Bool) both taking a Tuple;
+  `call(sum,(3,4))`→7 AND `call(eq,(5,5))`→true e2e. gate 1741p/0f.
 - **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path — FIXED-SHAPE
-  SCALAR tuple/record is DONE for single-export, multi-export, AND mixed (above); still to widen: DISTINCT-SIG
-  / ROUND-TRIP variants of the compound arg (⚠ NOTE the round-trip path where the CONSUMER builds the arg
-  in-guest ALREADY works — this is the DIRECT-CALL-side distinct-sig only), a compound arg ALONGSIDE other
-  args, a VARIABLE-LENGTH collection arg (needs a `value-decode` runtime op that does not exist). A
-  closure-typed closure ARG on the direct-call path (a closure-resource passed INTO a call); a closure
-  TRANSFORMER (`own<t>` both directions — cleanly declined). **The entire byte-rope
+  SCALAR tuple/record is DONE for single-export, multi-export, mixed, AND distinct-sig (above); still to
+  widen: a compound arg ALONGSIDE other args (the `TupleArgRebuild` currently assumes the tuple is the SOLE
+  arg — needs interleaving flattened-tuple fields with pass-through scalars), a VARIABLE-LENGTH collection arg
+  (needs a `value-decode` runtime op that does not exist), a tuple arg on a byte-rope/compound/collection-
+  RESULT group. (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
+  direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-resource passed
+  INTO a call); a closure TRANSFORMER (`own<t>` both directions — cleanly declined). **The entire byte-rope
   (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND
   the variable-length collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape —
   single-export + multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete

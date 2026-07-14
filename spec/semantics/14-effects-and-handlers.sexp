@@ -1294,6 +1294,21 @@
               (handle Choose unit ((guess () s (resume 5 s))) (Choose.pick))) (export main)))
   (error  CDZ0403))
 
+(case "a handler mixing arms of two different effects is rejected"
+  (doc    "A handler discharges EXACTLY ONE effect — every arm names an operation of the handle head's
+           declaring effect (capabilities-and-effects.md #A Handler Discharges Exactly One Effect).
+           `(handle A … ((a …) (b …)) …)` mixes an arm for `A.a` with an arm for `b`, an operation of a
+           DIFFERENT effect `B`; since `b` is not one of `A`'s declared operations, the arm is rejected
+           CDZ0403 (the same closed-set check that rejects an undeclared operation name). Discharging two
+           effects over one sub-computation is expressed by NESTING a handler per effect, not by enumerating
+           two effects' operations in one handler's arms.")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect B (op b (-> Unit Int64)))
+            (def (main)
+              (handle A 0 ((a (u) s (resume 1 s)) (b (u) s (resume 2 s))) (A.a))) (export main)))
+  (error  CDZ0403))
+
 (case "a handler that does not discharge every operation of its effect is rejected"
   (doc    "`Diag` declares two operations, `emit` and `collect`; a `handle Diag` binding only `emit`
            leaves `collect` undischarged. A handle names ONE effect and its arms ARE that effect's
