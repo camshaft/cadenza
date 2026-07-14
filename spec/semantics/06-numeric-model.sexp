@@ -1893,6 +1893,25 @@
   (call   main (: 1 Int64) (: 7 Int64))
   (output (: 128 Int64)))
 
+(case "a strength-reduced multiply nested as an operand computes in place"
+  (doc    "`(+ (* a 2) 1)` over a runtime `a`: the `(* a 2)` strength-reduces to `a << 1` and is the LHS
+           OPERAND of the enclosing `+`, so the shift writes the add's operand slot DIRECTLY (its result
+           store IS the add's operand store — no intermediate copy), then `+ 1`. `(3)` = 3·2 + 1 = 7, `(0)`
+           = 1. Pins that a nested strength-reduced multiply as an operand keeps the checked semantics
+           (value + overflow) while the shift result lands straight in the consuming op's slot.")
+  (input  (do (def (main (: a Int64)) (+ (* a 2) 1)) (export main)))
+  (call   main (: 3 Int64)) (output (: 7 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "a doubly-nested strength-reduced multiply chains shift into shift"
+  (doc    "`(* (* x 2) 4)` over a runtime `x`: the inner `(* x 2)` → `x << 1` writes the outer shift's
+           operand slot directly, and the outer `(* … 4)` → `… << 2` writes its own result — two shifts
+           chained with no copy between them. `(3)` = 3·8 = 24, `(1)` = 8. Pins the nested-operand shift
+           threading through a second strength reduction.")
+  (input  (do (def (main (: x Int64)) (* (* x 2) 4)) (export main)))
+  (call   main (: 3 Int64)) (output (: 24 Int64))
+  (call   main (: 1 Int64)) (output (: 8 Int64)))
+
 (case "a runtime arithmetic right shift preserves the sign"
   (doc    "`(>> a b)` on a signed runtime operand emits `i64.shr_s` (arithmetic, sign-extending);
            `(-256, 7)` = -2, matching the folded `(>> -256 7)`. A logical shift would answer a large
