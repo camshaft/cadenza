@@ -2925,6 +2925,19 @@ fn scan_top_level(ast: &Arenas) -> TopScan {
     for &body in defs.iter().filter_map(|d| d.body.as_ref()) {
         collect_nested_decls(ast, body, &top, &mut types, &mut effects, &mut modules);
     }
+    // A `(module …)` that is a TOP-LEVEL ITEM — an element of a top-level `(do …)` sequence root, `(do
+    // (module m …) (def (main) …) (export main))`. The main scan loop above handles only def/export/type/
+    // effect items (no `module` branch), and `collect_nested_decls` SKIPS a `top`-set form (it treats it as
+    // "already scanned"), so such a module was registered by NEITHER path — its name stayed unbound and its
+    // members escaped type-checking (a bare `(module m …)` and a def-body-nested one both register + check).
+    // Register each top-level module item here via the shared `collect_module_decl` (which also descends its
+    // members for deeper nesting), matching the do-local / bare-module paths. A module reached as a def
+    // body's `(do …)` element is already handled by the `collect_nested_decls` descent above.
+    for &item in &top {
+        if ast.as_form(item, "module").is_some() {
+            collect_module_decl(ast, item, &top, &mut types, &mut effects, &mut modules);
+        }
+    }
 
     // A DECLARED type name is NOT an implicit type parameter, even lowercase. `collect_type_params`
     // captures every free lowercase payload name as a tyvar (the `a` in `(type Box (W a))`), following

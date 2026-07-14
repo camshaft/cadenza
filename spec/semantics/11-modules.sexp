@@ -63,6 +63,23 @@
                   ((. m answer) (/ 1 0)))) (export main)))
   (error  CDZ0203))
 
+(case "a module in a top-level do sequence type-checks its members"
+  (doc    "A `(module …)` may sit as an ELEMENT of a top-level `(do …)` sequence root. Its members must be
+           type-checked exactly as a bare top-level `(module …)`'s are: an ill-typed nullary member — here
+           `(def (bad) (+ 1 2.0))`, a Float/Int mix — MUST be rejected CDZ0301, not silently accepted. This
+           position was a type-check hole: the top-level scan registers only def/export/type/effect items
+           (no `module` branch), and the nested-declaration walk SKIPS a top-level item as already-scanned,
+           so a module here was registered by NEITHER path — its members escaped `collect_faults` while a
+           bare `(module m …)` and a def-body-nested one were both checked. Now a top-level module item is
+           registered via the shared module-gather, so its member bodies are type-checked wherever the
+           module sits (core-semantics.md #A program that is not well-typed MUST be rejected). Also holds
+           for a Bool/Int mix and an unbound name in the member.")
+  (input  (do
+            (module m (def (bad) (+ 1 2.0)))
+            (def (main) 5)
+            (export main)))
+  (error  CDZ0301))
+
 (case "each definition in a module registers a reachable export field"
   (doc    "Witnesses core-semantics.md #A Module Evaluates To A Record Of Its Exports (2nd sentence:
            each definition registers its name and value as a field of the module's record): a module

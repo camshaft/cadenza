@@ -14451,6 +14451,41 @@ mod match_engine {
     }
 
     #[test]
+    fn a_module_in_a_top_level_do_type_checks_its_members() {
+        // `type-system.md` §A program that is not well-typed MUST be rejected. A `(module …)` that is an
+        // ELEMENT of a TOP-LEVEL `(do …)` sequence root was registered by NEITHER the top-level scan (which
+        // has no `module` branch) NOR the nested-declaration walk (which SKIPS a top-level item as
+        // already-scanned) — so its members escaped `collect_faults` entirely (a residual of the
+        // nullary-member-body fix, which reached a bare `(module m …)` and a def-body-nested one but not
+        // this position). `scan_top_level` now registers a top-level module item via `collect_module_decl`.
+        // An ill-typed member is now rejected wherever the module sits.
+        for src in [
+            // Float/Int mix → CDZ0301 (was silently accepted / a latent invalid component).
+            "(do (module m (def (bad) (+ 1 2.0))) (def (main) 5) (export main))",
+            // Bool/Int mix → CDZ0203.
+            "(do (module m (def (bad) (+ true 1))) (def (main) 5) (export main))",
+        ] {
+            assert!(
+                reject_code(src).is_some(),
+                "an ill-typed member of a top-level-do module must be rejected (was a type-check hole): {src}"
+            );
+        }
+        assert_eq!(
+            reject_code("(do (module m (def (bad) (+ 1 2.0))) (def (main) 5) (export main))")
+                .as_deref(),
+            Some("CDZ0301"),
+            "the Float/Int mix is the numeric no-promotion CDZ0301, matching the bare-module path"
+        );
+        // A WELL-TYPED top-do module still compiles clean (the position is accepted; only the missing
+        // type-check was the bug).
+        assert_eq!(
+            reject_code("(do (module m (def (good) (+ 1 2))) (def (main) 5) (export main))"),
+            None,
+            "a well-typed top-do module member is not falsely rejected"
+        );
+    }
+
+    #[test]
     fn a_module_member_body_resolves_an_enclosing_scope_sibling_module() {
         // `core-semantics.md` §A Module Evaluates To A Record Of Its Exports: a member body resolves names
         // by the ordinary lexical scope — including the module's ENCLOSING scope, so a member of `app` can
