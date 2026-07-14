@@ -4527,7 +4527,6 @@
             (def (app (: g (-> Int64 W)) (: x Int64)) (g x))
             (def (main (: k Int64)) (match (app W.Mk k) ((W.Mk n) n) ((W.N) -1)))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
@@ -4542,7 +4541,6 @@
             (def (app (: g (-> Int64 P)) (: x Int64)) (g x))
             (def (main (: k Int64)) (match (app (P.Mk 10) k) ((P.Mk a b) (+ a b))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (output (: 15 Int64)))
 
@@ -4570,7 +4568,6 @@
             (def (pick (: which Int64)) (if (> which 0) W.A W.B))
             (def (main (: k Int64)) (match ((pick k) k) ((W.A n) n) ((W.B n) (+ n 100))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
