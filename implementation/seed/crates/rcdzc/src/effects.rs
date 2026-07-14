@@ -3395,12 +3395,12 @@ fn pure_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> PureHole {
 /// the continuation AFTER the hole MAY itself perform (a second hole): this is the two-hole (general
 /// one-shot) case, folded frame-free by RE-REDUCING the spliced continuation `C[v]` under the same handler
 /// (each refold removes one perform, so it terminates). Returns the leading perform occurrence, or `None`
-/// if the leading effect on the spine is not a clean strict-position discharged perform (a conditional /
-/// `let` / non-uniform position — left to the frame vertical). Scoped to STRICT forms only (operator/call
-/// operands, tuple/list elements, `not`/proj/member/annotation) — the same uniform positions `pure_hole`
-/// admits, but permitting a performing tail. SOUND ONLY for a ONE-SHOT arm (the caller checks
-/// `count_resumes == 1`): a multi-shot arm would splice a performing `C` more than once, duplicating the
-/// inner effect.
+/// if the leading effect on the spine is not at a clean strict-first, UNIFORM position (a conditional
+/// BRANCH / connective RHS — the frame vertical's job). Descends the same STRICT-FIRST positions
+/// `pure_hole` does: operator/call operands, tuple/list elements, `not`/proj/member/annotation, a `let`
+/// (its inits then body, in order), and a `match` SCRUTINEE (evaluated first). SOUND ONLY for a ONE-SHOT
+/// arm (the caller checks `count_resumes == 1`): a multi-shot arm would splice a performing `C` more than
+/// once, duplicating the inner effect.
 fn leading_strict_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId> {
     // A discharged perform IS the leading hole — provided its own ARGS are strongly pure (an effectful arg
     // would be an even-earlier hole this simple spine walk does not thread).
@@ -3428,9 +3428,22 @@ fn leading_strict_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<
             }
             None
         }
-        // Any non-strict shape (`if`/`match`/`and`/`or`/`let`/`handle`/`resume`) or an already-pure leaf:
-        // not a clean strict leading hole here — decline (the frame vertical handles a non-uniform leading
-        // position; a fully-pure node has no hole).
+        // A `let`: inits then body all run UNCONDITIONALLY in sequence — a strict spine. The leading hole
+        // is the first performing position across (inits ++ body); the WHOLE `let` is the continuation `C`
+        // (the refold copies it, so each binder re-binds independently). Mirrors `pure_hole`'s `let` arm.
+        Resolved::Let { bindings, body } => {
+            let mut positions: Vec<StructId> = bindings.iter().map(|&(_n, i)| i).collect();
+            positions.push(body);
+            leading_strict_hole_seq(db, positions.into_iter(), ctx)
+        }
+        // A `match`: the SCRUTINEE is a strict, always-evaluated-first position (the arms run only after);
+        // the leading hole may be in the scrutinee. The continuation `C = (match □ arms…)` is re-reduced by
+        // the refold, so the arms need not be pure here (unlike `pure_hole`, which needs a pure `C`). A
+        // perform in an ARM BODY is a non-uniform (conditionally-run) position — NOT a leading strict hole
+        // (handler distribution handles a pure-scrutinee arm perform; a scrutinee hole is this path).
+        Resolved::Match { scrutinee, .. } => leading_strict_hole(db, scrutinee, ctx),
+        // Any other shape (`if`/`and`/`or`/`handle`/`resume`) or an already-pure leaf: not a clean strict
+        // leading hole here — decline (a conditional's non-uniform positions are the frame vertical's job).
         _ => None,
     }
 }

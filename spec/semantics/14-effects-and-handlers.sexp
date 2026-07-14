@@ -353,6 +353,21 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ (Amb.flip) (Amb.flip)))) (export main)))
   (output (: 22 Int64)))
 
+(case "a one-shot two-hole body folds across a let binding"
+  (doc    "The one-shot re-reducing fold descends the STRICT spine of a `let` (its inits then its body, run
+           unconditionally in sequence), so a body with a perform in the let INIT and another in the let
+           BODY folds. Here `(let ((x (Amb.flip))) (+ x (Amb.flip)))`: the leading flip is the INIT, with
+           continuation `C = (let ((x [])) (+ x (Amb.flip)))`; `(resume 10 s)` re-reduces `C[10] = (let ((x
+           10)) (+ x (Amb.flip)))` — the binding fixes `x = 10` and the body's remaining flip is a pure
+           one-hole context, folding to `(+ 1 (+ 10 10))` = 21; the outer arm `(+ 1 (resume 10 s))` then
+           evaluates to `(+ 1 21)` = 22. The whole `let` is copied into `C`, so its binder re-binds
+           independently; one resume, so the continuation is spliced once.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip))) (+ x (Amb.flip))))) (export main)))
+  (output (: 22 Int64)))
+
 (case "a handler arm that resumes NON-tail folds when the perform is in an if condition"
   (doc    "The pure one-hole continuation extends into an `if` CONDITION — a strict, always-evaluated-first
            position, so the continuation `C = (if (< [] 5) 1 2)` is uniform (the branches run only AFTER the

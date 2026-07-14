@@ -28079,15 +28079,24 @@ mod stage1 {
     }
 
     #[test]
-    fn a_perform_in_a_match_scrutinee_and_an_arm_declines_the_distribution() {
-        // ADVERSARIAL: match distribution needs a STRONGLY-PURE scrutinee. `(match (Amb.flip) (0 5) (_ (+ 1
-        // (Amb.flip))))` performs in BOTH the scrutinee and an arm — distribution must not fire (a two-hole
-        // shape); declines cleanly (never a mis-fold).
+    fn a_perform_in_a_match_scrutinee_and_an_arm_folds_via_the_one_shot_refold() {
+        // E5 TWO-HOLE composing with match distribution: `(match (Amb.flip) (0 5) (_ (+ 1 (Amb.flip))))`
+        // performs in BOTH the scrutinee and an arm. The one-shot refold takes the SCRUTINEE flip as the
+        // leading hole → `C = (match □ (0 5) (_ (+ 1 (Amb.flip))))`; `(resume 10 s)` re-reduces `C[10] =
+        // (match 10 (0 5) (_ (+ 1 (Amb.flip))))` — now the scrutinee is the pure constant 10, so match
+        // DISTRIBUTION fires over the arm perform: the `_` arm `(+ 1 (Amb.flip))` folds to `(+ 1 (+ 1 10))`
+        // = 12, and the match selects it → 12; the outer arm `(+ 1 (resume 10 s))` → `(+ 1 12)` = 13. (Was a
+        // clean decline before the refold — the refold turns the scrutinee hole into a leading strict hole,
+        // and the residual arm perform is served by distribution.) One-shot, so no effect is duplicated.
         let src = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (Amb.flip) (0 5) (_ (+ 1 (Amb.flip)))))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a perform in the scrutinee AND an arm must decline (distribution needs a pure scrutinee)"
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a scrutinee-and-arm two-hole folds via the refold + distribution"),
+                "main"
+            ),
+            13
         );
     }
 
@@ -28176,15 +28185,21 @@ mod stage1 {
     }
 
     #[test]
-    fn two_performs_across_a_let_decline_the_pure_one_hole_fold() {
-        // ADVERSARIAL: a hole in a let INIT and another in the BODY is a TWO-hole context — `pure_hole_seq`
-        // over the init values + body finds a second hole → Impure → decline (needs sequential threading /
-        // real continuations, not a single splice).
+    fn two_performs_across_a_let_fold_via_the_one_shot_refold() {
+        // E5 TWO-HOLE across a `let`: a hole in a let INIT and another in the BODY. The one-shot refold
+        // (`leading_strict_hole` descends the `let`'s inits then body) folds it: leading flip in the INIT →
+        // `C = (let ((x □)) (+ x (Amb.flip)))`; `(resume 10 s)` re-reduces `C[10] = (let ((x 10)) (+ x
+        // (Amb.flip)))` (x=10, body has the second flip in a pure one-hole context) → `(+ 1 (+ 10 10))` = 21;
+        // the outer arm `(+ 1 (resume 10 s))` → `(+ 1 21)` = 22. (Was a clean decline before the refold.)
         let src = "(do (effect Amb (op flip (-> Unit Int64))) \
                    (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip))) (+ x (Amb.flip))))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "two performs across a let must decline the single-hole fold"
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a one-shot two-hole across a let folds via the refold"),
+                "main"
+            ),
+            22
         );
     }
 
