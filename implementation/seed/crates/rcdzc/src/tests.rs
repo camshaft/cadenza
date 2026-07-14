@@ -51928,8 +51928,7 @@ mod cross_component_oracle {
         // B must publish its own interface (a named instance), NOT export `mid` top-level, AND import both
         // A's interface and the runtime.
         assert!(
-            contains_bytes(&b, b"cadenza:mid/api")
-                && contains_bytes(&b, b"cadenza:pairs/api"),
+            contains_bytes(&b, b"cadenza:mid/api") && contains_bytes(&b, b"cadenza:pairs/api"),
             "the middle component publishes cadenza:mid/api AND imports cadenza:pairs/api"
         );
         {
@@ -51943,7 +51942,9 @@ mod cross_component_oracle {
             (def (main (: x Int64)) (host (M) (M.mid x))) \
             (export main))";
         let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(c_src)))
-            .unwrap_or_else(|d| panic!("chain top consumer compiles: {} [{:?}]", d.message, d.code));
+            .unwrap_or_else(|d| {
+                panic!("chain top consumer compiles: {} [{:?}]", d.message, d.code)
+            });
         {
             let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
             v.validate_all(&consumer).expect("chain consumer validates");
@@ -51970,9 +51971,7 @@ mod cross_component_oracle {
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("an A->B->C chain runs")
-        {
+        match cdz_run::run_with_peers(&consumer, &peers, &opts).expect("an A->B->C chain runs") {
             // C.main(9) → B.mid(9) → (A.pair(9)=(9,9)).0 + 1 = 9 + 1 = 10. A value flows A→B→C, with B both
             // consuming A and providing to C over the fused envelope.
             cdz_run::Outcome::Value(s) => assert_eq!(
