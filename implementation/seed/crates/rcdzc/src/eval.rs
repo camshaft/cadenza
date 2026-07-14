@@ -1497,7 +1497,17 @@ fn reduce_to_record_id(db: &mut Db, id: StructId) -> Option<StructId> {
         Resolved::Record { .. } => return Some(id),
         Resolved::Ref { value } => {
             let value = *value;
-            return reduce_to_record_id(db, value);
+            // A self-referential value def — `(def (g) g)`, or a mutual `(def (a) b) (def (b) a)` — resolves
+            // to a `Ref` chain that cycles (a node's `Ref` returns to itself or a prior node), so following
+            // it unguarded LOOPS FOREVER (the fast borrow path added no bound; the pre-existing owned path
+            // relied on an upstream reduction guard this short-circuit skips). Route the Ref hop through the
+            // reduction-depth guard the `Apply` case below uses: past `REDUCE_DEPTH_LIMIT` the guard denies
+            // entry and this yields `None` (does not reduce to a record) — a value cycle bottoms out instead
+            // of hanging. `collect_faults` reports the cycle as CDZ0201 (`resolve::value_ref_cycle`); here we
+            // only need to TERMINATE, not diagnose. A short, well-formed `Ref` chain (`(def (a) 5)(def (b)
+            // a)`) is far under the limit, so this changes no valid program's result.
+            let mut guard = db.enter_reduction()?;
+            return reduce_to_record_id(guard.db(), value);
         }
         _ => {}
     }
