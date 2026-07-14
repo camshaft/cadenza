@@ -695,6 +695,11 @@ mod tests {
             assert_eq!(to_ref(&a.sub(&b)), &ra - &rb, "sub {a:?} {b:?}");
             assert_eq!(to_ref(&a.mul(&b)), &ra * &rb, "mul {a:?} {b:?}");
             assert_eq!(to_ref(&a.neg()), -&ra, "neg {a:?}");
+            // `to_decimal_string` (the Rational escape's `num/den` name leaf — R3c) renders every escaping
+            // Rational/BigInt decimal, but shipped WITHOUT a reference check. Pin it against num-bigint's
+            // `to_string` over the same random values — the per-digit divmod base conversion is exactly
+            // where an off-by-one (a dropped/extra leading digit, a sign slip) hides.
+            assert_eq!(a.to_decimal_string(), ra.to_string(), "to_decimal_string {a:?}");
 
             let ord = a.cmp(&b);
             assert_eq!(ord, ra.cmp(&rb), "cmp {a:?} {b:?}");
