@@ -1814,13 +1814,14 @@ pub fn select_function_of(
         };
         code.push(Lir::Loop(block_ty));
     }
-    // STRAIGHT-LINE CSE: for a NON-looping, NON-mutual, straight-line body, compute each shared trap-free
-    // scalar subexpression (a node referenced ≥2× — the residue of β-substituting a multiply-used param's
-    // argument at each use) ONCE into a slot up-front, so `emit`'s node-keyed `slots.get(&id)` fast path
-    // reads the slot at each use instead of re-emitting the whole computation. Gated to straight-line +
-    // trap-free + scalar (see the pass docs) so hoisting to the top is unconditionally sound. Skipped for a
-    // looping body (its control flow makes it non-straight-line anyway) and the mutual dispatch.
-    if !loops && !mutual && body_is_straight_line(db, body) {
+    // DOMINATOR CSE: for a NON-looping, NON-mutual body, compute each shared scalar subexpression that is
+    // ALWAYS EVALUATED (in the dominating frontier — the body if straight-line, or an `if` condition /
+    // match scrutinee that runs before any branch) ONCE into a slot up-front, so `emit`'s node-keyed
+    // `slots.get(&id)` fast path reads the slot at each use (in the cond AND both branches) instead of
+    // re-emitting. `collect_cse_candidate_groups` requires a dominating member per class, so a value shared
+    // only across branches is NOT hoisted (that would speculate work/a trap onto a path that skips it).
+    // Skipped for a looping body (the loop transform owns its slots) and the mutual dispatch.
+    if !loops && !mutual {
         for group in collect_cse_candidate_groups(db, body) {
             // A group is a VALUE-EQUIVALENCE class (all members `core_eq` — the same computation). Emit ONE
             // representative into a slot and point every member at it. Pick a representative NOT already
@@ -2387,18 +2388,35 @@ fn licm_children(db: &mut Db, id: StructId) -> Vec<StructId> {
 // Emitted INNER-FIRST (smaller subtrees first) so a nested shared node's slot is registered before an
 // enclosing shared node reads it.
 
-/// Whether the body at `id` is STRAIGHT-LINE — contains no control-flow construct (`If`/`Match`/
-/// `MatchList`/`MatchSum`) anywhere in the value positions CSE would hoist across. A `let` is fine (its
-/// bindings/body are straight-line value positions). Conservative: any unanalyzed compound is walked via
-/// `licm_children`; a construct that introduces conditional evaluation returns false so CSE stays off.
-fn body_is_straight_line(db: &mut Db, id: StructId) -> bool {
-    match core_of(db, id) {
-        Core::If { .. } | Core::Match { .. } | Core::MatchList { .. } | Core::MatchSum { .. } => {
-            false
-        }
-        _ => licm_children(db, id)
-            .into_iter()
-            .all(|c| body_is_straight_line(db, c)),
+/// Collect the DOMINATING FRONTIER of the body at `id` — the set of node occurrences that are ALWAYS
+/// EVALUATED on entry, regardless of which branch any control flow takes. This is the emit-position
+/// dominance set a CSE hoist to the top is sound against: a node in it runs before the rest of the body no
+/// matter what, so computing it once up-front adds no work on any path and moves no trap (its trap, if any,
+/// fires at the same first-occurrence point). The walk descends UNCONDITIONALLY-reached positions only: a
+/// pure operator's operands and a `let`'s bindings+body are always evaluated, but an `If` conditionally
+/// runs its branches — so descend ONLY its `cond` (always evaluated); likewise a `Match`/`MatchList`/
+/// `MatchSum` runs only the selected arm, so descend ONLY its scrutinee. (A whole straight-line body is its
+/// own frontier — no control flow prunes anything — so this subsumes the old `body_is_straight_line` gate.)
+fn collect_dominating_frontier(
+    db: &mut Db,
+    id: StructId,
+    out: &mut std::collections::HashSet<StructId>,
+) {
+    if !out.insert(id) {
+        return; // already visited this occurrence
+    }
+    let unconditional: Vec<StructId> = match core_of(db, id) {
+        // Control flow: only the DECIDING sub-value is always evaluated; the branches/arms are conditional.
+        Core::If { cond, .. } => vec![cond],
+        Core::Match { scrutinee, .. }
+        | Core::MatchList { scrutinee, .. }
+        | Core::MatchSum { scrutinee, .. } => vec![scrutinee],
+        // Everything else `licm_children` enumerates evaluates ALL its children unconditionally (a pure
+        // operator's operands, a `let`'s bindings + body, a call's args, a compound's elements).
+        _ => licm_children(db, id),
+    };
+    for child in unconditional {
+        collect_dominating_frontier(db, child, out);
     }
 }
 
@@ -2423,18 +2441,24 @@ fn collect_node_refs(
     }
 }
 
-/// Collect the CSE candidate GROUPS of the straight-line body `id`: each returned `Vec<StructId>` is a
-/// VALUE-EQUIVALENCE CLASS (all members pairwise `core_eq` — the SAME computation) of shareable, non-
-/// trivial, SCALAR nodes whose TOTAL reference count across the class is ≥2. Two sources of ≥2 both
-/// qualify: ONE node referenced twice (`g (* a b)` β-shares the arg — a single StructId with count 2),
-/// OR two DISTINCT occurrences each referenced once (hand-written / cross-op `(+ (* a b) (* (* a b) 3))`,
-/// which the intra-op arith-CSE — one op only — misses). Value-numbering (not node identity) unifies both.
-/// Groups returned INNER-FIRST (by ascending representative subtree size) so a nested class's slot is
-/// registered before an enclosing class's representative reads it.
+/// Collect the CSE candidate GROUPS of the body `id`: each returned `Vec<StructId>` is a VALUE-EQUIVALENCE
+/// CLASS (all members pairwise `core_eq` — the SAME computation) of shareable, non-trivial, SCALAR nodes
+/// whose TOTAL reference count across the class is ≥2 AND that has ≥1 member in the DOMINATING FRONTIER
+/// (an always-evaluated position). The dominance requirement is what makes hoisting sound across control
+/// flow: the class is computed anyway on entry (its dominating occurrence), so pulling it to a slot up-
+/// front adds no work on any path and moves no trap — the other occurrences (in branches / anywhere) then
+/// read the slot. `(if (> (* a b) 0) (* a b) (- 0 (* a b)))`: the `(* a b)` in the cond dominates, so the
+/// two branch copies collapse to slot reads (3 muls → 1). A class shared ONLY across branches (no
+/// dominating member) is NOT hoisted — that would speculate work / a trap onto a path that skips it.
+/// Two sources of ≥2 refs both qualify (a single β-shared node ref'd twice, or distinct `core_eq`
+/// occurrences), value-numbering unifies them. Groups INNER-FIRST (ascending representative subtree size)
+/// so a nested class's slot is registered before an enclosing class's representative reads it.
 fn collect_cse_candidate_groups(db: &mut Db, body: StructId) -> Vec<Vec<StructId>> {
     let mut counts: HashMap<StructId, u32> = HashMap::new();
     let mut order: Vec<StructId> = Vec::new();
     collect_node_refs(db, body, &mut counts, &mut order);
+    let mut dominating: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+    collect_dominating_frontier(db, body, &mut dominating);
     // Keep only the shareable / non-trivial / scalar distinct nodes (in first-seen order for determinism).
     let mut cands: Vec<StructId> = Vec::new();
     for id in order {
@@ -2463,12 +2487,16 @@ fn collect_cse_candidate_groups(db: &mut Db, body: StructId) -> Vec<Vec<StructId
             classes.push(vec![id]);
         }
     }
-    // Keep a class iff its TOTAL reference count (summing each distinct member's multiplicity) is ≥2 — an
-    // actual repeat worth naming. INNER-FIRST by representative size so emitting a class's representative
-    // reads any already-slotted nested class instead of recomputing.
+    // Keep a class iff (a) its TOTAL reference count (summing each distinct member's multiplicity) is ≥2 —
+    // an actual repeat worth naming — AND (b) ≥1 member is in the DOMINATING FRONTIER (always evaluated),
+    // so hoisting it to the top is sound on every path. INNER-FIRST by representative size so emitting a
+    // class's representative reads any already-slotted nested class instead of recomputing.
     let mut groups: Vec<Vec<StructId>> = classes
         .into_iter()
-        .filter(|c| c.iter().map(|m| counts[m]).sum::<u32>() >= 2)
+        .filter(|c| {
+            c.iter().map(|m| counts[m]).sum::<u32>() >= 2
+                && c.iter().any(|m| dominating.contains(m))
+        })
         .collect();
     groups.sort_by_key(|c| subtree_size(db, c[0]));
     groups
@@ -10971,6 +10999,50 @@ mod tests {
         // The key assertion is that selection SUCCEEDS (no "no local slot" crash from a bad hoist).
         select_function(&mut db, body, &params, &layout)
             .expect("a let-local subexpression must not be hoisted before its binding");
+    }
+
+    #[test]
+    fn dominator_cse_hoists_a_condition_dominated_subexpression() {
+        // `(if (> (* a b) 0) (* a b) (- 0 (* a b)))` — the `(* a b)` in the CONDITION is always evaluated
+        // (it DOMINATES both branches), so all three value-equal `(* a b)` collapse to ONE computed slot
+        // read in the cond + both branches. Exactly ONE `i64.mul` (was 3). The dominance requirement is
+        // what makes hoisting across the `if` sound: the class runs on entry regardless of the branch taken.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (if (> (* a b) 0) (* a b) (- 0 (* a b)))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code.iter().filter(|i| **i == Lir::I64Mul).count(),
+            1,
+            "a condition-dominated `(* a b)` is computed once and shared across cond+branches, got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn dominator_cse_does_not_hoist_a_branch_only_subexpression() {
+        // `(if (> c 0) (* a b) (- 0 (* a b)))` — `(* a b)` appears ONLY in the two BRANCHES, never in the
+        // (always-evaluated) condition, so it is NOT in the dominating frontier. Hoisting it would SPECULATE
+        // the product (and, for a trapping op, its trap) onto the code path that runs before the branch is
+        // chosen — unsound. So it must be left in place: exactly TWO `i64.mul` (one per branch), not one.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64) (: c Int64)) (if (> c 0) (* a b) (- 0 (* a b)))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code.iter().filter(|i| **i == Lir::I64Mul).count(),
+            2,
+            "a branch-only shared `(* a b)` (no dominating occurrence) is NOT hoisted, got: {:?}",
+            f.code
+        );
     }
 
     #[test]
