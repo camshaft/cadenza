@@ -725,9 +725,12 @@ impl<'a> Parser<'a> {
             Kind::Backtick => self.quasiquote(),
             Kind::Comma => self.unquote("unquote"),
             Kind::UnquoteSplice => self.unquote("unquote-splicing"),
-            // `#{` is a map literal; `#[` is the raw-list escape.
+            // `#{` is a map literal; `#(` is a set literal; `#[` is the raw-list escape.
             Kind::Hash if self.nth_kind(1) == Kind::LBrace => {
                 self.bracketed_bars(Self::map_literal)
+            }
+            Kind::Hash if self.nth_kind(1) == Kind::LParen => {
+                self.bracketed_bars(Self::set_literal)
             }
             Kind::Hash => self.bracketed_bars(Self::hash_list),
             // A lexer ERROR token — an unterminated literal (`"…` / `b"…` / `#"…` / `` `… `` / `#\`) run
@@ -1927,6 +1930,38 @@ impl<'a> Parser<'a> {
         self.list(items, span)
     }
 
+    /// `#( e, … )`  ->  `((. Set of) ("list" e …))` — a set literal, sugar for `Set.of([e, …])`. The
+    /// third built-in collection surface, completing the `#`-prefix family (`#{`=map, `#[`=raw-list,
+    /// `#(`=set). It desugars to a member-access APPLICATION of the ordinary prelude `Set.of` (not a
+    /// grammar primitive) applied to a list literal — so `#()` is the empty set `Set.of([])`, and a
+    /// shadowed `Set` binding correctly falls back to the user's `Set` (there is no unshadowable set
+    /// primitive; the printer round-trips this exact shape via `set_literal`). Elements are single
+    /// expressions (`PREC_SEQ + 1`), comma-separated; a sequence element parenthesizes.
+    fn set_literal(&mut self) -> StructId {
+        let start = self.cur_span();
+        self.bump(); // '#'
+        self.bump(); // '('
+        let list_head = self.ctor_head("list", start);
+        let mut elems = vec![list_head];
+        if !self.at(Kind::RParen) {
+            loop {
+                let before = self.pos;
+                elems.push(self.expr(crate::token::PREC_SEQ + 1));
+                if !self.sep_continue(Kind::RParen) {
+                    break;
+                }
+                if self.pos == before {
+                    self.bump(); // element didn't consume — avoid a missing-`,` spin
+                }
+            }
+        }
+        self.expect(Kind::RParen, "`)`");
+        let span = start.merge(self.prev_span());
+        let list = self.list(elems, span);
+        let set_of = self.member_head("Set", "of", span);
+        self.list(vec![set_of, list], span)
+    }
+
     // ---- misc helpers ----
 
     /// A binder position: an identifier or backtick name; error placeholder otherwise.
@@ -2378,6 +2413,28 @@ mod tests {
         assert_eq!(
             sexpr::print(&parse_ok("dist(5 feet)")),
             r#"(dist ((. Qty of) 5 ((. Unit of) #"feet")))"#
+        );
+    }
+
+    #[test]
+    fn set_literal_desugars() {
+        use crate::sexpr;
+        // `#(1, 2, 3)` desugars to `Set.of([1, 2, 3])` — a member-access application of the prelude
+        // `Set.of` over a `list` literal. The list head is the unshadowable STRING primitive `"list"`.
+        let a = parse_ok("#(1, 2, 3)");
+        assert_eq!(sexpr::print(&a), r#"((. Set of) ("list" 1 2 3))"#);
+        // The empty set is `Set.of([])`.
+        let e = parse_ok("#()");
+        assert_eq!(sexpr::print(&e), r#"((. Set of) ("list"))"#);
+        // A single-element set, and nested elements (an expression element parses fully).
+        assert_eq!(
+            sexpr::print(&parse_ok("#(x + 1)")),
+            r#"((. Set of) ("list" (+ x 1)))"#
+        );
+        // It composes as an ordinary operand: a call argument.
+        assert_eq!(
+            sexpr::print(&parse_ok("contains(#(1, 2), 1)")),
+            r#"(contains ((. Set of) ("list" 1 2)) 1)"#
         );
     }
 

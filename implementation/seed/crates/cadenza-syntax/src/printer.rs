@@ -301,6 +301,13 @@ impl<'a> Printer<'a> {
             self.doc.end();
             return;
         }
+        // A set literal `((. Set of) (list …))` renders back to `#(…)` — the inverse of the parser's
+        // `set_literal`. Checked before the name-head dispatch since the head is the member-access LIST
+        // `(. Set of)`, not a name. Like the quantity/unit sugars, `Set` needs no shadow guard (the
+        // member access re-reads identically); the inner list IS shadow-gated via `literal_ctor`.
+        if let Some(elems) = self.set_literal(items) {
+            return self.bracketed("#(", ")", false, &elems, |p, e| p.expr(e, 0));
+        }
         // A head that is an Atom(Name) may name a construct or an operator; otherwise it is a
         // computed-callee application.
         let head = self.head_name(items[0]);
@@ -1952,6 +1959,33 @@ impl<'a> Printer<'a> {
         Some((items[2], name))
     }
 
+    /// If `items` is a set literal `((. Set of) (list e …))`, return its element occurrences — so it
+    /// prints as the concise `#(e, …)` surface (the inverse of the parser's `set_literal`). All of
+    /// these must hold, else the general `Set.of(…)` call form renders it (a faithful round-trip
+    /// either way):
+    ///   * head is the member access `(. Set of)` and there is exactly one argument;
+    ///   * that argument is a `list` LITERAL (a `("list" …)` primitive or an UNSHADOWED `(list …)`
+    ///     alias, via `literal_ctor` — a shadowed `list` is a user application, kept as a call);
+    ///   * the list carries no `.. rest` marker (the `#(…)` surface has no rest form, so a spread list
+    ///     falls back to `Set.of([…, .. rest])`).
+    fn set_literal(&self, items: &[StructId]) -> Option<Vec<StructId>> {
+        if items.len() != 2 || !self.is_member_call(items[0], "Set", "of") {
+            return None;
+        }
+        let Struct::List(list) = self.a.get(items[1]) else {
+            return None;
+        };
+        let &head = list.first()?;
+        if self.literal_ctor(head).as_deref() != Some("list") {
+            return None;
+        }
+        let elems = &list[1..];
+        if self.has_rest_marker(elems) {
+            return None;
+        }
+        Some(elems.to_vec())
+    }
+
     /// True iff `id` is the member-access head `(. obj key)` with the given object and key names.
     fn is_member_call(&self, id: StructId, obj: &str, key: &str) -> bool {
         matches!(self.a.get(id), Struct::List(m)
@@ -2688,6 +2722,48 @@ mod tests {
             "#{ \"a\" = 1, \"b\" = 2 }"
         );
         assert_eq!(assert_roundtrip("#{ 1 = 10 }", 80), "#{ 1 = 10 }");
+    }
+
+    #[test]
+    fn set_literal_round_trips() {
+        // `#(…)` is sugar for `Set.of([…])` — the third built-in collection surface. It round-trips
+        // and the independent s-expr oracle prints the desugared shape back as `#(…)`.
+        assert_eq!(assert_roundtrip("#(1, 2, 3)", 80), "#(1, 2, 3)");
+        assert_eq!(assert_roundtrip("#(x)", 80), "#(x)");
+        // Empty set: `#()` is `Set.of([])`, distinct from the empty map `#{}` / list `[]`.
+        assert_eq!(assert_roundtrip("#()", 80), "#()");
+        // The oracle: the desugared member-access application prints as the `#(…)` surface.
+        let a = sexpr::read("((. Set of) (list 1 2 3))").unwrap();
+        assert_eq!(print(&a, 80), "#(1, 2, 3)");
+        assert_eq!(
+            print(&sexpr::read("((. Set of) (list))").unwrap(), 80),
+            "#()"
+        );
+        // Wide sets break all-or-nothing like a list.
+        assert_eq!(
+            assert_roundtrip("#(1000, 2000, 3000, 4000)", 20),
+            "#(\n  1000,\n  2000,\n  3000,\n  4000\n)"
+        );
+    }
+
+    #[test]
+    fn set_literal_falls_back_to_call_form() {
+        // A shadowed `Set` (or a `Set.of` applied to a non-`list`-literal argument) is NOT a set
+        // literal — it renders as the ordinary `Set.of(…)` member call, which round-trips faithfully.
+        // A `Set.of` over a computed list (a bare `xs`, not a `list` literal) stays a call.
+        assert_eq!(assert_roundtrip("Set.of(xs)", 80), "Set.of(xs)");
+        // A shadowed inner `list` alias keeps the call form (the literal gate is `literal_ctor`).
+        let shadowed = "let list = f in Set.of(list(1, 2))";
+        let out = assert_roundtrip(shadowed, 80);
+        assert!(
+            out.contains("Set.of(list(1, 2))"),
+            "shadowed `list` must stay a call, got {out:?}"
+        );
+        // A `Set.of` over a `.. rest` spread list has no `#(…)` surface — stays the call form.
+        assert_eq!(
+            assert_roundtrip("Set.of([1, .. rest])", 80),
+            "Set.of([1, .. rest])"
+        );
     }
 
     #[test]
