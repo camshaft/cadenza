@@ -1678,6 +1678,21 @@
   (call   main (: 5 Int64))
   (output (: 3 Int64)))
 
+(case "a recursive def named a target-language keyword runs"
+  (doc    "`loop` is a valid Cadenza identifier but a keyword in some backends (Rust). A RECURSIVE def named
+           `loop` SURVIVES as a real function (a non-recursive one inlines away), so a backend that emits the
+           source name verbatim as its function identifier would produce `fn loop(…)` — invalid in a language
+           where `loop` is reserved. `loop(3)` counts down to 42. Pins that a def whose name collides with a
+           target keyword is emitted as an escaped identifier (a raw identifier `r#loop` on the Rust backend;
+           the wasm backend is unaffected — function names there are indices, not identifiers), so the same
+           program runs on every backend. Also covers while/for/type/mut/impl/… as surviving function names.")
+  (input  (do
+            (def (loop (: n Int64)) (if (= n 0) 42 (loop (- n 1))))
+            (def (main) (loop 3))
+            (export main)))
+  (call   main)
+  (output (: 42 Int64)))
+
 (case "accumulator introduction threads a transformed extra parameter through a multi-parameter recursion"
   (doc    "Accumulator introduction generalizes to a MULTI-parameter linear recursion: an extra parameter
            that is TRANSFORMED at each recursive step (not merely carried) must be threaded correctly by
