@@ -4628,12 +4628,19 @@ pub fn type_errors(db: &mut Db, id: StructId) -> Vec<Reject> {
 }
 
 /// The `record has no field \`key\`` rejection for a member access `member` (`(. operand key)`),
-/// enriched with a "did you mean?" suggestion when a field of the record is a near-miss for `key`
-/// (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix — the record analogue of
-/// the unbound-name suggestion). `operand`'s field names are the candidate set. A close field →
-/// message names it AND the reject carries a heuristic ReplaceNode fix on the KEY occurrence (so an
-/// editor rewrites exactly the field token, `(. r fild)` → `(. r field)`); no close field → the plain
-/// message, no fix.
+/// enriched two-tier (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix — the
+/// record analogue of the unbound-name suggestion). `operand`'s field names are the candidate set (a
+/// CLOSED, small set — a record's fields or a module's operations, unlike the unbounded in-scope names an
+/// unbound variable draws from, so LISTING them is signal, not noise). TIER 1 — a field is a plausible
+/// typo of `key`: name it (`` — did you mean `field`? ``) AND carry a heuristic ReplaceNode fix on the
+/// KEY occurrence (so an editor rewrites exactly the field token, `(. r fild)` → `(. r field)`). TIER 2 —
+/// no confident typo: LIST the closest few fields (`` — closest matches: `a`, `b`, `c` ``) so an agent
+/// sees what the record/module actually offers (`((. List get) …)` → "closest matches: `at`, `of`" —
+/// rustc's "available fields are: …") instead of reading the prelude to discover them; no fix (a list of
+/// options is not one mechanical edit). Both tiers via the shared `did_you_mean` helper (same as the
+/// unknown-top-form head), so the phrasing + determinism match every other did-you-mean site. The
+/// `did_you_mean` suffix always begins ` — `, so the dedup's `no_field_key` (which splits on ` — `) still
+/// keys both tiers by the invariant `` record has no field `k` `` core — collapse stays intact.
 fn no_field_reject(
     db: &mut Db,
     member: StructId,
@@ -4641,23 +4648,20 @@ fn no_field_reject(
     key: &crate::resolved::Symbol,
 ) -> Reject {
     let fields = crate::eval::record_field_names(db, operand);
+    // The CONFIDENT single (tier 1) drives the FIX; the two-tier message adds the closest-matches list
+    // when there is none. `nearest` and `did_you_mean`'s tier-1 branch use the same cutoff, so a Some here
+    // ⟺ the message says "did you mean `field`?" — the fix targets the very field the message names.
     let suggestion = crate::diag::suggest::nearest(&key.name, &fields);
     // The key occurrence is the second child of the `(. operand key)` form — the node the fix rewrites.
     let key_occ = db.ast.as_form(member, ".").and_then(|t| t.get(1).copied());
+    let hint = crate::diag::suggest::did_you_mean(&key.name, &fields, 3);
+    let reject = Reject::coded(
+        Code::Malformed,
+        format!("{}`{}`{hint}", crate::diag::NO_FIELD_PREFIX, key.name),
+    );
     match (suggestion, key_occ) {
-        (Some(field), Some(occ)) => Reject::coded(
-            Code::Malformed,
-            format!(
-                "{}`{}` — did you mean `{field}`?",
-                crate::diag::NO_FIELD_PREFIX,
-                key.name
-            ),
-        )
-        .with_fix(Fix::replace_heuristic(occ, field)),
-        _ => Reject::coded(
-            Code::Malformed,
-            format!("{}`{}`", crate::diag::NO_FIELD_PREFIX, key.name),
-        ),
+        (Some(field), Some(occ)) => reject.with_fix(Fix::replace_heuristic(occ, field)),
+        _ => reject,
     }
 }
 

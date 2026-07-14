@@ -23521,17 +23521,53 @@ mod stage1 {
     }
 
     #[test]
-    fn a_field_with_no_close_match_carries_no_suggestion() {
-        // No field is within the edit-distance cutoff of `zzzzzz` — the plain "no field" message, no
-        // misleading fix.
+    fn a_field_with_no_close_match_lists_the_available_fields() {
+        // No field is within the edit-distance cutoff of `zzzzzz` — so instead of a CONFIDENT "did you
+        // mean?" (which would be a baseless guess) OR a bare dead-end "no field" message, the diagnostic
+        // LISTS the record's actual fields ("closest matches: `height`, `width`") — rustc's "available
+        // fields are: …". A record/module is a CLOSED, small field set, so listing them is signal an agent
+        // acts on (it no longer has to read the type/prelude to learn what exists), not noise. No FIX (a
+        // list of options is not one mechanical edit) and no false "did you mean" (there is no near typo).
         let d = expect_error("(. (record (width 10) (height 20)) zzzzzz)");
         assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
         assert!(
             !d.message.contains("did you mean"),
-            "no suggestion: {}",
+            "no confident single suggestion (nothing is a plausible typo): {}",
             d.message
         );
-        assert!(d.fix.is_none(), "no fix carried: {:?}", d.fix);
+        assert!(
+            d.message.contains("closest matches:")
+                && d.message.contains("`height`")
+                && d.message.contains("`width`"),
+            "lists the available fields: {}",
+            d.message
+        );
+        assert!(
+            d.fix.is_none(),
+            "no fix carried for a list of options: {:?}",
+            d.fix
+        );
+    }
+
+    #[test]
+    fn an_unknown_module_operation_lists_the_available_operations() {
+        // The flagship "match the Rust bar" case: `((. List get) …)` — `List` has no `get` operation
+        // (it is `at`) and `get` is too far to be a confident typo, so the diagnostic LISTS the closest
+        // real operations. Before, an agent got only "record has no field `get`" and had to read the
+        // prelude to discover the real names; now the fix route is in the message itself. A prelude module
+        // IS a record of operations, so this rides the same `no_field_reject` a user-record field takes.
+        let d = expect_error("(. List get)");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("closest matches:") && d.message.contains("`at`"),
+            "lists the real List operations (incl. `at`): {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("did you mean"),
+            "`get` is too far from any op for a confident single: {}",
+            d.message
+        );
     }
 
     #[test]
