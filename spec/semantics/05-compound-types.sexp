@@ -2196,6 +2196,27 @@
             (def (main) (sum (list 10 20 30))) (export main)))
   (output (: 60 Int64)))
 
+(case "a two-arm list match with constant arms dispatches branchlessly on the length — empty"
+  (doc    "`(def (f (: xs (List Int64))) (match xs ((list) 0) ((list a .. r) 1)))` — an empty-vs-nonempty
+           list match with CONSTANT arm bodies (0, 1) is `(if (len == 0) 0 1)`, so the compiler dispatches
+           branchlessly on the length (a `select`), not a structured `if`. The wildcard `(list a .. r)` arm
+           binds `a`/`r` but its body does NOT read them (it is the constant 1), so the branchless select
+           is safe (no speculative element read). Called via a runtime-selected `[]` → 0. Pins the list
+           analogue of the scalar/sum two-arm select.")
+  (input  (do (def (f (: xs (List Int64))) (match xs ((list) 0) ((list a .. r) 1))) (def (main (: n Int64)) (f (if (< n 0) (list) (list n)))) (export main)))
+  (call   main (: -1 Int64))
+  (output (: 0 Int64)))
+
+(case "a two-arm list match reading an element binder keeps the branch — no speculative empty read"
+  (doc    "`(match xs ((list) -1) ((list a .. r) a))` — the cons arm READS the element binder `a`. This must
+           NOT become a branchless select: a select evaluates both arms, so it would read element 0 even on
+           an EMPTY list. The compiler keeps the length `if`. Called with a runtime-selected non-empty list
+           `[42]` → a = 42, and the empty path → -1 (pinned by the companion). Confirms the element-read arm
+           is evaluated only when the list is non-empty.")
+  (input  (do (def (f (: xs (List Int64))) (match xs ((list) -1) ((list a .. r) a))) (def (main (: n Int64)) (f (if (< n 0) (list) (list n)))) (export main)))
+  (call   main (: 42 Int64))
+  (output (: 42 Int64)))
+
 (case "a list element position composes with a nested tuple pattern"
   (doc    "A list ELEMENT position is a *Patterns Compose* binder position (`core-semantics.md` §A List Is
            Deconstructed By Element Patterns With An Optional Rest): an element MAY itself be any pattern —
