@@ -661,14 +661,23 @@ the component type. The new work:
   parametric `Framed` descriptor so element/key/value types are observable — a NESTED collection crosses too);
   `Some(desc)` routes to the value-encode core reusing `assemble_closure_bytes_resource`. `cdz-run` already
   try-decodes. +6 corpus (List, Set canonical order, Map canonical key order, nested List, capturing→List,
-  empty List). 🔑 SCOPE: single-export. The multi/mixed/distinct-sig/round-trip collection result is the
-  natural next widening (thread the descriptor through their shared-`call`/consumer serializers).
-- **REMAINING (all optional, none blocking):** a variable-length collection result on the multi/mixed/
-  distinct-sig/round-trip paths (single-export List/Map/Set is done); a compound closure ARG (host→guest
+  empty List). 🔑 SCOPE: single-export.
+- **✅ VARIABLE-LENGTH collection closure RESULT on the MULTI-EXPORT path COMPLETE `@1258fdfc`.** N
+  same-signature closures each returning a List/Map/Set now share ONE `call` that value-encodes the returned
+  handle against the ONE shared shape descriptor (all exports share the result type). Pieces: (1)
+  `serialize::multi_closure_value_encode_resource_core_module` — combines the multi-bytes core (N makes +
+  shared `list<u8>` `call` + memory/`cabi_realloc` + plain slots) with the single-export value-encode body
+  (build the descriptor Bytes, value-encode the dispatched collection handle, copy the doc out); no data
+  section (the descriptor is baked into the shared `call`). (2) `emit_multi_closure_resource` — a
+  non-bytes/scalar/fixed-template List/Map/Set shared result routes to the value-encode core reusing
+  `assemble_multi_closure_bytes_resource`. `cdz-run` already try-decodes. +4 corpus (two list closures both
+  driven; three Set-returning closures sharing one `call`, two driven).
+- **REMAINING (all optional, none blocking):** a variable-length collection result on the mixed/distinct-sig/
+  round-trip paths (single-export + multi-export List/Map/Set are done); a compound closure ARG (host→guest
   decode — harder); a closure TRANSFORMER (`own<t>` both directions — cleanly declined); the wasmtime-blocked
   `borrow<t>` repeated-call handle. **The entire byte-rope (`Bytes`/`String`) result surface AND the entire
   fixed-shape compound (tuple/record/sum) result surface are DONE across ALL closure shapes; a variable-length
-  collection result is DONE on the single-export path.**
+  collection result is DONE on single-export + multi-export.**
 
 ## Risks / open questions
 
