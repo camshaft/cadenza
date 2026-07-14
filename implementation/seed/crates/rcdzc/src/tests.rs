@@ -48223,4 +48223,94 @@ mod cross_component_oracle {
             cdz_run::Outcome::Trap(t) => panic!("source cross-component run trapped: {t}"),
         }
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // X4b-provider — BOTH sides from source: a PROVIDER `.cdz` compiled with a `component-name` request
+    // publishes its exports as the interface `cadenza:math/api`; a CONSUMER `.cdz` binds it via
+    // `(extern …)`. Composed via run_with_peers → the whole thing runs from two Cadenza sources.
+    // ------------------------------------------------------------------------------------------------
+
+    /// Compile a source program to a component, naming the interface it publishes its exports under (the
+    /// `component-name` request artifact, X4b). Returns the emitted component bytes.
+    fn compile_provider(src: &str, iface: &str) -> Vec<u8> {
+        use crate::Target;
+        use crate::abi::Artifact;
+        use crate::compile::compile;
+        use crate::testkit::parse;
+        let out = crate::host::run_with_compiler_stack(|| {
+            compile(
+                &[
+                    Artifact::new(
+                        Artifact::KIND_AST,
+                        "main",
+                        crate::codec::encode(&parse(src)),
+                    ),
+                    Artifact::new(
+                        crate::link::KIND_COMPONENT_NAME,
+                        "component-name",
+                        iface.as_bytes().to_vec(),
+                    ),
+                ],
+                &[Target::Wasm],
+            )
+        });
+        out.artifact(Target::Wasm.artifact_kind())
+            .unwrap_or_else(|| {
+                panic!(
+                    "provider compiles; diagnostics: {:?}",
+                    out.diagnostics
+                        .iter()
+                        .map(|d| &d.message)
+                        .collect::<Vec<_>>()
+                )
+            })
+            .to_vec()
+    }
+
+    #[test]
+    fn x4b_provider_two_source_components_link_and_run() {
+        use crate::testkit::parse;
+        // PROVIDER source: exports `neg` (0 - x), published as the interface cadenza:math/api.
+        let provider = compile_provider(
+            "(do (def (neg (: x Int64)) (- 0 x)) (export neg))",
+            "cadenza:math/api",
+        );
+        // CONSUMER source: binds cadenza:math/api's `neg` via (extern …) and calls it.
+        let consumer_src = "(do \
+            (extern \"cadenza:math/api\" (neg (-> Int64 Int64))) \
+            (def (main (: x Int64)) (neg x)) \
+            (export main))";
+        let consumer =
+            crate::compile::compile_component(&crate::codec::encode(&parse(consumer_src)))
+                .expect("consumer compiles");
+        // Both are valid standalone components (provider EXPORTS the interface, consumer IMPORTS it).
+        for (bytes, who) in [(&provider, "provider"), (&consumer, "consumer")] {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(bytes)
+                .unwrap_or_else(|e| panic!("{who} validates: {e}"));
+        }
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:math/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: None,
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("two source components compose + run")
+        {
+            // main(5) = neg(5) = -5 — BOTH sides compiled from Cadenza source, linked as components.
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "-5",
+                    "two source Cadenza components link + run across the boundary"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("two-source cross-component run trapped: {t}"),
+        }
+    }
 }

@@ -787,6 +787,20 @@ pub fn emit(
         ));
     }
 
+    // A PROVIDER (X4b) publishes its scalar boundary exports as a named INTERFACE INSTANCE (the name the
+    // `component-name` request supplied, stored on the Db) so a peer's `(extern "iface" …)` binds to it.
+    // Only the bare scalar case this increment: no runtime import, and every export scalar/unit (a
+    // compound export as an interface member is a later increment). Otherwise fall through to the ordinary
+    // top-level-export envelope.
+    if let Some(iface) = db.component_name.clone()
+        && imports.is_empty()
+        && boundary
+            .iter()
+            .all(|e| e.result != envelope::BoundaryResult::Bytes)
+    {
+        return Ok(envelope::assemble_provider(&core, &boundary, &iface));
+    }
+
     // The versioned runtime import name (`cadenza:runtime/heap@0.0.0+<hash>`) — the name the runtime
     // component is imported under, carrying the content-address suffix `cdz-run` resolves it by. Unused
     // when `imports` is empty (the bare envelope). Built here (not in `envelope`) so the envelope stays
