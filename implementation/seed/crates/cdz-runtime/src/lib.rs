@@ -8613,6 +8613,34 @@ mod tests {
         );
         op_drop(smap);
 
+        // (L3) value-encode a LARGE int-keyed MAP — the shape the compiler now escapes (variable-length
+        // collection results). Guards that a big map encode's ALLOCATION stays LINEAR in entry count: the
+        // walk collects entries into ONE `entries` Vec (grow-once), sorts by `op_get_int` (no heap — an int
+        // key sort allocates nothing), and emits grow-once leaf/struct/child pools + the output. A
+        // regression to a per-entry transient Vec, or an O(N²) re-walk of the CHAMP, would blow the ceiling
+        // (CPU scaling was separately verified ~flat 4.3-4.9 µs/entry to N=4096 — this row is the
+        // machine-agnostic alloc guard for the same property). Built ONCE; only the encode is measured.
+        let lmap_desc: &[u8] = &[0x03, 0x00, 0x00, 0x0d, 0x00, 0x01, 0x02]; // [0]=Int [1]=Int [2]=Map(k0,v1); root=2
+        const LMAP_N: i64 = 1000;
+        let mut lmap = op_map_empty();
+        for k in 0..LMAP_N {
+            lmap = op_map_insert(lmap, op_box_int(k), op_box_int(k * 10));
+        }
+        let lmap_enc = measure(&mut || {
+            let doc = op_value_encode_form(lmap, lmap_desc).expect("encode a large int map");
+            core::hint::black_box(&doc);
+        });
+        println!("ALLOC value_encode_largemap N={LMAP_N}: {lmap_enc}");
+        // MEASURED ~2.08/entry (2078 for N=1000): the entries Vec grows once, each (k v) pair emits
+        // leaf+struct into the grow-once pools, plus the output byte Vec + Bytes leaf — LINEAR, N-bounded.
+        // The int-key `sort_by` allocates nothing. A per-entry transient Vec or an O(N²) CHAMP re-walk
+        // would be orders of magnitude over this ceiling (O(N²) at N=1000 ≈ 10⁶).
+        assert!(
+            lmap_enc <= 6000,
+            "value_encode_largemap N={LMAP_N} allocs {lmap_enc} exceeds ceiling 6000 (~2/entry linear: grow-once entries+leaf+struct+child pools + output; int-key sort is heap-free; an O(N²)/per-entry-Vec regression would blow past)"
+        );
+        op_drop(lmap);
+
         // (M) FREE CASCADE — `op_drop` of a DEEP unique structure. This is the single hottest RC path (the
         // compiler emits `drop` at every dead heap binding and the resource destructor), yet every OTHER
         // row above bundles the drop with O(N) CONSTRUCTION, so a regression in the cascade's own
