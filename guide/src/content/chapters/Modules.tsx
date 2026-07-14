@@ -107,21 +107,31 @@ export default function Modules() {
       <H2>Your turn</H2>
       <Exercise
         id="modules:1"
-        prompt={<>Finish <C>area</C> so <C>Circle.area 5</C> gives <C>75</C> — it should use the module's <C>pi</C>.</>}
+        prompt={
+          <>
+            Two modules, each with one job: <C>Money.cents</C> turns dollars into cents (×100), and{" "}
+            <C>Tax.add</C> adds <C>5</C>. Compose them — feed <C>2</C> dollars through both — by qualifying
+            the inner call with the right module name, so the answer is <C>205</C>.
+          </>
+        }
         starter={`(def (main)
   (do
-    (module Circle
-      (def pi 3)
-      (def (area r) (* pi ?)))
-    (Circle.area 5)))`}
+    (module Money (def (cents d) (* d 100)))
+    (module Tax   (def (add c) (+ c 5)))
+    (Tax.add (?.cents 2))))`}
         solution={`(def (main)
   (do
-    (module Circle
-      (def pi 3)
-      (def (area r) (* pi (* r r))))
-    (Circle.area 5)))`}
-        expected="75"
-        hint={<>Area is <C>pi × r × r</C>. You need <C>r</C> squared: <C>(* r r)</C>.</>}
+    (module Money (def (cents d) (* d 100)))
+    (module Tax   (def (add c) (+ c 5)))
+    (Tax.add (Money.cents 2))))`}
+        expected="205"
+        hint={
+          <>
+            <C>cents</C> lives in <C>Money</C>, so the qualified name is <C>Money.cents</C>. Then{" "}
+            <C>2 × 100 = 200</C>, and <C>Tax.add</C> makes it <C>205</C>. (Qualify it with <C>Tax</C> and the
+            compiler declines — <C>Tax</C> has no <C>cents</C>.)
+          </>
+        }
       />
 
       <Exercise
