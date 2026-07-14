@@ -1,9 +1,4 @@
-type Ast =
-  | Int(Int64)
-  | Str(String)
-  | Bool(Bool)
-  | Name(String)
-  | List(List(Ast))
+import { Ast } from "ast"
 
 def free-vars(node: Ast) = match node with
   | Ast.Name(n) => Set.insert(#(), n)
