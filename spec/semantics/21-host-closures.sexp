@@ -1720,3 +1720,70 @@
               (export mk) (export app) (export five)))
   (call   five)
   (output (: 5 Int64)))
+
+; A COMPOUND (tuple/record) result on the DISTINCT-SIG ROUND-TRIP path — the LAST fixed-shape compound-result
+; gap. Producers/consumers of DIFFERENT signatures where a consumer RETURNS a fixed-shape compound: each
+; consumer crosses as `(own<t_g>, args…) -> list<u8>` carrying the value form (its own per-consumer template).
+; Fixed-shape compound results now work across EVERY closure shape. A compound consumer coexists with a
+; scalar consumer, another compound consumer of a different sig, and a byte-rope consumer (disjoint memory:
+; each compound template its own data region, byte-rope payloads written past them).
+
+(case "distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the compound"
+  (doc    "`mka : () -> (-> Int64 Int64)`, `mkb : () -> (-> Bool Int64)` are distinct sigs → two resource
+           types. `appa : (own<t0>, Int64) -> (Tuple Int64 Int64)` returns `(tuple x (g x))`. Host produces
+           via `mka`, hands to `appa(handle, 5)` → `(: (tuple 5 6) (Tuple Int64 Int64))`. Pins the compound
+           consumer result on the distinct-sig round-trip path.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 5 Int64))
+  (output (: (tuple 5 6) (Tuple Int64 Int64))))
+
+(case "distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the scalar"
+  (doc    "The SAME two-resource-type program, driving the SCALAR consumer of the OTHER signature: `appb :
+           (own<t1>, Bool) -> Int64` → `appb(handle, true)` = 10 (by value). Confirms the scalar consumer is
+           unaffected by the sibling compound consumer's memory/template.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appb (: true Bool))
+  (output (: 10 Int64)))
+
+(case "distinct-sig round-trip: TWO compound consumers of different sigs — the tuple one"
+  (doc    "Both consumers return a compound of DIFFERENT shape: `appa` a tuple, `appb` a record.
+           `appa(mka-handle, 40)` → `(: (tuple 40 41) (Tuple Int64 Int64))`. Each consumer walks its OWN
+           per-consumer value-form template.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (record (flag y) (val (h y))))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 40 Int64))
+  (output (: (tuple 40 41) (Tuple Int64 Int64))))
+
+(case "distinct-sig round-trip: TWO compound consumers of different sigs — the record one"
+  (doc    "The SAME program's OTHER consumer: `appb(mkb-handle, true)` → `(: (record (flag true) (val 7))
+           (Record (flag Bool) (val Int64)))`. Confirms each distinct-sig consumer decodes its own template.")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (record (flag y) (val (h y))))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appb (: true Bool))
+  (output (: (record (flag true) (val 7)) (Record (flag Bool) (val Int64)))))
+
+(case "distinct-sig round-trip: a compound consumer + a byte-rope consumer of different sigs — the byte-rope"
+  (doc    "A COMPOUND consumer (`appa` → tuple value form) AND a BYTE-ROPE consumer (`appb` → raw list<u8>)
+           of DISTINCT signatures. `appb(mkb-handle, false)` → `(8)` — its payload written PAST the compound
+           template region (disjoint memory).")
+  (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
+              (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
+              (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (bin (u8 (UInt8.wrap (h y)))))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appb (: false Bool))
+  (output (8)))

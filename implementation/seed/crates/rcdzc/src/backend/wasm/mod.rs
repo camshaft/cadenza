@@ -3016,6 +3016,7 @@ fn emit_distinct_sig_roundtrip_resource(
         ret_vt: crate::backend::wasm::lir::ValType,
         result_byte: u8,
         ret_is_bytes: bool,
+        ret_template: Option<crate::lower::ValueFormTemplate>,
     }
     struct PlainS {
         def: usize,
@@ -3093,14 +3094,19 @@ fn emit_distinct_sig_roundtrip_resource(
             }
             let ret_vt = valtype_of(&e.result)
                 .ok_or_else(|| Reject::decline("consumer result has no valtype"))?;
-            // A byte-rope (`Bytes`/`String`) consumer result crosses as `list<u8>` (the compound consumer);
-            // a scalar takes its inline byte.
+            // A byte-rope (`Bytes`/`String`) consumer result crosses as `list<u8>` (raw payload); a scalar
+            // takes its inline byte; a fixed-shape COMPOUND crosses as `list<u8>` carrying the value form.
             let ret_is_bytes = matches!(
                 e.result.strip_nominal(),
                 crate::ty::Ty::Bytes | crate::ty::Ty::String
             );
-            let result_byte = if ret_is_bytes {
-                0 // unused by the byte-rope path; the consumer returns list<u8>
+            let ret_template = if ret_is_bytes || closure_boundary_byte(&e.result).is_some() {
+                None
+            } else {
+                crate::lower::runtime_value_form_template(e.result.strip_nominal())
+            };
+            let result_byte = if ret_is_bytes || ret_template.is_some() {
+                0 // unused by the list-returning paths; the consumer returns list<u8>
             } else {
                 closure_boundary_byte(&e.result)
                     .ok_or_else(|| closure_boundary_reject("result", &e.result))?
@@ -3114,6 +3120,7 @@ fn emit_distinct_sig_roundtrip_resource(
                 ret_vt,
                 result_byte,
                 ret_is_bytes,
+                ret_template,
             });
         }
     }
@@ -3143,6 +3150,7 @@ fn emit_distinct_sig_roundtrip_resource(
     }
     let intrinsics = (2 * sigs.len()) as u32;
     let any_bytes = cons.iter().any(|c| c.ret_is_bytes);
+    let any_compound = cons.iter().any(|c| c.ret_template.is_some());
     let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
         used.insert("arr-get");
         used.insert("get-int");
@@ -3151,6 +3159,11 @@ fn emit_distinct_sig_roundtrip_resource(
             // A byte-rope consumer copies its returned Bytes/String out via a `bytes-len`/`bytes-get` loop.
             used.insert("bytes-len");
             used.insert("bytes-get");
+        }
+        if any_compound {
+            // A compound consumer walks its returned handle to fill the value form — a Bool leaf reads
+            // `get-bool` (int + nested `arr-get` already covered).
+            used.insert("get-bool");
         }
         used.extend(lifted_ops.iter().copied());
     })?;
@@ -3202,15 +3215,14 @@ fn emit_distinct_sig_roundtrip_resource(
                 params: c.params.clone(),
                 ret_vt: c.ret_vt,
                 ret_is_bytes: c.ret_is_bytes,
-                // A COMPOUND result on the DISTINCT-SIG round-trip is a later widening; that path's consumer
-                // result stays scalar/byte-rope (its classification never builds a template).
-                ret_template: None,
+                ret_template: c.ret_template.clone(),
             });
             abi_cons.push(envelope::ClosureConsumeAbi {
                 name: c.name.clone(),
                 params: c.abi_params.clone(),
                 result_byte: c.result_byte,
-                ret_is_bytes: c.ret_is_bytes,
+                // The envelope's `ret_is_bytes` means "crosses as list<u8>" — byte-rope OR compound.
+                ret_is_bytes: c.ret_is_bytes || c.ret_template.is_some(),
             });
         }
         ser_groups.push(serialize::RtSigGroup {
