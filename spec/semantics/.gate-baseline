@@ -800,6 +800,7 @@ pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
+pass	a perform SHORT-CIRCUITED out of an or's right operand is NOT executed (empty host-calls)
 pass	a perform in a match-arm guard is discharged by the enclosing handle
 pass	a perform in a taken if-branch threads its state to the continuation after the if
 pass	a perform in a taken match-arm threads its state to the continuation after the match
