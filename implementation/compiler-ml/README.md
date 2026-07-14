@@ -61,7 +61,7 @@ non-colliding names from a sibling.
 ## Structure (mirrors the rcdzc stages)
 
 Source modules live under `src/`; `Project.cdz`, `README.md`, `TESTING.md`, and `repros/` sit at the
-top. Current `src/` modules (each with same-file `@test`s — 180 tests total across 20 modules):
+top. Current `src/` modules (each with same-file `@test`s — 189 tests total across 21 modules):
 
 - `src/ast.cdz` — the AST datatype + pure traversals (`node-count`, `head-name`; the `ast.rs`
   analogue). One recursive sum; a node contains its children (no arena — the language has real
@@ -139,7 +139,11 @@ top. Current `src/` modules (each with same-file `@test`s — 180 tests total ac
   `Some b` if `arg` structurally equals `a` (recursive `ty-eq` over `TFun`), else `None`; `chain2` threads
   the `Option` across two applications (short-circuit on `None`). Exercises recursive structural type
   equality + Option-chained fallible application. 11 `@test`s. Uses a top-level `tag` helper for nullary
-  comparison (working around the ML nested-nullary-match bug above).
+  comparison (working around the nested-nullary-match bug above).
+- `src/depth-guard.cdz` — a recursion-limit / stack-safety guard: `check` returns `Result Int64 String` —
+  `Ok(max-depth)` if the `Ast` stays within a limit, `Err` the moment a node exceeds it. Stresses a
+  `Result` THREADED through recursion with EARLY-RETURN on `Err` (a deep child short-circuits the sibling
+  walk). 9 `@test`s incl. widest-branch-decides + short-circuit-on-deep-first-child. Confirmed WORKING.
 - `src/encode.cdz` — the INVERSE of `decode`: serialize an `Ast` to a flat byte buffer at RUN TIME
   (`Ast → Bytes`, via `Bytes.of`/`Bytes.concat` + `UInt8.wrap` over recursively-assembled fragments) —
   runtime byte CONSTRUCTION, the complement to `decode`'s reading. Its `@test`s prove the full ROUND-TRIP

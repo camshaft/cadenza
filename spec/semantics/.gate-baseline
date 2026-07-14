@@ -671,6 +671,7 @@ pass	a list element position composes with a nested tuple pattern
 pass	a list match arm may carry a guard on its element binders
 pass	a list mixing integer and boolean elements is a type error
 pass	a list mixing integer and float elements is a type error
+pass	a list of bools is exhaustive when the empty and both first-element values are covered
 pass	a list of closures each keeps its own capture, selected by a runtime index
 pass	a list of maps with different keys is homogeneous, not a type error
 pass	a list of maps: a runtime index then looks a runtime key up in the found map
@@ -1430,6 +1431,10 @@ pass	adding rational-magnitude quantities of incompatible dimension is still a c
 pass	adding two named family units of one dimension converts to the reference (Float)
 pass	adding two quantities of the same dimension keeps that dimension
 pass	adding two units of one dimension converts to the reference unit exactly
+pass	addition of two lists is rejected — a list is not a number
+pass	addition of two records is rejected — a record is not a number
+pass	addition of two sets is rejected — a set is not a number
+pass	addition of two strings is rejected — text is not a number
 pass	all-nullary enum equality compares discriminants
 pass	an 8-bit-integer closure crosses the host boundary
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
@@ -2104,6 +2109,7 @@ pass	subtracting quantities of incompatible dimension is a compile-time error
 pass	subtraction
 pass	subtraction below the minimum integer overflows and traps
 pass	subtraction of an integer and a float does not silently promote
+pass	subtraction of two strings is rejected
 pass	sum type constructors are in scope after declaration
 pass	symbol identity follows String normalization
 pass	symbols interned from different strings are unequal

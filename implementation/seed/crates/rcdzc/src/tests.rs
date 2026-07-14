@@ -17709,13 +17709,15 @@ mod match_engine {
     }
 
     #[test]
-    fn arithmetic_on_two_text_operands_names_the_real_type_and_plus_offers_concat() {
-        // `(+ s t)` on two Strings (the Python/JS reflex) used to report the GENERIC scheme-unify's phantom
-        // "type mismatch: Int64 and String must be the same type here" — an `Int64` the author never wrote,
-        // reading as an internal clash. It now names the REAL situation ("arithmetic is not defined on
-        // String") and — for `+`, whose intent is concatenation — carries the actionable `String.concat`
-        // rewrite (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). Bytes too.
-        // Comparison on two texts stays VALID (lexical order / equality) — the guard is arithmetic-only.
+    fn arithmetic_on_two_same_typed_non_numeric_operands_names_the_real_type_and_plus_offers_concat()
+     {
+        // `(+ s t)` on two Strings (the Python/JS reflex) — and on two Lists/Records/Tuples/Bools/etc. —
+        // used to report the GENERIC scheme-unify's phantom "type mismatch: Int64 and <T> must be the same
+        // type here" — an `Int64` the author never wrote, reading as an internal clash. It now names the
+        // REAL situation ("arithmetic is not defined on <T>") and — for `+` on a type with a total
+        // concatenation op (String/Bytes/List) — carries the actionable `.concat` rewrite
+        // (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix). Comparison on two
+        // same-typed values stays VALID (equality / order) — the guard is arithmetic-only.
 
         // `+` on two Strings → honest message + a `((. String concat) …)` replace on the operator head, and
         // NO leftover phantom `Int64`.
@@ -17768,11 +17770,98 @@ mod match_engine {
             );
         }
 
+        // GENERALIZED beyond text: two Lists → List.concat rewrite (a total concat op exists).
+        let lists = reject_full(
+            "(module m (def (f (: a (List Int64)) (: b (List Int64))) (+ a b)) (export f))",
+        )
+        .expect("(+ List List) rejects");
+        assert_eq!(
+            lists.code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            lists.message
+        );
+        assert!(
+            lists
+                .message
+                .contains("arithmetic is not defined on (List Int64)")
+                && !lists.message.contains("Int64 and"),
+            "names the real list type, no phantom `Int64 and …`: {}",
+            lists.message
+        );
+        assert_eq!(
+            lists.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("(. List concat)"),
+            "List `+` rewrites to List.concat: {}",
+            lists.message
+        );
+
+        // Two Records / Tuples: honest message naming the real type, NO forced fix (no total `+`-like op —
+        // a mis-suggestion would be worse than none). The phantom `Int64` is gone.
+        for (ty, name) in [
+            ("(Record (x Int64))", "record"),
+            ("(Tuple Int64 Int64)", "tuple"),
+        ] {
+            let d = reject_full(&format!(
+                "(module m (def (f (: a {ty})) (+ a a)) (export f))"
+            ))
+            .unwrap_or_else(|| panic!("(+ {name} {name}) must reject"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "{name}: {}", d.message);
+            assert!(
+                d.message.contains("arithmetic is not defined on")
+                    && !d.message.contains("Int64 and"),
+                "{name} names the real type, no phantom `Int64 and …`: {}",
+                d.message
+            );
+            assert!(
+                d.fix.is_none(),
+                "{name} arithmetic offers no forced fix: {:?}",
+                d.fix
+            );
+        }
+
+        // SCOPED OUT (corpus-pinned): a Bool in integer addition stays CDZ0203 — an argument checked
+        // against a body-inferred parameter type (`09-functions.sexp`, `(def (f x) (+ x x)) (f true)`), NOT
+        // relabeled to the CDZ0201 text/compound message. The scalar-ish leaves keep their existing path.
+        assert_eq!(
+            reject_code("(module m (def (f x) (+ x x)) (def (main) (f true)) (export main))")
+                .as_deref(),
+            Some("CDZ0203"),
+            "a Bool in body-inferred integer addition stays the CDZ0203 arg-vs-inferred-param check"
+        );
+
         // NO false fire: comparison on two Strings is VALID (lexical order / equality).
         assert!(run_returns::<bool>(
             &component("(module m (def (main) (< \"a\" \"b\")) (export main))"),
             "main"
         ));
+        // NO false fire: EQUALITY on two same-typed compounds/bools is VALID (structural eq) — not arith.
+        for src in [
+            "(module m (def (f (: a (List Int64)) (: b (List Int64))) (= a b)) (export f))",
+            "(module m (def (f (: a (Record (x Int64))) (: b (Record (x Int64)))) (= a b)) (export f))",
+            "(module m (def (f (: a Bool) (: b Bool)) (= a b)) (export f))",
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "equality on two same-typed values stays valid: {src}"
+            );
+        }
+        // NO false fire: numeric `+` and the Char.to-int coercion path are unaffected.
+        assert!(
+            reject_code("(module m (def (f (: a Int64) (: b Int64)) (+ a b)) (export f))")
+                .is_none(),
+            "numeric + is still valid"
+        );
+        let ch = reject_full("(module m (def (f (: a Char) (: b Char)) (+ a b)) (export f))")
+            .expect("(+ Char Char) rejects");
+        assert!(
+            ch.fix
+                .as_ref()
+                .is_some_and(|f| f.replacement.contains("Char")),
+            "Char `+` keeps its Char.to-int coercion wrap (not intercepted): {} fix={:?}",
+            ch.message,
+            ch.fix
+        );
         // NO false fire: a String against an Int is the DISTINCT cross-kind message (unchanged).
         let cross = reject_full("(module m (def (f (: a String)) (+ a 1)) (export f))")
             .expect("(+ String Int) rejects");
@@ -22013,6 +22102,77 @@ mod match_engine {
         assert_eq!(run("0"), "1", "[C.R] matches the C.R arm");
         assert_eq!(run("1"), "2", "[C.G] matches the C.G arm");
         assert_eq!(run("2"), "0", "[C.B] matches no listed arm → catch-all");
+    }
+
+    #[test]
+    fn saturating_bool_list_first_elements_are_exhaustive_without_a_wildcard() {
+        // `(list) + (list true .. r) + (list false .. r)` covers every length: the empty arm covers length
+        // 0, and the two bool-lead arms saturate the first element of any non-empty list (`true` or `false`,
+        // nothing else) — so the match is TOTAL without a `_` (`core-semantics.md`: a set of list arms is
+        // exhaustive when it covers the empty list AND every non-empty list). The list analogue of Inc-20's
+        // tuple-of-bools. `desugar_saturating_bool_list_elements` drops the LAST bool arm's redundant
+        // position-0 test (→ `(list _ .. r)`, an unguarded tail cover the length matcher counts), so the
+        // check passes AND the runtime routes correctly by first-match-wins.
+        assert!(
+            reject_code(
+                "(module m \
+                   (def (f (: xs (List Bool))) \
+                     (match xs ((list) 0) ((list true .. r) 1) ((list false .. r) 2))) \
+                   (def (main) (f (list true))) (export main))"
+            )
+            .is_none(),
+            "a bool-saturating list match is exhaustive without a wildcard"
+        );
+        // Runtime: build a list internally and dispatch. mk(0) → [] → arm 0; mk(1) → [true, false] → the
+        // true-lead arm (1); mk(2) → [false, true] → the false-lead arm (2). Confirms the guard-drop rewrite
+        // preserves first-match-wins — the true-lead arm still gates on `true`, only the (now trailing)
+        // false-lead arm is unconditional.
+        let run = |n: &str| -> String {
+            run_heap_value(
+                "(module m \
+                   (def (mk (: n Int64)) \
+                     (if (< n 1) (list) (if (< n 2) (list true false) (list false true)))) \
+                   (def (f (: xs (List Bool))) \
+                     (match xs ((list) 0) ((list true .. r) 1) ((list false .. r) 2))) \
+                   (def (main (: n Int64)) (f (mk n))) (export main))",
+                vec![n.to_string()],
+            )
+            .unwrap_or_default()
+        };
+        if run("0").is_empty() {
+            eprintln!("runtime wasm not found; skipping bool-saturation-list run");
+            return;
+        }
+        assert_eq!(run("0"), "0", "[] matches the empty arm");
+        assert_eq!(run("1"), "1", "[true, …] matches the true-lead arm");
+        assert_eq!(run("2"), "2", "[false, …] matches the false-lead arm");
+    }
+
+    #[test]
+    fn a_bool_list_match_missing_a_lead_value_or_the_empty_arm_still_rejects() {
+        // The saturation relaxation is SOUND — it fires ONLY when both bool values AND the empty list are
+        // covered. A single bool-lead arm does not saturate the first element (the other value is
+        // uncovered), and dropping the empty arm leaves length 0 uncovered — both stay CDZ0210.
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: xs (List Bool))) \
+                   (match xs ((list) 0) ((list true .. r) 1))) \
+                 (def (main) (f (list true))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210"),
+            "only one bool-lead value → the other first-element value is uncovered"
+        );
+        assert_eq!(
+            reject_code(
+                "(module m (def (f (: xs (List Bool))) \
+                   (match xs ((list true .. r) 1) ((list false .. r) 2))) \
+                 (def (main) (f (list true))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0210"),
+            "no empty arm → length 0 is uncovered even when the first element saturates"
+        );
     }
 
     #[test]
@@ -37690,22 +37850,33 @@ mod stage1 {
         // A TYPE head — `(handle C …)` where `C` is a sum type — is the same "head is not an effect" root
         // cause (it leaked "record has no field `op`" + the fold-decline before). It now names the head as
         // `a type`, not the misleading "not yet reducible by the tail-resumptive fold".
+        // Use an arm-op name (`a`) that is NOT a variant of `C` so the desugared `(. C a)` would report
+        // "the type `C` has no variant `a`" — the type-head analogue of the value head's "member access
+        // requires a record" consequent. That consequent is now suppressed too, so ONLY the head reject
+        // remains.
         let mut ty_head = crate::db::Db::load(parse(
-            "(module m (type C (Red)) (def (main) (handle C 0 ((x (u) s (resume 1 s))) 5)) (export main))",
+            "(module m (type C (Red)) (def (main) (handle C 0 ((a (u) s (resume 1 s))) 5)) (export main))",
         ));
-        let td = crate::diagnostics(&mut ty_head);
-        let d = td
-            .iter()
-            .find(|d| d.message.contains("head must name an EFFECT"))
-            .expect("a type handle head names the real problem");
-        assert!(
-            d.message.contains("`C`") && d.message.contains("is a type"),
-            "names the head as a type: {}",
-            d.message
+        let td: Vec<crate::abi::Diagnostic> = crate::diagnostics(&mut ty_head)
+            .into_iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert_eq!(
+            td.len(),
+            1,
+            "a type handle head reports exactly one error (consequents dropped): {:?}",
+            td.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
         assert!(
-            !td.iter().any(|d| d.message.contains("not yet reducible")),
-            "the misleading fold-decline is dropped: {td:?}"
+            td[0].message.contains("`C`") && td[0].message.contains("is a type"),
+            "names the head as a type: {}",
+            td[0].message
+        );
+        assert!(
+            !td.iter()
+                .any(|d| d.message.contains("not yet reducible")
+                    || d.message.contains("has no variant")),
+            "the misleading fold-decline + no-variant consequents are dropped: {td:?}"
         );
         // A PRELUDE TYPE head — `(handle Int64 …)` / `(handle Option …)` — is the same root cause but a
         // prelude type has NO user decl (neither `def_by_name` nor `type_decl_by_name`), so it slipped
