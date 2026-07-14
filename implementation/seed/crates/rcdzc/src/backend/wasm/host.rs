@@ -197,6 +197,11 @@ fn is_extern_heap_type(ty: &Ty) -> bool {
 // reproduce the same host-call sequence and the same result.
 //= spec/capabilities/capabilities-and-effects.md#a-run-is-a-deterministic-function-of-its-input-and-responses
 //# A run's observable behavior MUST be a deterministic function of its input and the ordered responses to the host calls it makes, so that the same input and the same responses in the same order reproduce the same host-call sequence and the same result (constitution III).
+// The TERMINAL CONDITION (whether a terminating run ends in a normal result or a trap) is part of that
+// observable behavior, so it too is a deterministic function of input + ordered capability responses:
+// nothing but a reached host op can vary it, and this walk proves those are exactly the manifest's ops.
+//= spec/capabilities/core-semantics.md#a-program-that-terminates-ends-in-one-of-two-terminal-conditions
+//# The terminal condition of a program run that terminates MUST be a deterministic function of its input and its declared capabilities' responses, so that whether a run terminates is a property of the environment that hosts it while the terminal condition of one that does is fixed by the program.
 pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>) {
     // WALK-DEPTH GUARD — the same bound `collect_call_callees` / `collect_closure_codes` hold (see
     // [`crate::db::WALK_DEPTH_LIMIT`]): this walk drives `core_of` at every node, and a non-normalizing
