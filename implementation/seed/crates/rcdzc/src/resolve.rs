@@ -3222,6 +3222,27 @@ pub(crate) fn fixed_arity_reject(
 fn resolve_if(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, "if").unwrap_or(&[]);
     if tail.len() != 3 {
+        // The COMMON too-few case is a MISSING ELSE — `(if b then)`, the reflex of a language where `if`
+        // without `else` is a statement. In Cadenza an `if` is an EXPRESSION (it must produce a value on
+        // both branches), so the actionable repair is to ADD an else branch. Offer an `InsertArms` fix
+        // appending an `(trap "TODO")` else — a diverging placeholder (`trap : ∀a. String → a`) that
+        // inhabits ANY type, so it type-checks against the then-branch whatever its type, clearing the
+        // arity error in one shot for the author to fill (the `if` twin of the non-exhaustive-match
+        // add-arm fix). TOO MANY operands keeps the surplus-delete fix from `fixed_arity_reject`.
+        if tail.len() == 2 {
+            return Resolved::Poison(
+                Reject::coded(
+                    Code::Malformed,
+                    "this `if` has no else branch — an `if` is an expression, so it needs both a then \
+                     and an else branch: `(if <cond> <then> <else>)`",
+                )
+                .at(id)
+                .with_fix(crate::diag::Fix::insert_arms_heuristic(
+                    id,
+                    vec!["(trap \"TODO\")".to_string()],
+                )),
+            );
+        }
         return Resolved::Poison(fixed_arity_reject(
             id,
             tail,

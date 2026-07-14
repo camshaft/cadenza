@@ -15218,6 +15218,61 @@ mod match_engine {
     }
 
     #[test]
+    fn a_suffixed_bigint_literal_annotated_or_passed_to_int64_faults_once_as_a_type_mismatch() {
+        // An EXPLICITLY-SUFFIXED literal `999…N` types as `BigInt` (a distinct numeric type), so
+        // annotating it `Int64` — or passing it to an `Int64` parameter — is a genuine TYPE MISMATCH
+        // (CDZ0203), NOT a bare literal that "does not fit the width". The width fit-check
+        // (`literal_width_fault`) sees through the suffix's `(: 999 BigInt)` desugar to the inner literal
+        // and USED to ALSO fire CDZ0302, double-reporting the same slip with a misleading framing. The
+        // fault set for a suffixed literal must carry the mismatch and NOT the range-fit code.
+        crate::host::run_with_compiler_stack(|| {
+            for src in [
+                // A value annotation, and an argument to an Int64 parameter — both route through the
+                // shared `literal_width_fault`; both must report the mismatch alone.
+                "(module m (def (main) (: 999999999999999999999999N Int64)) (export main))",
+                "(module m (def (g (: x Int64)) x) (def (main) (g 999999999999999999999999N)) (export main))",
+                // A value that FITS Int64's range but is still the wrong type — the mismatch, no range fault.
+                "(module m (def (main) (: 5N Int64)) (export main))",
+            ] {
+                let out = compile(
+                    &[crate::abi::Artifact::new(
+                        crate::abi::Artifact::KIND_AST,
+                        "main",
+                        crate::codec::encode(&parse(src)),
+                    )],
+                    &[Target::Wasm],
+                );
+                let codes: Vec<_> = out
+                    .diagnostics
+                    .iter()
+                    .filter(|d| d.severity == crate::abi::Severity::Error)
+                    .filter_map(|d| d.code.clone())
+                    .collect();
+                assert!(
+                    codes.iter().any(|c| c == "CDZ0203"),
+                    "the type mismatch is reported for {src}: {codes:?}"
+                );
+                assert!(
+                    !codes.iter().any(|c| c == "CDZ0302"),
+                    "no redundant range-fit fault for a suffixed literal in {src}: {codes:?}"
+                );
+            }
+            // The BARE (unsuffixed) overflow literal still range-checks — it types as the Int64 DEFAULT, so
+            // it is a grounding, and its overflow IS a CDZ0302 (with the BigInt widen fix), unchanged.
+            let bare = reject_full(
+                "(module m (def (main) (: 999999999999999999999999 Int64)) (export main))",
+            )
+            .expect("a bare over-Int64 literal is rejected");
+            assert_eq!(
+                bare.code.as_deref(),
+                Some("CDZ0302"),
+                "got: {}",
+                bare.message
+            );
+        });
+    }
+
+    #[test]
     fn a_float_literal_that_overflows_float32_is_out_of_range() {
         // The float analogue of an out-of-range integer literal: `(: 1.0e300 Float32)` is finite as the
         // default `Float64` but rounds to `±inf` in `Float32` (a value with no written form), so CDZ0302 —
@@ -16809,12 +16864,69 @@ mod match_engine {
                 d.fix
             );
         }
-        // TOO FEW (a missing `if` else / a 1-operand `and`) has nothing to delete — no fix.
-        let few = find("(module m (def (main) (if true 1)) (export main))");
+        // TOO FEW for `and`/`or`/`not` (a 1-operand `and`) has nothing to delete — no fix. (A missing-else
+        // `if` is the SPECIAL case: it gets an add-else fix, asserted separately in
+        // `an_if_missing_its_else_branch_offers_to_add_one`.)
+        let few = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) (and true)) (export main))",
+        )))
+        .into_iter()
+        .find(|d| d.message.contains("takes exactly"))
+        .expect("a 1-operand `and` reports an arity fault");
         assert!(
             few.fix.is_none(),
-            "a too-few `if` has no surplus to delete: {:?}",
+            "a too-few `and` has no surplus to delete: {:?}",
             few.fix
+        );
+    }
+
+    #[test]
+    fn an_if_missing_its_else_branch_offers_to_add_one() {
+        // `(if b then)` — the reflex of a language where `if` without `else` is a statement — is a
+        // wrong-arity `if` in Cadenza, where `if` is an EXPRESSION (both branches must produce a value).
+        // Rather than the generic "if takes exactly 3 operands" (which reads as a count nit), name the real
+        // situation and carry the actionable repair: append an `(trap "TODO")` else. `trap : ∀a. String → a`
+        // inhabits any type, so the completed `(if b then (trap "TODO"))` type-checks against the then-branch
+        // whatever its type — the `if` twin of the non-exhaustive-match add-arm fix.
+        let d = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: b Bool)) (if b 1)) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0201"))
+        .expect("a missing-else if rejects");
+        assert!(
+            d.message.contains("no else branch") && d.message.contains("expression"),
+            "names the missing else + why (if is an expression): {}",
+            d.message
+        );
+        let fix = d.fix.as_ref().expect("an add-else fix is carried");
+        assert_eq!(fix.kind, crate::abi::FixKind::InsertInto);
+        assert!(
+            fix.replacement.contains("(trap \"TODO\")"),
+            "the fix appends a placeholder else branch: {:?}",
+            fix.replacement
+        );
+        // The completed if compiles (the placeholder inhabits the then-branch's type).
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (def (f (: b Bool)) (if b 1 (trap \"TODO\"))) (export f))"
+            )))
+            .is_ok(),
+            "the if with an added else branch compiles"
+        );
+        // A 1-operand `(if b)` — no then either — is NOT a clean add-else (both branches missing), so it
+        // stays the generic arity message with no fix.
+        let lone = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: b Bool)) (if b)) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0201"))
+        .expect("a 1-operand if rejects");
+        assert!(
+            lone.message.contains("takes exactly 3 operands") && lone.fix.is_none(),
+            "a lone-cond if keeps the generic arity message, no fix: {} fix={:?}",
+            lone.message,
+            lone.fix
         );
     }
 

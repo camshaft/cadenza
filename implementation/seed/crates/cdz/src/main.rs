@@ -688,6 +688,10 @@ fn run_test_file(
                     failed += 1;
                     let args_str = inputs.join(", ");
                     let msg = message.map(|m| format!(": {m}")).unwrap_or_default();
+                    // A reported property failure records BOTH the input that produced it (the shrunk
+                    // counterexample args) AND the seed to replay — so the failing run is reproducible.
+                    //= spec/capabilities/property-based-testing.md#generation-is-seeded-and-reproducible
+                    //# A reported property failure MUST record the seed and the input that produced it.
                     println!(
                         "FAIL {name}{msg}\n  counterexample: {name}({args_str})  (seed {seed}; replay \
                          with `--seed {seed}`)"
@@ -923,6 +927,17 @@ fn gen_pool(seed: u64, size: usize) -> Vec<i64> {
 /// the ones the generator actually pulled; trailing pool entries never affected the run) toward 0, one
 /// position at a time by halving, keeping any reduction that STILL fails. Reports the consumed prefix
 /// (rendered) — the ints that reproduce the failure. Greedy + bounded, like the scalar `shrink`.
+///
+/// This IS the harness's shrinking search: on a failing property it searches for a SMALLER input that
+/// still fails (halving each consumed position, keeping only reductions that still `Fail`); it TERMINATES
+/// (each position halves toward 0, `while n != 0`, and a non-failing candidate breaks that position — no
+/// unbounded search); and it REPORTS the minimal `best` prefix it converged to as the counterexample.
+//= spec/capabilities/property-based-testing.md#shrinking-converges-to-a-minimal-failing-input
+//# When a property fails, the harness MUST search for a smaller input that still fails.
+//= spec/capabilities/property-based-testing.md#shrinking-converges-to-a-minimal-failing-input
+//# The shrinking search MUST terminate rather than search unboundedly.
+//= spec/capabilities/property-based-testing.md#shrinking-converges-to-a-minimal-failing-input
+//# The shrinking search MUST report a minimal failing input.
 fn shrink_pool(
     pool: &[i64],
     gens: usize,
@@ -960,6 +975,12 @@ fn shrink_pool(
 /// Generate one `--arg` string per generator, from a driver seeded at `seed` — bolero's `driver::Rng`
 /// (a seeded, reproducible driver) feeding each type's `ValueGenerator`. The rendered forms are exactly
 /// what `cdz-run`'s `coerce_one` parses (`5`, `-3`, `true`, `1.5`, a single char).
+///
+/// The generation is a pure function of `seed`: the same seed re-produces the same inputs on every run, so
+/// a property run is reproducible from its recorded seed (`run_property` seeds trial `t` at `seed + t`, and
+/// `--seed` replays the exact pool). This is what lets a reported failure be replayed deterministically.
+//= spec/capabilities/property-based-testing.md#generation-is-seeded-and-reproducible
+//# A property run MUST be reproducible from its recorded seed, producing the same inputs on every conforming run.
 fn generate_inputs(gens: &[GenKind], seed: u64) -> Vec<String> {
     use bolero_generator::driver::{self, Rng};
     use bolero_generator::{ValueGenerator, produce};

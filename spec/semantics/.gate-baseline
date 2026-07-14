@@ -37,17 +37,20 @@ pass	MIXED: a nested-Tuple-arg closure (scalar result) ALONGSIDE a plain export 
 pass	MIXED: a nested-Tuple-arg closure with a LIST result ALONGSIDE a plain export
 pass	MIXED: a scalar-then-NESTED-tuple closure with a LIST result ALONGSIDE a plain export
 pass	MIXED: a two-Tuple-arg closure with a LIST result ALONGSIDE a plain export
+pass	MIXED: an Option-arg closure ALONGSIDE a plain (non-closure) export
 pass	MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside a Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside a nested-Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside a two-Tuple-arg LIST closure
 pass	MIXED: driving the PLAIN export alongside a two-Tuple-arg closure
+pass	MIXED: driving the PLAIN export alongside an Option-arg closure
 pass	MULTI-EXPORT: THREE tuple args with a LIST result, shared `call`
 pass	MULTI-EXPORT: a nested-Tuple-arg closure with a LIST result
 pass	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
 pass	MULTI-EXPORT: among-scalars tuple arg with a LIST result (shared interleaving list-`call`)
 pass	MULTI-EXPORT: among-scalars tuple arg with a fixed-shape COMPOUND result
 pass	MULTI-EXPORT: driving the FIRST two-Tuple-arg closure (add)
+pass	MULTI-EXPORT: driving the SECOND Option-arg closure (Some and None)
 pass	MULTI-EXPORT: driving the SECOND two-Tuple-arg LIST closure
 pass	MULTI-EXPORT: driving the second among-scalars LIST closure (tuple then suffix scalar)
 pass	MULTI-EXPORT: driving the second among-scalars closure (subtract)
@@ -60,6 +63,8 @@ pass	MULTI-EXPORT: two capturing closures each taking TWO Tuple args
 pass	MULTI-EXPORT: two closures each taking a scalar arg THEN a NESTED tuple
 pass	MULTI-EXPORT: two closures each taking a scalar arg THEN a Tuple arg
 pass	MULTI-EXPORT: two nested-Tuple-arg closures share one call — driving the sum
+pass	MULTI-EXPORT: two same-sig Option-arg closures share one `call`
+pass	MULTI-EXPORT: two same-sig Result-arg closures share one `call`
 pass	MULTI-EXPORT: two same-sig Tuple-arg closures share one direct-call `call`
 pass	MULTI-EXPORT: two same-sig closures each taking THREE Tuple args
 pass	MULTI-EXPORT: two same-sig closures each taking TWO Tuple args share one `call`
@@ -594,6 +599,7 @@ pass	a handler mixing arms of two different effects is rejected
 pass	a handler resumes its continuation at most once by default
 pass	a handler that does not discharge every operation of its effect is rejected
 pass	a handler threads a SET as its state — the seen-set idiom, deduping across performs
+pass	a handler whose STATE is a RECORD combining a scalar counter and a heap LIST field
 pass	a handler whose STATE is a TUPLE reads both fields and rebuilds the pair per performance
 pass	a handler whose STATE is a sum destructures it in the arm
 pass	a header of packed nibbles and a length-prefixed body round-trips
@@ -1531,6 +1537,7 @@ pass	an effect operation taking a SUM parameter matches it in the handler arm
 pass	an effect performed in a callee is discharged by the caller's handler
 pass	an effect resolves past an intermediate frame that installs no handler
 pass	an effect resolves through a deep chain of intermediate functions
+pass	an effect result drives the bound of a PURE recursive helper called in the handle body
 pass	an effect that declares an operation name twice is rejected
 pass	an effect-built NESTED-compound value escapes the handle and a nested projection reads through it
 pass	an element is projected from a runtime-constructed tuple
@@ -2191,6 +2198,7 @@ pass	the entrypoint returns its runtime argument unchanged
 pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
 pass	the exponent marker is case-insensitive
+pass	the greater-than operator on chars follows scalar order
 pass	the guarded-let conditional takes its else-branch when the conjunction is false
 pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
 pass	the identity function applied to a boolean returns the boolean
@@ -2244,6 +2252,9 @@ pass	the three-way comparison orders Bool with false below true
 pass	the three-way comparison orders Float64 by numeric value — Equal
 pass	the three-way comparison orders Float64 by numeric value — Greater
 pass	the three-way comparison orders Float64 by numeric value — Less
+pass	the three-way comparison orders chars by scalar value — Equal
+pass	the three-way comparison orders chars by scalar value — Greater
+pass	the three-way comparison orders chars by scalar value — Less
 pass	the three-way comparison orders strings lexicographically
 pass	the two variants of Result compare unequal
 pass	the underlying numeric type obeys the numeric core — no silent promotion under a unit
@@ -2276,6 +2287,7 @@ pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity
 pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two adjacent modules declared inside a function body compose
+pass	two chars with different scalar values are unequal
 pass	two closures from one factory capture distinct values
 pass	two constant records with the same fields in different written order are equal
 pass	two constant sums with the same payload but different variants are not equal
