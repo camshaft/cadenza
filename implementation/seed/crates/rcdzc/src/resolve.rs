@@ -1815,6 +1815,14 @@ fn find_leading_binder_in_list_pattern(
             elem_name == name && elem_name != "_"
         } else if is_tuple_pattern(db, elem) {
             find_binder_in_tuple(db, elem, name, &mut path, &mut heads)
+        } else if is_list_pattern(db, elem) {
+            // A NESTED LIST element `(list (list a .. r1) .. r2)` — the element at `Elem(i)` is itself a
+            // list pattern, so descend it with `find_binder_in_list` (which handles nested leading elements
+            // AND a `.. rest` sublist via `RestFrom`). Its own `Elem`/`RestFrom` steps stack onto the outer
+            // `Elem(i)`, so `a` reads `Elem(i), Elem(0)` and `r1` reads `Elem(i), RestFrom(…)`. `find_binder_
+            // in_pattern` excludes the `list` head (it is a compound-value ctor, not a variant), so without
+            // this branch a nested-list element's binder fell through unresolved (CDZ0101 in the body).
+            find_binder_in_list(db, elem, name, &mut path, &mut heads)
         } else {
             find_binder_in_pattern(db, elem, name, &mut path, &mut heads)
         };

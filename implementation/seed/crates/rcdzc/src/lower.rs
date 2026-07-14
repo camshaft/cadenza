@@ -3630,6 +3630,43 @@ fn list_element_irrefutable_or_decline(
     elem_pat: StructId,
     elem_ty: &crate::ty::Ty,
 ) -> Result<(), Reject> {
+    // A NESTED LIST element `(list …)` is refutable UNLESS it is the zero-leading rest form `(list .. r)`
+    // (which matches every inner list — truly irrefutable, `RestFrom(0)` reads the whole inner list safely
+    // even when empty). A LEADING-element nested list `(list a .. r1)` / `(list a b)` is length-refutable
+    // (`(list a .. r1)` misses the EMPTY inner list — `core-semantics.md §A List Is Deconstructed`: "a
+    // single-leading-element-plus-rest pattern MUST match any NON-empty list"), and the length-dispatch
+    // matcher tests only the OUTER length — so binding `a` = `Elem(i), Elem(0)` on an empty inner list
+    // would TRAP instead of falling through to the next arm. Matching it soundly needs an INNER-length
+    // guard (the list-element analogue of the Inc-11/12 refutable-element desugars) — a later increment; for
+    // now DECLINE the leading-element nested-list case honestly rather than emit a latent trap-on-empty
+    // miscompile. (The BINDER resolution for both forms is in place — `find_leading_binder_in_list_pattern`
+    // descends a nested `(list …)` element via `find_binder_in_list` — so once the guard lands the body
+    // reads its nested binders with no further resolve work.)
+    if is_list_pattern(db, elem_pat) {
+        let has_leading = db
+            .ast
+            .as_form(elem_pat, "list")
+            .or_else(|| db.ast.as_ctor_form(elem_pat, "list"))
+            .map(|es| {
+                let dd = es.iter().position(|&e| db.ast.as_name(e) == Some(".."));
+                match dd {
+                    // A rest form `(list p… .. rest)` with ≥1 leading element is refutable.
+                    Some(k) => k > 0,
+                    // No `..` → a fixed-arity nested list `(list a b)` is refutable (a specific length).
+                    None => !es.is_empty(),
+                }
+            })
+            .unwrap_or(false);
+        if has_leading {
+            return Err(Reject::decline(
+                "a nested list element with leading positions (e.g. `(list a .. rest)`) is refutable — it \
+                 needs an inner-length guard the length-dispatch matcher does not yet emit; only the \
+                 zero-leading rest form `(list .. rest)` is irrefutable here",
+            ));
+        }
+        // The zero-leading rest form `(list .. rest)` is irrefutable — fall through to `check_binding_pattern`
+        // (which accepts it and validates the rest binder), so the nested rest binder resolves + folds.
+    }
     match check_binding_pattern(db, elem_pat, elem_ty) {
         Ok(()) => Ok(()),
         // A refutable element (literal / multi-variant ctor) → not-yet-supported in a length-dispatch list

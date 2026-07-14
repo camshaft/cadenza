@@ -815,6 +815,7 @@ pass	a nested constructor value dispatches on both tags in a match
 pass	a nested element kind mismatch in equality is a type error
 pass	a nested if on the same condition collapses the inner test to the known branch
 pass	a nested lambda captures+applies a closure-typed def PARAMETER (inline lambda argument)
+pass	a nested list element composes over a runtime list of lists
 pass	a nested literal pattern of the wrong type is a type error
 pass	a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive
 pass	a nested match on a runtime scrutinee

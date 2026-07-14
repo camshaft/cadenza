@@ -21199,6 +21199,63 @@ mod match_engine {
     }
 
     #[test]
+    fn a_nested_list_element_binds_the_zero_leading_rest_form_and_declines_a_leading_one() {
+        // A list element MAY itself be a nested LIST pattern (`core-semantics.md §145`: "an element MAY
+        // itself be … a nested element pattern"). The binder RESOLUTION now descends a nested `(list …)`
+        // element (`find_leading_binder_in_list_pattern` → `find_binder_in_list`), so a body reference to a
+        // nested element binder no longer reports CDZ0101. Before, only tuple/ctor elements descended.
+        //
+        // IRREFUTABLE (accepted): the ZERO-LEADING rest form `(list (list .. r1) .. r2)` — the inner
+        // `(list .. r1)` matches EVERY inner list (its `RestFrom(0)` reads the whole inner list, safe even
+        // when empty), so it composes with the length-dispatch matcher with no inner-length test.
+        assert!(
+            reject_code(
+                "(module m (def (f (: xs (List (List Int64)))) \
+                   (match xs ((list (list .. r1) .. r2) ((. List len) r1)) (_ -1))) \
+                 (def (main) (f (list (list 1 2 3)))) (export main))"
+            )
+            .is_none(),
+            "a zero-leading nested rest-list element is irrefutable and its inner rest binder resolves"
+        );
+        // And it is SOUND on an EMPTY inner list — it MATCHES (not traps) and reads the inner rest as the
+        // empty list (length 0). This is the whole point of gating the leading form below: the zero-leading
+        // form never reads a leading `Elem(i)` that could be out of bounds.
+        if let Some(v) = run_heap_value(
+            "(module m (def (f (: xs (List (List Int64)))) \
+               (match xs ((list (list .. r1) .. r2) ((. List len) r1)) (_ -1))) \
+             (def (main) (f (list (list)))) (export main))",
+            vec![],
+        ) {
+            assert_eq!(
+                v, "0",
+                "the zero-leading nested rest binds the empty inner list (len 0), no trap"
+            );
+        }
+        // REFUTABLE (declined, NOT a latent trap): a LEADING-element nested list `(list (list a .. r1) ..
+        // r2)` is length-refutable — `(list a .. r1)` misses the EMPTY inner list, and the length-dispatch
+        // matcher tests only the OUTER length, so binding `a` = `Elem(i), Elem(0)` on an empty inner list
+        // would TRAP instead of falling through. Until an inner-length guard lands (the list-element
+        // analogue of the Inc-11/12 refutable-element desugars), this DECLINES honestly (codeless).
+        let decline = reject_full(
+            "(module m (def (f (: xs (List (List Int64)))) \
+               (match xs ((list (list a .. r1) .. r2) a) (_ -1))) \
+             (def (main) (f (list (list 1)))) (export main))",
+        )
+        .expect("a leading-element nested list blocks compilation");
+        assert_eq!(
+            decline.code, None,
+            "a leading-element nested list declines (no code) — an inner-length guard is unbuilt"
+        );
+        assert!(
+            decline
+                .message
+                .contains("nested list element with leading positions"),
+            "the decline names the leading-nested-list limit: {}",
+            decline.message
+        );
+    }
+
+    #[test]
     fn a_tail_recursive_sum_consumer_compiles_to_a_constant_stack_loop() {
         // A tail-recursive consumer of a SUM type — `(count n acc) = (match n ((Zero) acc) ((Succ m) (count
         // m (+ acc 1))))` over `(type Nat (Zero) (Succ Nat))` — is a self-tail-call inside a `Core::MatchSum`

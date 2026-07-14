@@ -2134,6 +2134,23 @@
             (def (main) (classify (list (Op.Neg 5) (Op.Add 1)))) (export main)))
   (output (: -5 Int64)))
 
+(case "a nested list element composes over a runtime list of lists"
+  (doc    "A list element MAY itself be a nested LIST pattern (`core-semantics.md §A List Is Deconstructed`:
+           an element MAY itself be a nested element pattern, matched recursively). Over a runtime `List
+           (List Int64)`, `((list (list .. inner) .. outer) …)` binds `inner` to the FIRST sublist and
+           `outer` to the rest of the outer list — the binder resolution descends the nested `(list …)`
+           element (its `Elem(0)`/`RestFrom` steps stack onto the outer `Elem(0)`). The ZERO-LEADING inner
+           rest form `(list .. inner)` matches EVERY inner list (so it is irrefutable and needs no
+           inner-length test), which is why it composes with the outer length-dispatch directly. Here the
+           outer list `(list (list 1 2 3) (list 4 5))` binds `inner`=`(list 1 2 3)`; its length is 3.")
+  (input  (do
+            (def (first-len (: xss (List (List Int64))))
+              (match xss
+                ((list (list .. inner) .. outer) ((. List len) inner))
+                (_                               -1)))
+            (def (main) (first-len (list (list 1 2 3) (list 4 5)))) (export main)))
+  (output (: 3 Int64)))
+
 (case "a list match arm may carry a guard on its element binders"
   (doc    "A list-pattern arm MAY carry a `(guard <list-pattern> <cond>)` guard, exactly as a scalar or sum
            arm does (`core-semantics.md` §Matching Is Exhaustive Or Rejected: a guard is a boolean the arm's
