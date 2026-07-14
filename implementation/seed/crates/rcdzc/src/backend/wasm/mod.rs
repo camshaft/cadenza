@@ -6181,19 +6181,26 @@ fn export_make_params(
     for (_, t) in &params {
         match t.strip_nominal() {
             crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) => {
-                let Some((field_bytes, field_vts, rebuild)) = fixed_shape_scalar_tuple_arg(t)
+                // A fixed-shape compound param — including NESTED ones (a tuple-of-tuples, a record with a
+                // tuple field): `nested_fixed_shape_tuple_arg` flattens the whole tree to its depth-first
+                // scalar leaves, the recursive `FieldRebuild` that rebuilds the (nested) cell, and the
+                // `TupleFieldShape` tree the envelope mints the nested `tuple<…>` types from. A VARIABLE-
+                // length field (a `List`/`Map`/`Set` inside the compound) or a non-scalar leaf → `None`,
+                // which declines (a runtime-decoded field param is a separate, harder gap).
+                let Some((_field_bytes, field_vts, rebuild_fields, shape)) =
+                    nested_fixed_shape_tuple_arg(t)
                 else {
                     return Err(Reject::decline(format!(
                         "a parameterized heap-return export's compound parameter `{}` is not a fixed-shape \
-                         scalar tuple/record (a nested-compound or variable-length field parameter is not \
-                         yet supported)",
+                         tuple/record of scalars (a variable-length field — a list/map/set inside the \
+                         compound — is not yet supported)",
                         t.render_name()
                     )));
                 };
                 leaf_vts.extend(field_vts);
                 slots.push(MakeSlot::Tuple {
-                    field_bytes,
-                    rebuild: rebuild.fields,
+                    shape,
+                    rebuild: rebuild_fields,
                 });
             }
             _ => match (
@@ -6229,13 +6236,14 @@ struct MakeParams {
     slots: Vec<MakeSlot>,
 }
 
-/// One `make` parameter: a scalar leaf (its component boundary byte) or a fixed-shape scalar tuple/record
-/// (its per-field component bytes for the minted `tuple<…>`, and the per-field rebuild the core cell build
-/// uses). The COUNT of flattened leaves a slot consumes is 1 for a scalar, else the rebuild's leaf count.
+/// One `make` parameter: a scalar leaf (its component boundary byte) or a fixed-shape tuple/record — its
+/// (possibly NESTED) `TupleFieldShape` tree the envelope mints the `tuple<…>` type(s) from, and the
+/// recursive per-field rebuild the core cell build uses. The count of flattened leaves a slot consumes is
+/// 1 for a scalar, else the depth-first leaf count of the shape/rebuild.
 enum MakeSlot {
     Scalar(u8),
     Tuple {
-        field_bytes: Vec<u8>,
+        shape: Vec<crate::backend::wasm::envelope::TupleFieldShape>,
         rebuild: Vec<crate::backend::wasm::serialize::FieldRebuild>,
     },
 }
@@ -6275,17 +6283,12 @@ impl MakeParams {
     /// mints. Shared with the closure slot-model helpers (`mint_call_arg_tuple_types` /
     /// `make_functype_slots`).
     fn boundary_slots(&self) -> Vec<crate::backend::wasm::envelope::ArgSlot> {
-        use crate::backend::wasm::envelope::{ArgSlot, TupleFieldShape};
+        use crate::backend::wasm::envelope::ArgSlot;
         self.slots
             .iter()
             .map(|s| match s {
                 MakeSlot::Scalar(b) => ArgSlot::Scalar(*b),
-                MakeSlot::Tuple { field_bytes, .. } => ArgSlot::Tuple(
-                    field_bytes
-                        .iter()
-                        .map(|&b| TupleFieldShape::Scalar(b))
-                        .collect(),
-                ),
+                MakeSlot::Tuple { shape, .. } => ArgSlot::Tuple(shape.clone()),
             })
             .collect()
     }

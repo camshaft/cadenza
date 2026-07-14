@@ -1992,7 +1992,7 @@ pub fn assemble_runtime_resource(
     // minted native `tuple<…>` (the ABI flattens it into the scalar core leaves the core `make` rebuilds).
     // `shift` = the number of compound params (= tuple types minted), so `own<t>`/make-ft/encode types
     // slide past them.
-    let shift = compound_slot_count(make_slots);
+    let shift = call_arg_tuple_type_count(make_slots); // total tuple types (nesting mints >1 per compound param)
     let own_ty = 2 + shift; // own<t> sits after the minted tuple types (2..2+shift)
     let make_ft = 3 + shift;
     let make_types = {
@@ -6789,7 +6789,7 @@ fn resource_inner_component_borrow(make_slots: &[ArgSlot]) -> Vec<u8> {
     // tuple types (one per compound slot, at `tuple_base..tuple_base+s`) + `own<resource_ty>` + the make
     // functype referencing each param (scalar byte or its tuple type index). `resource_ty` is the RESOURCE
     // type index (0 import side, the re-exported `E` export side).
-    let s: u32 = compound_slot_count(make_slots);
+    let s: u32 = call_arg_tuple_type_count(make_slots); // total tuple types (nesting mints >1 per compound param)
     let make_functype_items = |resource_ty: u32, own_type_idx: u32, tuple_base: u32| -> Vec<u8> {
         let mut items = Vec::new();
         let mut next = tuple_base;
@@ -7126,15 +7126,6 @@ fn params_result_functype(param_bytes: &[u8], result_valtype: &[u8]) -> Vec<u8> 
     item.push(0x00); // one result
     item.extend_from_slice(result_valtype);
     item
-}
-
-/// The number of COMPOUND (tuple/record) parameters in a `make` slot list — the count of native `tuple<…>`
-/// component types the envelope mints for them, i.e. how far it shifts every later component type index.
-fn compound_slot_count(slots: &[ArgSlot]) -> u32 {
-    slots
-        .iter()
-        .filter(|s| matches!(s, ArgSlot::Tuple(_)))
-        .count() as u32
 }
 
 /// A resource-`make` component functype `(params…) -> result` over a per-parameter [`ArgSlot`] list: a

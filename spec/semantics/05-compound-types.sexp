@@ -6485,3 +6485,26 @@
   (input  (do (def (main (: a Int64) (: p (Tuple Int64 Int64))) (+ (BigInt.of a) (+ (BigInt.of (. p 0)) (BigInt.of (. p 1))))) (export main)))
   (call   main (: 1000000000 Int64) (: (tuple 2000000000 3000000000) (Tuple Int64 Int64)))
   (output (: 6000000000 BigInt)))
+
+(case "an export with a nested-tuple parameter returns a list from its leaves"
+  (doc    "A NESTED fixed-shape compound param — a tuple whose first field is itself a tuple — crosses as
+           a native nested `tuple<tuple<…>, …>` the canonical ABI flattens depth-first into scalar leaves,
+           which `make` rebuilds into the nested cell (recursive `FieldRebuild`). `main((tuple (tuple 1 2)
+           3)) = (list 1 2 3)`.")
+  (input  (do (def (main (: p (Tuple (Tuple Int64 Int64) Int64))) (list (. (. p 0) 0) (. (. p 0) 1) (. p 1))) (export main)))
+  (call   main (: (tuple (tuple 1 2) 3) (Tuple (Tuple Int64 Int64) Int64)))
+  (output (: (list 1 2 3) (List Int64))))
+
+(case "an export with a record-with-a-tuple-field parameter returns a list from its leaves"
+  (doc    "A record whose field is a tuple is likewise a nested fixed-shape compound; its fields cross in
+           canonical sorted-key order. `main((record (pt (tuple 10 20)) (n 30))) = (list 10 20 30)`.")
+  (input  (do (def (main (: p (Record (pt (Tuple Int64 Int64)) (n Int64)))) (list (. (. p pt) 0) (. (. p pt) 1) (. p n))) (export main)))
+  (call   main (: (record (pt (tuple 10 20)) (n 30)) (Record (pt (Tuple Int64 Int64)) (n Int64))))
+  (output (: (list 10 20 30) (List Int64))))
+
+(case "an export mixing a scalar and a nested-tuple parameter returns a list from both"
+  (doc    "A nested compound composes with a scalar param: `main(9, (tuple (tuple 5 6) 7)) = (list 9 5 7)`
+           — the scalar leaf, then the nested tuple's depth-first leaves, rebuilt.")
+  (input  (do (def (main (: a Int64) (: p (Tuple (Tuple Int64 Int64) Int64))) (list a (. (. p 0) 0) (. p 1))) (export main)))
+  (call   main (: 9 Int64) (: (tuple (tuple 5 6) 7) (Tuple (Tuple Int64 Int64) Int64)))
+  (output (: (list 9 5 7) (List Int64))))
