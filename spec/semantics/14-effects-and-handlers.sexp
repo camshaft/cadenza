@@ -898,6 +898,25 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (dbl (Amb.flip)))) (export main)))
   (output (: 21 Int64)))
 
+(case "an effect result drives the bound of a PURE recursive helper called in the handle body"
+  (doc    "The effect-free callee the fold treats as opaque may itself be RECURSIVE, as long as its
+           recursion reaches NO effect — the companion of the non-recursive effect-free-call cases above.
+           The perform is discharged ONCE in the handle body and its result becomes the ARGUMENT to a pure
+           recursive helper whose whole recursion is effect-free: `(sum-to (Cfg.limit))` where `sum-to n =
+           (if (= n 0) 0 (+ n (sum-to (- n 1))))`. `Cfg.limit` resumes 4, so `(sum-to 4)` = `4 + 3 + 2 + 1`
+           = 10. Pins that the fold discharges the single perform to its resume value and then runs the pure
+           recursion as an ordinary effect-free computation on that value — the effect does not enter the
+           helper's recursion at all (the helper is a separate, self-contained pure function the perform
+           merely feeds). Distinct from the effect-context-SPECIALIZED recursive walks (where the recursion
+           ITSELF performs): here the recursion is effect-free and only its INPUT comes from an effect.")
+  (input  (do
+            (effect Cfg (op limit (-> Unit Int64)))
+            (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (- n 1)))))
+            (def (main)
+              (handle Cfg 0 ((limit (u) s (resume 4 s)))
+                (sum-to (Cfg.limit)))) (export main)))
+  (output (: 10 Int64)))
+
 (case "a let-bound lambda whose body performs is applied in the handle body"
   (doc    "A LAMBDA VALUE is pure at CONSTRUCTION — its body's effects fire only when it is APPLIED. So a
            `let` binding a performing lambda is a pure binding, and the discharged op surfaces at the

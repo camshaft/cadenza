@@ -1536,6 +1536,7 @@ pass	an effect operation taking a SUM parameter matches it in the handler arm
 pass	an effect performed in a callee is discharged by the caller's handler
 pass	an effect resolves past an intermediate frame that installs no handler
 pass	an effect resolves through a deep chain of intermediate functions
+pass	an effect result drives the bound of a PURE recursive helper called in the handle body
 pass	an effect that declares an operation name twice is rejected
 pass	an effect-built NESTED-compound value escapes the handle and a nested projection reads through it
 pass	an element is projected from a runtime-constructed tuple
