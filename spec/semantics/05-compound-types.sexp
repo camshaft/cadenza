@@ -4394,6 +4394,25 @@
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
+(case "a recursive sum built then folded by a NESTED recursive call composes on every backend"
+  (doc    "A recursive `Nat` is BUILT by one recursion (`mk : Int → Nat`) and FOLDED by another (`cnt :
+           Nat → Int`), composed so the build is an ARGUMENT to the fold: `(cnt (mk k))`. On the
+           gas-metered async backend each recursive call threads a shared `env` cell, and a call NESTED as
+           another call's argument (`cnt(env, mk(env, k).await)`) would borrow `env` mutably twice at once
+           (Rust E0499) unless the inner call is hoisted to a preceding statement — a genuine async-lowering
+           hazard this pins. Built 500 deep (also exercises fold depth): `(cnt (mk 500))` = 500. Pins that a
+           build-then-fold over a recursive sum, with one recursion nested in the other's arguments,
+           compiles and runs on the wasm, Rust, and gas-metered async backends alike.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk  (: n Int64)) (if (> n 0) (Nat.S (mk (- n 1))) (Nat.Z)))
+            (def (cnt (: x Nat))   (match x ((Nat.Z) 0) ((Nat.S p) (+ 1 (cnt p)))))
+            (def (main (: k Int64)) (cnt (mk k)))
+            (export main)))
+  (needs  sum-type-declaration)
+  (call   main (: 500 Int64))
+  (output (: 500 Int64)))
+
 (case "a unary constructor is a single-arity function"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
            The Tagged Variant (1st sentence): Some is a single-arity constructor. Applied to an
