@@ -1153,6 +1153,30 @@ fn rustc_roundtrip_three_level_nested_sum_match_folds_through_known_constructors
 }
 
 #[test]
+fn rustc_roundtrip_generic_sum_with_a_type_param_nested_in_a_variant_payload() {
+    // A GENERIC sum whose variant payload has the type parameter NESTED inside another type — `(type Box
+    // (E) (W (Option a)))`, so `W`'s payload is `Option<a>`, not a bare `a`. The enum emitter mapped only a
+    // WHOLE-payload param to `T{k}`; a param nested in `(Option a)` reached `rust_type(Ty::Var)` = None and
+    // the whole generic enum declined ("no native representation"). It now renders the payload at a SENTINEL
+    // instantiation and maps each param var to `T{k}` wherever it appears, emitting `enum Box<T0> { E,
+    // W(Option<T0>) }`. `f(7)` = 7 (W(Some 7)), `f(-1)` = -1 (E). Matches the wasm oracle.
+    let rs = compile_rust(
+        "(module m (type Box (E) (W (Option a))) \
+           (def (f (: k Int64)) (match (if (> k 0) (Box.W (Option.Some k)) (Box.E)) \
+                                  ((Box.E) -1) ((Box.W (Option.Some n)) n) ((Box.W (Option.None)) -2))) \
+           (export f))",
+    );
+    // The nested param renders `Option<T0>`, not a declined `Ty::Var`.
+    assert!(rs.contains("W(Option<T0>)"), "nested param renders T0:\n{rs}");
+    if let Some(out) = rustc_run(&rs, "f(7)") {
+        assert_eq!(out, "7");
+    }
+    if let Some(out) = rustc_run(&rs, "f(-1)") {
+        assert_eq!(out, "-1");
+    }
+}
+
+#[test]
 fn rustc_roundtrip_builtin_option_matches() {
     // unwrap-or(Some 8, _) = 8, unwrap-or(None, -1) = -1 — a match over std's Option, constructed with
     // std's `Some`/`None` in the driver, runs and matches the oracle.

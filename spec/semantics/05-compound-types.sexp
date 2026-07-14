@@ -3625,6 +3625,25 @@
             (export main)))
   (output (: 7 Int64)))
 
+(case "a generic sum with a type parameter nested inside another sum payload matches through both"
+  (doc    "The NESTED-SUM companion: `(type Box (E) (W (Option a)))` — a generic sum whose variant `W`
+           carries `(Option a)`, so the parameter `a` sits INSIDE another sum, not as the whole payload.
+           `(Box.W (Option.Some k))` instantiates `a = Int64`; the nested `((Box.W (Option.Some n)) …)` arm
+           matches through BOTH the `Box.W` and the inner `Option.Some`, binding `n`. Pins that a type
+           parameter nested inside a sum-typed payload is threaded through the constructor scheme and that
+           the two-level constructor match dispatches on both discriminants — the two-compiler companion of
+           the tuple/record generic-payload cases. On the Rust backend the enum emits `enum Box<T0> { E,
+           W(Option<T0>) }` (the nested param rendered as the enum's own type parameter), where a
+           whole-payload-param-only mapping would have declined the generic enum.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Box (E) (W (Option a)))
+            (def (f (: k Int64)) (match (if (> k 0) (Box.W (Option.Some k)) (Box.E))
+                                   ((Box.E) -1) ((Box.W (Option.Some n)) n) ((Box.W (Option.None)) -2)))
+            (export f)))
+  (call   f (: 7 Int64))
+  (output (: 7 Int64)))
+
 (case "a generic sum with TWO type parameters instantiates each independently"
   (doc    "A generic sum with TWO implicit type parameters — `(type Pair (Pr a b))`, so `Pr : ∀a b. a → b
            → Pair a b`. `(Pair.Pr 5 true)` instantiates `a = Int64`, `b = Bool` independently; the

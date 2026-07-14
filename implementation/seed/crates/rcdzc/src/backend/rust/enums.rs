@@ -229,14 +229,68 @@ fn payload_rust_type(
     // GENERIC sum the self-reference must carry the decl's OWN type parameters (`Tree<T0>`, not a bare
     // `Tree` — a bare mention is E0107 "missing generics"), so `render_payload_ty` renders a self-`Ty::Sum`
     // at the decl's params; a `(Tuple Tree Tree)` payload → `(Tree<T0>, Tree<T0>)`, boxed by the caller.
-    let ty = crate::eval::typeval_of(db, pty_occ)
-        .ok_or_else(|| Reject::decline("a variant payload type does not resolve"))?;
+    // For a GENERIC sum, render off the payload type at a SENTINEL instantiation `Sum<Var(BASE+0),
+    // Var(BASE+1), …>` — a distinct sentinel var per param, in declaration order — so a param appearing
+    // ANYWHERE in the payload (including NESTED, `(W (Option a))` → `Option<Var(BASE+0)>`) carries a
+    // sentinel var that `render_payload_ty` renders as `T{k}`. Without this, a nested param reached
+    // `types::rust_type(Ty::Var)` = None and the whole generic enum declined ("no native representation").
+    // For a MONOMORPHIC sum (no params) render `typeval_of` directly — no sentinel needed.
+    let ty = if decl.params.is_empty() {
+        crate::eval::typeval_of(db, pty_occ)
+            .ok_or_else(|| Reject::decline("a variant payload type does not resolve"))?
+    } else {
+        sentinel_payload_ty(db, decl, pty_occ)
+            .ok_or_else(|| Reject::decline("a variant payload type does not resolve"))?
+    };
     render_payload_ty(&ty, decl).ok_or_else(|| {
         Reject::decline(format!(
             "a variant payload type {} has no native Rust representation",
             ty.render_name()
         ))
     })
+}
+
+/// The base for SENTINEL param vars — a value far above any real inference var, so a sentinel never
+/// collides with a genuine free var in a payload type. A payload var `PARAM_SENTINEL_BASE + k` is the
+/// sum's `k`-th type parameter, rendered `T{k}`.
+const PARAM_SENTINEL_BASE: u32 = 1 << 24;
+
+/// The type of the payload at occurrence `pty_occ`, computed at the SENTINEL instantiation of `decl`
+/// (`Sum<Var(BASE), Var(BASE+1), …>`) — so each param position `k`, wherever it appears (nested inside
+/// `Option`/`Tuple`/…), carries `Var(BASE+k)`, which `render_payload_ty` renders as `T{k}`. Finds the
+/// owning variant's ctor (the scheme relating payload → params) and peels it at the sentinel sum via
+/// `payload_ty_at_instantiation`. `None` if the ctor/scheme is unavailable (the enum then declines, as
+/// before). This is what lets a generic sum whose param is NESTED in a variant payload emit its enum.
+fn sentinel_payload_ty(
+    db: &mut Db,
+    decl: &crate::db::TypeDecl,
+    pty_occ: crate::ast::StructId,
+) -> Option<crate::ty::Ty> {
+    use crate::ty::Ty;
+    let ctor = decl
+        .variants
+        .iter()
+        .find(|v| v.payloads.contains(&pty_occ))
+        .and_then(|v| v.ctor)?;
+    let sentinel_sum = Ty::Sum {
+        decl: decl.occ,
+        name: decl.name.clone(),
+        args: (0..decl.params.len())
+            .map(|k| Ty::Var(PARAM_SENTINEL_BASE + k as u32))
+            .collect(),
+    };
+    let payload = crate::infer::payload_ty_at_instantiation(db, ctor, &sentinel_sum)?;
+    // A MULTI-payload variant's `payload_ty_at_instantiation` returns the whole `Ty::Tuple` of all its
+    // payloads; but `payload_rust_type` is called PER payload occurrence. Select this occurrence's element
+    // by its position in the variant, so a multi-payload generic variant renders each field's own type.
+    let variant = decl.variants.iter().find(|v| v.payloads.contains(&pty_occ))?;
+    if variant.payloads.len() > 1 {
+        let idx = variant.payloads.iter().position(|&p| p == pty_occ)?;
+        if let Ty::Tuple(elems) = &payload {
+            return elems.get(idx).cloned();
+        }
+    }
+    Some(payload)
 }
 
 /// Render a payload type to its Rust form WITHIN declaration `decl` — like [`types::rust_type`], but a
@@ -247,23 +301,38 @@ fn payload_rust_type(
 /// `types::rust_type` (their args are concrete). `None` for a type with no native Rust form.
 fn render_payload_ty(ty: &crate::ty::Ty, decl: &crate::db::TypeDecl) -> Option<String> {
     use crate::ty::Ty;
-    // A self-reference — the recursive mention of THIS declaration. Render the enum name + the decl's own
-    // params (the recursion is closed by the enclosing `Box`).
-    let is_self = match ty {
-        Ty::Sum { decl: d, .. } | Ty::Nominal { decl: d, .. } => *d == decl.occ,
-        _ => false,
-    };
-    if is_self {
+    // A SENTINEL param var (`PARAM_SENTINEL_BASE + k`) is the sum's k-th type parameter — render `T{k}`.
+    // This is what lets a param appearing ANYWHERE in a payload (nested in `Option`/`Tuple`/a self-ref's
+    // args) render as the enum's type parameter, not decline as an unmappable `Ty::Var`.
+    if let Ty::Var(n) = ty
+        && *n >= PARAM_SENTINEL_BASE
+    {
+        return Some(format!("T{}", n - PARAM_SENTINEL_BASE));
+    }
+    // A self-reference — the recursive mention of THIS declaration. Render the enum name + its args
+    // rendered recursively (a sentinel-var arg → `T{k}`, a concrete arg → its type; the recursion is
+    // closed by the enclosing `Box`). A monomorphic self-ref is the bare name.
+    if let Ty::Sum { decl: d, args, .. } | Ty::Nominal { decl: d, args, .. } = ty
+        && *d == decl.occ
+    {
         let name = types::sum_ident(&decl.name);
         if decl.params.is_empty() {
             return Some(name);
         }
-        let ps: Vec<String> = (0..decl.params.len()).map(|k| format!("T{k}")).collect();
+        // Render the self-ref's args (they carry the sentinel vars for a generic recursive sum). Fall back
+        // to the positional `T{k}` if an arg is missing (a bare self-mention with no args).
+        let ps: Vec<String> = if args.len() == decl.params.len() {
+            args.iter()
+                .map(|a| render_payload_ty(a, decl))
+                .collect::<Option<Vec<_>>>()?
+        } else {
+            (0..decl.params.len()).map(|k| format!("T{k}")).collect()
+        };
         return Some(format!("{name}<{}>", ps.join(", ")));
     }
-    // A compound that may CONTAIN a self-reference — recurse so a nested `(Tuple Tree Tree)` /
-    // `(List Tree)` renders the inner self-refs with the decl's params. Non-self leaves + concrete sums
-    // delegate to `types::rust_type`.
+    // A compound that may CONTAIN a self-reference or a param — recurse so a nested `(Tuple Tree Tree)` /
+    // `(List Tree)` / `(Option a)` renders its inner self-refs + params. Non-self concrete leaves delegate
+    // to `types::rust_type`.
     match ty {
         Ty::Tuple(elems) => {
             let parts: Option<Vec<String>> =
@@ -275,6 +344,20 @@ fn render_payload_ty(ty: &crate::ty::Ty, decl: &crate::db::TypeDecl) -> Option<S
                 _ => Some(format!("({})", parts.join(", "))),
             }
         }
+        // A NON-self sum/nominal with args (`(Option a)`, `(Result a b)`) — render its head + each arg
+        // recursively so a param arg becomes `T{k}`. A no-arg sum delegates to `types::rust_type` (a
+        // concrete monomorphic sum name). The head name uses the built-in std mapping for Option/Result
+        // via `types::rust_type` on the ARGS-STRIPPED shape is not needed — render the name + args here.
+        Ty::Sum { name, args, .. } if !args.is_empty() => {
+            let parts: Option<Vec<String>> =
+                args.iter().map(|a| render_payload_ty(a, decl)).collect();
+            let ident = types::sum_ident(name);
+            Some(format!("{ident}<{}>", parts?.join(", ")))
+        }
+        // A `List`/`Map`/`Set` element is NOT rendered (collections-as-values are unrealized on the Rust
+        // backend — `types::rust_type` has no arm; a `Vec<…>` field would be an enum the construct/match
+        // paths can't handle). Delegate to `types::rust_type`, which declines — consistent with a bare
+        // `List` payload declining.
         _ => types::rust_type(ty),
     }
 }
