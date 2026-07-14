@@ -14386,6 +14386,52 @@ mod match_engine {
     }
 
     #[test]
+    fn a_module_member_body_resolves_an_enclosing_scope_sibling_module() {
+        // `core-semantics.md` §A Module Evaluates To A Record Of Its Exports: a member body resolves names
+        // by the ordinary lexical scope — including the module's ENCLOSING scope, so a member of `app` can
+        // call a SIBLING MODULE `lib` declared beside it. The scope walk ascends body → app's synth `fn` →
+        // app's synth RECORD (where a SAME-module sibling resolves); the record's scope-skip now CHAINS to
+        // the enclosing scope of `(module app …)`, so the walk continues into the do-block where `lib`
+        // binds. Before this it dead-ended at the record → `lib` spuriously CDZ0101.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do \
+                   (module lib (def (answer) 42)) \
+                   (module app (def (go) ((. lib answer) unit))) \
+                   ((. app go) unit))) (export main))"
+            ),
+            None,
+            "a member of `app` resolves the sibling module `lib` in the enclosing do-block"
+        );
+        // The value is correct end-to-end: `(. app go)` reaches `(. lib answer)` = 42.
+        if let Some(v) = run_heap_value(
+            "(module top (def (main) (do \
+               (module lib (def (answer) 42)) \
+               (module app (def (go) ((. lib answer) unit))) \
+               ((. app go) unit))) (export main))",
+            vec![],
+        ) {
+            assert_eq!(
+                v, "42",
+                "a cross-module member call returns the callee's value"
+            );
+        }
+        // 🔑 DEFINITION-SITE preserved: `lib`'s own literal `42` keeps `lib`'s scope (Int64), NOT `app`'s
+        // `default-integer BigInt` — the record chains to where `lib` was WRITTEN, not to the caller. So
+        // the result is Int64 (a BigInt would render/type differently); this compiles clean as Int64.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do \
+                   (module lib (def (answer) 42)) \
+                   (module app (pragma default-integer BigInt) (def (go) ((. lib answer) unit))) \
+                   (if (= ((. app go) unit) 42) 1 0))) (export main))"
+            ),
+            None,
+            "a sibling module's literal keeps its own definition-site scope, not the caller's default"
+        );
+    }
+
+    #[test]
     fn a_default_integer_pragma_naming_an_unbound_type_is_cdz0101() {
         // 06-numeric-model "a default-integer pragma naming an unbound type is rejected as unbound, like an
         // annotation". A meaning-changing directive naming a NONEXISTENT type must not be silently accepted

@@ -187,6 +187,7 @@ pass	a built map renders its entries in canonical key order
 pass	a built-in Ast constructor applied to a wrong-type payload is a type error
 pass	a built-in Option is unwrapped by a helper that binds its payload
 pass	a built-in Option tuple payload consumed INLINE in the Some arm projects
+pass	a built-in Result whose two type arguments DIFFER is matched on both variants
 pass	a byte sequence carrying a runtime byte value is a first-class value
 pass	a byte sequence is constructed from a list of integers in range
 pass	a byte sequence written as a literal renders back to the same literal
@@ -345,6 +346,7 @@ pass	a dependent size of zero binds an empty body and leaves the rest untouched
 pass	a dependent-size segment binds exactly the number of bytes an earlier segment named
 pass	a dependent-size segment that overruns the remaining bytes falls through
 pass	a destructuring let over a runtime value binds its parts
+pass	a dictionary consumer called at two dictionaries is monomorphized per dictionary
 pass	a different function argument through the same recursive higher-order function
 pass	a digit separator adjacent to a float's decimal point is a malformed literal
 pass	a dimensionless quantity carries the group identity Unit.one
@@ -560,6 +562,7 @@ pass	a map with tuple values of different arities is a type error
 pass	a map with values of two different types is a type error
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
+pass	a match arm mixes a payload LITERAL, a wildcard, and a nested-Option pattern
 pass	a match binder over a narrow scrutinee returns the bound value
 pass	a match not covering the scrutinee is a compile-time rejection
 pass	a match on a BigInt with a single catch-all binder binds and uses it
@@ -607,6 +610,7 @@ pass	a multi-payload destructure binds the head and recurses on the tail
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
 pass	a multi-payload variant destructures its payloads positionally
 pass	a multi-payload variant whose spread element is itself a compound escapes correctly
+pass	a multi-payload variant with MIXED-width, MIXED-type payloads deconstructs each field
 pass	a multi-payload variant with a scalar AND two recursive payloads escapes flat
 pass	a multi-segment bin concatenates mixed-width signed and unsigned segments in order
 pass	a multi-variant constructor nested in a tuple let-binder is refutable and rejected
@@ -797,6 +801,7 @@ pass	a recursive NEWTYPE-wrapped linked list folds to a scalar
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
 pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
 pass	a recursive byte walk threading a Bytes parameter through a helper infers without annotation
+pass	a recursive consumer of a dictionary record inlines and erases the dictionary
 pass	a recursive def computes over its argument
 pass	a recursive def named a target-language keyword runs
 pass	a recursive def with a match base case computes over its argument
@@ -1016,9 +1021,12 @@ pass	a sum type can mix nullary and payload-carrying variants
 pass	a sum type is declared with named variants
 pass	a sum type variant can carry data
 pass	a sum value annotated as a scalar type is rejected
+pass	a sum variant carrying a Float64 payload boxes it and escapes it as a float
 pass	a sum variant carrying a Map payload is deconstructed and the map queried
+pass	a sum variant carrying a NARROW-int payload boxes and reads it at its width
 pass	a sum variant carrying a String payload matches and reads the string
 pass	a sum whose variants are named after target-language keywords constructs and matches
+pass	a sum with FOUR type parameters instantiates and matches each at a distinct type
 pass	a sum-match recursion that accumulates a built-in list returns a list
 pass	a sum-payload-wrapped self-application is rejected in bounded time, not a compiler stack overflow
 pass	a sum-type value is constructed through a variant
@@ -1451,6 +1459,7 @@ pass	exact rational arithmetic is exact and normalized
 pass	exact rational division is total and exact for a nonzero divisor
 pass	expect makes a checked-arithmetic result trap on overflow
 pass	expect on a RUNTIME-absent optional traps with the canonical unreachable kind
+pass	expect traps on the err case of a RUNTIME result
 pass	expect unwraps the ok case of a runtime result
 pass	expect unwraps the present case of a runtime optional
 pass	extending a record adds a new field
@@ -1733,6 +1742,7 @@ pass	the boolean literals
 pass	the built-in Ast is transformed as an ordinary value
 pass	the built-in list is folded by an element-with-rest pattern
 pass	the byte length of a runtime string equals the length of its encoded bytes
+pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
 pass	the else-branch of an if threads a performed state to the continuation
 pass	the empty byte sequence has length zero
@@ -1901,5 +1911,4 @@ todo	eval on malformed AST traps
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	reading the text a printer produced round-trips to an equal value
-todo	the default-integer pragma is definition-site scoped, not use-site
 todo	wrapping arithmetic uses the distinct wrapping type

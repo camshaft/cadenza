@@ -1155,7 +1155,26 @@ impl Db {
             modules.iter().filter_map(|m| m.synth).collect();
         // Per-node lexical-scope skip pointer (nearest binding-candidate ancestor + entry child) so the
         // scope walk hops over non-binding forms — O(1) per binder instead of O(nesting depth).
-        let scope_skip = build_scope_skip(&ast, &parent, &module_records);
+        let mut scope_skip = build_scope_skip(&ast, &parent, &module_records);
+        // CHAIN each module's SYNTHESIZED RECORD out to the enclosing scope of its DECLARATION occurrence.
+        // A member body's scope walk ascends body → the module's synth `fn` → its synth RECORD (where Case
+        // R / `module_sibling_binds` resolves a SIBLING MEMBER of the SAME module). But the record is a
+        // load-appended node whose own parent chain dead-ends, so without this the walk STOPS there — a
+        // member body could not see a name bound in the module's ENCLOSING scope (a SIBLING MODULE `lib`
+        // declared beside `(module app …)` in the same `do`, or an enclosing `let`/`def` binding). Point
+        // the record's skip at whatever the module's DECLARATION `occ` sees (`scope_skip[occ]` — the
+        // nearest binding candidate above the `(module …)` form), so after the record's own members the
+        // walk continues into the module's lexical context, exactly as a top-level def's body does. The
+        // record stays a binding candidate itself (its members resolve when the walk LANDS on it via
+        // `binder_in`'s Case R); this only extends where it goes NEXT. Definition-site correct: it chains
+        // to where the module was WRITTEN, so `lib`'s own literals keep `lib`'s scope, not `app`'s.
+        for m in &modules {
+            if let (Some(record), occ) = (m.synth, m.occ)
+                && (record.0 as usize) < scope_skip.len()
+            {
+                scope_skip[record.0 as usize] = scope_skip[occ.0 as usize];
+            }
+        }
         // Index each SCOPE FORM's parameter binders by name (last-wins), so `binder_in`'s per-reference
         // "does this scope declare `name`?" probe is O(1) rather than an O(params) signature scan.
         let scope_binders = build_scope_binders(&ast);
