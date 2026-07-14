@@ -5537,11 +5537,17 @@
   (output (: 1 Int64)))
 
 (case "comparing same-shape nominal types is a type error"
-  (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural. Point and
-           Vector share a shape but are distinct nominal types; the compiler tracks nominal identity
-           and rejects comparing them (CDZ0202), or declines if it does not yet track nominal tags in
-           comparison (reject-don't-miscompile).")
-  (input    (= (Point (x 0) (y 0)) (Vector (x 0) (y 0))))
+  (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural. `Point` and
+           `Vector` are nominal types over the SAME underlying record shape `(Record (x Int64) (y Int64))`
+           — but a nominal type's identity is its declaration, not its shape, so they are distinct. The
+           compiler tracks nominal identity and rejects comparing `(Point.Mk …)` with `(Vector.Mk …)`
+           across the nominal boundary (CDZ0202). The record sibling of the nominal-SUM case below; a
+           nominal type is a name tagging any structural type (§Nominal Is An Orthogonal Modifier Over Any
+           Structural Type — record, tuple, or sum).")
+  (input    (do
+              (type Point  (Mk (Record (x Int64) (y Int64))))
+              (type Vector (Mk (Record (x Int64) (y Int64))))
+              (= (Point.Mk (record (x 0) (y 0))) (Vector.Mk (record (x 0) (y 0))))))
   (error    CDZ0202))
 
 ; --- The other half of the nominal boundary: nominal vs the untagged shape ----------------
@@ -5553,19 +5559,24 @@
 ; as the nominal-vs-nominal case above is.
 
 (case "a nominal record compared to a plain record of the same shape is a type error"
-  (doc    "`(Point (x 0) (y 0))` is a nominal record; `(record (x 0) (y 0))` is the untagged structural
-           value of the same shape. Comparing them is a type error the compiler rejects (CDZ0202,
-           type-system.md #Nominal Types Are Not Comparable Across Their Boundary, 2nd sentence) — a
-           nominal value never silently compares equal to the untagged shape it was declared distinct
-           from.")
-  (input    (= (Point (x 0) (y 0)) (record (x 0) (y 0))))
+  (doc    "`(Point.Mk (record (x 0) (y 0)))` is a nominal record (a `Point` tagging the underlying record
+           shape); `(record (x 0) (y 0))` is the untagged structural value of the same shape. Comparing
+           them is a type error the compiler rejects (CDZ0202, type-system.md #Nominal Types Are Not
+           Comparable Across Their Boundary, 2nd sentence) — a nominal value never silently compares equal
+           to the untagged shape it was declared distinct from (unwrap the nominal to compare the
+           underlying value).")
+  (input    (do
+              (type Point (Mk (Record (x Int64) (y Int64))))
+              (= (Point.Mk (record (x 0) (y 0))) (record (x 0) (y 0)))))
   (error    CDZ0202))
 
 (case "a plain record compared to a nominal record of the same shape is a type error"
-  (doc    "The order-flipped companion: `(= (record …) (Point …))` is the same nominal-boundary
+  (doc    "The order-flipped companion: `(= (record …) (Point.Mk …))` is the same nominal-boundary
            violation regardless of which operand carries the tag — CDZ0202. Pins that the nominal tag
            is checked on either side of the comparison, not only the left.")
-  (input    (= (record (x 0) (y 0)) (Point (x 0) (y 0))))
+  (input    (do
+              (type Point (Mk (Record (x Int64) (y Int64))))
+              (= (record (x 0) (y 0)) (Point.Mk (record (x 0) (y 0))))))
   (error    CDZ0202))
 
 ; --- The nominal boundary holds for user-declared SUM types too, not only nominal records -----------

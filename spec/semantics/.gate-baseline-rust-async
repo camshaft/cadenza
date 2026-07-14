@@ -990,13 +990,13 @@ todo	a negative string index yields None rather than wrapping to a large offset
 todo	a negative-power SI prefix is an exact rational scale
 todo	a nested constructor in a multi-payload position destructures two levels
 todo	a nested unquote pattern matches a sub-AST by shape
-todo	a nominal record compared to a plain record of the same shape is a type error
+pass	a nominal record compared to a plain record of the same shape is a type error
 todo	a non-empty scrutinee does not match an empty bin pattern
 todo	a non-final unquote-splice in a quote pattern is ill-formed
 todo	a partially-applied function escapes as a value and runs through a recursive HOF
 todo	a peephole rewrite rule reads in the shape of the code it rewrites
 todo	a plain quote does not evaluate a quasiquote's unquote nested inside it
-todo	a plain record compared to a nominal record of the same shape is a type error
+pass	a plain record compared to a nominal record of the same shape is a type error
 todo	a predicate closure returning Bool drives an early-exit recursive HOF
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
@@ -1139,7 +1139,7 @@ todo	annotating a quantity at a dimension the expression does not derive is an e
 todo	chained guards of the same variant are tried in order
 todo	compacting a byte sequence built at run time preserves its bytes
 todo	comparing quantities of incompatible dimension is a compile-time error
-todo	comparing same-shape nominal types is a type error
+pass	comparing same-shape nominal types is a type error
 todo	comparing two quantities of the same dimension yields a Bool
 todo	comparing two units of one dimension converts before comparing
 todo	concatenating byte sequences built at run time appends their bytes in order

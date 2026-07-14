@@ -1423,14 +1423,14 @@ todo	a negative string index yields None rather than wrapping to a large offset
 todo	a negative unsigned integer width is rejected
 todo	a negative width is not honored as a narrow type
 todo	a negative-power SI prefix is an exact rational scale
-todo	a nominal record compared to a plain record of the same shape is a type error
+pass	a nominal record compared to a plain record of the same shape is a type error
 todo	a non-empty scrutinee does not match an empty bin pattern
 todo	a parameterized export returning a capturing closure is made and called by the host
 todo	a parameterized export returning a multi-argument capturing closure
 todo	a parameterized plain export alongside a closure export applies its argument
 todo	a parameterized plain export alongside a closure export — the closure captures and applies
 todo	a partially-applied function escapes as a value and runs through a recursive HOF
-todo	a plain record compared to a nominal record of the same shape is a type error
+pass	a plain record compared to a nominal record of the same shape is a type error
 todo	a predicate closure returning Bool drives an early-exit recursive HOF
 todo	a prelude Option value crosses a module boundary as an export result
 todo	a produced closure is handed back into a consumer export (the round trip)
@@ -1574,7 +1574,7 @@ todo	an unusual in-range width is a first-class type
 todo	an unusual-width value that overflows its computed range traps
 todo	arithmetic on a bound Rational payload computes and escapes exactly
 todo	compacting a byte sequence built at run time preserves its bytes
-todo	comparing same-shape nominal types is a type error
+pass	comparing same-shape nominal types is a type error
 todo	concatenating byte sequences built at run time appends their bytes in order
 todo	concatenating tuples preserves each element's type
 todo	constructing a runtime value that does not fit its segment traps

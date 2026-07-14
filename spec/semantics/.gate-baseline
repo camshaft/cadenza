@@ -813,6 +813,7 @@ pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
+pass	a nominal record compared to a plain record of the same shape is a type error
 pass	a non-constructor type applied to arguments in type position is rejected
 pass	a non-empty scrutinee does not match an empty bin pattern
 pass	a non-exhaustive guarded match is rejected even when a constant scrutinee folds its guard true
@@ -878,6 +879,7 @@ pass	a performing match-arm guard folds with WILDCARD patterns (no binder to let
 pass	a pipeline chain applies its stages left to right
 pass	a plain number def is unaffected by a following statement (the `as` sugar stays in its statement)
 pass	a plain quote does not evaluate a quasiquote's unquote nested inside it
+pass	a plain record compared to a nominal record of the same shape is a type error
 pass	a plural family-unit spelling names the same unit as its singular
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a predicate closure returning Bool drives an early-exit recursive HOF
@@ -1546,6 +1548,7 @@ pass	comparing quantities of incompatible dimension is a compile-time error
 pass	comparing quantities of one dimension at different scales converts before comparing
 pass	comparing records whose field sets differ in size is a type error
 pass	comparing records with different field-name sets is a type error
+pass	comparing same-shape nominal types is a type error
 pass	comparing sums with disjoint variant sets is a type error
 pass	comparing tuples of different lengths is a type error
 pass	comparing two quantities of the same dimension yields a Bool
@@ -2152,12 +2155,9 @@ todo	a closure returning Unit is declined — Unit has no machine representation
 todo	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 todo	a match on an open sum omitting the open-tail arm is rejected
 todo	a match on an open sum with an open-tail arm is exhaustive
-todo	a nominal record compared to a plain record of the same shape is a type error
-todo	a plain record compared to a nominal record of the same shape is a type error
 todo	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 todo	an open sum payload that does not match its schema yields a typed failure, not a trap
 todo	an open sum's payload decodes against a schema to a typed result
-todo	comparing same-shape nominal types is a type error
 todo	constructing a runtime value that does not fit its segment traps
 todo	eval on malformed AST traps
 todo	expect on an overflowing checked add traps
