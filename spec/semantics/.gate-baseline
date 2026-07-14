@@ -709,6 +709,8 @@ pass	a list-arm constructor element over a runtime-built list
 pass	a list-arm map element whose key is absent falls through
 pass	a list-carrying recursion whose base arm does a fallible indexed read compiles
 pass	a list-concatenating helper threads lists through a call
+pass	a list-payload split missing the empty arm is non-exhaustive
+pass	a list-payload split missing the non-empty arm is non-exhaustive
 pass	a literal in a let binder is refutable and rejected
 pass	a literal inside a NESTED constructor pattern refines the match
 pass	a literal inside a constructor pattern matches a runtime payload
@@ -2197,6 +2199,7 @@ pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
 pass	the difference of a set with itself is empty
 pass	the else-branch of an if threads a performed state to the continuation
+pass	the empty and None arms of a list-payload split dispatch to their own values
 pass	the empty byte sequence has length zero
 pass	the empty reader literal is the empty symbol
 pass	the empty set is equal to the empty set
