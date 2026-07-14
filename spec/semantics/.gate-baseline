@@ -331,6 +331,7 @@ pass	a handler arm that resumes NON-tail folds a perform in a match arm body by 
 pass	a handler arm that resumes NON-tail folds a perform in a short-circuit connective right operand
 pass	a handler arm that resumes NON-tail folds a perform in an if branch by handler distribution
 pass	a handler arm that resumes NON-tail folds through a PURE one-hole continuation
+pass	a handler arm that resumes NON-tail folds through a pure continuation containing an effect-free call
 pass	a handler arm that resumes NON-tail folds when the perform is in a let init
 pass	a handler arm that resumes NON-tail folds when the perform is in a match scrutinee
 pass	a handler arm that resumes NON-tail folds when the perform is in an and lhs

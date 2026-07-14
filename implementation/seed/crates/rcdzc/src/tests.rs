@@ -26740,6 +26740,62 @@ mod stage1 {
     }
 
     #[test]
+    fn an_e5_pure_one_hole_continuation_admits_an_effect_free_user_call() {
+        // E5 EXTENSION: the pure one-hole continuation `C` may now contain a NON-RECURSIVE user call whose
+        // body reaches NO effect — not only primitive operators. `C = (dbl □)` where `dbl x = x*2` is
+        // effect-free, so `(resume 10 s)` folds to `C[10] = (dbl 10)` and the arm `(+ 1 (resume 10 s))` →
+        // `(+ 1 (dbl 10))` = `(+ 1 20)` = 21. Splicing the pure call (once, or many times for a multi-shot
+        // arm) re-runs an effect-free computation — observationally identical to running it once — so NO
+        // frame machinery is needed. Previously declined ("a call in `C`" → the frame vertical).
+        let one_shot = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (dbl (: x Int64)) (* x 2)) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (dbl (Amb.flip)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(one_shot)))
+                    .expect("an effect-free user call in C folds"),
+                "main"
+            ),
+            21
+        );
+        // MULTI-shot over the same pure call duplicates `C = (dbl □)` safely (dbl is effect-free):
+        //   `(+ (resume 1 s) (resume 2 s))` → `(+ (dbl 1) (dbl 2))` = `(+ 2 4)` = 6.
+        let multi = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (dbl (: x Int64)) (* x 2)) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (dbl (Amb.flip)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(multi)))
+                    .expect("a multi-shot effect-free user call in C folds"),
+                "main"
+            ),
+            6
+        );
+        // NESTED effect-free calls compose: `C = (dbl (inc □))` → `(+ 1 (dbl (inc 10)))` = `(+ 1 22)` = 23.
+        let nested = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (dbl (: x Int64)) (* x 2)) (def (inc (: y Int64)) (+ y 1)) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (dbl (inc (Amb.flip))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(nested)))
+                    .expect("nested effect-free user calls in C fold"),
+                "main"
+            ),
+            23
+        );
+        // GUARD: a user call whose body ITSELF performs the discharged effect is NOT effect-free — the
+        // continuation is not pure (a second effect on the spine), so it must DECLINE (a clean todo, not a
+        // miscompile). `bad x = (+ x (Amb.flip))` performs, so `(bad (Amb.flip))` has two performs.
+        let effectful = "(do (effect Amb (op flip (-> Unit Int64))) \
+                   (def (bad (: x Int64)) (+ x (Amb.flip))) \
+                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (bad (Amb.flip)))) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(effectful))).is_err(),
+            "a user call whose body performs is not effect-free — the continuation is not pure, must decline"
+        );
+    }
+
+    #[test]
     fn a_pure_one_hole_match_scrutinee_re_resolves_a_binder_arm_and_nests_in_an_operator() {
         // ADVERSARIAL: (1) a match scrutinee hole whose selected arm BINDS the scrutinee and USES the binder
         // — the whole match is copied per resume by `splice_context`, so the pattern binder `k` must
