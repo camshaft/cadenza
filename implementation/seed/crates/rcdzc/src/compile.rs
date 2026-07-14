@@ -2265,6 +2265,53 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // family nor a user `Unit.define` (`5zorks`, `5gram`) fails to reduce and otherwise surfaces only as a
     // generic "no machine representation" decline — name the unknown unit (CDZ0201) with a did-you-mean.
     crate::infer::check_unknown_units(db, &mut faults);
+    // MISSPELLED FORM-KEYWORD CASCADE. A misspelled control/binding keyword in head position — `(mtch n
+    // (0 1) …)` for `match`, `(le ((x 5)) x)` for `let` — is an unbound-name CDZ0101 whose suggestion is a
+    // GRAMMAR keyword. But the whole form is then (mis)read as an APPLICATION, so its arms/bindings fault
+    // too: `(mtch …)`'s arm `(0 1)` → "cannot apply Int64", its `_` wildcard → "unbound `_`"; `(le …)`'s
+    // body reference `x` → "unbound `x`" (the bindings never took effect). Those are CONSEQUENT on the head
+    // typo, not INDEPENDENT problems (`diagnostics.md` §Maximal Independent Set). Once the head is fixed to
+    // the keyword, they vanish — so keep the head's did-you-mean CDZ0101 (with its fix) as the ONE primary
+    // and drop every OTHER fault anchored strictly INSIDE that form. Keyed on the suggestion being a grammar
+    // keyword, so an ordinary misspelled FUNCTION head `(helpr a b)` — whose arguments are genuine
+    // sub-expressions with independent faults — is untouched.
+    let keyword_typo_forms: Vec<StructId> = faults
+        .iter()
+        .filter(|r| r.code == Some(Code::Unbound))
+        .filter_map(|r| r.at)
+        .filter_map(|head| crate::resolve::unbound_head_suggests_grammar_keyword(db, head))
+        .collect();
+    if !keyword_typo_forms.is_empty() {
+        // The HEAD occurrences that carry the primary keyword-typo reject — never suppressed themselves.
+        let typo_heads: std::collections::HashSet<u32> = keyword_typo_forms
+            .iter()
+            .filter_map(|&form| match db.ast.get(form) {
+                crate::ast::Struct::List(kids) => kids.first().map(|k| k.0),
+                _ => None,
+            })
+            .collect();
+        faults.retain(|r| {
+            let Some(at) = r.at else {
+                return true; // an unanchored fault is not attributable to a form — keep
+            };
+            if typo_heads.contains(&at.0) {
+                return true; // the primary head reject stays
+            }
+            // Drop the fault iff its node lies within any keyword-typo form's subtree (walk parents).
+            !keyword_typo_forms.iter().any(|&form| {
+                let mut cur = at;
+                loop {
+                    if cur == form {
+                        break true;
+                    }
+                    match db.parent_of(cur) {
+                        Some(p) => cur = p,
+                        None => break false,
+                    }
+                }
+            })
+        });
+    }
     dedup_faults(db, faults, has_bakeable_type_export)
 }
 

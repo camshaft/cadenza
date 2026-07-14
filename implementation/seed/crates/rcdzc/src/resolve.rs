@@ -721,6 +721,27 @@ pub(crate) fn nearest_unbound_suggestion(db: &mut Db, id: StructId, name: &str) 
     nearest_name_suggestion(db, id, name)
 }
 
+/// When the unbound name at `id` is the HEAD of a form `(id …)` AND its nearest-name suggestion is a
+/// GRAMMAR KEYWORD (`match`/`let`/`if`/`and`/… — a misspelled control/binding form, e.g. `(mtch …)` for
+/// `match`, `(le …)` for `let`), return that ENCLOSING form node. `None` otherwise (a non-head typo, a
+/// head whose best match is an ordinary value/def, or a head with no close match). Used by
+/// `compile::collect_faults` to SUPPRESS the CASCADE a misspelled keyword triggers: the whole form is
+/// (mis)read as an APPLICATION, so its arms/bindings fault too (`(mtch n (0 1) …)` → "cannot apply Int64"
+/// on the arm `(0 1)`, "unbound `_`" on the wildcard) — all CONSEQUENT on the head typo, not independent
+/// problems. Keying on the suggestion being a GRAMMAR keyword (not any name) keeps the suppression to the
+/// misspelled-form case: an ordinary misspelled FUNCTION head `(helpr x)` has a real callee typo, and its
+/// arguments are genuine sub-expressions whose own faults ARE independent — so they are never suppressed.
+pub(crate) fn unbound_head_suggests_grammar_keyword(db: &mut Db, id: StructId) -> Option<StructId> {
+    let parent = db.parent_of(id)?;
+    // `id` must be the FIRST child (the head) of its parent list.
+    if !matches!(db.ast.get(parent), Struct::List(kids) if kids.first() == Some(&id)) {
+        return None;
+    }
+    let name = db.ast.as_name(id)?.to_string();
+    let candidate = nearest_name_suggestion(db, id, &name)?;
+    is_grammar_head(&candidate).then_some(parent)
+}
+
 /// The nearest in-scope name to an unbound `name` referenced at `id`, if one is close enough to be a
 /// plausible typo — the candidate a "did you mean?" suggestion names. Enumerates every name a reference
 /// at this point COULD have resolved to (the same four lookup tiers `resolve_name` walks: lexical

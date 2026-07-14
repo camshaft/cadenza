@@ -30994,6 +30994,58 @@ mod stage1 {
     }
 
     #[test]
+    fn a_misspelled_form_keyword_head_suppresses_its_cascade() {
+        // A misspelled keyword head makes the whole form (mis)parse as an APPLICATION, so its arms/bindings
+        // fault too — `(mtch n (0 1) (_ 2))` → "cannot apply Int64" on the arm `(0 1)` + "unbound `_`";
+        // `(le ((x 5)) x)` → "unbound `x`" (the bindings never took effect). Those are CONSEQUENT on the
+        // head typo. The diagnostics now report ONLY the head's did-you-mean CDZ0101 (with its fix); the
+        // cascade inside the mis-parsed form is dropped.
+        let all = |src: &str| crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+        let mtch = all("(module m (def (f (: n Int64)) (mtch n (0 1) (_ 2))) (export f))");
+        assert_eq!(
+            mtch.iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .count(),
+            1,
+            "only the head typo remains, no cascade: {:?}",
+            mtch.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            mtch[0].message.contains("did you mean `match`?"),
+            "the surviving error is the head typo: {}",
+            mtch[0].message
+        );
+        // The `let` case: the two spurious "unbound `x`" (from the never-bound body) are gone too.
+        let le = all("(module m (def (f) (le ((x 5)) x)) (export f))");
+        assert!(
+            le.iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .all(|d| d.message.contains("did you mean `let`?")),
+            "only the `let` typo remains, no spurious unbound-x cascade: {:?}",
+            le.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // NO OVERREACH: an ordinary misspelled FUNCTION head keeps its argument's independent fault — the
+        // suggestion `helper` is not a grammar keyword, so the cascade suppression does not apply.
+        let fn_typo = all("(module m (def (helper a) a) (def (f) (helpr nonesuch)) (export f))");
+        assert!(
+            fn_typo
+                .iter()
+                .any(|d| d.message.contains("did you mean `helper`?"))
+                && fn_typo.iter().any(|d| d.message.contains("`nonesuch`")),
+            "a function-head typo keeps its genuine argument fault: {:?}",
+            fn_typo.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // NO OVERREACH: a CORRECT `match` with a genuine unbound in an arm still reports that arm fault.
+        let ok_match =
+            all("(module m (def (f (: n Int64)) (match n (0 nonesuch) (_ 2))) (export f))");
+        assert!(
+            ok_match.iter().any(|d| d.message.contains("`nonesuch`")),
+            "a well-formed match's arm fault is not suppressed: {:?}",
+            ok_match.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn a_miscased_boolean_literal_suggests_the_lowercase_literal() {
         // `True`/`False` (the cross-language habit) read as unbound NAMES (the lexer only classifies
         // lowercase `true`/`false` as `Leaf::Bool`), so the one-shot fix is the lowercase literal — which
