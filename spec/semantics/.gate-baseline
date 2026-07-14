@@ -96,7 +96,11 @@ pass	a Map-returning closure alongside a parameterized plain export — the clos
 pass	a Map-returning closure alongside a parameterized plain export — the plain
 pass	a NARROW-int-field Tuple closure ARG flattens + rebuilds (exercises the i32->i64 extend)
 pass	a NESTED Record ARG (a record containing a record) crosses the direct-call boundary
+pass	a NESTED Record ARG with a LIST result crosses the direct-call boundary
 pass	a NESTED Tuple ARG (a tuple containing a tuple) crosses the direct-call boundary
+pass	a NESTED Tuple ARG with a BYTE-ROPE result crosses the direct-call boundary
+pass	a NESTED Tuple ARG with a LIST result crosses the direct-call boundary
+pass	a NESTED Tuple ARG with a fixed-shape COMPOUND result crosses the direct-call boundary
 pass	a NESTED Tuple ARG with a narrow Bool leaf crosses the direct-call boundary
 pass	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
@@ -1125,6 +1129,7 @@ pass	a variant carrying a RECORD payload constructs and matches
 pass	a variant carrying a Rational payload constructs and matches
 pass	a variant carrying a Symbol payload constructs, matches, and binds it
 pass	a variant carrying a record payload escapes to the host
+pass	a variant carrying an EMPTY-sum payload lays out and its dead arm zero-arm-matches
 pass	a variant pattern over a Bool scrutinee is a type error
 pass	a variant pattern over a scalar scrutinee is a type error
 pass	a variant with a wrong-type payload as a direct match scrutinee is a type error
