@@ -705,6 +705,7 @@ pass	a runtime scrutinee selects a non-first literal arm
 pass	a runtime string bound from a sum payload compares equal to a string parameter
 pass	a runtime string compared against a literal folds against the literal side
 pass	a runtime string equality selects a branch by comparing a parameter to a literal
+pass	a runtime string is indexed by scalar and the extracted scalar is returned
 pass	a runtime string is sliced by scalar offsets
 pass	a runtime string returned across the run boundary renders as its quoted text
 pass	a runtime string slice addresses scalar values, not bytes
@@ -890,6 +891,7 @@ pass	adding two named family units of one dimension converts to the reference (F
 pass	adding two quantities of the same dimension keeps that dimension
 pass	all-nullary enum equality compares discriminants
 pass	an 8-bit-integer closure crosses the host boundary
+pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an IEC binary prefix converts exactly over Int64
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
@@ -1120,6 +1122,8 @@ pass	distinct-sig byte-rope closure alongside a plain export — the closure
 pass	distinct-sig byte-rope closure alongside a plain export — the plain
 pass	distinct-sig byte-rope closures — the Bool→Bytes one
 pass	distinct-sig byte-rope closures — the Int64→Bytes one
+pass	distinct-sig collection result — the Bool→List closure
+pass	distinct-sig collection result — the Int64→List closure
 pass	distinct-sig compound result — the Bool→(Tuple Bool Int64) closure
 pass	distinct-sig compound result — the Int64→(Tuple Int64 Int64) closure
 pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one
@@ -1134,6 +1138,10 @@ pass	distinct-sig round-trip: a compound consumer + a scalar consumer of another
 pass	distinct-sig: a String closure + a Bytes closure of different signatures — the String one
 pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the byte-rope one
 pass	distinct-sig: a byte-rope closure coexists with a SCALAR closure — the scalar one
+pass	distinct-sig: a collection + a compound + a byte-rope + a scalar group all coexist — the collection
+pass	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the byte-rope
+pass	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the compound
+pass	distinct-sig: a collection + a compound + a byte-rope + a scalar group — the scalar
 pass	distinct-sig: a compound group + a byte-rope group + a scalar group — the byte-rope
 pass	distinct-sig: a compound group + a byte-rope group + a scalar group — the compound
 pass	distinct-sig: a compound group + a byte-rope group + a scalar group — the scalar
@@ -1307,6 +1315,10 @@ pass	projecting the result of a function that threads a tuple parameter must not
 pass	promoting a Float32 to Float64 is exact
 pass	pushing an element of a different type onto a list is a type error
 pass	pushing an element onto a list appends it
+pass	quasiquote constructs AST with selective evaluation
+pass	quasiquote makes AST construction readable
+pass	quasiquote nests with inner unquote evaluated
+pass	quasiquotes unquoting a runtime variable and a literal build equal ASTs
 pass	quote produces an AST value without evaluating
 pass	quote-vs-constructor AST equality holds regardless of operand order
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
@@ -1513,6 +1525,7 @@ pass	two variants of the same sum compare unequal regardless of operand order
 pass	under-applying a unary constructor is a type error, not a fabricated unit payload
 pass	unit and the empty tuple are the same value
 pass	unit is the empty tuple
+pass	unquote in quasiquote evaluates normally and embeds
 pass	unquote outside quasiquote is a syntax error
 pass	unquote with more than one operand inside a quasiquote is malformed
 pass	unsigned comparison orders by magnitude, not by signed interpretation
@@ -1563,13 +1576,11 @@ todo	a rational with numerator and denominator both negative normalizes to posit
 todo	a rational's sign is normalized onto the numerator
 todo	a rational-magnitude quantity erases to its exact rational value
 todo	a runtime left shift by 63 fits for -1 and overflow-traps for 1
-todo	a runtime string is indexed by scalar and the extracted scalar is returned
 todo	a utf8 bin segment binds a decoded string when the bytes are well-formed
 todo	a utf8 bin segment is a non-match on ill-formed bytes, forcing the catch-all
 todo	a utf8-decoding bin match with no catch-all is non-exhaustive
 todo	a whole rational carries a denominator of one
 todo	adding two units of one dimension converts to the reference unit exactly
-todo	an AST from quasiquoting a runtime value equals the same AST built by quote
 todo	an IEC binary prefix scales a unit by a power of two
 todo	an SI decimal prefix scales a unit by a power of ten
 todo	an arbitrary-precision integer multiplication does not overflow
@@ -1597,17 +1608,12 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	negating a runtime Int64 overflows at Int64.min
 todo	negating a runtime narrow integer traps at the width's own min, not the Int64 min
-todo	quasiquote constructs AST with selective evaluation
-todo	quasiquote makes AST construction readable
-todo	quasiquote nests with inner unquote evaluated
-todo	quasiquotes unquoting a runtime variable and a literal build equal ASTs
 todo	reading the text a printer produced round-trips to an equal value
 todo	signed 8-bit addition that overflows its width traps
 todo	splice flattens where unquote nests
 todo	the built-in list is folded by an element-with-rest pattern
 todo	the default-integer pragma is definition-site scoped, not use-site
 todo	two rationals denoting the same number are equal regardless of how they were written
-todo	unquote in quasiquote evaluates normally and embeds
 todo	unquote-splicing splices list elements into parent
 todo	unsigned 8-bit addition that overflows its width traps
 todo	unsigned subtraction below zero traps rather than wrapping

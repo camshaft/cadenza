@@ -317,6 +317,22 @@ pub enum Core {
         disc_some: u32,
         disc_none: u32,
     },
+    /// `String.at` / `String.scalar-at` on a RUNTIME string — read the i-th UNICODE SCALAR of a
+    /// UTF-8-backed String, fallibly (`String → Int64 → (Option String|Char)`). A constant string + index
+    /// FOLDS in `lower` (`chars().nth`), so this reaches the backend only for a runtime string. A String
+    /// is a flat UTF-8 byte leaf, so the backend WALKS the byte buffer scalar-by-scalar (a byte is a
+    /// scalar START iff `(byte & 0xC0) != 0x80` — a non-continuation byte): skip `index` scalars, then the
+    /// scalar's byte span is `[pos, pos+scalar_len)` where `scalar_len` counts the lead byte + its
+    /// continuation bytes. In bounds → `Some(bytes-slice(str, pos, scalar_len))` (the one-scalar String is
+    /// the byte-slice — `char` payload is the same byte-slice for `scalar-at`, distinguished at the source
+    /// type). A negative index or one at/beyond the scalar count → `None`. The scalar companion of
+    /// `BytesAt` (which reads a raw byte); here the payload is a multi-byte string span, indexed by SCALAR.
+    StrAt {
+        string: StructId,
+        index: StructId,
+        disc_some: u32,
+        disc_none: u32,
+    },
     /// `Bytes.concat` — append `lhs` and `rhs` into one byte sequence (runtime `bytes-concat`; consumes
     /// both, empty is the identity). Present when the pair is not both compile-time-visible constants (a
     /// constant pair folds to a `Core::BytesOf` in `lower`). The byte companion of `Core::ListConcat`.

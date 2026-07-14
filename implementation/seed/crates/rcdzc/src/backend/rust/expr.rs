@@ -784,6 +784,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         | Core::BytesOf { .. }
         | Core::BytesLen { .. }
         | Core::BytesAt { .. }
+        | Core::StrAt { .. }
         | Core::BytesConcat { .. }
         | Core::BytesSlice { .. }
         | Core::BytesCompact { .. }

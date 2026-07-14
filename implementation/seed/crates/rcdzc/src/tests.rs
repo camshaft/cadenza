@@ -14749,6 +14749,42 @@ mod match_engine {
     }
 
     #[test]
+    fn a_runtime_string_is_indexed_by_scalar() {
+        // `String.at` on a RUNTIME string (a `String.concat`-built rope, not a constant that folds) reads
+        // the i-th UNICODE SCALAR as a one-scalar String, fallibly. `Core::StrAt` WALKS the UTF-8 buffer
+        // (a byte is a scalar START iff `(b & 0xC0) != 0x80`), skips `index` scalars, and `bytes-slice`s
+        // the scalar's byte span into `Some`. THREE fixes compose here: (1) `Core::StrAt` (the walk);
+        // (2) the runtime `value-encode` `Shape::Str` now FLATTENS a rope before reading its bytes (a
+        // slice/concat string rendered its raw handle bytes before); (3) a GENERIC sum escape renders its
+        // type ARGS (`(Option String)`, not the bare `Option`) via the parametric `Framed` frame. `é` is
+        // scalar 3 of "café", occupying 2 UTF-8 bytes → `(Some "é")` whole.
+        let Some(v) = run_heap_value_escape(
+            "(module m (def (at s i) ((. String at) ((. String concat) s \"\") i)) \
+               (def (main) (at \"café\" 3)) (export main))",
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime String.at run");
+            return;
+        };
+        assert_eq!(
+            v, "(: (Some \"é\") (Option String))",
+            "runtime String.at reads the é scalar whole"
+        );
+
+        // Out of range (index >= scalar count) → None, consumed internally (byte-len) to avoid the escape.
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (at s i) ((. String at) ((. String concat) s \"\") i)) \
+                   (def (main) (match (at \"hi\" 5) ((Some x) ((. String byte-len) x)) ((None _) -1))) \
+                   (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "-1",
+            "runtime String.at past the last scalar is None"
+        );
+    }
+
+    #[test]
     fn a_recursive_list_consumer_infers_its_element_via_list_at() {
         // A recursive function whose list PARAMETER is touched ONLY through `List.at` (never a direct
         // operator on the list itself) now infers its element type — before, the `(Some x)` payload binder

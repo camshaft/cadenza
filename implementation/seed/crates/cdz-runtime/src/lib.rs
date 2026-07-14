@@ -1742,8 +1742,14 @@ fn encode_value(
                         out.push(b.atom(l));
                     }
                     Shape::Str => {
-                        // A String leaf stores its UTF-8 bytes in `raw` (see `op_str_new`/`op_str_get`);
-                        // emit them verbatim as a KIND_STR leaf. Read the raw in one borrow.
+                        // A String value may be a ROPE (a `String.concat`/`String.at`-slice builds concat/
+                        // slice nodes, NOT a flat leaf), so MATERIALIZE it to a leaf first (`bytes_flatten`,
+                        // iterative so no deep-rope stack overflow; content-preserving so unobservable on a
+                        // borrowed/shared value) before reading `raw` — exactly as `Shape::Bytes` does. A
+                        // flat string leaf stores its UTF-8 bytes in `raw` and flatten is a no-op there.
+                        // Without the flatten a runtime string (a concat/slice) rendered its raw HANDLE
+                        // bytes (garbage), losing the content.
+                        bytes_flatten(h);
                         let bytes = with_node(h, Vec::new(), |n| n.raw.as_slice().to_vec());
                         let l = b.str_leaf(bytes);
                         out.push(b.atom(l));
@@ -6370,6 +6376,9 @@ mod tests {
                 b.atom(l)
             }
             S::Str => {
+                // MATERIALIZE a rope string (concat/slice nodes) to a flat leaf before reading `raw` —
+                // exactly as `S::Bytes` does; without it a runtime string rendered its raw handle bytes.
+                bytes_flatten(h);
                 let bytes = with_node(h, Vec::new(), |n| n.raw.as_slice().to_vec());
                 let l = b.str_leaf(bytes);
                 b.atom(l)

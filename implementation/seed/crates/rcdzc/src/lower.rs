@@ -4840,12 +4840,22 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
 pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> {
     let mut builder = ShapeTableBuilder::default();
     match ty {
-        // A boxed sum: build its shape, then wrap in `Named(<type name>, …)` — the `(: <value> <Type>)`
-        // value-form frame.
-        crate::ty::Ty::Sum { name, .. } => {
+        // A boxed sum. A MONOMORPHIC sum (`args: []`) wraps in `Named(<type name>, …)` — the bare-name
+        // `(: <value> <Type>)` frame (`(: (Neg unit) Sign)`). A GENERIC sum (`args` non-empty) must render
+        // its type ARGUMENTS too (`(: (Some "é") (Option String))`, NOT the bare `(: … Option)`), so it
+        // wraps in a PARAMETRIC `Framed(<type-node>, …)` frame built from the full type (`type_node_of`
+        // renders `(Option String)`), exactly as a `List`/`Map`/`Set` does. Without this a generic sum
+        // result dropped its type args at the boundary.
+        crate::ty::Ty::Sum { name, args, .. } => {
             let inner = builder.shape_of(db, ty)?;
-            let named = builder.push(ShapeNode::Named(name.clone(), inner));
-            Some(builder.encode(named))
+            if args.is_empty() {
+                let named = builder.push(ShapeNode::Named(name.clone(), inner));
+                Some(builder.encode(named))
+            } else {
+                let type_node = type_node_of(ty)?;
+                let framed = builder.push(ShapeNode::Framed(type_node, inner));
+                Some(builder.encode(framed))
+            }
         }
         // A NOMINAL newtype (a recursive one that escapes): its `shape_of` ALREADY produces a
         // `Named(<type name>, …)` root (the erased-tag frame), so encode it directly — wrapping again
@@ -10513,9 +10523,19 @@ fn lower_str_at(db: &mut Db, id: StructId, string: StructId, index: StructId) ->
                 }
             }
         }
-        // A runtime string or runtime index — the byte-rope indexed read is a later increment.
+        // A RUNTIME string (or runtime index) — walk the UTF-8 byte buffer to the i-th scalar's byte span
+        // and slice it (`Core::StrAt`). A String is a flat UTF-8 byte leaf, so the backend scans scalar
+        // starts (a byte is a scalar START iff `(b & 0xC0) != 0x80`), skips `index` scalars, and slices the
+        // scalar's byte span into the `Some` payload — matching the const `chars().nth`. Guarded on the
+        // string operand being a definite `Ty::String` (the index is any integer).
+        _ if matches!(crate::infer::type_of(db, string), crate::ty::Ty::String) => Core::StrAt {
+            string,
+            index,
+            disc_some,
+            disc_none,
+        },
         _ => Core::Poison(Reject::decline(
-            "String.at on a runtime string is not yet computed (constant strings only)",
+            "String.at needs a String operand (its runtime read walks the UTF-8 buffer)",
         )),
     }
 }
