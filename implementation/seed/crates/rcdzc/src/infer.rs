@@ -2104,7 +2104,10 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
     // shapes alone (project keeps the named subset, without drops them, merge unions, extend/with insert)
     // — it never mutates an operand type and never leaves a row variable open in the result, so the
     // reshaped record is a fresh value with a statically-fixed field set and the emitted component carries
-    // no runtime field-set computation.
+    // no runtime field-set computation. A shape change happens ONLY through such an explicit `Record.*`
+    // operation — inference never widens or narrows a record's field set, so a reshape is always written.
+    //= spec/capabilities/type-system.md#a-record-row-is-reshaped-only-through-an-explicit-operation-yielding-a-new-value
+    //# A program MUST be able to derive a new record from existing records by an explicit row operation — restricting to named fields, dropping named fields, or combining two records — rather than by an implicit widening or narrowing that inference introduces, so that a shape change is always something the program wrote.
     //= spec/capabilities/type-system.md#a-record-row-is-reshaped-only-through-an-explicit-operation-yielding-a-new-value
     //# A record row operation MUST yield a new record value and MUST NOT alter the operand records, consistent with the immutable value heap, so that reshaping a record is the derivation of a new value with a new shape and not a mutation of an existing one.
     //= spec/capabilities/type-system.md#a-record-row-is-reshaped-only-through-an-explicit-operation-yielding-a-new-value
@@ -5514,6 +5517,8 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // type error (CDZ0201) — the same static-bounds rule an out-of-arity `(. x N)` gets
                 // (`type-system.md` §A Tuple Is Split At A Position …, 2nd sentence). A non-literal `k`, or
                 // a non-tuple operand, falls through (declines/faulted elsewhere).
+                //= spec/capabilities/type-system.md#a-tuple-is-split-at-a-position-into-a-prefix-and-a-suffix
+                //# A split position that is not within the operand tuple's static arity range MUST be rejected at compile time as a type error, consistent with a positional tuple access whose index is out of the tuple's static arity being rejected, so that a split can never name a position the tuple does not have.
                 collect(db, args[0], out);
                 if let Ty::Tuple(elems) = type_of(db, args[0])
                     && let Resolved::Int(k) = resolved_of(db, args[1])
