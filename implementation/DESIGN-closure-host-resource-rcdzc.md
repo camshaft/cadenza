@@ -794,10 +794,26 @@ the component type. The new work:
   consumer. +6 corpus. **The ROUND-TRIP closure surface is SATURATED — every remaining gap is DIRECT-CALL
   host→guest transfer (a closure/compound the HOST supplies over the boundary, blocked on a nonexistent
   `value-decode` runtime op + a closure-resource-into-a-call ABI) or the `borrow<t>`/transformer frontier.**
+- **✅ C-HOST-6 — a scalar closure crosses as a REPEATABLE `borrow<t>` callback handle `@28b678bd`. The
+  wasmtime-37 borrow trap is DODGED.** A single-export scalar closure's `call` now takes `borrow<t>` instead
+  of `own<t>`, so the host KEEPS the handle across calls (one `make`, MANY `call`s — the natural callback
+  shape), versus `own<t>`'s consume-per-call ("unknown handle index" on a 2nd call). The wasmtime-37 borrow
+  trap (`resource.rep` on a borrowed self traps) is dodged EXACTLY as the value-heap `encode` borrow method
+  does: `lift_borrow` hands the guest the REP DIRECTLY as `call`'s `self`, so the body uses param 0 as the
+  cell rep with NO `resource.rep` and does NOT self-drop — the `t-dtor` reclaims when the host drops the
+  handle. Still leak-free (make allocs, dtor drops). Pieces: `serialize::
+  {multi_closure_resource_core_module_with_host_borrow, closure_resource_core_module_borrow}` (a `call_borrow`
+  flag branches the scalar `call` body); `envelope::{assemble_closure_resource_borrow,
+  resource_inner_component_closure_borrow}` (`call` self = `borrow<t>`, `make` stays `own<t>`);
+  `emit_closure_resource`'s scalar tail routes to borrow. PROVEN e2e under wasmtime 37 by
+  `a_borrow_closure_handle_is_repeatable` (one `adder(10)` handle → `call(5)`=15 then `call(7)`=17 on the SAME
+  handle). +1 corpus witness. This RESOLVES the design's "single biggest known hazard". (Compound/collection
+  `call` results keep own/self-drop — a later borrow widening.)
 - **REMAINING (all optional, none blocking):** a compound/closure-typed closure ARG on the DIRECT-CALL path
   (the HOST supplies it over the boundary — a compound needs a `value-decode` runtime op that does not exist;
   a closure needs a closure-resource passed INTO a call); a closure TRANSFORMER (`own<t>` both directions —
-  cleanly declined); the wasmtime-blocked `borrow<t>` repeated-call handle. **The entire byte-rope
+  cleanly declined); a borrow<t> `call` for the COMPOUND/COLLECTION-result closures (the scalar `call` is
+  done; the value-form paths keep own/self-drop for now). **The entire byte-rope
   (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND
   the variable-length collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape —
   single-export + multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete
