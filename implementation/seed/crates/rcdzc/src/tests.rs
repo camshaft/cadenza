@@ -11405,18 +11405,18 @@ mod match_engine {
         // MALFORMED — quote requires exactly one operand, the form it denotes. It rejects CDZ0201 (a
         // well-formedness defect), NOT the CDZ0101 unbound-name error a non-grammar `quote` head produced,
         // and never panics reaching for the absent quoted node. `quote` is a grammar head now, so this is
-        // an arity check; a well-formed `(quote FORM)` still DECLINES (real quotation is the
-        // metaprogramming vertical), a Todo — a codeless decline, verified below.
+        // an arity check.
         assert_eq!(
             reject_code("(module m (def (main) (quote)) (export main))").as_deref(),
             Some("CDZ0201")
         );
-        // A one-operand `(quote FORM)` is well-formed but not yet built → a codeless DECLINE (not CDZ0201,
-        // and no longer the CDZ0101 unbound-name error).
+        // A one-operand `(quote FORM)` is well-formed and now REIFIES to the `Ast` value it denotes
+        // (`(quote 5)` -> `(Ast.Int 5)`, via `crate::quote::reify_quotes`), so it compiles clean — no
+        // rejection, no longer the CDZ0101 unbound-name error nor a Todo decline.
         assert_eq!(
             reject_code("(module m (def (main) (quote 5)) (export main))"),
             None,
-            "a well-formed (quote FORM) declines (a Todo), it is not a coded rejection"
+            "a well-formed (quote FORM) reifies to an Ast value, it is not a coded rejection"
         );
     }
 
@@ -16686,6 +16686,52 @@ mod match_engine {
         assert!(
             reject_code("(module m (def (main) (Ast.Name \"x\")) (export main))").is_none(),
             "Ast.Name applied to String is well-typed"
+        );
+    }
+
+    #[test]
+    fn quote_reifies_to_the_ast_value_it_denotes() {
+        // 12-metaprogramming §Quote Produces An AST Value: `(quote FORM)` evaluates to the `Ast` sum value
+        // representing FORM's structure. `crate::quote::reify_quotes` rewrites each quote into the
+        // constructor application that BUILDS that value, so a quote result and a hand-built `Ast.*` value
+        // are ONE value — structural equality (`=`) between them holds. The reification maps by SHAPE:
+        // integer -> `(Ast.Int n)`, bare name -> `(Ast.Name "n")`, compound `(a …)` -> `(Ast.List (list
+        // …))`. Each equality below compiles clean (the two sides denote the same value); the gate checks
+        // they actually run to `true`.
+        assert!(
+            reject_code("(module m (def (main) (= (quote 42) (Ast.Int 42))) (export main))")
+                .is_none(),
+            "a quoted integer equals the same Ast.Int node"
+        );
+        assert!(
+            reject_code("(module m (def (main) (= (quote foo) (Ast.Name \"foo\"))) (export main))")
+                .is_none(),
+            "a quoted name equals the same Ast.Name node"
+        );
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (= (quote (+ 1 2)) \
+                      (Ast.List (list (Ast.Name \"+\") (Ast.Int 1) (Ast.Int 2))))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a quoted compound form equals the same Ast.List node"
+        );
+        // A quote is INERT: a stray `,x` (unquote NOT under a quasiquote) is a syntax error — the quote is
+        // NOT reified around it; `resolve::resolve_unquote` fires CDZ0003 (metaprogramming.md §Quasiquote
+        // Constructs AST With Selective Evaluation, a plain quote body is inert data, not a template).
+        assert_eq!(
+            reject_code("(module m (def (main) (quote (g (unquote x)))) (export main))").as_deref(),
+            Some("CDZ0003"),
+            "a stray unquote under a plain quote is CDZ0003, not silently reified"
+        );
+        // A quote whose body mentions a leaf the `Ast` sum can't carry yet (a String literal — no
+        // `Ast.Str` variant this increment) is NOT reified: it DECLINES (a Todo), never a miscompile.
+        assert_eq!(
+            reject_code("(module m (def (main) (quote \"hi\")) (export main))"),
+            None,
+            "an un-reifiable quote body declines cleanly (no artifact, no coded rejection)"
         );
     }
 

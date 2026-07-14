@@ -4786,8 +4786,9 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
             };
             payload_tys.push(pty);
         }
-        // The variant HEAD — QUALIFIED `(. IntList Cons)` for a user sum, a BARE `Some` name for a
-        // built-in prelude sum — so the runtime walker writes the same head the constant bake does.
+        // The variant HEAD — BARE (`Some`, `Cons`) normally, QUALIFIED `(. Ast List)` when the sum has a
+        // variant name a prelude entry shadows (see `variant_head_ast`) — so the runtime walker writes the
+        // same head the constant bake does.
         out.push(variant_form_template(
             db,
             *decl,
@@ -5263,10 +5264,11 @@ fn sum_variant_payload_types(
 
 /// One variant's value-form template: `(: <variant-head> payload…) SumType)`, payload leaves as holes
 /// reached via `sum-payload`. Arity shapes the value + the hole paths (see [`sum_form_template`]). The
-/// variant HEAD is built by [`variant_head_ast`] (qualified `(. Type Variant)` for a user sum, a bare
-/// name for a built-in), so the runtime template writes the identical head the constant bake does.
+/// variant HEAD is built by [`variant_head_ast`] (bare normally, qualified `(. Type Variant)` when the
+/// sum has a prelude-shadowed variant), so the runtime template writes the identical head the constant
+/// bake does.
 fn variant_form_template(
-    db: &Db,
+    db: &mut Db,
     decl: StructId,
     disc: u32,
     payloads: &[crate::ty::Ty],
@@ -5524,14 +5526,53 @@ fn leb_len(mut n: u64) -> usize {
 /// if the disc is out of range (a compiler bug). Shared by the constant-escape bake and the
 /// runtime-escape template so both write the identical head.
 fn variant_head_ast(
-    db: &Db,
+    db: &mut Db,
     b: &mut crate::ast::Builder,
     decl: StructId,
     disc: u32,
 ) -> Option<StructId> {
     let t = db.type_decl_by_occ(decl)?;
+    let tname = t.name.clone();
     let vname = t.variants.get(disc as usize)?.name.clone();
+    // A variant head normally renders BARE (`Some`, `Cons`, `Neg`) — the value reads back because the
+    // bare name resolves to that variant. But when a variant name is SHADOWED by a prelude entry that is
+    // NOT a variant ctor (`Ast.Int`/`Ast.List` — `Int` is the integer type ctor, `List` the list
+    // module), a bare head would read back as that other binding, not the variant, so the value form
+    // would not round-trip. Such a sum renders EVERY head QUALIFIED `(. Type Variant)` (a consistent
+    // per-sum spelling, so mixed variants don't split): the member access resolves unambiguously to the
+    // variant. This is the render-side twin of the load-time `variant_ctor_index` prelude-collision skip
+    // (`db.rs`) — the same rule (don't let a colliding variant name masquerade as its prelude binding),
+    // applied to the escaping VALUE FORM. `Some`/`None` are in the prelude too, but bound to their OWN
+    // variant ctors, so they round-trip bare and are NOT qualified.
+    if sum_needs_qualified_heads(db, decl) {
+        let dot = b.name(".");
+        let ty_name = b.name(tname);
+        let var_name = b.name(vname);
+        return Some(b.list(vec![dot, ty_name, var_name]));
+    }
     Some(b.name(vname))
+}
+
+/// Whether the sum declared at `decl` must render its variant heads QUALIFIED (see [`variant_head_ast`]):
+/// true iff ANY variant name is bound in the prelude to something that is NOT a variant ctor (a type
+/// ctor, a module, a value). A per-sum property (not per-variant) so every head of the sum spells the
+/// same way. A variant whose prelude binding IS a variant ctor (`Some`/`None`/`Ok`/`Err`) round-trips
+/// bare, so it does not force qualification; a variant name absent from the prelude (`Cons`, `Neg`)
+/// likewise resolves bare to its own ctor.
+fn sum_needs_qualified_heads(db: &mut Db, decl: StructId) -> bool {
+    let Some(t) = db.type_decl_by_occ(decl) else {
+        return false;
+    };
+    let names: Vec<String> = t.variants.iter().map(|v| v.name.clone()).collect();
+    names
+        .iter()
+        .any(|name| match db.prelude.get(name).copied() {
+            // Bound in the prelude to a non-variant-ctor (no `(meta variant)`) → bare would resolve to
+            // that OTHER binding, so the whole sum must qualify.
+            Some(occ) => crate::eval::variant_disc_of(db, occ).is_none(),
+            // Not a prelude name → bare resolves to this sum's own variant ctor; no qualification needed.
+            None => false,
+        })
 }
 
 /// Reconstruct the VALUE s-expression of a constant node into `b`: a scalar → its literal atom; a

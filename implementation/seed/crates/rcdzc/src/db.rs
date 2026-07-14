@@ -859,6 +859,14 @@ impl Db {
         // `(. E op)` projections resolve like hand-written member access. A handle already in internal
         // shape (4 children) is left untouched, so a hand-authored internal program still compiles.
         crate::effects::desugar_handles(&mut ast);
+        // Reify every well-formed `(quote FORM)` into the `Ast` constructor application that BUILDS its
+        // value (`(quote 42)` -> `(Ast.Int 42)`, `(quote (+ 1 2))` -> `(Ast.List (list …))`), so a quote
+        // result and a hand-written `Ast.*` value are the SAME sum value (`metaprogramming.md` §Quote
+        // Produces An AST Value). Purely structural — a quote is inert, its body never evaluated. Runs
+        // BEFORE the parent index so the emitted `(. Ast …)`/`(list …)` nodes resolve like source. A
+        // quote whose body mentions a leaf the `Ast` sum can't carry yet, or a wrong-arity `(quote …)`,
+        // is left untouched for `resolve::resolve_quote` (a Todo decline / a CDZ0201, never a rewrite).
+        crate::quote::reify_quotes(&mut ast);
         // ACCUMULATOR INTRODUCTION: rewrite a linear NON-tail recursion (`f n = if base 0 (+ n (f (- n
         // 1)))`) into a tail-recursive accumulator def (which `select`'s loop transform then compiles to a
         // constant-stack `loop`). Synthesizes a fresh accumulator def and re-seeds the original — appending
