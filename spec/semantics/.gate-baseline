@@ -741,6 +741,8 @@ pass	a signed narrow-width parameter plus a bare literal computes at the paramet
 pass	a signed pattern segment reads a two's-complement integer as negative
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a single-form body admits a sequence by holding a do block
+pass	a single-variant NEWTYPE escapes with its tag ERASED, only the type header naming it
+pass	a single-variant newtype over a COMPOUND escapes the bare compound under its type header
 pass	a single-variant-sum binding pattern destructures a multi-payload constructor positionally
 pass	a single-variant-sum binding pattern nests inside another
 pass	a slice spanning a concatenation sees the logical bytes

@@ -3333,6 +3333,42 @@
   (input  (do (type Opt (Sm Int64) (Nn)) (def (main) (Opt.Sm 42)) (export main)))
   (output (: (Sm 42) Opt)))
 
+(case "a single-variant NEWTYPE escapes with its tag ERASED, only the type header naming it"
+  (doc    "The CONTRAST with the multi-variant payload-variant render above: a SINGLE-variant sum is a
+           NEWTYPE, whose tag adds nothing to the runtime representation (type-system.md §158: a nominal
+           value IS its underlying structural value plus a compile-time tag). So `(Id.Mk 42)` for `(type Id
+           (Mk Int64))` escapes as `(: 42 Id)` — the payload BARE (`42`, not `(Mk 42)`), the `Mk` tag NOT
+           in the payload, only the type header `Id` naming it. This is exactly value-interchange.md §A
+           Nominal Tag Participates In The Header, Not The Payload: 'a nominal value and its underlying
+           structural value serialize to identical payload bytes and differ only in the header'. A
+           generation that rendered `(: (Mk 42) Id)` — the tag in the payload — would give a nominal value
+           a DIFFERENT payload from its underlying Int64, breaking that invariant. Distinct from a
+           MULTI-variant sum (above), whose variant name IS load-bearing payload (it selects the arm).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Id (Mk Int64))
+            (def (mk (: b Int64)) (Id.Mk b))
+            (def (main) (mk 42))
+            (export main)))
+  (call   main)
+  (output (: 42 Id)))
+
+(case "a single-variant newtype over a COMPOUND escapes the bare compound under its type header"
+  (doc    "The compound companion: `(type Pt (Mk (Tuple Int64 Int64)))` — a newtype whose underlying value
+           is a tuple. `(Pt.Mk (tuple 5 5))` escapes `(: (tuple 5 5) Pt)`: the payload is the BARE tuple
+           value (identical to a plain `(tuple 5 5)`), the `Mk` tag erased into the `Pt` type header, same
+           as the scalar-inner newtype above. Pins that the tag-erased payload rule holds when the
+           underlying value is itself a compound (a tuple/record/sum), not only a scalar — the nominal
+           payload is byte-identical to its underlying structural value at every shape.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type Pt (Mk (Tuple Int64 Int64)))
+            (def (mk (: b Int64)) (Pt.Mk (tuple b b)))
+            (def (main) (mk 5))
+            (export main)))
+  (call   main)
+  (output (: (tuple 5 5) Pt)))
+
 (case "a user sum's nullary variant escapes with its bare variant name"
   (doc    "The nullary companion: `(Opt.Nn)` (a nullary user variant, its payload the unit value) escapes
            as `(: (Nn unit) Opt)` — the bare variant name `Nn` applied to `unit`, exactly as a built-in
