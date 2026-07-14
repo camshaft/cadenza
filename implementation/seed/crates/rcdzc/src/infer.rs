@@ -3236,6 +3236,23 @@ fn collection_element_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String
     }
 }
 
+/// The combined per-member structural-delta TAIL for two SAME-KIND compound types that differ inside — a
+/// record field-set / per-field type, a tuple arity / per-position type, or a collection element/key/value
+/// type. This bundles the three per-member hints (`record_field_diff_hint`, `tuple_arity_mismatch_hint`,
+/// `collection_element_mismatch_hint`) behind one call so the JOIN sites — a list literal, an `if`'s
+/// branches, a `match`'s arms — can point at the SPECIFIC differing sub-part exactly as the annotation-
+/// mismatch site does, instead of rendering two whole compound types the reader must diff. The `first`
+/// argument is the type the join is unifying against (the first element / then-branch / first arm); the
+/// hints phrase it as "should be <first>, but this one is <other>", which reads correctly for a join (the
+/// first occurrence sets the type the rest must match). `None` when the two types are not the same
+/// structured kind or agree on every member. No mechanical fix (the repair is retyping a value the author
+/// supplies), matching the per-member hints it composes.
+fn structural_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
+    record_field_diff_hint(first, other)
+        .or_else(|| tuple_arity_mismatch_hint(first, other))
+        .or_else(|| collection_element_mismatch_hint(first, other))
+}
+
 /// An actionable message TAIL when `actual` is a FUNCTION value used where a NON-function `expected` is
 /// required — the "forgot to call it" slip. A partial application `(h 1)` (h takes 2) or a bare function
 /// name `h` used as a value has type `(-> … …)`; the generic "type mismatch: Int64 and (-> Int64 Int64)"
@@ -4671,10 +4688,15 @@ fn check_application(
                     // unifies at the float type. The literal may be on EITHER side — the FIRST element
                     // (`(list 1 2.0)`, fix `first`) or THIS one (`(list 1.0 2)`, fix `e`); offer the fix on
                     // whichever side is the int literal (a computed integer expression yields no fix).
+                    // When the two element types are the SAME structured kind but differ INSIDE (records of
+                    // one field's type, tuples of one position, a nested collection axis), name the specific
+                    // differing sub-part instead of rendering two whole compounds — the join-site reuse of
+                    // the annotation-mismatch per-member hints.
+                    let delta = structural_delta_hint(&first_ty, &et).unwrap_or_default();
                     let mut reject = Reject::coded(
                         code,
                         format!(
-                            "list elements must share one type: {} and {}",
+                            "list elements must share one type: {} and {}{delta}",
                             first_ty.render_name(),
                             et.render_name()
                         ),
@@ -5838,10 +5860,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     Code::TypeMismatch
                 };
                 trace!(target: "rcdzc::infer", node = id.0, then_ty = %then_ty.render_name(), else_ty = %else_ty.render_name(), ?code, "fault: if branches differ");
+                let delta = structural_delta_hint(&then_ty, &else_ty).unwrap_or_default();
                 let mut reject = Reject::coded(
                     code,
                     format!(
-                        "if branches differ: {} vs {}",
+                        "if branches differ: {} vs {}{delta}",
                         then_ty.render_name(),
                         else_ty.render_name()
                     ),
@@ -6258,10 +6281,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 for (_, body) in arms.iter().skip(1) {
                     let bt = type_of(db, *body);
                     if !first_ty.agrees_with(&bt) {
+                        let delta = structural_delta_hint(&first_ty, &bt).unwrap_or_default();
                         let mut reject = Reject::coded(
                             Code::TypeMismatch,
                             format!(
-                                "match arms differ: {} vs {}",
+                                "match arms differ: {} vs {}{delta}",
                                 first_ty.render_name(),
                                 bt.render_name()
                             ),

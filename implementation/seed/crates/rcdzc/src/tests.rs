@@ -12510,6 +12510,70 @@ mod match_engine {
     }
 
     #[test]
+    fn a_join_site_names_the_structural_delta_not_two_full_renders() {
+        // The per-member structural-delta hints (record field, tuple position, collection axis) now also
+        // fire at the JOIN sites — a list literal, an `if`'s branches, a `match`'s arms — where two
+        // same-kind compounds that differ inside were dumped as two whole renders. `structural_delta_hint`
+        // bundles the three per-member helpers so all three sites point at the SPECIFIC difference.
+        // A LIST LITERAL of records differing in one field's TYPE.
+        let list =
+            reject_full("(module m (def (g) (list (record (x 1)) (record (x true)))) (export g))")
+                .expect("a list of records with a differing field rejects");
+        assert!(
+            list.message
+                .contains("field `x` should be Int64, but this one is Bool"),
+            "list literal names the differing field: {}",
+            list.message
+        );
+        // An `if` whose branches are records differing in one field's TYPE.
+        let iff = reject_full(
+            "(module m (def (f (: b Bool)) (if b (record (x 1)) (record (x true)))) (export f))",
+        )
+        .expect("if branches with a differing record field reject");
+        assert!(
+            iff.message
+                .contains("field `x` should be Int64, but this one is Bool"),
+            "if-branch names the differing field: {}",
+            iff.message
+        );
+        // A `match` whose arms are tuples differing in one position's TYPE.
+        let m = reject_full(
+            "(module m (def (f (: n Int64)) (match n (0 (tuple 1 2)) (_ (tuple 1 true)))) (export f))",
+        )
+        .expect("match arms with a differing tuple position reject");
+        assert!(
+            m.message
+                .contains("element 1 should be Int64, but this one is Bool"),
+            "match-arm names the differing position: {}",
+            m.message
+        );
+        // A LIST LITERAL of tuples of DIFFERENT ARITY names the arity delta (not per-position).
+        let arity = reject_full("(module m (def (g) (list (tuple 1 2) (tuple 1 2 3))) (export g))")
+            .expect("a list of tuples of different arity rejects");
+        assert!(
+            arity
+                .message
+                .contains("expected a tuple with 2 elements, but this one has 3"),
+            "list literal names the tuple arity delta: {}",
+            arity.message
+        );
+        // NO regression: a SCALAR clash keeps its clean message (no structural delta) AND its float-retype
+        // fix — the delta only fires for same-kind compounds that differ inside.
+        let scalar = reject_full("(module m (def (g) (list 1 2.0)) (export g))")
+            .expect("(list 1 2.0) rejects");
+        assert!(
+            !scalar.message.contains("should be") && !scalar.message.contains("field"),
+            "a scalar clash gets no structural-delta tail: {}",
+            scalar.message
+        );
+        assert!(
+            scalar.fix.is_some(),
+            "the int-literal→float retype fix still rides along: {:?}",
+            scalar.fix
+        );
+    }
+
+    #[test]
     fn a_wrong_type_argument_to_a_prelude_member_op_names_the_operation() {
         // A wrong-type argument to a named prelude MEMBER OP — `(List.push xs true)`, `(Int64.of s)` —
         // named the operation + its expected argument type instead of the generic unify mismatch ("Int64
