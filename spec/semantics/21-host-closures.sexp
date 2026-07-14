@@ -2190,6 +2190,62 @@
   (call   app (: 7 Int64))
   (output (: (tuple 7 8) (Tuple Int64 Int64))))
 
+; The SAME compound-closure-argument relaxation applies to the DISTINCT-SIGNATURE round-trip — closures of
+; different signatures each cross as their own resource type, and each is applied in-guest by its consumer, so
+; a compound argument is built guest-side and never crosses the boundary. Only the closure signature's fence
+; is widened (machine-representable rather than scalar-boundary); the per-group resource machinery is unchanged.
+
+(case "distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the compound-arg one"
+  (doc    "`mka : () -> (-> (Tuple Int64 Int64) Int64)`, `mkb : () -> (-> Bool Int64)` are distinct sigs → two
+           resource types. `appa : (own<t0>, Int64) -> Int64` applies its handed-back closure to a guest-built
+           `(tuple x x)`. `appa(handle, 5)` → `g((tuple 5 5))` = 10. Pins a COMPOUND closure argument on the
+           distinct-sig round-trip path (built in-guest, one of two resource types).")
+  (input  (do (def (mka) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
+              (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
+              (def (appa (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g (tuple x x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 5 Int64))
+  (output (: 10 Int64)))
+
+(case "distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the scalar-arg one"
+  (doc    "The SAME two-resource-type program, driving the OTHER (scalar-arg) closure of the other signature:
+           `appb : (own<t1>, Bool) -> Int64` → `appb(handle, true)` = 10. Confirms the scalar-arg group is
+           unaffected by the sibling compound-arg group.")
+  (input  (do (def (mka) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
+              (def (mkb) (fn ((: b Bool)) (: (if b 10 20) Int64)))
+              (def (appa (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g (tuple x x)))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (h y))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appb (: true Bool))
+  (output (: 10 Int64)))
+
+(case "distinct-sig round-trip: TWO compound-arg closures of different sigs — the Tuple-arg one"
+  (doc    "Both closures take a DIFFERENT compound: `g` a Tuple, `h` a Record → two resource types.
+           `appa : (own<t0>, Int64) -> Int64` applies `g` to `(tuple x+1 x)`. `appa(handle, 7)` →
+           `g((tuple 8 7))` = 8-7 = 1. Each group's closure takes its own compound argument built in-guest.")
+  (input  (do (def (mka) (fn ((: p (Tuple Int64 Int64))) (- (. p 0) (. p 1))))
+              (def (mkb) (fn ((: r (Record (a Int64) (b Int64)))) (* (. r a) (. r b))))
+              (def (appa (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g (tuple (+ x 1) x)))
+              (def (appb (: h (-> (Record (a Int64) (b Int64)) Int64)) (: y Int64))
+                (h (record (a y) (b y))))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appa (: 7 Int64))
+  (output (: 1 Int64)))
+
+(case "distinct-sig round-trip: TWO compound-arg closures of different sigs — the Record-arg one"
+  (doc    "The SAME program's OTHER closure: `appb : (own<t1>, Int64) -> Int64` applies `h` to a guest-built
+           `(record (a y) (b y))`. `appb(handle, 6)` → `h((record (a 6) (b 6)))` = 36. Confirms each distinct
+           signature threads its own compound argument through its own resource type.")
+  (input  (do (def (mka) (fn ((: p (Tuple Int64 Int64))) (- (. p 0) (. p 1))))
+              (def (mkb) (fn ((: r (Record (a Int64) (b Int64)))) (* (. r a) (. r b))))
+              (def (appa (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g (tuple (+ x 1) x)))
+              (def (appb (: h (-> (Record (a Int64) (b Int64)) Int64)) (: y Int64))
+                (h (record (a y) (b y))))
+              (export mka) (export mkb) (export appa) (export appb)))
+  (call   appb (: 6 Int64))
+  (output (: 36 Int64)))
+
 (case "a compound closure ARG on the DIRECT-CALL path is declined — host would supply the compound"
   (doc    "A single closure export whose closure takes a Tuple, called DIRECTLY by the host (no consumer to
            apply it in-guest): the host would have to supply the `(Tuple Int64 Int64)` argument OVER the

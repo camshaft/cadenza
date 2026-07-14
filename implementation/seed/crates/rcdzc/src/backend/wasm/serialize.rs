@@ -3237,7 +3237,39 @@ pub fn multi_closure_resource_core_module(
     lifted_type_idx: u32,
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
+    multi_closure_resource_core_module_with_host(
+        funcs,
+        imports,
+        &[],
+        makes,
+        plain,
+        arg_vts,
+        ret_vt,
+        lifted_type_idx,
+        layout,
+    )
+}
+
+/// [`multi_closure_resource_core_module`] with a HOST-IMPORT set (the build-time-delegated closure-capture
+/// case). Host ops are laid FIRST in the import section (core funcs `0..h`), so a `Lir::CallHostImport(i)`
+/// — whose `i` is the op's RAW position in `layout.host_order` — resolves to exactly core func `i` with NO
+/// index recomputation (the same invariant the plain `emit` path relies on). The value-heap runtime ops
+/// then occupy `h..h+k`, and the resource intrinsics `h+k`, `h+k+1`; every derived base shifts by `h`.
+/// `host_fns` EMPTY reproduces the original layout byte-for-byte (the closure path with no host effect).
+#[allow(clippy::too_many_arguments)]
+pub fn multi_closure_resource_core_module_with_host(
+    funcs: &[SelectedFunc],
+    imports: &[&RtOp],
+    host_fns: &[crate::backend::wasm::host::HostImport],
+    makes: &[ClosureMake],
+    plain: &[PlainExport],
+    arg_vts: &[ValType],
+    ret_vt: ValType,
+    lifted_type_idx: u32,
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
+    let h = host_fns.len();
     let k = imports.len();
     let n = funcs.len();
     let nmk = makes.len();
@@ -3248,10 +3280,13 @@ pub fn multi_closure_resource_core_module(
         ValType::F64 => wasm_abi::CORE_F64,
     };
 
-    // ── Type section ── import functypes 0..k, resource-new/resource-rep (k, k+1), one functype per
-    // defined body, then one make functype PER make (params may differ per export), then call
-    // `(i32 self, args…)->R`.
+    // ── Type section ── HOST-op functypes 0..h, then runtime import functypes h..h+k, resource-new/
+    // resource-rep (h+k, h+k+1), one functype per defined body, then one make functype PER make (params
+    // may differ per export), then call `(i32 self, args…)->R`.
     let mut type_items = Vec::new();
+    for f in host_fns {
+        type_items.extend_from_slice(&host_import_functype(f));
+    }
     for o in imports {
         type_items.extend_from_slice(&import_functype(o));
     }
@@ -3261,9 +3296,9 @@ pub fn multi_closure_resource_core_module(
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         t
     };
-    type_items.extend_from_slice(&i32_to_i32); // resource-new (index k)
-    type_items.extend_from_slice(&i32_to_i32); // resource-rep (index k+1)
-    let defined_type_base = k + 2;
+    type_items.extend_from_slice(&i32_to_i32); // resource-new (index h+k)
+    type_items.extend_from_slice(&i32_to_i32); // resource-rep (index h+k+1)
+    let defined_type_base = h + k + 2;
     for f in funcs {
         type_items.extend_from_slice(&functype(f)?);
     }
@@ -3289,18 +3324,26 @@ pub fn multi_closure_resource_core_module(
     let total_types = defined_type_base + n + nmk + 1;
     let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
 
-    // ── Import section ── k ops + resource-new + resource-rep, all from "heap".
+    // ── Import section ── h HOST ops (from "host", core funcs 0..h — so a `CallHostImport(i)` hits func
+    // `i` verbatim), then k runtime ops (from "heap", h..h+k), then resource-new + resource-rep (h+k,
+    // h+k+1). Their type indices match the type-section order above.
     let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut import_items = Vec::new();
-    for (i, o) in imports.iter().enumerate() {
-        import_items.extend_from_slice(&import_item(o.name, i as u32));
-        import_index.insert(o.name, i as u32);
+    for (i, f) in host_fns.iter().enumerate() {
+        import_items.extend_from_slice(&host_import_item(&f.op, i as u32));
+        // NOTE: a host op is called via `CallHostImport(raw host_order position)`, NOT via `import_index`
+        // (which keys runtime-op NAMES); no map entry needed. Its core func index IS `i` by construction.
     }
-    import_items.extend_from_slice(&import_item("resource-new", k as u32));
-    import_items.extend_from_slice(&import_item("resource-rep", (k + 1) as u32));
-    let import_sec = section(2, &wasm_vec(k + 2, &import_items));
-    let f_rnew = k as u32;
-    let f_rrep = (k + 1) as u32;
+    for (j, o) in imports.iter().enumerate() {
+        let ti = (h + j) as u32;
+        import_items.extend_from_slice(&import_item(o.name, ti));
+        import_index.insert(o.name, ti);
+    }
+    import_items.extend_from_slice(&import_item("resource-new", (h + k) as u32));
+    import_items.extend_from_slice(&import_item("resource-rep", (h + k + 1) as u32));
+    let import_sec = section(2, &wasm_vec(h + k + 2, &import_items));
+    let f_rnew = (h + k) as u32;
+    let f_rrep = (h + k + 1) as u32;
 
     // ── Function section ── defined bodies, then the N makes, then call.
     let mut func_items = Vec::new();

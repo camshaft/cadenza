@@ -685,6 +685,21 @@ pub fn nearest_declared_op(db: &mut Db, op: StructId) -> Option<(StructId, Strin
     Some((key_occ, candidate))
 }
 
+/// The CANONICAL identity of a handler arm's operation `(. E k)` — `(effect-declaration-occurrence,
+/// op-name)`. Two arms discharge the SAME operation exactly when their identities are equal, so this is
+/// the key a duplicate-arm check dedups on. Keyed by the effect's DECLARATION (not just the name) so two
+/// effects each declaring `emit` never collide — the same closed-set identity `handler_missing_operations`
+/// and the reduction plan use. `None` if `op` is not `(. E k)` on an effect (an undeclared/malformed arm,
+/// whose own fault CDZ0403 is reported instead). The op key's OCCURRENCE (for a delete fix's anchor) is
+/// read separately via `arm_op_key_occ`.
+pub fn arm_op_identity(db: &mut Db, op: StructId) -> Option<(u32, String)> {
+    let Resolved::Member { operand, key } = resolved_of(db, op) else {
+        return None;
+    };
+    let decl = effect_decl_of_value(db, operand)?;
+    Some((decl, key.name.to_string()))
+}
+
 /// The operations an exhaustive handler for the effect discharged by `arms` MUST bind but does NOT —
 /// the effect's declared operation names minus the arms' operation names, in declaration order. Empty
 /// when the handler is exhaustive (binds every operation) OR when the effect can't be determined (a

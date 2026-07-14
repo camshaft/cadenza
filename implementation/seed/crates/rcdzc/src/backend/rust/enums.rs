@@ -350,26 +350,20 @@ fn variant_payloads_mention(
 ) -> bool {
     let occs = variant.payloads.clone();
     occs.iter().any(|&pty| {
-        crate::eval::typeval_of(db, pty).is_some_and(|ty| {
-            reaches_decl(db, &ty, decl_occ, &mut std::collections::HashSet::new())
-        })
+        crate::eval::typeval_of(db, pty).is_some_and(|ty| reaches_decl(db, &ty, decl_occ))
     })
 }
 
 /// Whether the type `ty` can transitively reach the sum declaration `decl_occ` through the sum-reference
 /// graph — a CYCLE detector for boxing a recursive (self- OR mutually-recursive) variant field. A direct
-/// mention of `decl_occ` is a hit; otherwise, for each OTHER sum `ty` mentions, follow that sum's variant
-/// payloads (its own reference edges) looking for a path back to `decl_occ`. `visited` (sum decl occs
-/// already expanded) bounds the walk — a finite sum graph is fully explored once. A `List<Rose>` /
-/// `Vec`-like element does NOT continue the walk here: those built-in containers provide their own heap
-/// indirection (a Rust `Vec<Rose>` is finite-sized regardless), so a self-reference UNDER a `List`/`Map`/
-/// `Set` needs no `Box` at the variant — only a DIRECT sum/tuple/record payload position does.
-fn reaches_decl(
-    db: &mut Db,
-    ty: &crate::ty::Ty,
-    decl_occ: crate::ast::StructId,
-    visited: &mut std::collections::HashSet<crate::ast::StructId>,
-) -> bool {
+/// mention of `decl_occ` is a hit; otherwise the transitive sum-graph reach from each sum `ty` mentions is
+/// consulted through the MEMOIZED `sum_reachable_from` (an O(1) set membership, not a fresh DFS per query
+/// — the O(N³)→O(N²) fix). A `List<Rose>` / `Vec`-like element does NOT continue the walk: those built-in
+/// containers provide their own heap indirection (a Rust `Vec<Rose>` is finite-sized regardless), so a
+/// self-reference UNDER a `List`/`Map`/`Set` needs no `Box` at the variant — only a DIRECT sum/tuple/record
+/// payload position does. No `visited` set is needed: the sum expansion is cycle-guarded inside the memo,
+/// and the tuple/record/args recursion here is over finite type TREES that cannot cycle.
+fn reaches_decl(db: &mut Db, ty: &crate::ty::Ty, decl_occ: crate::ast::StructId) -> bool {
     use crate::ty::Ty;
     match ty {
         Ty::Sum { decl: d, args, .. } | Ty::Nominal { decl: d, args, .. } => {
@@ -377,36 +371,125 @@ fn reaches_decl(
                 return true;
             }
             // A reference to another sum: does IT (through its own payloads) reach back to `decl_occ`?
-            // Expand it once (visited-guarded). Also follow any type args (a generic instantiation).
-            if args.iter().any(|a| reaches_decl(db, a, decl_occ, visited)) {
+            // Also follow any type args (a generic instantiation) structurally.
+            if args.iter().any(|a| reaches_decl(db, a, decl_occ)) {
                 return true;
             }
-            if visited.insert(*d)
-                && let Some(td) = db.type_decl_by_occ(*d)
-            {
-                let payload_occs: Vec<crate::ast::StructId> = td
-                    .variants
-                    .iter()
-                    .flat_map(|v| v.payloads.clone())
-                    .collect();
-                for pty in payload_occs {
-                    if let Some(pt) = crate::eval::typeval_of(db, pty)
-                        && reaches_decl(db, &pt, decl_occ, visited)
-                    {
-                        return true;
-                    }
-                }
-            }
-            false
+            // The transitive sum-graph reach from `d` is a TARGET-INDEPENDENT set, memoized per decl — an
+            // O(1) membership test rather than a fresh DFS per query.
+            sum_reachable_from(db, *d).contains(&decl_occ)
         }
         // A DIRECT tuple/record payload position continues the walk — a `(Tuple Int64 L)` / `(Record (l
         // L))` reaches `decl` if any element/field does. (A `List`/`Map`/`Set` element does NOT — the
         // container's heap indirection already makes it finite; only a by-value position needs the Box.)
-        Ty::Tuple(elems) => elems.iter().any(|e| reaches_decl(db, e, decl_occ, visited)),
-        Ty::Record(fields) => fields
-            .values()
-            .any(|t| reaches_decl(db, t, decl_occ, visited)),
+        Ty::Tuple(elems) => elems.iter().any(|e| reaches_decl(db, e, decl_occ)),
+        Ty::Record(fields) => fields.values().any(|t| reaches_decl(db, t, decl_occ)),
         _ => false,
+    }
+}
+
+/// The set of sum declarations TRANSITIVELY reachable from `start`'s variant payloads through the
+/// sum-reference graph (the by-value positions a `Box` decision follows: a sum/nominal payload directly,
+/// or one nested in a tuple/record payload — NOT under a `List`/`Map`/`Set`, whose heap indirection breaks
+/// the size cycle). Target-INDEPENDENT and memoized per `start` in `db.sum_reachable`, so the recursive-
+/// variant check is an O(1) membership test rather than a fresh DFS per variant (the O(N³)→O(N²) fix).
+///
+/// Computed by an iterative worklist (no recursion, so a cycle terminates by the `seen` guard) — and NOT
+/// cached mid-walk: the WHOLE set for `start` is materialized, then inserted, so a partial (cycle-clipped)
+/// result is never observed. `start` itself is NOT included unless the graph genuinely cycles back to it
+/// (which is exactly the self-reference a recursive variant needs to detect).
+fn sum_reachable_from(
+    db: &mut Db,
+    start: crate::ast::StructId,
+) -> std::rc::Rc<crate::fxhash::FxHashSet<crate::ast::StructId>> {
+    if let Some(hit) = db.sum_reachable.get(&start) {
+        return hit.clone();
+    }
+    // Reachability closure over the CACHED per-decl out-edges (each computed once via `typeval_of`), so a
+    // cycle of N sums costs O(N) edge-builds total, not O(N) per start (which was O(N²) `typeval_of`).
+    let mut reached: crate::fxhash::FxHashSet<crate::ast::StructId> =
+        crate::fxhash::FxHashSet::default();
+    let mut expanded: std::collections::HashSet<crate::ast::StructId> =
+        std::collections::HashSet::new();
+    let mut work = vec![start];
+    while let Some(d) = work.pop() {
+        if !expanded.insert(d) {
+            continue; // already expanded this decl's out-edges — cycle guard
+        }
+        for &e in sum_out_edges_of(db, d).iter() {
+            if reached.insert(e) {
+                work.push(e);
+            }
+        }
+    }
+    let rc = std::rc::Rc::new(reached);
+    db.sum_reachable.insert(start, rc.clone());
+    rc
+}
+
+/// The sum decls `d`'s variant payloads DIRECTLY mention (the sum-graph out-edges of `d`) — cached per
+/// decl in `db.sum_out_edges` so the `typeval_of`-per-payload work is done ONCE per decl, not once per
+/// (decl, reachability-query-start). Reading `d`'s payload type-expressions, evaluating each, and
+/// collecting the sum/nominal decls each mentions by value (through tuple/record nesting + type args —
+/// NOT under a `List`/`Map`/`Set`).
+fn sum_out_edges_of(
+    db: &mut Db,
+    d: crate::ast::StructId,
+) -> std::rc::Rc<Vec<crate::ast::StructId>> {
+    if let Some(hit) = db.sum_out_edges.get(&d) {
+        return hit.clone();
+    }
+    let payload_occs: Vec<crate::ast::StructId> = match db.type_decl_by_occ(d) {
+        Some(td) => td
+            .variants
+            .iter()
+            .flat_map(|v| v.payloads.clone())
+            .collect(),
+        None => Vec::new(),
+    };
+    let mut edges: crate::fxhash::FxHashSet<crate::ast::StructId> =
+        crate::fxhash::FxHashSet::default();
+    let mut sink: Vec<crate::ast::StructId> = Vec::new();
+    for pty in payload_occs {
+        if let Some(pt) = crate::eval::typeval_of(db, pty) {
+            collect_sum_mentions(&pt, &mut edges, &mut sink);
+        }
+    }
+    let rc = std::rc::Rc::new(edges.into_iter().collect::<Vec<_>>());
+    db.sum_out_edges.insert(d, rc.clone());
+    rc
+}
+
+/// Record every sum/nominal decl `ty` mentions in a by-value position (directly, or nested in a tuple/
+/// record — the same positions `reaches_decl` follows), adding each to `reached` and queuing it in `work`
+/// for expansion. A `List`/`Map`/`Set` element is NOT followed (heap indirection). Type ARGS are followed
+/// (a generic instantiation's argument is a by-value payload). Pure structural walk over one type tree.
+fn collect_sum_mentions(
+    ty: &crate::ty::Ty,
+    reached: &mut crate::fxhash::FxHashSet<crate::ast::StructId>,
+    work: &mut Vec<crate::ast::StructId>,
+) {
+    use crate::ty::Ty;
+    match ty {
+        Ty::Sum { decl: d, args, .. } | Ty::Nominal { decl: d, args, .. } => {
+            if reached.insert(*d) {
+                work.push(*d);
+            }
+            for a in args.iter() {
+                collect_sum_mentions(a, reached, work);
+            }
+        }
+        Ty::Tuple(elems) => {
+            for e in elems.iter() {
+                collect_sum_mentions(e, reached, work);
+            }
+        }
+        Ty::Record(fields) => {
+            for t in fields.values() {
+                collect_sum_mentions(t, reached, work);
+            }
+        }
+        _ => {}
     }
 }
 

@@ -528,6 +528,12 @@ fn collect_closure_codes(db: &mut Db, id: StructId, out: &mut std::collections::
             collect_closure_codes(db, scrutinee, out);
             collect_cont_closure_codes(db, &root, out);
         }
+        Core::MatchList { scrutinee, arms } => {
+            collect_closure_codes(db, scrutinee, out);
+            for arm in &arms {
+                collect_closure_codes(db, arm.body, out);
+            }
+        }
         Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
             collect_closure_codes(db, scrutinee, out)
         }
@@ -723,6 +729,12 @@ fn collect_call_callees(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         crate::core::Core::MatchSum { scrutinee, root } => {
             collect_call_callees(db, scrutinee, out);
             collect_cont_callees(db, &root, out);
+        }
+        crate::core::Core::MatchList { scrutinee, arms } => {
+            collect_call_callees(db, scrutinee, out);
+            for arm in &arms {
+                collect_call_callees(db, arm.body, out);
+            }
         }
         crate::core::Core::SumPayload { scrutinee, .. } => collect_call_callees(db, scrutinee, out),
         // `expect` evaluates its scrutinee (which may CALL — a `checked-add` composes here); the trap path

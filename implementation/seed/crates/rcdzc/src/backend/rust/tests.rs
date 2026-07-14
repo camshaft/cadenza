@@ -921,6 +921,41 @@ fn rustc_roundtrip_mutually_recursive_sums_fold() {
 }
 
 #[test]
+fn a_wide_mutually_recursive_cycle_boxes_every_edge() {
+    // A CYCLE of many mutually-recursive sums `T0→T1→…→T{n-1}→T0` — the shape whose recursive-variant
+    // boxing check the cycle detector runs per variant per enum. That check is now memoized (a per-decl
+    // out-edge cache + a per-decl reachable-set cache + an O(1) `type_decl_by_occ` index), turning what
+    // was O(N³) (a fresh full-cycle DFS per variant, with a linear `type_decl_by_occ` scan per step) into
+    // ~O(N²). This locks in that the memoized path still produces the CORRECT boxing at width: every
+    // `Mk{i}` variant carries `Box<T{i+1}>` (its payload reaches back around the cycle), and every enum
+    // emits — the same verdict the un-memoized fresh-DFS gave.
+    let n = 12;
+    let types: Vec<String> = (0..n)
+        .map(|i| format!("(type T{i} (Mk{i} T{}) (End{i}))", (i + 1) % n))
+        .collect();
+    let src = format!(
+        "(module m {} (def (f (: t T0)) (match t (((. T0 Mk0) _) 1) (((. T0 End0) _) 0))) (export f))",
+        types.join(" ")
+    );
+    let rs = try_compile_rust(&src).expect("a wide mutually-recursive cycle emits boxed enums");
+    // Every cycle edge is boxed: `Mk{i}(Box<T{i+1}>)` for each i (each payload reaches back to its own
+    // sum through the cycle, so the finite-size Box is required on all of them).
+    for i in 0..n {
+        let nxt = (i + 1) % n;
+        assert!(
+            rs.contains(&format!("Mk{i}(Box<T{nxt}>)")),
+            "T{i}'s recursive variant must box its T{nxt} payload; got:\n{rs}"
+        );
+        // The nullary `End{i}` variant carries no payload (not boxed) — a spot-check that boxing is
+        // selective, not blanket.
+        assert!(
+            rs.contains(&format!("enum T{i} ")),
+            "enum T{i} must emit: {rs}"
+        );
+    }
+}
+
+#[test]
 fn rustc_roundtrip_builtin_option_matches() {
     // unwrap-or(Some 8, _) = 8, unwrap-or(None, -1) = -1 — a match over std's Option, constructed with
     // std's `Some`/`None` in the driver, runs and matches the oracle.

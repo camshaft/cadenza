@@ -75,6 +75,26 @@ pub enum SetAlgebraOp {
     Difference,
 }
 
+/// One arm of a [`Core::MatchList`] — a LENGTH condition on the list scrutinee plus a body. The backend
+/// tests the conditions in arm order against `vec-len(scrutinee)`; the first satisfied arm's body runs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ListArmCond {
+    /// `vec-len == n` — a fixed-arity `(list p0 … p_{n-1})` pattern.
+    LenEq(usize),
+    /// `vec-len >= lead` — a rest pattern `(list p0 … p_{lead-1} .. rest)` (binds ≥ `lead` elements).
+    LenGe(usize),
+    /// Always matches — a bare binder / `_` (a whole-list catch-all). Equivalent to `LenGe(0)`.
+    Any,
+}
+
+/// One arm of a runtime list match: its length [`ListArmCond`] and the body occurrence to emit when the
+/// condition holds. Binders (leading elements, the rest sublist) resolve independently via `SumPayload`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ListArm {
+    pub cond: ListArmCond,
+    pub body: StructId,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PathStep {
     /// Descend into a sum variant's PAYLOAD — `sum-payload(handle)`. (A single-payload variant; a
@@ -89,6 +109,12 @@ pub enum PathStep {
     Payload,
     /// Descend into a tuple/record ARRAY cell at `index` — `arr-get(handle, index)`.
     Elem(usize),
+    /// The TAIL SUBLIST of a `List` scrutinee starting at index `k` — the `rest` binder of a list REST
+    /// pattern `(list p0 … p_{k-1} .. rest)`, which binds `(List a)` = the elements from `k` onward.
+    /// Reads `vec-split(list, k).right` at run time (the left half, the matched leading `k` elements, is
+    /// dropped); over a CONSTANT list it folds to the tail `Core::ListNew`. Only appears as the SOLE step
+    /// of a rest-binder's path (a list scrutinee is flat — no nesting under a rest).
+    RestFrom(usize),
 }
 
 /// A match-arm PROBE — the test that decides whether an arm is taken, over a SCALAR scrutinee. A
@@ -525,6 +551,19 @@ pub enum Core {
         /// or a [`SumCont::Guarded`] (a guarded arm of the selected variant). A root that is a bare
         /// `Leaf` folds to its body in `lower` and never reaches here.
         root: Box<SumCont>,
+    },
+    /// A match over a RUNTIME `List` scrutinee, dispatched by LENGTH (a constant list folds the selected
+    /// arm in `lower`). Each arm is a [`ListArm`] — a length CONDITION (exact `n` for a fixed-arity
+    /// `(list …)`, or ≥ `lead` for a rest pattern `(list p… .. rest)`, or always for a bare binder/`_`) and
+    /// a body. The backend reads `vec-len(scrutinee)` ONCE and tests each arm's condition in order (first
+    /// match wins), emitting the first arm's body whose condition holds. A leading element binder resolves
+    /// to `SumPayload{Elem(i)}` (`vec-get`) and the rest binder to `SumPayload{RestFrom(k)}` (`vec-split`)
+    /// on their own, so an arm carries only its length condition + body. Exhaustiveness (every length ≥ 0
+    /// covered) is checked in `lower` (CDZ0210 otherwise), so the last arm's condition always holds at run
+    /// time (there is a catch-all tail) — the emit needs no fallthrough trap.
+    MatchList {
+        scrutinee: StructId,
+        arms: Vec<ListArm>,
     },
     /// The SUB-VALUE of a sum scrutinee at an access PATH, extracted by a variant pattern's binder.
     /// `(match s ((Some x) x))` → `x` reads `sum-payload(scrutinee)` (path `[Payload]`); `(match s
