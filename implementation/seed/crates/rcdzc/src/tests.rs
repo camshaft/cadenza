@@ -3681,6 +3681,23 @@ fn a_perform_in_a_tuple_constructor_element_threads() {
     );
 }
 
+/// A perform in a RECORD field VALUE (the string-headed `("record" (label value)…)` primitive, what the ML
+/// record literal `{ a = … }` lowers to) now THREADS — the `thread_bounded` record arm threads each field
+/// value in WRITTEN order (keeping the label) and rebuilds the ctor. Fields WRITTEN `b`,`a` (reverse of
+/// sorted): `b` reads 0, `a` reads 1 → `(- (. r a) (. r b))` = 1 (had it evaluated in sorted order it would
+/// be -1), pinning written-order evaluation. Completes the compound-ctor element threading (tuple/list/record).
+#[test]
+fn a_perform_in_a_record_field_threads_in_written_order() {
+    use crate::testkit::parse;
+    let src = "(do (effect Fresh (op next (-> Int64))) \
+               (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) \
+                 (let ((r (\"record\" (b (Fresh.next)) (a (Fresh.next))))) (- (. r a) (. r b))))) (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+        "a perform in a string-headed record ctor field must thread, not decline"
+    );
+}
+
 /// A recursive effectful walk whose self-call is the `match` SCRUTINEE and whose perform is in an arm BODY
 /// — `(match (walk (- n 1)) (_ (Ctr.tick)))` — is the same out-state-observing shape: the scrutinee runs
 /// the recursion, then the arm-body perform reads its OUT-state. Before the `match` arm of

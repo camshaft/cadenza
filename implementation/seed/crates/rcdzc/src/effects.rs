@@ -3199,6 +3199,36 @@ fn thread_bounded(
             children.extend(relems);
             Some((db.push_list(children), cur))
         }
+        // A RECORD CONSTRUCTOR `("record" (label value)…)` — a STRICT compound constructor whose field
+        // VALUES are evaluated in written order before the record is built. Thread each field's value (a
+        // perform there reads/threads state), keeping the label, and rebuild the same `("record" (label
+        // rvalue)…)` form. The companion of the tuple/list arm above for the ML record literal `{ a = …, b
+        // = … }`, which lowers to this string-headed ctor with `(label value)` pair args. (Matched on the
+        // RAW form via `as_ctor_form` — like the `let` arm — because `Resolved::Record` holds a sorted
+        // BTreeMap that loses the written order the source evaluates in.)
+        _ if db.ast.as_ctor_form(node, "record").is_some() => {
+            let fields: Vec<StructId> = db.ast.as_ctor_form(node, "record").unwrap().to_vec();
+            let mut cur = states;
+            let mut rfields = Vec::with_capacity(fields.len());
+            for field in fields {
+                let Struct::List(kv) = db.ast.get(field).clone() else {
+                    return None;
+                };
+                if kv.len() != 2 {
+                    return None;
+                }
+                // The label is copied structurally (a field name, not a value to thread); the VALUE is
+                // threaded (it may perform).
+                let label_copy = copy_pure(db, kv[0]);
+                let (rvalue, next) = thread_bounded(db, kv[1], cur, ctx, inline_depth)?;
+                cur = next;
+                rfields.push(db.push_list(vec![label_copy, rvalue]));
+            }
+            let head = db.push_atom(Leaf::Str("record".to_string()));
+            let mut children = vec![head];
+            children.extend(rfields);
+            Some((db.push_list(children), cur))
+        }
         // A `(let ((n init)…) body)` — thread state through each initializer in order, then the body.
         // This is what threads range-sum's `(let ((i (Idx.next))) (if (= i 0) …))`: the init `(Idx.next)`
         // performs (reads state, threads next), and `i` binds that resume value. Rebuild the `let` with

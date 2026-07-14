@@ -2049,6 +2049,7 @@ pass	performing a string-parameter operation with a non-string argument is a typ
 pass	performing an operation with a wrong-type argument for a compound parameter is a type error
 pass	performing an operation with an argument of the wrong type is a type error
 pass	performs in the ELEMENTS of a tuple / list CONSTRUCTOR thread left-to-right
+pass	performs in the FIELD VALUES of a RECORD constructor thread in written order
 pass	popping a field yields its value and the remaining record
 pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple

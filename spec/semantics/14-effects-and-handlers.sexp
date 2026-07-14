@@ -1170,6 +1170,25 @@
                 (let ((p ("tuple" (Fresh.next) (Fresh.next)))) (+ (. p 0) (. p 1))))) (export main)))
   (output (: 1 Int64)))
 
+(case "performs in the FIELD VALUES of a RECORD constructor thread in written order"
+  (doc    "The record companion of the tuple/list-element case: a perform in a RECORD field VALUE is a
+           strict, ordered position — each field value is evaluated in WRITTEN order before the record is
+           built — so the fold threads it and rebuilds the `(\"record\" (label rvalue)…)` form, keeping the
+           labels. This pins the STRING-HEADED record ctor primitive `(\"record\" …)`, what the ML record
+           literal `{ a = …, b = … }` lowers to (its `(label value)` pair args). The fields are WRITTEN `b`
+           then `a` (reverse of sorted order) to pin that the VALUES evaluate in written order, not the
+           record's canonical sorted order: seeded 0, `b`'s value reads 0 and `a`'s reads 1, so `(- (. r a)
+           (. r b))` = `1 - 0` = 1 (had it evaluated `a` first — sorted order — it would be `0 - 1` = -1).
+           Before this the record-field perform declined; the fold now hoists it like the tuple/list element
+           and the operand/arg/sum-payload cases. Completes the compound-constructor element threading
+           (tuple / list / record).")
+  (input  (do
+            (effect Fresh (op next (-> Int64)))
+            (def (main)
+              (handle Fresh 0 ((next () s (resume s (+ s 1))))
+                (let ((r ("record" (b (Fresh.next)) (a (Fresh.next))))) (- (. r a) (. r b))))) (export main)))
+  (output (: 1 Int64)))
+
 (case "a performed operation composes as a RECORD field value that is then projected"
   (doc    "The record-constructor companion of the tuple/projection case: a perform in a RECORD FIELD VALUE
            is a strict, unconditional position, so it composes and the surrounding projection is a pure
