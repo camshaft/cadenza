@@ -1433,6 +1433,22 @@ runtime_local! {
         core::cell::RefCell::new(DocBuilder::new_const());
 }
 
+runtime_local! {
+    /// SINGLE-ENTRY cache of the LAST decoded descriptor: `(descriptor bytes, decoded Descriptor)`.
+    /// `decode_descriptor` allocates a `Vec<Shape>` table + a nested Vec per Tuple/Record/Sum/Spread shape
+    /// + a `String` per Named/field/variant — a fixed per-call cost that was paid FRESH on every encode
+    /// (measured 6 of the ~19 residual allocs for the IntList descriptor, ~31%). But an escape SITE always
+    /// crosses the boundary with the SAME compiler-baked descriptor bytes (an escape in a loop re-encodes
+    /// under one descriptor), so a 1-entry cache keyed by the byte slice hits ~every call after the first:
+    /// on a hit the decode is skipped entirely (0 allocs); on a miss (first call, or a different escape
+    /// site interleaved) it decodes + replaces the entry (1 alloc for the cloned key + the decode). The
+    /// bytes are the cache key (a `Descriptor` decoded from identical bytes IS identical — the decode is a
+    /// pure function of the bytes), so a hit is always correct. Safe: single-threaded; `op_value_encode_
+    /// form` clones out / uses the cached `Descriptor` under one borrow and never re-enters itself.
+    static DESCRIPTOR_CACHE: core::cell::RefCell<Option<(Vec<u8>, Descriptor)>> =
+        core::cell::RefCell::new(None);
+}
+
 /// The document builder — a growing leaf pool + struct table, with leaf DEDUP (a repeated name/int
 /// collapses to one pool entry, matching the canonical arenas the native encoder is handed). Each
 /// `push_*` returns the entry's absolute index; `finish(root)` serializes to the codec document.
@@ -2366,18 +2382,31 @@ fn encode_value(
 /// unrenderable shape (a not-yet-supported Float/Str/Bytes payload). Does NOT drop `h` — the caller
 /// (the escape `encode`) owns the release point.
 fn op_value_encode_form(h: Handle, desc: &[u8]) -> Option<Vec<u8>> {
-    let descriptor = decode_descriptor(desc)?;
-    // Reuse the thread-local builder + `out` stack — `reset()`/`clear()` empties them but retains capacity,
-    // so the leaf/struct/child-pool + result-stack growth is paid ONCE (not per encode). The result bytes
-    // are identical either way; the reuse is a pure allocation optimisation (see `ENCODE_BUILDER`/
-    // `ENCODE_OUT`). The two thread-locals are distinct cells, so `b` and `out` never alias.
-    ENCODE_BUILDER.with(|bcell| {
-        ENCODE_OUT.with(|ocell| {
-            let b = &mut *bcell.borrow_mut();
-            let out = &mut *ocell.borrow_mut();
-            b.reset();
-            let root = encode_value(&descriptor, b, out, h, descriptor.root)?;
-            Some(b.finish(root))
+    // Decode the descriptor via the single-entry cache: on a hit (the same escape site's bytes as last
+    // call — the common loop case) the decode + its Vec/String allocs are skipped entirely. On a miss,
+    // decode once and store `(bytes.to_vec(), descriptor)` as the new entry. The whole encode runs while
+    // the cache cell is borrowed, so the cached `Descriptor` is used in place (no clone). `decode_
+    // descriptor` is a pure function of the bytes, so a byte-equal hit yields the identical descriptor.
+    DESCRIPTOR_CACHE.with(|dcell| {
+        let mut slot = dcell.borrow_mut();
+        // Refresh the entry on a miss (empty, or different bytes than cached).
+        if slot.as_ref().map(|(bytes, _)| bytes.as_slice()) != Some(desc) {
+            let decoded = decode_descriptor(desc)?;
+            *slot = Some((desc.to_vec(), decoded));
+        }
+        let descriptor = &slot.as_ref()?.1;
+        // Reuse the thread-local builder + `out` stack — `reset()`/`clear()` empties them but retains
+        // capacity, so the leaf/struct/child-pool + result-stack growth is paid ONCE (not per encode). The
+        // result bytes are identical either way; the reuse is a pure allocation optimisation (see
+        // `ENCODE_BUILDER`/`ENCODE_OUT`). The three thread-locals are distinct cells, so they never alias.
+        ENCODE_BUILDER.with(|bcell| {
+            ENCODE_OUT.with(|ocell| {
+                let b = &mut *bcell.borrow_mut();
+                let out = &mut *ocell.borrow_mut();
+                b.reset();
+                let root = encode_value(descriptor, b, out, h, descriptor.root)?;
+                Some(b.finish(root))
+            })
         })
     })
 }
@@ -7067,6 +7096,41 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak across the inline/heap boundary");
     }
 
+    /// The single-entry `DESCRIPTOR_CACHE` must never cross-contaminate: two DIFFERENT descriptors, whether
+    /// alternated (thrashing the 1-entry cache — every call a miss) or repeated (hitting), must each yield
+    /// the SAME output as a fresh decode would. The cache key is the descriptor BYTES, so a byte-different
+    /// descriptor must always re-decode; this pins that the key comparison + refresh is correct (a bug that
+    /// returned the STALE cached descriptor for new bytes would render the wrong value). Encodes an Int
+    /// (desc A) and a Str (desc B) in an ALTERNATING sequence, then each REPEATED, asserting every result.
+    #[test]
+    fn value_encode_descriptor_cache_does_not_cross_contaminate() {
+        reset();
+        let before = live_nodes();
+        let desc_int: &[u8] = &[0x01, 0x00, 0x00]; // [0]=Int, root=0
+        let desc_str: &[u8] = &[0x01, 0x03, 0x00]; // [0]=Str, root=0
+        let iv = op_box_int(7);
+        let sv = op_str_new(String::from("hi"));
+        // The canonical single-value docs, captured by a FIRST decode of each (before any interleaving).
+        let want_int = op_value_encode_form(iv, desc_int).expect("int");
+        let want_str = op_value_encode_form(sv, desc_str).expect("str");
+        // ALTERNATING A,B,A,B — every call is a cache MISS (bytes differ from the prior entry). Each must
+        // still equal its canonical doc: a stale-entry bug would return the other value's shape.
+        for _ in 0..4 {
+            assert_eq!(op_value_encode_form(iv, desc_int).expect("int alt"), want_int, "Int under alternation");
+            assert_eq!(op_value_encode_form(sv, desc_str).expect("str alt"), want_str, "Str under alternation");
+        }
+        // REPEATED A,A,A then B,B,B — cache HITS after the first; must still be correct.
+        for _ in 0..3 {
+            assert_eq!(op_value_encode_form(iv, desc_int).expect("int rep"), want_int, "Int under repetition");
+        }
+        for _ in 0..3 {
+            assert_eq!(op_value_encode_form(sv, desc_str).expect("str rep"), want_str, "Str under repetition");
+        }
+        op_drop(iv);
+        op_drop(sv);
+        assert_eq!(live_nodes(), before, "no leak across the cache thrash");
+    }
+
     /// value-encode of a ROPE String (concat/slice nodes) via `Shape::Str` must MATERIALIZE it first.
     /// Since a runtime `String.concat`/`String.at`-slice lowers to the SAME `bytes-concat`/`bytes-slice`
     /// rope nodes as Bytes (a String IS a bytes rope), a rope-String reaching `Shape::Str` is NOT a flat
@@ -9242,20 +9306,20 @@ mod tests {
             drop_allocs <= 40,
             "free_cascade_deep DEPTH={DROP_DEPTH} allocs {drop_allocs} exceeds ceiling 40 (O(1) teardown: fixed seed buffer + adopt-by-move worklist; a fresh-Vec-per-node regression would be ~O(DEPTH), a recursive-free regression would stack-overflow)"
         );
-        // MEASURED ~19 allocs/encode of a 50-element IntList (~150 value nodes) = ~0.13 allocs/node — after
+        // MEASURED ~13 allocs/encode of a 50-element IntList (~150 value nodes) = ~0.09 allocs/node — after
         // the flat `child_pool` arena (was ~195/encode = ~1.3/node, `@80bf18d9`), the output-Vec pre-size
         // that killed the serialization realloc churn (~100→92, `@84ebc883`), the `DocLeaf::IntScalar`
-        // raw-i64 leaf that stopped each int malloc'ing a magnitude Vec (92→43, `@6decb84a`), AND the
-        // reused thread-local `ENCODE_BUILDER`/`ENCODE_OUT` pools (43→19: the leaf/struct/child/out Vecs no
-        // longer grow FROM ZERO each call — `reset`+`clear` retains capacity, so the growth is paid once).
-        // The remaining allocs are the output byte Vec's own growth + the per-call `work` stack (borrows the
-        // descriptor, so NOT pooled) + the descriptor table — all LINEAR in node count. Ceiling TIGHTENED
-        // 5000→2400 to track the reduced floor; catches an O(N²) re-walk, a lost pool reuse, or a return of
-        // per-node Vec / output-realloc churn. `xtask bench`'s baseline (1924) is the tight guard; this
-        // is the coarse in-suite backstop.
+        // raw-i64 leaf that stopped each int malloc'ing a magnitude Vec (92→43, `@6decb84a`), the reused
+        // thread-local `ENCODE_BUILDER`/`ENCODE_OUT` pools (43→19: no more grow-from-ZERO per call), AND the
+        // `DESCRIPTOR_CACHE` (19→13: the descriptor's table Vec + nested shape Vecs + name Strings — ~6/encode,
+        // 31% — are decoded ONCE and cached by bytes, skipped on every later same-descriptor call). The
+        // remaining allocs are the output byte Vec's own growth + the per-call `work` stack (borrows the
+        // descriptor, so NOT pooled). Ceiling TIGHTENED 2400→1800 to track the reduced floor; catches an
+        // O(N²) re-walk, a lost pool/descriptor reuse, or a return of per-node Vec / output-realloc churn.
+        // `xtask bench`'s baseline (1331) is the tight guard; this is the coarse in-suite backstop.
         assert!(
-            venc <= 2400,
-            "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 2400 (~19/encode of a 50-node list: was ~92 (per-int magnitude Vec, `DocLeaf::IntScalar` cut it), then ~43 (a fresh `DocBuilder` + `out` Vec grew from ZERO each call). Now `ENCODE_BUILDER`+`ENCODE_OUT` are reused thread-locals (clear + retain capacity) so the pool growth is paid ONCE — the residual is the output byte Vec + the per-call `work` stack + descriptor table. A per-int-Vec, a lost builder/out reuse, or an output-realloc regression would climb)"
+            venc <= 1800,
+            "value_encode x{VE_REPS} allocs {venc} exceeds ceiling 1800 (~13/encode of a 50-node list: 92 (per-int Vec) → 43 (`IntScalar`) → 19 (`ENCODE_BUILDER`/`ENCODE_OUT` reuse) → 13 (`DESCRIPTOR_CACHE` — the descriptor decode's ~6 Vecs/Strings paid ONCE, skipped on same-descriptor reuse). Residual = output byte Vec + per-call `work` stack. A lost cache/pool reuse, a per-int-Vec, or an output-realloc regression would climb)"
         );
         op_drop(ve_list);
     }
