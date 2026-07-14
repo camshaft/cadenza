@@ -3101,14 +3101,18 @@ fn option_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     None
 }
 
-/// An actionable message TAIL when `expected` and `actual` are BOTH records that differ in their FIELD
-/// SET — the value is MISSING a field the type requires, and/or carries an EXTRA one the type has no
-/// place for. Naming both full record types (`(Record (x Int64) (y Int64))` vs `(Record (x Int64))`)
-/// buries the actual difference; this names the specific fields instead (rustc's "missing field `y`" /
-/// "no field `z`"). `None` unless both are records AND their field-name sets differ (a same-fields
-/// different-field-TYPE mismatch — `(x Int64)` vs `(x Bool)` — is a per-field type error the full render
-/// already shows clearly, not a set difference, so it is left alone). Field names are compared as SETS
-/// (the `BTreeMap` keys), so the hint is deterministic (sorted) and order-independent.
+/// An actionable message TAIL when `expected` and `actual` are BOTH records that differ. Two shapes,
+/// each pointing at the SPECIFIC difference instead of leaving the reader to diff two full record renders:
+///  • a FIELD-SET difference — the value is MISSING a field the type requires, and/or carries an EXTRA one
+///    the type has no place for (rustc's "missing field `y`" / "no field `z`"); OR
+///  • a same-field-set PER-FIELD TYPE difference — the field names all match but some field's TYPE differs
+///    (`(x Int64)` vs `(x Bool)`), named as "field `x` should be Int64, but this one is Bool" (rustc's
+///    "expected `Int64`, found `Bool`" anchored on the field). Buried in a 3-field render otherwise — the
+///    reader must diff `(Record (x Int64) (y Int64) (z Int64))` against `(… (y Bool) …)` to spot `y`.
+/// `None` unless both are records AND some difference is found. Field names are compared as SETS (the
+/// `BTreeMap` keys) and the differing-type fields are visited in sorted key order, so the hint is
+/// deterministic and order-independent. A field-set difference takes precedence (a record with both a
+/// wrong field-set AND a type mismatch on a shared field is first told which fields to add/remove).
 fn record_field_diff_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     let (Ty::Record(want), Ty::Record(got)) = (expected, actual) else {
         return None;
@@ -3124,7 +3128,22 @@ fn record_field_diff_hint(expected: &Ty, actual: &Ty) -> Option<String> {
         .map(|k| k.name.as_str())
         .collect();
     if missing.is_empty() && extra.is_empty() {
-        return None; // same field names — a per-field type mismatch, not a set difference
+        // Same field-name set — look for the FIRST field (sorted key order) whose type differs and name
+        // it. `agrees_with` is the same relation `unify` uses, so we only flag a genuine clash (a deferred
+        // `Var`/`Any` field agrees and is skipped). Naming one field is enough to point the fix; the full
+        // render still carries the complete picture for a multi-field clash.
+        let culprit = want
+            .iter()
+            .find(|(k, wt)| got.get(k).is_some_and(|gt| !wt.agrees_with(gt)));
+        return culprit.map(|(k, wt)| {
+            let gt = &got[k];
+            format!(
+                " — field `{}` should be {}, but this one is {}",
+                k.name,
+                wt.render_name(),
+                gt.render_name()
+            )
+        });
     }
     let quote = |names: &[&str]| {
         names
@@ -3148,17 +3167,22 @@ fn record_field_diff_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     Some(format!(" — {}", parts.join("; ")))
 }
 
-/// An actionable message TAIL when `expected` and `actual` are BOTH tuples of DIFFERENT ARITY — the value
-/// has more or fewer elements than the type. Naming both full tuple types (`(Tuple Int64 Int64 Int64)` vs
-/// `(Tuple Int64 Int64)`) buries the count difference; this names the arities (rustc's "expected a tuple
-/// with 3 elements, found one with 2"). `None` unless both are tuples with DIFFERENT lengths (a
-/// same-arity per-position TYPE mismatch — `(Tuple Int64 Bool)` vs `(Tuple Int64 Int64)` — is left to the
-/// full render, which already shows the differing element clearly, exactly as the record helper leaves a
-/// same-field-set type mismatch alone).
+/// An actionable message TAIL when `expected` and `actual` are BOTH tuples that differ. Two shapes,
+/// mirroring the record hint, each pointing at the SPECIFIC difference:
+///  • DIFFERENT ARITY — the value has more or fewer elements than the type ("expected a tuple with 3
+///    elements, but this one has 2", rustc's arity message); OR
+///  • same-arity PER-POSITION TYPE difference — a `(Tuple Int64 Bool)` where `(Tuple Int64 Int64)` is
+///    wanted, named as "element 1 should be Int64, but this one is Bool" (0-indexed, matching the tuple
+///    projection `(. t 1)` and the out-of-range "tuple index N" message). Buried in the full render
+///    otherwise for a wide tuple.
+/// `None` unless both are tuples AND some difference is found. Positions are visited left-to-right, so the
+/// hint is deterministic (the first differing position). `agrees_with` (the relation `unify` uses) gates
+/// the per-position check, so a deferred `Var`/`Any` position is skipped.
 fn tuple_arity_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
-    if let (Ty::Tuple(want), Ty::Tuple(got)) = (expected, actual)
-        && want.len() != got.len()
-    {
+    let (Ty::Tuple(want), Ty::Tuple(got)) = (expected, actual) else {
+        return None;
+    };
+    if want.len() != got.len() {
         let plural = |n: usize| if n == 1 { "" } else { "s" };
         return Some(format!(
             " — expected a tuple with {} element{}, but this one has {}",
@@ -3167,7 +3191,18 @@ fn tuple_arity_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
             got.len(),
         ));
     }
-    None
+    // Same arity — name the FIRST position whose type differs (0-indexed).
+    want.iter()
+        .zip(got.iter())
+        .enumerate()
+        .find(|(_, (wt, gt))| !wt.agrees_with(gt))
+        .map(|(i, (wt, gt))| {
+            format!(
+                " — element {i} should be {}, but this one is {}",
+                wt.render_name(),
+                gt.render_name()
+            )
+        })
 }
 
 /// An actionable message TAIL when `actual` is a FUNCTION value used where a NON-function `expected` is

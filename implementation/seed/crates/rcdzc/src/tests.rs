@@ -12344,8 +12344,9 @@ mod match_engine {
             "names both missing fields, sorted: {}",
             two.message
         );
-        // NO field-diff hint when the field NAMES match but a field's TYPE differs — that is a per-field
-        // type mismatch the full render already shows, not a set difference.
+        // When the field NAMES match but a field's TYPE differs, name the SPECIFIC field and its expected
+        // vs actual type (rustc's "expected `Int64`, found `Bool`" anchored on the field) — NOT a field-SET
+        // message (nothing is missing/extra), and not just two full record renders the reader must diff.
         let type_diff = reject_full(
             "(module m (def (h (: p (Record (x Int64)))) (. p x)) \
                (def (g) (h (record (x true)))) (export g))",
@@ -12354,8 +12355,28 @@ mod match_engine {
         assert!(
             !type_diff.message.contains("missing field")
                 && !type_diff.message.contains("no such field"),
-            "a same-field-set type mismatch gets no field-diff hint: {}",
+            "a same-field-set type mismatch is not a set difference: {}",
             type_diff.message
+        );
+        assert!(
+            type_diff
+                .message
+                .contains("field `x` should be Int64, but this one is Bool"),
+            "names the specific differing field + its types: {}",
+            type_diff.message
+        );
+        // In a WIDE record (many fields agree, one differs), the hint pinpoints the culprit (`y`) instead of
+        // burying it in a full-render diff.
+        let wide = reject_full(
+            "(module m (def (h (: p (Record (x Int64) (y Int64) (z Int64)))) (. p x)) \
+               (def (g) (h (record (x 1) (y true) (z 3)))) (export g))",
+        )
+        .expect("a wide record with one wrong field rejects");
+        assert!(
+            wide.message
+                .contains("field `y` should be Int64, but this one is Bool"),
+            "pinpoints the one differing field among many: {}",
+            wide.message
         );
     }
 
@@ -12395,7 +12416,9 @@ mod match_engine {
             "names the arity delta the other direction: {}",
             more.message
         );
-        // NO arity hint when the arities MATCH but an element's TYPE differs.
+        // When the arities MATCH but an element's TYPE differs, name the SPECIFIC position (0-indexed,
+        // matching the projection `(. t 1)` and the "tuple index N" message) and its expected vs actual
+        // type — NOT an arity message (the counts agree).
         let type_diff = reject_full(
             "(module m (def (h (: t (Tuple Int64 Bool))) (. t 0)) \
                (def (g) (h (tuple 1 2))) (export g))",
@@ -12403,7 +12426,14 @@ mod match_engine {
         .expect("a same-arity element-type mismatch rejects");
         assert!(
             !type_diff.message.contains("expected a tuple with"),
-            "a same-arity element-type mismatch gets no arity hint: {}",
+            "a same-arity element-type mismatch is not an arity delta: {}",
+            type_diff.message
+        );
+        assert!(
+            type_diff
+                .message
+                .contains("element 1 should be Bool, but this one is Int64"),
+            "names the specific differing position + its types: {}",
             type_diff.message
         );
     }
