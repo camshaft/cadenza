@@ -1440,6 +1440,27 @@
                   (walk 3)))) (export main)))
   (output (: 6 Int64)))
 
+(case "one effect's result flows as the ARGUMENT to a DIFFERENT effect's op under nested handlers"
+  (doc    "The cross-effect, non-recursive companion of the two-effects-in-one-walk case: the result of an
+           INNER-handled effect's perform is the very argument an OUTER-handled effect's perform consumes —
+           `(Dst.put (Src.get))`. The argument `(Src.get)` is discharged by the inner `Src` handler first
+           (advancing the Src state), and its result feeds `Dst.put`, discharged by the outer `Dst` handler
+           (advancing the Dst state independently). `Src.get : Unit -> Int64` seeded 5, arm `(get (u) s
+           (resume s (+ s 1)))` → reads 5; `Dst.put : Int64 -> Int64` seeded 100, arm `(put (v) t (resume (+
+           v t) (+ t 10)))` → `(Dst.put 5)` = `5 + 100` = 105. Pins that a value produced by discharging one
+           effect crosses into a DIFFERENT effect's operation as its argument, each threading its own handler
+           state through a distinct slot — the two folds compose along the data dependency without sharing or
+           clobbering state (distinct from the SAME-effect nested-perform-argument case, where one handler's
+           single state slot threads both reads).")
+  (input  (do
+            (effect Src (op get (-> Unit Int64)))
+            (effect Dst (op put (-> Int64 Int64)))
+            (def (main)
+              (handle Src 5 ((get (u) s (resume s (+ s 1))))
+                (handle Dst 100 ((put (v) t (resume (+ v t) (+ t 10))))
+                  (Dst.put (Src.get))))) (export main)))
+  (output (: 105 Int64)))
+
 (case "a handle's TUPLE value pairing a scalar with a built list escapes and is destructured"
   (doc    "The handle's VALUE is a COMPOUND — a tuple pairing a scalar with an effect-built heap list — and
            the whole tuple escapes the handle to be destructured outside. `(handle Idx 1 … (tuple 42 (build
