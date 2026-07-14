@@ -692,6 +692,33 @@ fn run_rewrite(args: &RewriteArgs) -> Result<(), String> {
             RuleSet::new(vec![Rule::new(p, t)])
         }
     };
+    // A template metavariable the pattern never binds can NEVER be filled, so every site would fail to
+    // instantiate and the rewrite would silently report "rewrote 0 site(s)" — reading like the pattern
+    // just did not match, hiding the real (static) cause. Reject it UP FRONT, naming the stray metavar,
+    // so a typo'd/leftover template metavar is caught before the search. Checked per rule so a `--rules`
+    // file's bad rule is named too.
+    for (i, rule) in rules.rules.iter().enumerate() {
+        let unbound = rule.unbound_template_metavars();
+        if let Some(first) = unbound.first() {
+            let quoted: Vec<String> = unbound.iter().map(|m| format!("`,{m}`")).collect();
+            let where_ = if args.rules.is_some() {
+                format!(" (rule {})", i + 1)
+            } else {
+                String::new()
+            };
+            let plural = if unbound.len() == 1 {
+                "metavariable"
+            } else {
+                "metavariables"
+            };
+            return Err(format!(
+                "the template{where_} uses {plural} {} that the pattern never binds — a template \
+                 metavariable must be bound by its pattern, or it can never be filled (nearest fix: \
+                 bind `,{first}` in the pattern, or remove it from the template)",
+                quoted.join(", ")
+            ));
+        }
+    }
     let strategy = if args.top_down {
         Strategy::TopDown
     } else {

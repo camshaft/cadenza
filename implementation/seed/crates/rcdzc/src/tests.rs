@@ -25844,6 +25844,53 @@ mod stage1 {
     }
 
     #[test]
+    fn dividing_a_runtime_value_by_the_constant_zero_fails_the_build() {
+        // `(/ n 0)` / `(% n 0)` with a RUNTIME numerator but the compile-time literal `0` as the divisor
+        // ALWAYS traps regardless of `n` — no runtime value makes it valid. Rejected CDZ0304 (like the
+        // both-constant `(/ 5 0)`), not shipped as a runtime trap. The message says how to fix it: guard
+        // the divisor or remove the division. Distinct from `(/ n z)` with a runtime `z` (a genuine
+        // runtime trap — `z` is a variable, not the literal `0`).
+        let d = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (g (: n Int64)) (/ n 0)) (export g))",
+        )))
+        .expect_err("dividing by the constant 0 fails the build");
+        assert_eq!(d.code.as_deref(), Some("CDZ0304"), "got: {}", d.message);
+        assert!(
+            d.message.contains("by the constant 0 always traps"),
+            "names the always-traps cause + fix route: {}",
+            d.message
+        );
+        // `%` by the constant 0 too.
+        assert_eq!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (def (g (: n Int64)) (% n 0)) (export g))",
+            )))
+            .expect_err("% by 0 fails")
+            .code
+            .as_deref(),
+            Some("CDZ0304")
+        );
+        // SHIELDED: a `(/ n 0)` in an UNTAKEN branch is unreachable, so it is NOT rejected — the const-trap
+        // reached-poison walk does not descend an untaken branch (the M74 shielding discipline).
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (def (g (: n Int64)) (if false (/ n 0) 1)) (export g))",
+            )))
+            .is_ok(),
+            "a divide-by-zero shielded in an untaken branch is not rejected"
+        );
+        // NOT the runtime-divisor case: `(/ n z)` with a variable `z` compiles (traps only if z==0 at run
+        // time) — the reject fires only for the LITERAL `0` divisor.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (def (g (: n Int64) (: z Int64)) (/ n z)) (export g))",
+            )))
+            .is_ok(),
+            "a runtime divisor is not a compile-time trap"
+        );
+    }
+
+    #[test]
     fn division_of_min_by_minus_one_overflows() {
         // (/ MIN -1) overflows Int64 (the result 2^63 doesn't fit) — CDZ0304, named as an overflow (NOT
         // a divide-by-zero: the divisor is -1, and the fold distinguishes the two Div traps).

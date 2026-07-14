@@ -430,6 +430,16 @@ pub fn emit(
     // The per-program HOST-import set (a `Core::HostCall`), first-encountered order. An unrepresentable
     // host-op boundary type was already declined honestly at the top of `emit` (the hoisted guard), so
     // every op reaching here has an emittable scalar/unit/string signature.
+    //
+    // The component's import set is the UNION of the escaping rows of every exported entrypoint: the loop
+    // runs `collect_host_imports` over each def in `layout.order` (the exports and what they reach) and
+    // accumulates into one `host_imports` — so one instantiated component carries a single import surface
+    // serving every entrypoint, and each entrypoint's authority is exactly the ops reachable from its own
+    // body (co-locating a pure entrypoint with an effectful one grants the pure one nothing).
+    //= spec/capabilities/capabilities-and-effects.md#a-component-is-bound-against-the-union-of-its-entrypoints-rows
+    //# The set of host operations a component imports MUST be the union of the escaping rows its entrypoints acknowledge, so that a component instantiated once carries a single import surface serving every entrypoint it exports, as the component model requires.
+    //= spec/capabilities/capabilities-and-effects.md#each-entrypoint-acknowledges-its-own-escaping-row
+    //# The authority an entrypoint reaches MUST be determined by the operations reachable from its own body under its own delegations, so that co-locating a pure entrypoint with an effectful one in the same component does not grant the pure entrypoint any authority.
     let mut host_imports: Vec<host::HostImport> = Vec::new();
     for &def in &layout.order {
         let body = def_body(db, def)?;
