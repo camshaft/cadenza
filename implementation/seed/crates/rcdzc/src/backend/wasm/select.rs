@@ -1821,26 +1821,26 @@ pub fn select_function_of(
     // trap-free + scalar (see the pass docs) so hoisting to the top is unconditionally sound. Skipped for a
     // looping body (its control flow makes it non-straight-line anyway) and the mutual dispatch.
     if !loops && !mutual && body_is_straight_line(db, body) {
-        for node in collect_cse_candidates(db, body) {
-            // Already assigned a slot (a nested candidate emitted as part of an earlier, larger one that
-            // got its slot first)? Skip — its uses already read that slot. (Inner-first ordering makes this
-            // rare, but a node reachable through two candidate parents could be seen after one claimed it.)
-            if slot_of.contains_key(&node) {
-                continue;
-            }
-            let Some(vt) = valtype_of(&type_of(db, node)) else {
+        for group in collect_cse_candidate_groups(db, body) {
+            // A group is a VALUE-EQUIVALENCE class (all members `core_eq` — the same computation). Emit ONE
+            // representative into a slot and point every member at it. Pick a representative NOT already
+            // slotted (a member could be a sub-node of an earlier, larger class's representative that got
+            // its slot first — its uses already read that slot).
+            let Some(&rep) = group.iter().find(|&&m| !slot_of.contains_key(&m)) else {
+                continue; // every member already reads a slot (nested in an earlier class) — nothing to do.
+            };
+            let Some(vt) = valtype_of(&type_of(db, rep)) else {
                 continue;
             };
             let slot = body_base;
             body_base += 1;
             high = high.max(body_base);
             scratch_ty.insert(slot, vt);
-            // Emit the shared computation ONCE (transient scratch above the reserved slots), store it, and
-            // register `(node → slot)` so every occurrence in the body reads the slot. A nested shared node
-            // was registered earlier (inner-first), so this emit already reads ITS slot — no double-compute.
+            // Emit the representative's computation ONCE (transient scratch above the reserved slots). A
+            // nested class was slotted earlier (inner-first), so this emit reads ITS slot — no recompute.
             emit(
                 db,
-                node,
+                rep,
                 &slot_of,
                 body_base,
                 &mut high,
@@ -1849,7 +1849,13 @@ pub fn select_function_of(
                 &mut code,
             )?;
             code.push(Lir::LocalSet(slot));
-            slot_of.insert(node, slot);
+            // Point EVERY member of the class at this one slot — each occurrence, wherever it is in the
+            // body, now reads the slot via `emit`'s node-keyed `slots.get(&id)` fast path instead of
+            // recomputing. (Members already slotted keep their own slot — harmless; they are `core_eq` so
+            // the value is identical, and re-inserting would only redirect a read to an equal value.)
+            for &member in &group {
+                slot_of.entry(member).or_insert(slot);
+            }
         }
     }
     // The body is emitted in TAIL position: a `Core::Call` in the body's result position becomes a
@@ -2396,40 +2402,42 @@ fn body_is_straight_line(db: &mut Db, id: StructId) -> bool {
     }
 }
 
-/// Count, per node `StructId`, how many times it is REFERENCED in the tree at `id` (a shared occurrence —
-/// same `StructId` reached through multiple parents — is counted once per parent edge). Walks the same
-/// value-position children `licm_children` enumerates. Used to find the ≥2-reference nodes CSE names.
-fn count_node_refs(db: &mut Db, id: StructId, counts: &mut HashMap<StructId, u32>) {
-    *counts.entry(id).or_insert(0) += 1;
-    // Only descend the FIRST time a node is seen — a shared subtree's interior is identical, so counting
-    // its children once per visit would over-count nested nodes and (for a deep DAG) blow up. We want the
-    // reference count of the node ITSELF (how many parents point at it), which the entry-increment above
-    // captures; its children are walked once.
-    if counts[&id] == 1 {
+/// Walk the value-position tree at `id` (via `licm_children`), recording per-StructId a REFERENCE COUNT
+/// (how many parent edges point at it — a node reached twice counts 2) into `counts`, and the distinct
+/// StructIds in first-seen order into `order`. A shared subtree's interior is walked ONCE (the count above
+/// captures the node's own multiplicity); descending per visit would over-count nested nodes / blow up on
+/// a deep DAG.
+fn collect_node_refs(
+    db: &mut Db,
+    id: StructId,
+    counts: &mut HashMap<StructId, u32>,
+    order: &mut Vec<StructId>,
+) {
+    let n = counts.entry(id).or_insert(0);
+    *n += 1;
+    if *n == 1 {
+        order.push(id);
         for child in licm_children(db, id) {
-            count_node_refs(db, child, counts);
+            collect_node_refs(db, child, counts, order);
         }
     }
 }
 
-/// Collect the CSE candidates in the straight-line body `id`: nodes referenced ≥2×, trap-free, non-
-/// trivial, with a SCALAR (non-heap) machine result. Returned INNER-FIRST (by ascending subtree size) so
-/// emitting them in order registers a nested shared node's slot before an enclosing one reads it.
-fn collect_cse_candidates(db: &mut Db, body: StructId) -> Vec<StructId> {
+/// Collect the CSE candidate GROUPS of the straight-line body `id`: each returned `Vec<StructId>` is a
+/// VALUE-EQUIVALENCE CLASS (all members pairwise `core_eq` — the SAME computation) of shareable, non-
+/// trivial, SCALAR nodes whose TOTAL reference count across the class is ≥2. Two sources of ≥2 both
+/// qualify: ONE node referenced twice (`g (* a b)` β-shares the arg — a single StructId with count 2),
+/// OR two DISTINCT occurrences each referenced once (hand-written / cross-op `(+ (* a b) (* (* a b) 3))`,
+/// which the intra-op arith-CSE — one op only — misses). Value-numbering (not node identity) unifies both.
+/// Groups returned INNER-FIRST (by ascending representative subtree size) so a nested class's slot is
+/// registered before an enclosing class's representative reads it.
+fn collect_cse_candidate_groups(db: &mut Db, body: StructId) -> Vec<Vec<StructId>> {
     let mut counts: HashMap<StructId, u32> = HashMap::new();
-    count_node_refs(db, body, &mut counts);
-    // The ≥2-referenced nodes, then filter to trap-free / non-trivial / scalar-result. Collect the ids
-    // first (releasing the `counts` borrow) so each predicate can take `&mut db` in a plain loop.
-    let multi: Vec<StructId> = counts
-        .iter()
-        .filter(|&(_, &n)| n >= 2)
-        .map(|(&id, _)| id)
-        .collect();
+    let mut order: Vec<StructId> = Vec::new();
+    collect_node_refs(db, body, &mut counts, &mut order);
+    // Keep only the shareable / non-trivial / scalar distinct nodes (in first-seen order for determinism).
     let mut cands: Vec<StructId> = Vec::new();
-    for id in multi {
-        // Shareable = a pure deterministic SCALAR computation (the `core_eq` pure set, incl. checked
-        // arith — sound here since the straight-line body has no branch to speculate a trap past), and
-        // non-trivial (a bare param/const is already free). A heap result is excluded (needs dup/drop).
+    for id in order {
         if licm_trivial(db, id) || !is_cse_shareable(db, id) {
             continue;
         }
@@ -2439,10 +2447,31 @@ fn collect_cse_candidates(db: &mut Db, body: StructId) -> Vec<StructId> {
         }
         cands.push(id);
     }
-    // INNER-FIRST: a smaller subtree is nested inside (or independent of) a larger one, never encloses it,
-    // so ordering by subtree node-count puts a shared inner node before any shared node that contains it.
-    cands.sort_by_key(|&id| subtree_size(db, id));
-    cands
+    // Partition into value-equivalence classes by `core_eq` (a small O(n²) pairwise scan — a body has few
+    // CSE candidates). A distinct node joins the first class it is `core_eq` to.
+    let mut classes: Vec<Vec<StructId>> = Vec::new();
+    for id in cands {
+        let mut placed = false;
+        for class in classes.iter_mut() {
+            if core_eq(db, class[0], id) {
+                class.push(id);
+                placed = true;
+                break;
+            }
+        }
+        if !placed {
+            classes.push(vec![id]);
+        }
+    }
+    // Keep a class iff its TOTAL reference count (summing each distinct member's multiplicity) is ≥2 — an
+    // actual repeat worth naming. INNER-FIRST by representative size so emitting a class's representative
+    // reads any already-slotted nested class instead of recomputing.
+    let mut groups: Vec<Vec<StructId>> = classes
+        .into_iter()
+        .filter(|c| c.iter().map(|m| counts[m]).sum::<u32>() >= 2)
+        .collect();
+    groups.sort_by_key(|c| subtree_size(db, c[0]));
+    groups
 }
 
 /// The number of nodes in the value-position subtree at `id` (via `licm_children`) — the CSE ordering key
@@ -2468,11 +2497,14 @@ fn subtree_size(db: &mut Db, id: StructId) -> u32 {
 /// (`is_heap_type`); this predicate is purely about determinism/effect-freedom.
 fn is_cse_shareable(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
-        Core::ConstInt(_)
-        | Core::ConstBool(_)
-        | Core::Unit
-        | Core::Param { .. }
-        | Core::LocalRef { .. } => true,
+        Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit | Core::Param { .. } => true,
+        // A `let`-LOCAL reference is NOT shareable by this pass: its slot is established only when the
+        // `let` binding is emitted INSIDE the body, but CSE hoists a candidate to BEFORE the body — so a
+        // hoisted `(* k k)` over a let-local `k` would read an unbound slot ("let-binding reference has no
+        // local slot"). Params (slots `0..n`, live up front) are fine; a let-local is excluded so its
+        // enclosing subexpression is never hoisted. (The `let`-binding-level CSE — `should_keep_binding`
+        // — already names a multiply-used let value; a computation OVER a let-local stays in place.)
+        Core::LocalRef { .. } => false,
         Core::Arith { lhs, rhs, .. } | Core::Compare { lhs, rhs, .. } => {
             is_cse_shareable(db, lhs) && is_cse_shareable(db, rhs)
         }
@@ -10897,6 +10929,48 @@ mod tests {
             "single-use arg inlines (2 muls: the arg + `* s 5`), got: {:?}",
             f.code
         );
+    }
+
+    #[test]
+    fn straight_line_cse_value_numbers_distinct_occurrences_across_ops() {
+        // VALUE-NUMBERING (not node identity): two DISTINCT `(* a b)` occurrences across DIFFERENT ops —
+        // `(+ (* a b) (* (* a b) 3))` — are `core_eq`, so straight-line CSE computes the product ONCE and
+        // shares it. Exactly TWO muls remain: the shared `(* a b)` + the `(* … 3)`. Before value-numbering
+        // (node-identity only) this was THREE (each hand-written `(* a b)` emitted separately).
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (+ (* a b) (* (* a b) 3))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        assert_eq!(
+            f.code.iter().filter(|i| **i == Lir::I64Mul).count(),
+            2,
+            "value-equal `(* a b)` across ops is computed once (2 muls), got: {:?}",
+            f.code
+        );
+    }
+
+    #[test]
+    fn straight_line_cse_does_not_hoist_a_let_local_subexpression() {
+        // A shared subexpression over a `let`-LOCAL — `(let ((k (+ a b))) (+ (* k k) (* k k)))` — must NOT
+        // be hoisted before the body: the local `k`'s slot is only established when the `let` binding is
+        // emitted INSIDE the body, so a hoisted `(* k k)` would read an unbound slot ("let-binding reference
+        // has no local slot"). `is_cse_shareable` excludes `Core::LocalRef`, so a computation over a
+        // let-local is left in place. This must COMPILE (a regression guard — an early value-numbering
+        // version crashed here) and value-check. `(let ((k 7)) (+ (* k k) (* k k)))` = 49+49 = 98.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: a Int64) (: b Int64)) (let ((k (+ a b))) (+ (* k k) (* k k)))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "f");
+        // The key assertion is that selection SUCCEEDS (no "no local slot" crash from a bad hoist).
+        select_function(&mut db, body, &params, &layout)
+            .expect("a let-local subexpression must not be hoisted before its binding");
     }
 
     #[test]
