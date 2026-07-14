@@ -10,6 +10,10 @@ pass	MIXED: a List-returning Tuple-arg closure ALONGSIDE a plain export — driv
 pass	MIXED: a Tuple-arg closure export ALONGSIDE a plain (non-closure) export
 pass	MIXED: driving the PLAIN export alongside a List-returning Tuple-arg closure
 pass	MIXED: driving the PLAIN export alongside a Tuple-arg closure
+pass	MULTI-EXPORT: among-scalars tuple arg with a BYTE-ROPE result
+pass	MULTI-EXPORT: among-scalars tuple arg with a LIST result (shared interleaving list-`call`)
+pass	MULTI-EXPORT: among-scalars tuple arg with a fixed-shape COMPOUND result
+pass	MULTI-EXPORT: driving the second among-scalars LIST closure (tuple then suffix scalar)
 pass	MULTI-EXPORT: driving the second among-scalars closure (subtract)
 pass	MULTI-EXPORT: two Tuple-arg closures sharing a List-returning `call`
 pass	MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`
