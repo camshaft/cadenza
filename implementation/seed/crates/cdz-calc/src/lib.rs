@@ -324,14 +324,20 @@ pub fn eval_program(program: &cadenza_syntax::Arenas) -> Result<String, Eval> {
 }
 
 /// Re-render a value form (`cdz-run`'s canonical s-expr text, e.g. `(: 1/2 Rational)` or `(tuple 1 2)`)
-/// into the reader's surface. A no-op for s-expr; ML re-renders via the printer. A value that won't
-/// re-render (should not happen for a well-formed value form) falls back to the raw text.
+/// into the reader's surface for DISPLAY. A no-op for s-expr; ML re-renders via the printer's display
+/// conversion (the spec's "typed-result-to-text" surface) — so a `Rational` shows bare (`1/2`), a
+/// quantity in its concise `<value> <unit>` form, and the result's type annotation is dropped. A value
+/// that won't re-render (should not happen for a well-formed value form) falls back to the raw text.
 fn render_value(sexpr_value: &str, surface: Format) -> String {
     if surface != Format::Ml {
         return sexpr_value.to_string();
     }
+    let opts = cadenza_syntax::convert::Options {
+        display: true,
+        ..Default::default()
+    };
     match cadenza_syntax::sexpr::read(sexpr_value) {
-        Ok(arenas) => match cadenza_syntax::convert::write(&arenas, Format::Ml) {
+        Ok(arenas) => match cadenza_syntax::convert::write_with(&arenas, Format::Ml, opts) {
             Ok(bytes) => String::from_utf8_lossy(&bytes).trim_end().to_string(),
             Err(_) => sexpr_value.to_string(),
         },
@@ -539,6 +545,32 @@ mod tests {
             calc.wrap_in_lets("ans"),
             "let ans = 20 in let ans = ans + 5 in ans",
             "inner ans shadows, its rhs reads the outer ans"
+        );
+    }
+
+    #[test]
+    fn render_value_uses_the_display_surface_in_ml() {
+        // The ML surface renders a result for DISPLAY: a rational bare (not backtick-quoted), a quantity
+        // in its concise `<value> <unit>` surface, the result type annotation dropped — so a calculator
+        // shows `1/4 meter/second`, not `Qty.of(`1/4`, Unit.base(#meter) / Unit.base(#second)) : Qty(…)`.
+        let ml = |v: &str| render_value(v, Format::Ml);
+        assert_eq!(ml("(: 1/3 Rational)"), "1/3");
+        assert_eq!(ml("(: 8/1 Rational)"), "8");
+        assert_eq!(
+            ml(concat!(
+                "(: (Qty.of 1/4 (Unit./ (Unit.base #\"meter\") (Unit.base #\"second\")))",
+                "   (Qty Rational (Unit./ (Unit.base #\"meter\") (Unit.base #\"second\"))))"
+            )),
+            "1/4 meter/second"
+        );
+        assert_eq!(
+            ml("(: (Qty.of 5.0 (Unit.base #\"meter\")) (Qty Float64 (Unit.base #\"meter\")))"),
+            "5.0 meter"
+        );
+        // The s-expr surface is the canonical value form, untouched by display.
+        assert_eq!(
+            render_value("(: 1/3 Rational)", Format::Sexpr),
+            "(: 1/3 Rational)"
         );
     }
 }

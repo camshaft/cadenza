@@ -32,23 +32,50 @@ const INDENT: isize = 2;
 /// `if` condition, so a nested conditional condition reads as `if (if …) then …`.
 const PREC_KEYWORD: u8 = 1;
 
-/// Pretty-print `arenas` to ML text targeting `width` columns.
+/// Pretty-print `arenas` to ML text targeting `width` columns. This is the CANONICAL, RE-READABLE
+/// surface: a name that would re-lex as something else is backtick-escaped, a `Rational` value leaf
+/// (`1/4`) is quoted, a unit is spelled as its full `Unit.base(#name)` construction — everything the
+/// reader needs to reconstruct the exact same tree. For rendering a value to a human (a calculator
+/// result), use [`print_display`], which drops that ceremony.
 pub fn print(arenas: &Arenas, width: usize) -> String {
+    print_mode(arenas, width, false)
+}
+
+/// Pretty-print `arenas` for human DISPLAY (the spec's "typed-result-to-text" surface,
+/// self-hosting-surface.md §Rendering A Result Is A Compiler-Exposed Display Conversion). Unlike
+/// [`print`], the output is NOT required to re-read to the same tree, so it drops the round-trip
+/// ceremony that makes a value ugly to read: a `Rational` prints bare (`1/4`, not `` `1/4` ``; `8/1`
+/// as `8`), a quantity prints in its concise `<value> <unit>` surface (`1/4 meter/second`, not
+/// `Qty.of(`1/4`, Unit.base(#meter) / Unit.base(#second))`), and the outer `(: value type)` type
+/// annotation on a whole result is stripped (a calculator shows the value, not its type). Everything
+/// else renders exactly as [`print`] does — same layout, same precedence, same width behavior.
+pub fn print_display(arenas: &Arenas, width: usize) -> String {
+    print_mode(arenas, width, true)
+}
+
+fn print_mode(arenas: &Arenas, width: usize, display: bool) -> String {
     let mut p = Printer {
         a: arenas,
         doc: Doc::new(),
         shadowed_ctors: shadowed_ctors(arenas),
         delimit_body: false,
+        display,
+    };
+    // In display mode, an outer `(: value type)` result annotation is stripped — a rendered value
+    // shows the value, not its type. Only at the ROOT (a nested ascription is a real program form).
+    let root = match (display, p.a.as_form(arenas.root, ":")) {
+        (true, Some(ann)) if ann.len() == 2 => ann[0],
+        _ => arenas.root,
     };
     // A `do` at the ROOT is the program's top-level form sequence — print its forms BARE (blank-line
     // separated), not wrapped in `do { … }`. A nested `do` (reached via `expr`) keeps the block form.
-    if let Some(forms) = p.a.as_form(arenas.root, "do")
+    if let Some(forms) = p.a.as_form(root, "do")
         && !forms.is_empty()
     {
         let forms = forms.to_vec();
         p.print_root_forms(&forms);
     } else {
-        p.expr(arenas.root, 0);
+        p.expr(root, 0);
     }
     p.doc.render(width)
 }
@@ -76,6 +103,11 @@ struct Printer<'a> {
     /// The parens are the "genuine ambiguity" delimiter. Cleared otherwise, so the common keyword-led
     /// case (`… def …`, `… export …`) keeps the clean bare `= n + 1` body. See `body_after_eq`.
     delimit_body: bool,
+    /// DISPLAY mode: render values for a human rather than for re-reading. Set by [`print_display`].
+    /// When true a `Rational` value leaf prints bare (`1/4`), a quantity prints in its concise
+    /// `<value> <unit>` surface, and a base unit prints as its bare name — none of which round-trips,
+    /// but all of which reads better as a result. `false` is the canonical, re-readable printer.
+    display: bool,
 }
 
 /// The four compound-value constructors that have a `{…}`/`(…)`/`[…]`/`#{…}` surface literal AND a
@@ -234,6 +266,18 @@ impl<'a> Printer<'a> {
             // `Leaf::Sym`, so the round-trip is preserved either way.
             Leaf::Sym(s) if sym_is_bare_safe(s) => self.doc.word(format!("#{s}")),
             Leaf::Sym(s) => self.doc.word(format!("#\"{}\"", literal::escape_string(s))),
+            // A `Rational` value is a `Name` leaf spelled `num/den` (there is no rational reader
+            // literal; the canonical printer must backtick-quote it, since bare `1/4` re-lexes as the
+            // division `1 / 4`). In DISPLAY mode that round-trip constraint does not apply, so it prints
+            // bare — and an integral rational drops its `/1` denominator (`8/1` → `8`).
+            Leaf::Name(n) if self.display && rational_name(n).is_some() => {
+                let (num, den) = rational_name(n).unwrap();
+                if den == "1" {
+                    self.doc.word(num.to_string());
+                } else {
+                    self.doc.word(format!("{num}/{den}"));
+                }
+            }
             Leaf::Name(n) => self.doc.word(emit_name(n)),
             // A bad-escape MARKER round-trips back to `"\<c>"` so the printed form re-reads to the same
             // marker (the defect survives the round-trip rather than being silently lost).
@@ -268,6 +312,28 @@ impl<'a> Printer<'a> {
                 "map" if self.is_map_shape(args) => return self.print_map(args),
                 _ => {}
             }
+        }
+        // DISPLAY mode: a quantity VALUE `(Qty.of <value> <unit>)` renders in its concise
+        // `<value> <unit>` surface (`1/4 meter/second`), with the unit spelled bare (`Unit.base(#meter)`
+        // → `meter`, a composite as its infix `meter/second`), and a DIMENSIONLESS quantity (`Unit.one`)
+        // as just its value. This is the value-form analogue of `quantity_literal` — it accepts the
+        // `Unit.base`/`Unit.one`/composite shapes a RESULT carries (not the `Unit.of` a source literal
+        // uses), and never has to round-trip, so it needs no bare-safe/non-negative guards.
+        if self.display
+            && let Some((value, unit)) = self.display_quantity(items)
+        {
+            self.doc.ibox(0);
+            self.expr(value, PREC_MEMBER);
+            if let Some(unit) = unit {
+                self.doc.word(" ");
+                // The unit is a space-separated trailing token (no operand can fuse to its right in a
+                // value form — a quantity only sits in comma/brace-delimited slots), so it needs no
+                // OUTER parens: render at precedence 0 and let its own composition parenthesize
+                // internally only where a looser operator sits under a tighter one (`meter/second^2`).
+                self.display_unit(unit, 0);
+            }
+            self.doc.end();
+            return;
         }
         // A quantity literal `(Qty.of <numlit> (Unit.of #"name"))` renders back to its concise surface
         // `<num> name` — the inverse of the parser's `maybe_quantity_literal`. Binds tightest (like a
@@ -2058,6 +2124,87 @@ impl<'a> Printer<'a> {
         Some((items[1], name))
     }
 
+    /// DISPLAY-only. If `items` is a quantity VALUE `(Qty.of <value> <unit>)`, return its magnitude and
+    /// its unit — where the unit is `None` for the DIMENSIONLESS `Unit.one` (rendered as just the
+    /// value). Unlike `quantity_literal` this is for the VALUE form a result carries, so it accepts any
+    /// magnitude (a `Rational`/`Float`/`Int` leaf — the display leaf renderer handles each) and any unit
+    /// EXPRESSION (`Unit.base`, `Unit.one`, or a composite `*`/`/`/`^` of them — `display_unit` renders
+    /// it), with no round-trip guards. Returns `None` for a non-quantity, so the general form renders it.
+    fn display_quantity(&self, items: &[StructId]) -> Option<(StructId, Option<StructId>)> {
+        if items.len() != 3 || !self.is_member_call(items[0], "Qty", "of") {
+            return None;
+        }
+        let unit = if self.is_member_call(items[2], "Unit", "one") {
+            None // dimensionless — show just the value
+        } else {
+            Some(items[2])
+        };
+        Some((items[1], unit))
+    }
+
+    /// DISPLAY-only. Render a unit EXPRESSION as compact math: `(Unit.base #"meter")` → `meter`,
+    /// `Unit.one` → `1`, and a composite (heads `Unit.*`/`Unit./`/`Unit.^`, or the bare glyphs the value
+    /// form may carry) as its infix form with NO surrounding spaces — `meter/second`, `meter^2`,
+    /// `meter/second^2` — the mathematical convention for a unit, and distinct from the spaced arithmetic
+    /// a magnitude uses. `parent_prec` drives minimal parens via the shared `infix_prec` table (a
+    /// left-associative operator prints its right child one tier tighter, so `meter/(second*second)`
+    /// keeps its parens). Any shape this does not recognize falls back to the ordinary expression form.
+    fn display_unit(&mut self, id: StructId, parent_prec: u8) {
+        if let Some(name) = self.unit_base_name(id) {
+            self.doc.word(name);
+            return;
+        }
+        if self.is_member_call(id, "Unit", "one") {
+            self.doc.word("1");
+            return;
+        }
+        if let Struct::List(m) = self.a.get(id)
+            && m.len() == 3
+            && let Some(head) = self.head_name(m[0]).map(|h| h.to_string())
+            && let Some(prec) = infix_prec(&head)
+            && matches!(infix_glyph(&head), "*" | "/" | "^")
+        {
+            let (glyph, l, r) = (infix_glyph(&head).to_string(), m[1], m[2]);
+            let paren = prec < parent_prec;
+            if paren {
+                self.doc.word("(");
+            }
+            self.display_unit(l, prec);
+            self.doc.word(glyph);
+            // `^`'s right operand is the integer exponent (a literal, not a unit); every other
+            // composition's right operand is a unit, printed one tier tighter for left-associativity.
+            if head_glyph_is_pow(&head) {
+                self.expr(r, PREC_MEMBER);
+            } else {
+                self.display_unit(r, prec + 1);
+            }
+            if paren {
+                self.doc.word(")");
+            }
+            return;
+        }
+        // Unrecognized unit shape — render it as an ordinary expression (still readable).
+        self.expr(id, parent_prec);
+    }
+
+    /// If `id` is `(Unit.base #"name")`, the base-dimension NAME (the symbol's text). Used by the
+    /// display surface to print a base unit as its bare name.
+    fn unit_base_name(&self, id: StructId) -> Option<String> {
+        let Struct::List(m) = self.a.get(id) else {
+            return None;
+        };
+        if m.len() != 2 || !self.is_member_call(m[0], "Unit", "base") {
+            return None;
+        }
+        match self.a.get(m[1]) {
+            Struct::Atom(l) => match self.a.leaf(*l) {
+                Leaf::Sym(s) => Some(s.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// If `items` is a unit conversion `(Unit.in (Unit.of #"name") value)` whose target is a BARE-NAME
     /// family unit, return the converted value and the target unit name — so it prints as the concise
     /// `value as name` surface (the inverse of the parser's `as_conversion`). All must hold, else the
@@ -2331,6 +2478,33 @@ impl<'a> Printer<'a> {
     }
 }
 
+/// If `n` is the canonical spelling of a `Rational` value — an optional leading `-` then
+/// `<digits>/<digits>` with a non-empty, all-decimal numerator and denominator — return its
+/// `(numerator, denominator)` halves (the sign staying on the numerator). This is the `num/den`
+/// NAME leaf the compiler renders a rational value as; there is no rational reader literal, so it is
+/// carried as a `Leaf::Name`. Used only by the DISPLAY surface to print it bare (`1/4`) and to elide
+/// an integral denominator (`8/1` → `8`). Returns `None` for any other name (a plain identifier,
+/// `a/b` over non-digits, a bare integer with no slash), which prints as an ordinary name.
+fn rational_name(n: &str) -> Option<(&str, &str)> {
+    let (num, den) = n.split_once('/')?;
+    // The numerator may carry a leading sign; the digits after it, and all of the denominator, must
+    // be decimal digits (and each half non-empty). A `+` sign is not part of the canonical form.
+    let num_digits = num.strip_prefix('-').unwrap_or(num);
+    let digits_ok = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if digits_ok(num_digits) && digits_ok(den) {
+        Some((num, den))
+    } else {
+        None
+    }
+}
+
+/// True iff `head` is a unit-EXPONENTIATION head (arena `^` or the qualified `Unit.^`) — the one unit
+/// composition whose right operand is an integer exponent, not a nested unit. The display unit renderer
+/// prints that operand as a plain expression while recursing into the unit operands of `*`/`/`.
+fn head_glyph_is_pow(head: &str) -> bool {
+    infix_glyph(head) == "^"
+}
+
 /// A name prints bare when it re-lexes to exactly itself as a single `Ident`/operator token AND is
 /// not a reserved word; otherwise it is backtick-quoted. This is the lossless escape for symbolic
 /// heads (`|`, `+`, `->`), keyword-shaped names (`let`, `in`), and anything that would otherwise
@@ -2516,6 +2690,61 @@ mod tests {
         assert_eq!(print(&odd, 80), "Qty.of(5, Unit.of(#\"foo bar\"))");
         let bare = sexpr::read(r#"(Unit.of #"meter")"#).unwrap();
         assert_eq!(print(&bare, 80), "Unit.of(#meter)");
+    }
+
+    /// The DISPLAY surface renders a VALUE for a human — dropping the round-trip ceremony the canonical
+    /// printer must keep. Each case pairs the compiler's canonical VALUE FORM (as `cdz-run` emits it,
+    /// read by the s-expr oracle) with its expected display text.
+    #[test]
+    fn display_surface_renders_values_readably() {
+        let disp = |src: &str| {
+            let a = sexpr::read(src).unwrap();
+            print_display(&a, 80)
+        };
+        // A rational value is a `Name("1/4")` leaf — the canonical printer backtick-quotes it (bare
+        // `1/4` re-lexes as division), display prints it bare.
+        assert_eq!(disp("(: 1/3 Rational)"), "1/3");
+        assert_eq!(
+            print(&sexpr::read("(: 1/3 Rational)").unwrap(), 80),
+            "`1/3` : Rational"
+        );
+        // An integral rational drops its `/1` denominator.
+        assert_eq!(disp("(: 8/1 Rational)"), "8");
+        // A negative rational keeps its sign on the numerator.
+        assert_eq!(disp("(: -1/2 Rational)"), "-1/2");
+        // The outer `(: value type)` result annotation is stripped in display; a scalar shows bare.
+        assert_eq!(disp("(: 5.0 Float64)"), "5.0");
+        // A quantity value renders in its concise `<value> <unit>` surface — a base unit bare, a
+        // rational value bare — instead of `Qty.of(`1/4`, Unit.base(#meter) / Unit.base(#second))`.
+        assert_eq!(
+            disp(concat!(
+                "(: (Qty.of 1/4 (Unit./ (Unit.base #\"meter\") (Unit.base #\"second\")))",
+                "   (Qty Rational (Unit./ (Unit.base #\"meter\") (Unit.base #\"second\"))))"
+            )),
+            "1/4 meter/second"
+        );
+        assert_eq!(
+            disp("(: (Qty.of 5.0 (Unit.base #\"meter\")) (Qty Float64 (Unit.base #\"meter\")))"),
+            "5.0 meter"
+        );
+        // An exponentiated unit reads `meter^2`; its integer exponent is a plain literal.
+        assert_eq!(
+            disp(concat!(
+                "(: (Qty.of 9.0 (Unit.^ (Unit.base #\"meter\") 2))",
+                "   (Qty Float64 (Unit.^ (Unit.base #\"meter\") 2)))"
+            )),
+            "9.0 meter^2"
+        );
+        // A DIMENSIONLESS quantity (`Unit.one`) shows just its value — no unit.
+        assert_eq!(
+            disp("(: (Qty.of 3.0 Unit.one) (Qty Float64 Unit.one))"),
+            "3.0"
+        );
+        // A rational inside a compound value is rendered bare too (the display mode reaches every leaf).
+        assert_eq!(
+            disp("(: (tuple 1/2 3/1) (Tuple Rational Rational))"),
+            "(1/2, 3)"
+        );
     }
 
     #[test]
