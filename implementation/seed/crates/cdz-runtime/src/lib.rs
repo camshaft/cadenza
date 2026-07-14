@@ -14766,6 +14766,99 @@ mod tests {
             .for_each(|ops| run_vec_op_sequence(ops));
     }
 
+    // ── BYTES ROPE randomized differential vs `Vec<u8>` ─────────────────────────────────────────
+    // The bytes rope (O(1) concat/slice over shared leaves, flatten-on-read, slice-of-slice collapse)
+    // is as structurally intricate as the RRB vector but had only FIXED spot-checks. Mirror the vector
+    // differential: random concat / slice / compact / read / fork sequences vs a `Vec<u8>` reference.
+    // Like the RRB vector, the rope is ELEMENT-canonical but NOT shape-canonical (a concat/slice tree
+    // is a different rep from a flat leaf of the same bytes), so the invariant is CONTENT equivalence
+    // (`bytes_to_vec` + `bytes-len`), NOT `champ_eq`. ⚠ `op_bytes_get`/`bytes_to_vec` FLATTEN a rope in
+    // place — content-preserving + unobservable, but it mutates shape, so read each handle's content
+    // ONCE and compare to its reference; a forked snapshot is verified by its OWN content read.
+    #[derive(Debug, bolero::TypeGenerator)]
+    enum BytesOp {
+        // Append a fresh `n % 40 + 1`-byte leaf via `bytes-concat` (grows the rope; concat is O(1) so a
+        // deep right-leaning spine builds — the shape flatten-on-read must handle without O(n²)/overflow).
+        ConcatRange { n: u8 },
+        // Slice `[start, start+len)` of the current bytes (both taken modulo the live length so always
+        // in range; a 0-len or full slice is a valid edge, never a trap). Exercises slice + seam-cross +
+        // the slice-of-slice collapse when applied to an already-sliced rope.
+        Slice { start: u8, len: u8 },
+        Compact,   // materialize to an independent leaf (releases any pinned parent) — content-preserving
+        ReadOne,   // read a single byte (flattens a rope in place) — must not change observable content
+        Fork,
+        DropForked,
+    }
+
+    fn run_bytes_op_sequence(ops: &[BytesOp]) {
+        let before = live_nodes();
+        let mut v = op_bytes_alloc(0); // the empty Bytes
+        let mut reference: Vec<u8> = Vec::new();
+        let mut forks: Vec<(Handle, Vec<u8>)> = Vec::new();
+        for op in ops {
+            match *op {
+                BytesOp::ConcatRange { n } => {
+                    let count = (n as usize) % 40 + 1;
+                    let tail: Vec<u8> = (0..count).map(|j| (j as u8).wrapping_mul(7).wrapping_add(1)).collect();
+                    let tv = bytes_leaf(&tail);
+                    v = op_bytes_concat(v, tv);
+                    reference.extend_from_slice(&tail);
+                }
+                BytesOp::Slice { start, len } => {
+                    let blen = reference.len();
+                    // start ∈ [0, blen]; len ∈ [0, blen-start] — always a valid (possibly empty) range.
+                    let s = if blen == 0 { 0 } else { (start as usize) % (blen + 1) };
+                    let max_len = blen - s;
+                    let l = if max_len == 0 { 0 } else { (len as usize) % (max_len + 1) };
+                    v = op_bytes_slice(v, s as u32, l as u32);
+                    reference = reference[s..s + l].to_vec();
+                }
+                BytesOp::Compact => {
+                    v = op_bytes_compact(v); // content unchanged; storage becomes independent
+                }
+                BytesOp::ReadOne => {
+                    if !reference.is_empty() {
+                        // Reading byte 0 flattens `v` in place; the value read must match the reference.
+                        let got = op_bytes_get(v, 0) as u8;
+                        assert_eq!(got, reference[0], "bytes-get(0) matches reference (flatten-safe)");
+                    }
+                }
+                BytesOp::Fork => {
+                    op_dup(v); // rc>1: a following consuming op path-copies, leaving this snapshot intact
+                    forks.push((v, reference.clone()));
+                }
+                BytesOp::DropForked => {
+                    if let Some((h, _)) = forks.pop() {
+                        op_drop(h);
+                    }
+                }
+            }
+        }
+        // (1) length + full content vs the reference. `bytes_to_vec` flattens `v` in place — fine, it is
+        // content-preserving and this is the last read of `v`'s shape we depend on.
+        assert_eq!(op_bytes_len(v) as usize, reference.len(), "bytes length matches reference");
+        assert_eq!(bytes_to_vec(v), reference, "bytes content matches reference");
+        // (2) forked snapshots undisturbed by later mutation of `v` (aliasing safety over shared leaves).
+        // Each fork reads its OWN content (flattening that snapshot, independent of `v`).
+        for (h, snap) in &forks {
+            assert_eq!(op_bytes_len(*h) as usize, snap.len(), "forked bytes snapshot length intact");
+            assert_eq!(bytes_to_vec(*h), *snap, "forked bytes snapshot content intact");
+        }
+        // (3) no leak / no double-free across the whole rope of shared slices/concats.
+        op_drop(v);
+        for (h, _) in forks {
+            op_drop(h);
+        }
+        assert_eq!(live_nodes(), before, "no leak / no double-free across the whole bytes sequence");
+    }
+
+    #[test]
+    fn prop_bytes_matches_reference_under_random_op_sequences() {
+        bolero::check!()
+            .with_type::<Vec<BytesOp>>()
+            .for_each(|ops| run_bytes_op_sequence(ops));
+    }
+
     // ── U6: FBIP rc==1 in-place cursor advance for map-iter-next / set-iter-next ────────────────
     // Load-bearing: (1) a forked/peeked/teed cursor (rc>1) stays INDEPENDENT — advancing one owner
     // must not disturb the other (aliasing catcher); (2) a unique (rc==1) walk allocates ZERO new
