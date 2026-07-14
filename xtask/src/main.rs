@@ -955,7 +955,13 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     // The user-sum descriptors (`// cdz-sum[Ident]: (Variant payload) …`) the backend emitted — the
     // variant structure the render needs to `match` a user-enum value into its canonical bare form.
     let sums = cdz_sum_descriptors(&module);
-    let body = match ret_ty.as_deref().map(|ty| cdz_render_expr(ty, &sums)) {
+    // …and the erased-newtype descriptors (`// cdz-newtype[Pt]: <inner>`) — a newtype-typed boundary value
+    // renders by its inner type (the tag erased), not `Display` of the erased Rust tuple.
+    let newtypes = cdz_newtype_descriptors(&module);
+    let body = match ret_ty
+        .as_deref()
+        .map(|ty| cdz_render_expr(ty, &sums, &newtypes))
+    {
         Some(render) => {
             format!("fn main() {{ let __r = {call_or_await}; println!(\"{{}}\", {render}); }}\n")
         }
@@ -1118,10 +1124,11 @@ fn cdz_return_type(module: &str, name: &str) -> Option<String> {
 fn cdz_render_expr(
     ty: &str,
     sums: &std::collections::HashMap<String, Vec<(String, Option<String>)>>,
+    newtypes: &std::collections::HashMap<String, String>,
 ) -> String {
     let mut helpers = Vec::new();
     let mut on_path = Vec::new();
-    let expr = cdz_render_at(ty, "__r", sums, &mut helpers, &mut on_path);
+    let expr = cdz_render_at(ty, "__r", sums, newtypes, &mut helpers, &mut on_path);
     // The recursive-sum render helpers (if any) are hoisted ahead of the expression, then the expression
     // is a block that defines them and evaluates. Each helper is a `fn`, so mutual/self recursion works.
     if helpers.is_empty() {
@@ -1146,6 +1153,7 @@ fn cdz_render_at(
     ty: &str,
     path: &str,
     sums: &std::collections::HashMap<String, Vec<(String, Option<String>)>>,
+    newtypes: &std::collections::HashMap<String, String>,
     helpers: &mut Vec<String>,
     on_path: &mut Vec<String>,
 ) -> String {
@@ -1153,13 +1161,30 @@ fn cdz_render_at(
     if ty == "Unit" {
         return "\"unit\".to_string()".to_string();
     }
+    // An erased NEWTYPE (`// cdz-newtype[Pt]: (Tuple Int64 Int64)`) — its runtime value IS the inner type
+    // (the tag erased, `type-system.md §156`), and `Ty::Nominal`'s render_name is the bare name `Pt`. Render
+    // by its INNER type so a `Pt`-typed boundary value renders structurally as `(tuple 5 5)` — NOT falling
+    // to the scalar `Display` of the erased Rust tuple `(i64, i64)` (rustc E0277). Checked before the user-
+    // sum arm (a newtype has no `cdz-sum` descriptor) and the scalar fallthrough.
+    if let Some(inner) = newtypes.get(ty) {
+        return cdz_render_at(inner, path, sums, newtypes, helpers, on_path);
+    }
     // `(Tuple T0 T1 …)` → `(tuple …)`.
     if let Some(elems) = parse_head_type(ty, "Tuple") {
         let placeholders = vec!["{}"; elems.len()].join(" ");
         let args: Vec<String> = elems
             .iter()
             .enumerate()
-            .map(|(i, e)| cdz_render_at(e, &format!("({path}).{i}"), sums, helpers, on_path))
+            .map(|(i, e)| {
+                cdz_render_at(
+                    e,
+                    &format!("({path}).{i}"),
+                    sums,
+                    newtypes,
+                    helpers,
+                    on_path,
+                )
+            })
             .collect();
         return format!("format!(\"(tuple {placeholders})\", {})", args.join(", "));
     }
@@ -1191,6 +1216,7 @@ fn cdz_render_at(
                 fty.trim(),
                 &format!("({path}).{i}"),
                 sums,
+                newtypes,
                 helpers,
                 on_path,
             ));
@@ -1210,7 +1236,7 @@ fn cdz_render_at(
     let vbind = format!("__v{}", path.len());
     if let Some(args) = parse_head_type(ty, "Option") {
         let payload = args.first().map(String::as_str).unwrap_or("");
-        let inner = cdz_render_at(payload, &vbind, sums, helpers, on_path);
+        let inner = cdz_render_at(payload, &vbind, sums, newtypes, helpers, on_path);
         return format!(
             "match &{path} {{ Some({vbind}) => format!(\"(Some {{}})\", {inner}), None => \"(None unit)\".to_string() }}"
         );
@@ -1220,6 +1246,7 @@ fn cdz_render_at(
             args.first().map(String::as_str).unwrap_or(""),
             &vbind,
             sums,
+            newtypes,
             helpers,
             on_path,
         );
@@ -1227,6 +1254,7 @@ fn cdz_render_at(
             args.get(1).map(String::as_str).unwrap_or(""),
             &vbind,
             sums,
+            newtypes,
             helpers,
             on_path,
         );
@@ -1268,7 +1296,7 @@ fn cdz_render_at(
                     let vident = rust_ident(vname);
                     match payload {
                         Some(pty) => {
-                            let inner = cdz_render_at(pty, "__p", sums, helpers, on_path);
+                            let inner = cdz_render_at(pty, "__p", sums, newtypes, helpers, on_path);
                             arms.push(format!(
                                 "prog::{ty}::{vident}(__p) => format!(\"({vname} {{}})\", {inner})"
                             ));
@@ -1340,6 +1368,23 @@ fn cdz_sum_descriptors(
             })
             .collect();
         map.insert(ident.trim().to_string(), variants);
+    }
+    map
+}
+
+/// Parse the `// cdz-newtype[<Ident>]: <inner-render-name>` descriptor notes into a map `Ident → inner
+/// type`. An erased newtype's runtime value IS its inner type (the tag adds nothing), so the gate renders a
+/// newtype-typed boundary value by its inner type — see [`cdz_render_at`]'s newtype arm.
+fn cdz_newtype_descriptors(module: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for line in module.lines() {
+        let t = line.trim_start();
+        let Some(rest) = t.strip_prefix("// cdz-newtype[") else {
+            continue;
+        };
+        if let Some((ident, inner)) = rest.split_once("]:") {
+            map.insert(ident.trim().to_string(), inner.trim().to_string());
+        }
     }
     map
 }
@@ -2848,7 +2893,7 @@ mod trap_grading_tests {
                 ("Nil".to_string(), None),
             ],
         );
-        let expr = cdz_render_expr("IntList", &sums);
+        let expr = cdz_render_expr("IntList", &sums, &std::collections::HashMap::new());
         // A recursive helper `fn __render_IntList` is generated and the value is rendered by CALLING it —
         // the self-referential `IntList` payload position becomes a recursive call, not another inline match.
         assert!(
@@ -2875,7 +2920,7 @@ mod trap_grading_tests {
                 ("Pos".to_string(), None),
             ],
         );
-        let s = cdz_render_expr("Sign", &mono);
+        let s = cdz_render_expr("Sign", &mono, &std::collections::HashMap::new());
         assert!(
             s.contains("fn __render_Sign(") && s.contains("(Pos unit)"),
             "{s}"
@@ -2891,7 +2936,11 @@ mod trap_grading_tests {
         // fail rustc E0277. (Regression: the head was matched lowercase `record`, which stopped matching a
         // `(Record …)` note after a1c9bc09, failing every record-escape case on the rust gate.)
         let sums = std::collections::HashMap::new();
-        let expr = cdz_render_expr("(Record (a Int64) (b Int64))", &sums);
+        let expr = cdz_render_expr(
+            "(Record (a Int64) (b Int64))",
+            &sums,
+            &std::collections::HashMap::new(),
+        );
         assert!(
             expr.contains("(record (") && expr.contains("(__r).0") && expr.contains("(__r).1"),
             "a record type must render structurally by field position, not Display the whole tuple: {expr}"
@@ -2901,10 +2950,42 @@ mod trap_grading_tests {
             "must not fall through to the scalar Display path: {expr}"
         );
         // A record whose field is itself a tuple composes — the inner `(Tuple …)` renders `(tuple …)`.
-        let nested = cdz_render_expr("(Record (x Int64) (y (Tuple Int64 Int64)))", &sums);
+        let nested = cdz_render_expr(
+            "(Record (x Int64) (y (Tuple Int64 Int64)))",
+            &sums,
+            &std::collections::HashMap::new(),
+        );
         assert!(
             nested.contains("(record (") && nested.contains("(tuple "),
             "a record field that is a tuple renders structurally: {nested}"
+        );
+    }
+
+    #[test]
+    fn newtype_type_renders_by_its_erased_inner() {
+        // An erased NEWTYPE's `render_name` is the bare name `Pt`; its runtime value IS the inner type (the
+        // tag erased). The renderer must resolve `Pt` through its `cdz-newtype` descriptor to the inner type
+        // and render STRUCTURALLY — NOT fall to the scalar `Display` of the erased Rust tuple `(i64,i64)`
+        // (rustc E0277). A newtype over a compound renders the bare compound value (no `Pt` wrapper).
+        let sums = std::collections::HashMap::new();
+        let mut newtypes = std::collections::HashMap::new();
+        newtypes.insert("Pt".to_string(), "(Tuple Int64 Int64)".to_string());
+        let expr = cdz_render_expr("Pt", &sums, &newtypes);
+        assert!(
+            expr.contains("(tuple ") && expr.contains("(__r).0") && expr.contains("(__r).1"),
+            "a newtype over a tuple renders the bare inner tuple, not Display: {expr}"
+        );
+        assert!(
+            !expr.trim_start().starts_with("format!(\"{}\""),
+            "must not fall through to the scalar Display path: {expr}"
+        );
+        // A newtype over a SCALAR resolves to that scalar (Display is correct for an Int64).
+        let mut nt2 = std::collections::HashMap::new();
+        nt2.insert("UserId".to_string(), "Int64".to_string());
+        let s = cdz_render_expr("UserId", &sums, &nt2);
+        assert!(
+            s.contains("format!(\"{}\""),
+            "a newtype over Int64 renders the scalar: {s}"
         );
     }
 }

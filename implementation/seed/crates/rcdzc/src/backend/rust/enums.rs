@@ -75,6 +75,36 @@ pub fn emit_sum_descriptors(db: &mut Db) -> String {
     out
 }
 
+/// Emit a machine-readable DESCRIPTOR note per erased NEWTYPE — the inner type its name erases to, so the
+/// gate's value renderer can render a `Pt`-typed boundary value structurally. Format, one line per newtype:
+///   `// cdz-newtype[<Ident>]: <inner-render-name>`
+/// A newtype `(type Pt (Mk (Tuple Int64 Int64)))` ERASES (`db.newtype_inner`): its runtime value IS the
+/// inner tuple, and `Ty::Nominal`'s `render_name` is just the bare name `Pt`. Without this note the gate
+/// renderer meets the return type `Pt`, finds no record/tuple/sum match, and falls to a scalar `Display`
+/// of the erased Rust tuple `(i64, i64)` → rustc E0277. The note lets it resolve `Pt` to its inner type
+/// `(Tuple Int64 Int64)` and render the VALUE structurally as `(tuple 5 5)` (the tag-erased bare compound,
+/// what the wasm gate produces). Only a MONOMORPHIC newtype gets one — a generic newtype's inner mentions a
+/// type parameter with no concrete render form (the same restriction `emit_sum_descriptors` draws).
+pub fn emit_newtype_descriptors(db: &mut Db) -> String {
+    let mut out = String::new();
+    let n = db.type_decls.len();
+    for i in 0..n {
+        let decl = db.type_decls[i].clone();
+        if !decl.params.is_empty() {
+            continue; // generic newtype — inner mentions a type param, no concrete render form.
+        }
+        let Some(inner) = db.newtype_inner.get(&decl.occ).cloned() else {
+            continue; // not an erased newtype.
+        };
+        let ident = types::sum_ident(&decl.name);
+        out.push_str(&format!(
+            "// cdz-newtype[{ident}]: {}\n",
+            inner.render_name()
+        ));
+    }
+    out
+}
+
 /// The `render_name` of a variant's payload TYPE, or `None` for a nullary variant. A one-payload variant
 /// is its payload type's render; a MULTI-payload variant's payload is one tuple, so it is the `(Tuple …)`
 /// render of the payload types (matching the single-`Ty::Tuple` payload the core models and the enum
