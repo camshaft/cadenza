@@ -7312,8 +7312,13 @@ fn try_emit_scalar_br_table(
     // `br d`: d in 0..n → $a_d ; d = n → $default ; d = n+1 → $join.
     let default_depth = n_arms; // exits $default
     src.push(out);
-    out.push(m.konst(min));
-    out.push(m.sub());
+    // The shifted index is `scrutinee - min`; when the covered range STARTS AT 0 (the common `(match x
+    // (0 …) (1 …) …)` shape) the shift is the identity `x - 0`, so skip the dead `const 0 ; sub` — the
+    // scrutinee IS the table index. (`m.sub()` wraps, so `x - 0 == x` exactly at both slot widths.)
+    if min != 0 {
+        out.push(m.konst(min));
+        out.push(m.sub());
+    }
     if !m.slot32 {
         // i64 scrutinee: guard against the wrap-aliasing (idx as u64 >= span → default), then narrow.
         let idx_slot = base;
@@ -12037,6 +12042,49 @@ mod tests {
             !f.code.iter().any(|i| matches!(i, Lir::I64Eq)),
             "a br_table dispatch has no linear per-arm equality probe, got: {:?}",
             f.code
+        );
+    }
+
+    #[test]
+    fn a_br_table_over_a_zero_based_range_skips_the_index_shift() {
+        // A dense `br_table` normalizes the scrutinee to a 0-based table index via `scrutinee - min`. When
+        // the covered range STARTS AT 0 — the common `(match x (0 …) (1 …) …)` shape — that shift is the
+        // identity `x - 0`, so the `const 0 ; sub` is dead and skipped: the scrutinee IS the index. A
+        // range NOT starting at 0 keeps the subtract. Assert the min=0 table has NO `I64Sub` while the
+        // min=5 table has exactly one (the index shift).
+        let lir = |src: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = layout_of(&mut db);
+            let (params, body) = function_of(&mut db, "f");
+            select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let min0 = lir(
+            "(module m (def (f (: x Int64)) (match x (0 10) (1 20) (2 30) (3 40) (_ 50))) (def (main) 0) (export main))",
+        );
+        assert!(
+            min0.iter().any(|i| matches!(i, Lir::BrTable(_, _))),
+            "the min=0 match still uses a br_table, got: {min0:?}"
+        );
+        assert!(
+            !min0.iter().any(|i| matches!(i, Lir::I64Sub)),
+            "a 0-based range skips the `x - 0` index shift, got: {min0:?}"
+        );
+        // The wrap-aliasing guard (`idx >=u span → default`) is UNAFFECTED — a negative/huge i64 scrutinee
+        // still routes to the default, so the out-of-range compare survives.
+        assert!(
+            min0.iter().any(|i| matches!(i, Lir::I64GeU)),
+            "the out-of-range wrap guard is kept, got: {min0:?}"
+        );
+        let min5 = lir(
+            "(module m (def (f (: x Int64)) (match x (5 10) (6 20) (7 30) (_ 40))) (def (main) 0) (export main))",
+        );
+        assert_eq!(
+            min5.iter().filter(|i| matches!(i, Lir::I64Sub)).count(),
+            1,
+            "a non-zero-based range keeps its `x - min` index shift, got: {min5:?}"
         );
     }
 

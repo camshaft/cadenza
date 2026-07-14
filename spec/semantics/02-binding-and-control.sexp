@@ -185,6 +185,26 @@
   (call   main (: 7 Int64))
   (output (: 30 Int64)))
 
+(case "a dense zero-based jump-table match routes an out-of-range scrutinee to the default"
+  (doc    "`(def (main (: x Int64)) (match x (0 10) (1 20) (2 30) (3 40) (_ 50)))` — a dense match over
+           0..3 compiles to a `br_table` jump. Because the covered range starts at 0, the table index is
+           the scrutinee directly (the `x - 0` shift is elided). Called with -1: a NEGATIVE scrutinee, as
+           an unsigned table index, is huge and out of range, so the out-of-range guard routes it to the
+           default 50 — NOT a spurious in-range hit. Pins that eliding the zero-shift keeps the unsigned
+           out-of-range guard intact (a negative or too-large scrutinee still defaults).")
+  (input  (do (def (main (: x Int64)) (match x (0 10) (1 20) (2 30) (3 40) (_ 50))) (export main)))
+  (call   main (: -1 Int64))
+  (output (: 50 Int64)))
+
+(case "a dense zero-based jump-table match hits a covered arm"
+  (doc    "The covered-arm companion of the zero-based `br_table` match `(match x (0 10) (1 20) (2 30)
+           (3 40) (_ 50))`: called with 2, the table index 2 (the scrutinee used directly, no shift)
+           selects arm 2 → 30. Together with the out-of-range case this pins value parity of the
+           zero-shift-elided jump table with the shifted form.")
+  (input  (do (def (main (: x Int64)) (match x (0 10) (1 20) (2 30) (3 40) (_ 50))) (export main)))
+  (call   main (: 2 Int64))
+  (output (: 30 Int64)))
+
 ; A lexical binding wins in APPLICATION-HEAD position too, not only value position — even when its
 ; name coincides with a built-in constructor form like `list`/`tuple`/`record`/`map`. core-semantics.md
 ; #Binding Is Lexical: "A name MUST resolve to the nearest enclosing binding of that name." A `let`
