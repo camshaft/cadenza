@@ -606,6 +606,7 @@ pass	a member access with no field operand is rejected, not a crash
 pass	a module declaration binds its name in the enclosing scope
 pass	a module function calls a sibling export by name
 pass	a module function is recursive
+pass	a module in a top-level do sequence type-checks its members
 pass	a module may nest three deep
 pass	a module nested in a module projects as a nested record field
 pass	a module value definition registers a reachable export field

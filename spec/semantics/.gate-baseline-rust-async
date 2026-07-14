@@ -1291,3 +1291,4 @@ pass	updating a record field changes its type to the new value's
 pass	updating a record field replaces its value
 todo	updating an absent record field is rejected
 todo	wrapping arithmetic uses the distinct wrapping type
+pass	a module in a top-level do sequence type-checks its members

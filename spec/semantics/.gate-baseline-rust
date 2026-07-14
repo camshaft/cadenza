@@ -435,6 +435,7 @@ pass	a nullary function called from another function's body
 pass	a nullary function returning a scalar is callable
 pass	a nullary helper called and used in arithmetic
 pass	a nullary module export applied to a non-unit argument is rejected
+pass	a module in a top-level do sequence type-checks its members
 pass	a nullary module export's non-unit argument does not swallow the argument's own fault
 pass	a nullary variant applied to a non-unit payload is a type error
 pass	a nullary variant applied to a non-unit payload rejects even when constructed via application
