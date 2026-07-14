@@ -3608,6 +3608,18 @@ fn selfcall_precedes_perform_in_operands(
     {
         return true;
     }
+    // An `if` evaluates its CONDITION first, then the taken BRANCH — the condition is a strict-first
+    // position (like a match scrutinee). A self-call in the condition followed by a perform in EITHER branch
+    // reads the recursion's OUT-state (the branch threads against the post-condition `cur`, which the
+    // recursive-call arm returns unchanged). Same out-state gap; without this the cond-self-call shape leaks
+    // the internal `f#ctx$s0` name in a CDZ0101. (A self-call in a BRANCH, not the condition, is a different
+    // position — handled by the generic structural recurse below where it belongs.)
+    if let Resolved::If { cond, then_, else_ } = resolved_of(db, node)
+        && contains_self_call(db, cond, callee_def)
+        && (contains_any_perform(db, then_, ctx) || contains_any_perform(db, else_, ctx))
+    {
+        return true;
+    }
     // Recurse structurally — the shape can be nested inside a branch/let/operand.
     match db.ast.get(node).clone() {
         Struct::List(children) => children

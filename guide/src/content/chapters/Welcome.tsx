@@ -30,8 +30,9 @@ export default function Welcome() {
       <Runnable title="Your first program" source={`(+ 2 3)`} />
 
       <P>
-        Try changing <C>2</C> and <C>3</C> to other numbers, then Run again. The result is shown with
-        its type — Cadenza infers that this is an <C>Int64</C>.
+        Try changing <C>2</C> and <C>3</C> to other numbers, then Run again. The result is <C>5</C> — and
+        though nothing here says so, Cadenza has inferred its type is <C>Int64</C>, the checked 64-bit
+        integer you'll meet in <strong>The numeric model</strong>.
       </P>
 
       <H2>One language, two syntaxes</H2>

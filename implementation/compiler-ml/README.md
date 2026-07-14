@@ -123,20 +123,19 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   last-arm absorption, so a hand-written inner `match` easily mis-attaches its catch-all to the outer
   match (CDZ0210 non-exhaustive + CDZ0213 unreachable). The printer's own output round-trips correctly.
 
-- **OPEN (seed `rcdzc` — a plain `//` LINE COMMENT HIDES the following top-level form).**
-  `repros/reject-line-comment-hides-toplevel-form.cdz`. The reader wraps a leading line comment as
-  `(comment "…" <next-form>)` and the compiler's top-level SCAN does not see through the wrapper — so
-  the wrapped `def`/`type`/`export`/`@test`/`effect` becomes invisible (`cdz check` → "unbound name
-  `comment`" per form + the def's own name unbound). **SHARP BOUNDARY (probed 2026-07-14 — broader than
-  first logged, which wrongly said only `@test`/`effect` were hit):** a plain `//` leading ANY top-level
-  form breaks; `//` BETWEEN two defs, TRAILING-INLINE on a def, or with a blank line after it all still
-  break (the wrapper attaches to the next top-level form regardless). What WORKS: a `///` DOC comment on
-  a `def`/`type` (that scan strips the leading `(doc …)`), and a `//` INSIDE a body (not top-level). So
-  the gap is precise: the top-level scan strips a leading `(doc …)` but NOT a leading `(comment …)` —
-  the fix mirrors the doc-strip (peel a leading `(comment …)` in the same db.rs scan). Impact: every
-  top-level comment in a port module must be `///` or live inside a body. The manifest reader peels
-  `(comment …)` as a workaround (so `cdz test` reads a commented `Project.cdz`), but `cdz check` on any
-  commented module still errors — a real top-level-scan gap.
+- **✅ FIXED (seed `rcdzc`, 2026-07-14): a plain `//`/`///` comment HID the following top-level form.**
+  `repros/reject-line-comment-hides-toplevel-form.cdz` now checks CLEAN. The reader wraps a leading line
+  comment as `(comment "…" <next-form>)`; the top-level scan didn't see through it, so the wrapped
+  `def`/`type`/`export`/`@test`/`effect` was invisible ("unbound name `comment`"). A sibling landed
+  `strip_comments` in `Db::load` (`db.rs`@`1a606980`, peels the wrapper before every scan) fixing all
+  the single-file placements this loop had catalogued (leading/between-defs/trailing-inline/blank-after,
+  `//` and `///` alike). **This iteration extended the fix to the LINK path:** a `//`/`///` comment on
+  an `(import …)` was STILL hidden, because `rcdzc::link` scans imports off the RAW arena BEFORE
+  `Db::load`'s strip — so a documented import was spliced as an unmodeled top-level form ("`import` … not
+  modeled"). Fixed by peeling comments in `compile.rs::link_inputs` (each file's arena, post-decode)
+  + `cdz`'s own `declared_import_paths` closure-detector; regression test
+  `crates/cdz/tests/check_imports_cli.rs::a_comment_on_an_import_is_seen_through_by_the_link_scan`. So a
+  top-level comment (incl. on an import) is now fully supported.
 
 - **✅ FIXED (seed `rcdzc`@`b2bf850d`): a `br_table`-lowered match (≥4 arms) in OPERAND position dropped
   a RECURSIVE-CALL sibling operand.** Reported by this loop, fixed by a sibling within one iteration
