@@ -14631,6 +14631,61 @@ mod match_engine {
         );
     }
 
+    /// A `let` and a `fn` each take exactly ONE body. A surplus operand after the body —
+    /// `(let ((x 1)) x 99)` / `(fn (x) x 99)` — was SILENTLY ACCEPTED (the resolver read only the
+    /// bindings/params + the first body, dropping the surplus → a silent miscompile), a likely author slip
+    /// expecting `do`-style sequencing where these forms take a single body. Now each rejects CDZ0201
+    /// "has more than one body … wrap multiple statements in a `(do …)`" with a delete-the-surplus fix (the
+    /// shared `fixed_arity_reject`, same as `if`/`and`/`resume`/`host`). Extends the fixed-arity
+    /// surplus-ignore sweep (resume M106, host M107) to the two binding forms.
+    #[test]
+    fn a_let_or_fn_with_more_than_one_body_is_cdz0201() {
+        use crate::testkit::parse;
+        for (src, form) in [
+            (
+                "(module m (def (main) (let ((x 1)) x 99)) (export main))",
+                "let",
+            ),
+            (
+                "(module m (def (main) ((fn (x) x 99) 5)) (export main))",
+                "fn",
+            ),
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("more than one body"))
+                .unwrap_or_else(|| panic!("a too-many-body {form} must be rejected"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert!(
+                d.message
+                    .contains(&format!("this {form} has more than one body"))
+                    && d.message.contains("(do …)"),
+                "names the form + the `do` sequencing hint: {}",
+                d.message
+            );
+            assert_eq!(
+                d.fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Delete),
+                "carries a delete-the-surplus fix: {:?}",
+                d.fix
+            );
+        }
+        // NO REGRESSION: a single-body let/fn, and a let whose ONE body is a `(do …)` sequence, are clean.
+        for ok in [
+            "(module m (def (main) (let ((x 1)) x)) (export main))",
+            "(module m (def (main) ((fn (x) x) 5)) (export main))",
+            "(module m (def (main) (let ((x 1)) (do (+ x 1) x))) (export main))",
+        ] {
+            let arity = crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                .into_iter()
+                .find(|d| d.message.contains("more than one body"));
+            assert!(
+                arity.is_none(),
+                "a single-body form must not be flagged: {ok} -> {arity:?}"
+            );
+        }
+    }
+
     #[test]
     fn unquote_outside_quasiquote_is_cdz0003_wrong_arity_is_cdz0201() {
         // metaprogramming.md §Quasiquote Constructs AST With Selective Evaluation: `,`/`,@` are meaningful

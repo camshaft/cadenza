@@ -3288,6 +3288,23 @@ fn resolve_let(db: &Db, id: StructId) -> Resolved {
             format!("this let's bindings are malformed — each must be `(<name> <init>)`. {SHAPE}"),
         ));
     }
+    // TOO MANY operands — `(let (binds) body extra)`. A let is exactly `(let ((<name> <init>)…) <body>)`
+    // with ONE body; a surplus operand after the body was SILENTLY IGNORED (the resolver read only
+    // `tail[0]`/`tail[1]`), compiling to code that dropped it — a silent miscompile, and a likely author
+    // slip (expecting `do`-style sequencing where a let takes a single body). Reject it CDZ0201 with a
+    // delete-the-surplus fix (the shared `fixed_arity_reject`); the message names `do` as the sequencing
+    // form so the author knows how to write multiple statements.
+    if tail.len() > 2 {
+        return Resolved::Poison(fixed_arity_reject(
+            id,
+            tail,
+            2,
+            &format!(
+                "this let has more than one body — a let takes a single body (wrap multiple \
+                 statements in a `(do …)`). {SHAPE}"
+            ),
+        ));
+    }
     Resolved::Let {
         bindings: pairs,
         body,
@@ -3675,6 +3692,23 @@ fn resolve_lambda(db: &Db, id: StructId) -> Resolved {
             ));
         }
     };
+    // TOO MANY operands — `(fn (params) body extra)`. A fn is exactly `(fn (<param>…) <body>)` with ONE
+    // body; a surplus operand after the body was SILENTLY IGNORED (the resolver read only
+    // `tail[0]`/`tail[1]`), compiling to code that dropped it — a silent miscompile, and a likely author
+    // slip (expecting `do`-style sequencing where a fn body is a single expression). Reject it CDZ0201
+    // with a delete-the-surplus fix (the shared `fixed_arity_reject`); the message names `do` as the
+    // sequencing form, matching the `let` too-many-body reject.
+    if tail.len() > 2 {
+        return Resolved::Poison(fixed_arity_reject(
+            id,
+            tail,
+            2,
+            &format!(
+                "this fn has more than one body — a fn takes a single body (wrap multiple \
+                 statements in a `(do …)`). {SHAPE}"
+            ),
+        ));
+    }
     Resolved::Lambda { params, body }
 }
 
