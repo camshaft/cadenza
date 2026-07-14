@@ -964,6 +964,16 @@ fn op_bigint_div(a: Handle, b: Handle) -> Handle {
 fn trap_bigint_div_zero() -> ! {
     panic!("cdz-runtime: BigInt division by zero")
 }
+/// `bigint-rem` — the REMAINDER of truncating division (`%`): `a - (a / b) * b`, so its sign is the
+/// DIVIDEND's (numeric-model.md — `%` takes the dividend's sign, the companion of `bigint-div`'s
+/// truncate-toward-zero). TRAPS on a zero divisor (same as `bigint-div`). `divmod` returns `(q, r)` with
+/// exactly this remainder, so this is the `r` half — the whole reason `divmod` computes both at once.
+fn op_bigint_rem(a: Handle, b: Handle) -> Handle {
+    match unbox_bigint(a).divmod(&unbox_bigint(b)) {
+        Some((_q, r)) => box_bigint(&r),
+        None => trap_bigint_div_zero(),
+    }
+}
 /// `bigint-cmp` — three-way compare: `-1`/`0`/`1` for `a < b`/`a = b`/`a > b` (the primitive the
 /// comparison operators `<`/`>`/`=`/… lower to + a fixed compare).
 fn op_bigint_cmp(a: Handle, b: Handle) -> i64 {
@@ -3978,6 +3988,9 @@ impl Guest for Component {
         let (l, r) = op_vec_split(Handle::from_u32(v), index);
         op_drop(l); // reclaim the dropped prefix
         r.to_u32()
+    }
+    fn bigint_rem(a: u32, b: u32) -> u32 {
+        op_bigint_rem(Handle::from_u32(a), Handle::from_u32(b)).to_u32()
     }
     fn vec_of_arr(arr: u32) -> u32 {
         op_vec_of_arr(Handle::from_u32(arr)).to_u32()
@@ -9724,6 +9737,43 @@ mod tests {
         assert_eq!(cmp(-3, -3), 0, "-3 == -3");
         assert_eq!(cmp(0, -1), 1, "0 > -1");
         assert_eq!(cmp(-1, 0), -1, "-1 < 0");
+        assert_eq!(live_object_count(), before, "no BigInt leak");
+    }
+
+    /// `bigint-rem` (op 73, the `%` the compiler now emits for a runtime BigInt) — the remainder of
+    /// TRUNCATING division, so its sign is the DIVIDEND's, matching Rust `%` on i64 across the full sign
+    /// matrix. Backed by the same `divmod` as `bigint-div` (the `r` half), so `a == (a/b)*b + (a%b)`.
+    #[test]
+    fn bigint_rem_takes_dividend_sign_all_combos() {
+        reset();
+        let before = live_object_count();
+        let rem = |a: i64, b: i64| -> i64 {
+            let (ha, hb) = (op_bigint_of_i64(a), op_bigint_of_i64(b));
+            let hr = op_bigint_rem(ha, hb);
+            let r = op_bigint_to_i64_checked(hr);
+            op_drop(ha);
+            op_drop(hb);
+            op_drop(hr);
+            r
+        };
+        // Remainder matches Rust i64 `%` (dividend's sign) across all four sign combos + exact/zero cases.
+        for &(a, b) in &[(17, 5), (-17, 5), (17, -5), (-17, -5), (6, 3), (-6, 3), (2, 5), (-2, 5), (0, 7)] {
+            assert_eq!(rem(a, b), a % b, "bigint-rem {a} % {b} == i64 %");
+            // And the division identity: a == (a/b)*b + (a%b). The bigint ops BORROW their operands, so
+            // each intermediate handle must be dropped explicitly (no consuming chain).
+            let (ha, hb) = (op_bigint_of_i64(a), op_bigint_of_i64(b));
+            let hq = op_bigint_div(ha, hb);
+            let hr = op_bigint_rem(ha, hb);
+            let qb = op_bigint_mul(hq, hb);
+            let sum = op_bigint_add(qb, hr);
+            assert_eq!(op_bigint_to_i64_checked(sum), a, "a == (a/b)*b + (a%b) for {a},{b}");
+            op_drop(ha);
+            op_drop(hb);
+            op_drop(hq);
+            op_drop(hr);
+            op_drop(qb);
+            op_drop(sum);
+        }
         assert_eq!(live_object_count(), before, "no BigInt leak");
     }
 

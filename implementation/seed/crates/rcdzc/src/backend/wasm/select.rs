@@ -180,6 +180,7 @@ const OP_BIGINT_ADD: &str = "bigint-add";
 const OP_BIGINT_SUB: &str = "bigint-sub";
 const OP_BIGINT_MUL: &str = "bigint-mul";
 const OP_BIGINT_DIV: &str = "bigint-div";
+const OP_BIGINT_REM: &str = "bigint-rem";
 /// `bigint-cmp(a, b) -> s64` — the three-way compare (`-1`/`0`/`1` for `a<b`/`a=b`/`a>b`), which the
 /// BigInt comparison operators `<`/`>`/`<=`/`>=`/`=` lower to + a fixed signed compare-with-zero (B3c).
 const OP_BIGINT_CMP: &str = "bigint-cmp";
@@ -1128,6 +1129,7 @@ pub fn collect_used_ops(
                 crate::core::BigIntOp::Sub => OP_BIGINT_SUB,
                 crate::core::BigIntOp::Mul => OP_BIGINT_MUL,
                 crate::core::BigIntOp::Div => OP_BIGINT_DIV,
+                crate::core::BigIntOp::Rem => OP_BIGINT_REM,
             });
             out.insert(OP_DROP);
             collect_used_ops(db, lhs, out);
@@ -3780,6 +3782,7 @@ fn emit(
                 crate::core::BigIntOp::Sub => OP_BIGINT_SUB,
                 crate::core::BigIntOp::Mul => OP_BIGINT_MUL,
                 crate::core::BigIntOp::Div => OP_BIGINT_DIV,
+                crate::core::BigIntOp::Rem => OP_BIGINT_REM,
             };
             emit_bigint_borrow_binary(db, lhs, rhs, import, high, slots, scratch_ty, layout, out)
         }

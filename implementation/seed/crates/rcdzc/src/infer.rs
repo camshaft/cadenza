@@ -2414,6 +2414,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                     | crate::resolved::Prim::Sub
                     | crate::resolved::Prim::Mul
                     | crate::resolved::Prim::Div
+                    | crate::resolved::Prim::Rem
             ) && (matches!(a, Ty::BigInt) || matches!(b, Ty::BigInt))
             {
                 return Ty::BigInt;
@@ -3755,6 +3756,10 @@ fn check_application(
             prim,
             Some(crate::resolved::Prim::Mul | crate::resolved::Prim::Div)
         );
+        // `%` (remainder) is BigInt-valid arithmetic like `/`, but it is NOT `is_multiplicative` — the
+        // quantity `*`/`/` dimensional skip above must exclude it (a `%` on a quantity has its own rules),
+        // so it rides ONLY the BigInt-skip condition below.
+        let is_rem = matches!(prim, Some(crate::resolved::Prim::Rem));
         let a0 = type_of(db, args[0]);
         let b0 = type_of(db, args[1]);
         let any_qty = matches!(a0, Ty::Qty { .. }) || matches!(b0, Ty::Qty { .. });
@@ -3774,7 +3779,7 @@ fn check_application(
         // case; `lower` routes to the runtime bigint op), descend for operand faults, and return. A
         // genuine `BigInt`/fixed MIX still faults: `agrees_with` is false, so `type_of` gave one operand
         // BigInt and the other a fixed Int — the mismatch is caught by the operand check here.
-        if (is_additive || is_multiplicative)
+        if (is_additive || is_multiplicative || is_rem)
             && (matches!(a0, Ty::BigInt) || matches!(b0, Ty::BigInt))
         {
             // A mix (one BigInt, one non-BigInt-non-Any) is the no-promotion error CDZ0301.

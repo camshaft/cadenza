@@ -312,6 +312,28 @@
   (call   main (: 40 Int64) (: 2 Int64))
   (output (: 42 Int64)))
 
+(case "runtime BigInt remainder runs on the arbitrary-precision runtime"
+  (doc    "`(Int64.of (% (BigInt.of a) (BigInt.of b)))` with runtime a,b takes the remainder on the runtime
+           limb library (the `bigint-rem` op, backed by the same `divmod` as `bigint-div`): a=17,b=5 → 2.
+           Pins that `%` — not just `/` — routes to the runtime BigInt path.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (Int64.of (% (BigInt.of a) (BigInt.of b))))
+            (export main)))
+  (call   main (: 17 Int64) (: 5 Int64))
+  (output (: 2 Int64)))
+
+(case "a runtime BigInt remainder takes the dividend's sign"
+  (doc    "`(% (BigInt.of a) (BigInt.of b))` is the remainder of TRUNCATING division, so it takes the
+           DIVIDEND's sign (the companion of `bigint-div`'s truncate-toward-zero): a=-17,b=5 → -2 (not the
+           floored +3). Matches fixed-width `%` semantics.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (Int64.of (% (BigInt.of a) (BigInt.of b))))
+            (export main)))
+  (call   main (: -17 Int64) (: 5 Int64))
+  (output (: -2 Int64)))
+
 (case "a runtime BigInt intermediate that overflows Int64 does not trap"
   (doc    "`(Int64.of (/ (* big big) big))` with `big = BigInt.of 5000000000`: the product `big*big` =
            2.5e19 OVERFLOWS Int64 (max ~9.2e18), but BigInt's representation grows rather than trapping —
