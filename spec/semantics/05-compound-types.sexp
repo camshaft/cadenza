@@ -3214,6 +3214,76 @@
   (call   main (: 7 Int64))
   (output (: 7 Int64)))
 
+(case "an erased single-variant newtype wrapping a sum matches through the inner variants"
+  (doc    "A single-variant sum is an ERASED newtype — no runtime tag, its value IS the payload. When it
+           WRAPS ANOTHER SUM (`(type W (V (Result Int64 Int64)))`) and is matched with a NESTED constructor
+           pattern (`((W.V (Result.Ok n)) …)`), the match must dispatch on the INNER Result, the erased `W`
+           tag contributing nothing. `(f (if (> k 0) (W.V (Result.Ok k)) (W.V (Result.Err 0))))` at `k = 5`
+           holds `W.V (Result.Ok 5)`, so the `Ok` arm binds `n = 5`. Pins the two-compiler agreement on an
+           erased-newtype-over-a-sum nested match: the wasm backend reads the inner discriminant directly
+           (the newtype occupies no slot), and the Rust backend erases the nominal switch step so it emits
+           `match w { Result::Ok(p) => p, Result::Err(p) => p }` — the wrapper invisible at runtime on
+           both (was a Rust-backend decline, `sum payload has no bound match arm`).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (V (Result Int64 Int64)))
+            (def (f (: w W)) (match w ((W.V (Result.Ok n)) n) ((W.V (Result.Err e)) e)))
+            (def (main (: k Int64)) (f (if (> k 0) (W.V (Result.Ok k)) (W.V (Result.Err 0)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "an erased newtype over a sum reads the inner payload, not the whole wrapper"
+  (doc    "The FOLDING companion of the erased-newtype-over-a-sum match, guarding a latent miscompile: with
+           a CONSTANT scrutinee `(W.V (Result.Ok 7))`, the match folds to the `Ok` arm and its binder `n`
+           must read the INNER Int (7), NOT the whole erased wrapper. A path-folder that treated the erased
+           newtype's every step as a nominal no-op (re-reading the unchanged node's still-nominal type)
+           consumed the inner sum's payload step too and folded `n` to the whole `Result` — a wrong value
+           that compiled. Pins that the fold peels EXACTLY ONE nominal layer per erased step, so `n` = 7 on
+           both backends (the wasm oracle and the Rust fold agree).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (V (Result Int64 Int64)))
+            (def (main) (match (W.V (Result.Ok 7)) ((W.V (Result.Ok n)) n) ((W.V (Result.Err e)) e)))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "a literal-refined recursive-sum arm folds under a statically-known discriminant"
+  (doc    "A recursive-sum match with a LITERAL-REFINED payload arm (`((L.Cons 0 t) …)`) over a scrutinee
+           whose DISCRIMINANT is statically known but whose payload is RUNTIME: `(L.Cons x (L.Nil))` — the
+           `Cons` tag is fixed, `x` is the call argument. The known-disc fold collapses the root switch to
+           the `Cons` arm's continuation, a bare literal test at the root. `(f 0)` tests `x = 0` → the
+           literal arm yields 100; `(f 7)` falls through to the binding arm `(L.Cons h t)` → `h = 7`. Pins
+           the two-compiler agreement on a NON-switch root continuation over a recursive sum: the wasm
+           backend tests the payload leaf, and the Rust backend routes the root literal test through its
+           continuation emitter (`if x == 0 { 100 } else { x }`) rather than declining a non-switch root.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type L (Nil) (Cons Int64 L))
+            (def (f (: x Int64)) (match (L.Cons x (L.Nil)) ((L.Cons 0 t) 100) ((L.Cons h t) h) ((L.Nil) -1)))
+            (export f)))
+  (call   f (: 0 Int64))
+  (output (: 100 Int64)))
+
+(case "a nested constructor match on a variant past the first dispatches on that variant's payload"
+  (doc    "A NESTED constructor pattern on a variant that is NOT the first — `(type W (A Int64) (V (Option
+           Int64)))`, matched `((W.V (Option.Some n)) …)`, where the nested-sum-carrying variant `V` sits
+           at discriminant 1. The inner match must dispatch on `V`'s payload (`Option Int64`), NOT on
+           variant 0's (`A`'s `Int64`). A backend that resolved the nested switch's subject type by reading
+           variant 0's payload unconditionally saw `Int64` where the Option was, and either declined or
+           mis-dispatched. `(f 7)` builds `W.V (Option.Some 7)` and the `Some` arm binds 7. Pins the
+           two-compiler agreement on a nested match past the first variant: the wasm backend reads the
+           entered variant's payload directly, and the Rust backend resolves the inner switch's subject to
+           the ENTERED variant's payload (was a Rust-backend decline for a disc-≥1 nested-sum variant).")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (A Int64) (V (Option Int64)))
+            (def (f (: k Int64)) (match (W.V (if (> k 0) (Option.Some k) (Option.None)))
+                                   ((W.A h) h) ((W.V (Option.Some n)) n) ((W.V (Option.None)) -2)))
+            (export f)))
+  (call   f (: 7 Int64))
+  (output (: 7 Int64)))
+
 (case "a match pattern naming a non-existent variant is a coded rejection"
   (doc    "A match arm whose constructor pattern names a variant the scrutinee's sum does NOT declare —
            `(V.Q)` on `(type V (A Int64) (B))`, where `V` has no variant `Q` — is a rejection that NAMES

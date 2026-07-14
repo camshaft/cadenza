@@ -956,6 +956,100 @@ fn a_wide_mutually_recursive_cycle_boxes_every_edge() {
 }
 
 #[test]
+fn rustc_roundtrip_erased_newtype_wrapping_a_sum_nested_match() {
+    // A single-variant sum is an ERASED newtype (no Rust enum — its value IS the payload). When it WRAPS
+    // A SUM (`(type W (V (Result …)))`) and is matched with a NESTED constructor pattern (`(W.V (Ok n))`),
+    // the decision-tree's switch/bind paths carry the newtype's `Payload` step, but `lower` erased that
+    // same step from the BODY's payload reads — so the switch dispatched one level too shallow and the
+    // arm's payload binder mismatched the body read ("sum payload has no bound match arm"). The backend
+    // now erases the nominal switch step (twin of `lower::erase_nominal_steps`), so the switch dispatches
+    // on the INNER sum directly: `match w { Result::Ok(p) => p, Result::Err(p) => p }`. `f(Ok 5)`=5,
+    // `f(Err 9)`=9 — the erased wrapper is invisible at runtime, matching the wasm oracle.
+    let rs = compile_rust(
+        "(module m (type W (V (Result Int64 Int64))) \
+           (def (f (: w W)) (match w (((. W V) (Result.Ok n)) n) (((. W V) (Result.Err e)) e))) \
+           (export f))",
+    );
+    // The erased newtype emits NO `enum W`; the match dispatches on the inner Result directly.
+    assert!(!rs.contains("enum W "), "erased newtype emits no enum:\n{rs}");
+    assert!(rs.contains("Result::Ok(__pay"), "dispatches on inner sum:\n{rs}");
+    if let Some(out) = rustc_run(&rs, "f(Ok(5))") {
+        assert_eq!(out, "5");
+    }
+    if let Some(out) = rustc_run(&rs, "f(Err(9))") {
+        assert_eq!(out, "9");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_erased_newtype_wrapping_a_sum_binder_reads_the_inner_not_the_wrapper() {
+    // REGRESSION for a latent `fold_sum_path` miscompile (shared by BOTH backends) the Rust decline had
+    // been masking: `fold_sum_path` re-read `type_of(cur)` each step to detect a nominal newtype, but for
+    // a newtype WRAPPING A SUM the erased value stays the SAME node, so its raw type read `Ty::Nominal` for
+    // EVERY step — the inner sum's `Payload` was consumed as a SECOND nominal no-op and a payload binder
+    // folded to the WHOLE wrapper (`n` in `(W.V (Ok n))` became the whole `Result`, an infinite-ish wrong
+    // value). Fixed with a PEELED type cursor (one nominal layer per erased step). Here the whole thing
+    // folds (constant scrutinee), so the answer proves the binder reads the INNER Int, not the wrapper:
+    // `(W.V (Ok 7))` matched `(W.V (Ok n))` → 7.
+    let rs = compile_rust(
+        "(module m (type W (V (Result Int64 Int64))) \
+           (def (run) (match (W.V (Result.Ok 7)) (((. W V) (Result.Ok n)) n) \
+                                                 (((. W V) (Result.Err e)) e))) (export run))",
+    );
+    if let Some(out) = rustc_run(&rs, "run()") {
+        assert_eq!(out, "7", "binder reads the inner Int, not the wrapper:\n{rs}");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_recursive_sum_literal_refined_const_disc_root() {
+    // A recursive-sum match with a LITERAL-REFINED payload arm (`(Cons 0 t)`) over a scrutinee whose
+    // DISCRIMINANT is statically known (a constant `SumNew` — `(Cons x Nil)`, `Cons` tag known, `x`
+    // runtime). `lower`'s known-disc fold collapses the root `Switch` to the `Cons` arm's continuation — a
+    // bare `LitTest` at ROOT. The backend previously declined a non-`Switch` root; it now routes `LitTest`
+    // / `Guarded` / `Leaf` roots through `emit_sum_cont` (which reads the sub-value via `emit_sum_payload`,
+    // folding against the constant scrutinee's payloads). `f(Cons 0 Nil)` hits the literal arm = 100;
+    // `f(Cons 7 Nil)` binds `h` = 7. Matches the wasm oracle — the last non-Switch-root gap.
+    let rs = compile_rust(
+        "(module m (type L (Nil) (Cons Int64 L)) \
+           (def (f (: x Int64)) (match (L.Cons x (L.Nil)) \
+                                  (((. L Cons) 0 t) 100) (((. L Cons) h t) h) (((. L Nil)) -1))) \
+           (export f))",
+    );
+    if let Some(out) = rustc_run(&rs, "f(0)") {
+        assert_eq!(out, "100");
+    }
+    if let Some(out) = rustc_run(&rs, "f(7)") {
+        assert_eq!(out, "7");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_nested_match_on_a_variant_at_disc_ge_1() {
+    // A NESTED constructor match on a variant that is NOT variant 0 — `(type W (A Int64) (V (Option
+    // Int64)))` matched `((W.V (Option.Some n)) …)`, where the nested-sum-carrying variant `V` is at
+    // discriminant 1. The backend's nested-switch subject-type walk read variant 0's payload
+    // unconditionally (`sum_disc0_payload_ty`), so the inner switch on `W.V`'s Option resolved to `A`'s
+    // `Int64` (not `Option Int64`) and declined (`sum construction node is not a sum type`). It now reads
+    // the ENTERED variant's payload (via the constant-value disc cursor), so the inner switch dispatches on
+    // the Option: `f(V(Some 7))` = 7, `f(V(None))` = -2, `f(A 3)` = 3 — matching the wasm oracle.
+    let rs = compile_rust(
+        "(module m (type W (A Int64) (V (Option Int64))) \
+           (def (f (: k Int64)) (match (W.V (if (> k 0) (Option.Some k) (Option.None))) \
+                                  ((W.A h) h) ((W.V (Option.Some n)) n) ((W.V (Option.None)) -2))) \
+           (export f))",
+    );
+    // Dispatches on the INNER Option (V's payload), not A's Int64.
+    assert!(rs.contains("Option::Some(__pay"), "inner Option switch:\n{rs}");
+    if let Some(out) = rustc_run(&rs, "f(7)") {
+        assert_eq!(out, "7");
+    }
+    if let Some(out) = rustc_run(&rs, "f(-1)") {
+        assert_eq!(out, "-2");
+    }
+}
+
+#[test]
 fn rustc_roundtrip_builtin_option_matches() {
     // unwrap-or(Some 8, _) = 8, unwrap-or(None, -1) = -1 — a match over std's Option, constructed with
     // std's `Some`/`None` in the driver, runs and matches the oracle.
@@ -1090,6 +1184,83 @@ fn main() {
     if let Some(out) = rustc_run_driver(&module, driver) {
         // sum_to(5)=15, gas was metered (>0), and the budget-3 run trapped.
         assert_eq!(out, "15 true true", "async run:\n{module}");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_async_recursive_sum_folds() {
+    // The async backend's recursion handling (`Box::pin(callee(env, …)).await`) composes with the
+    // recursive-sum representation (a boxed self-referential payload, `Cons(Box<(i64, L)>)`): a
+    // cons-list summed by a self-recursive `async fn` compiles under the real `CdzEnv`, meters gas at
+    // every step, and folds to the same value the sync/wasm backends produce. This is the one sum
+    // shape whose async execution the sync round-trips don't cover — the recursive `async fn` future
+    // must be `Box::pin`-sized AND its payload `Box`-sized, two independent boxings that must agree.
+    let module = compile_rust_async(
+        "(module m (type L (Nil) (Cons Int64 L)) \
+         (def (sm l) (match l ((L.Nil) 0) ((L.Cons h t) (+ h (sm t))))) \
+         (def (main) (sm (L.Cons 1 (L.Cons 2 (L.Cons 3 (L.Nil)))))) (export main))",
+    );
+    // A recursive `async fn` sizes its future via `Box::pin`; the recursive payload sizes via `Box`.
+    assert!(module.contains("Cons(Box<(i64, L)>)"), "boxed payload:\n{module}");
+    assert!(module.contains("Box::pin(sm(env,"), "boxed recursive call:\n{module}");
+    let driver = r#"
+struct Meter { spent: u64 }
+impl cdz_rt::CdzEnv for Meter {
+    async fn consume(&mut self, g: u64) { self.spent += g; }
+}
+fn block_on<F: core::future::Future>(mut f: F) -> F::Output {
+    use core::task::*;
+    fn n(_: *const ()) {} fn c(_: *const ()) -> RawWaker { r() }
+    fn r() -> RawWaker { RawWaker::new(core::ptr::null(), &V) }
+    static V: RawWakerVTable = RawWakerVTable::new(c, n, n, n);
+    let w = unsafe { Waker::from_raw(r()) };
+    let mut cx = Context::from_waker(&w);
+    let mut f = unsafe { core::pin::Pin::new_unchecked(&mut f) };
+    loop { if let Poll::Ready(v) = f.as_mut().poll(&mut cx) { return v; } }
+}
+fn main() {
+    let mut e = Meter { spent: 0 };
+    let v = block_on(prog::main(&mut e));
+    // sm([1,2,3]) = 6; gas was metered across the recursive descent (one charge per fn entry).
+    println!("{v} {}", e.spent > 3);
+}
+"#;
+    if let Some(out) = rustc_run_driver(&module, driver) {
+        assert_eq!(out, "6 true", "async recursive-sum run:\n{module}");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_async_mutually_recursive_sums_fold() {
+    // Async recursion + MUTUAL sum recursion: `(type A (AN B))` / `(type B (BN A))` — neither variant
+    // mentions its own decl, so the box decision must follow the A→B→A cycle (reaches_decl) to box both
+    // `AN(Box<B>)` and `BN(Box<A>)`; and the two mutually-recursive `async fn`s each `Box::pin` the
+    // other's call. Both boxings must land or rustc rejects (E0072 infinite size / unsized future).
+    let module = compile_rust_async(
+        "(module m (type A (AL Int64) (AN B)) (type B (BL Int64) (BN A)) \
+         (def (sa a) (match a ((A.AL n) n) ((A.AN b) (sb b)))) \
+         (def (sb b) (match b ((B.BL n) n) ((B.BN a) (sa a)))) \
+         (def (main) (sa (A.AN (B.BN (A.AL 9))))) (export main))",
+    );
+    assert!(module.contains("AN(Box<B>)"), "boxed A payload:\n{module}");
+    assert!(module.contains("BN(Box<A>)"), "boxed B payload:\n{module}");
+    let driver = r#"
+struct M;
+impl cdz_rt::CdzEnv for M { async fn consume(&mut self, _: u64) {} }
+fn block_on<F: core::future::Future>(mut f: F) -> F::Output {
+    use core::task::*;
+    fn n(_: *const ()) {} fn c(_: *const ()) -> RawWaker { r() }
+    fn r() -> RawWaker { RawWaker::new(core::ptr::null(), &V) }
+    static V: RawWakerVTable = RawWakerVTable::new(c, n, n, n);
+    let w = unsafe { Waker::from_raw(r()) };
+    let mut cx = Context::from_waker(&w);
+    let mut f = unsafe { core::pin::Pin::new_unchecked(&mut f) };
+    loop { if let Poll::Ready(v) = f.as_mut().poll(&mut cx) { return v; } }
+}
+fn main() { println!("{}", block_on(prog::main(&mut M))); }
+"#;
+    if let Some(out) = rustc_run_driver(&module, driver) {
+        assert_eq!(out, "9", "async mutual-recursion run:\n{module}");
     }
 }
 

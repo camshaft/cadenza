@@ -2372,18 +2372,24 @@ fn erase_nominal_steps(
 fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -> Option<Core> {
     use crate::core::PathStep;
     let mut cur = root;
+    // A TYPE cursor tracked ALONGSIDE `cur`, peeled one nominal layer per erased `Payload` step. Tracking
+    // the peeled type — rather than re-reading `type_of(cur)` each step — is essential when a newtype WRAPS
+    // A SUM (`(type W (V (Result …)))`): the newtype is erased, so `cur` stays the SAME node and its raw
+    // type reads `Ty::Nominal` for EVERY step; re-reading it consumed the inner sum's `Payload` as a SECOND
+    // nominal no-op and folded a payload binder to the WHOLE wrapper (a miscompile — `n` in `(W.V (Ok n))`
+    // became the whole `Result`). The peeled cursor fires the nominal skip exactly once per layer, so the
+    // inner sum's `Payload` then descends the sum (constant) or correctly declines the fold (runtime).
+    let mut ty = crate::infer::type_of(db, root);
     for step in steps {
         // A `Payload` step over a NOMINAL NEWTYPE sub-value is a no-op: the box is erased, so the newtype
-        // construction lowered its payload core DIRECTLY at `cur` (no `Core::SumNew` to descend). The
-        // underlying value IS `cur` — leave it unchanged and continue (a following `Elem` reads a
-        // multi-payload newtype's tuple). Detected by the sub-value's TYPE being `Ty::Nominal`.
-        if matches!(step, PathStep::Payload)
-            && matches!(
-                crate::infer::type_of(db, cur),
-                crate::ty::Ty::Nominal { .. }
-            )
-        {
-            continue;
+        // construction lowered its payload core DIRECTLY at `cur` (no `Core::SumNew` to descend). PEEL one
+        // nominal layer off the type cursor and leave `cur` unchanged (a following `Payload` reads a wrapped
+        // sum, a following `Elem` reads a multi-payload newtype's tuple).
+        if matches!(step, PathStep::Payload) {
+            if let crate::ty::Ty::Nominal { inner, .. } = &ty {
+                ty = (**inner).clone();
+                continue;
+            }
         }
         cur = match (step, core_of(db, cur)) {
             (PathStep::Payload, Core::SumNew { payloads, .. }) if payloads.len() == 1 => {
@@ -2401,6 +2407,9 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
             }
             _ => return None,
         };
+        // Re-sync the type cursor to the descended node (its own type — a nested newtype's inner peels on
+        // the next `Payload`, a tuple element's type drives a following step).
+        ty = crate::infer::type_of(db, cur);
     }
     Some(core_of(db, cur))
 }
