@@ -19263,11 +19263,14 @@ mod match_engine {
         // A garbage type in a variant PAYLOAD — `(type C (A Nonesuch))` — was silently accepted (the
         // unknown name resolved to nothing and `A` was mis-typed as NULLARY, its payload dropped). Now the
         // declaration-site check rejects it CDZ0101, the same as an unknown type in a param/value
-        // annotation. Nested in a `(List …)`/`(Tuple …)` too.
+        // annotation. Nested in a `(List …)`/`(Tuple …)`, INSIDE a record field, and a record nested in a
+        // tuple are all caught (the record-aware position walk validates each field's type).
         for src in [
             "(module m (type C (A Nonesuch)) (def (main) 0) (export main))",
             "(module m (type C (A (List Nonesuch))) (def (main) 0) (export main))",
             "(module m (type P (Node (Tuple a Nonesuch)) (Leaf)) (def (main) 0) (export main))",
+            "(module m (type Box (B (Record (val Nonesuch))) N) (def (main) 0) (export main))",
+            "(module m (type P (Node (Tuple Int64 (Record (v Nonesuch)))) (Leaf)) (def (main) 0) (export main))",
         ] {
             let err = compile_component(&crate::codec::encode(&parse(src)))
                 .expect_err("an unknown type in a variant payload must be rejected");
@@ -19286,15 +19289,18 @@ mod match_engine {
         assert_eq!(lit.code.as_deref(), Some("CDZ0203"), "got: {}", lit.message);
 
         // NO false positive on the valid parametric / recursive / known payloads — these MUST compile:
-        // a bare type param, a param nested in a tuple, self-recursion, mutual/forward refs, generic self,
-        // a known concrete type, and (conservatively skipped) a record payload mentioning a param.
+        // a bare type param, a param nested in a tuple, a param-parameterized application `(Option a)`,
+        // self-recursion, mutual/forward refs, generic self, a known concrete type, and a record payload
+        // mentioning a param (bare AND inside an application).
         for ok in [
             "(module m (type Opt (Some a) (Non)) (def (main) 0) (export main))",
             "(module m (type P (Node (Tuple a a)) (Leaf)) (def (main) 0) (export main))",
+            "(module m (type C (A (Option a)) (N)) (def (main) 0) (export main))",
             "(module m (type T (Nil) (Cons Int64 T)) (def (main) 0) (export main))",
             "(module m (type A (MkA B)) (type B (MkB A)) (def (main) 0) (export main))",
             "(module m (type Tree (Leaf a) (Node (Tuple Tree Tree))) (def (main) 0) (export main))",
             "(module m (type C (A Int64)) (def (main) 0) (export main))",
+            "(module m (type Box (B (Record (v (Option a)))) N) (def (main) 0) (export main))",
             "(module m (type Box (B (Record (val a))) N) \
                (def (main) (match (Box.B (record (val 7))) ((Box.B r) (. r val)) (Box.N 0))) (export main))",
         ] {
