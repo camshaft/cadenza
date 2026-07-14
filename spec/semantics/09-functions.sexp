@@ -3207,6 +3207,27 @@
             (export main)))
   (error  CDZ0201))
 
+; The `@` sigil is GENERAL (`@name form` — "future annotations `@deprecated`, `@test` layer in with no new
+; lexer/parser/resolver rules"). An annotation name the compiler does NOT model is TRANSPARENT: the strip
+; pass unwraps `(@ <name> (def …))` to the def just as it does a known one, recording nothing — so the def
+; takes effect, the unmodeled name is simply ignored. (Previously an unmodeled `(@ …)` node survived to
+; resolve, where the head `@` is no declaration → the wrapped def was DROPPED with a misleading "unbound
+; name `@`" plus a phantom unbound-name for the def.) A future annotation gains meaning by joining the
+; compiler's known set; until then it is an inert marker that never breaks the def it annotates.
+
+(case "an unrecognized annotation leaves its wrapped definition in effect"
+  (doc    "`(@ deprecated (def (f) 5))` — the `@name` annotation sigil with a name OTHER than the modeled
+           inline policies / test marker. The def must still register and `main` → 5: an unmodeled
+           annotation is transparent (unwrapped to the def, its name ignored), not a rejection. This holds
+           for ANY unknown name (`@deprecated`, `@lint`, …) and for a def USED by another def; the modeled
+           `@inline-never`/`@inline-always` retain their emission policy. A generation that unwraps an
+           unknown annotation runs `f` (→ 5) rather than dropping it with 'unbound name @'.")
+  (input  (do
+            (@ deprecated (def (f) 5))
+            (def (main) (f))
+            (export main)))
+  (output (: 5 Int64)))
+
 ; COST HEURISTIC (Addendum 4). The UNANNOTATED default is always-inline, but a LARGE, MULTIPLY-CALLED def
 ; whose call has a runtime-dependent argument is emitted ONCE and called instead of duplicated at each site.
 ; This is an EMISSION-STRATEGY choice — it does NOT change semantics — so it is observable only via the

@@ -3377,10 +3377,11 @@ fn strip_const_params(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId> {
     const_params
 }
 
-/// The three known annotation NAMES `strip_annotations` consumes off a `(@ NAME (def …))` wrapper —
-/// the inline-policy pair and the unit-test marker. A `@`-annotation whose name is NOT one of these is
-/// left in place (a later pass or a reject handles it), so this pool is the single source of truth for
-/// "which annotations the compiler models today".
+/// The three known annotation NAMES `strip_annotations` records into a policy set off a `(@ NAME (def …))`
+/// wrapper — the inline-policy pair and the unit-test marker — the single source of truth for "which
+/// annotations carry compiler SEMANTICS today". An annotation whose name is NOT one of these is still
+/// UNWRAPPED (the def takes effect) but recorded nowhere: a transparent, inert marker. So a future
+/// `@deprecated`/`@lint`/… works as a no-op the day it is written and gains meaning by joining this list.
 pub(crate) const KNOWN_ANNOTATIONS: &[&str] = &["inline-never", "inline-always", "test"];
 /// The strippable annotations a definition carries, each a set of the annotated defs' BODY occurrences.
 pub(crate) struct StrippedAnnotations {
@@ -3392,23 +3393,26 @@ pub(crate) struct StrippedAnnotations {
     pub(crate) tests: crate::fxhash::FxHashSet<StructId>,
 }
 
-/// Unwrap every known `@`-ANNOTATION on a definition — `(@ inline-never (def …))`, `(@ inline-always
-/// (def …))`, `(@ test (def …))` — in place, returning the sets of the annotated defs' BODY occurrences
+/// Unwrap EVERY `@`-ANNOTATION on a definition — `(@ inline-never (def …))`, `(@ inline-always (def …))`,
+/// `(@ test (def …))`, and any `(@ <other-name> (def …))` — in place, returning the sets of the
+/// annotated defs' BODY occurrences for the names in [`KNOWN_ANNOTATIONS`]
 /// (`DESIGN-recursive-generic-monomorphization-rcdzc.md` Addendum 4). `@` is the GENERAL-PURPOSE
-/// annotation head (`(@ NAME FORM)`, from the ML `@name form` sigil); this pass consumes the names in
-/// [`KNOWN_ANNOTATIONS`] and leaves any other annotation for a later pass / reject. An annotation is a
-/// declaration a build phase consumes (the emitter's inline policy, the `cdz test` hoist) — not part of
-/// the def shape every reader walks — so it is removed here BEFORE `scan_top_level`, exactly as
-/// `strip_def_docs`/`strip_const_params` remove their wrappers, leaving every downstream reader a plain
-/// `(def …)`.
+/// annotation head (`(@ NAME FORM)`, from the ML `@name form` sigil); a KNOWN name records its def into a
+/// policy set, an UNKNOWN name is unwrapped just the same but recorded nowhere (a transparent no-op marker,
+/// so a future `@deprecated`/… works the day it is written). An annotation is a declaration a build phase
+/// consumes (the emitter's inline policy, the `cdz test` hoist) — not part of the def shape every reader
+/// walks — so it is removed here BEFORE `scan_top_level`, exactly as `strip_def_docs`/`strip_const_params`
+/// remove their wrappers, leaving every downstream reader a plain `(def …)`.
 ///
 /// The annotation NODE is rewritten IN PLACE to BE the inner `(def SIG BODY)` (it adopts the def's
 /// children), so its `StructId` now identifies the def and every parent that already pointed at the
 /// annotation needs no update — the inner def node is left orphaned (harmless; unreferenced). The
 /// recorded key is the def's BODY occurrence (`def` tail index 1 = child index 2), the identity
-/// `lower`/`layout` key on (`def_index_by_body`). An annotation around a NON-def (or a malformed def), or
-/// one whose name is not known, is left untouched. A SINGLE annotation per def is the modeled case (as
-/// with the original inline-policy pass); stacking two known annotations on one def is not relied on here.
+/// `lower`/`layout` key on (`def_index_by_body`). An UNKNOWN annotation name (or a non-name head) whose
+/// inner IS a def is STILL unwrapped — recorded in no policy set, a transparent no-op — so the def takes
+/// effect; only its (unmodeled) name is ignored. An annotation around a NON-def (or a malformed def) is
+/// left untouched (a well-formedness concern elsewhere). A SINGLE annotation per def is the modeled case
+/// (as with the original inline-policy pass); stacking two known annotations on one def is not relied on.
 fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
     let mut inline_never: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
     let mut inline_always: crate::fxhash::FxHashSet<StructId> = crate::fxhash::FxHashSet::default();
@@ -3423,10 +3427,16 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
         let (Some(&name_occ), Some(&inner)) = (tail.first(), tail.get(1)) else {
             continue;
         };
-        let name = match ast.as_name(name_occ) {
-            Some(n) if KNOWN_ANNOTATIONS.contains(&n) => n.to_string(),
-            _ => continue,
-        };
+        // The annotation NAME, if it is a bare name at all. A KNOWN name (in `KNOWN_ANNOTATIONS`) records
+        // its def into a policy set below; an UNKNOWN name is TRANSPARENT — the wrapper is still unwrapped
+        // to the inner def (so the def registers and resolves), the name simply ignored. This is the
+        // `@`-sigil's advertised extensibility (`7221f7bc`: "future annotations `@deprecated`, `@test` layer
+        // in with no new lexer/parser/resolver rules" / "leaves other annotations in place") — "in place"
+        // means the annotated FORM still takes effect, NOT that the `(@ …)` node survives to resolve (where
+        // `@` has no declaration arm → the whole def would be DROPPED with a misleading "unbound name `@`"
+        // plus a phantom unbound-name for the def it wrapped). A future annotation that needs real semantics
+        // adds its name to `KNOWN_ANNOTATIONS` + a set here; until then it is an inert, unwrapped marker.
+        let name = ast.as_name(name_occ).map(str::to_string);
         // The inner must be a `(def SIG BODY …)` — read its children to adopt them + find the BODY occ.
         let Some(def_tail) = ast.as_form(inner, "def") else {
             continue; // an annotation around a non-def — leave untouched (a well-formedness concern elsewhere)
@@ -3440,17 +3450,29 @@ fn strip_annotations(ast: &mut Arenas) -> StrippedAnnotations {
             continue;
         };
         ast.structure[i] = Struct::List(inner_children);
-        match name.as_str() {
-            "inline-never" => {
+        // The match arms below record exactly the SEMANTIC annotations; `KNOWN_ANNOTATIONS` is the
+        // published catalog of those names. Assert the two agree, so adding a name to one without the other
+        // trips in debug (a known name that falls to the transparent `_ => {}` would silently lose its
+        // policy). An unknown name is intentionally not in the catalog → the `_` arm's inert unwrap.
+        debug_assert!(
+            name.as_deref()
+                .is_none_or(|n| KNOWN_ANNOTATIONS.contains(&n)
+                    == matches!(n, "inline-never" | "inline-always" | "test")),
+            "KNOWN_ANNOTATIONS and the strip_annotations match arms disagree on `{name:?}`"
+        );
+        match name.as_deref() {
+            Some("inline-never") => {
                 inline_never.insert(body);
             }
-            "inline-always" => {
+            Some("inline-always") => {
                 inline_always.insert(body);
             }
-            "test" => {
+            Some("test") => {
                 tests.insert(body);
             }
-            _ => unreachable!("filtered to KNOWN_ANNOTATIONS above"),
+            // An unknown annotation name (or a non-name annotation head): unwrapped above, recorded in no
+            // policy set — a transparent no-op marker so the wrapped def still takes effect.
+            _ => {}
         }
     }
     StrippedAnnotations {
