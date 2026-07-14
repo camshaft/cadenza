@@ -1218,8 +1218,32 @@ fn call_site_distinct_arg_types(db: &mut Db, def: usize, own_body: StructId) -> 
     for args in &call_args {
         for (i, &arg) in args.iter().enumerate() {
             let t = type_of(db, arg);
-            if !matches!(t, Ty::Any | Ty::Var(_)) && !out[i].contains(&t) {
-                out[i].push(t);
+            if !matches!(t, Ty::Any | Ty::Var(_)) {
+                if !out[i].contains(&t) {
+                    out[i].push(t);
+                }
+                continue;
+            }
+            // TRANSITIVE genericity: the argument itself typed as a `Var`/`Any` — but if it is ANOTHER
+            // def's parameter (`(wrap m y)` calling `(idr 2 y)` — `idr`'s x is fed `wrap`'s `y`), that
+            // caller-param's OWN distinct-type spread flows through. So `idr.x` inherits `wrap.y`'s
+            // `{Int64, String}` and is detected generic, even though `idr` has only ONE syntactic call
+            // site. Guarded by `seed_transitive` against a cycle (a mutually-recursive generic pair).
+            if let Some((d, j)) = arg_is_other_def_param(db, arg)
+                && !db.seed_transitive.contains(&d)
+                && db.defs[d].body.is_some()
+            {
+                db.seed_transitive.insert(d);
+                let d_body = db.defs[d].body.unwrap();
+                let d_spread = call_site_distinct_arg_types(db, d, d_body);
+                db.seed_transitive.remove(&d);
+                if let Some(tys) = d_spread.get(j) {
+                    for ty in tys {
+                        if !out[i].contains(ty) {
+                            out[i].push(ty.clone());
+                        }
+                    }
+                }
             }
         }
     }
@@ -2769,17 +2793,47 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
 /// the instantiated return type after substitution. Used to type a RECURSIVE call by its callee's
 /// signature (which β-reduction can't type). Mirrors the operator-scheme application in `apply_type`.
 fn apply_scheme_to_args(db: &mut Db, scheme: &Scheme, args: &[StructId]) -> Ty {
+    // Type each argument up front so a GENERIC scheme can seed its instantiation counter PAST every
+    // variable the args carry (below). A MONOMORPHIC scheme (no `ty_vars`) is unaffected by this.
+    let arg_tys: Vec<Ty> = args.iter().map(|&a| type_of(db, a)).collect();
+
+    // For a GENERIC scheme (recursive-generic monomorphization), the connection between the callee's
+    // result variable and its parameter variable MUST survive so a caller that THREADS its own generic
+    // param through this call (`(def (wrap m y) … (idr 2 y))` — `wrap`'s result is `idr`'s result is
+    // `y`'s type) gets a result type equal to that param var, not a disconnected fresh one. The old path
+    // `freshen_free`s each arg to dodge an occurs-check collision between the arg's from-0 vars and the
+    // scheme's from-0 instantiation — but freshening a bare param-var arg is exactly what SEVERS the
+    // connection (a three-level generic chain then decoupled result from param → "looped function result
+    // has no machine rep"). Instead, seed the scheme's instantiation counter ABOVE every ty-var the args
+    // mention, so the scheme's fresh vars cannot collide with an arg's var and NO freshening is needed —
+    // the arg's canonical param var flows through the unify untouched. A generic def scheme has EMPTY
+    // width/sign var lists (`compute_def_scheme`), so only ty-vars can collide, and `collect_free_vars`
+    // finds them. A MONOMORPHIC scheme keeps the exact old freshen path (byte-identical).
+    let generic = !scheme.ty_vars.is_empty();
     let mut fresh = Fresh::new();
+    if generic {
+        let mut arg_vars = Vec::new();
+        for t in &arg_tys {
+            t.collect_free_vars(&mut arg_vars);
+        }
+        if let Some(&max) = arg_vars.iter().max() {
+            fresh.reserve(max + 1); // instantiate above every arg var → no collision without freshening
+        }
+    }
     let mut cur = crate::unify::instantiate(scheme, &mut fresh);
     let mut subst = Subst::new();
-    for &arg in args {
+    for at_raw in arg_tys {
         let applied = subst.apply(&cur);
         match applied {
             Ty::Fn(param, result) => {
-                // Freshen the arg's free variables past the scheme's instantiation before unifying (see
-                // `apply_type`): an under-constrained arg types with its own from-0 `Fresh` and would
-                // otherwise alias this scheme's variables into a spurious occurs-check cycle.
-                let at = crate::unify::freshen_free(&type_of(db, arg), &mut fresh);
+                // A MONOMORPHIC scheme freshens the arg (dodges the from-0 occurs-check collision, see
+                // `apply_type`); a GENERIC scheme skips it (the seeded counter already avoids collision)
+                // so a threaded param var stays connected to the callee's result var.
+                let at = if generic {
+                    at_raw
+                } else {
+                    crate::unify::freshen_free(&at_raw, &mut fresh)
+                };
                 let _ = crate::unify::unify(&mut subst, &param, &at);
                 cur = *result;
             }

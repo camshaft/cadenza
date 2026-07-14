@@ -23570,6 +23570,41 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_generic_threading_another_generic_is_transitively_generic() {
+        // 09-functions "a recursive generic function threading another generic is itself generic at two
+        // types": `wrap` threads its generic `y` into a SECOND generic recursive `idr`, so `wrap`'s
+        // result is `idr`'s result is `y`'s type — genericity propagates through the call graph.
+        // `call_site_distinct_arg_types` follows a Var-typed arg that is another def's param
+        // (`arg_is_other_def_param`) to inherit that param's type spread, so `idr` is detected generic
+        // despite a single call site; and `apply_scheme_to_args` seeds the instantiation counter past the
+        // arg vars (skipping the freshen) so `wrap`'s result var stays CONNECTED to its param var — a
+        // three-level chain then keeps `(-> Int64 (-> ?a ?a))` rather than decoupling to `(-> Int64 (-> ?a
+        // ?b))` ("looped function result has no machine rep"). Called at Bool then Int64 → four
+        // specializations. `(wrap 1 true)` = true → `(wrap 2 40)` = 40.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (def (idr (: n Int64) x) (if (= n 0) x (idr (- n 1) x))) \
+               (def (wrap (: m Int64) y) (if (= m 0) (idr 2 y) (wrap (- m 1) y))) \
+               (def (main) (if (wrap 1 true) (wrap 2 40) 99)) (export main))",
+        )))
+        .expect("a recursive generic threading another generic is transitively generic");
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
+        // A THREE-level chain (top→mid→idr) — genericity must propagate two hops, and the param↔result
+        // connection must survive at every level. Bool then Int64. `(top 1 true)` = true → `(top 2 40)` = 40.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (def (idr (: n Int64) x) (if (= n 0) x (idr (- n 1) x))) \
+               (def (mid (: m Int64) y) (if (= m 0) (idr 1 y) (mid (- m 1) y))) \
+               (def (top (: k Int64) z) (if (= k 0) (mid 1 z) (top (- k 1) z))) \
+               (def (main) (if (top 1 true) (top 2 40) 99)) (export main))",
+        )))
+        .expect(
+            "a three-level generic chain propagates genericity and keeps param=result connected",
+        );
+        assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
+    }
+
+    #[test]
     fn a_top_level_value_definition_binds_a_name() {
         // 11-modules "a top-level value definition binds a name usable by the program's functions": a
         // bare-name `(def NAME VALUE)` at the top level (signature is a NAME atom, not a `(sig param…)`

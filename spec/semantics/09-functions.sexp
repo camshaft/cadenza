@@ -2826,3 +2826,25 @@
             (def (main) (+ (loopn 3 40) (loopn 2 2)))
             (export main)))
   (output (: 42 Int64)))
+
+; TRANSITIVE recursive-generic monomorphization — a generic recursive function that CALLS another
+; generic recursive function, threading its own generic parameter, is itself generic (its result type is
+; the callee's, which is the threaded param's). Genericity propagates through the call graph: the inner
+; `idr` is called at only ONE syntactic site (`(idr 2 y)`), yet is generic because `wrap` feeds it a
+; generic value, and `wrap`'s result stays connected to its parameter so `wrap` too is generic. Both are
+; then monomorphized per concrete type at the OUTERMOST call sites.
+
+(case "a recursive generic function threading another generic is itself generic at two types"
+  (doc    "`wrap` recurses on `m`, threading `y` UNCHANGED, and at its base calls a SECOND generic
+           recursive function `idr` (also threading its arg). `wrap`'s result is `idr`'s result is
+           `y`'s type — so `wrap` is generic in `y`, even though `idr` has a single call site. Called at
+           Bool (`(wrap 1 true)`) and Int64 (`(wrap 2 40)`), BOTH `wrap` and `idr` are monomorphized at
+           each type (four specialized functions). Before transitive genericity, `idr`'s param pinned to
+           the first type and the second use was rejected CDZ0203. `(wrap 1 true)` is true → `(wrap 2 40)`
+           = 40.")
+  (input  (do
+            (def (idr (: n Int64) x) (if (= n 0) x (idr (- n 1) x)))
+            (def (wrap (: m Int64) y) (if (= m 0) (idr 2 y) (wrap (- m 1) y)))
+            (def (main) (if (wrap 1 true) (wrap 2 40) 99))
+            (export main)))
+  (output (: 40 Int64)))
