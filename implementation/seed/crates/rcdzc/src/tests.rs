@@ -3586,6 +3586,30 @@ fn an_if_false_true_negation_runs_as_not_the_condition() {
     ));
 }
 
+/// A recursive effectful walk whose self-call is `let`-BOUND and whose perform runs AFTER it (in the
+/// `let` body) observes the recursion's OUT-state — the single-return specialization threads only the
+/// INCOMING state, so it CANNOT fold this. It must DECLINE CLEANLY (a "not yet compiled" todo), NOT leak
+/// the internal `walk#eff2$s0` state-param name in a confusing CDZ0101. The operand-scan guard missed the
+/// `let`-bound shape (the self-call is buried in the init, the body's `(+ rest (Ctr.tick))` has only a
+/// `Ref` + a perform as operands); the `let`-sequencing arm of `selfcall_precedes_perform_in_operands`
+/// catches it. The direct-operand `(+ (walk …) (Ctr.tick))` form folds (accumulator-introduction rewrites
+/// it to tail form first) — this is specifically the leaked-internal-name check≡compile gap.
+#[test]
+fn a_let_bound_selfcall_then_perform_declines_cleanly_without_leaking_an_internal_name() {
+    use crate::testkit::parse;
+    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
+               (def (walk (: n Int64)) (if (= n 0) 0 (let ((rest (walk (- n 1)))) (+ rest (Ctr.tick))))) \
+               (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src)))
+        .expect_err("the out-state-observing let-bound post-order shape must decline");
+    // The decline must NOT leak an internal specialization name (`walk#eff…$s…`) — that was the bug.
+    assert!(
+        !err.message.contains("#eff") && !err.message.contains("$s"),
+        "the decline must not leak an internal state-param name, got: {}",
+        err.message
+    );
+}
+
 /// An exported parameter with NO annotation is ambiguous — its machine width is unfixed, so the
 /// compiler DECLINES asking for an annotation rather than inventing a width.
 #[test]
@@ -12168,17 +12192,42 @@ mod match_engine {
 
     #[test]
     fn a_multi_payload_pattern_of_wrong_arity_is_rejected() {
-        // A payload-arity mismatch — `(Mk a b c)` against a 2-payload `Mk` — names a nonexistent third
-        // element; it must REJECT (CDZ0201), never bind `c` past the payload tuple (a wrong value / invalid
+        // A constructor-arity mismatch — `(Mk a b c)` against a 2-field `Mk` — names a nonexistent third
+        // element; it must REJECT (CDZ0201), never bind `c` past the field tuple (a wrong value / invalid
         // wasm). The correct-arity sibling compiles; only the over-arity pattern faults.
+        let over = reject_full(
+            "(module m (type Pair (Mk Int64 Int64)) \
+               (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a b c) (+ a b)))) (export main))",
+        )
+        .expect("an over-arity multi-payload pattern is a malformed destructure");
         assert_eq!(
-            reject_code(
-                "(module m (type Pair (Mk Int64 Int64)) \
-                   (def (main (: n Int64)) (match (Pair.Mk n n) ((Pair.Mk a b c) (+ a b)))) (export main))"
-            )
-            .as_deref(),
+            over.code.as_deref(),
             Some("CDZ0201"),
-            "an over-arity multi-payload pattern is a malformed destructure"
+            "got: {}",
+            over.message
+        );
+        // The message NAMES the constructor + counts ELEMENTS/fields — not the internal "payload(s)" /
+        // "newtype" / "variant carries" terms it leaked before (the constructor twin of the tuple-pattern
+        // shape message).
+        assert!(
+            over.message
+                .contains("this pattern binds 3 elements for `Mk`, but `Mk` carries 2 fields")
+                && !over.message.contains("payload"),
+            "names the ctor + counts fields, no internal 'payload' term: {}",
+            over.message
+        );
+        // The single-value-carrier variant matched with several binders points at the one-sub-pattern form.
+        let single = reject_full(
+            "(module m (type P (Mk Int64) (Other)) \
+               (def (f (: p P)) (match p ((Mk x y) x) ((Other) 0))) (export f))",
+        )
+        .expect("a multi-binder pattern on a single-value ctor rejects");
+        assert!(
+            single.message.contains(
+                "`Mk` carries a single value of type Int64 — bind it with one sub-pattern `(Mk x)`"
+            ),
+            "a single-value ctor points at the one-sub-pattern form: {}",
+            single.message
         );
     }
 
@@ -16858,6 +16907,25 @@ mod match_engine {
                 "main"
             ),
             3
+        );
+    }
+
+    #[test]
+    fn a_mixed_list_anchors_at_the_outlier_element_not_the_whole_list() {
+        // The homogeneity reject anchors at the OUTLIER element (the one that broke homogeneity against the
+        // established first-element type), not the enclosing `(list …)` — so the editor squiggle lands on
+        // exactly the off element in a long list, not the whole literal. `"three"` is the String among
+        // Int64s; its reported node must be that STRING ATOM, not the list.
+        let src = "(module m (def (main) ((. List len) (list 1 2 \"three\" 4 5))) (export main))";
+        let d = reject_full(src).expect("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+        let node = d.node.expect("the reject carries an anchor node");
+        let db = crate::db::Db::load(parse(src));
+        // The anchor is the string literal `"three"`, not the `(list …)` form.
+        assert_eq!(
+            db.ast.as_str(crate::ast::StructId(node)),
+            Some("three"),
+            "the mismatch anchors at the outlier element `\"three\"`, not the whole list"
         );
     }
 
@@ -25392,6 +25460,54 @@ mod match_engine {
                 cdz_run::Outcome::Trap(t) => panic!("tuple-payload destructure trapped: {t}"),
             }
         }
+    }
+
+    #[test]
+    fn a_map_pattern_nested_in_a_tuple_binds_its_value_binder() {
+        // 05-compound-types "a map pattern nested in a tuple binds its value binder". A `(map (k v) …)`
+        // key-directed pattern NESTED inside a tuple pattern binds its value at the map's sub-path of the
+        // scrutinee (a `MapField` at path `[Elem(0)]`), gated by a `MapHasKeys` presence test. It once
+        // dropped its binder ('unbound name `a`') — the nested-binder walk handled tuple/list sub-patterns
+        // but had no map arm. Constant scrutinee (folds): `(tuple (map (1 100)) 5)` binds a=100, k=5 → 105.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m \
+                       (def (f (: t (Tuple (Map Int64 Int64) Int64))) \
+                          (match t ((tuple (map (1 a)) k) (+ a k)) (_ (- 0 1)))) \
+                       (def (main) (f (tuple (map (1 100)) 5))) (export main))"
+                ),
+                "main"
+            ),
+            105
+        );
+        // Two nested maps in one tuple, each binding its own value — a=100, b=5 → 105.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m \
+                       (def (f (: t (Tuple (Map Int64 Int64) (Map Int64 Int64)))) \
+                          (match t ((tuple (map (1 a)) (map (2 b))) (+ a b)) (_ (- 0 1)))) \
+                       (def (main) (f (tuple (map (1 100)) (map (2 5))))) (export main))"
+                ),
+                "main"
+            ),
+            105
+        );
+        // SOUNDNESS: a nested map whose named key is ABSENT makes the arm fall through (MapHasKeys gate),
+        // not spuriously match — key 7 is not in `(map (1 100))`, so the catch-all yields -1.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m \
+                       (def (f (: t (Tuple (Map Int64 Int64) Int64))) \
+                          (match t ((tuple (map (7 a)) k) (+ a k)) (_ (- 0 1)))) \
+                       (def (main) (f (tuple (map (1 100)) 5))) (export main))"
+                ),
+                "main"
+            ),
+            -1
+        );
     }
 
     #[test]
@@ -38322,6 +38438,62 @@ mod stage1 {
              {walked} fields (expected 0 < n ≤ {}); the O(P²) re-walk was ~{}",
             (p as u64) * 8,
             (p as u64) * (p as u64)
+        );
+    }
+
+    #[test]
+    fn a_deeply_nested_collection_type_annotation_reduces_without_a_node_blowup() {
+        // REGRESSION (perf): `eval::typeval_of`'s type-constructor arm reduced a COLLECTION type ctor
+        // (`List`/`Set`/`Map`) via `reduce_ctor`, which builds the `Ty` and then `encode_typeval`s it BACK
+        // into fresh AST nodes — an arena round-trip. For a deeply-nested annotation `(List (List … Int64))`
+        // that re-serialized the WHOLE built `Ty` at EVERY nesting level → O(depth²) appended nodes, and the
+        // reduction re-ran per referencing occurrence, so `cdz check` on a depth-N annotation was ~O(N³)
+        // (depth 100/200/400/800 = 35/169/1091/8203ms, ~cubic). The generic-SUM ctor path already avoided
+        // this (`reduce_sum_ctor` returns the `Ty` directly); the collection ctors did not. FIX: build the
+        // `Ty::List`/`Set`/`Map` DIRECTLY from the reduced argument types in `typeval_of`, no
+        // `encode_typeval` round-trip — so the arena stays O(depth), not O(depth²).
+        //
+        // The NOISE-FREE signal is the loaded arena's NODE COUNT (`db.ast.structure.len()`): a pure function
+        // of the program, so no timing. A depth-D annotation should leave the arena O(D) (the prelude is a
+        // constant baseline); the round-trip made it O(D²). Measure the GROWTH from D to 2D and assert it is
+        // sub-quadratic — linear node growth is ~2×, the O(D²) blowup was ~4×+.
+        fn nested_list_src(depth: usize) -> String {
+            let mut ty = String::from("Int64");
+            for _ in 0..depth {
+                ty = format!("(List {ty})");
+            }
+            format!("(module m (def (f (: x {ty})) x) (def (main) 0) (export main))")
+        }
+        // A small instance compiles clean (a valid nested collection annotation, no error diagnostics).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&nested_list_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a nested collection-type annotation compiles with no error diagnostics: {diags:?}"
+        );
+        // Node count AFTER a full `diagnostics` run (which forces the annotation's `typeval_of` reduction).
+        fn nodes_after_check(src: &str) -> usize {
+            crate::host::run_with_compiler_stack(|| {
+                let mut db = crate::db::Db::load(parse(src));
+                let _ = crate::diagnostics(&mut db);
+                db.ast.structure.len()
+            })
+        }
+        // Subtract the constant baseline (prelude + fixed scaffolding) measured at a shallow depth, so the
+        // ratio reflects the DEPTH-DEPENDENT growth, not the fixed prelude that dominates a small program.
+        let base = nodes_after_check(&nested_list_src(50)) as f64;
+        let n200 = nodes_after_check(&nested_list_src(200)) as f64 - base;
+        let n400 = nodes_after_check(&nested_list_src(400)) as f64 - base;
+        // Depth 200→400 is a 2× depth; linear node growth ⇒ ~2×, the O(depth²) round-trip was ~4×. Guard
+        // the denominator, and require < 3× (between the two regimes, with margin for constant terms).
+        let ratio = n400 / n200.max(1.0);
+        assert!(
+            ratio < 3.0,
+            "a deeply-nested collection-type annotation must leave the arena O(depth), not O(depth²) (was a \
+             `reduce_ctor`→`encode_typeval` round-trip per nesting level; the direct `Ty` build in \
+             `typeval_of` fixes it): depth 200→400 grew the node count {ratio:.1}× (n200={n200}, \
+             n400={n400}); linear is ~2×, the O(depth²) blowup was ~4×"
         );
     }
 

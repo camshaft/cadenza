@@ -1082,6 +1082,12 @@ pub enum Resolved {
     /// of `SumPayload`/`BinField`.
     MapField {
         scrutinee: StructId,
+        /// The access PATH from `scrutinee` down to the matched MAP — EMPTY when the map pattern is the
+        /// direct match scrutinee (`(match m ((map (k v)) …))`), or `Elem`/`Payload` steps when the map is
+        /// NESTED inside a tuple/record/variant pattern (`(match t ((tuple (map (k v)) …) …))` — the map is
+        /// at `Elem(0)` of the tuple scrutinee). Walked to reach the nested `Ty::Map`/`Core::MapNew` before
+        /// the value/rest read, exactly as `SumPayload.steps` reaches a nested payload.
+        path: std::rc::Rc<[crate::core::PathStep]>,
         /// `Some(key)`: a VALUE binder at `key`. `None`: the REST binder (scrutinee minus `named`).
         key: Option<StructId>,
         /// The keys the pattern NAMES — removed to form the rest map. Empty for a value binder.

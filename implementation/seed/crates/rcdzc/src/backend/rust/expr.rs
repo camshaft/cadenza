@@ -1196,6 +1196,13 @@ fn emit_match_impl(
                     "a runtime list-pattern match is not yet emitted",
                 ));
             }
+            // A `MapHasKeys` probe only ever FOLDS (a constant map sub-value); a runtime map declines at
+            // `build_lit_test`, so it never reaches a runtime match emit.
+            crate::core::Probe::MapHasKeys { .. } => {
+                return Err(crate::diag::Reject::decline(
+                    "a runtime map-pattern match is not yet emitted",
+                ));
+            }
             crate::core::Probe::Wild => "_".to_string(),
         };
         let guard = match arm.guard {
@@ -1599,6 +1606,7 @@ fn emit_sum_cont(
                 crate::core::Probe::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
                 crate::core::Probe::Str(_)
                 | crate::core::Probe::ListLen { .. }
+                | crate::core::Probe::MapHasKeys { .. }
                 | crate::core::Probe::Wild => {
                     return Err(Reject::decline(
                         "a non-scalar literal-payload probe is not rendered by the Rust backend",
