@@ -969,9 +969,9 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
     // `unreachable statement` + `()`-isn't-`Display` build error. The gate observes the panic as the
     // recorded `(trap …)` outcome. (A `?N` return means the body diverges; a genuinely-polymorphic non-
     // diverging export is not producible here — the backend would have declined its unrepresentable result.)
-    let diverging = ret_ty
-        .as_deref()
-        .is_some_and(|t| t == "Any" || (t.starts_with('?') && t[1..].chars().all(|c| c.is_ascii_digit())));
+    let diverging = ret_ty.as_deref().is_some_and(|t| {
+        t == "Any" || (t.starts_with('?') && t[1..].chars().all(|c| c.is_ascii_digit()))
+    });
     let body = if diverging {
         format!("fn main() {{ {call_or_await}; }}\n")
     } else {
@@ -980,7 +980,9 @@ fn run_program_rust(tools: &Tools, program: &str, call: Option<&Call>, async_mod
             .map(|ty| cdz_render_expr(ty, &sums, &newtypes, &sum_params))
         {
             Some(render) => {
-                format!("fn main() {{ let __r = {call_or_await}; println!(\"{{}}\", {render}); }}\n")
+                format!(
+                    "fn main() {{ let __r = {call_or_await}; println!(\"{{}}\", {render}); }}\n"
+                )
             }
             // Unknown return type (no emitted signature parsed) — fall back to `{}` (a scalar).
             None => format!("fn main() {{ println!(\"{{}}\", {call_or_await}); }}\n"),
