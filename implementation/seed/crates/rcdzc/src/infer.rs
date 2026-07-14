@@ -7202,6 +7202,32 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     let mut subst = Subst::new();
                     if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
                         trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), expr_ty = %expr_ty.render_name(), "fault: annotation type mismatch (CDZ0203)");
+                        // This arm reports BOTH a genuine value annotation `(: value T)` the author wrote AND
+                        // a CALL ARGUMENT checked via the parameter's SYNTHESIZED `(: arg paramtype)` wrap
+                        // (`substituted_arg` — step (2) of the lambda-application check). For a call argument
+                        // the word "annotation" is misleading: the author wrote no annotation, they passed a
+                        // wrong-typed value to a parameter. The two are distinguishable: the synthesized wrap
+                        // is a SPANLESS (non-user) node whose `expr` is the USER-written argument, whereas a
+                        // genuine `(: value T)` is a user node (and a β-copied in-body annotation has a
+                        // non-user `expr` too — deduped against its user twin). So `id` non-user + `expr` user
+                        // ⟹ a call argument. Phrase it as "this argument is a Bool, but … expects Int64"
+                        // instead of "annotation type Int64 does not match value type Bool".
+                        let is_call_arg = !db.is_user_node(id) && db.is_user_node(expr);
+                        let mismatch_lead = |verb_tail: &str| {
+                            if is_call_arg {
+                                format!(
+                                    "this argument is {}, but a value of type {} is expected here{verb_tail}",
+                                    expr_ty.render_with_article(),
+                                    annot_ty.render_name(),
+                                )
+                            } else {
+                                format!(
+                                    "annotation type {} does not match value type {}{verb_tail}",
+                                    annot_ty.render_name(),
+                                    expr_ty.render_name(),
+                                )
+                            }
+                        };
                         // The annotation mismatch has a MECHANICAL REPAIR in several cases, each making the
                         // value type-check in ONE shot (the annotation position mirrors the argument
                         // position's coercion fixes). The two LITERAL-RETYPE repairs (a `replace`, not a
@@ -7236,12 +7262,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             out.push(
                                 Reject::coded(
                                     Code::TypeMismatch,
-                                    format!(
-                                        "annotation type {} does not match value type {} — {verb} \
-                                         (`{text}`)",
-                                        annot_ty.render_name(),
-                                        expr_ty.render_name()
-                                    ),
+                                    mismatch_lead(&format!(" — {verb} (`{text}`)")),
                                 )
                                 .at(id)
                                 .with_fix(Fix::replace_heuristic(expr, text)),
@@ -7366,14 +7387,8 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 .or(fn_tail)
                                 .or(collection_tail)
                                 .unwrap_or_default();
-                            let mut reject = Reject::coded(
-                                Code::TypeMismatch,
-                                format!(
-                                    "annotation type {} does not match value type {}{tail}",
-                                    annot_ty.render_name(),
-                                    expr_ty.render_name(),
-                                ),
-                            );
+                            let mut reject =
+                                Reject::coded(Code::TypeMismatch, mismatch_lead(&tail));
                             if let Some((prefix, suffix, verb, _)) = wrap {
                                 reject = reject
                                     .with_fix(Fix::wrap_heuristic(expr, prefix, suffix, verb));

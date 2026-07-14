@@ -12870,6 +12870,77 @@ mod match_engine {
     }
 
     #[test]
+    fn a_wrong_typed_call_argument_reads_as_an_argument_not_an_annotation() {
+        // A wrong-typed argument to a user FUNCTION — `(h true)` where `h`'s parameter is `Int64` — is
+        // checked via the parameter's SYNTHESIZED `(: arg paramtype)` wrap, so it shared the value-
+        // annotation site's "annotation type Int64 does not match value type Bool" message. But the author
+        // wrote NO annotation on `true`; they passed a wrong-typed argument. Now a call argument reads
+        // "this argument is a Bool, but a value of type Int64 is expected here" (rustc's "expected `Int64`,
+        // found `Bool`" at an argument), while a GENUINE `(: value T)` keeps the annotation wording. The
+        // discriminator: the synthesized wrap is a non-user node whose `expr` is the user-written argument.
+        let call = reject_full("(module m (def (h (: a Int64)) a) (def (g) (h true)) (export g))")
+            .expect("a wrong-typed call argument rejects");
+        assert_eq!(
+            call.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            call.message
+        );
+        assert!(
+            call.message
+                .contains("this argument is a Bool, but a value of type Int64 is expected here"),
+            "a call argument reads as an argument, not an annotation: {}",
+            call.message
+        );
+        assert!(
+            !call.message.contains("annotation type"),
+            "no misleading 'annotation' wording for a call argument: {}",
+            call.message
+        );
+        // The coercion fix still rides along — `(h 3.0)` where `a : Int64` keeps the drop-`.0` retype.
+        let coerce = reject_full("(module m (def (h (: a Int64)) a) (def (g) (h 3.0)) (export g))")
+            .expect("a coercible wrong-typed argument rejects");
+        assert!(
+            coerce.message.contains("this argument is a Float64")
+                && coerce.message.contains("drop the fractional form"),
+            "the call-argument wording keeps the coercion fix: {}",
+            coerce.message
+        );
+        assert!(
+            coerce.fix.is_some(),
+            "the retype fix rides along: {:?}",
+            coerce.fix
+        );
+        // A GENUINE value annotation `(: value T)` KEEPS the "annotation type" wording (the author DID
+        // write an annotation there).
+        let annot = reject_full("(module m (def (g) (: true Int64)) (export g))")
+            .expect("a genuine annotation mismatch rejects");
+        assert!(
+            annot
+                .message
+                .contains("annotation type Int64 does not match value type Bool"),
+            "a genuine annotation keeps its wording: {}",
+            annot.message
+        );
+        // The per-member structural hint still fires through the call-argument path — a wrong tuple element
+        // in an argument names the position AND reads as an argument.
+        let compound = reject_full(
+            "(module m (def (h (: t (Tuple Int64 Int64))) t) (def (g) (h (tuple 1 true))) (export g))",
+        )
+        .expect("a wrong-typed compound argument rejects");
+        assert!(
+            compound
+                .message
+                .contains("this argument is a (Tuple Int64 Bool)")
+                && compound
+                    .message
+                    .contains("element 1 should be Int64, but this one is Bool"),
+            "the call-argument wording composes with the per-member hint: {}",
+            compound.message
+        );
+    }
+
+    #[test]
     fn a_string_where_bytes_is_expected_offers_a_to_bytes_conversion_fix() {
         // A `String` supplied where `Bytes` is required — `(Bytes.len "hi")`, or `(f "hi")` for a
         // `(: b Bytes)` parameter — has a TOTAL prelude conversion: wrap in `(String.to-bytes …)` (the
