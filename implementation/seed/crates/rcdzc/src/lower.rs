@@ -4439,6 +4439,11 @@ fn desugar_runtime_map_match(
         }
         else_node = chain;
     }
+    // Give the synthesized presence-test chain scope-skip entries BEFORE resolving it: the chain nests
+    // O(arms) deep, and every node is a non-binding `if`/`match`/`.`/application form, so without this a
+    // prelude name (`Map`/`lookup`/`Some`/`None`) in an inner arm walks O(depth) parents to conclude "not
+    // lexically bound" → O(N²) over N arms. The pass-through skip makes each such resolution O(1).
+    db.extend_scope_skip_pass_through(else_node);
     crate::resolve::resolve_subtree(db, else_node);
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "runtime map match → nested presence-test if-chain (body MapField reads runtime)");
     Some(core_of(db, else_node))

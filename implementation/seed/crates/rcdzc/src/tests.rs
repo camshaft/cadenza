@@ -39461,6 +39461,59 @@ mod stage1 {
     }
 
     #[test]
+    fn a_wide_runtime_map_match_resolves_synth_names_in_bounded_time() {
+        // REGRESSION (perf): the runtime-map-match desugar (`lower::desugar_runtime_map_match`) folds N
+        // key-directed arms into an O(N)-DEEP nested `(if <k-present> body <else>)` presence chain, each
+        // `<k-present>` a synthesized `(match (Map.lookup m k) ((Some _) true) ((None) false))`. Those synth
+        // nodes are NOT in the load-time scope-skip index, so resolving a prelude name (`Map`/`lookup`/
+        // `Some`/`None`) in an inner arm walked O(depth) enclosing forms to conclude "not lexically bound"
+        // → O(arms²) `binder_in` calls (N=200/400/800 = 105K/410K/1.6M, ~4×/dbl). FIX:
+        // `Db::extend_scope_skip_pass_through` gives the synth chain scope-skip entries (every node is a
+        // non-binding form, so it passes its parent's skip through), making each resolution hop O(1).
+        //
+        // The NOISE-FREE signal is the total `binder_in` call count (a pure function of the program). A
+        // match with N single-key map arms should resolve its synth names in O(N) `binder_in` calls, not
+        // O(N²). Correctness (the dispatch picks the right arm) is pinned by the run-value tests out of band.
+        fn wide_map_match_src(arms: usize) -> String {
+            let arm_forms: String = (0..arms)
+                .map(|i| format!("((map (\"k{i}\" v)) {i})"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "(module m (def (f (: m (Map String Int64))) (match m {arm_forms} (_ -1))) \
+                   (def (main) (f (map (\"k0\" 1)))) (export main))"
+            )
+        }
+        // A small instance compiles clean (a valid runtime-map match).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_map_match_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide runtime-map match compiles with no error diagnostics: {diags:?}"
+        );
+        fn binder_in_calls(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::BINDER_IN_CALLS.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::BINDER_IN_CALLS.with(|c| c.get())
+            })
+        }
+        // Arms 200→400 is a 2× width; linear `binder_in` growth ⇒ ~2×, the O(N²) walk was ~4×. Guard the
+        // denominator and require < 3× (between the regimes, with margin for constant terms).
+        let n200 = binder_in_calls(&wide_map_match_src(200));
+        let n400 = binder_in_calls(&wide_map_match_src(400));
+        let ratio = n400 as f64 / (n200.max(1)) as f64;
+        assert!(
+            ratio < 3.0,
+            "a wide runtime-map match must resolve its synthesized presence-chain names in O(arms) \
+             `binder_in` calls, not O(arms²) (the desugar's O(depth)-nested `if`/`match` chain needs \
+             scope-skip coverage — `extend_scope_skip_pass_through`): arms 200→400 grew binder_in calls \
+             {ratio:.1}× (n200={n200}, n400={n400}); linear is ~2×, the deep-walk was ~4×"
+        );
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the
