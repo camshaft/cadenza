@@ -373,6 +373,7 @@ pass	a handler arm that resumes NON-tail folds when the perform is in an and lhs
 pass	a handler arm that resumes NON-tail folds when the perform is in an if condition
 pass	a handler arm that resumes NON-tail folds when the perform is the whole body
 pass	a handler folds a counter across the operations it discharges
+pass	a handler mixing arms of two different effects is rejected
 pass	a handler resumes its continuation at most once by default
 pass	a handler that does not discharge every operation of its effect is rejected
 pass	a header of packed nibbles and a length-prefixed body round-trips
