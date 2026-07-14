@@ -1987,6 +1987,27 @@ fn emit_tail(
                 trace!(target: "rcdzc::select", node = id.0, taken, "tail if condition decided by branch refinement — emit only the taken branch");
                 return emit_tail(db, branch, slots, base, high, scratch_ty, layout, out, tl);
             }
+            // FLOW-SENSITIVE EQUAL-BRANCH COLLAPSE (see the non-tail arm): both branches reduce to the SAME
+            // constant under their branch refinements + a trap-free cond → emit that constant (in tail
+            // position). The emit-time analogue of `lower`'s `core_equiv(then, else)` fold.
+            if crate::lower::is_trap_free(db, cond) {
+                let base_frame = db.current_refinements();
+                let then_frame = refined_frame_for_branch(db, cond, true, base_frame.clone());
+                db.push_range_refinements(then_frame);
+                let tc = refined_const_value(db, then_);
+                db.pop_range_refinements();
+                if let Some(tc) = tc {
+                    let else_frame = refined_frame_for_branch(db, cond, false, base_frame);
+                    db.push_range_refinements(else_frame);
+                    let ec = refined_const_value(db, else_);
+                    db.pop_range_refinements();
+                    if ec.as_ref() == Some(&tc) {
+                        trace!(target: "rcdzc::select", node = id.0, "tail if with equal refined-constant branches → the constant");
+                        let cid = crate::lower::synth_core(db, tc, result.clone());
+                        return emit_tail(db, cid, slots, base, high, scratch_ty, layout, out, tl);
+                    }
+                }
+            }
             // BRANCHLESS SELECT (see the non-tail `emit` arm for the full rationale): when both branches
             // are cheap trap-free leaves and the result is a non-heap scalar, a `select` beats an `if`.
             // A leaf branch is never a tail call, so dropping the tail context here loses no `return_call`
@@ -3904,6 +3925,35 @@ fn emit(
                 return emit_branch(
                     db, branch, &result, slots, base, high, scratch_ty, layout, out,
                 );
+            }
+            // FLOW-SENSITIVE EQUAL-BRANCH COLLAPSE: when both branches reduce to the SAME constant UNDER
+            // their respective branch refinements — `(if (> x 10) (if (> x 5) 7 8) 7)`: the then-branch's
+            // inner `(> x 5)` is decided true by the `x > 10` refinement, so it is `7`, matching the else —
+            // the whole `if` is that constant, provided the condition is trap-free (it is still evaluated,
+            // so a trapping cond must stay). This is the emit-time analogue of `lower`'s `core_equiv(then,
+            // else)` fold, which only sees branches equal WITHOUT flow facts; `refined_const_value` applies
+            // each branch's refinement to expose the equality `lower` could not. Each branch's refined
+            // constant is computed under its own pushed frame (as the real emit below would).
+            if crate::lower::is_trap_free(db, cond) {
+                let base_frame = db.current_refinements();
+                let then_frame = refined_frame_for_branch(db, cond, true, base_frame.clone());
+                db.push_range_refinements(then_frame);
+                let tc = refined_const_value(db, then_);
+                db.pop_range_refinements();
+                if let Some(tc) = tc {
+                    let else_frame = refined_frame_for_branch(db, cond, false, base_frame);
+                    db.push_range_refinements(else_frame);
+                    let ec = refined_const_value(db, else_);
+                    db.pop_range_refinements();
+                    if ec.as_ref() == Some(&tc) {
+                        // Both branches are the same constant — emit it, dropping the (trap-free) branch.
+                        trace!(target: "rcdzc::select", node = id.0, "if with equal refined-constant branches → the constant (trap-free cond dropped)");
+                        let cid = crate::lower::synth_core(db, tc, result.clone());
+                        return emit_branch(
+                            db, cid, &result, slots, base, high, scratch_ty, layout, out,
+                        );
+                    }
+                }
             }
             // BRANCHLESS SELECT: when both branches are cheap trap-free leaves (a param/local/constant)
             // and the result is a SCALAR (not unit, not a heap handle), emit wasm's `select` instead of
@@ -6395,6 +6445,39 @@ fn refined_frame_for_branch(
         // `(not a)` in this branch's polarity = `a` in the OPPOSITE polarity.
         Core::Not { operand } => refined_frame_for_branch(db, operand, !then_branch, base),
         _ => base,
+    }
+}
+
+/// The compile-time-constant value a branch reduces to UNDER THE CURRENTLY-ACTIVE refinement frame, if
+/// any — a `Core::ConstInt`/`ConstBool` directly, or a nested `Core::If` whose condition the active
+/// refinement DECIDES (recurse into the taken branch, having pushed that branch's own refinement frame).
+/// Returns the constant `Core`, or `None` when the branch is not a refinement-constant. This is the
+/// emit-time analogue of `lower`'s const-fold: `lower` folds a branch that is constant WITHOUT flow facts,
+/// but a branch like `(if (> x 5) 7 8)` becomes the constant `7` only under an active `x > 10` refinement
+/// that `lower` never saw. Used to collapse an `if` whose two branches reduce to the SAME constant under
+/// their respective refinements (`(if (> x 10) (if (> x 5) 7 8) 7)` → `7`). Bounded by the branch depth
+/// (each recursion strips one decided `if`); pushes/pops the refinement frame around the recursion so the
+/// nested fact is visible and never leaks. Only the ORDERING-decided `if` is chased — a non-decided inner
+/// `if`, or any non-constant leaf, returns `None`.
+fn refined_const_value(db: &mut Db, branch: StructId) -> Option<Core> {
+    match core_of(db, branch) {
+        c @ (Core::ConstInt(_) | Core::ConstBool(_)) => Some(c),
+        Core::If { cond, then_, else_ } => {
+            // The inner `if` reduces to a constant only if the active refinement DECIDES its condition.
+            let Core::Compare { op, lhs, rhs } = core_of(db, cond) else {
+                return None;
+            };
+            let taken = crate::lower::refined_comparison_const(db, op, lhs, rhs)?;
+            let branch = if taken { then_ } else { else_ };
+            // Descend with the taken branch's own refinement pushed (it may decide a further-nested `if`).
+            let base_frame = db.current_refinements();
+            let frame = refined_frame_for_branch(db, cond, taken, base_frame);
+            db.push_range_refinements(frame);
+            let r = refined_const_value(db, branch);
+            db.pop_range_refinements();
+            r
+        }
+        _ => None,
     }
 }
 

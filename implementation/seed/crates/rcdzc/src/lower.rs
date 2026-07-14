@@ -8246,7 +8246,7 @@ fn shift_width(db: &mut Db, val: StructId) -> u32 {
 /// `-`/`*`/`<<`/`>>` (overflow/count guards), `/`/`%` (÷0, MIN/-1), a call (its body may trap), an
 /// `if`/`match` (a branch may trap), a sum/tuple/record construct (may allocate/box — treated as
 /// possibly-effecting here). Reads the operand's already-lowered core recursively.
-fn is_trap_free(db: &mut Db, id: StructId) -> bool {
+pub(crate) fn is_trap_free(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
         Core::ConstInt(_)
         | Core::ConstBool(_)
@@ -12111,8 +12111,9 @@ fn decode_bin_field_runtime(
 
 /// Synthesize a fresh node carrying `core` with solved type `ty` (its `core`/`ty` columns pre-filled, so
 /// it lowers/types directly without re-resolution — the same trick `Bytes.slice`'s fold payload uses).
-/// Used by the runtime bin matcher to build the `if`-chain + per-arm predicate out of `Core` directly.
-fn synth_core(db: &mut Db, core: Core, ty: crate::ty::Ty) -> StructId {
+/// Used by the runtime bin matcher to build the `if`-chain + per-arm predicate out of `Core` directly,
+/// and by select's equal-refined-branch collapse to materialize the shared constant.
+pub(crate) fn synth_core(db: &mut Db, core: Core, ty: crate::ty::Ty) -> StructId {
     let id = db.push_atom(crate::ast::Leaf::Bytes(Vec::new())); // placeholder leaf; core/ty are authoritative
     db.core.fill(id, core);
     db.types.fill(id, ty);

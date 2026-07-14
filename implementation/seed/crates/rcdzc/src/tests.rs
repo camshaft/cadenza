@@ -6865,6 +6865,100 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_if_whose_branches_refine_to_the_same_constant_collapses() {
+        // FLOW-SENSITIVE EQUAL-BRANCH COLLAPSE: when both branches reduce to the SAME constant under their
+        // respective branch refinements, and the condition is trap-free, the whole `if` is that constant.
+        // `(if (> x 10) (if (> x 5) 7 8) 7)`: under `x > 10` the inner `(> x 5)` is decided true → the
+        // then-branch is `7`, matching the else `7` → the `if` is `7`. This is the emit-time analogue of
+        // `lower`'s `core_equiv(then, else)` fold (which only sees branches equal WITHOUT flow facts).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // Both branches refine to `7` → the whole `if` is the constant `7`: NO comparison, NO branch/select.
+        let collapsed = select(
+            "(module m (def (f (: x Int64)) (if (> x 10) (if (> x 5) 7 8) 7)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !collapsed.iter().any(|i| matches!(
+                i,
+                Lir::I64GtS | Lir::I64GeS | Lir::I64LtS | Lir::I64LeS | Lir::If(_) | Lir::Select
+            )),
+            "equal refined-constant branches collapse to the bare constant, got: {collapsed:?}"
+        );
+        // VALUE PARITY: the collapsed form equals the original — `7` for every `x`.
+        for x in [-100, 0, 5, 6, 10, 11, 50] {
+            assert_eq!(
+                run::<i64>(
+                    "(: x Int64)",
+                    "(if (> x 10) (if (> x 5) 7 8) 7)",
+                    &[Val::S64(x)]
+                ),
+                7,
+                "collapsed value @{x}"
+            );
+        }
+        // NEGATIVE: branches that DON'T refine to the same constant keep the `if` (then→7, else→9).
+        let kept = select(
+            "(module m (def (f (: x Int64)) (if (> x 10) (if (> x 5) 7 8) 9)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            kept.iter().any(|i| matches!(i, Lir::If(_) | Lir::Select)),
+            "unequal branches keep a branch/select, got: {kept:?}"
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (> x 10) (if (> x 5) 7 8) 9)",
+                &[Val::S64(20)]
+            ),
+            7
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (> x 10) (if (> x 5) 7 8) 9)",
+                &[Val::S64(0)]
+            ),
+            9
+        );
+        // TRAP SAFETY: a trapping condition must NOT be dropped — the collapse requires a trap-free cond.
+        // `(> (/ 10 n) 0)` has a trapping `/`, so the `if` is kept and traps at n=0.
+        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (def (f (: n Int64)) (if (> (/ 10 n) 0) (if (> (/ 10 n) 0) 7 8) 7)) (export f))",
+        )))
+        .expect("compile");
+        assert!(
+            call_traps(&tb, "f", &[Val::S64(0)]),
+            "a trapping condition is preserved (collapse declined)"
+        );
+        assert_eq!(run_returns_with::<i64>(&tb, "f", &[Val::S64(5)]), 7);
+    }
+
+    #[test]
     fn a_branch_refinement_folds_a_comparison_of_two_disjoint_refined_ranges() {
         // FLOW-SENSITIVE RANGE-VS-RANGE FOLD: when two DIFFERENT variables are each refined by an enclosing
         // branch so their ranges are DISJOINT, a comparison BETWEEN them is decided — no runtime compare.
