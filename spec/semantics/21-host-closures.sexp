@@ -4070,6 +4070,71 @@
   (call   twice (: 21 Int64))
   (output (: 42 Int64)))
 
+; DIRECT-CALL SUM ARG: a closure whose argument is an `(Option scalar)` crosses the host boundary as a NATIVE
+; component `option<payload>` — the canonical ABI FLATTENS it into `(disc: i32, payload)` core params (no
+; memory/realloc/runtime decode). The guest `call` rebuilds the sum cell in-guest: branch on the flattened disc
+; (the component `option` sends Some=1, None=0 — INDEPENDENT of Cadenza's `(Some a) None` decl order, so the
+; guest tests the BOUNDARY disc but builds the cell with the DECL disc), then `sum-new(decl-disc, box payload)`
+; for Some / `sum-new(decl-disc, unit)` for None, before dispatching the closure's `match`. This is the first
+; host→guest SUM decode; the `option<…>` boundary type is a new component-type former. Scope: a SOLE `(Option
+; scalar)` arg, single-export, scalar result (a Result/user-sum arg, or a list result over a sum, are later).
+
+(case "a closure taking an Option Int64 ARG — Some crosses the direct-call boundary"
+  (doc    "`mk : () -> (-> (Option Int64) Int64)` returns `(fn (o) (match o ((Some x) x) (None 0)))`. The
+           `(Option Int64)` arg crosses as a native `option<s64>` the ABI flattens to `(disc, payload)`; the
+           guest rebuilds the sum cell (branch on the boundary disc → `sum-new`) and matches it. `make()` → a
+           handle; `call(handle, Some(42))` → 42.")
+  (input  (do (def (mk) (fn ((: o (Option Int64))) (match o ((Some x) x) (None 0)))) (export mk)))
+  (call   mk (: (Some 42) (Option Int64)))
+  (output (: 42 Int64)))
+
+(case "a closure taking an Option Int64 ARG — None crosses the direct-call boundary"
+  (doc    "The SAME closure driven with `None`: the boundary option's disc 0 (None) → the guest builds the
+           `None` cell (`sum-new(decl-none-disc, unit)`), the match takes the `None` arm → 0.")
+  (input  (do (def (mk) (fn ((: o (Option Int64))) (match o ((Some x) x) (None 0)))) (export mk)))
+  (call   mk (: None (Option Int64)))
+  (output (: 0 Int64)))
+
+(case "a closure taking an Option Bool ARG crosses the direct-call boundary"
+  (doc    "The payload need not be Int64: `(Option Bool)` crosses as `option<bool>`, the guest boxes the Bool
+           payload (`box-bool`) into the `Some` cell. `call(handle, Some(true))` → `(if b 1 2)` = 1.")
+  (input  (do (def (mk) (fn ((: o (Option Bool))) (match o ((Some b) (if b 1 2)) (None 0)))) (export mk)))
+  (call   mk (: (Some true) (Option Bool)))
+  (output (: 1 Int64)))
+
+(case "a closure taking an Option Float64 ARG crosses the direct-call boundary"
+  (doc    "A Float64 payload: `(Option Float64)` crosses as `option<f64>`, the guest boxes the float
+           (`box-float`) into the `Some` cell. `call(handle, Some(2.5))` → the payload 2.5.")
+  (input  (do (def (mk) (fn ((: o (Option Float64))) (match o ((Some x) x) (None 0.0)))) (export mk)))
+  (call   mk (: (Some 2.5) (Option Float64)))
+  (output (: 2.5 Float64)))
+
+(case "a closure taking an Option Int32 ARG (narrow-int payload) crosses the direct-call boundary"
+  (doc    "A NARROW-int payload: `(Option Int32)` crosses as `option<s32>`; the guest i32→i64-extends the
+           flattened payload before `box-int` (a narrow int widens to the boxed i64). `call(handle, Some(7))`
+           → 7.")
+  (input  (do (def (mk) (fn ((: o (Option Int32))) (match o ((Some x) x) (None 0)))) (export mk)))
+  (call   mk (: (Some 7) (Option Int32)))
+  (output (: 7 Int32)))
+
+(case "a CAPTURING closure taking an Option Int64 ARG crosses the direct-call boundary"
+  (doc    "The sum-arg path composes with capture (C-HOST-2): a parameterized export `(def (mk (: k Int64)) …)`
+           returns a closure that BOTH captures `k` AND takes an `(Option Int64)` arg. `make(100)` → a handle
+           closing over k=100; `call(handle, Some(5))` → `(match o ((Some x) (+ x k)) (None k))` = `5 + 100` =
+           105. The make-forwarded capture cell + the rebuilt sum-arg cell coexist in the one `call`.")
+  (input  (do (def (mk (: k Int64)) (fn ((: o (Option Int64))) (match o ((Some x) (+ x k)) (None k))))
+              (export mk)))
+  (call   mk (: 100 Int64) (: (Some 5) (Option Int64)))
+  (output (: 105 Int64)))
+
+(case "a CAPTURING closure taking an Option Int64 ARG — None takes the captured value"
+  (doc    "The SAME capturing closure driven with `None`: the `None` arm returns the captured `k`.
+           `call(make(100), None)` → 100.")
+  (input  (do (def (mk (: k Int64)) (fn ((: o (Option Int64))) (match o ((Some x) (+ x k)) (None k))))
+              (export mk)))
+  (call   mk (: 100 Int64) (: None (Option Int64)))
+  (output (: 100 Int64)))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner

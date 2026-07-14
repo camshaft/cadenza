@@ -121,6 +121,8 @@ pass	a CAPTURING closure returning a tuple
 pass	a CAPTURING closure taking TWO Tuple args
 pass	a CAPTURING closure taking TWO Tuple args with a LIST result
 pass	a CAPTURING closure taking a Tuple ARG crosses the DIRECT-CALL boundary
+pass	a CAPTURING closure taking an Option Int64 ARG crosses the direct-call boundary
+pass	a CAPTURING closure taking an Option Int64 ARG — None takes the captured value
 pass	a CBOR atom decodes each scalar major type to its value
 pass	a CBOR head decodes its major type and big-endian argument from the input bytes
 pass	a CBOR reader walks a variable-length array using its decoded length as the element count
@@ -346,6 +348,11 @@ pass	a closure returning an EMPTY List
 pass	a closure returning an empty Bytes crosses as the empty list
 pass	a closure returning an empty String crosses as the empty list
 pass	a closure taking a nominal-over-scalar argument receives the underlying scalar
+pass	a closure taking an Option Bool ARG crosses the direct-call boundary
+pass	a closure taking an Option Float64 ARG crosses the direct-call boundary
+pass	a closure taking an Option Int32 ARG (narrow-int payload) crosses the direct-call boundary
+pass	a closure taking an Option Int64 ARG — None crosses the direct-call boundary
+pass	a closure taking an Option Int64 ARG — Some crosses the direct-call boundary
 pass	a closure that performs a delegated effect cannot cross the host boundary
 pass	a closure whose CALL returns a tuple CONTAINING a list
 pass	a closure whose CALL returns a user sum crosses as the value form

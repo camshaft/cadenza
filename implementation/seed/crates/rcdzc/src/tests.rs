@@ -49304,6 +49304,7 @@ mod closure_host_resource {
             &layout,
             false,
             std::slice::from_ref(&rebuild),
+            &[],
         )
         .expect("tuple-arg closure-resource core serializes");
 

@@ -7145,9 +7145,11 @@ fn make_functype_slots(
         param_items.extend_from_slice(name.as_bytes());
         match (slot, tup_idx) {
             (ArgSlot::Scalar(vt), _) => param_items.push(*vt),
-            (ArgSlot::Tuple(_), Some(idx)) => param_items.extend_from_slice(&owned_valtype(*idx)),
-            (ArgSlot::Tuple(_), None) => {
-                unreachable!("a Tuple make param must carry a minted tuple type index")
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), Some(idx)) => {
+                param_items.extend_from_slice(&owned_valtype(*idx))
+            }
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), None) => {
+                unreachable!("a Tuple/Option make param must carry a minted defined-type index")
             }
         }
     }
@@ -7718,6 +7720,15 @@ fn tuple_defined_type(field_bytes: &[u8]) -> Vec<u8> {
     item
 }
 
+/// A component `option<T>` DEFINED TYPE: `0x6b <T-valtype>` — the `option` former tag then the payload's
+/// primitive valtype byte. The direct-call SUM-arg path: an `(Option scalar)` closure argument crosses as
+/// this native type, which the canonical ABI FLATTENS into `(disc: i32, payload: <T>)` core params — the
+/// guest `call` rebuilds the sum cell from them (`serialize::SumArgRebuild`). Pinned runnable by the
+/// `an_option_scalar_closure_arg_crosses_by_native_flattening` oracle (`wasm_encoder`'s `.option(...)`).
+fn option_defined_type(payload_byte: u8) -> Vec<u8> {
+    vec![0x6b, payload_byte]
+}
+
 /// The boundary component-TYPE shape of a fixed-shape compound closure argument, recursively: each field is
 /// either a PRIMITIVE valtype byte (an aliased-width scalar leaf) or a NESTED tuple (its own field shapes).
 /// A `Scalar` field is one flattened core param; a `Nested` field is its own `tuple<…>` DEFINED type the
@@ -7797,25 +7808,31 @@ pub enum ArgSlot {
     Scalar(u8),
     /// A fixed-shape tuple/record arg, its (possibly nested) field shape.
     Tuple(Vec<TupleFieldShape>),
+    /// An `(Option scalar)` arg carrying its payload's component primitive valtype byte — crosses as a native
+    /// `option<payload>` DEFINED type (minted by [`mint_call_arg_tuple_types`], flattened by the canonical ABI
+    /// to `(disc: i32, payload)`; the guest rebuilds the sum cell via `serialize::SumArgRebuild`).
+    OptionScalar(u8),
 }
 
 /// The number of component TYPES [`mint_call_arg_tuple_types`] emits for `slots`: the sum of
-/// [`nested_tuple_type_count`] over every `Tuple` slot (a `Scalar` slot mints none). Zero when there is no
-/// tuple slot (byte-identical to the all-scalar `call` functype path).
+/// [`nested_tuple_type_count`] over every `Tuple` slot, plus ONE `option<…>` type per `OptionScalar` slot (a
+/// `Scalar` slot mints none). Zero when every slot is a plain scalar (byte-identical to the all-scalar path).
 fn call_arg_tuple_type_count(slots: &[ArgSlot]) -> u32 {
     slots
         .iter()
         .map(|s| match s {
             ArgSlot::Scalar(_) => 0,
             ArgSlot::Tuple(shape) => nested_tuple_type_count(shape),
+            ArgSlot::OptionScalar(_) => 1,
         })
         .sum()
 }
 
-/// Mint the `tuple<…>` DEFINED TYPES for every `Tuple` slot into `items`, in arg order, advancing `next_type`
-/// past each. Returns, per slot, `Some(outer_tuple_type_idx)` for a `Tuple` slot and `None` for a `Scalar`
-/// slot — exactly the reference each slot contributes to the `call` functype's param list. A single `Tuple`
-/// slot mints byte-identically to `mint_tuple_type_nested`; N tuples mint their type groups back to back.
+/// Mint the aggregate DEFINED TYPES for every non-scalar slot into `items`, in arg order, advancing
+/// `next_type` past each. Returns, per slot, `Some(defined_type_idx)` for a `Tuple`/`OptionScalar` slot (the
+/// `tuple<…>`/`option<…>` type the `call` functype references by index) and `None` for a `Scalar` slot. A
+/// single `Tuple` slot mints byte-identically to `mint_tuple_type_nested`; an `OptionScalar` mints one
+/// `option<payload>`.
 fn mint_call_arg_tuple_types(
     slots: &[ArgSlot],
     next_type: &mut u32,
@@ -7826,6 +7843,12 @@ fn mint_call_arg_tuple_types(
         .map(|s| match s {
             ArgSlot::Scalar(_) => None,
             ArgSlot::Tuple(shape) => Some(mint_tuple_type_nested(shape, next_type, items)),
+            ArgSlot::OptionScalar(payload_byte) => {
+                items.extend_from_slice(&option_defined_type(*payload_byte));
+                let idx = *next_type;
+                *next_type += 1;
+                Some(idx)
+            }
         })
         .collect()
 }
@@ -7854,9 +7877,11 @@ fn closure_call_functype_slots(
         param_items.extend_from_slice(name.as_bytes());
         match (slot, tup_idx) {
             (ArgSlot::Scalar(vt), _) => param_items.push(*vt),
-            (ArgSlot::Tuple(_), Some(idx)) => param_items.extend_from_slice(&owned_valtype(*idx)),
-            (ArgSlot::Tuple(_), None) => {
-                unreachable!("a Tuple slot must carry a minted tuple type index")
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), Some(idx)) => {
+                param_items.extend_from_slice(&owned_valtype(*idx))
+            }
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), None) => {
+                unreachable!("a Tuple/Option slot must carry a minted defined-type index")
             }
         }
     }
@@ -7888,9 +7913,11 @@ fn closure_call_list_functype_slots(
         param_items.extend_from_slice(name.as_bytes());
         match (slot, tup_idx) {
             (ArgSlot::Scalar(vt), _) => param_items.push(*vt),
-            (ArgSlot::Tuple(_), Some(idx)) => param_items.extend_from_slice(&owned_valtype(*idx)),
-            (ArgSlot::Tuple(_), None) => {
-                unreachable!("a Tuple slot must carry a minted tuple type index")
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), Some(idx)) => {
+                param_items.extend_from_slice(&owned_valtype(*idx))
+            }
+            (ArgSlot::Tuple(_) | ArgSlot::OptionScalar(_), None) => {
+                unreachable!("a Tuple/Option slot must carry a minted defined-type index")
             }
         }
     }

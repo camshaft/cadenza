@@ -1879,6 +1879,103 @@ fn closure_boundary_byte(ty: &crate::ty::Ty) -> Option<u8> {
     }
 }
 
+/// A FIXED-SHAPE `(Option scalar)` closure ARGUMENT that crosses the DIRECT-CALL boundary as a native
+/// component `option<payload>` (the canonical ABI flattens it to `(disc: i32, payload)` core params). Returns,
+/// for such a `ty`: the payload's component boundary byte (the `option<…>` type's payload valtype), the
+/// payload's core valtype (the flattened `payload` param — the `disc` param is always i32), and the
+/// [`serialize::SumArgRebuild`] the core `call` uses to reassemble the sum cell by branching on the disc +
+/// `sum-new`. `None` unless `ty` is a TWO-variant sum with exactly one payload-bearing variant (≤1 aliased-
+/// width scalar payload) + one nullary variant — the `Option`/`Result`-with-nullary shape (the built-in
+/// `Option` is the common case). The disc of each variant is its DECLARATION index (`db.type_decl_by_occ`).
+#[allow(clippy::type_complexity)]
+fn fixed_shape_option_scalar_arg(
+    db: &mut Db,
+    ty: &crate::ty::Ty,
+) -> Option<(
+    u8,
+    crate::backend::wasm::lir::ValType,
+    crate::backend::wasm::serialize::SumArgRebuild,
+)> {
+    use crate::backend::wasm::serialize::SumArgRebuild;
+    use crate::ty::Ty;
+    let Ty::Sum { decl, args, .. } = ty.strip_nominal() else {
+        return None;
+    };
+    // Snapshot the decl's params + per-variant payload-occurrence lists into owned data, so the `db.ast`
+    // reads below don't overlap the `decl_ref` borrow.
+    let (params, variant_payloads): (Vec<String>, Vec<Vec<crate::ast::StructId>>) = {
+        let decl_ref = db.type_decl_by_occ(*decl)?;
+        // EXACTLY two variants: one nullary + one carrying a single scalar payload. (Option = `(Some a) None`.)
+        if decl_ref.variants.len() != 2 {
+            return None;
+        }
+        (
+            decl_ref.params.clone(),
+            decl_ref
+                .variants
+                .iter()
+                .map(|v| v.payloads.clone())
+                .collect(),
+        )
+    };
+    // Classify each variant → (disc, Option<payload_ty>). The payload type is the variant's ONE payload
+    // occurrence, mapped through the sum's generic params to the instantiated `args` when it is a type var.
+    let mut payload_variant: Option<(u32, crate::ty::Ty)> = None;
+    let mut nullary_disc: Option<u32> = None;
+    for (i, payloads) in variant_payloads.iter().enumerate() {
+        match payloads.len() {
+            0 => {
+                if nullary_disc.is_some() {
+                    return None; // two nullary variants — a bare enum, not an Option-shape payload sum
+                }
+                nullary_disc = Some(i as u32);
+            }
+            1 => {
+                if payload_variant.is_some() {
+                    return None; // two payload-bearing variants — out of this increment
+                }
+                // Resolve the payload's type. A generic param name (`a` in `(Some a)`) binds to `args` at its
+                // param index. We accept only the generic-var case (the built-in Option/Result shape); a
+                // concrete-payload user sum is a later widening.
+                let pname = db
+                    .ast
+                    .head_name(payloads[0])
+                    .or_else(|| db.ast.as_name(payloads[0]))?
+                    .to_string();
+                let pi = params.iter().position(|p| *p == pname)?;
+                let pty = args.get(pi)?.clone();
+                payload_variant = Some((i as u32, pty));
+            }
+            _ => return None, // a multi-payload variant — out of this increment
+        }
+    }
+    let (payload_disc, payload_ty) = payload_variant?;
+    let nullary_disc = nullary_disc?;
+    // The payload must be an aliased-width scalar (Int/Bool/Float) — the shapes `option<T>` flattens + the
+    // guest boxes with a single op. `scalar_field_rebuild` gives the box op + narrow-int extend.
+    let payload_byte = closure_boundary_byte(&payload_ty)?;
+    let payload_vt = crate::backend::wasm::lir::valtype_of(&payload_ty)?;
+    let crate::backend::wasm::serialize::FieldRebuild::Scalar { box_op, extend } =
+        scalar_field_rebuild(&payload_ty)?
+    else {
+        return None;
+    };
+    Some((
+        payload_byte,
+        payload_vt,
+        SumArgRebuild {
+            base_param: 1, // the sum is the SOLE closure arg → disc at param 1, payload at 2 (after self=0)
+            // The component `option<T>` always sends Some=1 (canonical `variant { none, some(T) }`),
+            // regardless of Cadenza's decl order — the guest branches on this boundary disc.
+            boundary_payload_disc: 1,
+            payload_disc,
+            payload_box: Some((box_op, extend)),
+            nullary_disc,
+            payload_is_i32_param: matches!(payload_vt, crate::backend::wasm::lir::ValType::I32),
+        },
+    ))
+}
+
 /// A FIXED-SHAPE SCALAR tuple/record closure ARGUMENT that crosses the DIRECT-CALL boundary as a native
 /// component `tuple<…>` (the canonical ABI flattens it into scalar core params). Returns, for such a `ty`:
 /// the per-field component boundary bytes (the envelope's `tuple<…>` type + the flattened core `call`
@@ -2399,14 +2496,33 @@ fn emit_closure_resource(
     } else {
         None
     };
+    // A SOLE `(Option scalar)` closure ARG crosses as a native `option<payload>` the canonical ABI flattens to
+    // `(disc: i32, payload)` core params; the core `call` rebuilds the sum cell via `SumArgRebuild`, the
+    // envelope mints `option<…>` via `ArgSlot::OptionScalar`. Detected only when no tuple classifier fired.
+    // Scoped: the SOLE arg, scalar result, no build-time host effect (each a clean later widening).
+    let sum_arg: Option<(
+        u8,
+        crate::backend::wasm::lir::ValType,
+        crate::backend::wasm::serialize::SumArgRebuild,
+    )> = if host_imports.is_empty()
+        && tuple_arg.is_none()
+        && nested_tuple.is_none()
+        && multi_args.is_none()
+        && arg_tys.len() == 1
+    {
+        fixed_shape_option_scalar_arg(db, &arg_tys[0])
+    } else {
+        None
+    };
     // Boundary bytes (component valtypes) for the `call` method's ARGS — aliased scalar widths (a compound
     // closure arg on the direct-call path is handled by `tuple_arg` above, when it is a fixed-shape scalar
     // tuple/record; any other compound arg declines here — host→guest decode is not supported).
     let arg_bytes: Vec<u8> = if tuple_arg.is_some()
         || nested_tuple.is_some()
         || multi_args.is_some()
+        || sum_arg.is_some()
     {
-        Vec::new() // the flattened fields are carried by tuple_arg/nested_tuple/multi_args, not arg_bytes
+        Vec::new() // the flattened fields are carried by tuple_arg/nested_tuple/multi_args/sum_arg, not arg_bytes
     } else {
         arg_tys
             .iter()
@@ -2511,6 +2627,9 @@ fn emit_closure_resource(
         leaf_vts.clone() // the DEPTH-FIRST flattened leaf params of a nested tuple arg
     } else if let Some((_, all_vts, _)) = &multi_args {
         all_vts.clone() // the flattened leaves of EVERY tuple/scalar arg, in order (N-compound-args)
+    } else if let Some((_, payload_vt, _)) = &sum_arg {
+        // A sum arg flattens to `(disc: i32, payload)` core params — the shared `call` signature.
+        vec![crate::backend::wasm::lir::ValType::I32, *payload_vt]
     } else {
         arg_tys
             .iter()
@@ -2631,6 +2750,14 @@ fn emit_closure_resource(
                 }
             }
         }
+        // A SOLE `(Option scalar)` arg: the `call` rebuilds the sum cell via `sum-new` (branching on disc),
+        // boxing the payload with its box op (a Bool/Float payload needs `box-bool`/`box-float`).
+        if let Some((_, _, rebuild)) = &sum_arg {
+            used.insert("sum-new");
+            if let Some((box_op, _)) = rebuild.payload_box {
+                used.insert(box_op);
+            }
+        }
         used.extend(lifted_ops.iter().copied());
     })?;
     let export_abs = layout
@@ -2718,6 +2845,7 @@ fn emit_closure_resource(
             &layout,
             false, // own<t> (single-use) — every rebuilt-arg cell drop is unconditional, so leak-free
             rebuilds,
+            &[], // no sum arg (this is a tuple/multi-tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_closure_resource_borrow_tuple(
@@ -2734,6 +2862,52 @@ fn emit_closure_resource(
             &[],  // single-tuple suffix unused
             None, // single-tuple nested shape unused
             Some(slots),
+        ));
+    }
+    // A SOLE `(Option scalar)` closure ARG with a SCALAR result: the sum crosses as a native `option<payload>`
+    // the canonical ABI flattens to `(disc:i32, payload)`. The core `call` rebuilds the sum cell (branch on
+    // disc → `sum-new`); the envelope mints `option<payload>` via `ArgSlot::OptionScalar`. A LIST result over a
+    // sum arg is a later widening (the list cores don't thread sums) — falls through + declines.
+    if let Some((payload_byte, _payload_vt, rebuild)) = &sum_arg
+        && !ret_is_bytes
+        && !ret_is_compound
+        && !ret_is_collection
+    {
+        let main_core = serialize::multi_closure_resource_core_module_with_host_borrow(
+            &funcs,
+            &imports,
+            &[],
+            &[serialize::ClosureMake {
+                export_name: "make".to_string(),
+                export_abs,
+                param_vts: make_param_vts.clone(),
+            }],
+            &[],
+            &arg_vts,
+            ret_vt,
+            lifted_type_idx,
+            &layout,
+            false, // own<t> (single-use) — the rebuilt sum cell drop is unconditional, so leak-free
+            &[],   // no tuple arg
+            std::slice::from_ref(rebuild),
+        )
+        .map_err(Reject::decline)?;
+        return Ok(envelope::assemble_closure_resource_borrow_tuple(
+            &main_core,
+            &dtor_core,
+            &imports,
+            &import_name,
+            &make_param_bytes,
+            &arg_bytes, // empty — the flattened disc/payload are carried by the slot list
+            result_byte,
+            false,
+            None, // single-tuple flat path unused
+            &[],  // prefix unused
+            &[],  // suffix unused
+            None, // nested shape unused
+            Some(&[crate::backend::wasm::envelope::ArgSlot::OptionScalar(
+                *payload_byte,
+            )]),
         ));
     }
     // A `Bytes`-result closure crosses `call` as `list<u8>` (through linear memory): the bytes-result core
@@ -2864,6 +3038,7 @@ fn emit_closure_resource(
             &layout,
             false, // own<t> (single-use) — the rebuilt-arg cell drop is unconditional, so still leak-free
             std::slice::from_ref(rebuild),
+            &[], // no sum arg (single flat/nested tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_closure_resource_borrow_tuple(
@@ -2905,6 +3080,7 @@ fn emit_closure_resource(
             &layout,
             false, // own<t> (single-use) — the rebuilt-arg cell drop is unconditional, so still leak-free
             std::slice::from_ref(rebuild),
+            &[], // no sum arg (single flat/nested tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_closure_resource_borrow_tuple(
@@ -3597,6 +3773,7 @@ fn emit_multi_closure_resource(
             &layout,
             false,
             rebuilds,
+            &[], // no sum arg (this is a tuple/multi-tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
@@ -3633,6 +3810,7 @@ fn emit_multi_closure_resource(
             &layout,
             false,
             std::slice::from_ref(rebuild),
+            &[], // no sum arg (single flat/nested tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
@@ -3669,6 +3847,7 @@ fn emit_multi_closure_resource(
             &layout,
             false,
             std::slice::from_ref(rebuild),
+            &[], // no sum arg (single flat/nested tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
@@ -4260,6 +4439,7 @@ fn emit_mixed_closure_resource(
             &layout,
             false,
             rebuilds,
+            &[], // no sum arg (this is a tuple/multi-tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
@@ -4296,6 +4476,7 @@ fn emit_mixed_closure_resource(
             &layout,
             false,
             std::slice::from_ref(rebuild),
+            &[], // no sum arg (single flat/nested tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(
@@ -4332,6 +4513,7 @@ fn emit_mixed_closure_resource(
             &layout,
             false,
             std::slice::from_ref(rebuild),
+            &[], // no sum arg (single flat/nested tuple path)
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_mixed_closure_resource_borrow_tuple(

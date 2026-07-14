@@ -1548,6 +1548,103 @@ impl FieldRebuild {
     }
 }
 
+/// How a closure `call` reassembles ONE flattened fixed-shape SUM argument (an `Option`/`Result` — a
+/// two-variant sum where the payload-bearing variant carries ≤1 aliased-width scalar payload) into the single
+/// value-heap CELL its lifted body expects. The sum crosses the DIRECT-CALL boundary as a native component
+/// `option<T>`/`variant<…>`, which the canonical ABI FLATTENS into `(disc: i32, payload…)` core params — the
+/// disc at `base_param`, the payload leaf (when present) at `base_param + 1`. This descriptor tells the `call`
+/// body to rebuild that cell in-guest: branch on the flattened disc; for the payload variant box the payload
+/// param + `sum-new(payload_disc, boxed)`; for the nullary variant `sum-new(nullary_disc, IMM_UNIT)` — the
+/// exact `Core::SumNew` build shape (`select.rs`) — and push the resulting handle in place of the raw params.
+/// Proven runnable by the `an_option_scalar_closure_arg_crosses_by_native_flattening` oracle. This increment
+/// scopes a TWO-VARIANT sum with a nullary variant + a ≤1-scalar-payload variant (Option/Result).
+#[derive(Clone)]
+pub struct SumArgRebuild {
+    /// The CORE-PARAM index the flattened sum's `disc` (i32) lands at; the payload (if any) is at
+    /// `base_param + 1`. `1` when the sum is the SOLE closure arg (after `self`=0).
+    pub base_param: u32,
+    /// The discriminant the COMPONENT boundary type sends for the PAYLOAD-bearing variant — the value the
+    /// flattened `disc` param carries when the payload is present. For a component `option<T>` this is ALWAYS
+    /// `1` (the canonical `variant { none, some(T) }` order — Some=1), INDEPENDENT of Cadenza's decl order.
+    /// The guest branches `disc == boundary_payload_disc` to pick the payload arm.
+    pub boundary_payload_disc: u32,
+    /// The discriminant of the PAYLOAD-bearing variant IN CADENZA'S DECL — the disc `sum-new` builds the cell
+    /// with (may differ from `boundary_payload_disc`: Cadenza's `(Some a) None` has Some=0, but the boundary
+    /// option sends Some=1). This is what a guest `match` on the rebuilt cell dispatches on.
+    pub payload_disc: u32,
+    /// The `box_op` for the single scalar payload (`"box-int"`/`"box-bool"`/`"box-float"`/`"box-float32"`) +
+    /// whether a NARROW int payload needs an i32→i64 extend before `box-int`. `None` when the payload variant
+    /// is ALSO nullary (a two-nullary-variant sum, e.g. a bare enum) — then both variants build the unit.
+    pub payload_box: Option<(&'static str, Option<bool>)>,
+    /// The DECL discriminant of the NULLARY variant (`None`) — builds `sum-new(nullary_disc, IMM_UNIT)`.
+    pub nullary_disc: u32,
+    /// The i32 core valtype of the flattened payload param, when present (for the guest `if` result type is
+    /// always i32 — a sum handle — so this is unused for the block type; retained for documentation/future).
+    #[allow(dead_code)]
+    pub payload_is_i32_param: bool,
+}
+
+/// Emit the SUM-arg CELL REBUILD for a closure `call` body: reassemble the single fixed-shape sum argument
+/// (which crossed FLATTENED as `(disc, payload…)` core params) into the one i32 sum-cell handle the lifted
+/// body expects, leaving the handle on the stack AND stashed in `sum_local` (dropped after `call_indirect`).
+/// Emits `if disc == payload_disc { sum-new(payload_disc, box(payload)) } else { sum-new(nullary_disc, UNIT) }`.
+/// `imp(name) -> import index`. See [`SumArgRebuild`].
+fn emit_sum_arg_rebuild(
+    rebuild: &SumArgRebuild,
+    sum_local: u32,
+    imp: &dyn Fn(&str) -> u64,
+    out: &mut Vec<u8>,
+) {
+    use crate::backend::wasm::wasm_abi::op;
+    let disc_param = rebuild.base_param;
+    let payload_param = rebuild.base_param + 1;
+    // Branch on the BOUNDARY disc (the component option's Some=1), NOT the decl disc — the flattened `disc`
+    // param carries the component-model convention, which may differ from Cadenza's decl order.
+    out.push(op::LOCAL_GET);
+    uleb128(disc_param as u64, out);
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(rebuild.boundary_payload_disc as i64, out);
+    out.push(op::I32_EQ);
+    out.push(op::IF);
+    out.push(wasm_abi::CORE_I32); // block type: → i32 (the sum handle)
+    // PAYLOAD variant: sum-new(payload_disc, box(payload)) — or the unit when the payload variant is nullary.
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(rebuild.payload_disc as i64, out); // [disc]
+    if let Some((box_op, extend)) = &rebuild.payload_box {
+        out.push(op::LOCAL_GET);
+        uleb128(payload_param as u64, out); // [disc, payload-leaf]
+        if let Some(signed) = extend {
+            out.push(if *signed {
+                op::I64_EXTEND_I32_S
+            } else {
+                op::I64_EXTEND_I32_U
+            });
+        }
+        out.push(op::CALL);
+        uleb128(imp(box_op), out); // [disc, payload-handle]
+    } else {
+        out.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(
+            crate::backend::wasm::runtime_abi::IMM_UNIT as i64,
+            out,
+        ); // [disc, unit]
+    }
+    out.push(op::CALL);
+    uleb128(imp("sum-new"), out); // [sum-handle]
+    out.push(op::ELSE);
+    // NULLARY variant: sum-new(nullary_disc, IMM_UNIT).
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(rebuild.nullary_disc as i64, out); // [disc]
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(crate::backend::wasm::runtime_abi::IMM_UNIT as i64, out); // [disc, unit]
+    out.push(op::CALL);
+    uleb128(imp("sum-new"), out); // [sum-handle]
+    out.push(op::END);
+    // stash for the post-dispatch drop; leaves [sum-handle] on the stack.
+    out.push(op::LOCAL_TEE);
+    uleb128(sum_local as u64, out);
+}
+
 /// Emit the tuple-arg CELL REBUILD for a closure `call` body: reassemble the single fixed-shape tuple/record
 /// argument (which crossed the boundary FLATTENED into its N scalar fields at core params `1..1+N`) into the
 /// one i32 cell handle the lifted body expects — `arr-alloc N` + per field (index, the flattened param, box,
@@ -1628,13 +1725,30 @@ fn emit_closure_call_args(
     imp: &dyn Fn(&str) -> u64,
     out: &mut Vec<u8>,
 ) {
+    emit_closure_call_args_with_sums(tuples, tuple_local, &[], 0, arity, imp, out)
+}
+
+/// [`emit_closure_call_args`] with ZERO OR MORE fixed-shape SUM-arg rebuilds interleaved among the scalars +
+/// tuples. Each sum consumes `1` (nullary payload variant) or `2` (disc + one scalar payload) flattened core
+/// params from its `base_param`; at a sum's `base_param` the walk emits its rebuilt cell (stashed at
+/// `sum_local + i`) and skips its params. Sums + tuples are non-overlapping. With `sums` empty, byte-identical
+/// to [`emit_closure_call_args`]. (This increment wires only sums; a tuple + sum together is a later widening.)
+fn emit_closure_call_args_with_sums(
+    tuples: &[TupleArgRebuild],
+    tuple_local: u32,
+    sums: &[SumArgRebuild],
+    sum_local: u32,
+    arity: u32,
+    imp: &dyn Fn(&str) -> u64,
+    out: &mut Vec<u8>,
+) {
     use crate::backend::wasm::wasm_abi::op;
     let get = |l: u32, out: &mut Vec<u8>| {
         out.push(op::LOCAL_GET);
         uleb128(l as u64, out);
     };
-    // Walk the flattened core params `1..1+arity`; at each tuple's `base_param` emit its rebuild + skip its
-    // leaves, else push the scalar. `tuples` are ascending by `base_param` + non-overlapping.
+    // Walk the flattened core params `1..1+arity`; at each tuple's/sum's `base_param` emit its rebuild + skip
+    // its params, else push the scalar. `tuples`/`sums` are ascending by `base_param` + non-overlapping.
     let mut a = 1u32;
     while a < 1 + arity {
         if let Some((ti, rebuild)) = tuples.iter().enumerate().find(|(_, t)| t.base_param == a) {
@@ -1644,6 +1758,11 @@ fn emit_closure_call_args(
                 .iter()
                 .map(FieldRebuild::leaf_count)
                 .sum::<u32>();
+        } else if let Some((si, rebuild)) = sums.iter().enumerate().find(|(_, s)| s.base_param == a)
+        {
+            emit_sum_arg_rebuild(rebuild, sum_local + si as u32, imp, out);
+            // disc (1) + the payload leaf (1) when the payload variant carries a scalar.
+            a += 1 + if rebuild.payload_box.is_some() { 1 } else { 0 };
         } else {
             get(a, out);
             a += 1;
@@ -1719,6 +1838,7 @@ pub fn closure_resource_core_module_borrow(
         lifted_type_idx,
         layout,
         call_borrow,
+        &[],
         &[],
     )
 }
@@ -3864,6 +3984,7 @@ pub fn multi_closure_resource_core_module_borrow(
         layout,
         call_borrow,
         &[],
+        &[],
     )
 }
 
@@ -3897,6 +4018,7 @@ pub fn multi_closure_resource_core_module_with_host(
         layout,
         false,
         &[],
+        &[],
     )
 }
 
@@ -3926,6 +4048,10 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
     // The scalar `call` rebuilds each cell from its flattened fields, interleaved with scalars in arg order,
     // and drops each after `call_indirect`. `&[]` = no tuple arg (byte-identical to the scalar path).
     tuples: &[TupleArgRebuild],
+    // ZERO OR MORE fixed-shape SUM args (Option/Result — each a `SumArgRebuild` at its own `base_param`). The
+    // `call` rebuilds each sum cell by branching on the flattened disc + `sum-new`, and drops each after
+    // `call_indirect`. `&[]` = no sum arg (byte-identical). This increment wires the SOLE-sum-arg case.
+    sums: &[SumArgRebuild],
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let h = host_fns.len();
@@ -4107,9 +4233,11 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
         // the rebuilt tuple-cell handle. Params are: 0 = self, 1..1+arity = the closure's args (the FLATTENED
         // tuple fields when `tuple_arg` is set). `arg_vts` is the boundary/core param list either way.
         let cell_local = (1 + arg_vts.len()) as u32;
-        // One i32 per tuple arg for its rebuilt cell handle (at `tuple_local + i`), after the cell-rep local.
+        // One i32 per tuple arg for its rebuilt cell handle (at `tuple_local + i`), after the cell-rep local;
+        // then one i32 per SUM arg (at `sum_local + i`), after the tuple locals.
         let tuple_local = cell_local + 1;
-        let n_extra_locals = 1 + tuples.len() as u32;
+        let sum_local = tuple_local + tuples.len() as u32;
+        let n_extra_locals = 1 + tuples.len() as u32 + sums.len() as u32;
         let mut inner = Vec::new();
         // one local group: n_extra_locals × i32.
         inner.extend_from_slice(&wasm_vec(1, &{
@@ -4136,7 +4264,15 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
         // scalar args when `tuples` is empty). See [`emit_closure_call_args`].
         {
             let imp = |name: &str| *import_index.get(name).expect("rebuild op imported") as u64;
-            emit_closure_call_args(tuples, tuple_local, arg_vts.len() as u32, &imp, &mut inner);
+            emit_closure_call_args_with_sums(
+                tuples,
+                tuple_local,
+                sums,
+                sum_local,
+                arg_vts.len() as u32,
+                &imp,
+                &mut inner,
+            );
         }
         // indirection index: arr-get(cell, 0) → get-int → i32.wrap_i64.
         inner.push(op::LOCAL_GET);
@@ -4186,6 +4322,19 @@ pub fn multi_closure_resource_core_module_with_host_borrow(
                 *import_index
                     .get("drop")
                     .expect("drop imported for the tuple-arg cell release") as u64,
+                &mut inner,
+            );
+        }
+        // Each REBUILT sum-arg cell is likewise an owned per-call temporary — drop it unconditionally,
+        // balancing its `sum-new`. (`sum-new` with the inline-unit payload allocs a heap sum node either way.)
+        for si in 0..sums.len() as u32 {
+            inner.push(op::LOCAL_GET);
+            uleb128((sum_local + si) as u64, &mut inner);
+            inner.push(op::CALL);
+            uleb128(
+                *import_index
+                    .get("drop")
+                    .expect("drop imported for the sum-arg cell release") as u64,
                 &mut inner,
             );
         }

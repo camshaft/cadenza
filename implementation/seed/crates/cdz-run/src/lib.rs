@@ -1368,6 +1368,30 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
                 .collect();
             Val::Tuple(vals?)
         }
+        // A FIXED-PAYLOAD `(Option scalar)` argument (the direct-call SUM-arg path): the host supplies it as a
+        // component `option<T>` value, which the canonical ABI flattens into the guest's `(disc, payload)` core
+        // params. The corpus writes `(Some <value>)` for the present case and `None` (a bare atom) for absent;
+        // coerce the payload against `option.ty()`.
+        Type::Option(ot) => {
+            let t = s.trim();
+            if t == "None" {
+                Val::Option(None)
+            } else {
+                // `(Some <value>)` — strip the parens + the `Some` head, coerce the remaining value.
+                let inner = t
+                    .strip_prefix('(')
+                    .and_then(|x| x.strip_suffix(')'))
+                    .map(str::trim)
+                    .and_then(|x| x.strip_prefix("Some"))
+                    .map(str::trim)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "argument `{s}`: expected an option literal `(Some <value>)` or `None`"
+                        )
+                    })?;
+                Val::Option(Some(Box::new(coerce_one(inner, &ot.ty())?)))
+            }
+        }
         other => {
             return Err(anyhow!(
                 "argument `{s}`: compound parameter type {other:?} is not supported by cdz-run yet"
