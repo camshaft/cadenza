@@ -792,7 +792,14 @@ pub enum Ty {
         decl: crate::ast::StructId,
         name: String,
         args: Vec<Ty>,
-        inner: Box<Ty>,
+        // `Rc`, not `Box`: `inner` is the derived machine-rep template with `args` substituted, and for a
+        // NESTED generic nominal (`(Box (Box … Int64))`) the child nominal is stored BOTH here and in
+        // `args` — with a `Box`, each level deep-CLONED the child into `inner`, so the materialized `Ty`
+        // doubled per nesting level = O(2^depth) (a depth-20 annotation hung the compiler). `Rc` SHARES the
+        // child's allocation across `args`/`inner` and across levels, so a deep nesting is O(depth) nodes,
+        // not O(2^depth). Behaviour-identical — `inner` is a hint that is never compared (only read for
+        // layout/valtype), and its logical structure is unchanged; only the pointer is now shared.
+        inner: std::rc::Rc<Ty>,
     },
     /// A function type `param → result`, curried (a multi-parameter operation is nested `Fn`s). What
     /// an operator's (and later a function's) `Meta.t` denotes; an application unifies the argument

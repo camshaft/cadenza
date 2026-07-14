@@ -704,6 +704,7 @@ pass	a map pattern falls through when the key is absent
 pass	a map pattern matches a present key and binds its value
 pass	a map pattern nested in a tuple binds its value binder
 pass	a map pattern value sub-pattern may be a literal that refines the match
+pass	a map pattern value sub-pattern may be an irrefutable compound that binds
 pass	a map threaded as a recursive accumulator is grown then measured
 pass	a map whose value is a list: a runtime lookup then indexes the returned list
 pass	a map with a String value is looked up and its value compared in the arm
@@ -887,10 +888,13 @@ pass	a parameter annotation contradicting its use is rejected
 pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
 pass	a parameterized compound-return export forwards distinct arguments to make
+pass	a parameterized export builds a list of tuples by a runtime-length loop and measures it
 pass	a parameterized export returning a capturing closure is made and called by the host
 pass	a parameterized export returning a multi-argument capturing closure
 pass	a parameterized export returns a built-in Option computed from its argument
 pass	a parameterized export returns a list computed from its argument
+pass	a parameterized export returns a list of lists built from its argument
+pass	a parameterized export returns a list of tuples built from its argument
 pass	a parameterized export returns a record computed from its argument
 pass	a parameterized export returns a runtime BigInt computed from its argument
 pass	a parameterized export returns a runtime Rational computed from its argument
@@ -1496,6 +1500,7 @@ pass	an if with a narrow branch and a bare-literal branch computes at the narrow
 pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct
 pass	an if-tuple returned from a call, let-bound and projected twice
 pass	an if-wrapped self-application is rejected in bounded time, not an inference hang
+pass	an if→SELECT-eligible conditional with a performed condition and pure branches stays sound
 pass	an imported helper reaches its own file's private definition when inlined
 pass	an imported name resolves to a sibling file's exported definition
 pass	an in-bounds slice yields Some of the bytes at that range

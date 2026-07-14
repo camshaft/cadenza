@@ -173,7 +173,7 @@ fn rewrite_sentinel_vars(ty: &crate::ty::Ty, decl: &crate::db::TypeDecl) -> crat
                 .iter()
                 .map(|a| rewrite_sentinel_vars(a, decl))
                 .collect(),
-            inner: Box::new(rewrite_sentinel_vars(inner, decl)),
+            inner: std::rc::Rc::new(rewrite_sentinel_vars(inner, decl)),
         },
         other => other.clone(),
     }
@@ -619,7 +619,7 @@ fn ground_free_vars(ty: &crate::ty::Ty) -> crate::ty::Ty {
             decl: *decl,
             name: name.clone(),
             args: args.iter().map(ground_free_vars).collect(),
-            inner: Box::new(ground_free_vars(inner)),
+            inner: std::rc::Rc::new(ground_free_vars(inner)),
         },
         other => other.clone(),
     }

@@ -6569,6 +6569,22 @@
             (def (main) (look (pick 0))) (export main)))
   (output (: 1 Int64)))
 
+(case "a map pattern value sub-pattern may be an irrefutable compound that binds"
+  (doc    "A map-pattern VALUE sub-pattern may be an IRREFUTABLE COMPOUND that INTRODUCES BINDERS — a tuple
+           `(map (\"a\" (tuple x y)))` / a single-variant `(Mk n)` — not just a bare binder or a literal
+           (core-semantics.md §A Map Is Matched By Key-Directed Patterns: each value binder position is a
+           *Patterns Compose* position). The nested binders resolve via a resolve-stage descent giving the
+           value read a sub-path INTO the value (the map analogue of a nested tuple/payload binder), and the
+           value is folded down that sub-path. Here the map holds `(tuple 3 4)` at \"a\" → `x`=3, `y`=4 →
+           7. A refutable value (a multi-variant constructor) instead needs value-discriminant dispatch.")
+  (input  (do
+            (def (main)
+              (match (Map.insert (Map.empty) "a" (tuple 3 4))
+                ((map ("a" (tuple x y)) .. rest) (+ x y))
+                (_                               -1)))
+            (export main)))
+  (output (: 7 Int64)))
+
 ; ── An un-projected element / un-referenced field is UNOBSERVED, so its trap is not raised ──────────
 ; core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed: a trap occurs when the
 ; computation that would raise it is observed — its value flowing to the result, a host call, or an
@@ -6719,6 +6735,44 @@
   (input  (do (def (main (: n Int64)) (if (> n 0) (Set.of (list n)) (Set.of (list)))) (export main)))
   (call   main (: 0 Int64)) (output (: ((. Set of) (list)) (Set Int64)))
   (call   main (: 5 Int64)) (output (: ((. Set of) (list 5)) (Set Int64))))
+
+; The parameterized returns above are FLAT collections (a list/map/set of scalars). A NESTED collection
+; return — a `(List (Tuple …))` (an association / key-value list) or a `(List (List …))` — is the shape a
+; compiler emits (a list of head/payload pairs, a list of instruction operand lists). These pin that the
+; resource escape's parametric frame renders the nested element type from a runtime argument. (A record
+; whose fields are collections, or a tuple containing a sum, built from a runtime param still declines —
+; the compound-in-compound-param-return limit; a list of tuples/lists is realized.)
+
+(case "a parameterized export returns a list of tuples built from its argument"
+  (doc    "`main(n) = (list (tuple n (* n 10)) (tuple (+ n 1) (* (+ n 1) 10)))` returns a
+           `(List (Tuple Int64 Int64))` — an association-list of key/value pairs — built from the argument:
+           n=5 → `(list (tuple 5 50) (tuple 6 60))`, n=0 → `(list (tuple 0 0) (tuple 1 10))`. Pins that the
+           resource escape renders a NESTED element type (a tuple inside a list) from a runtime argument,
+           the key-value-list shape a compiler emits (distinct from the flat parameterized-list return).")
+  (input  (do (def (main (: n Int64)) (list (tuple n (* n 10)) (tuple (+ n 1) (* (+ n 1) 10)))) (export main)))
+  (call   main (: 5 Int64)) (output (: (list (tuple 5 50) (tuple 6 60)) (List (Tuple Int64 Int64))))
+  (call   main (: 0 Int64)) (output (: (list (tuple 0 0) (tuple 1 10)) (List (Tuple Int64 Int64)))))
+
+(case "a parameterized export returns a list of lists built from its argument"
+  (doc    "The list-of-lists companion: `main(n) = (list (list n) (list n n))` returns a `(List (List Int64))`
+           whose inner lists differ in length — n=5 → `(list (list 5) (list 5 5))`. Pins that a doubly-nested
+           collection (a list of lists, each a genuine sub-vector) crosses the resource-escape boundary from
+           a runtime argument, the operand-lists shape a code emitter builds.")
+  (input  (do (def (main (: n Int64)) (list (list n) (list n n))) (export main)))
+  (call   main (: 5 Int64)) (output (: (list (list 5) (list 5 5)) (List (List Int64))))
+  (call   main (: 0 Int64)) (output (: (list (list 0) (list 0 0)) (List (List Int64)))))
+
+(case "a parameterized export builds a list of tuples by a runtime-length loop and measures it"
+  (doc    "The runtime-length form: `build` pushes `(tuple i (* i 2))` for i in 0..n-1 into a
+           `(List (Tuple Int64 Int64))` accumulator, then `List.len` measures it — how many pairs is decided
+           at run time. `build 0 3` → 3 pairs. Pins that a list of tuples grown by a recursion (not a fixed
+           literal spine) and consumed to a scalar composes — the accumulate-a-key-value-list idiom, the
+           nested-element companion of the runtime-length list builder.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List (Tuple Int64 Int64)))) (if (< i n) (build (+ i 1) n (List.push out (tuple i (* i 2)))) out))
+            (def (main (: n Int64)) (List.len (build 0 n (list)))) (export main)))
+  (call   main (: 3 Int64)) (output (: 3 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
 
 (case "a tuple-parameter export returns a list computed from its fields"
   (doc    "An export whose PARAMETER is a fixed-shape tuple crosses the boundary: the param arrives as a

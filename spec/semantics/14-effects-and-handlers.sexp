@@ -1262,6 +1262,24 @@
                 (if (> (* (C.t) (C.t)) 0) (* (C.t) (C.t)) 99))) (export main)))
   (output (: 12 Int64)))
 
+(case "an if→SELECT-eligible conditional with a performed condition and pure branches stays sound"
+  (doc    "A soundness pin against the backend's if→SELECT conversion (which turns a small trap-free `if`
+           into a branchless `select` that evaluates BOTH arms eagerly). The condition performs and the two
+           branches are pure scalar values — exactly the shape the conversion targets. `C` seeded 3, arm
+           `(resume s (+ s 1))`: the condition `(C.t)` reads 3 (state → 4), `3 < 5` is true, so the pure
+           then-branch `10` is the value. Sound because the perform is discharged to a single sequenced read
+           in the CONDITION before the optimizer runs — the branches carry no effectful node, so converting
+           the `if` to a branchless `select` (eager on both scalar arms) cannot duplicate, reorder, or drop
+           the perform. Pinned at 10 — the perform runs exactly once, in the condition, regardless of the
+           if/select lowering. (Distinct from the CSE pins: here the concern is the branchless-select
+           transform evaluating both arms, not a shared subexpression being hoisted.)")
+  (input  (do
+            (effect C (op t (-> Unit Int64)))
+            (def (main)
+              (handle C 3 ((t (u) s (resume s (+ s 1))))
+                (if (< (C.t) 5) 10 20))) (export main)))
+  (output (: 10 Int64)))
+
 ; --- A perform inside an if/match BRANCH threads its state OUT to the continuation after the conditional.
 ; A branch's state advance is not local to the branch: the code following the conditional must run against
 ; the branch's POST-state, not the pre-branch state. Because only one branch runs, the state after the

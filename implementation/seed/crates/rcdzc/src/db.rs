@@ -76,6 +76,16 @@ thread_local! {
     /// `ty_has_free_var_walks_a_shared_record_type_once`.
     pub(crate) static TY_HAS_FREE_VAR_ELEMS_WALKED: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
+
+    /// Test-only: total `Ty` nodes VISITED by `subst_template_vars` (the generic-nominal template
+    /// substitution) since the last reset. `normalize_sum` builds `Ty::Nominal { inner }` by substituting
+    /// the type args into the template; before `Nominal.inner` was an `Rc`, a NESTED nominal `(Box (Box …
+    /// Int64))` deep-CLONED the child into `inner` at every level, so the substituted `Ty` — and the work
+    /// to build+re-substitute it — DOUBLED per level = O(2^depth). With `inner: Rc<Ty>` the child is SHARED,
+    /// so the substitution work is O(depth). The noise-free regression signal — see
+    /// `a_deeply_nested_generic_nominal_annotation_reduces_to_a_linear_size_type`.
+    pub(crate) static SUBST_TEMPLATE_VARS_VISITS: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
@@ -2610,7 +2620,7 @@ impl Db {
                 // substituted); it is never compared, so a recursive nominal's divergent inner is
                 // harmless. Both come from the same `args`, kept consistent.
                 args,
-                inner: Box::new(inner),
+                inner: std::rc::Rc::new(inner),
             };
         }
         crate::ty::Ty::Sum { decl, name, args }
@@ -4224,6 +4234,8 @@ pub const TOP_LEVEL_KEYWORDS: &[&str] = &[
 /// instantiation) is left as-is (a free var the boundary rejects, not a panic). A template with no vars
 /// (a monomorphic newtype) is cloned unchanged. Descends every structural `Ty` that carries inner types.
 fn subst_template_vars(template: &crate::ty::Ty, args: &[crate::ty::Ty]) -> crate::ty::Ty {
+    #[cfg(test)]
+    SUBST_TEMPLATE_VARS_VISITS.with(|c| c.set(c.get() + 1));
     use crate::ty::Ty;
     match template {
         Ty::Var(i) => args.get(*i as usize).cloned().unwrap_or(Ty::Var(*i)),
