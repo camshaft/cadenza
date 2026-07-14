@@ -1396,7 +1396,7 @@ fn collect_cont_ops(
                 }
                 // A `ListLen` probe folds against a constant list; a runtime list payload declines at
                 // `build_lit_test`, so it is never emitted to a runtime `LitTest` either.
-                crate::core::Probe::ListLen(_) => {
+                crate::core::Probe::ListLen { .. } => {
                     unreachable!(
                         "a list-length probe folds; it is never emitted to a runtime LitTest"
                     )
@@ -5205,7 +5205,7 @@ fn emit_probe_condition(probe: &crate::core::Probe, src: OperandSrc, it: IntTy, 
         }
         // A `ListLen` probe folds against a constant list; a runtime list payload declines earlier, so it
         // never reaches a runtime scalar probe.
-        crate::core::Probe::ListLen(_) => {
+        crate::core::Probe::ListLen { .. } => {
             unreachable!("a list-length probe folds; it is never emitted as a runtime scalar probe")
         }
         crate::core::Probe::Wild => {}
@@ -5420,7 +5420,7 @@ fn emit_probe_chain(
                     "a string-literal probe folds; a runtime string match declines at is_scalar"
                 )
             }
-            crate::core::Probe::ListLen(_) => {
+            crate::core::Probe::ListLen { .. } => {
                 unreachable!(
                     "a list-length probe folds; a runtime list match declines at build_lit_test"
                 )
@@ -6066,7 +6066,7 @@ fn emit_sum_cont(
                         "a string-literal payload pattern is not yet emitted at run time",
                     ));
                 }
-                crate::core::Probe::ListLen(_) => {
+                crate::core::Probe::ListLen { .. } => {
                     // A `ListLen` payload pattern over a RUNTIME list declines at `build_lit_test` (only a
                     // constant list folds), so it never reaches this runtime sum-payload literal-test emit.
                     return Err(Reject::decline(

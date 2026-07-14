@@ -1853,13 +1853,29 @@ fn find_binder_in_list(
     path: &mut Vec<crate::core::PathStep>,
     heads: &mut Vec<StructId>,
 ) -> bool {
-    let elems: Vec<StructId> = db
+    let raw: Vec<StructId> = db
         .ast
         .as_form(pattern, "list")
         .or_else(|| db.ast.as_ctor_form(pattern, "list"))
         .unwrap_or(&[])
         .to_vec();
-    for (i, &elem) in elems.iter().enumerate() {
+    // Split off a trailing `.. rest`: the rest binder (the single element after the `..` marker) binds the
+    // TAIL SUBLIST from index `lead` onward, via a `RestFrom(lead)` step (`const_at_path`'s `RestFrom`/
+    // `ListNew` fold; the payload analogue of the top-level `list_rest_binder` path). `lead` = the leading
+    // fixed element patterns.
+    let (leads, rest): (&[StructId], Option<StructId>) =
+        match raw.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
+            Some(k) if k + 2 == raw.len() => (&raw[..k], Some(raw[k + 1])),
+            _ => (&raw[..], None),
+        };
+    if let Some(rest) = rest
+        && db.ast.as_name(rest) == Some(name)
+        && name != "_"
+    {
+        path.push(crate::core::PathStep::RestFrom(leads.len()));
+        return true;
+    }
+    for (i, &elem) in leads.iter().enumerate() {
         let path_len = path.len();
         let heads_len = heads.len();
         path.push(crate::core::PathStep::Elem(i));

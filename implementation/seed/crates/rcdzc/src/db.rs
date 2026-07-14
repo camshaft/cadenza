@@ -867,6 +867,14 @@ pub struct Db {
     /// in the consumer's span table.
     user_node_count: u32,
 
+    /// Quote-PATTERN nodes with a NON-FINAL `,@` splice — `` `(f ,@init ,last) `` — collected by
+    /// [`crate::quote::reify_quotes`] (which detects them while desugaring a pattern-position quasiquote,
+    /// then leaves the node un-reified). A `,@` binds the tail, so it is meaningful only as the FINAL
+    /// element (`metaprogramming.md`); a non-final one is ill-formed. [`crate::compile::collect_faults`]
+    /// reports each as CDZ0221 (the quote-pattern analogue of the binary-form CDZ0220). Empty for a
+    /// program with no such defect.
+    pub(crate) nonfinal_splice_patterns: Vec<StructId>,
+
     /// The resolved-form column. Filled only by [`crate::resolve`].
     pub(crate) resolved: Column<StructId, Resolved>,
     /// The solved-type column. Filled only by [`crate::infer`].
@@ -972,7 +980,9 @@ impl Db {
         // BEFORE the parent index so the emitted `(. Ast …)`/`(list …)` nodes resolve like source. A
         // quote whose body mentions a leaf the `Ast` sum can't carry yet, or a wrong-arity `(quote …)`,
         // is left untouched for `resolve::resolve_quote` (a Todo decline / a CDZ0201, never a rewrite).
-        crate::quote::reify_quotes(&mut ast);
+        // Returns the quote-PATTERN nodes with a NON-FINAL `,@` splice (ill-formed — a rest binds the
+        // tail, meaningful only last), which `collect_faults` reports CDZ0221.
+        let nonfinal_splice_patterns = crate::quote::reify_quotes(&mut ast);
         // ACCUMULATOR INTRODUCTION: rewrite a linear NON-tail recursion (`f n = if base 0 (+ n (f (- n
         // 1)))`) into a tail-recursive accumulator def (which `select`'s loop transform then compiles to a
         // constant-stack `loop`). Synthesizes a fresh accumulator def and re-seeds the original — appending
@@ -1133,6 +1143,7 @@ impl Db {
             unit_defines,
             file_scope,
             user_node_count,
+            nonfinal_splice_patterns,
             reduce_depth: 0,
             reduce_nodes: 0,
             descent_depth: 0,

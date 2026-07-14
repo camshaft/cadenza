@@ -112,8 +112,9 @@ struct QuotePlan {
 
 /// Desugar every reifiable `(quote FORM)` into the `Ast` constructor application that builds `FORM`'s
 /// value (see the module docs). Runs during `Db::load`, before the parent index — so the emitted
-/// `(. Ast …)` projections and `(list …)` forms resolve like hand-written source.
-pub fn reify_quotes(ast: &mut Arenas) {
+/// `(. Ast …)` projections and `(list …)` forms resolve like hand-written source. Returns the
+/// quote-PATTERN nodes with a NON-FINAL `,@` splice (ill-formed), which `collect_faults` reports CDZ0221.
+pub fn reify_quotes(ast: &mut Arenas) -> Vec<StructId> {
     // Snapshot the pre-existing node count: only ORIGINAL nodes can be a source quote, and reification
     // APPENDS (ids >= this bound), so the scan must not consider its own output. Descending id order so
     // an outer quote is reified from its body's original structure before its inner quotes are reached
@@ -123,6 +124,10 @@ pub fn reify_quotes(ast: &mut Arenas) {
     // quote/quasiquote here DESTRUCTURES (desugars to an `Ast.*` PATTERN via `reify_pattern`), it does
     // not construct. Built from a local parent map because this pass runs before `Db`'s `parent_index`.
     let pattern_nodes = pattern_position_nodes(ast, original_len);
+    // Quote-pattern nodes carrying a NON-FINAL `,@` splice — ill-formed (a rest binds the tail, meaningful
+    // only last). Collected while scanning + reported CDZ0221 by `collect_faults` (the node is left
+    // un-reified since `reify_pattern` bails on it).
+    let mut nonfinal_splice: Vec<StructId> = Vec::new();
     let mut plans: Vec<QuotePlan> = Vec::new();
     for i in (0..original_len).rev() {
         let id = StructId(i);
@@ -155,8 +160,14 @@ pub fn reify_quotes(ast: &mut Arenas) {
             .as_deref()
         {
             if in_pattern {
+                // A NON-FINAL `,@` in this pattern template is ill-formed — record the quasiquote node
+                // for `collect_faults` to reject CDZ0221 (a rest binds the tail, meaningful only last).
+                // Checked before reify so the node is caught even though `reify_pattern` bails on it.
+                if template_has_nonfinal_pattern_splice(ast, *tmpl) {
+                    nonfinal_splice.push(id);
+                }
                 // Desugar to the `Ast.*` PATTERN. `None` = an un-reifiable leaf, a non-final `,@`
-                // (→ resolve declines / CDZ0221 elsewhere), or an arity fault — leave for resolve.
+                // (recorded above → CDZ0221), or an arity fault — leave for resolve.
                 reify_pattern(ast, *tmpl, true)
             } else {
                 // Reify ACTIVELY at depth 1. `None` = an un-reifiable leaf, an ACTIVE splice (`,@` —
@@ -187,6 +198,32 @@ pub fn reify_quotes(ast: &mut Arenas) {
         // so this never clobbers another plan's quote node.)
         ast.structure[plan.reified.0 as usize] = Struct::List(Vec::new());
     }
+    nonfinal_splice
+}
+
+/// Whether a quote-PATTERN template contains a NON-FINAL `,@` splice — an `(unquote-splicing …)` that is
+/// not the last element of its enclosing list (`` `(f ,@init ,last) `` — `,@init` before `,last`). A
+/// `,@` binds the tail, so it is meaningful only LAST; a non-final one is ill-formed (CDZ0221). Walks the
+/// template structurally (an `unquote`'s own operand is a sub-pattern, not evaluated here).
+fn template_has_nonfinal_pattern_splice(ast: &Arenas, node: StructId) -> bool {
+    let Struct::List(items) = ast.get(node) else {
+        return false;
+    };
+    let items = items.clone();
+    let last = items.len().saturating_sub(1);
+    for (i, &child) in items.iter().enumerate() {
+        // A `(unquote-splicing …)` child that is not in the final position is the fault.
+        if ast.head_name(child) == Some("unquote-splicing") && i != last {
+            return true;
+        }
+        // Recurse into a nested list child (a deeper template level).
+        if matches!(ast.get(child), Struct::List(_))
+            && template_has_nonfinal_pattern_splice(ast, child)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// The set of original node ids that sit in PATTERN position — a match arm's pattern slot and every

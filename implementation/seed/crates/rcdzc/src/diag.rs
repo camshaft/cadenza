@@ -201,6 +201,13 @@ pub enum Code {
     /// structural rejection, not a runtime surprise (a value that does not fit its segment traps at run
     /// time instead, "binary value does not fit segment"). The CDZ02xx types-and-patterns band.
     IllFormedBinary,
+    /// A non-final `,@` SPLICE in a QUOTE PATTERN — `` `(f ,@init ,last) `` puts `,@init` (which binds the
+    /// remaining elements) before a fixed `,last`, requiring a variable-length gap flanked by a fixed tail
+    /// (`metaprogramming.md` §A `,@<name>` … MUST appear only as the final element). Ill-formed: a rest
+    /// binds the whole tail, so it is meaningful only LAST. The quote-pattern companion of the binary-form
+    /// `IllFormedBinary` (an unsized `(bytes …)` segment is legal only last), one code down the CDZ02xx
+    /// types-and-patterns band.
+    NonFinalSplice,
     /// A DIMENSIONAL mismatch — combining quantities of incompatible dimension: adding, subtracting, or
     /// comparing a length to a time; annotating a quantity at a dimension the expression does not derive.
     /// Units are checked THEN ERASED before the program runs, so a dimensional inconsistency is ALWAYS a
@@ -291,6 +298,7 @@ impl Code {
             Code::LatentAuthority => "CDZ0404",
             Code::ClosureEscapesEffect => "CDZ0406",
             Code::IllFormedBinary => "CDZ0220",
+            Code::NonFinalSplice => "CDZ0221",
             Code::DimensionMismatch => "CDZ0501",
             Code::UnitConflict => "CDZ0502",
             Code::UnknownDirective => "CDZ0601",

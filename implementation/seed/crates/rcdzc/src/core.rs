@@ -145,13 +145,14 @@ pub enum Probe {
     /// string scrutinee is not a scalar (`is_scalar` is Int/Bool), so its match declines until the runtime
     /// string-equality probe is emitted (a later increment).
     Str(String),
-    /// A fixed-arity LIST pattern's length test — the list at this path must have exactly `n` elements
-    /// (`(list p0 … p{n-1})`). Like `Str`, only the CONSTANT-scrutinee FOLD is realized (a constant
-    /// `Core::ListNew` of the right length passes, then each element is destructured at `Elem(i)`); a
-    /// RUNTIME list payload is not a scalar, so its match declines until the runtime list matcher (the
-    /// `.. rest` tail + a runtime length probe) arrives. Carried as DATA, gated once the enclosing
-    /// discriminant constraints are satisfied, exactly like a literal test.
-    ListLen(usize),
+    /// A LIST pattern's length test — the list at this path must have `len` elements (`at_least` false, a
+    /// fixed-arity `(list p0 … p{len-1})`) or AT LEAST `len` (`at_least` true, a rest pattern `(list p0 …
+    /// p{len-1} .. rest)` binding the tail). Like `Str`, only the CONSTANT-scrutinee FOLD is realized (a
+    /// constant `Core::ListNew` of the right length passes, then each leading element is destructured at
+    /// `Elem(i)` and any rest binder reads `RestFrom(len)`); a RUNTIME list payload is not a scalar, so its
+    /// match declines until the runtime list matcher is wired into the payload path. Carried as DATA, gated
+    /// once the enclosing discriminant constraints are satisfied, exactly like a literal test.
+    ListLen { len: usize, at_least: bool },
     /// The wildcard `_` OR a bare binder — always matches.
     Wild,
 }

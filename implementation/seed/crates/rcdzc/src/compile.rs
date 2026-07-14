@@ -593,6 +593,21 @@ fn unbacktick(msg: &str) -> Option<&str> {
 
 fn collect_faults(db: &mut Db) -> Vec<Reject> {
     let mut faults = Vec::new();
+    // NON-FINAL `,@` SPLICE in a QUOTE PATTERN — `` `(f ,@init ,last) `` puts a tail-binding `,@` before
+    // a fixed element (`metaprogramming.md`: a `,@<name>` MUST appear only as the final element). Detected
+    // at load by `quote::reify_quotes` (which leaves the offending quasiquote un-reified); reported here as
+    // CDZ0221, the quote-pattern analogue of the binary-form CDZ0220 (an unsized `bytes` segment is legal
+    // only last).
+    for &occ in &db.nonfinal_splice_patterns.clone() {
+        faults.push(
+            Reject::coded(
+                crate::diag::Code::NonFinalSplice,
+                "a `,@` splice in a quote pattern binds the remaining elements, so it must be the \
+                 final element of its template",
+            )
+            .at(occ),
+        );
+    }
     // UNMODELED TOP-LEVEL FORM. A top-level `(head …)` whose head resolves to NOTHING — neither a
     // recognized declaration (`def`/`export`/`type`/`effect`) nor a grammar head nor a bound name. Two
     // real cases reach here, and they are STRUCTURALLY INDISTINGUISHABLE (both a list led by an unbound

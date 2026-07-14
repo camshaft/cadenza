@@ -1931,7 +1931,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             crate::core::Probe::Str(_) => Some(crate::ty::Ty::String),
             // A `ListLen` probe never arises in the SCALAR match path (it comes from a list PAYLOAD
             // sub-pattern in the sum decision tree, not `classify_probe`); no scalar-type check applies.
-            crate::core::Probe::ListLen(_) => None,
+            crate::core::Probe::ListLen { .. } => None,
             crate::core::Probe::Wild => None,
         };
         if let Some(pt) = pat_ty
@@ -3218,25 +3218,34 @@ fn pattern_constraints(
     // A LIST pattern `(list p0 p1…)` at `path` — a variant's LIST payload, destructured element-by-element
     // (`metaprogramming.md` quote patterns desugar `` `(+ ,a ,b) `` to `(Ast.List (list (Ast.Name "+") a
     // b))`, whose `(list …)` payload sub-pattern this handles; also a user `(W.Wrap (list a b))`). A list
-    // has a RUNTIME length, so a fixed-arity list pattern imposes a `ListLen(n)` test (like a literal
-    // test — gated once the discriminant constraints hold, folded against a constant list); each element
-    // sub-pattern then descends at `path + [Elem(i)]`, of the list's element type. SCOPE: fixed arity only
-    // (no `.. rest` tail) and the CONSTANT-scrutinee fold — a runtime list payload's `ListLen`/element
-    // reads decline (the runtime list matcher is task #51). A `.. rest` in a payload declines cleanly here.
+    // has a RUNTIME length, so the pattern imposes a `ListLen` test (like a literal test — gated once the
+    // discriminant constraints hold, folded against a constant list); each LEADING element sub-pattern
+    // descends at `path + [Elem(i)]`, of the list's element type. A trailing `.. rest` makes the length
+    // test AT-LEAST-`lead` and binds the tail — the rest binder resolves independently via `RestFrom(lead)`
+    // (`resolve::find_binder_in_list`), so it needs no constraint here. SCOPE: the CONSTANT-scrutinee fold
+    // only — a runtime list payload's `ListLen`/element reads decline (`build_lit_test`).
     if is_list_pattern(db, pat) {
-        let elems: Vec<StructId> = db
+        let raw: Vec<StructId> = db
             .ast
             .as_form(pat, "list")
             .or_else(|| db.ast.as_ctor_form(pat, "list"))
             .unwrap_or(&[])
             .to_vec();
-        // A `.. rest` tail (a `..` marker among the elements) needs the runtime sublist matcher — not this
-        // increment. Decline so the match is a Todo (never a wrong match).
-        if elems.iter().any(|&e| db.ast.as_name(e) == Some("..")) {
-            return Err(Reject::decline(
-                "a list rest pattern `.. rest` inside a variant payload is not yet supported",
-            ));
-        }
+        // Split off a trailing `.. rest`: a `..` MARKER followed by exactly one binder as the final two
+        // elements. `lead` = the fixed leading element patterns; `has_rest` = a tail-binding rest pattern.
+        let dotdot = raw.iter().position(|&e| db.ast.as_name(e) == Some(".."));
+        let (leads, has_rest): (&[StructId], bool) = match dotdot {
+            Some(k) if k + 2 == raw.len() => (&raw[..k], true), // `(list p… .. rest)` — well-formed
+            Some(_) => {
+                // A `..` that is not the second-to-last element is malformed (a rest binds the whole tail,
+                // so it must be final). CDZ0201 — the same shape rule a top-level list pattern enforces.
+                return Err(Reject::coded(
+                    Code::Malformed,
+                    "a list rest pattern `.. rest` must be the final element",
+                ));
+            }
+            None => (&raw[..], false),
+        };
         let elem_ty = match ty {
             crate::ty::Ty::List(e) => (**e).clone(),
             crate::ty::Ty::Any => crate::ty::Ty::Any,
@@ -3250,11 +3259,18 @@ fn pattern_constraints(
                 ));
             }
         };
-        // The fixed-arity LENGTH test — the list at `path` must have exactly `elems.len()` elements. Gated
-        // like a literal test (folded against a constant `Core::ListNew`); a mismatch falls through.
-        lit_tests.push((path.clone(), crate::core::Probe::ListLen(elems.len())));
+        // The LENGTH test — exactly `leads.len()` for a fixed pattern, AT LEAST `leads.len()` when a
+        // `.. rest` binds the tail. Gated like a literal test (folded against a constant `Core::ListNew`);
+        // a mismatch falls through.
+        lit_tests.push((
+            path.clone(),
+            crate::core::Probe::ListLen {
+                len: leads.len(),
+                at_least: has_rest,
+            },
+        ));
         let mut out = Vec::new();
-        for (i, &elem) in elems.iter().enumerate() {
+        for (i, &elem) in leads.iter().enumerate() {
             let mut deeper = path.clone();
             deeper.push(crate::core::PathStep::Elem(i));
             out.extend(pattern_constraints(db, elem, &elem_ty, deeper, lit_tests)?);
@@ -3715,10 +3731,16 @@ fn build_tree(
                     // equality (both NFC-normalized by the reader) — `(Ast.Name "+")` matches an
                     // `Ast.Name` carrying "+". A runtime string payload has no `ConstStr` → declines below.
                     (crate::core::Probe::Str(s), Core::ConstStr(cs)) => s == cs,
-                    // A fixed-arity list pattern's length test folds against a CONSTANT list: the
-                    // `Core::ListNew` must have exactly `n` elements. (A runtime list has no `ListNew`
-                    // here, so it falls to the runtime-test arm below, which declines — task #51.)
-                    (crate::core::Probe::ListLen(n), Core::ListNew { elems }) => elems.len() == *n,
+                    // A LIST length test folds against a CONSTANT list: an exact test needs `== len`, a
+                    // rest (`at_least`) test needs `>= len` (the tail binds the surplus). (A runtime list
+                    // has no `ListNew` here → the runtime-test arm below, which declines.)
+                    (crate::core::Probe::ListLen { len, at_least }, Core::ListNew { elems }) => {
+                        if *at_least {
+                            elems.len() >= *len
+                        } else {
+                            elems.len() == *len
+                        }
+                    }
                     // A non-constant / type-mismatched sub-value can't fold — emit the runtime test.
                     _ => {
                         return build_lit_test(
@@ -3962,7 +3984,7 @@ fn build_lit_test(
     // the backend). The CONSTANT case folded in `build_tree` and never reaches here.
     if matches!(
         probe,
-        crate::core::Probe::ListLen(_) | crate::core::Probe::Str(_)
+        crate::core::Probe::ListLen { .. } | crate::core::Probe::Str(_)
     ) {
         return Err(Reject::decline(
             "a list/string pattern over a runtime payload is not yet supported (only a constant folds)",
@@ -4242,7 +4264,7 @@ fn probe_matches_int(probe: &crate::core::Probe, v: &IntValue) -> bool {
         crate::core::Probe::Wild => true,
         crate::core::Probe::Bool(_)
         | crate::core::Probe::Str(_)
-        | crate::core::Probe::ListLen(_) => false,
+        | crate::core::Probe::ListLen { .. } => false,
     }
 }
 
@@ -4253,7 +4275,7 @@ fn probe_matches_bool(probe: &crate::core::Probe, b: bool) -> bool {
         crate::core::Probe::Wild => true,
         crate::core::Probe::Int(_)
         | crate::core::Probe::Str(_)
-        | crate::core::Probe::ListLen(_) => false,
+        | crate::core::Probe::ListLen { .. } => false,
     }
 }
 
@@ -4266,7 +4288,7 @@ fn probe_matches_str(probe: &crate::core::Probe, s: &str) -> bool {
         crate::core::Probe::Wild => true,
         crate::core::Probe::Int(_)
         | crate::core::Probe::Bool(_)
-        | crate::core::Probe::ListLen(_) => false,
+        | crate::core::Probe::ListLen { .. } => false,
     }
 }
 

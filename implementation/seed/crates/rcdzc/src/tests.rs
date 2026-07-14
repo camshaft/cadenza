@@ -18719,16 +18719,46 @@ mod match_engine {
             .is_none(),
             "a literal head in a quote pattern constrains by equality (falls through on a mismatch)"
         );
-        // A `.. rest` tail inside a variant payload needs the runtime sublist matcher (task #51) — it
-        // DECLINES (a Todo), never a miscompile.
-        assert_eq!(
+        // A `.. rest` tail inside a variant payload now BINDS (a `RestFrom(lead)` step, folded against a
+        // constant list) — `(W.Wrap (list a .. rest))` over `(list 1 2 3)` binds `a`=1 (and `rest`=[2,3]).
+        // Compiles clean.
+        assert!(
             reject_code(
                 "(module m (type W (Wrap (List Int64))) \
                    (def (main) (match (W.Wrap (list 1 2 3)) ((W.Wrap (list a .. rest)) a) (_ 0))) \
                  (export main))"
-            ),
-            None,
-            "a rest-binder list sub-pattern declines cleanly (no artifact, no coded rejection)"
+            )
+            .is_none(),
+            "a rest-binder list sub-pattern binds the leading element + tail"
+        );
+    }
+
+    #[test]
+    fn a_quote_pattern_final_splice_binds_the_rest_and_a_non_final_splice_is_cdz0221() {
+        // 12-metaprogramming §A Quasiquote In Pattern Position: a FINAL `,@name` binds the remaining
+        // elements as a list. `` `(f ,@args) `` desugars to `(Ast.List (list (Ast.Name "f") .. args))`,
+        // whose `.. args` rest binder folds against the constant `(quote (f 1 2 3))` → `args` = the three
+        // operand nodes; `List.len args` = 3. Compiles clean.
+        assert!(
+            reject_code(
+                "(module m (def (main) \
+                   (match (quote (f 1 2 3)) (`(f ,@args) ((. List len) args)) (other 0))) \
+                 (export main))"
+            )
+            .is_none(),
+            "a final `,@` in a quote pattern binds the rest of the elements"
+        );
+        // A NON-FINAL `,@` — `` `(f ,@init ,last) `` — is ill-formed (a rest binds the tail, so it is
+        // meaningful only last), rejected CDZ0221 (the quote-pattern analogue of the binary-form CDZ0220).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) \
+                   (match (quote (f 1 2 3)) (`(f ,@init ,last) last) (other other))) \
+                 (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0221"),
+            "a non-final `,@` in a quote pattern is CDZ0221"
         );
     }
 
