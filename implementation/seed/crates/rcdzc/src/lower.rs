@@ -316,10 +316,17 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // as `The`) — erased to its underlying Unit (no box, no disc). The node's type is
                 // `Ty::Nominal { inner: Unit }`, which occupies no runtime slot, exactly as `Core::Unit`.
                 crate::ty::Ty::Nominal { .. } => Core::Unit,
-                // A payload variant used bare is a partial application (a function value).
-                _ => Core::Poison(Reject::decline(
-                    "a variant constructor with payloads must be applied to its arguments",
-                )),
+                // A payload variant used BARE as a first-class VALUE (`W.Mk` stored in a tuple/list, or
+                // returned) — ETA-EXPAND it to a runtime closure `(fn (p…) (W.Mk p…))` lifted like any
+                // lambda value, so a constructor is a first-class function even when it cannot be inlined
+                // away. (The inline-fold path — a bare ctor applied via an inlined HOF — is handled earlier
+                // by `ctor_spine`; this is the genuine-runtime-closure case.) Falls back to declining if the
+                // ctor scheme or a payload/result type has no machine representation.
+                _ => eta_ctor_closure(db, id).unwrap_or_else(|| {
+                    Core::Poison(Reject::decline(
+                        "a variant constructor with payloads must be applied to its arguments",
+                    ))
+                }),
             }
         }
         // `Map.empty` used as a VALUE — an operator record whose `(meta apply)` is `Prim::MapEmpty`.
@@ -2546,10 +2553,26 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
 /// a `_`/whole-list binder or a `(list .. rest)` arm covers the infinite tail — else CDZ0210.
 //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
 //# A list MUST be matchable by an element pattern that names some number of leading elements positionally and MAY end in a rest binder for the remaining elements.
+// Length dispatch: a fixed-arity arm matches exactly its arity, a rest arm matches length ≥ its lead, a
+// bare binder / `_` matches any length; the empty pattern `(list)` matches only the empty list, and a
+// single-leading-element-plus-rest `(list x .. r)` matches any non-empty list.
+//= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
+//# An element pattern naming exactly `n` elements with no rest binder MUST match a list of length exactly `n`, binding each named element position to the corresponding element; a list of any other length MUST NOT match that pattern.
+//= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
+//# An element pattern naming `n` leading elements followed by a rest binder MUST match any list of length at least `n`, binding the leading positions to the first `n` elements and the rest binder to a list of the remaining elements in order.
+//= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
+//# In particular, the empty element pattern MUST match exactly the empty list, and a single-leading-element-plus-rest pattern MUST match any non-empty list, binding its first element and the rest of the list.
 //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
 //# A set of list-element arms MUST be treated as exhaustive when it covers both the empty list and every non-empty list — for example an empty-list arm together with a leading-element-plus-rest arm, or an arm ending in a rest binder that names no leading elements — and a set of arms that leaves some length uncovered MUST be a compile-time error under *Matching Is Exhaustive Or Rejected* unless a later arm (a name or wildcard pattern) covers the remainder.
 //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
 //# An element pattern MUST observe a list only through its length and its elements in order; it MUST NOT expose or depend on any internal cell or node structure of the list's representation, so that the same pattern matches a list regardless of how the list is represented.
+// A leading element position COMPOSES — it MAY itself be any irrefutable nested pattern (a wildcard, a
+// name, a tuple pattern, a single-variant constructor) matched recursively to any depth
+// (`list_element_irrefutable_or_decline`), and the whole list pattern is checked linear (CDZ0102 via
+// `check_pattern_linear`). The rest binder binds the tail SUBLIST, whose type is the SAME `List T` as the
+// scrutinee (infer.rs `RestFrom`), so a recursive function may match it again.
+//= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
+//# Each element position and the rest binder MUST be a binder position in the sense of *Patterns Compose*, so an element MAY itself be any pattern (a wildcard, a name, a tuple pattern, a constructor pattern, or a nested element pattern) matched recursively, and the whole pattern MUST remain linear (`CDZ0102`). The rest binder MUST bind a value of the same list type as the scrutinee, so a recursive function MAY match it again.
 fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     enum Arm {
         Fixed(usize, StructId), // a fixed-arity `(list …)` of this exact arity
@@ -3182,7 +3205,7 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     // Compile the matrix into a decision tree rooted at the scrutinee (path `[]`, type `scrut_ty`).
     let mut path_types: PathTypes = std::collections::HashMap::new();
     path_types.insert(Vec::new(), std::sync::Arc::new(scrut_ty));
-    match build_tree(db, scrutinee, &rows, &path_types) {
+    match build_tree(db, scrutinee, &rows, &mut path_types) {
         // The whole match reduces to one body (a top-level catch-all, or a fully constant-folded tree).
         Ok(crate::core::SumCont::Leaf(body)) => core_of(db, body),
         // Otherwise the root is a Switch (the usual case) — or a Guarded, when a disc-fold collapsed the
@@ -3196,18 +3219,30 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     }
 }
 
+/// A match-decision PATH shared across nesting levels — an `Arc<[PathStep]>`, not a bare `Vec`:
+/// `build_tree`'s partition loop re-clones every surviving row's constraint/lit-test paths at EACH nesting
+/// level, and `build_tree` recurses once per level. With `Vec<PathStep>` paths a deeply-nested pattern
+/// (`(Some (Some … x))`) deep-copied its O(depth)-long paths at every one of `depth` levels = O(depth³) (a
+/// depth-800 nested match: ~2s, ~37% in `Vec::clone`). `Arc` makes each per-level path clone a pointer
+/// bump, dropping the rebuild to O(depth²). (Same fix as `PathTypes`' `Arc<Ty>` values.)
+type MatchPath = std::sync::Arc<[crate::core::PathStep]>;
+/// A discriminant CONSTRAINT: the sub-value at this `MatchPath` must have this variant discriminant.
+type PathConstraint = (MatchPath, u32);
+/// A LITERAL test: the sub-value at this `MatchPath` must equal this literal probe.
+type PathLitTest = (MatchPath, crate::core::Probe);
+
 /// One row of the pattern matrix: the discriminant CONSTRAINTS this arm imposes (each a `(path, disc)`),
 /// and the arm's body. An empty constraint set is a catch-all (a bare binder / `_` top-level pattern) —
 /// it matches regardless of any discriminant. Constraints are ordered outer-to-inner (a shorter path
 /// first), which is the order the tree tests them.
 #[derive(Clone)]
 struct MatchRow {
-    constraints: Vec<(Vec<crate::core::PathStep>, u32)>,
+    constraints: Vec<PathConstraint>,
     /// LITERAL tests the arm imposes on payload sub-values: each `(path, probe)` requires the scalar at
     /// `path` to equal the literal. A `(Some 0)` pattern adds `([Payload], Int(0))`. Like a guard, a
     /// literal test does NOT count toward exhaustiveness (it may not match — it needs a same-variant
     /// binder/wildcard fall-through), and it is gated once the discriminant constraints are satisfied.
-    lit_tests: Vec<(Vec<crate::core::PathStep>, crate::core::Probe)>,
+    lit_tests: Vec<PathLitTest>,
     body: StructId,
     /// A match-arm GUARD `(guard <pattern> <cond>)` — the boolean `<cond>` the arm additionally requires.
     /// `None` for an unguarded arm. Once every discriminant constraint is satisfied (the row reaches a
@@ -3641,8 +3676,8 @@ fn pattern_constraints(
     pat: StructId,
     ty: &crate::ty::Ty,
     path: Vec<crate::core::PathStep>,
-    lit_tests: &mut Vec<(Vec<crate::core::PathStep>, crate::core::Probe)>,
-) -> Result<Vec<(Vec<crate::core::PathStep>, u32)>, Reject> {
+    lit_tests: &mut Vec<PathLitTest>,
+) -> Result<Vec<PathConstraint>, Reject> {
     // A GUARDED pattern `(guard <inner-pattern> <cond>)` contributes the INNER pattern's discriminant
     // constraints (the guard itself is not a discriminant test — it is carried on the `MatchRow` by
     // `lower_match_sum` and gated at the leaf in `build_tree`). Descend into the inner pattern so a
@@ -3695,7 +3730,7 @@ fn pattern_constraints(
                 ),
             ));
         }
-        lit_tests.push((path, probe));
+        lit_tests.push((path.into(), probe));
         return Ok(Vec::new());
     }
     // A bare NAME: either a NULLARY VARIANT of this sum (`None`) or a binder/wildcard. Resolve it against
@@ -3706,7 +3741,7 @@ fn pattern_constraints(
         if name != "_"
             && let Some(disc) = variant_disc_by_name(db, ty, &name)
         {
-            return Ok(vec![(path, disc)]);
+            return Ok(vec![(path.into(), disc)]);
         }
         return Ok(Vec::new()); // a binder / wildcard — no constraint
     }
@@ -3818,7 +3853,7 @@ fn pattern_constraints(
         // `.. rest` binds the tail. Gated like a literal test (folded against a constant `Core::ListNew`);
         // a mismatch falls through.
         lit_tests.push((
-            path.clone(),
+            path.clone().into(),
             crate::core::Probe::ListLen {
                 len: leads.len(),
                 at_least: has_rest,
@@ -3994,7 +4029,7 @@ fn pattern_constraints(
             ),
         ));
     }
-    let mut out = vec![(path.clone(), disc)];
+    let mut out: Vec<PathConstraint> = vec![(path.clone().into(), disc)];
     // Recurse into the payload. A single-payload variant `(Some p)` descends into `p` at `path +
     // [Payload]`; the payload's TYPE is the variant's payload type at this instantiation, so a nested
     // variant name there resolves against the right sum. A NULLARY variant pattern `(None)`/bare `None`
@@ -4235,14 +4270,22 @@ fn variant_disc_by_name(db: &mut Db, ty: &crate::ty::Ty, name: &str) -> Option<u
 /// that variant's payload type at `switch_path + [Payload]`). Keyed per-branch (not global), because the
 /// SAME path under different parent variants has different types (`Result`'s `[Payload]` is `a` in the
 /// `Ok` arm, `e` in the `Err` arm) — a global map would collide; a branch-local one is always consistent.
-// The value at each path is an `Arc<Ty>`, NOT a bare `Ty`: `extend_path_types` clones the whole map at
-// every nesting level (so sibling arms don't share a mutation), and a deeply-NESTED pattern (`(Some (Some
-// … x))`) descends `depth` levels with a map that grows one entry per level. With bare `Ty` values, each
-// per-level clone deep-copied every entry's Ty (itself O(depth) deep for a nested sum) → O(depth³) total
-// (a depth-400 nested match: 7.5s, 52% in `Ty::clone`). `Arc` makes the per-level map clone a cheap
-// pointer-bump per entry, dropping the map-clone factor to O(depth²).
+// The value at each path is an `Arc<Ty>`, NOT a bare `Ty`. `build_tree` threads ONE shared map with scoped
+// insert/restore per arm (see its arm loop): entering a variant arm inserts the arm's payload-path types
+// (recording each key's prior value), recurses, then restores — so sibling arms don't share a mutation
+// without cloning the whole map. An `Arc<Ty>` value keeps a restored prior entry a pointer-bump rather than
+// a deep `Ty` copy. (An earlier version CLONED the whole map per arm per level → O(depth³) on a nested
+// pattern; the shared-map + `Arc`-path fixes dropped that whole factor.)
 type PathTypes =
     std::collections::HashMap<Vec<crate::core::PathStep>, std::sync::Arc<crate::ty::Ty>>;
+/// A path-type ADDITION a variant arm makes: `(path, sub-value type)`. `path` is a plain `Vec` (a `Vec` key
+/// the `PathTypes` map owns), the type an `Arc` (shared, so a restore is a pointer bump).
+type PathTypeEntry = (Vec<crate::core::PathStep>, std::sync::Arc<crate::ty::Ty>);
+/// A saved-for-restore `PathTypes` slot: the key, and its value BEFORE the arm's insert (`None` = absent).
+type PathTypeRestore = (
+    Vec<crate::core::PathStep>,
+    Option<std::sync::Arc<crate::ty::Ty>>,
+);
 
 /// Compile a pattern MATRIX (`rows`) into a decision-tree CONTINUATION for the value at `scrutinee`. If
 /// the FIRST row is a catch-all (no constraints), it matches unconditionally → its body is the leaf (later
@@ -4256,7 +4299,7 @@ fn build_tree(
     db: &mut Db,
     scrutinee: StructId,
     rows: &[MatchRow],
-    path_types: &PathTypes,
+    path_types: &mut PathTypes,
 ) -> Result<crate::core::SumCont, Reject> {
     // The FIRST row whose discriminant constraints are all satisfied (empty) is at a LEAF position. If it
     // is UNGUARDED it matches unconditionally → its body is the leaf (later rows unreachable). If it is
@@ -4390,7 +4433,7 @@ fn build_tree(
     // The switch sub-value's type, as an `Arc` — the seeded case SHARES the map's `Arc` (a pointer bump,
     // not a deep clone of an O(depth)-nested `Ty`), so descending a deeply-nested pattern does not re-clone
     // the growing type at every level. The computed fallback wraps its fresh `Ty` once.
-    let sub_ty: std::sync::Arc<crate::ty::Ty> = match path_types.get(&switch_path) {
+    let sub_ty: std::sync::Arc<crate::ty::Ty> = match path_types.get(&switch_path[..]) {
         Some(t) => t.clone(),
         // Not seeded exactly: try a raw type-walk from the scrutinee, then (for a path that descends
         // through a boxed-sum `Payload` a raw walk can't cross) walk the SUFFIX from the longest seeded
@@ -4498,11 +4541,32 @@ fn build_tree(
     for &d in &tested {
         let own = disc_rows.remove(&d).unwrap_or_default();
         let sub_rows = merge_rows(own, &default_rows);
-        let child_types = extend_path_types(db, path_types, &switch_path, &sub_ty, decl, d);
-        let cont = build_tree(db, scrutinee, &sub_rows, &child_types)?;
+        // This variant's payload-type additions to `path_types`. SCOPED insert/restore over the SHARED map
+        // (rather than a whole-map clone per arm): insert the new keys — recording each key's PRIOR value —
+        // recurse, then RESTORE so a sibling arm (which extends the SAME `switch_path+[Payload]` key with
+        // ITS own payload type) sees the parent state, not this arm's. Sibling arms must not share a
+        // mutation; the parent map is left exactly as found. This is what drops the O(depth³) map-clone.
+        let additions = path_type_additions(db, &switch_path, &sub_ty, decl, d);
+        let mut prev: Vec<PathTypeRestore> = Vec::with_capacity(additions.len());
+        for (path, ty) in additions {
+            let old = path_types.insert(path.clone(), ty);
+            prev.push((path, old));
+        }
+        let cont = build_tree(db, scrutinee, &sub_rows, path_types);
+        // Restore BEFORE `?`-propagating, so the map is clean on the error path too.
+        for (path, old) in prev.into_iter().rev() {
+            match old {
+                Some(t) => {
+                    path_types.insert(path, t);
+                }
+                None => {
+                    path_types.remove(&path);
+                }
+            }
+        }
         sum_arms.push(crate::core::SumArm {
             disc: Some(d),
-            cont,
+            cont: cont?,
         });
     }
     if has_default {
@@ -4526,7 +4590,9 @@ fn build_tree(
     }
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, depth = switch_path.len(), arms = sum_arms.len(), "sum switch (decision-tree node)");
     Ok(crate::core::SumCont::Switch {
-        path: switch_path,
+        // The emitted `SumCont` carries a plain `Vec<PathStep>` (backends read it); convert the shared
+        // switch path ONCE here at the tree node, not per level.
+        path: switch_path.to_vec(),
         arms: sum_arms,
     })
 }
@@ -4540,11 +4606,11 @@ fn build_tree(
 fn build_lit_test(
     db: &mut Db,
     scrutinee: StructId,
-    lit_path: Vec<crate::core::PathStep>,
+    lit_path: MatchPath,
     probe: crate::core::Probe,
     matched_rows: &[MatchRow],
     else_rows: &[MatchRow],
-    path_types: &PathTypes,
+    path_types: &mut PathTypes,
 ) -> Result<crate::core::SumCont, Reject> {
     // A `ListLen` or `Str` probe that did NOT fold (the payload is a RUNTIME value, not a constant
     // `Core::ListNew`/`Core::ConstStr`) needs a runtime length/string test the backends don't emit — the
@@ -4561,7 +4627,8 @@ fn build_lit_test(
     let then_ = build_tree(db, scrutinee, matched_rows, path_types)?;
     let els = build_tree(db, scrutinee, else_rows, path_types)?;
     Ok(crate::core::SumCont::LitTest {
-        path: lit_path,
+        // The emitted node carries a plain `Vec<PathStep>`; convert the shared lit path once here.
+        path: lit_path.to_vec(),
         probe,
         then_: Box::new(then_),
         els: Box::new(els),
@@ -4664,25 +4731,29 @@ fn type_from_seeded_prefix(
     None
 }
 
-/// Extend `path_types` for the arm switching on variant `disc` at `switch_path` (a sum of type `sub_ty`,
-/// declaration `decl`): the sub-value at `switch_path + [Payload]` has the type of THAT variant's payload
-/// at `sub_ty`'s instantiation. Read via the variant's constructor record (its `(meta t)` scheme unified
-/// against `sub_ty`), so a generic sum's payload is instantiated (`Ok`'s payload in `Result Int Str` is
-/// `Int`). A nullary variant has no payload — no extension. The map is CLONED so sibling arms don't share.
-fn extend_path_types(
+/// The path-type ADDITIONS the arm switching on variant `disc` at `switch_path` introduces (a sum of type
+/// `sub_ty`, declaration `decl`): the sub-value at `switch_path + [Payload]` has the type of THAT variant's
+/// payload at `sub_ty`'s instantiation. Read via the variant's constructor record (its `(meta t)` scheme
+/// unified against `sub_ty`), so a generic sum's payload is instantiated (`Ok`'s payload in `Result Int
+/// Str` is `Int`). A nullary variant has no payload — no additions.
+///
+/// Returns just the NEW `(path, type)` entries rather than a whole extended map: `build_tree` INSERTS them
+/// into the shared `path_types`, recurses, then RESTORES the prior state (see `build_tree`'s arm loop). The
+/// old code cloned the entire map here per arm; since the map grows one deeper key per nesting level, a
+/// deeply-nested pattern (`(Some (Some … x))`) re-cloned the O(depth)-entry map at every one of `depth`
+/// levels = O(depth³). Scoped insert/restore over a shared map drops that whole factor.
+fn path_type_additions(
     db: &mut Db,
-    path_types: &PathTypes,
     switch_path: &[crate::core::PathStep],
     sub_ty: &crate::ty::Ty,
     decl: StructId,
     disc: u32,
-) -> PathTypes {
-    let mut out = path_types.clone();
-    // The variant's constructor occurrence — via the synthesized sum record's variant field, which
-    // carries the `(meta t)` scheme `payload_ty_at_instantiation` reads. (The declaration name occurrence
-    // does not resolve to a scheme; the synthesized ctor field does.)
+) -> Vec<PathTypeEntry> {
+    let mut out = Vec::new();
     // The variant's constructor occurrence — cached on the variant at synthesis time (O(1)), rather than
     // re-scanning the sum record's variant fields by name per arm (that was O(V) per arm → O(V²) overall).
+    // It carries the `(meta t)` scheme `payload_ty_at_instantiation` reads. (The declaration name
+    // occurrence does not resolve to a scheme; the synthesized ctor field does.)
     let ctor = db
         .type_decl_by_occ(decl)
         .and_then(|t| t.variants.get(disc as usize))
@@ -4700,20 +4771,25 @@ fn extend_path_types(
             for (i, elem_ty) in elems.iter().enumerate() {
                 let mut elem_path = child.clone();
                 elem_path.push(crate::core::PathStep::Elem(i));
-                out.insert(elem_path, std::sync::Arc::new(elem_ty.clone()));
+                out.push((elem_path, std::sync::Arc::new(elem_ty.clone())));
             }
         }
-        out.insert(child, std::sync::Arc::new(payload_ty));
+        out.push((child, std::sync::Arc::new(payload_ty)));
     }
     out
 }
 
-/// The shallowest (shortest, then by `path_cmp`) path any row constrains — the switch site.
-fn shallowest_path(rows: &[MatchRow]) -> Vec<crate::core::PathStep> {
+/// The shallowest (shortest, then by `path_cmp`) path any row constrains — the switch site. Returns a
+/// SHARED `Arc<[PathStep]>` (a pointer-bump clone of the winner), not a fresh `Vec`: the old code cloned
+/// EVERY path just to `min_by` them, which — since `build_tree` recurses once per pattern level — re-cloned
+/// the O(depth)-long constraint paths at every level = O(depth³). Selecting by reference + returning the
+/// winner's `Arc` makes each call an O(constraints × path-len) COMPARE with no path deep-copy.
+fn shallowest_path(rows: &[MatchRow]) -> MatchPath {
     rows.iter()
-        .flat_map(|r| r.constraints.iter().map(|(p, _)| p.clone()))
+        .flat_map(|r| r.constraints.iter().map(|(p, _)| p))
         .min_by(|a, b| a.len().cmp(&b.len()).then_with(|| path_cmp(a, b)))
-        .unwrap_or_default()
+        .cloned()
+        .unwrap_or_else(|| std::sync::Arc::from(&[][..]))
 }
 
 /// A total order on paths for a deterministic switch choice (Payload < Elem < RestFrom, each by index).
@@ -4970,6 +5046,69 @@ fn peel_ref_annot(db: &mut Db, id: StructId) -> StructId {
         }
     }
     cur
+}
+
+/// ETA-EXPAND a bare payload constructor `ctor_head` (a `(. Sum V)` record whose scheme is `(-> p0 … Sum)`)
+/// into a genuine runtime CLOSURE — `(fn (__eta0 … __eta{n-1}) (ctor_head __eta0 … __eta{n-1}))` lifted to a
+/// funcref-table slot via `lower_lambda_value`. This is needed when the constructor VALUE cannot be inlined
+/// away — it is stored in a heap data structure (a tuple/list/record) and applied later — so, unlike the
+/// `ctor_spine` inline-fold path, a real first-class function value must exist (the same lift a `(fn …)` or a
+/// named function value gets). A lambda / named fn stored in a tuple already lifts; a bare constructor did
+/// not, declining "a runtime closure application has no matching function type".
+///
+/// The constructor's arrow is FULLY KNOWN from its scheme (`scheme_of`), so the synthesized lambda needs no
+/// inference context: each `__eta{k}` param's type is SEEDED into `db.param_types` from the k-th arrow
+/// parameter, and the body `(ctor __eta…)` lowers to `SumNew` typed as the sum. `None` if the scheme is
+/// unavailable or a payload/result type has no machine representation (declines cleanly, as before).
+fn eta_ctor_closure(db: &mut Db, ctor_head: StructId) -> Option<Core> {
+    // The ctor's curried scheme `(-> p0 (-> p1 … Sum))` — peel each parameter type + the final sum.
+    let mut fresh = crate::unify::Fresh::new();
+    let scheme = crate::eval::scheme_of(db, ctor_head, &mut fresh)?;
+    let inst = crate::unify::instantiate(&scheme, &mut fresh);
+    let mut payload_tys: Vec<crate::ty::Ty> = Vec::new();
+    let mut cur = inst;
+    while let crate::ty::Ty::Fn(p, r) = cur {
+        payload_tys.push(*p);
+        cur = *r;
+    }
+    if payload_tys.is_empty() {
+        return None; // a nullary variant is a value, not a function — no closure needed.
+    }
+    // Synthesize `(fn (__eta0 …) (ctor_head __eta0 …))`. A distinct binder occurrence per param, and a
+    // distinct reference occurrence per body use (both `push_name` the same spelling; scope resolution ties
+    // the body ref to the param binder). The `__` prefix cannot collide with a source name.
+    let n = payload_tys.len();
+    let param_occs: Vec<StructId> = (0..n).map(|k| db.push_name(&format!("__eta{k}"))).collect();
+    let mut body_children = Vec::with_capacity(1 + n);
+    body_children.push(ctor_head);
+    for k in 0..n {
+        body_children.push(db.push_name(&format!("__eta{k}")));
+    }
+    let body = db.push_list(body_children);
+    let params_list = db.push_list(param_occs.clone());
+    let fn_head = db.push_name("fn");
+    let lambda = db.push_list(vec![fn_head, params_list, body]);
+    crate::resolve::resolve_subtree(db, lambda);
+    // SEED each synthesized param's machine type from the ctor scheme, so `lower_lambda_value`'s
+    // `type_of(param)` (which reads `db.param_types`) and the body's `SumNew` typing resolve without any
+    // inference context on the synthesized nodes. `param_name_occ` maps the binder to its name occurrence
+    // (the key `type_of`/`db.param_types` use).
+    let (params, ty_body_ok) = match resolved_of(db, lambda) {
+        Resolved::Lambda { params, body } => (params, body),
+        _ => return None, // synthesis did not classify as a lambda — bail (declines below)
+    };
+    let _ = ty_body_ok;
+    for (k, &p) in params.iter().enumerate() {
+        let occ = crate::eval::param_name_occ(db, p);
+        db.param_types
+            .entry(occ)
+            .or_insert_with(|| payload_tys[k].clone());
+    }
+    // Lower the synthesized lambda as a runtime closure value.
+    match resolved_of(db, lambda) {
+        Resolved::Lambda { params, body } => Some(lower_lambda_value(db, lambda, &params, body)),
+        _ => None,
+    }
 }
 
 fn ctor_spine_fueled(db: &mut Db, id: StructId, fuel: u32) -> Option<(StructId, Vec<StructId>)> {

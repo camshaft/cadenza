@@ -1052,10 +1052,25 @@ the component type. The new work:
   `(a, z)` → `r.z - r.a` = 97, not a positional coincidence). A TEST-HARNESS fix, not a compiler change.
   Corpus: record arg — sole/among-scalars/out-of-order/narrow-Bool-field/List-result/multi-export + a 3-field
   tuple + a 2-prefix/1-suffix interleaving.
-- **REMAINING (all optional, none blocking):** on the DIRECT-CALL path — a VARIABLE-LENGTH collection arg
-  (needs a `value-decode` runtime op that does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
-  direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-resource passed
-  INTO a call); a closure TRANSFORMER (`own<t>` both directions — cleanly declined). **The entire byte-rope
+- **✅ tuple-arg field-type variety witnessed** (`ef863bb3`, corpus-only). The flatten/rebuild is field-type
+  agnostic: FLOAT fields (→4.0), MIXED widths (Int32+Int64→42), a Bool among ints (→110, box-bool), and a
+  single-variant NOMINAL over a tuple (erases to the tuple, §156 kind-agnostic peel — supply the bare tuple).
+- **✅ direct-call tuple-arg × RESULT matrix filled: String + Sum results** (`1ef864ed`, corpus-only). A
+  sole-tuple-arg closure composes with a String result (byte-rope core, → bytes) AND a Sum/Option result
+  (value-encode walker, → `(Some 5)`) — the matrix now covers scalar / byte-rope (Bytes+String) / fixed-
+  compound / collection (List+Map) / sum. (A Char tuple field declines project-wide: `valtype_of(Ty::Char)=None`
+  — no runtime Char slot yet, cross-cutting, not closure-specific.)
+- **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
+  are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (1) **N
+  compound args** (two tuple args) + (2) **NESTED compound fields** (a tuple/record inside a tuple/record) —
+  `single_compound_among_scalars`/`fixed_shape_scalar_tuple_arg` reject >1 tuple + non-scalar fields, and
+  `TupleArgRebuild` + ~65 envelope sites + 16 `tuple_defined_type` mint sites assume EXACTLY ONE tuple; a
+  `Vec<TupleArgRebuild>` + recursive `tuple_field_abi` generalization is a large multi-tick vertical (decompose
+  like the C-HOST bricks before attempting). (3) a **SUM (Option) direct-call arg** (needs host→guest decode of
+  the discriminant+payload). (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
+  does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works for all of
+  these — no direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-
+  resource passed INTO a call); a closure TRANSFORMER (`own<t>` both directions — cleanly declined). **The entire byte-rope
   (`Bytes`/`String`) result surface, the entire fixed-shape compound (tuple/record/sum) result surface, AND
   the variable-length collection (List/Map/Set) result surface are ALL DONE across EVERY closure shape —
   single-export + multi-export + mixed + distinct-sig + round-trip + distinct-sig-round-trip; the complete

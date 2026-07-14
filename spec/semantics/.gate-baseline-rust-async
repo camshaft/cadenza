@@ -912,6 +912,7 @@ todo	a closure captures a capturing closure and calls it through a recursive HOF
 todo	a closure captures a function value and applies it through a recursive HOF
 todo	a closure captures a sum value and matches it inside its lifted body through a recursive HOF
 todo	a closure captures a tuple and projects it inside its lifted body through a recursive HOF
+todo	a constructor STORED in a tuple is extracted and applied as a first-class closure
 todo	a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF
 todo	a closure carried in a USER-declared sum's payload is extracted and applied
 todo	a closure carried in a sum payload is extracted by a match and applied

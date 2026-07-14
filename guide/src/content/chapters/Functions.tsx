@@ -113,19 +113,27 @@ export default function Functions() {
         id="functions:2"
         prompt={
           <>
-            <C>mul</C> takes two arguments, so <C>(mul 6)</C> is a function still waiting for the second.
-            Apply it to <C>7</C> to finish the call — the answer is <C>42</C>.
+            Finish <C>compose</C> so <C>(compose f g)</C> runs <C>g</C> first, then feeds its result to{" "}
+            <C>f</C>. With that order, <C>(compose inc dbl)</C> applied to <C>5</C> doubles first (to 10),
+            then increments — giving <C>11</C>.
           </>
         }
-        starter={`(def (mul a b) (* a b))
-(def (main) ((mul 6) ?))`}
-        solution={`(def (mul a b) (* a b))
-(def (main) ((mul 6) 7))`}
-        expected="42"
+        starter={`(def (compose f g)
+  (fn (x) (f ?)))
+(def (inc n) (+ n 1))
+(def (dbl n) (* n 2))
+(def (main) ((compose inc dbl) 5))`}
+        solution={`(def (compose f g)
+  (fn (x) (f (g x))))
+(def (inc n) (+ n 1))
+(def (dbl n) (* n 2))
+(def (main) ((compose inc dbl) 5))`}
+        expected="11"
         hint={
           <>
-            <C>(mul 6)</C> is a function expecting one more number; applying it to <C>7</C> computes{" "}
-            <C>6 × 7</C>.
+            <C>f</C> needs the result of running <C>g</C> on the input — so the hole is <C>(g x)</C>, and{" "}
+            <C>g</C> (here <C>dbl</C>) goes first. (Write just <C>x</C> and you'd skip <C>g</C> entirely —{" "}
+            <C>inc 5</C> = <C>6</C>, not <C>11</C>.)
           </>
         }
       />

@@ -69,6 +69,10 @@ pub const KIND_EXPORTS: &str = "exports";
 /// token (SEMANTIC SYNTAX HIGHLIGHTING), the LSP `semanticTokens` analogue.
 pub const KIND_HIGHLIGHT: &str = "highlight";
 
+/// The output artifact kind for a `DocOf`/`DocAt` query result — a definition's (or a built-in's)
+/// documentation text, the "hover documentation" companion of `KIND_TYPE_AT`.
+pub const KIND_DOC: &str = "doc";
+
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
 /// (`Query`). `Rewrite` (the validated-transaction arm of `DESIGN-sidecar-api.md`) is a later rung and
 /// not modeled here yet.
@@ -151,6 +155,26 @@ pub enum Query {
     /// occurrence, so a consumer can jump to it. Node-id-keyed like the others; TOTAL — a module with no
     /// exports yields the empty result. This is the "module interface at a glance" query.
     Exports,
+    /// The DOCUMENTATION of a definition or built-in, BY NAME — the doc companion of `TypeOf`. Answered
+    /// from an ordered fallback, all reads of columns the compiler already fills:
+    ///   1. a user definition's `(doc "…")` text (`db.doc_of_def`, keyed by the def's signature — the
+    ///      text `strip_def_docs` captured off the def body at load);
+    ///   2. else a BUILT-IN binding's `(meta doc)` channel — a built-in module is just a record, so its
+    ///      documentation is data on that record, read GENERICALLY (`eval::project_meta(rec, "doc")`),
+    ///      never by matching the name (the no-keys-outside-the-prelude rule: the query resolves the name
+    ///      to its prelude record, then reads a channel, exactly as member access does);
+    ///   3. else a GRAMMAR KEYWORD's doc (`if`/`let`/`match`/… — not bindings in the prelude map, so their
+    ///      text is a small table, the doc analogue of the hardcoded `resolve::GRAMMAR` set).
+    ///
+    /// TOTAL: a name that documents nothing yields a defined "no documentation for `name`" line.
+    DocOf { name: String },
+    /// The DOCUMENTATION of the definition the node at `node` belongs to or references, by its `StructId`
+    /// — the doc companion of `TypeAt`/`ResolveOf`, the "documentation at cursor" hover. Resolves the node
+    /// to a definition (its own def, or the def a reference resolves to via `resolve::resolved_of` +
+    /// `def_index_by_body`), then reads that def's `(doc "…")` text (`db.doc_of_def`). Node-id-keyed and
+    /// span-free like `TypeAt`: the consumer resolves a cursor OFFSET to the node and asks this. TOTAL: a
+    /// node that is not (and does not reference) a documented definition yields the empty result.
+    DocAt { node: u32 },
 }
 
 /// The one-byte request tags. Stable across versions (additive — a new request is a new tag).
@@ -182,6 +206,8 @@ mod tag {
     pub const QUERY_SCOPE_AT: u8 = 0x15;
     pub const QUERY_EXPORTS: u8 = 0x16;
     pub const QUERY_HIGHLIGHT: u8 = 0x17;
+    pub const QUERY_DOC_OF: u8 = 0x18;
+    pub const QUERY_DOC_AT: u8 = 0x19;
 }
 
 /// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
@@ -227,6 +253,12 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         })),
         tag::QUERY_EXPORTS => Some(Request::Query(Query::Exports)),
         tag::QUERY_HIGHLIGHT => Some(Request::Query(Query::Highlight)),
+        tag::QUERY_DOC_OF => Some(Request::Query(Query::DocOf {
+            name: read_string(r)?,
+        })),
+        tag::QUERY_DOC_AT => Some(Request::Query(Query::DocAt {
+            node: u32::try_from(r.read_varu64()?).ok()?,
+        })),
         _ => None,
     }
 }
@@ -272,6 +304,14 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
         }
         Request::Query(Query::Exports) => out.push(tag::QUERY_EXPORTS),
         Request::Query(Query::Highlight) => out.push(tag::QUERY_HIGHLIGHT),
+        Request::Query(Query::DocOf { name }) => {
+            out.push(tag::QUERY_DOC_OF);
+            write_string(out, name);
+        }
+        Request::Query(Query::DocAt { node }) => {
+            out.push(tag::QUERY_DOC_AT);
+            leb128::write_u64(out, *node as u64);
+        }
     }
 }
 
@@ -527,7 +567,141 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                 bytes: text.into_bytes(),
             }
         }
+        Query::DocOf { name } => {
+            // The documentation of a NAME, from the ordered fallback (user def → built-in `(meta doc)` →
+            // grammar keyword). Each step reads a column the compiler already fills; none matches the name
+            // against a hardcoded key (the built-in step resolves the name to its prelude record, THEN
+            // reads a channel — the same generic path member access takes).
+            let text =
+                doc_of_name(db, name).unwrap_or_else(|| format!("no documentation for `{name}`"));
+            QueryResult {
+                kind: KIND_DOC,
+                name: name.clone(),
+                bytes: text.into_bytes(),
+            }
+        }
+        Query::DocAt { node } => {
+            // The documentation of the definition the node belongs to or references — the "hover doc". A
+            // node inside a def's OWN body/signature, or a REFERENCE resolving to a def, maps to that def's
+            // signature occurrence; its `(doc "…")` text is read from the doc column. TOTAL: a node that
+            // does not reach a documented definition yields the empty result (no line).
+            let id = StructId(*node);
+            let text = doc_at_node(db, id).unwrap_or_default();
+            QueryResult {
+                kind: KIND_DOC,
+                name: node.to_string(),
+                bytes: text.into_bytes(),
+            }
+        }
     }
+}
+
+/// The documentation of a NAME — the `DocOf` read, an ordered fallback returning the FIRST source that
+/// documents it, or `None` if none does (the query then reports a defined "no documentation" line).
+///  1. a USER definition's `(doc "…")` text, keyed by the def's signature occurrence (`db.doc_of_def`);
+///  2. else a BUILT-IN binding's `(meta doc)` channel — resolve the name to its prelude record, then read
+///     the channel generically (`eval::project_meta`), never matching the name against a key;
+///  3. else a GRAMMAR KEYWORD's doc (a small table, the doc analogue of `resolve::GRAMMAR`).
+fn doc_of_name(db: &mut Db, name: &str) -> Option<String> {
+    // 1. A user definition's captured doc.
+    if let Some(idx) = db.def_by_name(name) {
+        let sig = db.defs[idx].sig_occ;
+        if let Some(doc) = db.doc_of_def(sig) {
+            return Some(doc.to_string());
+        }
+    }
+    // 2. A built-in binding's `(meta doc)` channel — read off its prelude record, generically.
+    if let Some(&rec) = db.prelude.get(name)
+        && let Some(doc_node) = crate::eval::project_meta(db, rec, "doc")
+        && let Some(text) = db.ast.as_str(doc_node)
+    {
+        return Some(text.to_string());
+    }
+    // 3. A grammar keyword's doc.
+    grammar_keyword_doc(name).map(str::to_string)
+}
+
+/// The documentation of the definition the node at `id` belongs to or references — the `DocAt` read.
+/// Maps the node to a definition by two routes, then reads that def's captured `(doc "…")` text:
+///  - the node is a REFERENCE resolving to a def (`resolve::resolved_of` → the def body → its def index),
+///    so hovering a USE shows the definition's doc; OR
+///  - the node is a def HEADER — its `(def …)` form, its signature list, or its NAME atom
+///    (`def_index_by_ident`, the same header→def map `TypeAt`'s hover uses), so hovering the DEFINITION
+///    shows its own doc.
+///
+/// Either route yields a `db.defs` index; its `sig_occ` keys the doc column. `None` if the node reaches
+/// no documented definition (the empty hover).
+fn doc_at_node(db: &mut Db, id: StructId) -> Option<String> {
+    // A reference resolves to the defining occurrence — a nullary def's body (`Ref`) or a function def's
+    // lambda body (`Lambda`). Either is a def body `def_index_by_body` maps to its def. This is the SAME
+    // body→def path `ResolveOf` walks to find a def's name occurrence, reused here to find its doc.
+    let via_ref = match crate::resolve::resolved_of(db, id) {
+        Resolved::Ref { value } => Some(value),
+        Resolved::Lambda { body, .. } => Some(body),
+        _ => None,
+    };
+    let def_idx = via_ref
+        .and_then(|target| db.def_index_by_body(target))
+        // Not a reference into a body — the node may BE a def's header (its form/signature/name), the
+        // "hover on the definition itself" case, resolved by the header→def map.
+        .or_else(|| db.def_index_by_ident(id));
+    let di = def_idx?;
+    let sig = db.defs[di].sig_occ;
+    db.doc_of_def(sig).map(str::to_string)
+}
+
+/// The documentation of a GRAMMAR KEYWORD — the final `DocOf` fallback. A keyword (`if`/`let`/`match`/…)
+/// is NOT a binding in the prelude map (it is dispatched structurally by `resolve`, see `resolve::GRAMMAR`),
+/// so its documentation cannot be a `(meta doc)` channel on a record; it lives here, the doc analogue of
+/// the hardcoded keyword set. `None` for a non-keyword (the query then reports "no documentation"). This
+/// is a fixed catalog of the language's OWN forms — a presentation surface, not name-dispatched meaning.
+fn grammar_keyword_doc(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "let" => {
+            "Bind one or more names over a body: (let ((x e) …) body). Bindings are sequential — a later initializer sees the earlier bindings."
+        }
+        "if" => {
+            "Conditional: (if cond then else). The condition must be Bool; both branches must have the same type."
+        }
+        "match" => {
+            "Deconstruct a value against patterns: (match e (pat body) …). Must be exhaustive — every case of the scrutinee's type is covered."
+        }
+        "do" => {
+            "A sequence of declarations and a final result expression: (do decl… result). Introduces a scope for do-local defs."
+        }
+        "fn" => {
+            "An anonymous function: (fn (param…) body). Its type is the arrow from the parameter types to the body's type."
+        }
+        "def" => {
+            "Define a name: (def (name param…) body) for a function, or (def name value) for a value. May carry a leading (doc \"…\")."
+        }
+        "export" => "Expose a definition as part of the module's interface: (export name).",
+        "module" => {
+            "A named collection of definitions: (module name item…). Members are reached by member access."
+        }
+        "and" => "Short-circuiting boolean AND: (and a b). Evaluates b only if a is true.",
+        "or" => "Short-circuiting boolean OR: (or a b). Evaluates b only if a is false.",
+        "not" => "Boolean negation: (not a).",
+        "quote" => {
+            "Suppress evaluation, yielding the operand's AST rather than its value: (quote form)."
+        }
+        "quasiquote" => {
+            "A selective-evaluation template (`): literal structure with (unquote …) / (unquote-splicing …) escapes filled by evaluation."
+        }
+        "|>" => "Pipeline: (|> L R) threads L as the first argument of the application R.",
+        "." => "Member access: (. record key) projects a field or operation from a record/module.",
+        ":" => "Type annotation: (: expr Type) asserts and checks expr against Type.",
+        "handle" => {
+            "Install an effect handler over a body: (handle body (op arm…) …). Handles the effect operations performed within."
+        }
+        "resume" => {
+            "Inside a handler arm, hand a value back to the point that performed the operation: (resume v)."
+        }
+        "host" => {
+            "Delegate an effect operation to the host boundary rather than an in-program handler."
+        }
+        _ => return None,
+    })
 }
 
 /// The semantic role of a token, for syntax highlighting — a fixed, closed vocabulary an editor maps to
@@ -1273,6 +1447,10 @@ mod tests {
             Request::Query(Query::ScopeAt { node: 9 }),
             Request::Query(Query::Exports),
             Request::Query(Query::Highlight),
+            Request::Query(Query::DocOf {
+                name: "helper".into(),
+            }),
+            Request::Query(Query::DocAt { node: 11 }),
         ];
         assert_eq!(decode(&encode(&requests)), Some(requests));
     }

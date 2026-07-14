@@ -94,6 +94,14 @@ enum Cmd {
     /// constructor vs local vs call vs unbound), as `file:line:col: kind` — the LSP `semanticTokens`
     /// analogue, coloured by MEANING (the compiler's columns) rather than by spelling.
     Highlight(HighlightArgs),
+    /// The documentation of a definition NAME in FILE — its `(doc "…")` text, or a built-in's
+    /// documentation (a prelude module's `(meta doc)` channel, or a grammar keyword's help) when the
+    /// name is not a user definition. The doc companion of `cdz type`.
+    Doc(DocArgs),
+    /// The documentation of the definition at a source BYTE OFFSET in FILE — a "documentation at cursor"
+    /// hover. Resolves the offset to a node, then to the definition it is or references, and prints that
+    /// definition's `(doc "…")` text. The doc companion of `cdz type-at`/`cdz def`.
+    DocAt(DocAtOffsetArgs),
 }
 
 fn main() -> ExitCode {
@@ -124,6 +132,8 @@ fn main() -> ExitCode {
         Cmd::Scope(a) => run_scope(&a),
         Cmd::Exports(a) => run_exports(&a),
         Cmd::Highlight(a) => run_highlight(&a),
+        Cmd::Doc(a) => run_doc(&a),
+        Cmd::DocAt(a) => run_doc_at(&a),
     }
 }
 
@@ -456,6 +466,22 @@ struct TypeAtArgs {
     offset: usize,
 }
 
+#[derive(clap::Args)]
+struct DocArgs {
+    /// The definition (or built-in) name to document.
+    name: String,
+    /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
+    file: String,
+}
+
+#[derive(clap::Args)]
+struct DocAtOffsetArgs {
+    /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
+    file: String,
+    /// The source BYTE OFFSET whose documentation to show — the cursor position (0-based, UTF-8 bytes).
+    offset: usize,
+}
+
 /// `cdz type NAME FILE` — parse in-process, drive the compiler's `TypeOf` sidecar query, print the
 /// rendered type. A query is a pure, total fact read: it answers even for a program that would not
 /// compile (`DESIGN-sidecar-api.md`).
@@ -523,6 +549,76 @@ fn run_type_at(args: &TypeAtArgs) -> ExitCode {
             println!("{ty} @ {}:{l0}:{c0}-{l1}:{c1}", args.file);
         }
         None => println!("{ty}"),
+    }
+    ExitCode::SUCCESS
+}
+
+/// `cdz doc NAME FILE` — drive the compiler's `DocOf` sidecar query, print the documentation. Answers
+/// from a user definition's `(doc "…")` text, else a built-in's `(meta doc)` channel / a grammar keyword's
+/// help. A pure, total fact read (like `cdz type`): it answers even for a program that would not compile,
+/// and a name that documents nothing prints a defined "no documentation" line (exit 0).
+fn run_doc(args: &DocArgs) -> ExitCode {
+    let (source, arenas) = match load_program(&args.file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let _ = source; // doc output carries no span
+    let out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::DocOf {
+            name: args.name.clone(),
+        }),
+    );
+    match out.artifact(rcdzc::sidecar::KIND_DOC) {
+        Some(bytes) => {
+            println!("{}", String::from_utf8_lossy(bytes));
+            ExitCode::SUCCESS
+        }
+        None => {
+            report_errors(&out);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `cdz doc-at FILE OFFSET` — the "documentation at cursor" query. Resolves the source byte offset to the
+/// innermost node id (via the span table this process kept), drives the compiler's `DocAt { node }` query,
+/// and prints the documentation of the definition that node is or references. The offset→node split keeps
+/// the compiler span-free, exactly as `type-at`/`def` do. An empty result (a node that documents nothing)
+/// prints a "no documentation" line.
+fn run_doc_at(args: &DocAtOffsetArgs) -> ExitCode {
+    let (source, arenas, spans) = match load_program_spanned(&args.file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let _ = source; // doc output carries no span
+    let Some(node) = spans.node_at_offset(args.offset) else {
+        eprintln!(
+            "{PROG}: no node at byte offset {} in {}",
+            args.offset, args.file
+        );
+        return ExitCode::FAILURE;
+    };
+    let out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::DocAt { node: node.0 }),
+    );
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_DOC) else {
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    let doc = String::from_utf8_lossy(bytes);
+    // A total query: an empty answer means the node documents nothing — say so rather than print a blank.
+    if doc.trim().is_empty() {
+        println!("no documentation at byte offset {}", args.offset);
+    } else {
+        println!("{doc}");
     }
     ExitCode::SUCCESS
 }

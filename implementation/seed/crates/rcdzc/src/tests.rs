@@ -11089,6 +11089,74 @@ mod match_engine {
     }
 
     #[test]
+    fn a_deeply_nested_match_lowers_without_a_cubic_constraint_reclone() {
+        // REGRESSION (perf): even after the `PathTypes` `Arc<Ty>` fix (see
+        // `a_deeply_nested_option_pattern_lowers_in_bounded_time`), `lower::build_tree` stayed O(depth³) on
+        // a deeply-nested pattern via TWO further per-level whole-structure re-clones: (a) the PARTITION
+        // loop rebuilt every surviving row's `constraints` list — each a `Vec<PathStep>` path — at every
+        // one of `depth` levels (an O(depth)-long path deep-copied `depth` times = O(depth³)); (b)
+        // `extend_path_types` CLONED THE WHOLE growing `path_types` map per arm per level. Three fixes:
+        // the constraint/lit-test PATH is now `Arc<[PathStep]>` (per-level clone = pointer bump, like
+        // `PathTypes`' `Arc<Ty>`), `build_tree` threads ONE shared `&mut PathTypes` with scoped
+        // insert/restore instead of a per-arm map clone, and `shallowest_path` selects by reference.
+        //
+        // The guard is the GROWTH RATIO across a depth doubling, not an absolute wall-clock bound — a ratio
+        // tests the complexity CLASS and is independent of profile (dev vs release) and machine speed, where
+        // an absolute ceiling is not (the cubic factor only dominates at large depth, so a shallow absolute
+        // bound catches nothing). Cubic lowering grows ~8× per doubling; the fixed quadratic-or-better grows
+        // ~2–4×. The two depths are timed PAIRED and back-to-back, and we take the MIN ratio across several
+        // pairs: measuring both depths in the same instant means transient CPU contention (under the
+        // parallel test harness) hits them EQUALLY, so it cancels in the ratio — a single starved window
+        // can't inflate one depth without the other. Threshold 6.0 sits between the two classes with margin
+        // (fixed ~2–4×, cubic ~8×). Depths are large enough that the timed work dominates measurement noise,
+        // but shallow enough to avoid the deep-recursion stack limit.
+        fn build_src(depth: usize) -> String {
+            let mut val = String::from("(None)");
+            let mut pat = String::from("x");
+            for _ in 0..depth {
+                val = format!("(Some {val})");
+                pat = format!("(Some {pat})");
+            }
+            format!(
+                "(module m (type Opt (a) (Some Opt) (None)) \
+                   (def (f (: o Opt)) (match o ({pat} 1) (_ 0))) \
+                   (def (main) (f {val})) (export main))"
+            )
+        }
+        fn lower_ms(src: &str, depth: usize) -> f64 {
+            let start = std::time::Instant::now();
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            let ms = start.elapsed().as_secs_f64() * 1000.0;
+            assert!(
+                diags
+                    .iter()
+                    .all(|d| d.severity != crate::abi::Severity::Error),
+                "a {depth}-deep nested Some match lowers with no error diagnostics: {diags:?}"
+            );
+            ms
+        }
+        let (src200, src400) = (build_src(200), build_src(400));
+        // Deep-but-finite recursion (per nesting level) → run under the compiler stack guard, like the
+        // depth-60 test, so a default worker's ~2 MB stack does not SIGABRT on a terminating walk.
+        let ratio = crate::host::run_with_compiler_stack(|| {
+            lower_ms(&src200, 200); // warm lazy one-time init before the first timed pair
+            let mut best = f64::INFINITY;
+            for _ in 0..6 {
+                let t200 = lower_ms(&src200, 200);
+                let t400 = lower_ms(&src400, 400);
+                best = best.min(t400 / t200.max(0.1));
+            }
+            best
+        });
+        assert!(
+            ratio < 6.0,
+            "a nested match's lowering must grow sub-cubically with depth (was O(depth³) via per-level \
+             constraint/path-map re-clone): 200→400 grew {ratio:.1}× (min paired ratio); \
+             cubic would be ~8×, the fix is ~2–4×"
+        );
+    }
+
+    #[test]
     fn a_multi_payload_variant_value_escapes_to_the_host() {
         // `(type Rec (Mk Int64 Int64 Int64))` is a SINGLE-variant sum — a NOMINAL NEWTYPE (a struct), so
         // its box is ERASED: the runtime value IS the payload TUPLE (no `sum-new`, no discriminant), and
@@ -15908,6 +15976,63 @@ mod match_engine {
     }
 
     #[test]
+    fn a_prelude_type_constructor_with_the_wrong_arity_names_its_expected_argument_count() {
+        // A prelude type CONSTRUCTOR applied to the wrong number of type arguments — `(List Int64 Int64)`
+        // (List takes 1), `(Map Int64)` (Map takes 2), `(Set Int64 Bool)` (Set takes 1) — reduces to NO
+        // type-value (`reduce_ctor` rejects the arity), so it read as the generic "a parameter's annotation
+        // requires a type, but found a non-type" — misleading, since `List`/`Map`/`Set` ARE type
+        // constructors, just misapplied. Now the message names the constructor + its expected vs supplied
+        // arity and spells the fix (rustc's "this type takes N generic arguments but M were supplied").
+        for (src, expect) in [
+            (
+                "(module m (def (g (: xs (List Int64 Int64))) xs) (export g))",
+                "`List` takes 1 type argument, but 2 were supplied — write `(List Elem)`",
+            ),
+            (
+                "(module m (def (g (: mp (Map Int64))) mp) (export g))",
+                "`Map` takes 2 type arguments, but 1 was supplied — write `(Map Key Value)`",
+            ),
+            (
+                "(module m (def (g (: s (Set Int64 Bool))) s) (export g))",
+                "`Set` takes 1 type argument, but 2 were supplied — write `(Set Elem)`",
+            ),
+            // The value-annotation site routes through the same helper.
+            (
+                "(module m (def (g) (: 5 (List Int64 Int64))) (export g))",
+                "`List` takes 1 type argument, but 2 were supplied — write `(List Elem)`",
+            ),
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| panic!("{src} rejects"));
+            assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
+            assert!(
+                d.message.contains(expect),
+                "names the ctor arity + fix:\n  expected substring: {expect}\n  got: {}",
+                d.message
+            );
+        }
+        // The CORRECT arity raises no arity/type fault — `(: n (List Int64))` used in a body type-checks
+        // (a bare param body may still decline at the value-heap boundary, but never with the arity/"not a
+        // type" CDZ0203). And a genuine non-type (a literal) keeps the generic "requires a type" message —
+        // the arity naming fires ONLY for a misapplied type constructor.
+        let ok = reject_full(
+            "(module m (def (g (: n (List Int64))) (match n ((list) 0) ((list x .. r) x))) (export g))",
+        );
+        assert!(
+            ok.as_ref().is_none_or(
+                |d| !d.message.contains("takes") && !d.message.contains("requires a type")
+            ),
+            "the correct arity `(List Int64)` raises no arity/type fault: {ok:?}"
+        );
+        let lit = reject_full("(module m (def (g (: n 5)) n) (export g))")
+            .expect("a literal annotation rejects");
+        assert!(
+            lit.message.contains("requires a type") && !lit.message.contains("takes"),
+            "a genuine non-type keeps the generic message: {}",
+            lit.message
+        );
+    }
+
+    #[test]
     fn applying_a_non_function_reports_one_error_not_a_shadowing_decline() {
         // Applying a non-function must be ONE primary `error:` — the coded `cannot apply a value of
         // type … — it is not a function` — NOT that reject PLUS the emit path's uncoded "value is not
@@ -18252,6 +18377,75 @@ mod match_engine {
         assert_eq!(
             v, "6",
             "runtime list-of-pairs, recurse on rest summing first components"
+        );
+    }
+
+    #[test]
+    fn a_tail_recursive_list_fold_compiles_to_a_constant_stack_loop() {
+        // A tail-recursive fold over a LIST — `(sa xs acc) = (match xs ((list) acc) ((list x .. rest) (sa
+        // rest (+ acc x))))` — is a self-tail-call inside a `Core::MatchList` cons arm. The loop transform
+        // now threads tail position into list-match arms (`emit_tail`/`body_has_member_tail_call`/
+        // `tail_callees` handle `MatchList`), so it compiles to ONE `loop` (constant stack) instead of a
+        // stack-growing recursive `call`. Pins the `loop` at the Lir level + value parity + that a large
+        // list (which would overflow a recursive stack) folds fine.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function_of;
+        let src = "(module m (def (sa (: xs (List Int64)) (: acc Int64)) \
+                     (match xs ((list) acc) ((list x .. rest) (sa rest (+ acc x))))) \
+                     (def (f (: a Int64) (: b Int64)) (sa (list a b) 0)) (export f))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("sa").expect("sa");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        // `select_function_of` with `self_def = Some(d)` enables the self-recursion loop transform.
+        let code = select_function_of(&mut db, body, &ps, &layout, Some(d))
+            .expect("select")
+            .code;
+        assert!(
+            code.iter().any(|i| matches!(i, Lir::Loop(_))),
+            "the tail list fold compiles to a loop, got: {code:?}"
+        );
+        assert!(
+            !code
+                .iter()
+                .any(|i| matches!(i, Lir::Call(_) | Lir::ReturnCall(_))),
+            "no residual self-`call`/`return_call` — the recursion became a loop br, got: {code:?}"
+        );
+
+        // VALUE PARITY + CONSTANT STACK: sum [0, N) via a build-then-fold. `N = 100000` would overflow a
+        // recursive stack; the loop folds it fine. Sum [0,100) = 4950.
+        let prog = |n: i64| {
+            format!(
+                "(module m \
+                   (def (build (: i Int64) (: n Int64) (: out (List Int64))) \
+                     (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                   (def (sa (: xs (List Int64)) (: acc Int64)) \
+                     (match xs ((list) acc) ((list x .. rest) (sa rest (+ acc x))))) \
+                   (def (main) (sa (build 0 {n} (list)) 0)) (export main))"
+            )
+        };
+        let Some(small) = run_heap_value(&prog(100), vec![]) else {
+            eprintln!("runtime wasm not found; skipping tail list-fold loop run");
+            return;
+        };
+        assert_eq!(small, "4950", "sum [0,100) via a looping tail fold");
+        assert_eq!(
+            run_heap_value(&prog(100000), vec![]).unwrap(),
+            "4999950000",
+            "sum [0,100000) folds in constant stack (would overflow if recursive)"
         );
     }
 
@@ -29517,6 +29711,69 @@ mod stage1 {
         );
     }
 
+    /// A handler arm that binds the WRONG NUMBER of parameter binders is CDZ0201 — the arm analogue of a
+    /// function applied at the wrong arity. Before the fix a wrong-arity arm was either SILENTLY ACCEPTED
+    /// (too few binders — the fold substituted a defaulted/absent binder) or surfaced ONLY the leaky "not
+    /// yet reducible by the tail-resumptive fold" feature-decline (too many) — neither said the parameter
+    /// count is wrong. `arm_param_arity_mismatch` names the operation and the expected/actual counts, and
+    /// its `HANDLER_ARM_ARITY_MARKER` makes `dedup_faults` drop the consequent fold-decline so it is ONE
+    /// primary error. ⚠ The ELIDED-UNIT convention is honored: a `(-> Unit R)` op accepts BOTH a 0-binder
+    /// (`(op () s …)`) and a 1-binder (`(op (u) s …)`) arm — the corpus uses both — so only an arm outside
+    /// `{0, 1}` for a unit op is a mismatch; a genuine N-parameter op requires exactly N.
+    #[test]
+    fn a_handler_arm_with_the_wrong_parameter_count_is_cdz0201() {
+        use crate::testkit::parse;
+        // (a) TOO MANY binders for a unit op — 2 where `{0, 1}` are accepted. Was the leaky fold-decline.
+        let too_many = "(module m (effect E (op get (-> Unit Int64))) \
+                   (def (main) (handle E 0 ((get (u v) s (resume 5 s))) (+ (E.get) 1))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(too_many)))
+            .expect_err("a handler arm binding too many parameters must be rejected");
+        assert_eq!(err.code.as_deref(), Some("CDZ0201"), "got: {}", err.message);
+        assert!(
+            err.message
+                .contains("handler arm for operation `get` binds 2 parameters")
+                && err.message.contains("declares 0 or 1"),
+            "names the op + expected/actual counts (unit op accepts 0 or 1): {}",
+            err.message
+        );
+        // The consequent fold-decline is DROPPED — the wrong-arity CDZ0201 is the ONE primary error.
+        assert!(
+            !err.message.contains("not yet reducible"),
+            "the fold-decline is suppressed in favor of the coded reject: {}",
+            err.message
+        );
+        // (b) TOO FEW binders for a genuine 1-parameter op — 0 where exactly 1 is required. Was SILENT.
+        let too_few = "(module m (effect E (op set (-> Int64 Unit))) \
+                   (def (main) (handle E 0 ((set () s (resume unit s))) (E.set 3))) (export main))";
+        let dfew = crate::diagnostics(&mut crate::db::Db::load(parse(too_few)))
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0201"))
+            .expect("a handler arm binding too few parameters must be reported at check");
+        assert!(
+            dfew.message
+                .contains("handler arm for operation `set` binds 0 parameters")
+                && dfew.message.contains("declares 1"),
+            "a genuine 1-param op requires exactly 1: {}",
+            dfew.message
+        );
+        // (c) NO FALSE REJECT: the elided-unit spellings the corpus uses are BOTH clean. A `(-> Unit R)`
+        // op handled with either 0 or 1 binders must produce no arity fault.
+        for arm in ["(get () s (resume 5 s))", "(get (u) s (resume 5 s))"] {
+            let ok = format!(
+                "(module m (effect E (op get (-> Unit Int64))) \
+                 (def (main) (handle E 0 ({arm}) (+ (E.get) 1))) (export main))"
+            );
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&ok)));
+            assert!(
+                !diags.iter().any(|d| d
+                    .message
+                    .contains("an arm binds exactly its operation's parameters")),
+                "the elided-unit spelling `{arm}` must not be flagged: {:?}",
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+    }
+
     #[test]
     fn a_far_handler_op_access_typo_reports_the_absent_field_exactly_once() {
         // A FAR-typo op ACCESS in a handle body — `((. E zzzzz))` where `zzzzz` matches no op — surfaces
@@ -37942,7 +38199,7 @@ mod sidecar_driven {
     use crate::backend::Target;
     use crate::compile::compile;
     use crate::sidecar::{
-        self, KIND_DIAGNOSTICS, KIND_EXPORTS, KIND_HIGHLIGHT, KIND_RESOLVE, KIND_SCOPE,
+        self, KIND_DIAGNOSTICS, KIND_DOC, KIND_EXPORTS, KIND_HIGHLIGHT, KIND_RESOLVE, KIND_SCOPE,
         KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request,
     };
     use crate::testkit::parse;
@@ -38619,6 +38876,162 @@ mod sidecar_driven {
         let out = compile(&inputs(src, &[Request::Query(Query::Exports)]), &[]);
         assert!(!out.has_error());
         assert_eq!(artifact_text(&out, KIND_EXPORTS).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_doc_of_query_reads_a_definitions_docstring() {
+        // A `DocOf` request answers with a definition's `(doc "…")` text — captured off the def body at
+        // load (`strip_def_docs`) and read from the doc column, for both a value and a function def.
+        let src = "(module m \
+                   (def answer (doc \"the answer\") 42) \
+                   (def (dbl (: x Int64)) (doc \"doubles x\") (* x 2)) \
+                   (def (main) answer) (export main))";
+        let out = compile(
+            &inputs(
+                src,
+                &[
+                    Request::Query(Query::DocOf {
+                        name: "answer".into(),
+                    }),
+                    Request::Query(Query::DocOf { name: "dbl".into() }),
+                ],
+            ),
+            &[],
+        );
+        assert!(
+            !out.has_error(),
+            "a query does not fail: {:?}",
+            out.diagnostics
+        );
+        // The FIRST DocOf artifact is `answer`'s doc, the SECOND is `dbl`'s (request order preserved).
+        let docs: Vec<String> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == KIND_DOC)
+            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
+            .collect();
+        assert_eq!(
+            docs,
+            vec!["the answer".to_string(), "doubles x".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_doc_of_query_for_an_undocumented_or_unknown_name_is_total() {
+        // A def with no doc, and a name that names nothing, each yield a DEFINED "no documentation" line —
+        // never an error (the oracle contract: a query is total over every input).
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile(
+            &inputs(
+                src,
+                &[
+                    Request::Query(Query::DocOf {
+                        name: "main".into(),
+                    }),
+                    Request::Query(Query::DocOf {
+                        name: "ghost".into(),
+                    }),
+                ],
+            ),
+            &[],
+        );
+        assert!(!out.has_error());
+        let docs: Vec<String> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == KIND_DOC)
+            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
+            .collect();
+        assert_eq!(
+            docs,
+            vec![
+                "no documentation for `main`".to_string(),
+                "no documentation for `ghost`".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_doc_of_query_falls_back_to_a_builtin_meta_doc_channel() {
+        // A built-in module is just a record, so its documentation is a `(meta doc)` channel on it, read
+        // GENERICALLY — the query resolves `List` to its prelude record, then reads the channel (never a
+        // name match). A grammar KEYWORD (`if`), not a binding, gets its doc from the keyword table.
+        let src = "(module m (def (main) 42) (export main))";
+        let out = compile(
+            &inputs(
+                src,
+                &[
+                    Request::Query(Query::DocOf {
+                        name: "List".into(),
+                    }),
+                    Request::Query(Query::DocOf { name: "if".into() }),
+                ],
+            ),
+            &[],
+        );
+        assert!(!out.has_error());
+        let docs: Vec<String> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == KIND_DOC)
+            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
+            .collect();
+        assert!(
+            docs[0].contains("persistent") && docs[0].contains("sequence"),
+            "List's built-in doc: {:?}",
+            docs[0]
+        );
+        assert!(
+            docs[1].starts_with("Conditional"),
+            "if's keyword doc: {:?}",
+            docs[1]
+        );
+    }
+
+    #[test]
+    fn a_doc_at_query_reads_the_doc_at_a_reference_and_at_the_definition() {
+        // `DocAt` is node-id-keyed: a USE of a documented def, and the def's OWN name occurrence, both
+        // surface its doc (the hover). Resolve the two spellings to node ids through the arena.
+        let src =
+            "(module m (def helper (doc \"a helper value\") 7) (def (main) helper) (export main))";
+        let arenas = parse(src);
+        // The def's NAME occurrence (`helper` in the def signature) and its later USE (`helper` in main).
+        let helper_ids: Vec<u32> = (0..arenas.structure.len() as u32)
+            .filter(|&i| arenas.as_name(crate::ast::StructId(i)) == Some("helper"))
+            .collect();
+        assert_eq!(helper_ids.len(), 2, "one def-name occurrence + one use");
+        for &node in &helper_ids {
+            let out = compile(&inputs(src, &[Request::Query(Query::DocAt { node })]), &[]);
+            assert!(!out.has_error(), "{:?}", out.diagnostics);
+            assert_eq!(
+                artifact_text(&out, KIND_DOC).as_deref(),
+                Some("a helper value"),
+                "node {node} should surface the doc"
+            );
+        }
+    }
+
+    #[test]
+    fn a_doc_at_query_for_an_undocumented_node_is_empty() {
+        // A node that reaches no documented definition (a literal, an undocumented def's use) yields the
+        // EMPTY result — total, not an error.
+        let src = "(module m (def (main) 42) (export main))";
+        let arenas = parse(src);
+        // The `42` literal — not a reference to any documented def.
+        let lit = (0..arenas.structure.len() as u32)
+            .find(|&i| {
+                matches!(
+                    arenas.get(crate::ast::StructId(i)),
+                    crate::ast::Struct::Atom(l) if matches!(arenas.leaf(*l), crate::ast::Leaf::Int { .. })
+                )
+            })
+            .expect("a literal node");
+        let out = compile(
+            &inputs(src, &[Request::Query(Query::DocAt { node: lit })]),
+            &[],
+        );
+        assert!(!out.has_error());
+        assert_eq!(artifact_text(&out, KIND_DOC).as_deref(), Some(""));
     }
 
     /// Run the `Highlight` query over `src` and collect the SET of `kind` strings assigned to the leaf
