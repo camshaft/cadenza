@@ -690,6 +690,45 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             )),
         );
     }
+    // DUPLICATE TYPE DECLARATION. A module's TYPE names are a fixed set exactly as its definition/export
+    // names are: `(type T …) (type T …)` declares `T` twice, and the name resolves to the FIRST — so a
+    // reference to a variant only the SECOND declares (`T.B` above) fails with a confusing "record has no
+    // field `B`", the shadowed second declaration silently unreachable. That is the SAME closed-name-set
+    // ill-formedness a duplicate def / export / variant / operation is rejected for (CDZ0201) — the sixth.
+    // Reject each `(type …)` after the first with a given name, anchored at its declaration occurrence,
+    // with a DELETE fix removing the redundant declaration (the first already binds the name — the same
+    // repair the duplicate export/variant/op gets). A type whose reference the author actually meant to
+    // point at the second declaration would RENAME it, but deleting the redundant same-named declaration
+    // resolves the ambiguity in one shot; which the author meant is the heuristic. `ty.occ` is the whole
+    // `(type …)` form (its nominal identity), so the fix removes the entire redundant declaration.
+    // Only USER declarations participate: the built-in sums (`Option`/`Result`/…) are appended to
+    // `type_decls` as ordinary entries but their `occ` is a SYNTHESIZED node (built after the user-node
+    // snapshot), so `is_user_node` is false for them. This is exactly what lets a user `(type Option …)`
+    // legitimately SHADOW the prelude sum (first-wins in `type_decl_by_name`) WITHOUT reading as a
+    // duplicate: the prelude `Option` is filtered out, leaving the single user declaration.
+    let mut seen_types: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let dup_types: Vec<(String, StructId)> = db
+        .type_decls
+        .iter()
+        .filter(|t| db.is_user_node(t.occ))
+        .filter(|t| !t.name.is_empty() && !seen_types.insert(t.name.as_str()))
+        .map(|t| (t.name.clone(), t.occ))
+        .collect();
+    for (name, occ) in dup_types {
+        faults.push(
+            Reject::coded(
+                Code::Malformed,
+                format!(
+                    "type `{name}` is declared more than once (a module has a fixed set of type names)"
+                ),
+            )
+            .at(occ)
+            .with_fix(crate::diag::Fix::delete_heuristic(
+                occ,
+                format!("remove the duplicate declaration of type `{name}`"),
+            )),
+        );
+    }
     // DUPLICATE EFFECT OPERATION. An effect `(effect E (op f …) (op f …))` declares its operation NAMES
     // as a fixed SET (capabilities-and-effects.md §An Effect Declaration Names The Effect And Types Its
     // Operations: each name is bound to ONE operation type), so naming an operation twice is the SAME
