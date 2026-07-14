@@ -25260,6 +25260,49 @@ mod diagnostics {
         );
     }
 
+    /// A mismatched-type comparison — `(< 1 "x")` (Int64 vs String) — reports the coded "… are different
+    /// types" reject (CDZ0201, naming the kind boundary). Because one operand is a compound/text the emit
+    /// path cannot fold to a scalar, `lower` ALSO returned the uncoded "comparison of a compound value
+    /// needs a heap walk (not yet built)" decline — a CONSEQUENCE of the mismatch that MISDIRECTS (reads as
+    /// an unbuilt feature). `dedup_faults` now drops that decline when a comparison type-mismatch reject is
+    /// present, so it is ONE primary error. A WELL-TYPED compound comparison (no mismatch reject) keeps its
+    /// honest not-yet-built decline.
+    #[test]
+    fn a_mismatched_comparison_drops_the_misleading_heap_walk_decline() {
+        use crate::testkit::parse;
+        for src in [
+            "(module m (def (main) (if (< 1 \"x\") 1 2)) (export main))",
+            "(module m (def (main) (if (< true \"x\") 1 2)) (export main))",
+        ] {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                diags.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                    && d.message.contains("are different types")),
+                "the coded kind-boundary reject is present: {src} -> {:?}",
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+            assert!(
+                !diags
+                    .iter()
+                    .any(|d| d.message.contains("needs a heap walk")),
+                "the misleading heap-walk decline is dropped: {src} -> {:?}",
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
+        // A GENUINELY well-typed compound comparison (same-type tuples) is NOT mismatched, so no "different
+        // types" reject accompanies it — its honest not-yet-built heap-walk decline must survive at compile.
+        let ok = "(module m (def (g (: a (Tuple Int64 Int64)) (: b (Tuple Int64 Int64))) \
+                   (if (< a b) 1 2)) (export g))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(ok))).expect_err(
+            "a well-typed compound comparison still declines (heap walk not yet built)",
+        );
+        assert!(
+            err.message.contains("needs a heap walk") && err.code.is_none(),
+            "the honest decline survives when there is no mismatch to defer to: {}",
+            err.message
+        );
+    }
+
     #[test]
     fn a_match_pattern_head_naming_a_non_variant_suggests_the_nearest_variant() {
         // A qualified match-pattern head `(. Sum Q)` where `Q` is not a variant of the scrutinee sum —

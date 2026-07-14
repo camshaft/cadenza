@@ -714,6 +714,23 @@ pub const MISSING_OP_TYPE_PREFIX: &str = "this operation has no type";
 /// error — the `host` analogue of the noncanonical-handle CDZ0401 suppression.
 pub const MALFORMED_HOST_PREFIX: &str = "this host";
 
+/// The UNCODED decline the emit path (`lower`) returns for a `<`/`=`/… comparison whose operand is a
+/// COMPOUND value it cannot fold to a scalar and cannot heap-walk yet. When the two operands are a
+/// genuine TYPE MISMATCH (`(< 1 "x")` — Int64 vs String, one side a compound/text), `infer` already
+/// reports the coded CDZ0201/CDZ0203 "… are different types" naming the kind boundary; this decline then
+/// rides alongside as a misleading second error (it reads as an unbuilt feature, but the real defect is
+/// the mismatch). `dedup_faults` drops it whenever a comparison type-mismatch reject (recognized by this
+/// substring) is present, keeping the coded reject as the ONE primary. A WELL-TYPED compound comparison
+/// that genuinely needs the not-yet-built heap walk (`(< (tuple 1 2) (tuple 3 4))`) keeps its honest
+/// decline — no "different types" reject accompanies it.
+pub const COMPOUND_COMPARISON_DECLINE: &str = "comparison of a compound value needs a heap walk";
+
+/// The stable SUBSTRING shared by every coded cross-kind / mismatched-operand comparison reject `infer`
+/// produces — `<a> and <b> are different types …` (a text-vs-scalar / compound-vs-atom kind boundary, a
+/// Bool-vs-other-scalar pair, or a map-vs-record pair). `dedup_faults` uses it to recognize such a reject
+/// and drop the consequent [`COMPOUND_COMPARISON_DECLINE`].
+pub const DIFFERENT_TYPES_COMPARISON_MARKER: &str = "are different types";
+
 /// The message the emit path (`lower`) attaches to the UNCODED decline it returns when `reduce_handle`
 /// cannot fold a `handle` form. A MALFORMED handler — one whose arm names an operation its effect does
 /// not declare (CDZ0403), or that does not discharge every operation (CDZ0405) — cannot fold, so this

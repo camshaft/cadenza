@@ -2003,6 +2003,17 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
     let has_malformed_host_reject = faults.iter().any(|r| {
         r.code == Some(Code::Malformed) && r.message.starts_with(crate::diag::MALFORMED_HOST_PREFIX)
     });
+    // Likewise: a COMPARISON whose operands are a genuine TYPE MISMATCH (`(< 1 "x")`) is rejected by
+    // `infer` as a coded "… are different types …" (CDZ0201/CDZ0203 naming the kind boundary). Because one
+    // operand is a compound/text the emit path cannot fold to a scalar, `lower` ALSO returns the uncoded
+    // "comparison of a compound value needs a heap walk" decline — a CONSEQUENCE of the mismatch, not an
+    // independent unbuilt-feature limit. Drop it when a comparison type-mismatch reject is present, keeping
+    // the coded reject (which names the real defect) as the ONE primary error.
+    let has_different_types_comparison_reject = faults.iter().any(|r| {
+        r.code.is_some()
+            && r.message
+                .contains(crate::diag::DIFFERENT_TYPES_COMPARISON_MARKER)
+    });
     // Likewise: a `handle` whose HEAD names a VALUE (`(handle foo …)`) is rejected CDZ0201 at the head. The
     // head is desugared into each arm's `(. foo op)` projection, so the value head ALSO leaks a CDZ0201
     // "member access requires a record, found <T>" (from `(. foo op)`) and the uncoded fold-decline — both
@@ -2250,6 +2261,15 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             // to the no-home walk — a consequent CDZ0401. Drop it for the malformed-host CDZ0201 (the real,
             // fixable defect is the host's shape, not a missing handler).
             if has_malformed_host_reject && r.code == Some(Code::EffectNoHome) {
+                return false;
+            }
+            // A mismatched-type comparison (`(< 1 "x")`) reports the coded "… are different types" reject;
+            // the emit path ALSO declines "comparison of a compound value needs a heap walk" (one operand
+            // is a compound/text it cannot fold). Drop that misleading decline for the coded reject.
+            if has_different_types_comparison_reject
+                && r.is_decline()
+                && r.message.contains(crate::diag::COMPOUND_COMPARISON_DECLINE)
+            {
                 return false;
             }
             // A `handle` whose HEAD names a value leaks two consequents from the desugared `(. foo op)`
