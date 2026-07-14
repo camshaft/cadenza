@@ -257,6 +257,44 @@
   (call   h (: 5 Int64) (: 3 Int64))
   (output (: 11 Int64)))
 
+(case "a closure capturing THREE scalars is made and called"
+  (doc    "`(def (mk (: a Int64) (: b Int64) (: c Int64)) (fn (x) (+ (+ (+ x a) b) c)))` — three captured
+           values in the cell. `make(1, 2, 3)` then `call(10)` = 10 + 1 + 2 + 3 = 16. Extends the two-capture
+           case to a wider environment (each capture read back inside the `call` dispatch).")
+  (input  (do (def (mk (: a Int64) (: b Int64) (: c Int64)) (fn ((: x Int64)) (+ (+ (+ x a) b) c)))
+              (export mk)))
+  (call   mk (: 1 Int64) (: 2 Int64) (: 3 Int64) (: 10 Int64))
+  (output (: 16 Int64)))
+
+(case "a closure capturing values of DIFFERENT types (Float64 + Int64)"
+  (doc    "`(def (mk (: base Float64) (: n Int64)) (fn (x) (+. x base)))` — the cell captures a Float64 AND an
+           Int64 (the latter unused in the body, but still stored), and the closure returns a Float64.
+           `make(1.5, 7)` then `call(2.5)` = 2.5 +. 1.5 = 4.0. Pins a MIXED-type capture environment (a float
+           and an int share one cell) with a float `call` result.")
+  (input  (do (def (mk (: base Float64) (: n Int64)) (fn ((: x Float64)) (+. x base)))
+              (export mk)))
+  (call   mk (: 1.5 Float64) (: 7 Int64) (: 2.5 Float64))
+  (output (: 4.0 Float64)))
+
+; The DIRECT-CALL host→guest boundary: when the HOST must supply a value to `make`/`call` OVER the boundary,
+; only aliased-width scalars cross (the same restriction host-call `abi_val_type` has). A COMPOUND the host
+; supplies — a `make` parameter of type `(List …)`/`(Tuple …)`/a sum — needs a host→guest DECODE into the
+; guest value-heap (a `value-decode` runtime op that does not exist), so it declines. This is the mirror of
+; the round-trip relaxation: an in-GUEST-built compound arg crosses freely (built guest-side), but a
+; host-SUPPLIED compound does not. The compiler DECLINES (a `todo`) rather than emit a component that can't
+; accept the argument.
+
+(case "a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode"
+  (doc    "`(def (mk (: xs (List Int64))) (fn (i) ((. List len) xs)))` returns a closure capturing the List
+           `xs`, but `xs` is a `make` PARAMETER the HOST supplies over the boundary — a `(List Int64)` has no
+           scalar host-boundary representation, and there is no host→guest decode of a compound into the guest
+           heap. Declines (a `todo`). Contrast the round-trip cases, where a compound closure argument is
+           BUILT in-guest and crosses freely.")
+  (input  (do (def (mk (: xs (List Int64))) (fn ((: i Int64)) ((. List len) xs)))
+              (export mk)))
+  (call   mk (: 5 Int64))
+  (output (: 3 Int64)))
+
 ; The scope fence is SCOPED to the returned closure's body — a BUILD-TIME delegated effect whose result
 ; the closure merely CAPTURES does NOT escape and must not be rejected. The distinction is where the
 ; `ask.ask` runs: INSIDE the returned closure (above — escapes, run later outside the delegation) versus
