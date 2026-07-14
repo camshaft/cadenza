@@ -2753,6 +2753,22 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             },
         };
     }
+    // A FUNCTION-VALUED scrutinee — `(match g …)` where `g` is a closure/def — is not matchable: a match
+    // deconstructs a DATA value by its cases (`core-semantics.md §Patterns Compose` — literals, tuples,
+    // constructors), and a function is not data (it has no cases, no discriminant, no machine value to
+    // probe). Without this it fell through to the scalar-probe path, which tried to lower `g` as a runtime
+    // value and hit the closure-boundary DECLINE ("a closure's parameter type has no machine
+    // representation") — an internal-sounding, uncoded message about a "parameter type" the author never
+    // asked about. Reject it up front with the real cause, coded CDZ0203 (an ill-typed match: the scrutinee
+    // is not a matchable value), so the diagnostic names what is wrong.
+    if let crate::ty::Ty::Fn(_, _) = crate::infer::type_of(db, scrutinee) {
+        return Core::Poison(Reject::coded(
+            Code::TypeMismatch,
+            "a function value cannot be matched — `match` deconstructs a data value by its cases \
+             (a literal, a tuple, or a constructor), and a function has none; call it, or match on \
+             the value it returns",
+        ));
+    }
     // A COMPOUND scrutinee — a SUM, a TUPLE, or a RECORD — is matched by the DECISION TREE, not the
     // scalar-probe path. A sum dispatches on the discriminant; a tuple has no discriminant, so its match
     // is a chain of `Elem`-path binders / literal tests; a RECORD has neither a discriminant NOR a
