@@ -696,6 +696,7 @@ pass	a map operation applies to a map passed as a function parameter
 pass	a map pattern binds the rest of the map after the named key
 pass	a map pattern falls through when the key is absent
 pass	a map pattern matches a present key and binds its value
+pass	a map pattern nested in a tuple binds its value binder
 pass	a map threaded as a recursive accumulator is grown then measured
 pass	a map whose value is a list: a runtime lookup then indexes the returned list
 pass	a map with a String value is looked up and its value compared in the arm
@@ -830,6 +831,7 @@ pass	a nested if on the same condition collapses the inner test to the known bra
 pass	a nested lambda captures+applies a closure-typed def PARAMETER (inline lambda argument)
 pass	a nested list element composes over a runtime list of lists
 pass	a nested literal pattern of the wrong type is a type error
+pass	a nested map pattern falls through when its key is absent
 pass	a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive
 pass	a nested match on a runtime scrutinee
 pass	a nested module's function export is applied through the projection chain
