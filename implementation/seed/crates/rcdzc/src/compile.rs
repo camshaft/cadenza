@@ -1283,6 +1283,26 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     for body in export_bodies.iter().copied() {
         crate::effects::check_no_home(db, body, &mut faults);
     }
+    // STRAY `resume`. A `resume` hands a value back to the point that performed a handler arm's operation,
+    // so it is meaningful ONLY inside a handler arm's BODY. A `resume` anywhere else — a top-level def body,
+    // a plain expression — has no arm to return into: it is a malformed use of the control form, not a
+    // not-yet-supported gap. Without this check a stray `resume` resolved to a valid `Resolved::Resume`,
+    // type-checked leniently (a resume is `Ty::Any`), and only DECLINED at lowering with NO coded
+    // diagnostic — so `cdz check` reported nothing and only the backend refused it (a `check`≡`compile`
+    // gap). Reject each stray `resume` with a coded CDZ0201 (Malformed — it is structurally well-formed but
+    // in an invalid position), anchored at the `resume` occurrence.
+    for id in (0..db.ast.structure.len() as u32).map(StructId) {
+        if db.ast.head_name(id) == Some("resume") && crate::resolve::is_stray_resume(db, id) {
+            faults.push(
+                Reject::coded(
+                    Code::Malformed,
+                    "a `resume` is only meaningful inside a handler arm's body — this one has no \
+                     enclosing handler arm to resume into",
+                )
+                .at(id),
+            );
+        }
+    }
     // EXPORTED-CLOSURE BODY TYPE-CHECK. An export whose body is a bare `(fn …)` crosses the host boundary
     // as a closure — it is NEVER applied in-guest, so its body is never β-reduced, and `collect_node`'s
     // `Resolved::Lambda` arm is a no-op (a called def's body is checked on β-reduction at its call site,

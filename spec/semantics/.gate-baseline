@@ -716,6 +716,7 @@ pass	a reference to an unbound name is rejected before running
 pass	a reflected quantity type rejects a value of a different dimension
 pass	a refutable constructor pattern in a let binder is rejected
 pass	a repeated let binding shadows the earlier one for what follows
+pass	a resume outside any handler arm is rejected
 pass	a returned capturing closure bound with let and applied folds like the inline form
 pass	a returned lambda captures+applies a closure param bound to a TOP-LEVEL def
 pass	a returned runtime string with a multi-byte scalar renders the scalar verbatim
