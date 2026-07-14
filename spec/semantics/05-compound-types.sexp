@@ -1265,6 +1265,30 @@
   (call   main)
   (output (: (Ch #\a) Tok)))
 
+(case "a variant carrying a Rational payload constructs and matches"
+  (doc    "A variant whose payload is the exact-rational leaf `Rational` — `(type W (V Rational) (Z))`.
+           `(Rational.of 3 4)` builds `3/4`, `(W.V …)` wraps it, and the `(W.V r) → 1` arm discriminates on
+           the variant (the Rational payload need not be re-computed to select the arm). Pins that the newer
+           `Rational` scalar composes as a sum payload — construction and match — exactly as an Int64 or
+           Char payload does; the leaf's own arithmetic is a separate capability, not exercised here.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (V Rational) (Z))
+            (def (f (: w W)) (match w ((W.V r) 1) ((W.Z) 0)))
+            (def (main) (f (W.V (Rational.of 3 4))))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a Rational-payload sum value escapes across the boundary in its canonical form"
+  (doc    "The escape companion: a `(V Rational)` variant value returned across the boundary renders its
+           canonical value form `(V 3/4)` — the Rational payload survives the value-escape walk (rendered
+           as its `numerator/denominator` form) exactly as an Int64/Char payload does. Pins that a Rational
+           is a first-class sum payload end to end (construction/match AND escape).")
+  (needs  sum-type-declaration)
+  (input  (do (type W (V Rational) (Z)) (def (main) (W.V (Rational.of 3 4))) (export main)))
+  (call   main)
+  (output (: (V 3/4) W)))
+
 ; --- A variant carrying a BARE NULLARY variant with an unconstrained payload type-checks ---------
 ; type-system.md #Generics Are Type-Valued Parameters: a nullary variant `None : ∀a. Option a` is
 ; generic in its payload. Constructing `(Some (None))`, the inner `None`'s payload `a` is a free type
