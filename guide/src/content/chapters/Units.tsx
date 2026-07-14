@@ -42,6 +42,22 @@ export default function Units() {
         A mix of different <em>dimensions</em> gets no such courtesy, as we'll see in a moment.
       </P>
 
+      <P>
+        Because the quantity surface is meant to read like English, common plurals resolve to their
+        singular unit — <C>#"feet"</C> is just <C>#"foot"</C>, the same member of the length family. So one
+        meter plus four feet is well-formed and converts exactly, to <C>2.2192</C> meters:
+      </P>
+      <Runnable
+        source={`(Qty.value
+  (+ (Qty.of 1.0 (Unit.of #"meter"))
+     (Qty.of 4.0 (Unit.of #"feet"))))`}
+      />
+      <Note>
+        Toggle to the conventional surface and the second quantity reads <C>4.0 feet</C> — the plural
+        survives in the surface even though it means the singular unit underneath. Write <C>#"foot"</C>{" "}
+        instead and you'd get the identical result.
+      </Note>
+
       <H2>Converting on purpose</H2>
       <P>
         When you want a specific unit out, convert to it with <C>Unit.in</C> — name the target unit
