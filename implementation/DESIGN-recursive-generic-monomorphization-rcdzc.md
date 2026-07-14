@@ -1,10 +1,9 @@
 # DESIGN: recursive-generic monomorphization (instantiate a recursive def more than once)
 
-Status: PHASES 0–2 + TRANSITIVE GENERICITY LANDED — a recursive generic function is instantiated once
-per distinct concrete type, end to end, INCLUDING a generic function that calls another generic and
-threads its param through (`loopn` at Int64+String → two fns; `wrap→idr` and a three-level `top→mid→idr`
-chain at Bool+Int64 → four/six fns; same-type calls dedup). 0 fail. REMAINING follow-ons at the bottom
-(mutual-recursion groups, module/do-local generics, explicit RecursionBound backstop).
+Status: COMPLETE — a recursive generic function is instantiated once per distinct concrete type, end to
+end, across EVERY recursive-def flavor: top-level, transitive (generic-calls-generic chains), mutual
+recursion, do-local, and module-member. Same-type calls dedup; unbounded polymorphic recursion rejects
+cleanly at type-check. All follow-ons resolved (see the bottom section). 0 fail throughout.
 
 ## Transitive genericity (LANDED after the initial phases) — generic-calls-generic
 
@@ -271,17 +270,21 @@ specialization, since each already registers internal defs.
 3. Unbounded-instantiation backstop: reuse the reduction budget / `RecursionBound` code, or a dedicated
    "polymorphic recursion not monomorphizable" code?
 
-## Remaining follow-ons (clean rejects today, NOT regressions — each a CDZ0203 Todo, never a miscompile)
+## Follow-ons — ALL RESOLVED (each verified + gated)
 
 1. ✅ **Transitive genericity — LANDED** (see the section near the top). A generic-calls-generic chain
-   (`wrap→idr`, and the three-level `top→mid→idr`) now propagates genericity through the call graph and
-   keeps the param↔result var connected, so both/all functions monomorphize per concrete type.
-2. **Mutual-recursion groups.** A mutually-recursive generic group should specialize as a GROUP at the
-   connected instantiation (reuse the `register_callable` group paths). Untested; likely declines.
-3. **Module-member / do-local generics.** Verify the `register_callable` / `register_do_local_callables`
-   paths carry specialization (each already registers internal defs; `type_specialize` resolves the
-   callee by `callee_def_index`, which has the `Member` arm). Untested.
-4. **Unbounded polymorphic recursion backstop.** A body that self-calls at an ever-LARGER type
-   (`f : a → …`, calls `f` at `List a`) would instantiate without bound. Today the concrete-arg-type demand
-   + `is_recursive` decline stops it, but it should DECLINE with `Code::RecursionBound` explicitly rather
-   than rely on an incidental limit. Add the guard when the group/transitive work lands.
+   (`wrap→idr`, and the three-level `top→mid→idr`) propagates genericity through the call graph and keeps
+   the param↔result var connected, so all functions monomorphize per concrete type.
+2. ✅ **Mutual-recursion groups — WORK (no new code).** `ping`/`pong` threading a generic each
+   monomorphize at both types; the cross-calls re-resolve by name and re-enter `type_specialize` at the
+   same instantiation, so the group specializes as a group without special handling.
+3. ✅ **Do-local generics — FIXED** (`copy_structural_pub`'s `pin_self_calls`). A do-local name resolves
+   by LEXICAL do-scope, which the specialized copy (re-parented out of the `do` block) escapes → the
+   copied self-call re-resolved unbound (CDZ0101). Fix: pin (share) the self-call occurrence so the copy
+   keeps resolving it to the original def and re-enters specialization. **Module-member generics** already
+   worked (`callee_def_index`'s `Member` arm resolves via `member_value`).
+4. ✅ **Unbounded polymorphic recursion — already SAFE.** A body self-calling at an ever-larger type
+   (`(bad n x) → (bad (- n 1) (tuple x x))`) is REJECTED at type-check (CDZ0203: the self-call arg type
+   conflicts with the param's solved type during the A2 connected solve) and terminates — it never enters
+   the specialization loop, so no explicit `RecursionBound` guard is needed. Verified: both a value-
+   returning and a discarded-result growing-type recursion reject cleanly (exit 0, no hang).

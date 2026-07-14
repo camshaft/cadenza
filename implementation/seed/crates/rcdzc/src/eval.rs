@@ -386,10 +386,42 @@ fn ref_binder(db: &mut Db, id: StructId) -> Option<StructId> {
 /// substitution — a β-reduction against an empty argument map. Used by recursive-generic monomorphization
 /// (`crate::lower::type_specialize`) to clone a generic def's body into a type-specialized copy: a body
 /// reference to a param re-resolves to the copy's re-annotated binder, and a self-call re-resolves by name
-/// to the original def (re-entering specialization at lower). The public entry to the private
-/// `copy_structural`, mirroring `effects::copy_pure`.
-pub fn copy_structural_pub(db: &mut Db, body: StructId) -> StructId {
+/// to the original def (re-entering specialization at lower). `own_params` are the def's parameter name
+/// occurrences — a body reference to one must copy + re-resolve against the specialized copy's new sig, so
+/// it is NOT pinned; every OTHER free reference (a self-call / sibling / do-local function that resolves to
+/// a `Lambda` OUTSIDE `body`) IS pinned first, so the copy SHARES the pinned occurrence instead of
+/// re-resolving it in the orphan copy. Without the pin a DO-LOCAL generic's self-call — which resolves by
+/// LEXICAL do-scope, not the global name index — became unbound in the re-parented copy (a spurious
+/// CDZ0101); a top-level/module callee re-resolved by name regardless, so it only bit the do-local path.
+/// Mirrors `apply_lambda`'s `pin_free_vars` before `beta_reduce`.
+pub fn copy_structural_pub(db: &mut Db, body: StructId, own_params: &[StructId]) -> StructId {
+    pin_free_vars(db, body, body, own_params);
+    // Additionally PIN every SELF-CALL occurrence — a name resolving to the def whose body IS `body`
+    // (`is_within(body, body)` is true, so `pin_free_vars` treats it as body-internal and skips it). A
+    // self-call must be SHARED so the copy resolves it to the ORIGINAL def and re-enters `type_specialize`
+    // (→ memo) at lower. A TOP-LEVEL/module self-call would re-resolve by the global name index anyway, but
+    // a DO-LOCAL one resolves by LEXICAL do-scope, which the orphan copy escapes → unbound. Sharing the
+    // occurrence closes both uniformly.
+    pin_self_calls(db, body, body);
     beta_reduce(db, body, &HashMap::default())
+}
+
+/// Pin (memoize the resolution of) every SELF-CALL name occurrence in `node` — a reference resolving to a
+/// `Lambda` whose body IS `self_body` (the def being copied). `pin_free_vars` excludes it (its representative
+/// binder equals `self_body`, so `is_within` reads body-internal); this shares it so the copy's self-call
+/// keeps resolving to the original def rather than re-resolving in the orphan copy. See `copy_structural_pub`.
+fn pin_self_calls(db: &mut Db, node: StructId, self_body: StructId) {
+    if db.ast.as_name(node).is_some() {
+        if matches!(resolved_of(db, node), Resolved::Lambda { body, .. } if body == self_body) {
+            crate::resolve::resolve_subtree(db, node);
+        }
+        return;
+    }
+    if let crate::ast::Struct::List(children) = db.ast.get(node) {
+        for c in children.clone() {
+            pin_self_calls(db, c, self_body);
+        }
+    }
 }
 
 // Applying a function evaluates its body with each parameter bound to its argument — realized here by

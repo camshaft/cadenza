@@ -283,7 +283,49 @@ pub(crate) fn sanitize_ident(name: &str) -> String {
     if s.is_empty() {
         s.push('_');
     }
+    // A Cadenza identifier may be a RUST KEYWORD (`loop`, `type`, `while`, `for`, `mut`, `impl`, …) — a
+    // valid Cadenza name but reserved in Rust, so emitting it verbatim as a `fn`/binder name is invalid Rust
+    // (`fn loop(…)` → rustc "expected `{`, found `(`"). rustc round-trips a keyword-named symbol as a RAW
+    // identifier `r#loop`, accepted for EVERY keyword except a handful (`crate`/`self`/`Self`/`super` can't
+    // be raw — and `_` is the wildcard, not a name) — mangle those with a reserved prefix instead. This is
+    // the identifier-emission twin of the `-`→`_` sanitization above; the SAME mapping applies at the `fn`
+    // declaration and every call/reference (all go through `sanitize_ident`), so they agree. wasm is
+    // unaffected (function names there are indices, not identifiers).
+    if is_rust_raw_ident_exception(&s) {
+        return format!("cdz_kw_{s}");
+    }
+    if is_rust_keyword(&s) {
+        return format!("r#{s}");
+    }
     s
+}
+
+/// The Rust keywords that CANNOT be written as a raw identifier (`r#…`) — so a Cadenza def/binder named one
+/// is mangled with a reserved prefix instead. `_` is the wildcard (never a raw ident); the rest are the
+/// path-sensitive keywords rustc rejects after `r#`.
+fn is_rust_raw_ident_exception(s: &str) -> bool {
+    matches!(s, "crate" | "self" | "Self" | "super" | "_")
+}
+
+/// Whether `s` is a Rust reserved word (a strict OR reserved keyword) — one that must be emitted as a raw
+/// identifier `r#s` when it is a Cadenza-source name. Excludes the raw-ident exceptions (handled by
+/// [`is_rust_raw_ident_exception`]). The set is the Rust 2021 keyword list; `match`/`fn`/`if`/`else`/`let`
+/// are Cadenza reserved words too (they never reach here as a def name) but are listed for completeness so
+/// any surviving occurrence is escaped rather than emitted raw.
+fn is_rust_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        // strict keywords
+        "as" | "break" | "const" | "continue" | "dyn" | "else" | "enum" | "extern" | "false"
+            | "fn" | "for" | "if" | "impl" | "in" | "let" | "loop" | "match" | "mod" | "move"
+            | "mut" | "pub" | "ref" | "return" | "static" | "struct" | "trait" | "true" | "type"
+            | "unsafe" | "use" | "where" | "while"
+            // 2018+ strict
+            | "async" | "await"
+            // reserved (future) keywords
+            | "abstract" | "become" | "box" | "do" | "final" | "macro" | "override" | "priv"
+            | "typeof" | "unsized" | "virtual" | "yield" | "try" | "gen"
+    )
 }
 
 /// The Rust `fn` identifier for a reachable definition — the ONE name both the declaration

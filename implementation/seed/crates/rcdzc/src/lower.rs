@@ -5199,6 +5199,16 @@ fn lower_recursive_call_or_decline(
     // (`DESIGN-recursive-generic-monomorphization-rcdzc.md`). The same def called at another type gets its
     // own copy; both emit as ordinary monomorphic functions. A MONOMORPHIC scheme (`ty_vars` empty) takes
     // the byte-identical `Core::Call { callee }` path below.
+    //
+    // So a generic definition is SPECIALIZED to each concrete type-argument set before it crosses the
+    // component boundary (every emitted copy is monomorphic). And this is the SAME compile-time reduction
+    // that specializes any def applied to compile-time-known arguments: a NON-recursive generic call
+    // β-reduces (monomorphizes away, no `Call` at all — see the inline-reduce path), and a recursive one
+    // takes a specialized copy here — not a distinct lowering path from ordinary compile-time application.
+    //= spec/capabilities/type-system.md#a-generic-definition-is-monomorphized-before-the-component-boundary
+    //# The compiler MUST monomorphize a generic definition — specialize it to each concrete set of type arguments it is used with, by compile-time reduction with those type-values bound — before the definition crosses a component boundary, consistent with the component ABI.
+    //= spec/capabilities/type-system.md#a-generic-definition-is-monomorphized-before-the-component-boundary
+    //# Monomorphization MUST be the same compile-time reduction by which the compiler specializes any definition applied to compile-time-known arguments, so that a generic instantiation is not a distinct lowering path from ordinary compile-time application.
     if !scheme.ty_vars.is_empty() {
         return match type_specialize(db, callee, args) {
             Some(spec) => {
@@ -5310,7 +5320,15 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<usiz
     // Copy the body structurally (fresh occurrences that re-resolve against the new def's scope): a body
     // reference to a param re-resolves by name to the new annotated binder; a self-call `(callee …)`
     // re-resolves by name to the ORIGINAL def and, lowered with the same-typed args, re-enters here → memo.
-    let spec_body = crate::eval::copy_structural_pub(db, orig_body);
+    // Pass the ORIGINAL def's param name occurrences as `own_params` so those references copy + re-resolve
+    // against the specialized sig, while every OTHER free reference (a self-call, or — for a DO-LOCAL
+    // generic — a sibling whose lexical do-scope the copy escapes) is pinned and SHARED. Without the pin a
+    // do-local generic's self-call re-resolved unbound in the orphan copy (CDZ0101).
+    let own_params: Vec<StructId> = orig_params
+        .iter()
+        .map(|&p| crate::eval::param_name_occ(db, p))
+        .collect();
+    let spec_body = crate::eval::copy_structural_pub(db, orig_body, &own_params);
 
     // Wrap in a real `(def (spec params…) body)` arena node so the parent index links param → sig → def
     // (`is_param_occurrence` walks that chain; `binder_in` resolves a body reference against the sig).

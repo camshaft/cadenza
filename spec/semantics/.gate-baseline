@@ -672,6 +672,7 @@ pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratc
 pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
 pass	a recursive byte walk threading a Bytes parameter through a helper infers without annotation
 pass	a recursive def computes over its argument
+pass	a recursive def named a target-language keyword runs
 pass	a recursive def with a match base case computes over its argument
 pass	a recursive do-local function nested in an inlined helper recurses
 pass	a recursive do-local function survives two inlinings of its helper
