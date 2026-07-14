@@ -350,6 +350,7 @@ pass	a guarded arm is selected when its guard holds
 pass	a guarded variant arm falls through when the guard fails
 pass	a guarded wildcard arm falls through to a tail-recursive call
 pass	a handle body reads an enclosing function parameter
+pass	a handle whose head names a value rather than an effect is rejected
 pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm for an operation the effect does not declare is rejected
 pass	a handler arm that resumes NON-tail folds a perform in a match arm body by handler distribution

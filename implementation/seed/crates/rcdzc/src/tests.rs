@@ -28874,6 +28874,47 @@ mod stage1 {
     }
 
     #[test]
+    fn a_handle_head_naming_a_value_reports_one_clear_diagnostic() {
+        // A `handle`'s head must name an EFFECT (the arms ARE that effect's operations). `(handle foo 0 …)`
+        // where `foo` is a value def used to surface ONLY as a leaky cascade — a CDZ0201 "member access
+        // requires a record, found Int64" (from the desugared `(. foo op)`) plus an uncoded "not yet
+        // reducible by the tail-resumptive fold" decline — neither naming the real problem. Now the primary
+        // is a clear CDZ0201 at the head, and `dedup_faults` drops both cascade faults, so `cdz check` shows
+        // exactly ONE actionable diagnostic.
+        let src = "(module m (def foo 5) (def (main) (handle foo 0 ((x (u) s (resume 1 s))) 5)) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let ds = crate::diagnostics(&mut db);
+        assert_eq!(
+            ds.len(),
+            1,
+            "exactly one diagnostic (cascade dropped): {ds:?}"
+        );
+        assert_eq!(
+            ds[0].code.as_deref(),
+            Some("CDZ0201"),
+            "got: {}",
+            ds[0].message
+        );
+        assert!(
+            ds[0].message.contains("head must name an EFFECT") && ds[0].message.contains("foo"),
+            "names the real problem — a value head, not a member-access artifact: {}",
+            ds[0].message
+        );
+        // An UNBOUND head keeps its own CDZ0101 (the resolver's primary — not shadowed by this check, which
+        // is conservative to a value def). A valid effect head compiles clean.
+        let unbound = crate::db::Db::load(parse(
+            "(module m (def (main) (handle Nonesuch 0 ((x (u) s (resume 1 s))) 5)) (export main))",
+        ));
+        let mut unbound = unbound;
+        assert!(
+            crate::diagnostics(&mut unbound)
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0101")),
+            "an unbound handle head keeps its CDZ0101"
+        );
+    }
+
+    #[test]
     fn an_abortive_perform_in_a_tail_if_branch_under_a_let_folds_per_branch() {
         // E4 branch-tail fold, the `let`-body case: a `let`'s VALUE is its BODY's value, so a `let` body is
         // in the same tail position as the `let`. An abortive perform in the tail of an `if` branch inside a

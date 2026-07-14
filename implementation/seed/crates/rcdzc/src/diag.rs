@@ -657,6 +657,15 @@ pub const RESUME_RESULT_MISMATCH_MARKER: &str = "a handler resumes with a value 
 /// misdirects (the author DID write a handler). Matched as a prefix so the shape-carrying tail can vary.
 pub const HANDLE_NONCANONICAL_PREFIX: &str = "this handle is not in canonical form";
 
+/// A stable PREFIX of the coded CDZ0201 "a handle's head must name an EFFECT" reject — a `(handle foo …)`
+/// whose head names a VALUE definition, not an effect. The head is desugared into each arm's `(. foo op)`
+/// projection, so a value head otherwise surfaces ONLY as a leaky cascade — a CDZ0201 "member access
+/// requires a record, found <T>" (from `(. foo op)` where `foo` is that scalar) plus the uncoded
+/// "not yet reducible by the tail-resumptive fold" decline — neither naming the real problem. `dedup_faults`
+/// drops both cascade faults whenever this reject is present, so a value-headed handle is ONE primary
+/// `error:` at the head, not shadowed by desugar-artifact diagnostics the author cannot act on.
+pub const HANDLE_VALUE_HEAD_PREFIX: &str = "a handle's head must name an EFFECT";
+
 /// A stable PREFIX of the coded CDZ0201 "an operation's type must be an arrow" reject — a
 /// `(op get Int64)` whose type is a well-formed NON-arrow. The op-value's `(meta t)` is then wrapped as
 /// `(fn () Int64)`, so PERFORMING it types the projected op-VALUE record against the arg, leaking the
