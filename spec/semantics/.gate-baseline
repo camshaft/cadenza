@@ -479,6 +479,7 @@ pass	a do-local generic function is instantiated per type
 pass	a do-sequence of unit-returning performs runs each for effect, then yields the tail value
 pass	a duplicate export clause for the same name is rejected
 pass	a duplicate export of the entry is rejected
+pass	a duplicate field in a variant's record-type payload is a type error
 pass	a duplicate match arm is dead code but the program still runs
 pass	a factorial that overflows the integer type traps through the recursion
 pass	a factory RETURNS a closure capturing the def's SCALAR parameter
@@ -991,6 +992,7 @@ pass	a rational-magnitude quantity erases to its exact rational value
 pass	a reader literal carries a qualified name with a dot
 pass	a recognized pragma with a malformed argument list is rejected
 pass	a recognized string escape denotes its one scalar value
+pass	a record TYPE with a duplicate field name is a type error
 pass	a record annotated with the wrong field type is rejected
 pass	a record field VALUE still reads the parameter it names after the call
 pass	a record field holding a sum is projected then matched
@@ -1556,6 +1558,7 @@ pass	an in-program handler OVERRIDES an effect's peer binding (the test-mock, no
 pass	an in-range constant argument to a narrow parameter computes at the parameter width
 pass	an inline-never definition is emitted once and called
 pass	an inline-never definition with a const dictionary still monomorphizes the dictionary
+pass	an inlined multi-use checked-arith argument is shared and computed directly into its slot
 pass	an inner binding shadows an outer one only within its scope
 pass	an inner handler's INIT state is computed by performing an enclosing effect
 pass	an inner lambda captures an enclosing match-arm binder and is applied
