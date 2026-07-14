@@ -15367,6 +15367,137 @@ mod match_engine {
     }
 
     #[test]
+    fn a_default_float_pragma_naming_a_non_float_type_is_cdz0303() {
+        // `numeric-model.md` §A Module May Declare Its Default Float Literal Type: the directive names the
+        // FLOATING-POINT type an otherwise-unconstrained DECIMAL literal grounds to, so it MUST name a float
+        // type. A well-formed directive whose argument reduces to a non-float type-value (`Int64`/`Rational`)
+        // fails the float-domain predicate → CDZ0303 (the float twin of the integer/rational domain reject).
+        for bad in ["Int64", "Rational"] {
+            assert_eq!(
+                reject_code(&format!(
+                    "(module top (def (main) (do (module m (pragma default-float {bad}) (def (x) 1.5)) ((. m x) unit))) (export main))"
+                ))
+                .as_deref(),
+                Some("CDZ0303"),
+                "default-float {bad} must be the float-domain reject"
+            );
+        }
+        // `Float32`/`Float64` name a floating-point type — ACCEPTED (the module registers, the projection
+        // resolves, the whole program compiles clean).
+        for good in ["Float32", "Float64"] {
+            assert_eq!(
+                reject_code(&format!(
+                    "(module top (def (main) (do (module m (pragma default-float {good}) (def (x) 1.5)) ((. m x) unit))) (export main))"
+                )),
+                None,
+                "default-float {good} is accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_default_float_pragma_with_wrong_arity_is_cdz0602() {
+        // A recognized key with its required type argument OMITTED → the structural CDZ0602 (malformed) —
+        // the float twin of the default-integer/default-fraction arity check.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-float) (def (x) 1.5)) ((. m x) unit))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0602")
+        );
+    }
+
+    #[test]
+    fn a_default_float_pragma_naming_an_unbound_type_is_cdz0101() {
+        // A meaning-changing directive naming a NONEXISTENT type must not be silently accepted — the same
+        // CDZ0101 the annotation `(: x Nope)` gives, matching the default-integer twin (resolution
+        // distinguishes an unbound name's `Poison` from a bound-but-unmodeled type).
+        assert_eq!(
+            reject_code(
+                "(do (module m (pragma default-float Nope) (def (x) 1.5)) (def (main) 42) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0101"),
+            "an unbound type name in a default-float pragma is CDZ0101, not silently accepted"
+        );
+    }
+
+    #[test]
+    fn a_default_float_pragma_makes_a_bare_decimal_literal_take_the_declared_width() {
+        // THE EFFECT (`numeric-model.md` §A Module May Declare Its Default Float Literal Type): a bare,
+        // otherwise-unconstrained DECIMAL literal WRITTEN in a `(pragma default-float Float32)` module takes
+        // `Float32` instead of `Float64`, so it rounds to the nearest binary32 and crosses the host boundary
+        // as an `f32`. Proven at the BITS: `3.14` read back as an `f32` is exactly `3.14f32` (its own
+        // nearest binary32), NOT the binary64 value truncated — the width propagated through inference to
+        // the `Core::ConstFloat` emission (`select.rs` reads `type_of` for the width).
+        let got = run_returns::<f32>(
+            &component(
+                "(module top (def (main) (do (module m (pragma default-float Float32) (def (x) 3.14)) ((. m x) unit))) (export main))",
+            ),
+            "main",
+        );
+        assert_eq!(
+            got.to_bits(),
+            3.14f32.to_bits(),
+            "a bare decimal in a default-float=Float32 module is a Float32, crossing as binary32"
+        );
+        // A decimal OUTSIDE any pragma module keeps the ordinary Float64 default — the binary64 value of
+        // `3.14`, read back as an `f64`.
+        let f64_default = run_returns::<f64>(
+            &component("(module m (def (main) 3.14) (export main))"),
+            "main",
+        );
+        assert_eq!(
+            f64_default.to_bits(),
+            3.14f64.to_bits(),
+            "a decimal outside a default-float module keeps the ordinary Float64 default"
+        );
+    }
+
+    #[test]
+    fn a_default_float_pragma_leaves_an_annotated_literal_and_an_integer_alone() {
+        // (1) AN EXPLICIT ANNOTATION WINS (`numeric-model.md` §"An explicit annotation … takes precedence
+        //     over the module's declared default"): `(: 3.14 Float64)` in a `default-float Float32` module
+        //     stays `Float64` — no spurious CDZ0203 from the fixed-width default unifying against the
+        //     annotation. Read back as an `f64` at the binary64 value.
+        let annotated = run_returns::<f64>(
+            &component(
+                "(module top (def (main) (do (module m (pragma default-float Float32) (def (x) (: 3.14 Float64))) ((. m x) unit))) (export main))",
+            ),
+            "main",
+        );
+        assert_eq!(
+            annotated.to_bits(),
+            3.14f64.to_bits(),
+            "an explicit Float64 annotation overrides the default-float=Float32 without a mismatch"
+        );
+        // (2) A default-float pragma governs DECIMAL literals only — a bare INTEGER literal keeps its
+        //     integer default (Int64), unaffected. `(+ 1 2)` type-checks clean as Int64 arithmetic.
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-float Float32) (def (x) (+ 1 2))) ((. m x) unit))) (export main))"
+            ),
+            None,
+            "a default-float pragma leaves an integer literal at its Int64 default"
+        );
+    }
+
+    #[test]
+    fn a_default_fraction_pragma_takes_precedence_over_default_float() {
+        // Both pragmas in one module: the EXACT-fraction default is the stronger statement (exact by
+        // default), so a bare decimal grounds to `Rational` (`0.5` → `1/2`), NOT the `default-float` width.
+        // `(/ 1 3)` is then exact rational division — clean, homogeneous (proving fraction won over float).
+        assert_eq!(
+            reject_code(
+                "(module top (def (main) (do (module m (pragma default-fraction Rational) (pragma default-float Float32) (def (third) (/ 1 3))) ((. m third) unit))) (export main))"
+            ),
+            None,
+            "default-fraction takes precedence over default-float — bare literals ground to Rational"
+        );
+    }
+
+    #[test]
     fn a_default_integer_pragma_runs_the_narrow_literal_fit_check() {
         // SOUNDNESS: a `(pragma default-integer <NarrowT>)` grounds a bare literal to `<NarrowT>`, so the
         // SAME literal-fit range check an explicit `(: v <NarrowT>)` runs must apply — else an out-of-range

@@ -439,8 +439,8 @@ pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
 /// Module Directive Is Drawn From A Fixed Set). The single source of truth for BOTH the `(pragma …)`
 /// validation (a key not here is CDZ0601) and the "did you mean?" suggestion an unknown key gets — so the
 /// suggestion can never drift from the accepted set. Small and closed today (`default-integer`,
-/// `default-fraction`); a new spec directive adds its key here.
-const PRAGMA_REGISTRY: &[&str] = &["default-integer", "default-fraction"];
+/// `default-fraction`, `default-float`); a new spec directive adds its key here.
+const PRAGMA_REGISTRY: &[&str] = &["default-integer", "default-fraction", "default-float"];
 
 /// The numeric-domain check for a well-formed `(pragma default-integer <T>)`: the directive names the
 /// type OTHERWISE-UNCONSTRAINED integer literals default to, so `<T>` MUST be an integer type
@@ -520,6 +520,39 @@ fn non_rational_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) ->
             format!(
                 "`default-fraction` must name an exact rational type (Rational), but `{}` is not \
                  (the default grounds otherwise-unconstrained numeric literals to an exact fraction)",
+                ty.render_name()
+            ),
+        )
+        .at(form),
+    )
+}
+
+/// The numeric-domain check for a well-formed `(pragma default-float <T>)`: `<T>` MUST be a floating-point
+/// type (`numeric-model.md` §A Module May Declare Its Default Float Literal Type). The floating-point twin
+/// of [`non_integer_default_fault`] — same conservatism (an unbound name surfaces its CDZ0101; a type that
+/// does not reduce to a concrete `Ty` returns `None`, no false reject), the domain predicate is
+/// `Ty::Float` (`Float32`/`Float64` — every admitted IEEE width, the ONE representation every fixed-width
+/// and deferred float shares). A non-float type-value (`Int64`, `Rational`, a record, …) is CDZ0303.
+fn non_float_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> Option<Reject> {
+    // An UNBOUND type name is the same CDZ0101 an annotation gives — surface it (see the integer twin's
+    // note for the bound-unmodeled vs unbound distinction this turns on).
+    if let crate::resolved::Resolved::Poison(reject) = crate::resolve::resolved_of(db, ty_expr)
+        && reject.code == Some(Code::Unbound)
+    {
+        return Some(reject);
+    }
+    let ty = crate::eval::typeval_of(db, ty_expr)?;
+    // The floating-point domain is `Ty::Float` — every admitted IEEE width (`Float32`/`Float64`), fixed or
+    // deferred.
+    if matches!(ty, crate::ty::Ty::Float(_)) {
+        return None;
+    }
+    Some(
+        Reject::coded(
+            Code::NonIntegerDefault,
+            format!(
+                "`default-float` must name a floating-point type (Float32 or Float64), but `{}` is not \
+                 (the default fixes the type otherwise-unconstrained decimal literals take)",
                 ty.render_name()
             ),
         )
@@ -787,23 +820,27 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         // members never reach `unknown_top_forms`, so this fires only for a top-level/root-scope pragma.)
         if head == "pragma" {
             // Only emit the placement message for a RECOGNIZED, WELL-FORMED directive — a top-level
-            // `(pragma default-integer <T>)` with the correct arity whose SOLE defect is its placement. A
-            // malformed pragma (an unknown key `nonesuch`, a wrong arity, a non-integer type) ALSO gets a
-            // more-specific reject from the pragma-registry pass (CDZ0601 naming the key / CDZ0602 arity /
+            // `(pragma <key> <T>)` with a registry key and the correct arity whose SOLE defect is its
+            // placement. A malformed pragma (an unknown key `nonesuch`, a wrong arity, a bad type) ALSO gets
+            // a more-specific reject from the pragma-registry pass (CDZ0601 naming the key / CDZ0602 arity /
             // CDZ0303 domain), which is MORE actionable than "it's mis-scoped" — so skip the placement
             // message there and let the registry message be the one primary. Gate on the exact shape the
-            // registry pass accepts: key `default-integer` with exactly one argument (`ptail.len() == 2`);
-            // the domain (integer-type) check is the registry's, so a bad type still gets CDZ0303 alone.
+            // registry pass accepts: a registry key with exactly one argument (`ptail.len() == 2`) that
+            // passes its key's domain check, so a bad type still gets CDZ0303 alone.
             let ptail = db.ast.as_form(occ, "pragma").map(<[_]>::to_vec);
-            let well_formed_default_integer = ptail.as_deref().is_some_and(|t| {
-                t.len() == 2
-                    && t.first()
-                        .and_then(|&k| db.ast.as_name(k))
-                        == Some("default-integer")
-                    // A non-integer type argument is the registry's CDZ0303 — defer to it, no placement noise.
-                    && non_integer_default_fault(db, occ, t[1]).is_none()
+            let well_formed_default = ptail.as_deref().is_some_and(|t| {
+                if t.len() != 2 {
+                    return false;
+                }
+                // A domain-bad type argument is the registry's CDZ0303 — defer to it, no placement noise.
+                match t.first().and_then(|&k| db.ast.as_name(k)) {
+                    Some("default-integer") => non_integer_default_fault(db, occ, t[1]).is_none(),
+                    Some("default-fraction") => non_rational_default_fault(db, occ, t[1]).is_none(),
+                    Some("default-float") => non_float_default_fault(db, occ, t[1]).is_none(),
+                    _ => false,
+                }
             });
-            if well_formed_default_integer {
+            if well_formed_default {
                 faults.push(
                     Reject::coded(
                         Code::UnknownDirective,
@@ -906,6 +943,21 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                         .at(form),
                     );
                 } else if let Some(reject) = non_rational_default_fault(db, form, ptail[1]) {
+                    faults.push(reject);
+                }
+            }
+            // `default-float <T>` — exactly one argument; a well-formed one whose type is not a
+            // floating-point type → the numeric-domain CDZ0303 (the float twin of `default-integer`).
+            Some("default-float") => {
+                if ptail.len() != 2 {
+                    faults.push(
+                        Reject::coded(
+                            Code::MalformedDirective,
+                            "`default-float` takes exactly one type argument (e.g. `(pragma default-float Float32)`)",
+                        )
+                        .at(form),
+                    );
+                } else if let Some(reject) = non_float_default_fault(db, form, ptail[1]) {
                     faults.push(reject);
                 }
             }

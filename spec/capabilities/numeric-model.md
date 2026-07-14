@@ -103,6 +103,18 @@ A declared default fraction literal type MUST apply to both an integer-written l
 
 The definition-site rule and the fixes-a-type-not-a-conversion rule for a default integer literal type MUST apply equally to a default fraction literal type: the default in force is the one declared by the module in which the literal is written, it introduces no implicit conversion between numeric types, and an explicit annotation or other constraint on the literal takes precedence.
 
+### A Module May Declare Its Default Float Literal Type
+
+A module MAY declare, through a module directive (modules-and-namespaces.md §"A Module Directive Is Drawn From A Fixed Set"), the floating-point type that a decimal literal with no other constraint takes within that module.
+
+When a module declares no default float literal type, a decimal literal with no other constraint MUST take the numeric model's default floating-point type.
+
+The type named by a default-float-literal directive MUST be a floating-point type the numeric model admits, and a directive naming a type that is not a floating-point type MUST be rejected with the machine-readable diagnostic for that unsatisfied constraint.
+
+A declared default float literal type MUST apply only to a decimal-written literal with no other constraint, leaving an integer-written literal at its declared or model-default integer type, so that a default float width governs how a written fraction is represented without silently making an integer a float.
+
+The definition-site rule and the fixes-a-type-not-a-conversion rule for a default integer literal type MUST apply equally to a default float literal type: the default in force is the one declared by the module in which the literal is written, it introduces no implicit conversion between numeric types, and an explicit annotation or other constraint on the literal takes precedence.
+
 ## Exactness
 
 ### Exact Arithmetic Is Exact

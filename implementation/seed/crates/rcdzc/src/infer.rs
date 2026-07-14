@@ -160,9 +160,13 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         },
         // A float literal's width is DEFERRED — it grounds to `Float64` unless an annotation or a float
         // operator's signature fixes it (`(: 3.5 Float32)`), mirroring a bare integer literal's width.
-        // A bare decimal literal: normally the default float; but a `(pragma default-fraction Rational)`
-        // module grounds it to the EXACT rational its digits denote (`0.5` → `1/2`) — exact-by-default.
-        Resolved::Float(_) => module_default_fraction_ty(db, id).unwrap_or_else(Ty::float),
+        // A bare decimal literal: a `(pragma default-fraction Rational)` module grounds it to the EXACT
+        // rational its digits denote (`0.5` → `1/2`) — exact-by-default, checked FIRST (an exact-fraction
+        // default is a stronger statement than a float-width default); else a `(pragma default-float <T>)`
+        // width; else the deferred float default (`Float64`).
+        Resolved::Float(_) => module_default_fraction_ty(db, id)
+            .or_else(|| module_default_float_ty(db, id))
+            .unwrap_or_else(Ty::float),
         Resolved::Unit => Ty::Unit,
         // A name IS its bound value's type — follow the ref (a lazy `type_of` on the value occurrence).
         Resolved::Ref { value } => type_of(db, value),
@@ -1789,6 +1793,38 @@ fn module_default_fraction_ty(db: &mut Db, id: StructId) -> Option<Ty> {
     let ty_expr = *db.default_fraction_literals.get(&id)?;
     let ty = crate::eval::typeval_of(db, ty_expr)?;
     matches!(ty, Ty::Rational).then_some(ty)
+}
+
+/// The declared default-FLOAT type for the bare DECIMAL literal at `id`, or `None` if it is not written in
+/// a `(pragma default-float <T>)` module. Reads the load-time `default_float_literals` map (keyed by the
+/// literal's ORIGINAL node, β-copy-robust) and reduces the recorded `<T>` occurrence to a `Ty`. Only a
+/// FLOAT type is honored (a non-float `<T>` is separately the CDZ0303 domain reject); anything that does
+/// not reduce to a concrete float type is `None` (the literal keeps the deferred `Float64` default). This
+/// fixes a TYPE, not a conversion: no-silent-promotion still holds, and an explicit annotation on the
+/// literal wins.
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-float-literal-type
+//# A module MAY declare, through a module directive (modules-and-namespaces.md §"A Module Directive Is Drawn From A Fixed Set"), the floating-point type that a decimal literal with no other constraint takes within that module.
+//= spec/capabilities/numeric-model.md#a-module-may-declare-its-default-float-literal-type
+//# When a module declares no default float literal type, a decimal literal with no other constraint MUST take the numeric model's default floating-point type.
+fn module_default_float_ty(db: &mut Db, id: StructId) -> Option<Ty> {
+    // An EXPLICIT ANNOTATION WINS (numeric-model.md §"An explicit annotation … takes precedence over the
+    // module's declared default"): a literal that is the expression of a `(: <lit> T)` annotation is
+    // governed by `T`, not the module default — so DON'T apply the default-float to it. Unlike the
+    // `default-integer` twin (which relies on the fault walk's integer-literal GROUNDING branch to let a
+    // conflicting annotation win), a bare FLOAT literal has no such grounding branch, so a FIXED default
+    // width (`Float32`) would UNIFY against a differing annotation (`(: 3.14 Float64)`) and spuriously
+    // reject CDZ0203. Excluding the annotated literal here makes it behave exactly as it would with no
+    // pragma — the deferred literal grounds through its annotation, the annotation wins. Same guard as
+    // `module_default_fraction_ty`.
+    if let Some(parent) = db.parent_of(id)
+        && let Some(tail) = db.ast.as_form(parent, ":")
+        && tail.first() == Some(&id)
+    {
+        return None;
+    }
+    let ty_expr = *db.default_float_literals.get(&id)?;
+    let ty = crate::eval::typeval_of(db, ty_expr)?;
+    matches!(ty, Ty::Float(_)).then_some(ty)
 }
 
 /// Ground a solved parameter type: a still-unsolved variable that a numeric use constrained becomes the

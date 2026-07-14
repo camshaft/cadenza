@@ -483,6 +483,25 @@ impl<'a> Printer<'a> {
                 self.doc.end();
                 return;
             }
+            // ---- pragma `(pragma key arg)` -> `@!key arg` (the inner-attribute sugar) ----
+            // The pragma-directive sugar, the `@` twin: `@!default-float Float32` reads as a modifier of
+            // the enclosing module (Rust's `#![…]`). Prints only for the CANONICAL two-argument shape (a
+            // NAME key + one argument), so a malformed `(pragma …)` (no key / wrong arity) falls through to
+            // the ordinary call rendering and its structure stays visible. The arg prints in the SAME line
+            // as an argument (a type name / parenthesized type), NOT wrapped as a call — the `@!` sits at
+            // the head of a module member, so no leading break.
+            if head == "pragma"
+                && args.len() == 2
+                && let Some(key) = self.a.as_name(args[0])
+            {
+                self.doc.cbox(0);
+                self.doc.word("@!");
+                self.doc.word(emit_name(key));
+                self.doc.word(" ");
+                self.expr(args[1], parent_prec);
+                self.doc.end();
+                return;
+            }
             // ---- keyword forms ----
             match head.as_str() {
                 "let" if self.is_let_shape(args) => return self.print_let(args, parent_prec),
@@ -2866,6 +2885,46 @@ mod tests {
         assert_eq!(
             assert_roundtrip("@a @b def f(x) = x", 80),
             "@a\n@b\ndef f(x) = x"
+        );
+    }
+
+    #[test]
+    fn pragma_sugar_round_trips() {
+        // `@!key arg` is the PRAGMA sugar — the inner-attribute twin of `@` (Rust's `#![…]`). It desugars
+        // to `(pragma key arg)`, byte-identical to a written pragma, so it flows through the SAME registry
+        // with no new downstream case. A bare-name argument (`Float32`) is the common shape.
+        assert_eq!(
+            assert_roundtrip("@!default-float Float32", 80),
+            "@!default-float Float32"
+        );
+        // ML surface → the canonical `(pragma …)` head; the s-expr surface reads it directly, so a written
+        // `(pragma …)` prints as `@!`. The two surfaces agree on one tree.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("@!default-fraction Rational").arenas),
+            "(pragma default-fraction Rational)"
+        );
+        assert_eq!(
+            print(&sexpr::read("(pragma default-integer Int64)").unwrap(), 80),
+            "@!default-integer Int64"
+        );
+        // The argument parses in prefix+POSTFIX position, so a constructor APPLICATION `Int(8)` is the
+        // single argument (`(Int 8)`), not `(pragma … Int)` applied to `8` — and it round-trips.
+        assert_eq!(
+            assert_roundtrip("@!default-integer Int(8)", 80),
+            "@!default-integer Int(8)"
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml("@!default-integer Int(8)").arenas),
+            "(pragma default-integer (Int 8))"
+        );
+        // In a MODULE, the pragma sits above the members it governs and the following `def` is NOT
+        // swallowed as an argument (a member does not begin with `.`/`(`); the whole module round-trips.
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("module m {\n  @!default-float Float32\n  def x() = 0.5\n}")
+                    .arenas
+            ),
+            "(module m (pragma default-float Float32) (def (x) 0.5))"
         );
     }
 

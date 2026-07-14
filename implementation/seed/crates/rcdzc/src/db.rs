@@ -439,6 +439,12 @@ pub struct ModuleDecl {
     /// with no such pragma. Like `default_int`, kept as the un-reduced occurrence; the load-time
     /// `default_fraction_literals` map records which literals it applies to.
     pub default_fraction: Option<StructId>,
+    /// The TYPE-EXPRESSION occurrence of a `(pragma default-float <T>)` member, if the module declares one
+    /// — the floating-point type an otherwise-unconstrained bare DECIMAL literal WRITTEN in this module
+    /// defaults to, instead of `Float64` (`numeric-model.md` §A Module May Declare Its Default Float
+    /// Literal Type). The float twin of `default_int`. `None` for a module with no such pragma. Kept as the
+    /// un-reduced occurrence; the load-time `default_float_literals` map records which literals it applies to.
+    pub default_float: Option<StructId>,
 }
 
 /// The bound on β-reduction nesting depth — a backstop. A recursive function is caught STATICALLY
@@ -605,6 +611,18 @@ pub struct Db {
     /// `Core::ConstRational` (via `rational_from_literal`); an explicit annotation still wins, and
     /// no-promotion still holds (the default fixes a type, not a coercion).
     pub default_fraction_literals: crate::fxhash::FxHashMap<StructId, StructId>,
+
+    /// Each bare DECIMAL-LITERAL node WRITTEN inside a `(module … (pragma default-float <T>) …)` → the
+    /// pragma's `<T>` type-expression occurrence. A literal in this map defaults to `<T>` (a float width)
+    /// instead of `Float64` (`numeric-model.md` §A Module May Declare Its Default Float Literal Type). The
+    /// float twin of `default_int_literals` — but it marks DECIMAL literals only (an integer-written literal
+    /// keeps its integer default; a default float width governs how a written-decimal literal grounds, not
+    /// how an integer does). Built ONCE at load by an ARENA walk (`collect_default_float_literals`), keyed
+    /// by the ORIGINAL source-literal node (β-copy-robust). DEFINITION-SITE scoped. `infer::compute`
+    /// consults it to give the literal its starting float type; an explicit annotation still wins and
+    /// no-promotion still holds (the default fixes a type, not a coercion — like the integer default, a
+    /// float default keeps the value form a `ConstFloat`, so no annotated-literal guard is needed).
+    pub default_float_literals: crate::fxhash::FxHashMap<StructId, StructId>,
 
     /// The declaration occurrences of sums that are C-style ENUMS — MORE than one variant, EVERY variant
     /// nullary (no payloads). Such a value carries no data beyond WHICH variant it is, so it needs no heap
@@ -1663,6 +1681,15 @@ impl Db {
                 );
             }
         }
+        // Map each bare DECIMAL literal written inside a `(pragma default-float <T>)` module to its default
+        // float type-expr — the floating-point analogue of the integer map (decimals only; an integer
+        // literal keeps its integer default).
+        let mut default_float_literals = crate::fxhash::FxHashMap::default();
+        for m in &modules {
+            if let Some(ty_expr) = m.default_float {
+                collect_default_float_literals(&ast, m.occ, ty_expr, &mut default_float_literals);
+            }
+        }
         let mut db = Db {
             ast,
             defs,
@@ -1675,6 +1702,7 @@ impl Db {
             newtype_inner: crate::fxhash::FxHashMap::default(),
             default_int_literals,
             default_fraction_literals,
+            default_float_literals,
             enum_disc: crate::fxhash::FxHashSet::default(),
             parent,
             child_ix,
@@ -3739,14 +3767,15 @@ fn collect_module_decl(
     // obligation blocking registration. A `(pragma …)` with any OTHER key is still unmodeled (blocks) —
     // the modeled set is exactly the keys whose meaning the compiler realizes.
     // A `(pragma <key> …)` member is MODELED for a key whose EFFECT the compiler realizes: `default-integer`
-    // (a bare literal defaults to `<T>`) and `default-fraction` (a bare numeric literal grounds to the
-    // exact rational `<T>`). Both are realized via a `ModuleDecl` field + a load-time literal map, so they
-    // don't block registration; any OTHER pragma key stays unmodeled (blocks).
+    // (a bare literal defaults to `<T>`), `default-fraction` (a bare numeric literal grounds to the exact
+    // rational `<T>`), and `default-float` (a bare decimal literal defaults to the float type `<T>`). Each
+    // is realized via a `ModuleDecl` field + a load-time literal map, so they don't block registration; any
+    // OTHER pragma key stays unmodeled (blocks).
     let is_modeled_pragma = |member: StructId| {
         ast.as_form(member, "pragma").is_some_and(|t| {
             matches!(
                 t.first().and_then(|&k| ast.as_name(k)),
-                Some("default-integer" | "default-fraction")
+                Some("default-integer" | "default-fraction" | "default-float")
             )
         })
     };
@@ -3769,6 +3798,7 @@ fn collect_module_decl(
     };
     let default_int = pragma_ty("default-integer");
     let default_fraction = pragma_ty("default-fraction");
+    let default_float = pragma_ty("default-float");
     if all_modeled
         && let Some(&name) = mod_tail.first()
         && let Some(name_str) = ast.as_name(name)
@@ -3779,6 +3809,7 @@ fn collect_module_decl(
             synth: None,
             default_int,
             default_fraction,
+            default_float,
         });
     }
     for &member in &members {
@@ -3894,6 +3925,54 @@ fn mark_numeric_literals(
     if let Struct::List(children) = ast.get(node) {
         for &c in children {
             mark_numeric_literals(ast, c, ty_expr, out);
+        }
+    }
+}
+
+/// The `default-float` analogue of [`collect_default_int_literals`]: record every bare DECIMAL literal in
+/// the DEF-BODY subtrees of a `(pragma default-float <T>)` module → the pragma's `<T>` occurrence.
+/// DEFINITION-SITE scoped (own `(def …)` bodies only; a nested module has its own scope). Keyed by the
+/// ORIGINAL literal node (β-copy-robust). Like the integer twin, this is a MEANING-CHANGING directive read
+/// from the module's CANONICAL AST alone, so a module's meaning does not depend on a compilation option.
+fn collect_default_float_literals(
+    ast: &Arenas,
+    mod_form: StructId,
+    ty_expr: StructId,
+    out: &mut crate::fxhash::FxHashMap<StructId, StructId>,
+) {
+    let Some(mod_tail) = ast.as_form(mod_form, "module") else {
+        return;
+    };
+    for &member in mod_tail.get(1..).unwrap_or(&[]) {
+        if let Some(def_tail) = ast.as_form(member, "def")
+            && let Some(&def_body) = def_tail.get(1)
+        {
+            mark_float_literals(ast, def_body, ty_expr, out);
+        }
+    }
+}
+
+/// Mark every DECIMAL-literal node (via `as_float`) reachable from `node` (recursively) with `ty_expr`,
+/// WITHOUT descending into a nested `(module …)`. The float analogue of [`mark_int_literals`] — a default
+/// float width governs how a WRITTEN-DECIMAL literal grounds (`3.14` → `Float32`), not how an integer
+/// literal does (an integer keeps its integer default), so ONLY float leaves are marked. A literal already
+/// recorded is left as-is.
+fn mark_float_literals(
+    ast: &Arenas,
+    node: StructId,
+    ty_expr: StructId,
+    out: &mut crate::fxhash::FxHashMap<StructId, StructId>,
+) {
+    if ast.as_float(node).is_some() {
+        out.entry(node).or_insert(ty_expr);
+        return;
+    }
+    if ast.as_form(node, "module").is_some() {
+        return;
+    }
+    if let Struct::List(children) = ast.get(node) {
+        for &c in children {
+            mark_float_literals(ast, c, ty_expr, out);
         }
     }
 }
