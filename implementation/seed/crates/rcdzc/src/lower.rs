@@ -3575,12 +3575,211 @@ fn ctor_pattern_with_wildcard_payloads(db: &mut Db, ctor_pat: StructId) -> Struc
     }
 }
 
+/// A wildcard-VALUE, rest-stripped copy of a map pattern `(map (k v)… .. r)` → `(map (k _)…)`: keeps each
+/// entry's KEY, replaces its value binder with `_`, and drops any `.. rest`. Used to build the
+/// key-presence guard for a refutable map list-element (test ONLY that the named keys are present, no value
+/// binding, no rest). The keys are reused live (a key is an ordinary value expression); the values become
+/// fresh `_` nodes.
+fn map_pattern_with_wildcard_values(db: &mut Db, map_pat: StructId) -> StructId {
+    let tail = db
+        .ast
+        .as_ctor_form(map_pat, "map")
+        .or_else(|| db.ast.as_form(map_pat, "map"))
+        .map(<[_]>::to_vec)
+        .unwrap_or_default();
+    let map_head = match db.ast.get(map_pat) {
+        crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+        _ => db.push_name("map"),
+    };
+    let mut children = vec![map_head];
+    for &entry in &tail {
+        // Stop at a `..` marker — the presence guard tests only the NAMED keys, not the rest.
+        if db.ast.as_name(entry) == Some("..") {
+            break;
+        }
+        if let crate::ast::Struct::List(kv) = db.ast.get(entry)
+            && kv.len() == 2
+        {
+            let key = kv[0];
+            let wild = db.push_name("_");
+            let new_entry = db.push_list(vec![key, wild]);
+            children.push(new_entry);
+        }
+    }
+    db.push_list(children)
+}
+
+/// Whether `elem_pat` is a MAP pattern `(map (k v)… .. r)` — a refutable list-arm element (it matches only
+/// a map containing the named keys). Like a refutable ctor element, it desugars to a fresh binder + a
+/// key-presence-test guard + a body that re-matches the binder to bind the values
+/// (`desugar_refutable_map_list_elements`). A non-map element returns `false`.
+fn is_map_element_pattern(db: &Db, elem_pat: StructId) -> bool {
+    db.ast.as_form(elem_pat, "map").is_some() || db.ast.head_ctor(elem_pat) == Some("map")
+}
+
+/// PRE-PASS for `lower_match_list` (the MAP twin of `desugar_refutable_ctor_list_elements`): rewrite an arm
+/// whose list pattern has a refutable MAP leading element `(list (map (k v)…) rest… .. r)` into an
+/// equivalent guarded arm the length-dispatch matcher + the (direct) map matcher already handle. A map
+/// element matches only a map containing its named keys AND binds the values — so, like a ctor element, it
+/// needs BOTH a presence test for fall-through AND value binding for the body:
+///   `((list (map (k v)…) rest… .. r) body)`  ≡
+///   `((guard (list __lc rest… .. r) (match __lc ((map (k _)…) true) (_ false)))
+///       (match __lc ((map (k v)…) body) (_ (trap …))))`
+/// The GUARD's key-presence test (a wildcard-VALUE map pattern) gates the arm; the BODY re-matches the SAME
+/// element binder to bind the values `v…` (the DIRECT map matcher — `lower_match_map` / the `MapField`
+/// resolution — binds them). One refutable-map element per arm (the common shape); ≥2 declines. NO new IR.
+/// Returns `Some(Core)` iff the rewrite fired.
+fn desugar_refutable_map_list_elements(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Core> {
+    // The leading elements of an arm's (optionally guarded) list pattern — `None` if not a list pattern.
+    let leading_of = |db: &mut Db, pat: StructId| -> Option<Vec<StructId>> {
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        let es = db
+            .ast
+            .as_ctor_form(inner, "list")
+            .or_else(|| db.ast.as_form(inner, "list"))
+            .map(<[_]>::to_vec)?;
+        let lead = es
+            .iter()
+            .position(|&e| db.ast.as_name(e) == Some(".."))
+            .unwrap_or(es.len());
+        Some(es[..lead].to_vec())
+    };
+    // Bail early unless some arm has a MAP leading element (the common case pays only this scan).
+    let mut any_map = false;
+    for &(pat, _) in arms {
+        if let Some(leading) = leading_of(db, pat)
+            && leading.iter().any(|&e| is_map_element_pattern(db, e))
+        {
+            any_map = true;
+        }
+    }
+    if !any_map {
+        return None;
+    }
+    let mut new_arms: Vec<StructId> = Vec::with_capacity(arms.len());
+    for (ai, &(pat, body)) in arms.iter().enumerate() {
+        let (inner, existing_guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            _ => (pat, None),
+        };
+        let list_es = db
+            .ast
+            .as_ctor_form(inner, "list")
+            .or_else(|| db.ast.as_form(inner, "list"))
+            .map(<[_]>::to_vec);
+        let Some(es) = list_es else {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        };
+        let lead = es
+            .iter()
+            .position(|&e| db.ast.as_name(e) == Some(".."))
+            .unwrap_or(es.len());
+        let map_positions: Vec<usize> = (0..lead)
+            .filter(|&p| is_map_element_pattern(db, es[p]))
+            .collect();
+        if map_positions.is_empty() {
+            new_arms.push(db.push_list(vec![pat, body]));
+            continue;
+        }
+        if map_positions.len() > 1 {
+            // ≥2 map elements in one arm — the body-rematch nesting is a later increment. Decline honestly.
+            return Some(Core::Poison(Reject::decline(
+                "a list arm with more than one map element is not yet supported (match one map element per arm)",
+            )));
+        }
+        let mpos = map_positions[0];
+        let map_pat = es[mpos]; // the original `(map (k v)…)` element pattern
+        let list_head = match db.ast.get(inner) {
+            crate::ast::Struct::List(items) if !items.is_empty() => items[0],
+            _ => db.push_name("list"),
+        };
+        let name = format!("__lm{ai}");
+        // Rebuild the list pattern with the map element replaced by a fresh bare binder.
+        let mut new_es: Vec<StructId> = Vec::with_capacity(es.len());
+        for (p, &e) in es.iter().enumerate() {
+            if p == mpos {
+                new_es.push(db.push_name(&name));
+            } else {
+                new_es.push(e);
+            }
+        }
+        let mut list_children = vec![list_head];
+        list_children.extend(new_es);
+        let new_list = db.push_list(list_children);
+        // The KEY-PRESENCE guard: `(match __lm ((map (k _)…) true) (_ false))` — a wildcard-value map pattern
+        // tests only that the named keys are present (the `MapHasKeys` gate), no value binding in the guard.
+        let presence_scrut = db.push_name(&name);
+        let presence_pat = map_pattern_with_wildcard_values(db, map_pat);
+        let true_node = db.push_atom(crate::ast::Leaf::Bool(true));
+        let false_node = db.push_atom(crate::ast::Leaf::Bool(false));
+        let presence_true_arm = db.push_list(vec![presence_pat, true_node]);
+        let wild = db.push_name("_");
+        let presence_false_arm = db.push_list(vec![wild, false_node]);
+        let presence_match_head = db.push_name("match");
+        let presence_test = db.push_list(vec![
+            presence_match_head,
+            presence_scrut,
+            presence_true_arm,
+            presence_false_arm,
+        ]);
+        let guard_cond = match existing_guard {
+            None => presence_test,
+            Some(g) => {
+                let and_head = db.push_name("and");
+                db.push_list(vec![and_head, g, presence_test])
+            }
+        };
+        let guard_head = db.push_name("guard");
+        let new_pat = db.push_list(vec![guard_head, new_list, guard_cond]);
+        // The BODY re-match: `(match __lm ((map (k v)…) <body>) (_ (trap …)))` — the DIRECT map matcher binds
+        // the value sub-patterns for the original body; the `_` arm is dead (the guard proved key presence)
+        // but keeps the inner match exhaustive.
+        let body_scrut = db.push_name(&name);
+        let body_true_arm = db.push_list(vec![map_pat, body]);
+        let trap_head = db.push_name("trap");
+        let trap_msg = db.push_str("unreachable: list-map-element keys already gated by guard");
+        let trap = db.push_list(vec![trap_head, trap_msg]);
+        let wild_b = db.push_name("_");
+        let body_false_arm = db.push_list(vec![wild_b, trap]);
+        let body_match_head = db.push_name("match");
+        let new_body = db.push_list(vec![
+            body_match_head,
+            body_scrut,
+            body_true_arm,
+            body_false_arm,
+        ]);
+        new_arms.push(db.push_list(vec![new_pat, new_body]));
+    }
+    let match_head = db.push_name("match");
+    let mut items = vec![match_head, scrutinee];
+    items.extend(new_arms);
+    let rewritten = db.push_list(items);
+    crate::resolve::resolve_subtree(db, rewritten);
+    trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "list match with a refutable map element → fresh-binder + key-presence guard + body re-match");
+    Some(core_of(db, rewritten))
+}
+
 fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
     // PRE-PASS (nested list): a refutable nested LIST leading element (`(list (list a .. r1) .. r2)`)
     // dispatches on the INNER list's length — desugar to a fresh binder + an inner-length guard + a body
     // re-match binding the inner sub-patterns. Run FIRST (a nested-list element is neither a ctor nor a
     // literal, so the other passes skip it); it rebuilds the match and recurses through `core_of`.
     if let Some(core) = desugar_refutable_nested_list_elements(db, scrutinee, arms) {
+        return core;
+    }
+    // PRE-PASS (map): a refutable MAP leading element (`(list (map (k v)) .. r)`) — a list of key-value
+    // records destructured by key — desugars to a fresh binder + a key-presence guard + a body re-match
+    // binding the values (the direct map matcher). Run alongside the ctor pass (a map element is neither a
+    // ctor nor a literal, so the other passes skip it); it rebuilds the match and recurses through `core_of`.
+    if let Some(core) = desugar_refutable_map_list_elements(db, scrutinee, arms) {
         return core;
     }
     // PRE-PASS (ctor): a refutable MULTI-VARIANT CONSTRUCTOR leading element (`(list (Op.Add x) .. r)`) —
