@@ -558,6 +558,23 @@ impl IntValue {
         out
     }
 
+    /// Shift a magnitude RIGHT by one bit (divide by 2, floor), canonical result. The LSB of each byte
+    /// flows into the MSB (bit 7) of the next-less-significant byte's result, processing MSB-first.
+    fn shr1_mag(m: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(m.len());
+        let mut carry = 0u8; // the low bit of the more-significant byte just processed
+        for &byte in m.iter() {
+            out.push((carry << 7) | (byte >> 1));
+            carry = byte & 1;
+        }
+        let mut start = 0;
+        while start < out.len() && out[start] == 0 {
+            start += 1;
+        }
+        out.drain(..start);
+        out
+    }
+
     /// Pack an MSB-first bit vector into canonical big-endian bytes.
     fn pack_bits_be(bits: &[u8]) -> Vec<u8> {
         // Drop leading zero bits.
@@ -582,14 +599,56 @@ impl IntValue {
         out
     }
 
-    /// The greatest common divisor of two MAGNITUDES (unsigned), Euclidean. `gcd(0,0)=0`; `gcd(a,0)=a`.
+    /// The greatest common divisor of two MAGNITUDES (unsigned). `gcd(0,0)=0`; `gcd(a,0)=a`.
+    ///
+    /// BINARY GCD (Stein's algorithm), not Euclidean: it uses only halving (`shr1_mag`), subtraction, and
+    /// comparison — never `divmod_mag`. This is the HOT compile-time path (`normalized_rational` reduces
+    /// every folded `Rational` to lowest terms), and `divmod_mag` is bit-serial (`8·len(a)` iterations per
+    /// call regardless of quotient size), so a Euclidean gcd of two large coprime magnitudes — the shape a
+    /// chained exact-rational sum produces, where distinct denominators MULTIPLY without cancellation — was
+    /// super-cubic (a 160-term `(+ (Rational.of 1 p0) …)` fold: ~1.8s, 99% in `divmod_mag`). Binary GCD
+    /// removes the trial division entirely: each step strips shared/individual factors of two and does one
+    /// subtract, so it is O(bits²) with a small constant on the same shape (the fold drops to milliseconds).
     fn gcd_mag(a: &[u8], b: &[u8]) -> Vec<u8> {
-        let mut x = IntValue::sub_mag(a, &[]); // canonicalize
+        let mut x = IntValue::sub_mag(a, &[]); // canonicalize (strip leading zeros)
         let mut y = IntValue::sub_mag(b, &[]);
-        while !y.is_empty() {
-            let (_q, r) = IntValue::divmod_mag(&x, &y);
-            x = y;
-            y = r;
+        // gcd(a,0)=a, gcd(0,b)=b (and gcd(0,0)=0 falls out — x stays empty).
+        if x.is_empty() {
+            return y;
+        }
+        if y.is_empty() {
+            return x;
+        }
+        // Factor out the largest power of two dividing BOTH — `shift` common trailing zero bits. `gcd =
+        // 2^shift · gcd(x>>shift, y>>shift)`, restored by shifting the odd-core result back up at the end.
+        let mut shift = 0usize;
+        while (x[x.len() - 1] & 1) == 0 && (y[y.len() - 1] & 1) == 0 {
+            x = IntValue::shr1_mag(&x);
+            y = IntValue::shr1_mag(&y);
+            shift += 1;
+        }
+        // Remove remaining factors of two from x, so x is odd at each loop entry.
+        while (x[x.len() - 1] & 1) == 0 {
+            x = IntValue::shr1_mag(&x);
+        }
+        loop {
+            // y is made odd (its factors of two cannot be common — x is odd).
+            while !y.is_empty() && (y[y.len() - 1] & 1) == 0 {
+                y = IntValue::shr1_mag(&y);
+            }
+            if y.is_empty() {
+                break;
+            }
+            // Both x and y are now odd; subtract the smaller from the larger (the difference is even and
+            // handled by the halving at the loop top). Keep x ≤ y so x holds the running gcd core.
+            if IntValue::cmp_mag(&x, &y) == std::cmp::Ordering::Greater {
+                std::mem::swap(&mut x, &mut y);
+            }
+            y = IntValue::sub_mag(&y, &x);
+        }
+        // Restore the common factors of two.
+        for _ in 0..shift {
+            x = IntValue::shl1_mag(&x);
         }
         x
     }
@@ -1127,6 +1186,41 @@ mod tests {
         // GCD ignores sign (result is the non-negative common divisor).
         assert_eq!(iv(-12).gcd(&iv(18)).to_i128(), Some(6));
         assert_eq!(iv(-12).gcd(&iv(-18)).to_i128(), Some(6));
+    }
+
+    #[test]
+    fn bignum_binary_gcd_matches_beyond_i128() {
+        // `gcd_mag` is BINARY GCD (Stein's) — the O(bits²) hot compile-time path that reduces a folded
+        // `Rational` to lowest terms. Pin it on values BEYOND i128 (where the differential-against-i128
+        // test above cannot reach) and on the coprime/odd/power-of-two shapes Stein's special-cases.
+        let two_64 = iv(1).add(&iv(u64::MAX as i128)); // 2^64
+        let two_128 = two_64.mul(&two_64); // 2^128
+        // Two large numbers sharing exactly 2^64: gcd(2^128, 3·2^64) == 2^64 (the common power of two × the
+        // gcd of the odd cores 2^64 and 3, which is 1).
+        let three_2_64 = two_64.mul(&iv(3));
+        assert!(
+            two_128.gcd(&three_2_64).eq_value(&two_64),
+            "gcd(2^128, 3·2^64) == 2^64"
+        );
+        // Coprime large ODDs: gcd(2^128+1, 2^128-1) == 1 (consecutive odds differ by 2, share no odd factor).
+        let big_odd_hi = two_128.add(&iv(1));
+        let big_odd_lo = two_128.sub(&iv(1));
+        assert!(
+            big_odd_hi.gcd(&big_odd_lo).eq_value(&iv(1)),
+            "gcd(2^128+1, 2^128-1) == 1 (coprime)"
+        );
+        // A large shared ODD factor: gcd(999983·2^64, 999983·3) == 999983 (a prime × its non-common cofactors).
+        let p = iv(999983);
+        let a = p.mul(&two_64);
+        let b = p.mul(&iv(3));
+        assert!(
+            a.gcd(&b).eq_value(&p),
+            "gcd(999983·2^64, 999983·3) == 999983"
+        );
+        // Identities across the zero/self boundary (Stein's early-outs).
+        assert!(two_128.gcd(&iv(0)).eq_value(&two_128), "gcd(x,0)==x");
+        assert!(iv(0).gcd(&two_128).eq_value(&two_128), "gcd(0,x)==x");
+        assert!(two_128.gcd(&two_128).eq_value(&two_128), "gcd(x,x)==x");
     }
 
     #[test]

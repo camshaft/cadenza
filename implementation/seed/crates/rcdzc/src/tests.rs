@@ -11851,6 +11851,41 @@ mod match_engine {
     }
 
     #[test]
+    fn a_long_chained_rational_sum_folds_in_bounded_time() {
+        // REGRESSION (perf): constant `Rational` arithmetic folds via `normalized_rational`, which reduces
+        // the result to lowest terms with `IntValue::gcd`. `gcd` WAS Euclidean over the bit-serial
+        // `divmod_mag` (`8·len(a)` iterations per call regardless of quotient size), so a chained exact sum
+        // of fractions with DISTINCT denominators — which MULTIPLY without cancellation, so the magnitude
+        // grows unbounded — was super-cubic: a 160-term sum took ~1.8s, a 320-term ~30s (99% in
+        // `divmod_mag`), an effective HANG of `cdz check` on a small program. The fix makes `gcd_mag`
+        // BINARY GCD (Stein's — shift/subtract only, never trial division), dropping it to O(bits²): the
+        // 320-term sum now folds in ~200ms, the realistic 10-50-term case in single-digit ms. This 200-term
+        // chain would be seconds pre-fix; that `diagnostics` returns quickly is the gate.
+        let mut primes: Vec<u64> = Vec::new();
+        let mut x = 2u64;
+        while primes.len() < 200 {
+            if primes.iter().all(|&p| x % p != 0) {
+                primes.push(x);
+            }
+            x += 1;
+        }
+        let mut expr = format!("(Rational.of 1 {})", primes[0]);
+        for p in &primes[1..] {
+            expr = format!("(+ {expr} (Rational.of 1 {p}))");
+        }
+        // Compare to a constant so the whole thing folds to a scalar `Bool` (a bare Rational has no host
+        // render); the equality also folds, exercising the `cmp` after the reducing adds.
+        let src = format!("(module m (def (main) (= {expr} (Rational.of 0 1))) (export main))");
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&src)));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a long chained Rational sum folds with no error diagnostics: {diags:?}"
+        );
+    }
+
+    #[test]
     fn a_bool_match_missing_a_literal_offers_the_specific_missing_arm() {
         // A Bool scrutinee is a FINITE gap: missing `false` → name it AND insert exactly
         // `(false (trap "TODO: false"))` (not a generic wildcard), the same precision as a missing sum
