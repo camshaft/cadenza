@@ -865,7 +865,10 @@ pub fn emit(
         }
         // Each op's interface, PARALLEL to `extern_fns` (i.e. `extern_order`) — the envelope groups the ops
         // by interface into per-interface imported instances.
-        let op_ifaces: Vec<&str> = extern_imports.iter().map(|e| e.interface.as_str()).collect();
+        let op_ifaces: Vec<&str> = extern_imports
+            .iter()
+            .map(|e| e.interface.as_str())
+            .collect();
         let extern_fns: Vec<envelope::HostFn> = extern_imports
             .iter()
             .map(|e| envelope::HostFn {

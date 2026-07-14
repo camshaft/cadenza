@@ -933,7 +933,10 @@ pub fn assemble_extern(
         let mut items = Vec::new();
         for (f, &oi) in extern_fns.iter().zip(op_ifaces) {
             let inst = iface_index(&ifaces, oi);
-            items.extend_from_slice(&comp_alias_item(inst as u32, &super::kebab_extern_name(&f.op)));
+            items.extend_from_slice(&comp_alias_item(
+                inst as u32,
+                &super::kebab_extern_name(&f.op),
+            ));
         }
         section(sec::ALIAS, &wasm_vec(p, &items))
     };
@@ -1137,7 +1140,10 @@ pub fn assemble_extern_runtime(
         let mut items = Vec::new();
         for (f, &oi) in extern_fns.iter().zip(op_ifaces) {
             let inst = iface_index(&ifaces, oi);
-            items.extend_from_slice(&comp_alias_item(inst as u32, &super::kebab_extern_name(&f.op)));
+            items.extend_from_slice(&comp_alias_item(
+                inst as u32,
+                &super::kebab_extern_name(&f.op),
+            ));
         }
         for op in imports {
             items.extend_from_slice(&comp_alias_item(g as u32, op.name));
