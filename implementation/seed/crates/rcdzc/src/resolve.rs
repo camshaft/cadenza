@@ -1944,11 +1944,29 @@ pub(crate) fn do_value_def_value(db: &Db, def_form: StructId) -> Option<StructId
 }
 
 /// Resolve `(if COND THEN ELSE)`.
+/// A FIXED-ARITY grammar form's wrong-arity reject, anchored at the form `id`, with a surplus-delete
+/// fix when there are TOO MANY operands: delete the FIRST extra (`tail[want]`), the same surplus-arg
+/// delete fix an over-applied operator / a too-many-operand quote gets — `cdz fix --all` removes extras
+/// until exactly `want` remain. TOO FEW carries NO fix (nothing to delete; supplying an operand is not a
+/// mechanical edit). Shared by `if` (want 3), `and`/`or` (want 2), `not` (want 1).
+fn fixed_arity_reject(id: StructId, tail: &[StructId], want: usize, message: &str) -> Reject {
+    let reject = Reject::coded(Code::Malformed, message.to_string()).at(id);
+    match tail.get(want) {
+        Some(&surplus) => reject.with_fix(crate::diag::Fix::delete_heuristic(
+            surplus,
+            "remove the extra operand",
+        )),
+        None => reject,
+    }
+}
+
 fn resolve_if(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, "if").unwrap_or(&[]);
     if tail.len() != 3 {
-        return Resolved::Poison(Reject::coded(
-            Code::Malformed,
+        return Resolved::Poison(fixed_arity_reject(
+            id,
+            tail,
+            3,
             "if takes exactly 3 operands",
         ));
     }
@@ -1973,9 +1991,11 @@ fn resolve_connective(db: &Db, id: StructId, is_and: bool) -> Resolved {
     let head = if is_and { "and" } else { "or" };
     let tail = db.ast.as_form(id, head).unwrap_or(&[]);
     if tail.len() != 2 {
-        return Resolved::Poison(Reject::coded(
-            Code::Malformed,
-            format!("{head} takes exactly 2 operands"),
+        return Resolved::Poison(fixed_arity_reject(
+            id,
+            tail,
+            2,
+            &format!("{head} takes exactly 2 operands"),
         ));
     }
     Resolved::And {
@@ -1989,8 +2009,10 @@ fn resolve_connective(db: &Db, id: StructId, is_and: bool) -> Resolved {
 fn resolve_not(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_form(id, "not").unwrap_or(&[]);
     if tail.len() != 1 {
-        return Resolved::Poison(Reject::coded(
-            Code::Malformed,
+        return Resolved::Poison(fixed_arity_reject(
+            id,
+            tail,
+            1,
             "not takes exactly 1 operand",
         ));
     }

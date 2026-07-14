@@ -11619,6 +11619,54 @@ mod match_engine {
     }
 
     #[test]
+    fn a_fixed_arity_grammar_form_with_too_many_operands_offers_a_delete_fix() {
+        // The fixed-arity grammar forms `if`/`and`/`or`/`not` reject a wrong operand count (CDZ0201);
+        // TOO MANY now carries a delete-the-surplus fix (the same surplus-arg delete an over-applied
+        // operator / a too-many-operand quote gets — `spec/capabilities/diagnostics.md` §A Diagnostic
+        // Carries A Route To A Fix). TOO FEW carries no fix (nothing to delete).
+        let find = |src: &str| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.message.contains("takes exactly"))
+                .unwrap_or_else(|| panic!("an arity fault is reported for {src}"))
+        };
+        for (src, want) in [
+            (
+                "(module m (def (main) (if true 1 2 3)) (export main))",
+                "if",
+            ),
+            (
+                "(module m (def (main) (and true false true)) (export main))",
+                "and",
+            ),
+            (
+                "(module m (def (main) (or true false true)) (export main))",
+                "or",
+            ),
+            (
+                "(module m (def (main) (not true false)) (export main))",
+                "not",
+            ),
+        ] {
+            let d = find(src);
+            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+            assert_eq!(
+                d.fix.as_ref().map(|f| f.kind),
+                Some(crate::abi::FixKind::Delete),
+                "`{want}` too-many-operands carries a delete fix: {:?}",
+                d.fix
+            );
+        }
+        // TOO FEW (a missing `if` else / a 1-operand `and`) has nothing to delete — no fix.
+        let few = find("(module m (def (main) (if true 1)) (export main))");
+        assert!(
+            few.fix.is_none(),
+            "a too-few `if` has no surplus to delete: {:?}",
+            few.fix
+        );
+    }
+
+    #[test]
     fn unquote_outside_quasiquote_is_cdz0003_wrong_arity_is_cdz0201() {
         // metaprogramming.md §Quasiquote Constructs AST With Selective Evaluation: `,`/`,@` are meaningful
         // ONLY inside a `` ` `` template. `unquote`/`unquote-splicing` are grammar heads now (reader-
