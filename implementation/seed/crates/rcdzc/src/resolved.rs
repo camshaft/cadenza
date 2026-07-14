@@ -1135,7 +1135,12 @@ pub enum Resolved {
         body: StructId,
     },
     /// A `(handle INIT (ARM…) BODY)` — an in-program effect handler establishing a context for `body`
-    /// (`capabilities-and-effects.md` §An Effect That Does Not Escape Is Discharged By A Handler). `init`
+    /// (`capabilities-and-effects.md` §An Effect That Does Not Escape Is Discharged By A Handler). This is
+    /// how a program raises an effect operation and discharges it entirely in-program — a handler wraps a
+    /// sub-computation and gives its operations a context — with no host capability needed.
+    //= spec/capabilities/capabilities-and-effects.md#an-effect-that-does-not-escape-is-discharged-by-a-handler
+    //# A program MUST be able to raise an effect operation and discharge it with a handler that establishes a context for the sub-computation it wraps, so that an effect handled entirely within the program is expressible without a host capability.
+    /// `init`
     /// is the seed state (evaluated where the handle is installed); each arm discharges one operation; the
     /// whole form's value is `body`'s value, with the accumulated state observable only through the
     /// operations. Children are AST occurrences resolved on demand. The compile-time evaluator reduces a
