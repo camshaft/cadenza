@@ -31486,7 +31486,7 @@ mod stage1 {
         // signature alone — so applying it leaves the first def and is well-formed. `node` is that form's id.
         let target = crate::ast::StructId(fix.node);
         assert!(
-            matches!(db.ast.as_form(target, "def"), Some(_)),
+            db.ast.as_form(target, "def").is_some(),
             "the delete target is the `(def …)` form, not the bare signature"
         );
         // Two DISTINCT named defs are fine — not a false duplicate.
