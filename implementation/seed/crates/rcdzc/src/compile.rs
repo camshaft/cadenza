@@ -110,6 +110,13 @@ pub fn compile(inputs: &[Artifact], targets: &[Target]) -> CompileOutput {
     });
 
     let mut db = Db::load_linked(arenas, linkage);
+    // A PROVIDER compile names the interface it publishes its exports under (X4b) — the
+    // `component-name` request artifact. A peer consumer's `(extern "cadenza:pkg/iface" …)` binds to
+    // this name. Absent (the common case) → exports cross as top-level funcs (byte-identical).
+    db.component_name = inputs
+        .iter()
+        .find(|a| a.kind == link::KIND_COMPONENT_NAME)
+        .map(|a| String::from_utf8_lossy(&a.bytes).into_owned());
     trace!(target: "rcdzc::compile", defs = db.defs.len(), exports = db.exports.len(), "loaded program");
 
     // Decode the optional `sidecar` request list — the program that DRIVES this compilation

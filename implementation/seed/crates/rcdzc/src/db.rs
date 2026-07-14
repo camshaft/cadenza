@@ -416,6 +416,12 @@ pub struct Db {
     /// applied, lowers to a `Core::ExternCall`. Populated at load; empty for a program that binds no peer
     /// (byte-neutral — the common case).
     pub extern_decls: Vec<ExternDecl>,
+    /// The interface name this component publishes its exports under, when compiled AS A PROVIDER (X4b) —
+    /// from the `component-name` compile-request artifact. `Some("cadenza:pkg/iface")` → `emit` wraps the
+    /// boundary exports as that named interface instance so a peer's `(extern …)` binds. `None` (the
+    /// common case) → exports cross as top-level component funcs (byte-identical to before). Set AFTER
+    /// `Db::load`/`load_linked` by the caller (`compile`), which reads the request artifact.
+    pub component_name: Option<String>,
     /// The nested `(module NAME …)` declarations reachable in a `do`-block, from the scan. Each is
     /// synthesized (`crate::modules`) to a record whose fields are its exported defs, so `NAME` resolves
     /// to that record (a `Ref` to it) and `(. NAME field)` is ordinary member access — the module analogue
@@ -1352,6 +1358,7 @@ impl Db {
             type_decls,
             effect_decls,
             extern_decls,
+            component_name: None,
             modules,
             newtype_inner: crate::fxhash::FxHashMap::default(),
             default_int_literals,

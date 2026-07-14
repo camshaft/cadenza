@@ -203,6 +203,75 @@ fn assemble_bare(core: &[u8], exports: &[BoundaryExport]) -> Vec<u8> {
     out
 }
 
+/// The PROVIDER shape (X4b, `DESIGN-cross-component-interop-rcdzc.md`): a component that publishes its
+/// scalar boundary exports as members of a NAMED INTERFACE INSTANCE `iface` (`cadenza:pkg/iface`), so a
+/// peer consumer's `(extern "iface" (op …) …)` binds to it. Identical to [`assemble_bare`] through the
+/// canon-lift (embed core, instantiate, one functype + alias + lift per export), but instead of exporting
+/// each lifted func at TOP LEVEL, it bundles them into a COMPONENT INSTANCE (a component-instance
+/// export-items section) and exports THAT one instance under the interface name. SCOPE: scalar/unit
+/// exports (a `list<u8>`/compound export as an interface member is a later increment — declined upstream).
+pub fn assemble_provider(core: &[u8], exports: &[BoundaryExport], iface: &str) -> Vec<u8> {
+    let n = exports.len();
+
+    // sec 7: one component functype per export.
+    let mut type_items = Vec::new();
+    for e in exports {
+        type_items.extend_from_slice(&comp_functype(e, 0));
+    }
+    let type_sec = section(sec::COMPONENT_TYPE, &wasm_vec(n, &type_items));
+
+    // sec 6: one core-func alias per export (off core-instance 0).
+    let mut alias_items = Vec::new();
+    for e in exports {
+        alias_items.extend_from_slice(&core_alias_item(0, &e.name));
+    }
+    let alias_sec = section(sec::ALIAS, &wasm_vec(n, &alias_items));
+
+    // sec 8: one canon-lift per export (component func i, using component type i).
+    let mut canon_items = Vec::new();
+    for i in 0..n {
+        canon_items.extend_from_slice(&canon_lift_item(i as u32, i as u32));
+    }
+    let canon_sec = section(sec::CANON, &wasm_vec(n, &canon_items));
+
+    // sec 5: a COMPONENT INSTANCE bundling the lifted funcs (export-items form `0x01`), each member
+    // `<name> 0x01 <comp-func>` (`0x01` = ComponentExportKind::Func) — kebab-normalized member names so a
+    // non-kebab export name is a valid interface member (matching the consumer's aliased name). Instance 0.
+    let instance_sec = {
+        let mut item = vec![0x01]; // export-items form
+        let mut members = Vec::new();
+        for (i, e) in exports.iter().enumerate() {
+            let name = super::kebab_extern_name(&e.name);
+            // Each member name is a component EXTERN NAME (`0x00 <len> <name>`), not a bare string.
+            members.extend_from_slice(&extern_name(&name));
+            members.push(0x01); // ComponentExportKind::Func
+            uleb128(i as u64, &mut members);
+        }
+        item.extend_from_slice(&wasm_vec(n, &members));
+        section(sec::COMPONENT_INSTANCE, &wasm_vec(1, &item))
+    };
+
+    // sec 11: export the single instance (0) under the interface name (kebab-normalized).
+    let export_sec = {
+        let iface_name = super::kebab_extern_name(iface);
+        section(
+            sec::COMPONENT_EXPORT,
+            &wasm_vec(1, &export_instance_item(&iface_name, 0)),
+        )
+    };
+
+    let mut out = Vec::new();
+    out.extend_from_slice(COMPONENT_MAGIC);
+    out.extend_from_slice(&core_module_section(core)); // 1
+    out.extend_from_slice(&section(sec::CORE_INSTANCE, &[0x01, 0x00, 0x00, 0x00])); // 2
+    out.extend_from_slice(&type_sec); // 7
+    out.extend_from_slice(&alias_sec); // 6
+    out.extend_from_slice(&canon_sec); // 8
+    out.extend_from_slice(&instance_sec); // 5: bundle the lifted funcs into one instance
+    out.extend_from_slice(&export_sec); // 11: export the instance under the interface name
+    out
+}
+
 /// The BARE shape with a `list<u8>` result — the escape-path ABI (a compound's canonical binary value
 /// form crosses as `list<u8>`, the resource `encode()` return). No runtime import, but the lift reads
 /// the `(ptr, len)` return area out of the core module's linear memory, so it aliases the core's

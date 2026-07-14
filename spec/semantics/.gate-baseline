@@ -110,6 +110,9 @@ pass	a NARROW-int-field Tuple closure ARG flattens + rebuilds (exercises the i32
 pass	a NESTED Record ARG (a record containing a record) crosses the direct-call boundary
 pass	a NESTED Record ARG with a LIST result crosses the direct-call boundary
 pass	a NESTED Tuple ARG (a tuple containing a tuple) crosses the direct-call boundary
+pass	a NESTED Tuple ARG among scalar args crosses the direct-call boundary
+pass	a NESTED Tuple ARG among scalars with a LIST result
+pass	a NESTED Tuple ARG between two scalar args (prefix + suffix)
 pass	a NESTED Tuple ARG with a BYTE-ROPE result crosses the direct-call boundary
 pass	a NESTED Tuple ARG with a LIST result crosses the direct-call boundary
 pass	a NESTED Tuple ARG with a fixed-shape COMPOUND result crosses the direct-call boundary
@@ -126,6 +129,7 @@ pass	a RECORD closure ARG on the MULTI-EXPORT path
 pass	a RECORD closure ARG whose fields are NOT in sorted source order
 pass	a RECORD closure ARG with a LIST result
 pass	a RECORD closure ARG with a narrow Bool field, among scalars
+pass	a RECORD with a nested TUPLE field crosses the direct-call boundary
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
 pass	a RUNTIME payload-literal refinement dispatches through its literal test
@@ -146,6 +150,7 @@ pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
 pass	a THREE-argument closure round-trips — flat arrow spelling
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
+pass	a TRIPLY-nested Record ARG crosses the direct-call boundary
 pass	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)
 pass	a Tuple ARG BEFORE a scalar arg crosses the direct-call boundary (tuple, then scalar)
 pass	a Tuple ARG BEFORE a scalar with a LIST result crosses the direct-call boundary
@@ -552,6 +557,7 @@ pass	a list mixing integer and float elements is a type error
 pass	a list of maps with different keys is homogeneous, not a type error
 pass	a list of records with different field sets is a type error
 pass	a list of tuples with different arities is a type error
+pass	a list pattern in a sum-variant payload matches a runtime node by its child count
 pass	a list value consumed by two operations in one function is not freed early
 pass	a list with a runtime element is returned as a program result
 pass	a list-concatenating helper threads lists through a call
@@ -768,6 +774,7 @@ pass	a performed operation composes under a projection and a negation
 pass	a performed operation is the scrutinee of a match that dispatches on its result
 pass	a performed operation whose result is a sum is matched on its variant
 pass	a performing argument to a multiply-using performing callee is not duplicated
+pass	a performing match SCRUTINEE threads its state into a performing arm body
 pass	a pipeline chain applies its stages left to right
 pass	a plain number def is unaffected by a following statement (the `as` sugar stays in its statement)
 pass	a plain quote does not evaluate a quasiquote's unquote nested inside it

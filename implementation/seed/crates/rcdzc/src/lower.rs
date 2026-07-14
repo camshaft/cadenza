@@ -4750,16 +4750,15 @@ fn build_lit_test(
     else_rows: &[MatchRow],
     path_types: &mut PathTypes,
 ) -> Result<crate::core::SumCont, Reject> {
-    // A `ListLen` or `Str` probe that did NOT fold (the payload is a RUNTIME value, not a constant
-    // `Core::ListNew`/`Core::ConstStr`) needs a runtime length/string test the backends don't emit — the
-    // runtime list/string matcher, not this increment. Decline so the match is a Todo (never emitted to
-    // the backend). The CONSTANT case folded in `build_tree` and never reaches here.
-    if matches!(
-        probe,
-        crate::core::Probe::ListLen { .. } | crate::core::Probe::Str(_)
-    ) {
+    // A `Str` probe that did NOT fold (the payload is a RUNTIME value, not a constant `Core::ConstStr`)
+    // needs a runtime string-equality test the backend does not emit — decline so the match is a Todo. A
+    // `ListLen` probe over a RUNTIME list payload IS emitted now: the backend reads `vec-len` of the
+    // sub-list handle at `lit_path` and compares it (`== len` fixed / `>= len` rest) — the runtime twin of
+    // the length-fold, so a `(Node.Call (list x .. rest))` matched over a runtime node dispatches by its
+    // child list's length. The CONSTANT case folded in `build_tree` and never reaches here.
+    if matches!(probe, crate::core::Probe::Str(_)) {
         return Err(Reject::decline(
-            "a list/string pattern over a runtime payload is not yet supported (only a constant folds)",
+            "a string pattern over a runtime payload is not yet supported (only a constant folds)",
         ));
     }
     let then_ = build_tree(db, scrutinee, matched_rows, path_types)?;

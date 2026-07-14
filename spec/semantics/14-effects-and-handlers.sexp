@@ -936,6 +936,22 @@
                 (do (match 0 (0 (Fresh.next)) (_ 99)) (Fresh.next)))) (export main)))
   (output (: 1 Int64)))
 
+(case "a performing match SCRUTINEE threads its state into a performing arm body"
+  (doc    "Both the match SCRUTINEE and the selected ARM BODY perform, and the arm's perform reads the state
+           the SCRUTINEE's perform advanced — the two-hole shape through a performing `match`. `Ask` seeded
+           3, `get` hands back `s` and threads `s - 1`: the scrutinee `(Ask.get)` reads 3 (state -> 2) and
+           binds the `n` arm (`3 != 0`); the arm body `(+ n (Ask.get))` performs again, reading the advanced
+           state 2, so it is `(+ 3 2)` = 5. Pins that state threaded THROUGH a performing scrutinee reaches a
+           performing arm body — the scrutinee is a strict-first position whose effect is sequenced before
+           the arm runs, exactly as an operator operand's is. Distinct from the constant-scrutinee arm-thread
+           case above (there the scrutinee is the literal `0`; here it performs).")
+  (input  (do
+            (effect Ask (op get (-> Unit Int64)))
+            (def (main)
+              (handle Ask 3 ((get (u) s (resume s (- s 1))))
+                (match (Ask.get) (0 (Ask.get)) (n (+ n (Ask.get)))))) (export main)))
+  (output (: 5 Int64)))
+
 (case "the else-branch of an if threads a performed state to the continuation"
   (doc    "The else-branch (taken, cond false) performs once (reads 0, threads 0->1); the continuation reads
            1. Pins that BOTH arms thread out, not just the then-arm — the distribution wraps the continuation

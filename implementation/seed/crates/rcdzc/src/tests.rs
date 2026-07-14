@@ -13038,6 +13038,57 @@ mod match_engine {
     }
 
     #[test]
+    fn a_sum_payload_numeric_mismatch_names_the_payload_axis_and_offers_the_retype_fix() {
+        // A variant-constructed value whose payload's inner numeric differs from the annotated sum's
+        // payload — `(Some 5)` vs `(Option Float64)`, `(Ok 5)` vs `(Result Float64 String)` — got the bare
+        // "this argument is (Option Int64)…" with NO hint and NO fix. Now it names the payload axis ("its
+        // payload should be Float64, but this one is Int64") AND offers the same retype the leaf gets
+        // everywhere else (`5`→`5.0`), anchored at the ctor's payload argument. The sum twin of the
+        // collection-axis / record-field fix-parity family (M116-M118).
+        let some = reject_full(
+            "(module m (def (h (: o (Option Float64))) o) (def (g) (h (Some 5))) (export g))",
+        )
+        .expect("a (Some Int) where (Option Float64) wanted rejects");
+        assert!(
+            some.message
+                .contains("its payload should be Float64, but this one is Int64"),
+            "names the sum payload axis: {}",
+            some.message
+        );
+        assert_eq!(
+            some.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("5.0"),
+            "retypes the payload leaf: {}",
+            some.message
+        );
+        // `Result` (two type params) — the differing FIRST param is named + fixed.
+        let ok = reject_full(
+            "(module m (def (h (: r (Result Float64 String))) r) (def (g) (h (Ok 5))) (export g))",
+        )
+        .expect("an (Ok Int) where (Result Float64 …) wanted rejects");
+        assert_eq!(
+            ok.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("5.0"),
+            "retypes the Result payload leaf: {}",
+            ok.message
+        );
+        // A NON-numeric payload (Bool vs Int) — the axis is named but there is no coercion, so no fix.
+        let boolish = reject_full(
+            "(module m (def (h (: o (Option Int64))) o) (def (g) (h (Some true))) (export g))",
+        )
+        .expect("a (Some Bool) where (Option Int64) wanted rejects");
+        assert!(
+            boolish
+                .message
+                .contains("its payload should be Int64, but this one is Bool")
+                && boolish.fix.is_none(),
+            "names the axis but offers no fix for a non-numeric payload: {} / {:?}",
+            boolish.message,
+            boolish.fix
+        );
+    }
+
+    #[test]
     fn a_wrong_type_argument_to_a_prelude_member_op_names_the_operation() {
         // A wrong-type argument to a named prelude MEMBER OP — `(List.push xs true)`, `(Int64.of s)` —
         // named the operation + its expected argument type instead of the generic unify mismatch ("Int64
@@ -19281,6 +19332,69 @@ mod match_engine {
             .unwrap(),
             "0",
             "a guarded list arm whose guard fails falls through to the catch-all (body binder did not break the guard)"
+        );
+    }
+
+    #[test]
+    fn a_list_pattern_in_a_sum_payload_matches_a_runtime_node() {
+        // THE COMPILER-AST SHAPE: a sum-variant payload that is a LIST — `(type Node (Lit Int64) (Call
+        // (List Node)))` — matched over a RUNTIME node by a list pattern in the payload position: `((Call
+        // (list _ .. rest)) …)`. Before, this declined "a list/string pattern over a runtime payload is not
+        // yet supported (only a constant folds)" — the decision-tree matcher produced a `Probe::ListLen`
+        // lit-test that only folded. Now the backend emits it: walk the path to the payload's LIST HANDLE,
+        // `vec-len`, compare (`== n` fixed / `>= n` rest), fall through on mismatch — so a node's child list
+        // is dispatched by length at run time, the exact idiom a self-hosted compiler's tree-walk uses.
+        // `build 2` = `Call [Lit 2, Call [Lit 1, Lit 7]]` — a non-empty Call → the rest arm → 99.
+        let Some(v) = run_heap_value(
+            "(module m (type Node (Lit Int64) (Call (List Node))) \
+               (def (build (: k Int64)) (if (< k 1) (Lit 7) (Call (list (Lit k) (build (- k 1)))))) \
+               (def (top (: n Node)) (match n ((Lit v) v) ((Call (list _ .. rest)) 99) (_ 0))) \
+               (def (main) (top (build 2))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping runtime list-in-payload match run");
+            return;
+        };
+        assert_eq!(
+            v, "99",
+            "a non-empty Call's child list matches the rest arm"
+        );
+
+        // The EMPTY-Call case dispatches by the SAME length gate: `build 0` = `Lit 7` (a Lit, not a Call),
+        // so it takes the `Lit` arm → 7. And a distinct FIXED-arity payload arm selects by exact length:
+        // `(Call (list a))` (exactly one child) vs `(Call (list _ .. rest))` (≥1). Build a one-child Call.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Node (Lit Int64) (Call (List Node))) \
+                   (def (one) (Call (list (Lit 5)))) \
+                   (def (top (: n Node)) (match n \
+                       ((Lit v) v) \
+                       ((Call (list only)) (match only ((Lit w) w) (_ -1))) \
+                       (_ 0))) \
+                   (def (main) (top (one))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "5",
+            "a fixed-arity list payload binds the sole child, read by a nested match"
+        );
+
+        // Length DISPATCH within a variant: a 2-child Call takes the arity-2 arm, a 1-child the arity-1
+        // arm — the `vec-len == n` gate distinguishes them at run time. `two` builds `Call [Lit 3, Lit 4]`.
+        assert_eq!(
+            run_heap_value(
+                "(module m (type Node (Lit Int64) (Call (List Node))) \
+                   (def (two) (Call (list (Lit 3) (Lit 4)))) \
+                   (def (top (: n Node)) (match n \
+                       ((Call (list a)) 1) \
+                       ((Call (list a b)) 2) \
+                       (_ 0))) \
+                   (def (main) (top (two))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "2",
+            "a runtime list-payload match dispatches by exact length (2-child → arity-2 arm)"
         );
     }
 
@@ -27748,6 +27862,19 @@ mod stage1 {
         assert!(expect_decline("frobnicate").contains("unbound name"));
         // A well-formed literal is unaffected.
         assert_eq!(run_main("0x2A"), 42);
+        // A `N`-suffixed literal in FLOAT FORM (`0.5N`/`2.0N`/`1e3N`) — the common suffix slip — gets a
+        // SPECIFIC message naming the cause (`N` = BigInt, spelled as a plain integer) + the fix (use the
+        // `R` Rational suffix), not the bare generic "malformed numeric literal".
+        for (tok, fix) in [("0.5N", "0.5R"), ("2.0N", "2.0R"), ("1e3N", "1e3R")] {
+            let msg = expect_decline(tok);
+            assert!(
+                msg.contains("the `N` suffix means BigInt") && msg.contains(&format!("`{fix}`")),
+                "a float-form `N`-suffixed `{tok}` explains + suggests `{fix}`, got: {msg}"
+            );
+        }
+        // A genuinely garbled digit-led token that merely ENDS in `N` (not a float-form suffix slip) keeps
+        // the generic message — `12xN` has a non-numeric body, not a decimal one.
+        assert!(expect_decline("12xN").contains("malformed numeric literal"));
     }
 
     #[test]
@@ -48221,6 +48348,96 @@ mod cross_component_oracle {
                 assert_eq!(s, "-5", "neg(5) across the component boundary from source")
             }
             cdz_run::Outcome::Trap(t) => panic!("source cross-component run trapped: {t}"),
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // X4b-provider — BOTH sides from source: a PROVIDER `.cdz` compiled with a `component-name` request
+    // publishes its exports as the interface `cadenza:math/api`; a CONSUMER `.cdz` binds it via
+    // `(extern …)`. Composed via run_with_peers → the whole thing runs from two Cadenza sources.
+    // ------------------------------------------------------------------------------------------------
+
+    /// Compile a source program to a component, naming the interface it publishes its exports under (the
+    /// `component-name` request artifact, X4b). Returns the emitted component bytes.
+    fn compile_provider(src: &str, iface: &str) -> Vec<u8> {
+        use crate::Target;
+        use crate::abi::Artifact;
+        use crate::compile::compile;
+        use crate::testkit::parse;
+        let out = crate::host::run_with_compiler_stack(|| {
+            compile(
+                &[
+                    Artifact::new(
+                        Artifact::KIND_AST,
+                        "main",
+                        crate::codec::encode(&parse(src)),
+                    ),
+                    Artifact::new(
+                        crate::link::KIND_COMPONENT_NAME,
+                        "component-name",
+                        iface.as_bytes().to_vec(),
+                    ),
+                ],
+                &[Target::Wasm],
+            )
+        });
+        out.artifact(Target::Wasm.artifact_kind())
+            .unwrap_or_else(|| {
+                panic!(
+                    "provider compiles; diagnostics: {:?}",
+                    out.diagnostics
+                        .iter()
+                        .map(|d| &d.message)
+                        .collect::<Vec<_>>()
+                )
+            })
+            .to_vec()
+    }
+
+    #[test]
+    fn x4b_provider_two_source_components_link_and_run() {
+        use crate::testkit::parse;
+        // PROVIDER source: exports `neg` (0 - x), published as the interface cadenza:math/api.
+        let provider = compile_provider(
+            "(do (def (neg (: x Int64)) (- 0 x)) (export neg))",
+            "cadenza:math/api",
+        );
+        // CONSUMER source: binds cadenza:math/api's `neg` via (extern …) and calls it.
+        let consumer_src = "(do \
+            (extern \"cadenza:math/api\" (neg (-> Int64 Int64))) \
+            (def (main (: x Int64)) (neg x)) \
+            (export main))";
+        let consumer =
+            crate::compile::compile_component(&crate::codec::encode(&parse(consumer_src)))
+                .expect("consumer compiles");
+        // Both are valid standalone components (provider EXPORTS the interface, consumer IMPORTS it).
+        for (bytes, who) in [(&provider, "provider"), (&consumer, "consumer")] {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(bytes)
+                .unwrap_or_else(|e| panic!("{who} validates: {e}"));
+        }
+        let peers = vec![cdz_run::Peer {
+            bytes: provider,
+            interface: "cadenza:math/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: None,
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("two source components compose + run")
+        {
+            // main(5) = neg(5) = -5 — BOTH sides compiled from Cadenza source, linked as components.
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "-5",
+                    "two source Cadenza components link + run across the boundary"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("two-source cross-component run trapped: {t}"),
         }
     }
 }

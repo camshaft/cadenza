@@ -1542,13 +1542,9 @@ fn collect_cont_ops(
                         "a string-literal probe folds; it is never emitted to a runtime LitTest"
                     )
                 }
-                // A `ListLen` probe folds against a constant list; a runtime list payload declines at
-                // `build_lit_test`, so it is never emitted to a runtime `LitTest` either.
-                crate::core::Probe::ListLen { .. } => {
-                    unreachable!(
-                        "a list-length probe folds; it is never emitted to a runtime LitTest"
-                    )
-                }
+                // A `ListLen` probe over a runtime list payload reads `vec-len` of the sub-list handle to
+                // gate the arm (a constant list folds instead, never reaching here).
+                crate::core::Probe::ListLen { .. } => out.insert(OP_VEC_LEN),
                 crate::core::Probe::Wild => false,
             };
             collect_cont_ops(db, scrutinee, then_, out);
@@ -6945,12 +6941,17 @@ fn emit_sum_cont(
                         "a string-literal payload pattern is not yet emitted at run time",
                     ));
                 }
-                crate::core::Probe::ListLen { .. } => {
-                    // A `ListLen` payload pattern over a RUNTIME list declines at `build_lit_test` (only a
-                    // constant list folds), so it never reaches this runtime sum-payload literal-test emit.
-                    return Err(Reject::decline(
-                        "a runtime list-pattern payload is not yet emitted at run time",
-                    ));
+                crate::core::Probe::ListLen { len, at_least } => {
+                    // A list-pattern payload over a RUNTIME list: the path walked to the sub-value's LIST
+                    // HANDLE (an i32); its `vec-len` is the length to test. A FIXED-arity `(list p0…p_{n-1})`
+                    // matches length EXACTLY `n` (`vec-len == n`); a rest `(list p… .. rest)` matches AT
+                    // LEAST `n` (`vec-len >= n`, the tail binds the surplus). The leading element binders +
+                    // the rest binder read the list on their own via `SumPayload{Elem}/{RestFrom}` (resolve
+                    // Case 6l/6r), so this arm only emits the LENGTH gate. On a mismatch, control falls
+                    // through to `els` exactly as an Int/Bool literal test does.
+                    out.push(Lir::CallImport(OP_VEC_LEN)); // [len:i32]
+                    out.push(Lir::ConstI32(*len as i32));
+                    out.push(if *at_least { Lir::I32GeU } else { Lir::I32Eq }); // [bool]
                 }
                 crate::core::Probe::Wild => {
                     return Err(Reject::decline("a wildcard literal test is a compiler bug"));
