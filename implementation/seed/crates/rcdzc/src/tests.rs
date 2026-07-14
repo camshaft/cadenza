@@ -32927,13 +32927,32 @@ mod stage1 {
                 .find(|d| d.severity == crate::abi::Severity::Error)
                 .and_then(|d| d.code.clone())
         };
+        // The first error's MESSAGE (for asserting phrasing, not just the code).
+        let msg = |body: &str| -> Option<String> {
+            let src = format!("(module m (def (main) {body}) (export main))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .map(|d| d.message.clone())
+        };
         // Refutable: a multi-variant constructor / a literal → CDZ0210 (non-exhaustive).
         assert_eq!(
             code("(let (((Some x) (Some 5))) x)").as_deref(),
             Some("CDZ0210")
         );
         assert_eq!(code("(let ((0 5)) 42)").as_deref(), Some("CDZ0210"));
-        // Shape-incompatible: a wrong-arity tuple / a tuple pattern vs a non-tuple value → CDZ0201.
+        // Shape-incompatible: a wrong-arity tuple / a tuple pattern vs a non-tuple value → CDZ0201. The
+        // message DISTINGUISHES the two: an arity mismatch names both element counts; a non-tuple value
+        // says a tuple pattern needs a tuple (the earlier phrasing conflated them + called the bound value
+        // a "payload").
         assert_eq!(
             code("(let (((tuple a b c) (tuple 1 2))) a)").as_deref(),
             Some("CDZ0201")
@@ -32941,6 +32960,19 @@ mod stage1 {
         assert_eq!(
             code("(let (((tuple a b) 5)) a)").as_deref(),
             Some("CDZ0201")
+        );
+        let arity = msg("(let (((tuple a b c) (tuple 1 2))) a)").unwrap_or_default();
+        assert!(
+            arity.contains(
+                "this tuple pattern binds 3 elements, but the value is a tuple with 2 elements"
+            ),
+            "the arity mismatch names both counts: {arity}"
+        );
+        let nontuple = msg("(let (((tuple a b) 5)) a)").unwrap_or_default();
+        assert!(
+            nontuple.contains("this tuple pattern cannot destructure a value of type Int64")
+                && !nontuple.contains("payload"),
+            "a non-tuple value says a tuple pattern needs a tuple (no 'payload'): {nontuple}"
         );
         // Non-linear: a binder repeated across the pattern → CDZ0102.
         assert_eq!(

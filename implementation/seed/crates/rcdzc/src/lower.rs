@@ -4944,19 +4944,37 @@ fn pattern_constraints(
                 }
                 return Ok(out);
             }
-            _ => {
+            other => {
                 // Anchor at the offending PATTERN node (`pat`), not the enclosing match — the squiggle
                 // then points at `(tuple a b c)`, the actual wrong construct, rather than the whole
                 // `(match … )`. (Without `.at`, `collect_reached_poisons` stamps the coarse match node.)
-                return Err(Reject::coded(
-                    Code::Malformed,
+                // DISTINGUISH the two shapes this arm catches, each read naturally (the earlier phrasing
+                // "a tuple pattern of N element(s) does not match the payload type T" conflated them and
+                // called every bound value a "payload", misleading for a top-level `let`/`match` on a plain
+                // tuple):
+                //  • the value IS a tuple but of a DIFFERENT arity — `(tuple a b c)` against a 2-tuple —
+                //    name both counts ("this pattern binds 3 elements, but the value is a tuple with 2"); OR
+                //  • the value is NOT a tuple at all — `(tuple a b)` against an `Int64` — say so, since a
+                //    tuple pattern cannot destructure a scalar/record/other (no element to bind).
+                let n = elems.len();
+                let plural = |k: usize| if k == 1 { "" } else { "s" };
+                let message = if let crate::ty::Ty::Tuple(ts) = other {
                     format!(
-                        "a tuple pattern of {} element(s) does not match the payload type {}",
-                        elems.len(),
-                        ty.render_name()
-                    ),
-                )
-                .at(pat));
+                        "this tuple pattern binds {n} element{}, but the value is a tuple with {} \
+                         element{} ({}) — a tuple pattern must bind exactly as many elements as the tuple has",
+                        plural(n),
+                        ts.len(),
+                        plural(ts.len()),
+                        other.render_name(),
+                    )
+                } else {
+                    format!(
+                        "this tuple pattern cannot destructure a value of type {} — a `(tuple …)` pattern \
+                         matches only a tuple value",
+                        other.render_name()
+                    )
+                };
+                return Err(Reject::coded(Code::Malformed, message).at(pat));
             }
         };
         let mut out = Vec::new();
