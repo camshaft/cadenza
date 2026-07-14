@@ -12691,6 +12691,38 @@ mod match_engine {
     }
 
     #[test]
+    fn an_unsolved_type_variable_renders_as_underscore_not_an_internal_number() {
+        // An UNSOLVED type variable in a rendered type — the error type of a bare `(Ok 1)` is `(Result
+        // Int64 _)`, inference never pins the `Err` payload — must render as `_` (rustc's placeholder for
+        // an unknown type), NOT the internal `?{n}`. The `n` is a nondeterministic solver-assigned number
+        // that means nothing to the author and reads as a naive-HM internal leak. Checked across the sites
+        // an unsolved var reaches a user message: a list-element clash, a call argument, an if-branch join.
+        let list = reject_full("(module m (def (g) (list (Some 1) (Ok 2))) (export g))")
+            .expect("mixing Option and Result in a list rejects");
+        assert!(
+            list.message.contains("(Result Int64 _)") && !list.message.contains("?"),
+            "an unsolved var renders as `_`, no `?N`: {}",
+            list.message
+        );
+        let arg = reject_full(
+            "(module m (def (g (: o (Option Int64))) o) (def (main) (g (Ok 2))) (export main))",
+        )
+        .expect("passing a Result where Option is wanted rejects");
+        assert!(
+            arg.message.contains("(Result Int64 _)") && !arg.message.contains("?"),
+            "the call-argument message renders the unsolved var as `_`: {}",
+            arg.message
+        );
+        let iff = reject_full("(module m (def (f (: b Bool)) (if b (Some 1) (Ok 2))) (export f))")
+            .expect("if branches Option vs Result reject");
+        assert!(
+            iff.message.contains("(Result Int64 _)") && !iff.message.contains("?"),
+            "the if-branch message renders the unsolved var as `_`: {}",
+            iff.message
+        );
+    }
+
+    #[test]
     fn a_join_site_names_the_structural_delta_not_two_full_renders() {
         // The per-member structural-delta hints (record field, tuple position, collection axis) now also
         // fire at the JOIN sites — a list literal, an `if`'s branches, a `match`'s arms — where two

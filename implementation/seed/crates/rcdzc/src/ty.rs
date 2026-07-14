@@ -1513,7 +1513,13 @@ impl Ty {
             // unit).
             Ty::Qty { inner, unit } => format!("(Qty {} {})", inner.render_name(), unit.render()),
             Ty::Type => "Type".to_string(),
-            Ty::Var(n) => format!("?{n}"),
+            // An UNSOLVED type variable — a payload/element type inference has not pinned (`(Result Int64
+            // _)`, the error type of a bare `(Ok 1)`). Render it as `_`, the placeholder rustc uses for an
+            // unknown type ("a value of type `Result<i32, _>`"), NOT the internal `?{n}` — the `n` is a
+            // nondeterministic solver-assigned number that means nothing to the author and reads as an
+            // internal-detail leak (the naive-HM leak the reporting discipline forbids). `_` is the stable,
+            // meaningful "not determined here" placeholder, identical wherever an unsolved var surfaces.
+            Ty::Var(_) => "_".to_string(),
             Ty::Any => "Any".to_string(),
         }
     }
