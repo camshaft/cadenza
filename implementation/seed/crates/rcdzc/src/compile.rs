@@ -3567,6 +3567,42 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
         }
     }
 
+    // ANONYMOUS-LAMBDA PARAMETERS. A `(fn (x) …)` param never referenced in the lambda body is unused,
+    // exactly like an unused DEF parameter — but a lambda is not in `db.defs`, so the def-param loop above
+    // misses it. Gated on `head_name == "fn"`: a DEF's signature list also resolves to a `Lambda` (its
+    // params are already checked by the def-param loop), so only an ANONYMOUS `(fn …)` is handled here (no
+    // double-report). Uses the same name-based check the def-param path does (`used_param_names` over the
+    // body — a reference resolves to a `Param`, synthesis-independent), which is scope-correct.
+    for i in 0..node_count {
+        let id = StructId(i as u32);
+        if !db.is_user_node(id) || db.ast.head_name(id) != Some("fn") {
+            continue;
+        }
+        let Resolved::Lambda { params, body } = crate::resolve::resolved_of(db, id) else {
+            continue;
+        };
+        if params.is_empty() {
+            continue;
+        }
+        let referenced = used_param_names(db, body);
+        for &p in params.iter() {
+            let name_occ = param_name_occ(db, p);
+            let Some(name) = db.ast.as_name(name_occ).map(str::to_string) else {
+                continue;
+            };
+            if name.starts_with('_') || referenced.contains(&name) {
+                continue;
+            }
+            binders.push(Binder {
+                name_occ,
+                target: name_occ,
+                name,
+                kind: "parameter",
+                precomputed_unused: true, // decided by the reference-name set, not the `used` occ set
+            });
+        }
+    }
+
     // A non-exported top-level DEFINITION that nothing references is unused (an exported def is part of
     // the interface — used by definition). A def's target is its body (a `Ref` to a nullary def points
     // at the body) OR — for a def-with-params — the reference resolves to a `Lambda { body }`, which is
