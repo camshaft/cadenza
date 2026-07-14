@@ -1100,16 +1100,26 @@ struct TypeNode {
 }
 
 /// Decode a [`TypeNode`]: `[ head_len ][ head_utf8 ] [ n_children:LEB ]( TypeNode )*n`.
-fn decode_type_node(d: &[u8], pos: &mut usize) -> Option<TypeNode> {
+/// Max nesting of a Framed type node. A genuine type is shallow — `(Map Int64 (List Bool))` is depth 2,
+/// and the compiler bakes only such well-formed nodes — so a cap far above any real type still declines a
+/// MALFORMED descriptor whose TypeNode nests thousands deep before it overflows the native/wasm call
+/// stack. WITHOUT this, `decode_type_node`'s recursion is bounded only by the byte length (each level is
+/// just `[name_len=0][n_children=1]` = 2 bytes), so a ~200 KB descriptor crashes the guest — violating
+/// value-encode's "never a trap" totality contract (a compiler-baked descriptor is always shallow, but
+/// the escape op must DECLINE any input, not abort).
+const TYPE_NODE_DEPTH_CAP: u32 = 256;
+
+fn decode_type_node(d: &[u8], pos: &mut usize, depth: u32) -> Option<TypeNode> {
+    if depth > TYPE_NODE_DEPTH_CAP {
+        return None; // a malformed descriptor's runaway TypeNode nesting — decline, don't overflow
+    }
     let head = desc_name(d, pos)?;
     let n = desc_leb(d, pos)?;
     // `reserve_cap`: clamp an untrusted child count to remaining bytes so a malformed TypeNode can't
-    // `with_capacity`-abort (each child is ≥1 byte). NOTE this is recursive — a malformed deeply-nested
-    // TypeNode is bounded only by `desc_name`/`desc_leb` running out of bytes (`?`), which they do since
-    // every level consumes ≥2 bytes (a name-len + a child-count); the total descriptor length caps depth.
+    // `with_capacity`-abort (each child is ≥1 byte).
     let mut children = Vec::with_capacity(reserve_cap(n, d, *pos));
     for _ in 0..n {
-        children.push(decode_type_node(d, pos)?);
+        children.push(decode_type_node(d, pos, depth + 1)?);
     }
     Some(TypeNode { head, children })
 }
@@ -1207,7 +1217,7 @@ fn decode_shape(d: &[u8], pos: &mut usize) -> Option<Shape> {
         14 => Shape::Float32,
         15 => {
             // Framed: <TypeNode> [ inner: idx ]  where TypeNode = [ head ][ n ]( TypeNode )*n (recursive).
-            let type_node = decode_type_node(d, pos)?;
+            let type_node = decode_type_node(d, pos, 0)?;
             Shape::Framed(type_node, desc_leb(d, pos)? as u32)
         }
         16 => {
@@ -6706,6 +6716,53 @@ mod tests {
             op_drop(h);
         }
         assert_eq!(live_nodes(), before, "no leak: every boxed int dropped");
+    }
+
+    /// A malformed descriptor whose Framed TYPE NODE nests absurdly deep DECLINES (`None`), it does not
+    /// overflow the stack. `decode_type_node` recurses per nesting level, and a level is only 2 bytes
+    /// (`[name_len=0][n_children=1]`), so before the `TYPE_NODE_DEPTH_CAP` a ~200 KB descriptor recursed
+    /// ~200 k deep and SIGABRT'd the guest — violating value-encode's "never a trap" totality (a
+    /// compiler-baked type node is always shallow, but the escape op must decline any input). The cap
+    /// makes it decline. A genuine type (`(Map Int (List Bool))`, depth 2) is far under the cap, unaffected.
+    #[test]
+    fn value_encode_deeply_nested_type_node_declines_no_overflow() {
+        reset();
+        let before = live_nodes();
+        fn leb(o: &mut Vec<u8>, mut v: u64) {
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                o.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        }
+        // table_len=2, [0]=Int, [1]=Framed<DEPTH-nested TypeNode>[inner=0]; root=1.
+        let mut d = Vec::new();
+        leb(&mut d, 2);
+        d.push(0); // [0] Int
+        d.push(15); // [1] Framed
+        const DEPTH: usize = 200_000; // vastly exceeds TYPE_NODE_DEPTH_CAP
+        for _ in 0..DEPTH {
+            leb(&mut d, 0); // empty head
+            leb(&mut d, 1); // 1 child → recurse
+        }
+        leb(&mut d, 0); // innermost: empty head
+        leb(&mut d, 0); // 0 children
+        leb(&mut d, 0); // Framed inner idx → 0
+        leb(&mut d, 1); // root = 1
+        let v = op_box_int(7);
+        // MUST return (as None), NOT overflow the stack.
+        assert!(
+            op_value_encode_form(v, &d).is_none(),
+            "a runaway-nested type node declines, it does not abort the guest"
+        );
+        op_drop(v);
+        assert_eq!(live_nodes(), before, "no leak on the declined encode");
     }
 
     /// A WIDE record (many DISTINCT field names) encodes byte-identically to the recursive oracle. This is
