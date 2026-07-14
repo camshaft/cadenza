@@ -82,19 +82,25 @@ export default function Symbols() {
       <H2>Your turn</H2>
       <Exercise
         id="symbols:1"
-        prompt={<>Call <C>wait</C> on a <C>#"yellow"</C> light — it should give <C>5</C>.</>}
-        starter={`(def (wait light)
-  (if (= light #"red") 30
-    (if (= light #"yellow") 5
-      0)))
-(def (main) (wait ?))`}
-        solution={`(def (wait light)
-  (if (= light #"red") 30
-    (if (= light #"yellow") 5
-      0)))
-(def (main) (wait #"yellow"))`}
-        expected="5"
-        hint={<>Pass the symbol for a yellow light: <C>#"yellow"</C>.</>}
+        prompt={
+          <>
+            Write the comparison inside <C>is-stop</C> so it returns <C>1</C> when the light is red and{" "}
+            <C>0</C> otherwise. With <C>(is-stop #"red")</C> the answer is <C>1</C>.
+          </>
+        }
+        starter={`(def (is-stop light)
+  (if (= light ?) 1 0))
+(def (main) (is-stop #"red"))`}
+        solution={`(def (is-stop light)
+  (if (= light #"red") 1 0))
+(def (main) (is-stop #"red"))`}
+        expected="1"
+        hint={
+          <>
+            A symbol's one operation is equality — compare <C>light</C> against the symbol{" "}
+            <C>#"red"</C>: <C>(= light #"red")</C>.
+          </>
+        }
       />
 
       <Exercise
