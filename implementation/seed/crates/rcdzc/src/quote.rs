@@ -241,10 +241,15 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
             // instead (as `reify` does for a bare non-Int leaf), so the quasiquote declines honestly with
             // "quasiquote produces an AST value (not yet built)" — the type-directed lift of a non-Int
             // active operand is a later increment (module docs §Quasiquote). A NON-literal operand (a
-            // name, a call) stays LIVE and wraps in `Ast.Int` as before — its type is unknown at reify
-            // time (pre-typecheck), and an Int-valued one is the corpus case.
+            // NAME `,n` or a call `,(f x)`) stays LIVE and wraps in `Ast.Int` as before — its type is
+            // unknown at reify time (pre-typecheck), and an Int-valued one is the corpus case.
+            //
+            // 🔑 A `Leaf::Name` is NOT a literal — it is a runtime REFERENCE (a let-bound var `,n` or a
+            // param), which the comment above says stays live. Only a non-int VALUE literal
+            // (Float/String/Bool/Char) bails; a bare int literal `,42` lifts. So exclude `Leaf::Name` from
+            // the bail (else `(let ((n 42)) `(op-const ,n))` and a `,param` regress to a spurious decline).
             if let Struct::Atom(l) = ast.get(items[1])
-                && !matches!(ast.leaf(*l), Leaf::Int { .. })
+                && !matches!(ast.leaf(*l), Leaf::Int { .. } | Leaf::Name(_))
             {
                 return None;
             }

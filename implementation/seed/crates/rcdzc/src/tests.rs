@@ -17617,6 +17617,18 @@ mod match_engine {
                  payload error: {d:?}"
             );
         }
+        // REGRESSION GUARD: an active unquote of a NAME (`,n` — a let-bound var or a param) is NOT a literal,
+        // it is runtime code that stays LIVE and wraps `(Ast.Int n)`. A `Leaf::Name` is a `Struct::Atom`, so
+        // the non-int-LITERAL bail above must EXCLUDE names — else `` `(op-const ,n) `` (n let-bound) that
+        // builds an Ast RESULT regresses to a spurious "produces an AST value (not yet built)" decline (the
+        // 5 quasiquote corpus cases). Here the result is an `Ast`, so it compiles clean end-to-end.
+        assert!(
+            reject_code(
+                "(module m (def (main) (let ((n 42)) (quasiquote (op-const (unquote n))))) (export main))"
+            )
+            .is_none(),
+            "an active unquote of a let-bound NAME building an Ast result must reify (not bail as a literal)"
+        );
     }
 
     #[test]
