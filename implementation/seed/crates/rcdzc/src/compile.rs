@@ -1373,8 +1373,19 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
     // (`(Record (val Nonesuch))`) IS caught, at the field-type position, with no field-name false positive.
     // The record-aware descent mirrors `db::collect_type_params` (which collects the params from the same
     // positions). A non-record payload validates as a single position (the whole payload expression).
+    // Only USER type declarations are validated — a prelude/synthesized decl's payloads were well-formed
+    // when built, and re-checking them against the CURRENT namespace produces a false positive when the
+    // user SHADOWS a payload-type name: `(def (Int64) 1)` rebinds `Int64` to a nullary function, so a
+    // prelude sum whose payload is typed `Int64` (e.g. an internal `Result`/pair) then fails
+    // `validate_type_position` ("a variant payload requires a type") — reported at the PRELUDE payload
+    // node, which has no source span, so the fault printed with no `line:col` and a message about a
+    // "variant payload" the user never wrote. Gate on `is_user_node(d.occ)`, exactly as the effect-decl
+    // payload loop below does, so shadowing a prelude type name is a plain rebind, not a phantom fault.
     let mut type_positions: Vec<(StructId, Vec<String>)> = Vec::new();
     for d in &db.type_decls {
+        if !db.is_user_node(d.occ) {
+            continue;
+        }
         let params = &d.params;
         for v in &d.variants {
             for &payload in &v.payloads {
