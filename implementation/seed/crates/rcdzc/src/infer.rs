@@ -1019,16 +1019,32 @@ fn validate_non_type_annotation(db: &mut Db, ty_expr: StructId, lead: &str, out:
         }
         return;
     }
-    // A bare name that IS a DECLARED TYPE whose `typeval_of` failed only because that type's OWN
-    // declaration is MALFORMED — e.g. `(: c C)` where `(type C (Red) (Red))` has a duplicate variant — is
-    // NOT "a value, not a type": `C` genuinely names a type, just a broken one. The duplicate-variant (or
-    // other declaration-site) reject is the primary, actionable "no"; adding "`C` is a value, not a type"
-    // here is a MISLEADING consequent (it is a type, and the phrasing blames the annotation, not the real
-    // defect). Suppress it — defer to the declaration-site error. (`type_decl_by_name` covers a top-level
-    // sum/newtype; a well-formed type reduces via `typeval_of` and never reaches this branch.)
-    if let Some(name) = db.ast.as_name(ty_expr)
-        && db.type_decl_by_name(name).is_some()
+    // A name that IS a DECLARED TYPE whose `typeval_of` failed only because that type's OWN declaration is
+    // MALFORMED — e.g. `(: c C)` / `(: x (Box Int64))` where `(type C (Red) (Red))` / `(type Box (W a) (W
+    // b))` has a duplicate variant — is NOT "a value, not a type" / "found a non-type": the name genuinely
+    // denotes a type, just a broken one. The duplicate-variant (or other declaration-site) reject is the
+    // primary, actionable "no"; adding a use-site "not a type" here is a MISLEADING consequent (it blames
+    // the annotation, not the real defect). Suppress it — defer to the declaration-site error. Covers BOTH
+    // a BARE name `C` and an APPLIED generic `(Box …)` (its head names the declared generic). A well-formed
+    // type reduces via `typeval_of` and never reaches this branch, so this fires only for a malformed one.
+    // The DECLARED-TYPE HEAD of the annotation, when its type is intrinsically MALFORMED — a bare name `C`,
+    // or an applied `(Box …)` whose head is a declared generic. For the applied form we additionally
+    // require the HEAD ALONE to fail `typeval_of`: that isolates a broken DECLARATION (`(type Box (W a) (W
+    // b))` — the bare `Box` does not reduce) from a WELL-FORMED generic merely MISAPPLIED (`(Box 5)` — the
+    // bare `Box` reduces fine; the `5` argument is the real, reportable defect via `non_type_argument_message`
+    // below, which we must NOT suppress). A bare-name annotation has no arguments, so its failing
+    // `typeval_of` already means the declaration is broken — no extra check needed there.
+    let malformed_type_head = if let Some(name) = db.ast.as_name(ty_expr) {
+        db.type_decl_by_name(name).is_some()
+    } else if let crate::ast::Struct::List(kids) = db.ast.get(ty_expr)
+        && let Some(&head) = kids.first()
+        && let Some(name) = db.ast.as_name(head)
     {
+        db.type_decl_by_name(name).is_some() && crate::eval::typeval_of(db, head).is_none()
+    } else {
+        false
+    };
+    if malformed_type_head {
         return;
     }
     let before = out.len();

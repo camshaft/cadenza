@@ -39364,6 +39364,36 @@ mod stage1 {
             "a value keeps its own message: {:?}",
             val.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
+        // An APPLIED malformed generic — `(: x (Box Int64))` where `(type Box (W a) (W b))` has a dup
+        // variant — likewise defers: only the dup-variant reject, no "found a non-type" consequent.
+        let applied = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (type Box (W a) (W b)) (def (f (: x (Box Int64))) x) (export f))",
+        )));
+        let aerrs: Vec<&str> = applied
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            aerrs
+                .iter()
+                .any(|m| m.contains("more than once in sum `Box`"))
+                && !aerrs.iter().any(|m| m.contains("found a non-type")),
+            "an applied malformed generic defers to the dup-variant reject: {aerrs:?}"
+        );
+        // NO OVER-SUPPRESSION on a WELL-FORMED generic MISAPPLIED: `(Box 5)` (a non-type argument) and
+        // `(Box Int64 Bool)` (wrong arity) still report — the type is fine, the USE is wrong.
+        for bad_use in [
+            "(module m (type Box (W a)) (def (f (: x (Box 5))) x) (export f))",
+            "(module m (type Box (W a)) (def (f (: x (Box Int64 Bool))) x) (export f))",
+        ] {
+            let d = crate::diagnostics(&mut crate::db::Db::load(parse(bad_use)));
+            assert!(
+                d.iter().any(|x| x.severity == crate::abi::Severity::Error),
+                "a well-formed generic misapplied still reports: {bad_use} -> {:?}",
+                d.iter().map(|x| &x.message).collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]
