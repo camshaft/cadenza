@@ -13255,6 +13255,32 @@ mod match_engine {
     }
 
     #[test]
+    fn applying_a_type_name_names_it_a_type_and_points_at_annotation_position() {
+        // `(Color 5)` / `(Option 5)` / `(Int64 5)` apply a TYPE name in call position. The head reduces to
+        // a type-value, so the generic `typeval_of(head)` discriminator recognizes it (no hard-coded name
+        // list — the no-keys-outside-the-prelude rule) and the message names the CATEGORY + where a type
+        // belongs: "`Color` is a type, not a function — a type appears in an annotation `(: value Color)`,
+        // not in call position". Covers a USER type (Color) and PRELUDE types (Option/Int64).
+        for (src, name) in [
+            (
+                "(module m (type Color R G B) (def (main) (Color 5)) (export main))",
+                "Color",
+            ),
+            ("(module m (def (main) (Option 5)) (export main))", "Option"),
+            ("(module m (def (main) (Int64 5)) (export main))", "Int64"),
+        ] {
+            let d = reject_full(src).unwrap_or_else(|| panic!("applying {name} is rejected"));
+            assert!(
+                d.message
+                    .contains(&format!("`{name}` is a type, not a function"))
+                    && d.message.contains("appears in an annotation"),
+                "names the type category + annotation position for {name}: {}",
+                d.message
+            );
+        }
+    }
+
+    #[test]
     fn applying_a_non_function_reports_one_error_not_a_shadowing_decline() {
         // Applying a non-function must be ONE primary `error:` — the coded `cannot apply a value of
         // type … — it is not a function` — NOT that reject PLUS the emit path's uncoded "value is not

@@ -4369,14 +4369,31 @@ fn check_application(
                     out.push(reject);
                 } else {
                     trace!(target: "rcdzc::infer", head = head.0, ty = %other.render_name(), "apply: applied a non-function (type fault)");
-                    out.push(Reject::coded(
-                        Code::TypeMismatch,
-                        format!(
+                    // A head that DENOTES A TYPE applied in call position (`(Color 5)`, `(Option 5)`,
+                    // `(Int64 5)`) — name the CATEGORY, mirroring the M75 effect/type message (and the M74
+                    // export-a-type message): "`Color` is a type, not a function". A type belongs in an
+                    // ANNOTATION `(: value Color)`, not a call — say so. The discriminator is GENERIC:
+                    // `typeval_of(head)` succeeds iff the head reduces to a type-value (a user `(type …)`
+                    // name, a prelude type like `Int64`/`Option`), so no hard-coded name list is needed
+                    // (the no-keys-outside-the-prelude rule). Names the head's SOURCE spelling. Any other
+                    // scheme-typed non-function head keeps the type-named message (the type IS the fact).
+                    // Read the head's source name first (releasing the `&db.ast` borrow), THEN check it
+                    // denotes a type via `typeval_of` (which needs `&mut db`) — a name AND a type-value.
+                    let head_name = db.ast.as_name(head).map(str::to_string);
+                    let type_name =
+                        head_name.filter(|_| crate::eval::typeval_of(db, head).is_some());
+                    let message = match type_name {
+                        Some(name) => format!(
+                            "`{name}` is a type, not a function — a type appears in an annotation \
+                             `(: value {name})`, not in call position"
+                        ),
+                        None => format!(
                             "{} {}",
                             crate::diag::NOT_A_FUNCTION_PREFIX,
                             other.render_name()
                         ),
-                    ));
+                    };
+                    out.push(Reject::coded(Code::TypeMismatch, message));
                 }
                 return;
             }
