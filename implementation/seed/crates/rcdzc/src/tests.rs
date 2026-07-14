@@ -18381,6 +18381,75 @@ mod match_engine {
     }
 
     #[test]
+    fn a_tail_recursive_list_fold_compiles_to_a_constant_stack_loop() {
+        // A tail-recursive fold over a LIST — `(sa xs acc) = (match xs ((list) acc) ((list x .. rest) (sa
+        // rest (+ acc x))))` — is a self-tail-call inside a `Core::MatchList` cons arm. The loop transform
+        // now threads tail position into list-match arms (`emit_tail`/`body_has_member_tail_call`/
+        // `tail_callees` handle `MatchList`), so it compiles to ONE `loop` (constant stack) instead of a
+        // stack-growing recursive `call`. Pins the `loop` at the Lir level + value parity + that a large
+        // list (which would overflow a recursive stack) folds fine.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function_of;
+        let src = "(module m (def (sa (: xs (List Int64)) (: acc Int64)) \
+                     (match xs ((list) acc) ((list x .. rest) (sa rest (+ acc x))))) \
+                     (def (f (: a Int64) (: b Int64)) (sa (list a b) 0)) (export f))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("sa").expect("sa");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        // `select_function_of` with `self_def = Some(d)` enables the self-recursion loop transform.
+        let code = select_function_of(&mut db, body, &ps, &layout, Some(d))
+            .expect("select")
+            .code;
+        assert!(
+            code.iter().any(|i| matches!(i, Lir::Loop(_))),
+            "the tail list fold compiles to a loop, got: {code:?}"
+        );
+        assert!(
+            !code
+                .iter()
+                .any(|i| matches!(i, Lir::Call(_) | Lir::ReturnCall(_))),
+            "no residual self-`call`/`return_call` — the recursion became a loop br, got: {code:?}"
+        );
+
+        // VALUE PARITY + CONSTANT STACK: sum [0, N) via a build-then-fold. `N = 100000` would overflow a
+        // recursive stack; the loop folds it fine. Sum [0,100) = 4950.
+        let prog = |n: i64| {
+            format!(
+                "(module m \
+                   (def (build (: i Int64) (: n Int64) (: out (List Int64))) \
+                     (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                   (def (sa (: xs (List Int64)) (: acc Int64)) \
+                     (match xs ((list) acc) ((list x .. rest) (sa rest (+ acc x))))) \
+                   (def (main) (sa (build 0 {n} (list)) 0)) (export main))"
+            )
+        };
+        let Some(small) = run_heap_value(&prog(100), vec![]) else {
+            eprintln!("runtime wasm not found; skipping tail list-fold loop run");
+            return;
+        };
+        assert_eq!(small, "4950", "sum [0,100) via a looping tail fold");
+        assert_eq!(
+            run_heap_value(&prog(100000), vec![]).unwrap(),
+            "4999950000",
+            "sum [0,100000) folds in constant stack (would overflow if recursive)"
+        );
+    }
+
+    #[test]
     fn a_recursive_list_consumer_infers_its_element_via_list_at() {
         // A recursive function whose list PARAMETER is touched ONLY through `List.at` (never a direct
         // operator on the list itself) now infers its element type — before, the `(Some x)` payload binder
