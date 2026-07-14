@@ -3419,18 +3419,32 @@ pub fn assemble_distinct_sig_resource_mixed_borrow(
                 ti += 2;
             }
             if gr.ret_is_bytes {
-                // call-<g>: own/borrow<t_g> (ti) + list<u8> (ti+1) + `(self, args…) -> list<u8>` functype.
+                // call-<g> returns `list<u8>`. With a TUPLE arg: own/borrow<t_g> (ti) + tuple<…> (ti+1) +
+                // list<u8> (ti+2) + `(self, tuple) -> list<u8>` functype (ti+3) — 4 types. Without: own/borrow
+                // (ti) + list<u8> (ti+1) + `(self, args…) -> list<u8>` functype (ti+2) — 3 types.
                 items.extend_from_slice(&call_handle(rty));
                 let own_ty = ti;
-                let list_ty = ti + 1;
-                items.extend_from_slice(&list_u8_defined_type());
-                items.extend_from_slice(&closure_call_list_functype(
-                    own_ty,
-                    &gr.arg_bytes,
-                    list_ty,
-                ));
-                fn_functype.push(ti + 2);
-                ti += 3;
+                if let Some(fields) = &gr.tuple_arg_bytes {
+                    let tup_ty = ti + 1;
+                    let list_ty = ti + 2;
+                    items.extend_from_slice(&tuple_defined_type(fields));
+                    items.extend_from_slice(&list_u8_defined_type());
+                    items.extend_from_slice(&closure_call_list_tuple_arg_functype(
+                        own_ty, tup_ty, list_ty,
+                    ));
+                    fn_functype.push(ti + 3);
+                    ti += 4;
+                } else {
+                    let list_ty = ti + 1;
+                    items.extend_from_slice(&list_u8_defined_type());
+                    items.extend_from_slice(&closure_call_list_functype(
+                        own_ty,
+                        &gr.arg_bytes,
+                        list_ty,
+                    ));
+                    fn_functype.push(ti + 2);
+                    ti += 3;
+                }
             } else if let Some(fields) = &gr.tuple_arg_bytes {
                 // call-<g>: own/borrow<t_g> (ti) + tuple<…> (ti+1) + `(self, tuple) -> R` functype.
                 items.extend_from_slice(&call_handle(rty));
@@ -4703,25 +4717,46 @@ fn resource_inner_component_distinct_sig_borrow(
             f += 1;
         }
         if gr.ret_is_bytes {
-            // call-<gi> : (self: own<t_gi>, args…) -> list<u8>  → own<t_gi> + list<u8> + functype.
+            // call-<gi> returns list<u8>. With a TUPLE arg: handle + tuple + list<u8> + functype (4 types);
+            // without: handle + list<u8> + functype (3 types).
             let own_ty = ty;
-            let list_ty = ty + 1;
-            let ft_ty = ty + 2;
-            out.extend_from_slice(&{
-                let mut items = call_handle(gi as u32);
-                items.extend_from_slice(&list_u8_defined_type());
-                items.extend_from_slice(&closure_call_list_functype(
-                    own_ty,
-                    &gr.arg_bytes,
-                    list_ty,
+            if let Some(fields) = &gr.tuple_arg_bytes {
+                let tup_ty = ty + 1;
+                let list_ty = ty + 2;
+                let ft_ty = ty + 3;
+                out.extend_from_slice(&{
+                    let mut items = call_handle(gi as u32);
+                    items.extend_from_slice(&tuple_defined_type(fields));
+                    items.extend_from_slice(&list_u8_defined_type());
+                    items.extend_from_slice(&closure_call_list_tuple_arg_functype(
+                        own_ty, tup_ty, list_ty,
+                    ));
+                    section(sec::COMPONENT_TYPE, &wasm_vec(4, &items))
+                });
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_IMPORT,
+                    &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
                 ));
-                section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
-            });
-            out.extend_from_slice(&section(
-                sec::COMPONENT_IMPORT,
-                &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
-            ));
-            ty += 3;
+                ty += 4;
+            } else {
+                let list_ty = ty + 1;
+                let ft_ty = ty + 2;
+                out.extend_from_slice(&{
+                    let mut items = call_handle(gi as u32);
+                    items.extend_from_slice(&list_u8_defined_type());
+                    items.extend_from_slice(&closure_call_list_functype(
+                        own_ty,
+                        &gr.arg_bytes,
+                        list_ty,
+                    ));
+                    section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+                });
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_IMPORT,
+                    &wasm_vec(1, &import_func_item(&import_wire_name(f), ft_ty)),
+                ));
+                ty += 3;
+            }
         } else if let Some(fields) = &gr.tuple_arg_bytes {
             // call-<gi> : (self: handle<t_gi>, p: tuple<…>) -> R  → handle + tuple + functype.
             let own_ty = ty;
@@ -4795,20 +4830,44 @@ fn resource_inner_component_distinct_sig_borrow(
             f += 1;
         }
         if gr.ret_is_bytes {
-            out.extend_from_slice(&{
-                let mut items = call_handle(exp_rty);
-                items.extend_from_slice(&list_u8_defined_type());
-                items.extend_from_slice(&closure_call_list_functype(ti, &gr.arg_bytes, ti + 1));
-                section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
-            });
-            out.extend_from_slice(&section(
-                sec::COMPONENT_EXPORT,
-                &wasm_vec(
-                    1,
-                    &export_func_ascribed_item(&format!("call-g{gi}"), f as u32, ti + 2),
-                ),
-            ));
-            ti += 3;
+            // list<u8> result. With a TUPLE arg: handle + tuple + list<u8> + functype (4 types); without:
+            // handle + list<u8> + functype (3 types).
+            if let Some(fields) = &gr.tuple_arg_bytes {
+                out.extend_from_slice(&{
+                    let mut items = call_handle(exp_rty);
+                    items.extend_from_slice(&tuple_defined_type(fields));
+                    items.extend_from_slice(&list_u8_defined_type());
+                    items.extend_from_slice(&closure_call_list_tuple_arg_functype(
+                        ti,
+                        ti + 1,
+                        ti + 2,
+                    ));
+                    section(sec::COMPONENT_TYPE, &wasm_vec(4, &items))
+                });
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_EXPORT,
+                    &wasm_vec(
+                        1,
+                        &export_func_ascribed_item(&format!("call-g{gi}"), f as u32, ti + 3),
+                    ),
+                ));
+                ti += 4;
+            } else {
+                out.extend_from_slice(&{
+                    let mut items = call_handle(exp_rty);
+                    items.extend_from_slice(&list_u8_defined_type());
+                    items.extend_from_slice(&closure_call_list_functype(ti, &gr.arg_bytes, ti + 1));
+                    section(sec::COMPONENT_TYPE, &wasm_vec(3, &items))
+                });
+                out.extend_from_slice(&section(
+                    sec::COMPONENT_EXPORT,
+                    &wasm_vec(
+                        1,
+                        &export_func_ascribed_item(&format!("call-g{gi}"), f as u32, ti + 2),
+                    ),
+                ));
+                ti += 3;
+            }
         } else if let Some(fields) = &gr.tuple_arg_bytes {
             out.extend_from_slice(&{
                 let mut items = call_handle(exp_rty);

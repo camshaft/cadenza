@@ -3114,17 +3114,9 @@ fn emit_distinct_sig_resource(
         };
         let ret_vt = valtype_of(&ret_ty)
             .ok_or_else(|| Reject::decline("closure result has no machine valtype"))?;
-        // A tuple arg is only supported on a SCALAR-result group this increment (a list-returning group's
-        // `call-<g>` body shape + a rebuilt tuple arg is a further widening). Decline that combination cleanly.
-        if group_tuple_arg.is_some()
-            && (ret_is_bytes || ret_template.is_some() || ret_descriptor.is_some())
-        {
-            return Err(Reject::decline(
-                "a distinct-signature closure with BOTH a compound argument AND a byte-rope/compound/\
-                 collection result is not yet emitted (the tuple-arg rebuild + a list-returning call-g body \
-                 compose in a later increment)",
-            ));
-        }
+        // A tuple arg now composes with EVERY result shape per group — scalar, byte-rope, fixed-compound, and
+        // collection: the per-group `call-<g>` bodies (all four branches) + the per-group envelope functypes
+        // thread the `TupleArgRebuild`. No result-shape decline remains for a distinct-sig tuple arg.
         // The lifted lambda's own param shape: for a tuple-arg group it takes ONE i32 tuple-cell handle (the
         // `call-<g>` wrapper rebuilds it from the flattened fields), NOT the flattened field vts.
         let match_vts: Vec<ValType> = if group_tuple_arg.is_some() {
@@ -3256,6 +3248,14 @@ fn emit_distinct_sig_resource(
     let any_bytes = ginfos.iter().any(|gi| gi.ret_is_bytes);
     let any_compound = ginfos.iter().any(|gi| gi.ret_template.is_some());
     let any_collection = ginfos.iter().any(|gi| gi.ret_descriptor.is_some());
+    // A tuple-arg group's `call-<g>` rebuilds the flattened tuple cell (`arr-alloc` + per field box + `arr-set`
+    // + `drop`). Collect the box ops the rebuilds actually reference (per field type) so they are imported.
+    let tuple_box_ops: std::collections::BTreeSet<&'static str> = ginfos
+        .iter()
+        .filter_map(|gi| gi.tuple_arg.as_ref())
+        .flat_map(|(_, rb)| rb.field_box_ops.iter().filter_map(|o| *o))
+        .collect();
+    let any_tuple_arg = ginfos.iter().any(|gi| gi.tuple_arg.is_some());
     let (imports, mut funcs, layout) = resource_escape_build_n(db, layout, intrinsics, |used| {
         used.insert("arr-get");
         used.insert("get-int");
@@ -3281,6 +3281,14 @@ fn emit_distinct_sig_resource(
                 "bytes-len",
                 "bytes-get",
             ] {
+                used.insert(op);
+            }
+        }
+        if any_tuple_arg {
+            // The tuple-arg cell rebuild: `arr-alloc N` + per field box + `arr-set` (+ `drop`, already above).
+            used.insert("arr-alloc");
+            used.insert("arr-set");
+            for op in &tuple_box_ops {
                 used.insert(op);
             }
         }

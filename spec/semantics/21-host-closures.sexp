@@ -2786,6 +2786,34 @@
   (call   twice (: 21 Int64))
   (output (: 42 Int64)))
 
+; The tuple-arg × list-result composition extends to the DISTINCT-SIGNATURE shape — the LAST list-result gap:
+; closures of DIFFERENT signatures each taking a fixed-shape scalar tuple arg AND returning a list<u8>-crossing
+; result (byte-rope / fixed-compound / collection) cross as G resource types, each per-group `call-g<n>`
+; rebuilding ITS OWN flattened tuple arg. All four per-group `call-g` body branches + the per-group envelope
+; functypes now thread the `TupleArgRebuild`.
+
+(case "DISTINCT-SIG: two DIFFERENT-signature Tuple-arg closures each returning a List"
+  (doc    "`mk-a : (-> (Tuple Int64 Int64) (List Int64))` and `mk-b : (-> (Tuple Int64 Bool) (List Int64))` —
+           DIFFERENT tuple-arg signatures, each returning a collection. They cross as TWO resource types, each
+           `call-g<n>` rebuilding its own flattened tuple arg then value-encoding the returned List. Driving
+           the Int64-tuple group: `make-a()` → handle, `call(handle, (10, 3))` → `(list 10 3)`.")
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Bool))) (list (. p 0))))
+              (export mk-a) (export mk-b)))
+  (call   mk-a (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (list 10 3) (List Int64))))
+
+(case "DISTINCT-SIG: driving the (Tuple Int64 Bool)-arg closure of the distinct-sig List pair"
+  (doc    "The SAME distinct-sig component, driving `mk-b : (-> (Tuple Int64 Bool) (List Int64))` — its arg
+           tuple has a NARROW Bool field (boxed via `box-bool` in the rebuild). `make-b()` → handle,
+           `call(handle, (7, true))` → `(list 7)`. Exercises a distinct tuple-arg shape per group + a Bool
+           field in the flattened-tuple rebuild.")
+  (input  (do (def (mk-a) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
+              (def (mk-b) (fn ((: p (Tuple Int64 Bool))) (list (. p 0))))
+              (export mk-a) (export mk-b)))
+  (call   mk-b (: (tuple 7 true) (Tuple Int64 Bool)))
+  (output (: (list 7) (List Int64))))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner
