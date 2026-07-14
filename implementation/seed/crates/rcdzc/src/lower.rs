@@ -3861,20 +3861,18 @@ fn enrich_pattern_head_suggestion(
     let Some(key) = db.ast.as_name(key_occ).map(str::to_string) else {
         return reject;
     };
-    // The nearest variant of `decl` to `key`, MEMOIZED per (decl, key): the variant-name clone + edit-
-    // distance scan is O(variants), and a WIDE sum matched with a stale variant from N sites re-ran it each
-    // → O(N²). Keyed by (decl, key), it is computed once per distinct query.
-    // The scrutinee sum's variant names — the closed candidate set. Read once here (this is a REJECT-only
-    // path — a valid match never calls this — so the read is not the hot case the winner memo guards).
-    let names: Vec<String> = match db.type_decl_by_occ(decl) {
-        Some(t) => t.variants.iter().map(|v| v.name.clone()).collect(),
-        None => return reject,
-    };
     // The confident single (memoized per (decl, key) — a wide sum matched with the SAME stale variant from
-    // N sites would otherwise re-run the O(variants) scan each → O(N²)). Drives the REPLACE fix.
+    // N sites would otherwise re-run the O(variants) scan each → O(N²)). Drives the REPLACE fix. The
+    // scrutinee sum's variant names (the closed candidate set) are cloned + scanned ONLY on a memo MISS —
+    // deferred behind the cache so a repeated (decl, key) query does not even re-clone the O(variants) list
+    // (the wrong-sum-ctor path hits this from N sites against a wide sum).
     let candidate = if let Some(hit) = db.variant_suggest_winner.get(&(decl, key.clone())) {
         hit.clone()
     } else {
+        let names: Vec<String> = match db.type_decl_by_occ(decl) {
+            Some(t) => t.variants.iter().map(|v| v.name.clone()).collect(),
+            None => return reject,
+        };
         let winner = crate::diag::suggest::nearest(&key, &names);
         db.variant_suggest_winner
             .insert((decl, key.clone()), winner.clone());
@@ -3892,8 +3890,25 @@ fn enrich_pattern_head_suggestion(
         // "record has no field". A sum is a CLOSED variant set, so listing is signal (the pattern-position
         // twin of the member-access two-tier). No fix (a list of options is not one mechanical edit).
         None => {
-            let close =
-                crate::diag::suggest::closest_matches(&key, names.iter().map(String::as_str), 3);
+            // The closest-variants LIST, MEMOIZED per (decl, key) — its `closest_matches` SORTS all N
+            // variants by edit distance (O(N log N)), and a WRONG-SUM ctor (always a far miss) matched from
+            // N sites against a wide sum re-ran it each → O(N² log N). Build `names` + sort only on a miss.
+            let close = if let Some(hit) = db.variant_closest_matches.get(&(decl, key.clone())) {
+                hit.clone()
+            } else {
+                let names: Vec<String> = match db.type_decl_by_occ(decl) {
+                    Some(t) => t.variants.iter().map(|v| v.name.clone()).collect(),
+                    None => return reject,
+                };
+                let close = crate::diag::suggest::closest_matches(
+                    &key,
+                    names.iter().map(String::as_str),
+                    3,
+                );
+                db.variant_closest_matches
+                    .insert((decl, key.clone()), close.clone());
+                close
+            };
             if close.is_empty() {
                 return reject; // an empty sum — nothing to list, keep the bare message
             }

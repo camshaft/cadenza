@@ -26420,6 +26420,69 @@ mod diagnostics {
     }
 
     #[test]
+    fn many_wrong_sum_ctor_arms_list_the_matched_variants_in_bounded_time() {
+        // REGRESSION (perf): a match-arm ctor that is a valid variant of a DIFFERENT sum (`(B.Wrong)`
+        // against an `A` scrutinee) is a FAR miss, so `lower::enrich_pattern_head_suggestion` lists the
+        // scrutinee sum's closest variants via `suggest::closest_matches` — which SORTS all N variants by
+        // edit distance (O(N log N)). fix-26 memoized only the TIER-1 nearest WINNER; the TIER-2 far-miss
+        // LIST re-ran per site, so N wrong-sum arms against a wide N-variant sum were O(N² log N) (cdz
+        // check 400/800/1600 = 264/944/3780ms, ~3.5×/doubling). FIX: memoize the closest-matches list per
+        // `(decl, key)` in `db.variant_closest_matches` (the far-miss twin of `variant_suggest_winner`) +
+        // build the variant-names list only on a memo MISS.
+        //
+        // Correctness: the far-miss enrichment still LISTS the matched type's variants (the diagnostic the
+        // author needs), just computed once per distinct query.
+        fn wrong_sum_src(n: usize) -> String {
+            let variants: String = (0..n)
+                .map(|i| format!("(V{i})"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let defs: String = (0..n)
+                .map(|i| format!("(def (f{i} (: a A)) (match a ((B.Wrong) {i}) (_ 0)))"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let binds: String = (0..n)
+                .map(|i| format!("(r{i} (f{i} (V0)))"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "(module m (type A {variants}) (type B (Wrong)) {defs} \
+                   (def (main) (let ({binds}) r0)) (export main))"
+            )
+        }
+        // The far-miss enrichment still lists the matched type's variants (a `— closest matches:` message).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wrong_sum_src(8))));
+        assert!(
+            diags.iter().any(|d| {
+                d.code.as_deref() == Some("CDZ0203") && d.message.contains("closest matches:")
+            }),
+            "a wrong-sum ctor arm lists the matched type's variants: {diags:?}"
+        );
+        // Growth guard: `cdz check` at N vs 2N wrong-sum arms against an N-variant sum. The per-site
+        // closest-matches sort drove a 400→800 ratio of ~3.2× (O(N² log N)); the memo makes it ~1.8×
+        // (linear). Paired back-to-back timings, MIN ratio, so transient contention cancels. Threshold 2.5.
+        fn check_ms(src: &str) -> f64 {
+            let start = std::time::Instant::now();
+            let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            start.elapsed().as_secs_f64() * 1000.0
+        }
+        let (narrow, wide) = (wrong_sum_src(400), wrong_sum_src(800));
+        check_ms(&narrow); // warm lazy one-time init before the first timed pair
+        let mut best = f64::INFINITY;
+        for _ in 0..6 {
+            let t400 = check_ms(&narrow);
+            let t800 = check_ms(&wide);
+            best = best.min(t800 / t400.max(0.1));
+        }
+        assert!(
+            best < 2.5,
+            "N wrong-sum-ctor arms against a wide sum must scale linearly (was O(N² log N) via a per-site \
+             `closest_matches` sort; now memoized per (decl, key)): width 400→800 grew {best:.1}× (min \
+             paired ratio); linear is ~2×, the per-site sort was ~3.2×"
+        );
+    }
+
+    #[test]
     fn an_int_let_binder_annotation_mismatch_offers_an_of_conversion_fix() {
         // The THIRD site of the same int coercion (arg + value-annotation + here): an annotated let-binder
         // whose annotation is a different int width than its INIT — `(let (((: x Int64) n)) …)` with
