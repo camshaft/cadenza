@@ -18362,6 +18362,35 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_partial_application_of_a_builtin_operation_declines_honestly_naming_the_op() {
+        // A built-in operation applied to too FEW arguments — `(. List at) (list 1)`, missing the index —
+        // is a partial application: a genuine not-yet-built construct (it would need a runtime closure). It
+        // used to leak the INTERNAL `reduce_ctor` sentinel `error: not a type constructor` (the op fell
+        // through lower's full-arity arms into the constructor catch-all). Now it declines HONESTLY, naming
+        // the operation from its `Operand.key` surface spelling and stating the real limitation.
+        let d = first_error("(module m (def (main) ((. List at) (list 1))) (export main))");
+        assert!(
+            !d.message.contains("not a type constructor"),
+            "the internal reduce_ctor sentinel must not surface: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("`List.at`")
+                && d.message.contains("wrong arity")
+                && d.message.contains("runtime closure"),
+            "names the op + the real limitation: {}",
+            d.message
+        );
+        // A FULL application of the same op still compiles (the honest decline did not over-fire).
+        let full = all_errors("(module m (def (main) ((. List at) (list 1) 0)) (export main))");
+        assert!(
+            full.is_empty(),
+            "a fully-applied operation is not declined: {:?}",
+            full.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn a_narrower_int_operand_to_a_float_operator_nests_the_int64_widening() {
         // `of-int : Int64 → Float` — it takes EXACTLY Int64. For a NARROWER operand (`x : Int32`) a bare
         // `(Float64.of-int x)` would ITSELF fail (Int32 ≠ Int64), so the fix must first widen:

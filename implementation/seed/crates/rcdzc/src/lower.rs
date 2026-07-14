@@ -1579,6 +1579,32 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: constructor prim");
                     match crate::eval::reduce_ctor(db, prim, id, &args) {
                         Ok(built) => core_of(db, built),
+                        // A NON-constructor OPERATION prim (`list-at`, `map-insert`, …) reaches `reduce_ctor`
+                        // ONLY here, when its full-arity arm above did not match — the operation was applied
+                        // to the WRONG NUMBER of arguments. `reduce_ctor` cannot build it, returning the
+                        // internal `NOT_A_CTOR_PRIM` sentinel; surfacing that verbatim leaked
+                        // `error: not a type constructor` for a plain `(. List at l)` (a partial application,
+                        // missing the index). Rewrite it into an HONEST decline naming the operation and its
+                        // shape: a partial application of a built-in operation is a genuine not-yet-built
+                        // construct (it needs a runtime closure), NOT a type-constructor error. An
+                        // OVER-application ALSO lands here, but `infer` already reports it as the coded
+                        // CDZ0203 "applied N arguments to a function of arity M"; this decline is the weaker
+                        // sibling (a Todo), so the coded reject remains the primary "no".
+                        Err(msg) if msg == crate::eval::NOT_A_CTOR_PRIM => {
+                            let named = op_member_name(db, head)
+                                .map(|n| format!("`{n}`"))
+                                .unwrap_or_else(|| "a built-in operation".to_string());
+                            trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: operation applied at the wrong arity → honest decline");
+                            // Arity-neutral wording: this fires on BOTH an under-application (`(List.at l)`,
+                            // missing the index — the common case, which would need a runtime closure) and an
+                            // over-application (`(Map.size m x)` — already the coded CDZ0203, this is its
+                            // weaker Todo sibling). Both are "applied at the wrong arity".
+                            Core::Poison(Reject::decline(format!(
+                                "{named} is applied at the wrong arity — a built-in operation must be \
+                                 applied to exactly its arguments (a partial application, which would need \
+                                 a runtime closure, is not yet built)"
+                            )))
+                        }
                         Err(msg) => {
                             trace!(target: "rcdzc::lower", node = id.0, %msg, "apply: constructor declined");
                             Core::Poison(Reject::decline(msg))
@@ -11862,6 +11888,19 @@ fn node_ty_is_enum_disc(db: &mut Db, id: StructId) -> bool {
         crate::ty::Ty::Sum { decl, .. } => db.is_enum_disc(*decl),
         _ => false,
     }
+}
+
+/// The user-facing `Operand.key` spelling of an operation head that is a `(. Operand key)` member access
+/// (`(. List at)` → `List.at`), for a wrong-arity diagnostic. Reads the two segment names off the raw
+/// `.` form — the surface the author wrote — rather than the internal intrinsic name (`list-at`). `None`
+/// when the head is not a two-segment member access (e.g. a bare alias), so the caller falls back to a
+/// generic phrasing.
+fn op_member_name(db: &Db, head: StructId) -> Option<String> {
+    let tail = db.ast.as_form(head, ".")?;
+    let [operand, key] = tail else { return None };
+    let operand = db.ast.as_name(*operand)?;
+    let key = db.ast.as_name(*key)?;
+    Some(format!("{operand}.{key}"))
 }
 
 /// Reduce an `Ordering` to the boolean the comparison `op` asks of it — the one place the relational
