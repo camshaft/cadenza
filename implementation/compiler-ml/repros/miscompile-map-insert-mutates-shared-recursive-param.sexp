@@ -17,11 +17,20 @@
 ;;     CORRECT (3).
 ;;   - Only a SELF-RECURSIVE `ev` — where the `Map.insert(env,…)` (in one arm) and the sibling read of the
 ;;     SAME `env` param are both reached through recursive `ev` calls — MISCOMPILES.
-;; So the trigger is a heap MAP PARAMETER consumed-in-place by `map-insert` in one recursive sub-call
-;; while a sibling recursive sub-call still reads it — the borrow/Perceus family (a shared param needs a
-;; dup before a consuming `map-insert`, exactly like the earlier String/slot-alias findings). It DIRECTLY
-;; breaks a scope-threading interpreter/type-checker: `src/interp.cdz`'s `interp-shadow-restores` @test
-;; hits it (env not preserved for the sibling after a nested Let inserts).
+;; So the trigger is a heap collection PARAMETER consumed-in-place in one recursive sub-call while a
+;; sibling recursive sub-call still reads it — the borrow/Perceus family (a shared param needs a dup
+;; before a consuming op).
+;;
+;; ⚠ NOT Map-SPECIFIC (iter 28): the SAME miscompile occurs with `List.push` and `Set.insert` on a shared
+;; recursive-param collection — each returns 4, not 3, in the identical `(Add (Grow Leaf) Leaf)` shape.
+;; So it is a GENERAL persistent-collection operand-consumption bug: ANY consuming op (`map-insert`,
+;; `list-push`, `set-insert`, and presumably `map-remove`/`set-remove`/`vec-update`) on a BORROWED
+;; parameter that a sibling recursive sub-call also uses, in a SELF-RECURSIVE function, mutates the shared
+;; handle. Likely fix locus: the Perceus dup discipline must `dup` a borrowed collection PARAM before it
+;; is passed to a consuming op inside a recursive callee (a callee that consumes a borrowed param needs to
+;; dup it, OR the caller must dup before a call whose callee consumes it — the cross-call ownership seam).
+;; It DIRECTLY breaks a scope-threading interpreter/type-checker: `src/interp.cdz`'s
+;; `interp-shadow-restores` @test hits it (env not preserved for the sibling after a nested Let inserts).
 (do
   (type E (Var) (Add E E) (Bind E))
   (def (ev (: e E) (: env (Map String Int64)))

@@ -226,17 +226,19 @@ still needs that seed fix; the STRUCTURE-and-scalars decode proves the arena→t
   O(n²) via `concat`. `List.map`/`List.filter`/`List.fold` are the obvious missing higher-order list ops.
   `src/traverse.cdz` now provides these hand-rolled (map/filter/fold + Ast predicate-count/fold).
 
-- **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value): `Map.insert` MUTATES a shared recursive-param
-  map.** `repros/miscompile-map-insert-mutates-shared-recursive-param.sexp`. A persistent `Map.insert(env,
-  …)` mutates its operand when `env` is a PARAMETER shared across the SIBLING recursive calls of a
-  self-recursive function — violating `collections-and-text.md` §"A Map … leaves its operand map
-  unchanged". A tree-walking interpreter's `(Add (Bind Var) Var)` under `{x:1}` returns 4 (2+2) not 3
-  (2+1): the left operand's `Map.insert(env, x, 2)` corrupts the shared `env`, so the right operand's
-  lookup reads 2. SHARP: `let`-bound maps, non-recursive helpers, and a single non-recursive fn all
-  compute correctly — only a SELF-RECURSIVE `ev` (insert in one recursive sub-call, sibling read of the
-  same param in another) miscompiles. Borrow/Perceus family (a shared map param needs a dup before a
-  consuming `map-insert`). Blocks a scope-threading interpreter/type-checker; `src/interp.cdz`'s
-  `interp-shadow-restores` case is withheld for it.
+- **OPEN (seed `rcdzc` — MISCOMPILE, silent wrong value): a consuming persistent-collection op MUTATES a
+  shared recursive-param collection (Map/List/Set).**
+  `repros/miscompile-map-insert-mutates-shared-recursive-param.sexp`. A persistent `Map.insert`/
+  `List.push`/`Set.insert` on a collection PARAMETER shared across the SIBLING recursive calls of a
+  self-recursive function mutates its operand — violating `collections-and-text.md` §"… leaves its
+  operand … unchanged". A tree-walking interpreter's `(Add (Bind Var) Var)` under `{x:1}` returns 4 (2+2)
+  not 3 (2+1): the left operand's `Map.insert(env, x, 2)` corrupts the shared `env`. SHARP: `let`-bound
+  collections, non-recursive helpers, and a single non-recursive fn all compute correctly — only a
+  SELF-RECURSIVE fn (consume in one recursive sub-call, sibling read of the same param in another)
+  miscompiles; and it reproduces IDENTICALLY for `List.push` and `Set.insert` (each returns 4), so it is
+  a GENERAL persistent-collection operand-consumption bug, not Map-specific. Borrow/Perceus family — the
+  cross-call ownership seam: a borrowed collection param passed to a consuming call needs a `dup`. Blocks
+  a scope-threading interpreter/type-checker; `src/interp.cdz`'s `interp-shadow-restores` is withheld.
 
 - **OPEN (seed `rcdzc` — RESOLVER, both surfaces; RE-DIAGNOSED iter 25): a NULLARY variant DOTTED pattern
   (`Ty.TInt`) in a NESTED match resolves as member ACCESS.**
