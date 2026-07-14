@@ -201,6 +201,7 @@ pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
 pass	a binary literal with digit separators
 pass	a binary-radix literal carries the N suffix and an underscore group
+pass	a bind directive naming a value definition rather than an effect is rejected
 pass	a binding form with bindings but no body is rejected, not a crash
 pass	a bit-field value that needs more bits than its width does not fit its segment
 pass	a bit-field wider than a byte packs across the byte boundary big-endian

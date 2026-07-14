@@ -1924,6 +1924,20 @@
             (def (main) (host (foo) 5)) (export main)))
   (error  CDZ0201))
 
+(case "a bind directive naming a value definition rather than an effect is rejected"
+  (doc    "The `(bind …)` peer-binding analogue of the host-delegates-a-value reject above (the U-pivot
+           unifies a peer dependency with an effect, so binding a peer names a declared EFFECT). `(bind foo
+           \"cadenza:x/y\")` where `foo` is a value definition names a VALUE, not an effect — there is
+           nothing to route to a peer, so it is a malformed binding rejected at compile time (CDZ0201)
+           rather than SILENTLY DROPPED (the `bind` scan used to ignore a non-effect/malformed directive, so
+           a typo'd binding quietly did nothing). Pins that a peer binding names a declared effect, the same
+           bar the host delegation and the `(extern …)` interface hold.")
+  (input  (do
+            (def (foo) 5)
+            (bind foo "cadenza:x/y")
+            (def (main) 0) (export main)))
+  (error  CDZ0201))
+
 (case "a host delegating the same effect twice is rejected"
   (doc    "A `host`'s effect list is a SET — the manifest is the union of the effects that escape to the
            boundary (capabilities-and-effects.md #Host Delegation Is An Entrypoint's Prerogative). `(host (A

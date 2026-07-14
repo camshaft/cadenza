@@ -1991,6 +1991,40 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             }
         }
     }
+    // A MALFORMED `(bind …)` peer-binding directive. `scan_effect_bindings` SILENTLY DROPS a `(bind …)`
+    // that is not `(bind <name> <string>)` (wrong arity, or a non-string interface) — so a typo'd binding
+    // does nothing, with no diagnostic, and the effect quietly escapes to the host (or is unrouted). And a
+    // `(bind foo …)` naming a VALUE definition rather than an effect binds nothing. Reject both here (the
+    // `bind` analogue of the malformed-extern scan-and-drop check + the host-delegates-a-value reject): a
+    // shape that is not `(bind Effect "iface")` is CDZ0201, and a `bind` whose name is an unambiguous VALUE
+    // DEF (not an effect) is flagged. (A name that is neither a top-level effect nor a value def — a
+    // module-scoped effect, or a genuinely unbound name — is NOT flagged here: a module effect is legitimate
+    // and an unbound name surfaces its own CDZ0101 at the reference; only an unambiguous non-effect def is a
+    // certain mis-bind. Uses `def_by_name` — a top-level value def — exactly as the host-delegates-a-value
+    // check does, since `effect_decl_by_name` is a top-level-only registry.)
+    for form in (0..db.ast.structure.len() as u32).map(StructId) {
+        let Some(btail) = db.ast.as_form(form, "bind").map(<[_]>::to_vec) else {
+            continue;
+        };
+        // Shape: exactly `(bind <name> <string>)`.
+        let well_shaped = btail.len() == 2
+            && btail.first().is_some_and(|&n| db.ast.as_name(n).is_some())
+            && btail.get(1).is_some_and(|&i| db.ast.as_str(i).is_some());
+        if !well_shaped {
+            let anchor = btail.first().copied().unwrap_or(form);
+            faults.push(Reject::coded(Code::Malformed, crate::diag::MALFORMED_BIND_MESSAGE).at(anchor));
+            continue;
+        }
+        // Well-shaped: the bound name must be an effect, not a value. Flag only an UNAMBIGUOUS value def
+        // (a name that is neither a top-level effect nor a module effect but IS a top-level def).
+        let name_occ = btail[0];
+        let name = db.ast.as_name(name_occ).unwrap().to_string();
+        if db.effect_decl_by_name(&name).is_none() && db.def_by_name(&name).is_some() {
+            faults.push(
+                Reject::coded(Code::Malformed, crate::diag::BIND_NOT_AN_EFFECT_MESSAGE).at(name_occ),
+            );
+        }
+    }
     // AN EXPORT WHOSE RESULT IS A NON-REPRESENTABLE CLOSURE — e.g. an entrypoint returning a PARTIAL
     // APPLICATION `(f 1)` for a two-parameter `f`, whose residual parameter type inference never fixed
     // (`Any`) — cannot cross the component boundary. The backend rejects it deep in closure-resource

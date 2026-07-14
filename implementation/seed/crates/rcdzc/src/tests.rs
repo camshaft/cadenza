@@ -50300,6 +50300,39 @@ mod cross_component_oracle {
     /// form (`as_str(*tail.first()?)?`), so it registered no `ExternDecl` and any op it would bind went
     /// unbound, surfacing a misleading "unbound name `neg` — did you mean `Neg`?" (an unrelated prelude
     /// type). Now the extern form is rejected naming the real fix (the interface is a string), and the
+    #[test]
+    fn a_malformed_or_non_effect_bind_directive_is_cdz0201_not_a_silent_drop() {
+        use crate::testkit::parse;
+        // (a) a MALFORMED `(bind …)` — missing the interface string — is CDZ0201, not silently dropped.
+        let malformed = "(do (effect E (op e (-> Int64 Int64))) (bind E) (def (main) 0) (export main))";
+        let d1 = crate::diagnostics(&mut crate::db::Db::load(parse(malformed)));
+        assert!(
+            d1.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("binds an EFFECT to a peer interface string")),
+            "a malformed (bind …) is CDZ0201: {:?}",
+            d1.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // (b) a `(bind …)` naming a VALUE DEFINITION (not an effect) is CDZ0201 — binding a non-effect to a
+        // peer routes nothing.
+        let non_effect = "(do (def (foo) 1) (bind foo \"cadenza:x/y\") (def (main) 0) (export main))";
+        let d2 = crate::diagnostics(&mut crate::db::Db::load(parse(non_effect)));
+        assert!(
+            d2.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("names a declared EFFECT")),
+            "a (bind …) of a non-effect is CDZ0201: {:?}",
+            d2.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // (c) NO REGRESSION: a well-formed `(bind Effect \"iface\")` of a declared effect is CLEAN.
+        let ok = "(do (effect Math (op add (-> Int64 Int64 Int64))) (bind Math \"cadenza:math/api\") \
+                  (def (main) (handle Math 0 ((add (a b) s (resume (+ a b) s))) (Math.add 2 3))) (export main))";
+        let d3 = crate::diagnostics(&mut crate::db::Db::load(parse(ok)));
+        assert!(
+            !d3.iter().any(|d| d.message.contains("(bind")),
+            "a well-formed (bind …) must not be flagged: {:?}",
+            d3.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
     /// consequent unbound-name faults for the extern's own op names are DEDUPED — one primary "no".
     #[test]
     fn a_malformed_extern_interface_is_cdz0201_not_a_silent_drop() {
