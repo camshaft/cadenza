@@ -1,0 +1,17 @@
+// The project manifest for the Cadenza-in-Cadenza compiler port, written in Cadenza itself.
+// `cdz` reads these well-known top-level defs to know how to build / run / test the project
+// (a def is the manifest — no new syntax, no per-command flags).
+//
+//   cdz test .        — run every `@test` in the modules listed in `tests`
+//   cdz test Project.cdz — same (the manifest names the suite)
+
+def name = "compiler-ml"
+
+// The library modules of the port, in dependency order (the entry's importables). As the pipeline
+// grows (decode / resolve / infer / lower / emit) they join this list.
+def modules = ["ast.cdz"]
+
+// The modules whose `@test` definitions form the project's test suite. Same-file with their code
+// for now (a cross-file test cannot yet construct a type whose variant shadows a prelude name —
+// see repros/import-prelude-collision), so a module tests itself.
+def tests = ["ast.cdz"]

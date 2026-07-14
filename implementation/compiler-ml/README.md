@@ -19,6 +19,35 @@ deliverable.
 - To exercise the backend: `cdz convert file.cdz --to binary > file.bin && cdz compile file.bin -t wasm
   -o out.wasm` (compile is the full type-check + lowering).
 
+## Project manifest + tests
+
+`Project.cdz` is the project manifest, **written in Cadenza itself** — well-known top-level `def`s the
+`cdz` binary reads (a def is the manifest; no new syntax, no per-command flags):
+
+```
+def name    = "compiler-ml"
+def modules = ["ast.cdz"]        // library modules, in dependency order
+def tests   = ["ast.cdz"]        // modules whose @test defs form the suite
+```
+
+Tests use the built-in **`@test`** workflow (`TESTING.md`): mark a nullary def `@test`; it PASSES by
+returning `unit`, FAILS by trapping (`trap("…")` carries the message). Run them:
+
+```
+cdz test                   # NO arg: search up from the cwd for the nearest Project.cdz (like cargo), run it
+cdz test .                 # reads Project.cdz here, runs every @test in the declared `tests` modules
+cdz test Project.cdz       # same, naming the manifest directly
+cdz test ast.cdz           # one file's @test defs
+cdz test --filter head     # only tests whose name contains "head"
+```
+
+`cdz test` with no argument walks UP from the current directory to the nearest `Project.cdz` and runs
+its suite. `cdz test <dir>` reads `Project.cdz` if present (runs `tests`), else walks every source file
+under the dir and aggregates. A `@test` never burdens a normal `cdz compile` (the test defs are unexported → dead
+→ dropped). Tests live SAME-FILE with the code they test (a cross-file test cannot yet construct a type
+whose variant shadows a prelude name — see `repros/import-prelude-collision`), so each module tests
+itself. `ast.cdz` carries 10 `@test`s for `node-count`/`head-name`.
+
 ## Structure (mirrors the rcdzc stages)
 
 - `ast.cdz` — the AST datatype + pure traversals (the `ast.rs` analogue). One recursive sum; a node
@@ -50,6 +79,16 @@ exactly (so `node-count` and shape passes are correct); Name/Str leaf CONTENT is
 - **Note (not a bug):** author nested `match` via `sexpr → ml`; the reader resolves nesting by greedy
   last-arm absorption, so a hand-written inner `match` easily mis-attaches its catch-all to the outer
   match (CDZ0210 non-exhaustive + CDZ0213 unreachable). The printer's own output round-trips correctly.
+
+- **OPEN (seed `rcdzc` — a leading `//`/`///` comment HIDES the following top-level form).** The reader
+  wraps a leading line comment / doc as `(comment "…" <form>)` / `(doc "…" <form>)` around the next
+  top-level form, and the compiler's top-level SCAN does not see through it — so a commented top-level
+  `def`/`effect`/`@test def` becomes invisible (`cdz check Project.cdz` → "unbound name `comment`"; a
+  commented `@test` silently does not run). A `def`/`type`/`module` consumes a leading `///` doc fine
+  (that path strips it); the gap is a leading comment on OTHER top-level forms + on an annotated
+  (`@test`) def. Worked around in the manifest reader (`parse_manifest` peels `(comment/doc …)` — so
+  `cdz test` reads a commented `Project.cdz`), but `cdz check` on the same file still errors, so it is a
+  real top-level-scan gap. Keep a top-level comment OFF an `effect`/`@test def` for now.
 
 - **OPEN (seed `rcdzc` — MISSING op): `List.map` does not exist.** A `List` value has only
   `at`/`len`/`push`/`concat`/`update`/`slice` (`prelude.rs` `list_module`); `(List.map xs f)` →
