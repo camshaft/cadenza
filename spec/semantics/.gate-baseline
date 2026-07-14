@@ -1443,6 +1443,7 @@ pass	negative zero is not equal to positive zero
 pass	nested patterns deconstruct recursively
 pass	nested patterns with literals
 pass	nullary constructor patterns are uniform with unary
+pass	one entrypoint's host authority is not reachable by another that does not delegate it
 pass	one generic sum instantiated at two different types in one program
 pass	one of several same-signature closure exports is made and called by the host
 pass	one of two DIFFERENT-signature closure exports is made and called

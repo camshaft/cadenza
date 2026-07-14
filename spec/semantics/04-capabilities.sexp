@@ -112,6 +112,22 @@
   (output (: unit Unit))
   (host-calls (call log.emit (: "1" String))))
 
+(case "one entrypoint's host authority is not reachable by another that does not delegate it"
+  (doc    "Witnesses capabilities-and-effects.md #Authority Availability Is Not Authority: authority is
+           per-entrypoint, not per-component. Entrypoint `a` delegates `ask` to the host (`(host (ask) …)`),
+           so the `ask` import is present in the instance for `a`'s sake. Entrypoint `b` performs `(ask.ask)`
+           WITHOUT its own enclosing handler or delegation — so even though the `ask` import is AVAILABLE in
+           the shared instance, `b` has no authority to reach it: `b` is rejected at compile time (CDZ0401,
+           the no-home check, which is scoped to EACH export's body). Availability in the instance is not
+           authority in the call graph — an import present for one export is inert for an export whose body
+           does not itself grant it, keeping 'no ambient authority' transitive per entrypoint.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (def (a) (host (ask) (ask.ask)))
+            (def (b) (+ (ask.ask) 1))
+            (export a) (export b)))
+  (error  CDZ0401))
+
 (case "an entrypoint that delegates no effect is pure and makes no host call"
   (doc    "Witnesses capabilities-and-effects.md #A Host Import Is A Boundary Effect And The Manifest
            Is Its Row: an entrypoint that delegates no effect to the host has the empty effect row, runs
