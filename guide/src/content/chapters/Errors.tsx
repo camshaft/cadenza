@@ -53,6 +53,11 @@ export default function Errors() {
     ((Some x) x)
     ((None _) 0)))`}
       />
+      <P>
+        Index <C>1</C> holds <C>20</C>, so the <C>Some</C> arm binds it and you get <C>20</C>. Change the{" "}
+        index to <C>9</C> and the <C>None</C> arm's <C>0</C> comes back instead — a miss you handle, not a
+        crash.
+      </P>
 
       <H2>When you're sure: <C>expect</C></H2>
       <P>
@@ -110,6 +115,10 @@ export default function Errors() {
     ((None _) (- 0 1))))
 (def (main) (describe (Some 0)))`}
       />
+      <P>
+        <C>(Some 0)</C> matches the literal-<C>0</C> arm, so this is <C>100</C>. Feed it <C>(Some 7)</C>{" "}
+        instead and the second arm binds <C>x</C> and returns <C>7</C>; <C>(None unit)</C> takes the last.
+      </P>
 
       <H2>Failing with a reason: <C>Result</C></H2>
       <P>
