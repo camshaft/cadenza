@@ -31994,6 +31994,35 @@ mod stage1 {
                 diags.iter().map(|d| &d.message).collect::<Vec<_>>()
             );
         }
+        // (d) A handler arm's OP-PARAMETER list is LINEAR too — `(two (x x) s …)` binds `x` twice, the same
+        // CDZ0102 a def/lambda/pattern duplicate is (it silently read one and shadowed the other). The
+        // remaining binder-list site that skipped the linearity check (M121's sibling-site sweep).
+        let dup = "(module m (effect E (op two (-> Int64 Int64 Int64))) \
+                   (def (main) (handle E 0 ((two (x x) s (resume (+ x x) s))) (E.two 3 4))) (export main))";
+        let dd = crate::diagnostics(&mut crate::db::Db::load(parse(dup)))
+            .into_iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0102"))
+            .expect("a handler arm's duplicate parameter is CDZ0102");
+        assert!(
+            dd.message.contains("bound more than once"),
+            "names the non-linear binder: {}",
+            dd.message
+        );
+        assert_eq!(
+            dd.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("x2"),
+            "the handler-arm dup param carries the rename fix: {}",
+            dd.message
+        );
+        // NO false reject: distinct arm params are clean.
+        let ok = "(module m (effect E (op two (-> Int64 Int64 Int64))) \
+                   (def (main) (handle E 0 ((two (x y) s (resume (+ x y) s))) (E.two 3 4))) (export main))";
+        assert!(
+            !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                .iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0102")),
+            "distinct handler-arm params are not flagged"
+        );
     }
 
     #[test]

@@ -8267,6 +8267,12 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             .at(anchor),
                         );
                     }
+                    // A handler arm's OPERATION-PARAMETER list is a binder position, LINEAR like a def's or
+                    // a lambda's — `(two (x x) s …)` binds `x` twice, silently reading one and shadowing
+                    // the other (the same miscompile a duplicate def/lambda param was). The same CDZ0102 +
+                    // rename fix, wherever a parameter list is written (the M121 sibling-site sweep — this
+                    // was the remaining binder-list form that skipped the check).
+                    param_list_linearity_faults(db, &arm.params, out);
                 }
                 // RESUME-VALUE / RESULT-TYPE CHECK. The value a handler resumes with — `(resume value
                 // state)` — is returned to the perform site, so it MUST have the operation's declared
