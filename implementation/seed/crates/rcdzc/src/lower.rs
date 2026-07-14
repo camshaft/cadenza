@@ -310,10 +310,22 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // emits a wrong value.
         Resolved::Member { operand, key } => match crate::eval::member_value(db, operand, &key) {
             crate::eval::Member::Field(value) => core_of(db, value),
-            crate::eval::Member::NoField => Core::Poison(Reject::coded(
-                Code::Malformed,
-                format!("{}`{}`", crate::diag::NO_FIELD_PREFIX, key.name),
-            )),
+            // ANCHOR AT THE MEMBER NODE (`id`), symmetric with `infer::no_field_reject` (which stamps its
+            // copy at the same member node): the ONE absent-field defect is reported by both the infer
+            // check and this emit fold, and anchoring both at the member node lets `dedup_faults` collapse
+            // them by (code, node). Without the explicit `.at(id)`, this poison reaches
+            // `collect_reached_poisons` UNANCHORED and gets stamped at whatever ENCLOSING node it is reached
+            // through — the redundant `((. r k))` apply wrapper, or an outer `(f (. r k))` call — a
+            // DIFFERENT node than infer's member-node copy, so the two slip through as the SAME CDZ0201
+            // printed twice. (A NESTED `(. (. r k) k)` still yields two, correctly: two DISTINCT member
+            // nodes, each its own field read.)
+            crate::eval::Member::NoField => Core::Poison(
+                Reject::coded(
+                    Code::Malformed,
+                    format!("{}`{}`", crate::diag::NO_FIELD_PREFIX, key.name),
+                )
+                .at(id),
+            ),
             // The operand did not reduce to a compile-time-visible record. MEMBER-INTO-IF: if it is an
             // `(if c R S)` whose BOTH branches are visible records carrying the field →
             // `(if c R.key S.key)`, pushing the member read into each branch. The record analogue of the

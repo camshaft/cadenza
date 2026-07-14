@@ -1103,20 +1103,34 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
     let has_type_export_reject = faults
         .iter()
         .any(|r| r.code.is_some() && r.message.contains(crate::diag::TYPE_EXPORT_MARKER));
-    // A "record has no field `k`" fault reported by BOTH the infer member check (with a did-you-mean
-    // fix) AND the emit-side member fold, at two DIFFERENT nodes (the `.k` projection vs an enclosing
-    // `(R.k …)` apply), is ONE fault shown twice. The messages are IDENTICAL up to the fix suffix, so key
-    // the duplicate by the `record has no field \`k\`` core (prefix + the backticked key, which both
-    // versions carry): if ANY copy carries a fix (the infer one), drop the OTHER anchored copies of the
-    // same field-fault. Keeps the richer, fix-bearing report; collapses the bare duplicate. Narrow to the
-    // no-field family so two genuinely-distinct same-message faults elsewhere are never merged.
+    // A "record has no field `k`" fault reported by BOTH the infer member check (with a did-you-mean fix)
+    // AND the emit-side member fold (fix-less) is ONE fault shown twice. Where the member node is a USER
+    // node, both copies now anchor at that SAME node (`lower`'s `Member::NoField` poison carries an
+    // explicit `.at(id)`, symmetric with `infer::no_field_reject`), so a NODE-keyed drop collapses them
+    // without touching a genuinely-distinct absent-field fault on ANOTHER record that happens to name the
+    // same missing field (`(. r fild)` near-miss + `(. s fild)` far-miss sit at DIFFERENT nodes). But when
+    // the member access is INLINED (a helper `(def (getx a) (. a k))` β-reduced at its call site), the
+    // emit copy's member node is SYNTHESIZED — `sanitize_origin` clears its anchor to `None` at the ABI
+    // edge — so it is NOT at infer's user-node and the node-keyed rule cannot see it; the fix suffix also
+    // makes its (code, message) differ from infer's, so the general anchored/unanchored dedup misses it
+    // too. A NAME-keyed fallback catches that copy, but ONLY when it is UNANCHORED (a located far fault on
+    // a distinct record keeps its own node, so it is never in this branch). Together: node-keyed for the
+    // ordinary same-node case (no false-merge), name-keyed-when-unanchored for the inlined/synthesized twin.
     fn no_field_key(msg: &str) -> Option<&str> {
         // The invariant core is `record has no field \`k\`` — strip an optional ` — did you mean …?` tail.
         msg.strip_prefix(crate::diag::NO_FIELD_PREFIX)
             .map(|rest| rest.split(" — ").next().unwrap_or(rest))
     }
-    // A field-fault CORE the program reports WITH a fix (the infer did-you-mean copy) — its fix-less twin
-    // is dropped below (keep the richer copy).
+    // The NODES at which a no-field fault carries a fix (the infer did-you-mean copy) — a fix-less no-field
+    // fault at one of these same nodes is that copy's twin and is dropped below (keep the richer copy).
+    let fixed_field_nodes: std::collections::HashSet<u32> = faults
+        .iter()
+        .filter(|r| r.fix.is_some() && no_field_key(&r.message).is_some())
+        .filter_map(|r| r.at.map(|s| s.0))
+        .collect();
+    // The field-name CORES a no-field fault carries a fix for — used ONLY to drop an UNANCHORED fix-less
+    // twin (the inlined/synthesized emit copy, sanitized to no location); a located far fault on a
+    // different record is never unanchored, so this name-level set cannot false-merge it.
     let fixed_field_cores: std::collections::HashSet<&str> = faults
         .iter()
         .filter(|r| r.fix.is_some())
@@ -1267,13 +1281,17 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
             if r.is_decline() && r.at.is_some_and(|s| coded_nodes.contains(&s.0)) {
                 return false;
             }
-            // A FIX-LESS "record has no field `k`" copy whose SAME field-fault appears WITH a fix
-            // elsewhere (infer's did-you-mean copy) is the emit-side duplicate — drop it, keep the fix.
-            // (Scoped to the fix-vs-no-fix pair, so two DISTINCT same-name field faults — neither with a
-            // fix — are never merged; the `R.make`-with-no-near-field duplicate is handled at its source
-            // in `lower`, not here.)
+            // A FIX-LESS "record has no field `k`" copy that is the emit-side duplicate of infer's
+            // did-you-mean copy — drop it, keep the fix. Two shapes: (1) at the SAME member NODE as a fixed
+            // twin (the ordinary case, both anchored at the user member node); (2) UNANCHORED with the same
+            // field-name core as a fixed twin (the INLINED case — the synthesized member node was
+            // sanitized to no location). Both are keyed so a genuinely-distinct absent-field fault on
+            // another record — which stays ANCHORED at its OWN node — is never dropped by either branch.
             if r.fix.is_none()
-                && no_field_key(&r.message).is_some_and(|k| fixed_field_cores.contains(k))
+                && no_field_key(&r.message).is_some_and(|k| match r.at {
+                    Some(s) => fixed_field_nodes.contains(&s.0),
+                    None => fixed_field_cores.contains(k),
+                })
             {
                 return false;
             }
