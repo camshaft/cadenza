@@ -1385,6 +1385,8 @@ pass	a two-parameter closure is applied at full arity through a recursive HOF
 pass	a two-parameter sum whose variants use the parameters in different orders instantiates correctly
 pass	a two-payload constructor applied in curried form builds the variant
 pass	a two-payload sum escapes its second variant with a bare name
+pass	a two-variant enum match with constant arms dispatches branchlessly — first variant
+pass	a two-variant enum match with constant arms dispatches branchlessly — second variant
 pass	a type annotation consistent with the value is transparent
 pass	a type stored in a compound result cannot cross the boundary
 pass	a type-value in integer-width position is rejected
@@ -1661,11 +1663,18 @@ pass	binding the same effect to a peer twice is rejected
 pass	bit-field segments pack sub-byte values into one byte
 pass	bitwise AND masks bits
 pass	bitwise AND of an integer and a float does not silently promote
+pass	bitwise AND with negative one is the operand (identity)
+pass	bitwise AND with zero is zero (annihilator)
 pass	bitwise OR combines bits
 pass	bitwise OR of an integer and a float does not silently promote
+pass	bitwise OR with negative one is all ones (annihilator)
+pass	bitwise OR with zero is the operand (identity)
 pass	bitwise XOR is its own inverse
+pass	bitwise XOR of a value with itself is zero (self-inverse)
 pass	bitwise XOR of an integer and a float does not silently promote
 pass	bitwise XOR toggles bits
+pass	bitwise XOR with negative one is the bitwise complement
+pass	bitwise XOR with zero is the operand (identity)
 pass	branches performing DIFFERENT counts each thread their own post-state to the continuation
 pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
