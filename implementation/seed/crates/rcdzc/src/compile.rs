@@ -412,10 +412,10 @@ const PRAGMA_REGISTRY: &[&str] = &["default-integer"];
 /// non-integer, never on absence of proof.
 fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> Option<Reject> {
     // An UNBOUND type name is the SAME CDZ0101 an annotation gives (`(: x Nope)`). Resolution — not the
-    // `typeval_of` reduction — is what tells an unbound name apart from a BOUND type this compiler does
-    // not yet model as a `Ty` (`BigInt`): a bound-unmodeled type resolves to SOMETHING (a `Ref`/`Record`)
-    // whose `typeval_of` is `None` (the conservative accept below), while an unbound name resolves to a
-    // `Poison(CDZ0101)`. Surfacing that poison here closes the silent-drop hole (a meaning-changing
+    // `typeval_of` reduction — is what tells an unbound name apart from a BOUND type whose `typeval_of`
+    // this compiler cannot yet reduce to a concrete `Ty`: such a bound type resolves to SOMETHING (a
+    // `Ref`/`Record`) whose `typeval_of` is `None` (the conservative accept below), while an unbound name
+    // resolves to a `Poison(CDZ0101)`. Surfacing that poison here closes the silent-drop hole (a meaning-changing
     // directive naming a nonexistent type must not be accepted) WITHOUT falsely rejecting a legitimate
     // unmodeled integer default — the exact distinction `numeric-model.md`'s conservatism turns on. Keyed
     // on the resolver's own `Code::Unbound`, not on the name string, so no name knowledge lives here.
