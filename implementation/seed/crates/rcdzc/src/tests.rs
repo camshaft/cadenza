@@ -48099,4 +48099,107 @@ mod cross_component_oracle {
         );
         let _ = &mut db;
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // X4b-3 — the BACKEND EMIT: a SOURCE consumer `(extern …)` + `(neg x)` compiles to a valid component
+    // importing `cadenza:math/api` (bound under `"peer"`), which — composed with a provider via
+    // run_with_peers (X4a) — RUNS end-to-end. The first source→run cross-component call.
+    // ------------------------------------------------------------------------------------------------
+
+    /// A provider core exporting `neg : (i64) -> i64` = `0 - x`.
+    fn provider_core_neg() -> Vec<u8> {
+        use wasm_encoder::*;
+        let mut m = Module::new();
+        let mut types = TypeSection::new();
+        types.ty().function(vec![ValType::I64], vec![ValType::I64]);
+        m.section(&types);
+        let mut funcs = FunctionSection::new();
+        funcs.function(0);
+        m.section(&funcs);
+        let mut exports = ExportSection::new();
+        exports.export("neg", ExportKind::Func, 0);
+        m.section(&exports);
+        let mut code = CodeSection::new();
+        let mut f = Function::new(vec![]);
+        f.instruction(&Instruction::I64Const(0));
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::I64Sub);
+        f.instruction(&Instruction::End);
+        code.function(&f);
+        m.section(&code);
+        m.finish()
+    }
+
+    /// A provider component exporting the interface `cadenza:math/api` with `neg : func(p0: s64) -> s64`
+    /// (param name `p0` to match the consumer's `assemble_extern`-emitted import declaration).
+    fn provider_math_component() -> Vec<u8> {
+        use wasm_encoder::*;
+        // inner component publishing `neg` as a top-level func under param name p0
+        let mut inner = ComponentBuilder::default();
+        let core_idx = inner.core_module_raw(&provider_core_neg());
+        let no_args: [(&str, ModuleArg); 0] = [];
+        let inst = inner.core_instantiate(core_idx, no_args);
+        let neg_core = inner.core_alias_export(inst, "neg", ExportKind::Func);
+        let (neg_ty, mut ft) = inner.type_function();
+        ft.params([("p0", ComponentValType::Primitive(PrimitiveValType::S64))])
+            .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
+        let neg_comp = inner.lift_func(neg_core, neg_ty, []);
+        inner.export(
+            "neg",
+            ComponentExportKind::Func,
+            neg_comp,
+            Some(ComponentTypeRef::Func(neg_ty)),
+        );
+        // outer: instantiate the inner + export the resulting instance as the interface `cadenza:math/api`
+        let mut c = ComponentBuilder::default();
+        let ic = c.component(inner);
+        let no_args2: [(&str, ComponentExportKind, u32); 0] = [];
+        let iinst = c.instantiate(ic, no_args2);
+        c.export(
+            "cadenza:math/api",
+            ComponentExportKind::Instance,
+            iinst,
+            None,
+        );
+        c.finish()
+    }
+
+    #[test]
+    fn x4b3_a_source_consumer_binds_a_peer_and_runs_end_to_end() {
+        use crate::testkit::parse;
+        // The CONSUMER is compiled FROM SOURCE: it binds the peer op `neg` via `(extern …)` and calls it.
+        let src = "(do \
+            (extern \"cadenza:math/api\" (neg (-> Int64 Int64))) \
+            (def (main (: x Int64)) (neg x)) \
+            (export main))";
+        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .expect("the source consumer compiles to a component (X4b-3 emit)");
+        // It must be a valid component that IMPORTS cadenza:math/api (not self-contained).
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("compiled consumer validates");
+        }
+        let peers = vec![cdz_run::Peer {
+            bytes: provider_math_component(),
+            interface: "cadenza:math/api".to_string(),
+        }];
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["5".to_string()],
+            runtime: None,
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run_with_peers(&consumer, &peers, &opts)
+            .expect("run the source consumer composed with the peer")
+        {
+            // main(5) = neg(5) = 0 - 5 = -5. A SOURCE program called a PEER component's export across
+            // the live boundary — the first end-to-end cross-component call.
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(s, "-5", "neg(5) across the component boundary from source")
+            }
+            cdz_run::Outcome::Trap(t) => panic!("source cross-component run trapped: {t}"),
+        }
+    }
 }

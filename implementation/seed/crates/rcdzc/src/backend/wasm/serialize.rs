@@ -89,6 +89,35 @@ fn host_import_item(op_name: &str, type_idx: u32) -> Vec<u8> {
     item
 }
 
+/// The core functype `0x60 <params> <result>` of a cross-component extern op (X4b) — its scalar
+/// parameter/result core valtypes. Scalar-only this increment (a `value`-handle param is X5).
+fn extern_import_functype(f: &crate::backend::wasm::host::ExternImport) -> Vec<u8> {
+    let mut item = vec![0x60];
+    let params: Vec<u8> = f.params.iter().map(|v| v.core_byte()).collect();
+    item.extend_from_slice(&wasm_vec(params.len(), &params));
+    match &f.result {
+        Some(v) => {
+            let r = [v.core_byte()];
+            item.extend_from_slice(&wasm_vec(1, &r));
+        }
+        None => item.extend_from_slice(&wasm_vec(0, &[])),
+    }
+    item
+}
+
+/// One core import item for a cross-component extern op — imported from module `"peer"` (the name the
+/// consumer's peer-instance is bound under), the op resolved by its name (X4b).
+fn extern_import_item(op_name: &str, type_idx: u32) -> Vec<u8> {
+    const PEER_MODULE: &str = "peer";
+    let mut item = uleb_bytes(PEER_MODULE.len() as u64);
+    item.extend_from_slice(PEER_MODULE.as_bytes());
+    item.extend_from_slice(&uleb_bytes(op_name.len() as u64));
+    item.extend_from_slice(op_name.as_bytes());
+    item.push(0x00); // import desc: func
+    uleb128(type_idx as u64, &mut item);
+    item
+}
+
 /// Serialize one flat instruction, appending its bytes to `out`. `import_index` maps a runtime op's
 /// name to its core function index (its position `0..k` in the import section), so a `CallImport`
 /// resolves by name to the same index the import section assigned. Exhaustive over `Lir`.
@@ -191,6 +220,14 @@ fn instr(i: &Lir, import_index: &std::collections::HashMap<&str, u32>, out: &mut
             // A host import occupies core-func index `index` — the host-import set is laid FIRST in the
             // core module's import section (this increment is host-ONLY, so no runtime ops precede it, and
             // the index is exactly the op's position in the host-import set). `call <index>`.
+            out.push(op::CALL);
+            uleb128(*index as u64, out);
+        }
+        Lir::CallExternImport(index) => {
+            // A cross-component extern import occupies core-func index `index` — X4b-3 is extern-ONLY (no
+            // host/runtime imports precede it), so the index is exactly the op's position in the
+            // extern-import set. `call <index>`. (Composition with host/runtime shifts the base by
+            // `h + k` — a later increment; the select layer would add the base then.)
             out.push(op::CALL);
             uleb128(*index as u64, out);
         }
@@ -493,7 +530,19 @@ pub fn core_module(
     imports: &[&RtOp],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    core_module_impl(funcs, imports, &[], layout)
+    core_module_impl(funcs, imports, &[], &[], layout)
+}
+
+/// [`core_module`] with a leading CROSS-COMPONENT extern-import set (X4b): `extern_fns` are peer ops
+/// imported from module `"peer"`, laid AFTER the host + runtime imports (core-func indices `h+k..`). A
+/// `Lir::CallExternImport(i)` resolves to `h + k + i`. X4b-3 scope: an extern-ONLY program (`host_fns`
+/// and `imports` empty), so the base is 0.
+pub fn core_module_with_extern(
+    funcs: &[SelectedFunc],
+    extern_fns: &[crate::backend::wasm::host::ExternImport],
+    layout: &Layout,
+) -> Result<Vec<u8>, String> {
+    core_module_impl(funcs, &[], &[], extern_fns, layout)
 }
 
 /// [`core_module`] with a leading HOST-import set (E2h-2): `host_fns` are host-delegated ops imported
@@ -507,29 +556,35 @@ pub fn core_module_with_host(
     host_fns: &[crate::backend::wasm::host::HostImport],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
-    core_module_impl(funcs, imports, host_fns, layout)
+    core_module_impl(funcs, imports, host_fns, &[], layout)
 }
 
 fn core_module_impl(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
     host_fns: &[crate::backend::wasm::host::HostImport],
+    extern_fns: &[crate::backend::wasm::host::ExternImport],
     layout: &Layout,
 ) -> Result<Vec<u8>, String> {
     let n = funcs.len();
     let h = host_fns.len();
-    let import_count = h + imports.len();
+    let e = extern_fns.len();
+    let import_count = h + imports.len() + e;
 
     // Type section: HOST import functypes first (type indices `0..h`), then RUNTIME import functypes
-    // (`h..import_count`), then one functype per defined function (`import_count..import_count+n`).
-    // Numbering imports' types first keeps a defined func's type index equal to `import_count + its
-    // emission position`, which the function section references.
+    // (`h..h+k`), then CROSS-COMPONENT extern functypes (`h+k..import_count`), then one functype per
+    // defined function (`import_count..import_count+n`). Numbering imports' types first keeps a defined
+    // func's type index equal to `import_count + its emission position`, which the function section
+    // references.
     let mut type_items = Vec::new();
     for f in host_fns {
         type_items.extend_from_slice(&host_import_functype(f));
     }
     for o in imports {
         type_items.extend_from_slice(&import_functype(o));
+    }
+    for f in extern_fns {
+        type_items.extend_from_slice(&extern_import_functype(f));
     }
     for f in funcs {
         type_items.extend_from_slice(&functype(f)?);
@@ -562,6 +617,13 @@ fn core_module_impl(
             let ti = (h + j) as u32;
             import_items.extend_from_slice(&import_item(o.name, ti));
             import_index.insert(o.name, ti);
+            import_n += 1;
+        }
+        // CROSS-COMPONENT extern ops (X4b) — imported from module `"peer"` at core-func indices
+        // `h+k..h+k+e`, using type indices `h+k..h+k+e` (laid after host + runtime functypes above).
+        for (j, f) in extern_fns.iter().enumerate() {
+            let ti = (h + imports.len() + j) as u32;
+            import_items.extend_from_slice(&extern_import_item(&f.op, ti));
             import_n += 1;
         }
         if needs_memory {

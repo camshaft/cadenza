@@ -450,6 +450,20 @@ pub fn emit(
         let body = def_body(db, def)?;
         host::collect_host_imports(db, body, &mut host_imports);
     }
+    // The CROSS-COMPONENT extern-import set (X4b) — the peer ops a `Core::ExternCall` names, collected
+    // over `layout.order` like the host set. X4b-3 scope: an extern-ONLY program (no host effect, no
+    // value-heap runtime); composing an extern import with host/runtime is a later increment.
+    let mut extern_imports: Vec<host::ExternImport> = Vec::new();
+    for &def in &layout.order {
+        let body = def_body(db, def)?;
+        host::collect_extern_imports(db, body, &mut extern_imports);
+    }
+    if !extern_imports.is_empty() && (!host_imports.is_empty() || !imports.is_empty()) {
+        return Err(Reject::decline(
+            "a cross-component extern import composed with a host effect or the value-heap runtime is \
+             not yet emitted (the extern + host/runtime import fusion is a later increment)",
+        ));
+    }
     // A program mixing a host effect AND the value-heap runtime composes BOTH import spaces
     // (`envelope::assemble_host_runtime`, wired in the host block below). One remaining combination still
     // declines: a host op with a STRING parameter (needs the shared-memory shape) composed with the runtime
@@ -487,10 +501,16 @@ pub fn emit(
             }
         }
     }
+    // The extern-import order (X4b) — `(interface, op)` pairs a `Core::ExternCall` resolves against.
+    let extern_order: Vec<(String, String)> = extern_imports
+        .iter()
+        .map(|e| (e.interface.clone(), e.op.clone()))
+        .collect();
     let layout = layout
-        .with_import_base((imports.len() + host_imports.len()) as u32)
+        .with_import_base((imports.len() + host_imports.len() + extern_imports.len()) as u32)
         .with_host_order(host_order)
-        .with_host_strings(host_strings);
+        .with_host_strings(host_strings)
+        .with_extern_order(extern_order);
     let layout = &layout;
 
     // Select each reachable definition's body, in emission order, WITH its parameters — so a
@@ -542,7 +562,11 @@ pub fn emit(
     // A HOST-delegating program threads its host imports through the core module's import section (from
     // module `"host"`, ahead of any runtime op); an ordinary program takes the runtime-only path
     // (byte-identical to before).
-    let mut core = if host_imports.is_empty() {
+    let mut core = if !extern_imports.is_empty() {
+        // X4b-3: an extern-ONLY program (guarded above) — the core imports its peer ops from `"peer"`.
+        serialize::core_module_with_extern(&funcs, &extern_imports, layout)
+            .map_err(Reject::decline)?
+    } else if host_imports.is_empty() {
         serialize::core_module(&funcs, &imports, layout).map_err(Reject::decline)?
     } else {
         serialize::core_module_with_host(&funcs, &imports, &host_imports, layout)
@@ -735,6 +759,34 @@ pub fn emit(
         });
     }
 
+    // A CROSS-COMPONENT consumer (X4b) takes the extern-import envelope shape: the peer interface is a
+    // component INTERFACE, its operations imported funcs the composition resolves (bound under `"peer"`).
+    // X4b-3 scope: a SINGLE peer interface (every extern import shares one interface name); a consumer
+    // binding two distinct peer interfaces declines (the multi-interface shape is a later increment).
+    if !extern_imports.is_empty() {
+        let iface = extern_imports[0].interface.clone();
+        if extern_imports.iter().any(|e| e.interface != iface) {
+            return Err(Reject::decline(
+                "binding more than one peer interface is not yet emitted (one interface per envelope; \
+                 the multi-interface extern shape is a later increment)",
+            ));
+        }
+        let extern_fns: Vec<envelope::HostFn> = extern_imports
+            .iter()
+            .map(|e| envelope::HostFn {
+                op: e.op.clone(),
+                comp_functype: extern_op_comp_functype(e),
+                core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
+            })
+            .collect();
+        return Ok(envelope::assemble_extern(
+            &core,
+            &boundary,
+            &iface,
+            &extern_fns,
+        ));
+    }
+
     // The versioned runtime import name (`cadenza:runtime/heap@0.0.0+<hash>`) — the name the runtime
     // component is imported under, carrying the content-address suffix `cdz-run` resolves it by. Unused
     // when `imports` is empty (the bare envelope). Built here (not in `envelope`) so the envelope stays
@@ -789,6 +841,27 @@ fn host_op_comp_functype(h: &host::HostImport) -> Vec<u8> {
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
     match h.result {
+        Some(r) => item.extend_from_slice(&[0x00, r.comp_byte()]),
+        None => item.extend_from_slice(&[0x01, 0x00]),
+    }
+    item
+}
+
+/// The COMPONENT functype of a cross-component extern op (X4b) — the shape declared in the peer
+/// interface's instance-type AND in the boundary the consumer imports against. Param NAMES are `p0,p1,…`
+/// (the convention `assemble_extern` + a matching provider both use — a component-model interface import
+/// checks param names structurally). Scalar params/result this increment (a `value` handle is X5).
+fn extern_op_comp_functype(e: &host::ExternImport) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    let mut param_items = Vec::new();
+    for (i, p) in e.params.iter().enumerate() {
+        let pname = format!("p{i}");
+        param_items.extend_from_slice(&(pname.len() as u8).to_le_bytes());
+        param_items.extend_from_slice(pname.as_bytes());
+        param_items.push(p.comp_byte());
+    }
+    item.extend_from_slice(&encode::wasm_vec(e.params.len(), &param_items));
+    match e.result {
         Some(r) => item.extend_from_slice(&[0x00, r.comp_byte()]),
         None => item.extend_from_slice(&[0x01, 0x00]),
     }

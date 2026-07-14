@@ -156,6 +156,13 @@ pub enum Lir {
     /// `CallImport` (a value-heap runtime op) and `Call` (a defined func) so the three index spaces stay
     /// separate — the serializer lays host imports first, then runtime ops, then defined funcs.
     CallHostImport(usize),
+    /// `call <extern-import-index>` — call a CROSS-COMPONENT peer operation by its position in the
+    /// program's extern-import set (X4b). A peer op is a component-level WIT function (the peer interface
+    /// bound under module `"peer"`) the composition resolves; its core-func index is `host + runtime +
+    /// its position`, laid AFTER the host and runtime imports. Distinct from `CallHostImport` (a host
+    /// effect) so the index spaces stay separate. X4b-3 scope: an extern-ONLY program (no host/runtime),
+    /// where the base is 0 and the index is the raw extern position.
+    CallExternImport(usize),
     /// `if <blocktype>` — a two-way branch leaving a value of the block type.
     If(BlockType),
     /// `block <blocktype>` — open a forward block; a `Br` targeting it jumps FORWARD to its `end` (the

@@ -101,6 +101,13 @@ pub struct Layout {
     /// call passes a string (then the core module needs no memory/data — byte-identical to the scalar
     /// host shape). Target-agnostic (plain strings + offsets), so it lives on the layout.
     pub host_strings: Vec<(String, u32)>,
+    /// The CROSS-COMPONENT extern-import order (X4b): `(interface, op)` name pairs, one per peer operation
+    /// a `Core::ExternCall` names, in the order the backend lays them in the core module's import section
+    /// (from module `"peer"`). A `Core::ExternCall` resolves its `(interface, op)` to a core-func index by
+    /// its position here — the exact `host_order` analogue. Laid AFTER the host + runtime imports so an
+    /// extern call's core-func index is `host + runtime + its position`. Empty for a program binding no
+    /// peer (byte-identical to before). Target-agnostic, filled by the backend's `with_extern_order`.
+    pub extern_order: Vec<(String, String)>,
 }
 
 impl Layout {
@@ -138,6 +145,7 @@ impl Layout {
             lifted_reached,
             host_order: Vec::new(),
             host_strings: Vec::new(),
+            extern_order: Vec::new(),
         }
     }
 
@@ -168,6 +176,25 @@ impl Layout {
             host_strings,
             ..self.clone()
         }
+    }
+
+    /// A copy of this layout with the CROSS-COMPONENT extern-import order set (X4b) — the `(interface,
+    /// op)` name pairs a `Core::ExternCall` resolves its call index against. Set by the backend once it
+    /// has collected the program's extern-import set (the `with_host_order` analogue).
+    pub fn with_extern_order(&self, extern_order: Vec<(String, String)>) -> Layout {
+        Layout {
+            extern_order,
+            ..self.clone()
+        }
+    }
+
+    /// The extern-import index of the peer op `(interface, op)` — its position in `extern_order`. `None`
+    /// if the program does not bind it (a compiler bug — the order is collected from the same
+    /// `Core::ExternCall` nodes selection emits).
+    pub fn extern_index(&self, interface: &str, op: &str) -> Option<usize> {
+        self.extern_order
+            .iter()
+            .position(|(i, o)| i == interface && o == op)
     }
 
     /// The core-func index of the host-delegated op `(effect, op)` — its position in `host_order`. `None`

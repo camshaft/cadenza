@@ -257,12 +257,20 @@ composition; no wasmparser in the compile path, no external interface artifact n
   `x4b2_*` (resolves to `Resolved::Extern`, lowers to `Core::ExternCall` w/ interface+op+result; a
   well-typed application declines-at-emit not type-rejects). Gate 1911 pass / 0 fail / 0 regressions;
   suite 1366; clippy clean.
-- **X4b-3 — backend emit.** `emit` collects the extern-import set from `Core::ExternCall`s, records
-  `layout.extern_order` (the `host_order` analogue), `select` emits each as `call <extern-index>` (a new
-  `Lir` or reuse `CallHostImport`-style), the core imports the peer ops from `"peer"`, route the whole to
-  `assemble_extern` (X3). ⚠ interface param NAMES must match across the boundary (the X3 finding) — emit
-  the consumer import decl with the `p0,p1,…` convention `assemble_extern` uses. ⚠ MISCOMPILE-PRONE
-  (`wasm-tools validate` is the oracle) — probe an extern-call-into-a-slot like the BigInt lesson.
+- **X4b-3 — backend emit. ✅ DONE (`spec`) — THE SOURCE→RUN MILESTONE.** `emit` collects the extern-import
+  set (`host::collect_extern_imports` → `host::ExternImport`), records `layout.extern_order` (the
+  `host_order` analogue + `with_extern_order`/`extern_index`), shifts `import_base` to include externs;
+  `select` emits `Core::ExternCall` → args + `Lir::CallExternImport(index)`; the core imports peer ops from
+  module `"peer"` (`serialize::core_module_with_extern` + `extern_import_functype`/`extern_import_item`);
+  `emit` routes an extern-only program to `assemble_extern` (X3) with `p0,p1,…` param names
+  (`extern_op_comp_functype`, matching the X3 finding). **Proven end-to-end: a SOURCE consumer `(extern
+  "cadenza:math/api" (neg (-> Int64 Int64))) (def (main (: x Int64)) (neg x))` compiles to a valid
+  component importing `cadenza:math/api`, and composed with a provider via `run_with_peers` → `main(5) =
+  neg(5) = -5`** (test `x4b3_*`). The first end-to-end cross-component call FROM SOURCE. SCOPE: an
+  extern-ONLY consumer (a single peer interface; no host/runtime fusion — those decline cleanly), scalar
+  args/result. Byte-neutral (only extern-using programs take the new path — gate 1924 pass / 0 fail / 0
+  regressions after `xtask build`; suite 1371; clippy clean). ⚠ stale-runtime false alarm again (536 →
+  0 after `xtask build`).
 - **X4b-provider — the component's OWN interface name.** 🔑 (operator, 2026-07-14): the PROVIDER must
   publish its exports under the interface name the consumer's `(extern "cadenza:math/api" …)` binds to, so
   the compile REQUEST needs to specify it — a `KIND_COMPONENT_NAME` input artifact (the `KIND_ENTRY`
