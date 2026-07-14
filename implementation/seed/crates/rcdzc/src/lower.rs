@@ -1120,13 +1120,32 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // it constructs its value here (falls through to `core_of(head)`), preserving the valid
                 // bare-nullary-construction path.
                 if crate::eval::variant_disc_of(db, head).is_some()
-                    && crate::eval::variant_payload_type(db, head).is_some()
+                    && let Some(payload) = crate::eval::variant_payload_type(db, head)
                 {
                     trace!(target: "rcdzc::lower", node = id.0, head = head.0, "apply: unary variant ctor under-applied (CDZ0201)");
-                    return Core::Poison(Reject::coded(
-                        Code::Malformed,
-                        "a variant constructor with a payload must be applied to its argument",
-                    ));
+                    // NAME the constructor + its payload type (`` `Wrap` needs its payload argument — it
+                    // carries an Int64 ``) instead of the anonymous "a variant constructor with a payload
+                    // …", so the reader sees WHICH ctor and WHAT to supply — the under-application twin of
+                    // the "`Mk` takes N arguments, but M were given" over-application message. The name
+                    // reads off the head: a bare `Wrap` / a member `(. Sum Wrap)` → `Wrap`. When the payload
+                    // type is UNRESOLVED (a generic ctor whose parameter no use has fixed — `(Some)` :
+                    // `∀a. a`, rendering as `_`), the "it carries `_`" clause reads as noise, so OMIT it and
+                    // just say the payload is needed.
+                    let carries = if payload.has_free_var() || matches!(payload, crate::ty::Ty::Any)
+                    {
+                        String::new()
+                    } else {
+                        format!(" — it carries {}", payload.render_with_article())
+                    };
+                    let msg = match ctor_head_display_name(db, head) {
+                        Some(name) => format!(
+                            "`{name}` needs its payload argument{carries}; apply it, e.g. `({name} <value>)`"
+                        ),
+                        None => {
+                            format!("this variant constructor needs its payload argument{carries}")
+                        }
+                    };
+                    return Core::Poison(Reject::coded(Code::Malformed, msg).at(head));
                 }
                 // A RECURSIVE nullary call (`(def (f) (f))`) cannot fold to a normal form — following
                 // the head would re-enter the same body without end. Decline it exactly as a recursive
@@ -1960,6 +1979,22 @@ fn compute(db: &mut Db, id: StructId) -> Core {
 /// reference resolves to) BEFORE the body is lowered, so a `Resolved::Ref` to a kept binding lowers
 /// to a `Core::LocalRef` reading the shared slot. The result is a `Core::Let { bindings, body }` when
 /// any binding is kept, or just the body's core when none is (no residual `let`).
+/// The source DISPLAY NAME of a variant-constructor head — a bare name (`Wrap` → `"Wrap"`) or a member
+/// form `(. Sum V)` (→ `"V"`, the variant it names). Used to NAME the constructor in the under-application
+/// diagnostic (`` `Wrap` needs its payload argument ``), the lower-side twin of `infer`'s
+/// `variant_ctor_head_name`. `None` for a head with no readable name (an anonymous / synthesized head),
+/// where the caller falls back to the un-named phrasing.
+fn ctor_head_display_name(db: &Db, head: StructId) -> Option<String> {
+    if let Some(n) = db.ast.as_name(head) {
+        return Some(n.to_string());
+    }
+    // A member `(. Sum V)` head — the ctor is its KEY (second child after the `.`), a bare name.
+    let tail = db.ast.as_form(head, ".")?;
+    tail.get(1)
+        .and_then(|&k| db.ast.as_name(k))
+        .map(str::to_string)
+}
+
 /// Fold `ast-splice-lift` over a CONSTANT list's element cores: wrap each in an `(Ast.Int e)` node — a
 /// `Core::SumNew` at the `Ast` sum's `Int` variant disc (one payload). Returns a `Core::ListNew` of the
 /// wrapped nodes (the lifted `(List Ast)`), or `None` if the `Ast` sum / its `Int` variant is somehow

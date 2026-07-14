@@ -14967,6 +14967,27 @@ mod match_engine {
             reject_code("(module m (def (main) (Some)) (export main))").as_deref(),
             Some("CDZ0201")
         );
+        // The message NAMES the constructor and how to apply it (not the anonymous "a variant constructor
+        // with a payload …"). `Some`'s payload is a free variable (generic), so the "it carries X" clause
+        // is omitted (it would read `_`); a CONCRETE-payload ctor names its type.
+        let some_msg = reject_full("(module m (def (main) (Some)) (export main))")
+            .expect("reject")
+            .message;
+        assert!(
+            some_msg.contains("`Some` needs its payload argument")
+                && some_msg.contains("`(Some <value>)`")
+                && !some_msg.contains("carries"),
+            "names the ctor + apply form, omits the unresolved payload: {some_msg}"
+        );
+        let wrap_msg =
+            reject_full("(module m (type T (Wrap Int64)) (def (main) (T.Wrap)) (export main))")
+                .expect("reject")
+                .message;
+        assert!(
+            wrap_msg.contains("`Wrap` needs its payload argument")
+                && wrap_msg.contains("it carries an Int64"),
+            "a concrete-payload ctor names its payload type: {wrap_msg}"
+        );
         // A NULLARY variant applied to nothing `(None)` is NOT under-applied — it has no payload, so it
         // CONSTRUCTS its value (used here as a match scrutinee, which types + runs).
         assert_eq!(
