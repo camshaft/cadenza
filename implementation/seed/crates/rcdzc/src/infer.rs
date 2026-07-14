@@ -804,6 +804,20 @@ pub fn solve_lambda_param_ty(db: &mut Db, binder: StructId, body: StructId) -> T
 /// type against the payload's declared function type). `None` when the context declares no arrow (a HOF
 /// call site — handled by the call's own unification — or a genuinely unconstrained position).
 pub(crate) fn expected_arrow_for_lambda(db: &mut Db, lambda: StructId) -> Option<Ty> {
+    // CUMULATIVE-WORK budget — the SAME `reduce_nodes` counter β-reduction charges against
+    // (`db::REDUCE_NODE_BUDGET`). This context-recovery recurses through `type_of` (path 3 below reads a
+    // parameter's type, which for a SELF-APPLICATION re-enters here on the growing term); like the plain
+    // reduction hang (`c2dae9b9`), the term stays within the descent DEPTH limit yet drives an EXPONENTIAL
+    // number of these lookups (`(fn v (if (v v) 1 (v v)))` applied to itself), so the depth guard alone
+    // does not stop it and inference appears to HANG. Charging each call against the shared work budget
+    // caps the TOTAL across every reduction-equivalent path (plain β-reduction AND this type-context
+    // recovery); past the budget, recover NOTHING (`None`) — the lambda types without the context hint and
+    // the program declines cleanly downstream, rather than looping. A real program makes far fewer of these
+    // than the budget (it is 1M; the corpus never approaches it).
+    if db.reduce_nodes >= crate::db::REDUCE_NODE_BUDGET {
+        return None;
+    }
+    db.reduce_nodes += 1;
     // (1) An ANNOTATION `(: (fn …) (-> P R))` directly on the lambda — the parent is a `(:` form whose
     //     second child is the type expression.
     let parent = db.parent_of(lambda)?;
@@ -981,6 +995,44 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
         collect_param_constraints(db, body, &env, def, &mut subst, &mut fresh);
     }
 
+    // CALL-SITE SEEDING: a parameter the BODY alone cannot ground — its type is decided only by HOW a
+    // caller invokes the def (`(def (lookup xs i k) (match (List.at xs i) ((Some (tuple key val)) …)))`
+    // never pins `xs`'s element from the body; `main`'s `(lookup (list (tuple 1 100) …) 0 2)` does). For
+    // each param still an open var after the body walk, find a NON-recursive call site of this def (a
+    // caller's application whose head resolves here) and unify its k-th argument's type into the param
+    // var. This is monomorphic call-site inference — the caller supplies the concrete type the body
+    // leaves generic. Only fires for a still-open param (a body-solved param is untouched), and only a
+    // DETERMINED argument type constrains (an `Any`/var arg adds nothing), so a well-solved def is
+    // byte-identical. Skips a self/recursive call (its args reference this def's own unsolved params —
+    // no new information) and is re-entry-guarded by `solving_params`.
+    if let Some(body) = db.defs[def].body {
+        // A param is "open" if its body-solved type is `Any` OR still CONTAINS a free var — a bare
+        // unsolved param (`Var`) OR a PARTIALLY-solved compound (`(List (Tuple Int64 ?10))`, where the
+        // body pinned the first tuple field but left the second). A call site's concrete argument fills
+        // the remaining holes by unification. (`has_free_var` catches the partial-compound case a bare
+        // `Var`/`Any` match would miss — the assoc-list `xs` whose value field stays open in the body.)
+        let still_open: Vec<usize> = param_binders
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, v))| {
+                let t = subst.apply(v);
+                matches!(t, Ty::Any) || t.has_free_var()
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if !still_open.is_empty() {
+            let arg_tys = call_site_arg_types(db, def, body);
+            for i in still_open {
+                if let Some(Some(at)) = arg_tys.get(i)
+                    && !matches!(at, Ty::Any | Ty::Var(_))
+                {
+                    let (_, pvar) = &param_binders[i];
+                    let _ = crate::unify::unify(&mut subst, pvar, at);
+                }
+            }
+        }
+    }
+
     // Ground each parameter: apply the substitution, then default a still-unsolved NUMERIC variable to
     // the signed-64 integer (a bare literal's default) and leave anything else `Any` (unconstrained).
     for (binder, var) in param_binders {
@@ -991,6 +1043,60 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
     }
 
     db.solving_params.remove(&def);
+}
+
+/// The per-position ARGUMENT TYPES a NON-RECURSIVE caller of `def` supplies, for call-site inference of a
+/// parameter the body alone leaves open. Scans every def body (except `def`'s own — a self-call's args
+/// reference the very params being solved, so it adds nothing) for an application whose head resolves to
+/// `def`, and returns the k-th argument's `type_of` at the FIRST such call site. `own_body` is `def`'s
+/// body, skipped so a self-recursive call is never mistaken for an external seed. Returns a vector indexed
+/// by parameter position; an entry is `None` when no call site determines that position. A conservative,
+/// read-only scan — it never mutates `db.param_types` and only READS argument types the caller already
+/// has (a caller's own params were solved by its own pass, or are concrete literals/constructors).
+fn call_site_arg_types(db: &mut Db, def: usize, own_body: StructId) -> Vec<Option<Ty>> {
+    // Collect candidate call sites first (immutable scan), then type their args (mutable `type_of`).
+    let mut call_args: Vec<Vec<StructId>> = Vec::new();
+    let def_count = db.defs.len();
+    for other in 0..def_count {
+        let Some(other_body) = db.defs[other].body else {
+            continue;
+        };
+        if other_body == own_body {
+            continue; // this def's own body — a self-call carries no external type information
+        }
+        collect_calls_to(db, other_body, def, &mut call_args);
+    }
+    // The widest arg list seen determines the result arity; take the first call site that fixes each
+    // position (a determined `type_of`), so multiple call sites together can seed distinct positions.
+    let arity = call_args.iter().map(Vec::len).max().unwrap_or(0);
+    let mut out: Vec<Option<Ty>> = vec![None; arity];
+    for args in &call_args {
+        for (i, &arg) in args.iter().enumerate() {
+            if out[i].is_none() {
+                let t = type_of(db, arg);
+                if !matches!(t, Ty::Any | Ty::Var(_)) {
+                    out[i] = Some(t);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Walk `node` collecting the ARGUMENT lists of every application whose head resolves to def `target`
+/// (`callee_def_index_for_infer`). Recurses through all structural children so a call nested anywhere in
+/// the body is found. Read-only over the AST (append-only into `out`).
+fn collect_calls_to(db: &mut Db, node: StructId, target: usize, out: &mut Vec<Vec<StructId>>) {
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && callee_def_index_for_infer(db, head) == Some(target)
+    {
+        out.push(args.to_vec());
+    }
+    if let crate::ast::Struct::List(children) = db.ast.get(node) {
+        for c in children.clone() {
+            collect_calls_to(db, c, target, out);
+        }
+    }
 }
 
 /// Walk the resolved body and, for every application whose HEAD is a parameter in `env` (a fn-typed
@@ -2971,50 +3077,53 @@ fn pattern_is_variant_ctor(db: &mut Db, pat: StructId) -> bool {
     crate::eval::variant_owner_decl(db, head).is_some()
 }
 
-/// Whether the lambda `head` REFERENCES its parameter whose name occurrence is `param_occ` anywhere in
-/// its body — i.e. the parameter is USED, so its argument appears (substituted) in the reduced body and
-/// need not be re-descended for faults. A body reference to a parameter resolves (via resolve's
-/// `binder_in`) to a `Resolved::Ref` whose transitive target is the parameter's binder, or to a
-/// `Resolved::Param { binder }`; the walk is a purely structural scan of the body's raw children (no
-/// reduction, no lowering), bounded by the body size. A `false` result means the parameter is DEAD (the
-/// body ignores it), so its argument's own faults are not otherwise collected and it must be descended.
-fn param_is_referenced(db: &mut Db, head: StructId, param_occ: StructId) -> bool {
-    let Some(body) = crate::eval::lambda_body(db, head) else {
-        return false;
-    };
-    references_binder(db, body, param_occ)
-}
-
-/// Structural scan: does the resolved subtree at `node` contain a reference that resolves to the binder
-/// `target` (a parameter's name occurrence)? Follows a `Resolved::Ref`/`Param` to its binder identity;
-/// recurses the raw AST children otherwise. Bounded by the subtree size (no reduction).
-fn references_binder(db: &mut Db, node: StructId, target: StructId) -> bool {
-    match resolved_of(db, node) {
-        Resolved::Param { binder } => binder == target,
-        Resolved::Ref { mut value } => {
-            // Follow the ref chain to a binder; a parameter reference's chain ends at the param binder.
-            loop {
-                if value == target {
-                    return true;
-                }
-                match resolved_of(db, value) {
-                    Resolved::Ref { value: next } => value = next,
-                    Resolved::Param { binder } => return binder == target,
-                    _ => break,
+/// The SET of parameter binders the lambda `head`'s body REFERENCES — the binder identity every body
+/// reference resolves to, collected in ONE structural walk. A parameter present here is USED (its argument
+/// appears substituted in the reduced body, so that argument's faults are already collected there and it
+/// need not be re-descended); one ABSENT is DEAD (the body ignores it, so its argument must be descended
+/// for its own faults). Replaces a per-parameter `references_binder` scan — asking this per argument was a
+/// full-body walk each, so a WIDE application `(f a0 … aN)` was O(args × body) = O(N²); one walk + O(1)
+/// membership per argument is O(body + args).
+///
+/// A body reference resolves (via resolve's `binder_in`) to a `Resolved::Ref` whose transitive chain ends
+/// at the parameter's binder, or to a `Resolved::Param { binder }`. The set collects EVERY identity a
+/// reference matches — each link of a `Ref` chain plus a terminal `Param`'s binder — so `p ∈ set` is
+/// byte-identical to the old `references_binder(body, p)` (which returned true if `p` equalled ANY chain
+/// link or the terminal binder). `Ref`/`Param` nodes are leaf references (not recursed); every other node
+/// recurses its raw AST children, visiting every value position (no reduction, no lowering).
+fn referenced_binders(db: &mut Db, body: StructId) -> std::collections::HashSet<StructId> {
+    fn walk(db: &mut Db, node: StructId, out: &mut std::collections::HashSet<StructId>) {
+        match resolved_of(db, node) {
+            Resolved::Param { binder } => {
+                out.insert(binder);
+            }
+            Resolved::Ref { mut value } => {
+                // Follow the ref chain, recording every link — a chain end at a `Param` records its binder.
+                loop {
+                    out.insert(value);
+                    match resolved_of(db, value) {
+                        Resolved::Ref { value: next } => value = next,
+                        Resolved::Param { binder } => {
+                            out.insert(binder);
+                            break;
+                        }
+                        _ => break,
+                    }
                 }
             }
-            false
-        }
-        _ => {
-            // Not a direct reference — recurse the raw children (a name in binder position, a literal, an
-            // operator head all simply do not match). This visits every value position of the body.
-            if let crate::ast::Struct::List(children) = db.ast.get(node) {
-                let children = children.clone();
-                return children.iter().any(|&c| references_binder(db, c, target));
+            _ => {
+                if let crate::ast::Struct::List(children) = db.ast.get(node) {
+                    let children = children.clone();
+                    for c in children {
+                        walk(db, c, out);
+                    }
+                }
             }
-            false
         }
     }
+    let mut out = std::collections::HashSet::new();
+    walk(db, body, &mut out);
+    out
 }
 
 /// The diagnostic code for a LIST HOMOGENEITY violation between two element types that do not unify —
@@ -3035,6 +3144,25 @@ fn list_homogeneity_code(a: &Ty, b: &Ty) -> Code {
         Code::Malformed
     } else {
         Code::TypeMismatch
+    }
+}
+
+/// The INTEGER-arithmetic operator spelling and its FLOAT-arithmetic sibling spelling `(int, float)`,
+/// or `None` for a prim with no float sibling. The four arithmetic operators `+`/`-`/`*`/`/` each have a
+/// width-generic float twin `+.`/`-.`/`*.`/`/.` (`prelude.rs`); the comparisons `<`/`=`/… are ALREADY
+/// polymorphic over floats (no separate spelling), and `%`/bit-ops have no float form. Used to repair
+/// `(+ 1.0 2.0)` — an integer operator applied to two FLOAT operands — by swapping the operator name,
+/// the whole-operation fix (rewriting one operand to an int leaves the other float; the author clearly
+/// wants float math). Returns both spellings so the message names the written operator and the fix names
+/// the sibling.
+fn float_sibling_operator(prim: crate::resolved::Prim) -> Option<(&'static str, &'static str)> {
+    use crate::resolved::Prim;
+    match prim {
+        Prim::Add => Some(("+", "+.")),
+        Prim::Sub => Some(("-", "-.")),
+        Prim::Mul => Some(("*", "*.")),
+        Prim::Div => Some(("/", "/.")),
+        _ => None,
     }
 }
 
@@ -3140,6 +3268,50 @@ fn check_application(
             ));
         }
         collect(db, args[1], out);
+        return;
+    }
+    // An INTEGER arithmetic operator (`+`/`-`/`*`/`/`) applied to two FLOAT operands — `(+ 1.0 2.0)`.
+    // The whole-operation repair is to SWAP the operator to its float sibling (`+.`), NOT to rewrite an
+    // operand: `+`'s scheme is `(Int a)`, so the generic unify below would fault the FIRST operand and
+    // offer to drop its `.0` — a fix that leaves the SECOND operand float (so `fix --all` rightly refuses
+    // it) and misreads the intent (two float literals mean float math). Detect it here and emit ONE clean
+    // CDZ0301 whose fix rewrites the OPERATOR NAME node (the app's first child) to the float sibling, then
+    // return so the generic path does not also add the misleading per-operand fix. Gated on BOTH operands
+    // being `Ty::Float` (a genuine int/float MIX — `(+ 1 2.0)` — keeps the per-operand coercion, which is
+    // the right call there: one operand is already an integer). `numeric-model.md` §Numeric Types Do Not
+    // Silently Promote (the explicit-conversion discipline) + `diagnostics.md` §A Diagnostic Carries A
+    // Route To A Fix.
+    if args.len() == 2
+        && let Some(prim) = crate::eval::meta_apply_of(db, head)
+        && let Some((int_op, sibling)) = float_sibling_operator(prim)
+        && let a0 = type_of(db, args[0])
+        && let b0 = type_of(db, args[1])
+        && matches!(a0, Ty::Float(_))
+        && matches!(b0, Ty::Float(_))
+    {
+        // The operator NAME occurrence is the application's first child (`(+ …)` → the `+` atom). Fall
+        // back to an unfixed reject if the shape is unexpected (never mis-target a fix).
+        let op_name_node = match db.ast.get(app) {
+            crate::ast::Struct::List(items) => items.first().copied(),
+            _ => None,
+        };
+        trace!(target: "rcdzc::infer", head = head.0, int_op, sibling, "fault: integer arithmetic operator on two floats — swap to the float sibling (CDZ0301)");
+        let mut reject = Reject::coded(
+            Code::NumericMismatch,
+            format!(
+                "`{int_op}` is integer arithmetic, but both operands are {} — use the floating-point \
+                 operator `{sibling}` (Cadenza never silently promotes a numeric type)",
+                a0.render_name(),
+            ),
+        )
+        .at(app);
+        if let Some(node) = op_name_node {
+            reject = reject.with_fix(Fix::replace_heuristic(node, sibling));
+        }
+        out.push(reject);
+        for &arg in args {
+            collect(db, arg, out);
+        }
         return;
     }
     // The RECORD + TUPLE ROW OPERATIONS have NO HM scheme (a label-list / literal-position operand is not
@@ -3788,11 +3960,18 @@ fn check_application(
         //     produce a body (a recursive callee, the depth limit), NOTHING covered the arguments, so
         //     descend them ALL — matching the pre-change behavior for that case.
         let params = crate::eval::lambda_params_of(db, head).unwrap_or_default();
+        // The set of parameters the body references, computed in ONE walk (was a full-body scan PER
+        // argument → O(args × body) = O(N²) for a WIDE application; now O(body) once + O(1) per arg).
+        // Only needed when the reduction succeeded — that is the only branch that skips a covered arg.
+        let referenced = if reduced_ok {
+            crate::eval::lambda_body(db, head)
+                .map(|body| referenced_binders(db, body))
+                .unwrap_or_default()
+        } else {
+            std::collections::HashSet::new()
+        };
         for (i, &arg) in args.iter().enumerate() {
-            let covered = reduced_ok
-                && params
-                    .get(i)
-                    .is_some_and(|&p| param_is_referenced(db, head, p));
+            let covered = reduced_ok && params.get(i).is_some_and(|&p| referenced.contains(&p));
             if !covered {
                 collect(db, arg, out);
             }

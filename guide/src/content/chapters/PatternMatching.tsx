@@ -129,23 +129,29 @@ export default function PatternMatching() {
 
       <Exercise
         id="pattern-matching:2"
-        prompt={<>Finish <C>wait</C>'s <C>Green</C> arm so a green light gives <C>0</C>.</>}
-        starter={`(type Light (Red unit) (Yellow unit) (Green unit))
-(def (wait l)
-  (match l
-    ((Red _) 30)
-    ((Yellow _) 5)
-    ((Green _) ?)))
-(def (main) (wait (Green unit)))`}
-        solution={`(type Light (Red unit) (Yellow unit) (Green unit))
-(def (wait l)
-  (match l
-    ((Red _) 30)
-    ((Yellow _) 5)
-    ((Green _) 0)))
-(def (main) (wait (Green unit)))`}
-        expected="0"
-        hint={<>A green light means "go" — no wait, so the arm's body is <C>0</C>.</>}
+        prompt={
+          <>
+            Write the <em>guard condition</em> so <C>grade</C> returns <C>1</C> for a passing score of{" "}
+            <C>60</C> or more, and <C>0</C> otherwise. With <C>(grade 75)</C> the answer is <C>1</C>.
+          </>
+        }
+        starter={`(def (grade s)
+  (match s
+    ((guard x ?) 1)
+    (_ 0)))
+(def (main) (grade 75))`}
+        solution={`(def (grade s)
+  (match s
+    ((guard x (>= x 60)) 1)
+    (_ 0)))
+(def (main) (grade 75))`}
+        expected="1"
+        hint={
+          <>
+            The guard binds the score to <C>x</C>; the condition for passing is "60 or more" —{" "}
+            <C>(&gt;= x 60)</C>. <C>75</C> clears it, so the first arm fires.
+          </>
+        }
       />
     </article>
   );

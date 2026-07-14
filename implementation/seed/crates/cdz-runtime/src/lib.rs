@@ -14601,6 +14601,171 @@ mod tests {
             .for_each(|ops| run_tuplekey_op_sequence(ops));
     }
 
+    // ── RRB persistent VECTOR randomized differential vs `Vec<i64>` ─────────────────────────────
+    // The map/set already have `prop_*_matches_reference` fuzz tests, but the RRB vector — the most
+    // structurally intricate collection (relaxed-radix rebalancing on concat/split, path-copy on a
+    // shared update, strict-vs-relaxed node invariants) — had only FIXED oracle spot-checks
+    // (`vec_concat_matches_oracle`, `vec_split_matches_oracle`). This drives random push/update/
+    // concat/split/fork sequences and checks the SAME four properties the map fuzz does: (1) element
+    // equivalence vs a `Vec<i64>` reference, (2) the RRB structural invariants hold, (3) same contents
+    // ⇒ byte-canonical (equals a fresh push-built twin) regardless of history, (4) forked snapshots
+    // stay UNDISTURBED by later mutation (aliasing safety), + no leak / no double-free at the end.
+    #[derive(Debug, bolero::TypeGenerator)]
+    enum VecOp {
+        Push { elem: u8 },
+        // `index`/`at` are taken MODULO the current length at apply time, so a generated value always
+        // lands in-range (the ops trap OOB — the reference is what defines "in range"). A no-op on empty.
+        Update { index: u8, elem: u8 },
+        SplitKeepLeft { at: u8 },
+        SplitKeepRight { at: u8 },
+        // GROW ops — without these, short random sequences keep the vector single-leaf (≤32), never
+        // reaching the MULTI-LEVEL tree or the RELAXED interior nodes that split/concat rebalancing
+        // builds (the RRB's hardest correctness surface). `PushRange` bulk-appends a run (fast to a
+        // multi-level STRICT tree); `ConcatRange` concats a fresh range on, whose boundary nodes go
+        // RELAXED. `n` is scaled so a handful of these crosses 32 (1 leaf) and 1024 (2 levels).
+        PushRange { n: u8 },
+        ConcatRange { n: u8 },
+        Fork,
+        DropForked,
+    }
+
+    /// Build a vector from a `Vec<i64>` reference by repeated push — the canonical construction, so two
+    /// vectors with equal contents built THIS way are byte-identical (the twin oracle for property 3).
+    fn vec_of_reference(reference: &[i64]) -> Handle {
+        let mut v = op_vec_empty();
+        for &e in reference {
+            v = op_vec_push(v, op_box_int(e));
+        }
+        v
+    }
+
+    fn run_vec_op_sequence(ops: &[VecOp]) {
+        let before = live_nodes();
+        let mut v = op_vec_empty();
+        let mut reference: Vec<i64> = Vec::new();
+        // Live forks: each keeps its own snapshot to verify it stays undisturbed by later mutation of `v`.
+        let mut forks: Vec<(Handle, Vec<i64>)> = Vec::new();
+        for op in ops {
+            match *op {
+                VecOp::Push { elem } => {
+                    let e = elem as i64;
+                    v = op_vec_push(v, op_box_int(e));
+                    reference.push(e);
+                }
+                VecOp::Update { index, elem } => {
+                    if !reference.is_empty() {
+                        let i = (index as usize) % reference.len();
+                        let e = elem as i64;
+                        v = op_vec_update(v, i as u32, op_box_int(e));
+                        reference[i] = e;
+                    }
+                }
+                VecOp::SplitKeepLeft { at } => {
+                    // Split at a valid boundary `0..=len`, keep the LEFT half, drop the right.
+                    let n = reference.len();
+                    let idx = if n == 0 { 0 } else { (at as usize) % (n + 1) };
+                    let (l, r) = op_vec_split(v, idx as u32);
+                    op_drop(r);
+                    v = l;
+                    reference.truncate(idx);
+                }
+                VecOp::SplitKeepRight { at } => {
+                    let n = reference.len();
+                    let idx = if n == 0 { 0 } else { (at as usize) % (n + 1) };
+                    let (l, r) = op_vec_split(v, idx as u32);
+                    op_drop(l);
+                    v = r;
+                    reference = reference.split_off(idx);
+                }
+                VecOp::PushRange { n } => {
+                    // Append `n % 40 + 1` consecutive ints (1..=40 — a few of these cross the 32-elem leaf
+                    // and stack toward the 1024-elem 2-level boundary), each via a real `vec-push`.
+                    let count = (n as i64) % 40 + 1;
+                    let base = reference.len() as i64;
+                    for j in 0..count {
+                        let e = base + j;
+                        v = op_vec_push(v, op_box_int(e));
+                        reference.push(e);
+                    }
+                }
+                VecOp::ConcatRange { n } => {
+                    // Concat a fresh `[0..n%40+1)` vector onto `v`. Concat of two non-aligned vectors is what
+                    // builds RELAXED interior nodes (irregular child sizes + cumulative size tables) — the
+                    // path fixed oracle spot-checks under-cover. Consumes both; `v` becomes the result.
+                    let count = (n as i64) % 40 + 1;
+                    let tail: Vec<i64> = (0..count).collect();
+                    let tv = vec_of_reference(&tail);
+                    v = op_vec_concat(v, tv);
+                    reference.extend(tail);
+                }
+                VecOp::Fork => {
+                    op_dup(v); // rc>1: the next mutation of `v` must path-copy, leaving this snapshot intact
+                    forks.push((v, reference.clone()));
+                }
+                VecOp::DropForked => {
+                    if let Some((h, _)) = forks.pop() {
+                        op_drop(h);
+                    }
+                }
+            }
+        }
+        // (1) element equivalence + length vs the reference.
+        assert_eq!(
+            op_vec_len(v) as usize,
+            reference.len(),
+            "vector length matches reference"
+        );
+        assert_eq!(vec_to_ints(v), reference, "vector elements match reference");
+        // (2) the RRB structural invariants (relaxed size tables consistent, header count == leaf total).
+        assert_vec_invariants(v);
+        // (3) element-canonical but NOT shape-canonical. Unlike a CHAMP map/set (whose storage IS
+        // canonical — same contents ⇒ byte-identical, so the map fuzz asserts `champ_eq` to a twin), an
+        // RRB vector legitimately keeps DIFFERENT internal shapes for the same element sequence: concat
+        // builds RELAXED interior nodes and split can leave a non-minimal-height spine (e.g. a 21-element
+        // vector at shift=5 with a single child, vs a push-built one at shift=0). So `champ_eq(v, twin)`
+        // is NOT an invariant here and must not be asserted — the property that HOLDS is that the shape
+        // difference is UNOBSERVABLE: reading elements in order (`vec_to_ints`, checked in (1)) and the
+        // value-encode of `v` (which renders by element, `op_vec_get` in order) both agree with a fresh
+        // push-built twin. Assert the observable equivalence via a list-shape value-encode.
+        let twin = vec_of_reference(&reference);
+        let list_desc: &[u8] = &[0x02, 0x00, 0x07, 0x00, 0x01]; // [0]=Int [1]=List(elem→0); root=1
+        let enc_v = op_value_encode_form(v, list_desc);
+        let enc_twin = op_value_encode_form(twin, list_desc);
+        assert_eq!(
+            enc_v, enc_twin,
+            "the vector's value-encode equals a fresh push-built twin's — the internal RRB shape \
+             difference (relaxed / non-minimal height from concat/split) is UNOBSERVABLE at the boundary"
+        );
+        op_drop(twin);
+        // (4) forked snapshots undisturbed by later mutation of `v` (aliasing safety).
+        for (h, snap) in &forks {
+            assert_eq!(
+                op_vec_len(*h) as usize,
+                snap.len(),
+                "forked vector snapshot length intact"
+            );
+            assert_eq!(vec_to_ints(*h), *snap, "forked vector snapshot elements intact");
+            assert_vec_invariants(*h);
+        }
+        // no leak / no double-free: release everything, live count returns to baseline.
+        op_drop(v);
+        for (h, _) in forks {
+            op_drop(h);
+        }
+        assert_eq!(
+            live_nodes(),
+            before,
+            "no leak / no double-free across the whole vector sequence"
+        );
+    }
+
+    #[test]
+    fn prop_vec_matches_reference_under_random_op_sequences() {
+        bolero::check!()
+            .with_type::<Vec<VecOp>>()
+            .for_each(|ops| run_vec_op_sequence(ops));
+    }
+
     // ── U6: FBIP rc==1 in-place cursor advance for map-iter-next / set-iter-next ────────────────
     // Load-bearing: (1) a forked/peeked/teed cursor (rc>1) stays INDEPENDENT — advancing one owner
     // must not disturb the other (aliasing catcher); (2) a unique (rc==1) walk allocates ZERO new
