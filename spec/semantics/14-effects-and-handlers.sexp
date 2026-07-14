@@ -1107,6 +1107,24 @@
                 (+ (Rng.next) (Rng.next)))) (export main)))
   (output (: 5.0 Float64)))
 
+(case "a BOOL-result effect op threads state across two performs on a boolean connective's operands"
+  (doc    "The Bool companion of the float/Int64 sequencing cases: a `Unit -> Bool` operation whose resume
+           value is derived from the handler state, performed on BOTH operands of an `and` (the left operand
+           is true, so the connective does NOT short-circuit and the right also runs). `Coin.flip : Unit ->
+           Bool`, arm `(flip (u) s (resume (= s 0) (+ s 1)))`, seeded 0: the first `(Coin.flip)` reads `(= 0
+           0)` = true (state → 1), the second reads `(= 1 0)` = false (state → 2), so `(and true (not
+           false))` = `(and true true)` = true. Pins that (i) a Bool result/state column threads through the
+           fold like any scalar and (ii) when the connective's LEFT operand is true the RIGHT-operand perform
+           genuinely runs and reads the ADVANCED state (had it not threaded, the second would read `(= 0 0)` =
+           true too and `(not true)` = false → the whole `and` false). Distinct from the abortive-connective
+           and pure-one-hole-in-an-and-lhs cases: here BOTH operands perform and thread tail-resumptively.")
+  (input  (do
+            (effect Coin (op flip (-> Unit Bool)))
+            (def (main)
+              (handle Coin 0 ((flip (u) s (resume (= s 0) (+ s 1))))
+                (and (Coin.flip) (not (Coin.flip))))) (export main)))
+  (output (: true Bool)))
+
 (case "two performs bound by nested lets thread the handler state in order"
   (doc    "Two performs on the strict spine, each BOUND by its own `let`, thread the handler state in
            evaluation order across the binds. `(let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b)))` under a

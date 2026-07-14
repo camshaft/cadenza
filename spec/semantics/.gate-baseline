@@ -104,6 +104,7 @@ pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
+pass	a BOOL-result effect op threads state across two performs on a boolean connective's operands
 pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
