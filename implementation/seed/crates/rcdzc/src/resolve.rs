@@ -621,6 +621,15 @@ fn nearest_name_suggestion(db: &Db, id: StructId, name: &str) -> Option<String> 
         for d in &db.defs {
             candidates.push(d.name.clone());
         }
+        // Tier 2b — the boolean LITERALS `true`/`false` (value position only). They are lexer literals
+        // (`Leaf::Bool`), not bound names, so they are NOT in scope/defs/prelude — yet a mis-cased
+        // `True`/`False` (the cross-language habit) reads as an unbound NAME, and its one-shot fix is the
+        // lowercase literal (which re-lexes as `Leaf::Bool`). Offering them as candidates makes `True` →
+        // "did you mean `true`?" (edit distance 1, within the cutoff), the same did-you-mean an unbound
+        // name gets — a literal is a valid replacement here exactly as a name is. (`TRUE` is distance 4,
+        // beyond the cutoff, so only the common single-case-slip is suggested — no baseless guess.)
+        candidates.push("true".to_string());
+        candidates.push("false".to_string());
     }
     // Tier 3 — `(type …)` names (a type name fits BOTH a member operand `Int64.max` AND a type expr `(: x
     // Int64)`) + their variant CONSTRUCTORS (a value, so kept ONLY in value position) — and `(effect …)`

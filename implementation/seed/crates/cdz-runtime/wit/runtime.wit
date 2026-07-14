@@ -315,6 +315,22 @@ interface heap {
   //    to the one canonical quiet `f32` NaN on construction (the f32 twin of `box-float`'s NaN normalize).
   box-float32: func(v: f32) -> u32;    // 63 — box a Float32 (4-byte leaf, NaN-canonical)
   get-float32: func(handle: u32) -> f32; // 64 — read a Float32 back
+
+  // ── Arbitrary-precision integer (BigInt, indices 65–71) — a sign-magnitude limb-array LEAF (the
+  //    `Bytes`-leaf shape: raw bytes, zero handles), ALWAYS heap (never a fixnum immediate — a BigInt is a
+  //    DISTINCT type from a fixed-width int). Backed by the `bigint::Big` limb library. The compiler emits
+  //    these for RUNTIME-valued BigInt (a constant folds in the compiler via num-bigint and never calls
+  //    them). `bigint-of-i64` widens a fixed-width int in; `bigint-to-i64-checked` narrows back, trapping
+  //    out of range; add/sub/mul never trap (the range grows); `bigint-div` truncates toward zero and
+  //    traps on a zero divisor; `bigint-cmp` is the three-way compare `<`/`=`/`>` lower to
+  //    (numeric-model.md §Arbitrary Precision; options/numeric-model/explicit-checked.md).
+  bigint-of-i64: func(v: s64) -> u32;             // 65 — widen a fixed-width int into a BigInt leaf
+  bigint-to-i64-checked: func(handle: u32) -> s64; // 66 — checked narrow back (traps out of range)
+  bigint-add: func(a: u32, b: u32) -> u32;        // 67 — a + b (never traps for magnitude)
+  bigint-sub: func(a: u32, b: u32) -> u32;        // 68 — a - b
+  bigint-mul: func(a: u32, b: u32) -> u32;        // 69 — a * b
+  bigint-div: func(a: u32, b: u32) -> u32;        // 70 — a / b truncating (traps on zero divisor)
+  bigint-cmp: func(a: u32, b: u32) -> s64;        // 71 — three-way compare: -1 / 0 / 1
 }
 
 world runtime {

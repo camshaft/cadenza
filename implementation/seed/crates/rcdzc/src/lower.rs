@@ -6066,10 +6066,13 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
 /// condition `c'` is EQUIVALENT to the enclosing `cond` (via `core_equiv` — a pure-core structural
 /// match), return the occurrence of the arm the enclosing branch's known truth of `cond` selects — `A`
 /// when `cond_is_true` (the then-branch, where `cond` holds), `B` otherwise (the else-branch, where it
-/// does not). `None` if `branch` is not such a nested `if` (leave it unchanged). The returned occurrence
-/// is REUSED as-is (no synthesis); it was resolved in the same scope, so lowering it in the branch's
-/// place is sound. `reduce_to_if` chases refs/annotations and stops at a kept multi-use binding, so a
-/// `let`-named inner `if` is not peeled (its value lives in a slot). Only the DIRECT nested `if` is
+/// does not). Also handles the NEGATED case: when `c'` is the boolean negation of `cond` (`(not cond)`,
+/// or `cond` is `(not c')`), the known truth of `cond` implies the OPPOSITE truth of `c'`, so the FLIPPED
+/// arm is selected — `(if c A (if (not c) B D))` takes `B` in the else-branch (where `c` is false, so
+/// `(not c)` is true). `None` if `branch` is not such a nested `if` (leave it unchanged). The returned
+/// occurrence is REUSED as-is (no synthesis); it was resolved in the same scope, so lowering it in the
+/// branch's place is sound. `reduce_to_if` chases refs/annotations and stops at a kept multi-use binding,
+/// so a `let`-named inner `if` is not peeled (its value lives in a slot). Only the DIRECT nested `if` is
 /// collapsed here; deeper propagation happens because the rewritten branch re-lowers and can collapse
 /// again.
 fn collapse_repeated_cond(
@@ -6080,10 +6083,26 @@ fn collapse_repeated_cond(
 ) -> Option<StructId> {
     let (inner_cond, inner_then, inner_else) = crate::eval::reduce_to_if(db, branch)?;
     if core_equiv(db, cond, inner_cond) {
+        // `c'` == `cond`: same truth → `cond_is_true` picks the inner then, else the inner else.
         Some(if cond_is_true { inner_then } else { inner_else })
+    } else if is_negation_of(db, cond, inner_cond) {
+        // `c'` == `!cond`: OPPOSITE truth → flip which arm survives.
+        Some(if cond_is_true { inner_else } else { inner_then })
     } else {
         None
     }
+}
+
+/// Whether the cores at `a` and `b` are boolean NEGATIONS of each other — one is `Core::Not { operand }`
+/// with `operand` `core_equiv` to the other. Both orders are tried (`a` is `(not b)` or `b` is `(not a)`).
+/// `not` is total and pure, and `core_equiv` matches only pure cores, so a matched pair is two pure
+/// booleans of exactly opposite truth. Used by `collapse_repeated_cond` to propagate a known condition
+/// into a nested `if` guarded by that condition's negation.
+fn is_negation_of(db: &mut Db, a: StructId, b: StructId) -> bool {
+    let one_way = |db: &mut Db, x: StructId, y: StructId| -> bool {
+        matches!(core_of(db, x), Core::Not { operand } if core_equiv(db, operand, y))
+    };
+    one_way(db, a, b) || one_way(db, b, a)
 }
 
 /// The number of times the binding whose initializer is `init` is REFERENCED within the resolved

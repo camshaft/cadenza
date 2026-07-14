@@ -2135,3 +2135,68 @@
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: false Bool))
   (output (: (tuple false 8) (Tuple Bool Int64))))
+
+; A COMPOUND closure ARGUMENT on the ROUND-TRIP path — the closure `g` takes a Tuple/Record/List/Map/Set. On
+; the round-trip path the consumer APPLIES the handed-back closure ITSELF, in-guest (`(g <compound>)` inside
+; the consumer body), so the closure's argument is BUILT in the guest and NEVER crosses the host boundary —
+; only the closure HANDLE (an `own<t>` resource, i32) and the consumer's own scalar params cross. So a
+; compound closure argument need only be MACHINE-representable (a value-heap handle, i32), not scalar-boundary.
+; This lifts the earlier "a closure argument of type … has no scalar host-boundary representation" fence for
+; the round trip. (A compound closure arg on the DIRECT-CALL path — where the HOST supplies the argument —
+; still declines: that would need a host→guest decode of the compound into the guest heap.)
+
+(case "round-trip: a consumer applies a closure taking a Tuple arg built in-guest"
+  (doc    "`mk : () -> (-> (Tuple Int64 Int64) Int64)` sums the pair; `app : (own<t>, Int64) -> Int64` applies
+           the handed-back closure to a guest-built `(tuple x x)`. `app(handle, 5)` → `g((tuple 5 5))` = 10.
+           Pins a COMPOUND (Tuple) closure argument crossing the round trip (built in-guest, never over the
+           boundary).")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
+              (def (app (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g (tuple x x)))
+              (export mk) (export app)))
+  (call   app (: 5 Int64))
+  (output (: 10 Int64)))
+
+(case "round-trip: a consumer applies a closure taking a Record arg built in-guest"
+  (doc    "`mk : () -> (-> (Record (a Int64) (b Int64)) Int64)` multiplies the two fields; `app` applies it to
+           a guest-built `(record (a x) (b x+1))`. `app(handle, 6)` → `g((record (a 6) (b 7)))` = 42. A RECORD
+           closure argument crosses the round trip (field names are compile-time-only; the value is an i32
+           heap handle in-guest).")
+  (input  (do (def (mk) (fn ((: r (Record (a Int64) (b Int64)))) (* (. r a) (. r b))))
+              (def (app (: g (-> (Record (a Int64) (b Int64)) Int64)) (: x Int64))
+                (g (record (a x) (b (+ x 1)))))
+              (export mk) (export app)))
+  (call   app (: 6 Int64))
+  (output (: 42 Int64)))
+
+(case "round-trip: a consumer applies a closure taking a List arg built in-guest"
+  (doc    "`mk : () -> (-> (List Int64) Int64)` takes the list length; `app` applies it to a guest-built
+           `(list x x x)`. `app(handle, 9)` → `g((list 9 9 9))` = `(. List len)` = 3. A VARIABLE-LENGTH
+           collection closure argument crosses the round trip (an i32 persistent-vector handle in-guest).")
+  (input  (do (def (mk) (fn ((: xs (List Int64))) ((. List len) xs)))
+              (def (app (: g (-> (List Int64) Int64)) (: x Int64)) (g (list x x x)))
+              (export mk) (export app)))
+  (call   app (: 9 Int64))
+  (output (: 3 Int64)))
+
+(case "round-trip: a compound-arg closure whose consumer returns a compound"
+  (doc    "The compound closure ARGUMENT and a compound consumer RESULT compose: `g : (-> (Tuple Int64 Int64)
+           Int64)` returns the pair's first element; `app` returns `(tuple x (g (tuple x+1 x)))`.
+           `app(handle, 7)` → `g((tuple 8 7))` = 8, so `(: (tuple 7 8) (Tuple Int64 Int64))`. A guest-built
+           compound arg feeds the closure, and the consumer's own compound result is value-form-encoded out.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (. p 0)))
+              (def (app (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64))
+                (tuple x (g (tuple (+ x 1) x))))
+              (export mk) (export app)))
+  (call   app (: 7 Int64))
+  (output (: (tuple 7 8) (Tuple Int64 Int64))))
+
+(case "a compound closure ARG on the DIRECT-CALL path is declined — host would supply the compound"
+  (doc    "A single closure export whose closure takes a Tuple, called DIRECTLY by the host (no consumer to
+           apply it in-guest): the host would have to supply the `(Tuple Int64 Int64)` argument OVER the
+           boundary, which needs a host→guest decode of the compound into the guest heap — out of scope. The
+           compiler DECLINES (a `todo`), rather than emit a component that can't accept the argument. Contrast
+           the round-trip cases above, where the argument is built in-guest.")
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 Int64))) (+ (. p 0) (. p 1))))
+              (export mk)))
+  (call   mk (: 3 Int64))
+  (output (: 5 Int64)))
