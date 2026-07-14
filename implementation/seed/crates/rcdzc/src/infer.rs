@@ -663,7 +663,10 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
     }
     let ty_expr = tail[1];
     // A RUNTIME WIDTH `(: n (UInt m))` with a runtime `m` is its own CDZ0302 (surfaced where the
-    // annotation is used in the body); do not also fault it here as "not a type".
+    // annotation is used in the body); do not also fault it here as "not a type". An integer type's
+    // width must be a COMPILE-TIME value: a width read from runtime data is rejected, never accepted.
+    //= spec/capabilities/numeric-model.md#an-integer-type-is-indexed-by-a-compile-time-width
+    //# The bit width of an integer type MUST be resolved from a compile-time value and MUST NOT be determined by runtime data, so that an integer's width is fixed before the program runs rather than dependent on a value computed at runtime.
     if crate::eval::is_runtime_width_type(db, ty_expr) {
         return;
     }
@@ -673,7 +676,10 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
     // exported. `reduce_ctor` clamps the width to the sentinel 0, so `typeval_of` succeeds with `Int0` and
     // the "not a type" check below never fires; catch it HERE by reading the ORIGINAL width off the
     // annotation, and name that width (not the misleading clamped `UInt0`). CDZ0302, the same code the
-    // literal-fit path gives — consistent with the totality the unbound-name rule already has.
+    // literal-fit path gives — consistent with the totality the unbound-name rule already has. A width
+    // outside the admitted range (1..=64) is rejected at compile time, never accepted or trapped at run.
+    //= spec/capabilities/numeric-model.md#an-integer-type-is-indexed-by-a-compile-time-width
+    //# A bit width that is outside the range the numeric model admits MUST be rejected at compile time with the machine-readable diagnostic for the unsatisfied width constraint, rather than accepted or trapped at runtime.
     if let Some((signed, w)) = crate::eval::out_of_range_int_width(db, ty_expr) {
         trace!(target: "rcdzc::infer", param = param.0, signed, width = w, "fault: over-ceiling integer width in a parameter annotation (CDZ0302)");
         out.push(

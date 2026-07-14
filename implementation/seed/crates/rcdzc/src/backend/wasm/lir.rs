@@ -87,6 +87,8 @@ pub enum Lir {
     //# The compiler MUST emit floating-point operations under a single fixed rounding mode.
     //= spec/contracts/determinism-and-fuel.md#floating-point-emission-is-determinism-constrained
     //# The compiler MUST NOT emit a fused or contracted floating-point operation whose result varies from the separately-rounded operations across conforming runtimes.
+    //= spec/capabilities/numeric-model.md#floating-point-follows-the-determinism-contract
+    //# A floating-point operation MUST produce a result consistent with the emission constraints in the determinism-and-fuel contract.
     F64Add,
     F64Sub,
     F64Mul,
