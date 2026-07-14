@@ -32313,7 +32313,13 @@ mod stage1 {
         }
         let src = format!("(module m {defs} (def (main) (= a30 (BigInt.of 0))) (export main))");
         // The well-typed program has no faults: an empty diagnostics list, returned in bounded time.
-        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&src)));
+        // Through the host-stack guard the bin uses (`host.rs`): the reached-poison walk recurses ~per
+        // chain level (30 deep here), which OVERFLOWS a default `cargo test` worker's ≈2 MB stack (SIGABRT,
+        // EXIT=101 with 0 FAILED) even though the visited-set fix makes it TERMINATE — deep-but-finite, not
+        // a loop. Sizing the stack from `DESCENT_DEPTH_LIMIT` bounds it by depth, not the native stack.
+        let diags = crate::host::run_with_compiler_stack(move || {
+            crate::diagnostics(&mut crate::db::Db::load(parse(&src)))
+        });
         assert!(
             diags
                 .iter()
