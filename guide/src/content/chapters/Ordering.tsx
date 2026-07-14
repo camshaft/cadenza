@@ -37,6 +37,11 @@ export default function Ordering() {
       (if (> x hi) hi x)))
 (def (main) (clamp 0 10 42))`}
       />
+      <P>
+        <C>(min 8 3)</C> is <C>3</C>, the smaller of the two. And <C>(clamp 0 10 42)</C> is <C>10</C>: 42 is
+        past the upper bound, so <C>clamp</C> pulls it back to <C>10</C> — feed it a value already inside{" "}
+        <C>0</C>–<C>10</C> and you get that value back unchanged.
+      </P>
 
       <H2>Three answers, not two</H2>
       <P>
