@@ -24,7 +24,7 @@
 1000	sum_new x1000
 1000	tuple2_build x1000
 10000	value_encode x100
-2078	value_encode_largemap N=1000
+2077	value_encode_largemap N=1000
 10900	value_encode_stringkeymap x100
 0	value_eq_nested x1000
 1200	vec_concat x100

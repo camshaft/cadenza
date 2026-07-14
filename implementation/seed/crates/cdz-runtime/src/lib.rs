@@ -1667,8 +1667,12 @@ fn set_elements_canonical(desc: &Descriptor, set: Handle, elem_ix: u32) -> Optio
         cur = op_set_iter_next(cur);
     }
     op_drop(cur); // release the final (exhausted) cursor
-    // Sort into canonical value order. Elements are distinct set members, so the compare is total here.
-    elems.sort_by(|&x, &y| canonical_scalar_order(elem_shape, x, y).unwrap_or(core::cmp::Ordering::Equal));
+    // Sort into canonical value order. Set members are DISTINCT, so stability is irrelevant → the
+    // in-place `sort_unstable_by` (no merge scratch-buffer allocation, better constants) gives the same
+    // canonical order as a stable sort with one fewer heap allocation on this escape path.
+    elems.sort_unstable_by(|&x, &y| {
+        canonical_scalar_order(elem_shape, x, y).unwrap_or(core::cmp::Ordering::Equal)
+    });
     Some(elems)
 }
 
@@ -1696,8 +1700,10 @@ fn map_entries_canonical(desc: &Descriptor, map: Handle, key_ix: u32) -> Option<
         cur = op_map_iter_next(cur);
     }
     op_drop(cur); // release the final (exhausted) cursor
-    // Sort by canonical KEY order. Keys are distinct (a map has each key once) → total order here.
-    entries.sort_by(|&(ka, _), &(kb, _)| {
+    // Sort by canonical KEY order. Map keys are DISTINCT → stability is irrelevant, so `sort_unstable_by`
+    // (in-place, no merge scratch-buffer allocation) gives the same canonical order with one fewer heap
+    // allocation than the stable `sort_by`.
+    entries.sort_unstable_by(|&(ka, _), &(kb, _)| {
         canonical_scalar_order(key_shape, ka, kb).unwrap_or(core::cmp::Ordering::Equal)
     });
     Some(entries)
