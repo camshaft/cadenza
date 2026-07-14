@@ -3872,6 +3872,37 @@
   (input  (= (map ("a" 1) ("b" 2)) (map ("b" 2) ("a" 1))))
   (output (: true Bool)))
 
+; The order-independence case above compares two constant `(map …)` literals (they fold). These pin it at
+; RUN TIME: two maps built by `Map.insert` in DIFFERENT insertion orders (a runtime value in one entry, so
+; neither folds) compare equal by CONTENT via the `value-eq` CHAMP walk — the order-independent, canonical-
+; by-construction persistent structure means the two runtime handles are byte-identical. Comparing two
+; environments / symbol tables for equality is the idiom; both operands are runtime handles (the CHAMP
+; walk), distinct from the runtime-vs-constant map-equality concern the comment below discusses.
+
+(case "two runtime maps built in different insertion orders compare equal by content"
+  (doc    "`m1` inserts key 1 (a runtime value `a`) then key 2; `m2` inserts key 2 THEN key 1 — the same
+           associations `{1↦a, 2↦20}` in the opposite order. Built at run time (a parameter in one entry),
+           they compare EQUAL for every `a` (a=10 → 1, a=5 → 1): the CHAMP is order-independent and canonical
+           by construction, so the two runtime handles are byte-identical. Pins runtime map equality's
+           order-independence (the environment-comparison idiom), the runtime companion of the constant
+           literal case above.")
+  (input  (do
+            (def (m1 (: a Int64)) (Map.insert (Map.insert Map.empty 1 a) 2 20))
+            (def (m2 (: a Int64)) (Map.insert (Map.insert Map.empty 2 20) 1 a))
+            (def (main (: a Int64)) (if (= (m1 a) (m2 a)) 1 0)) (export main)))
+  (call   main (: 10 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64)) (output (: 1 Int64)))
+
+(case "two runtime maps with the same keys but a different value are unequal"
+  (doc    "The discriminator that runtime map equality is a genuine per-value compare, not order-only:
+           `{1↦a, 2↦20}` vs `{1↦99, 2↦20}` — same key set, differing at key 1. a=99 → equal (1); a=10 →
+           unequal (0). Pins that the runtime CHAMP walk compares VALUES at each key, so two same-shape maps
+           differing in one value are unequal (the environment-changed check).")
+  (input  (do
+            (def (main (: a Int64)) (if (= (Map.insert (Map.insert Map.empty 1 a) 2 20) (Map.insert (Map.insert Map.empty 1 99) 2 20)) 1 0)) (export main)))
+  (call   main (: 99 Int64)) (output (: 1 Int64))
+  (call   main (: 10 Int64)) (output (: 0 Int64)))
+
 ; Map equality is STRUCTURAL and must not depend on whether a map's key was a compile-time constant or
 ; computed at run time (core-semantics.md #Equality Is Structural — two values equal exactly when their
 ; canonical forms coincide). `(let ((k 5)) (map (k 1)))` and `(let ((j (+ 2 3))) (map (j 1)))` are the

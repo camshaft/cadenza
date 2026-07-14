@@ -1064,6 +1064,8 @@ pass	a reflected quantity type rejects a value of a different dimension
 pass	a refutable constructor pattern in a let binder is rejected
 pass	a refutable map value sub-pattern dispatches by the value's constructor
 pass	a repeated let binding shadows the earlier one for what follows
+pass	a repeated runtime checked-multiply is computed once and still traps on overflow
+pass	a repeated runtime subexpression is computed once (CSE) and reused across an operator
 pass	a resume outside any handler arm is rejected
 pass	a returned capturing closure bound with let and applied folds like the inline form
 pass	a returned lambda captures+applies a closure param bound to a TOP-LEVEL def
@@ -2224,6 +2226,8 @@ pass	two rationals denoting the same number are equal regardless of how they wer
 pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
 pass	two runtime Ok values of a multi-parameter sum compare equal by a heap walk
+pass	two runtime maps built in different insertion orders compare equal by content
+pass	two runtime maps with the same keys but a different value are unequal
 pass	two runtime records compare equal by a heap walk
 pass	two runtime strings compare equal by their contents
 pass	two runtime sum values compare equal by a heap walk
