@@ -5147,10 +5147,26 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     // discarded), so an ill-typed or provably-trapping intermediate must be caught — descend into EVERY
     // form here (the last one is also covered by the `Ref` descent, harmlessly). Read off the raw AST
     // head since the resolved form has already collapsed to the last form's `Ref`.
-    if db.ast.head_name(id) == Some("do")
-        && let Some(forms) = db.ast.as_form(id, "do")
-    {
-        let forms: Vec<StructId> = forms.to_vec();
+    if db.ast.head_name(id) == Some("do") && db.ast.as_form(id, "do").is_some() {
+        // A `do` block that is ITSELF malformed — EMPTY (`(do)` has no value form) or ending in a
+        // DECLARATION (`(do (def x 5))` yields nothing) — resolves to a coded `Poison` (`resolve_do`).
+        // That is a well-formedness fault of the `do` node, so it must surface wherever `collect` visits
+        // it — including a def BODY that IS the malformed `(do)`. Without this, `(def (g) (do))` PASSED
+        // `cdz check` (the resolve-poison reached only the emit-path lowering walk, which runs on
+        // nullary-exported bodies alone) while `compile` rejected it — the same "check misses a
+        // resolve/lower-only reject on a param/nullary body" hole M81's `match_pattern_fault` closed for
+        // pattern faults. Surface the coded poison here (anchored at the `do` node), then STILL descend
+        // the forms below so an ill-typed intermediate is also reported; `dedup_faults` collapses this
+        // against any copy the emit walk surfaces at the same node. Compute the poison BEFORE re-borrowing
+        // `db.ast` for the forms list (`resolved_of` needs `&mut db`).
+        if let Resolved::Poison(r) = resolved_of(db, id)
+            && r.code.is_some()
+        {
+            let mut r = r;
+            r.set_origin_if_absent(id);
+            out.push(r);
+        }
+        let forms: Vec<StructId> = db.ast.as_form(id, "do").unwrap_or(&[]).to_vec();
         for f in forms {
             // A do-local `(def …)` is a DECLARATION, not a value expression — resolving it as one would
             // decline. A VALUE declaration `(def x V)` (or nullary `(def (x) V)`) has its value `V`

@@ -23349,6 +23349,67 @@ mod stage1 {
     }
 
     #[test]
+    fn a_malformed_do_block_surfaces_in_the_diagnostics_query_on_any_body() {
+        // An EMPTY `(do)` (no value form) and a `do` ending in a DECLARATION (`(do (def x 5))`, valueless)
+        // are coded CDZ0201 well-formedness faults. They were reached only by the emit-path lowering walk
+        // (nullary-EXPORTED bodies alone), so a malformed `(do)` as a PARAMETERIZED (or non-exported) def
+        // body silently PASSED `cdz check` while `compile` rejected it — the `do`-form analogue of the
+        // pattern-fault/binop-arity `check`≡`compile` gaps. `collect_node`'s `do` arm now surfaces the
+        // do form's own coded poison, so the fault appears in `diagnostics()` (what `check` runs) whether
+        // the def takes parameters or not.
+        let empty_param = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (g (: n Int64)) (do)) (export g))",
+        )));
+        let e = empty_param
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0201"))
+            .expect("an empty `(do)` in a parameterized body is caught by check");
+        assert!(
+            e.message.contains("empty `do` block has no value"),
+            "names the empty-do fault: {}",
+            e.message
+        );
+
+        // A trailing declaration is caught too.
+        assert!(
+            crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (g) (do (def x 5))) (export g))",
+            )))
+            .iter()
+            .any(|d| d
+                .message
+                .contains("must end in a value form, not a declaration")),
+            "a `do` ending in a declaration is caught"
+        );
+
+        // Reported EXACTLY ONCE when the malformed `do` is also reached via a call (no infer/emit double).
+        let called = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (mk) (do)) (def (main) (+ 1 (mk))) (export main))",
+        )));
+        assert_eq!(
+            called
+                .iter()
+                .filter(|d| d.message.contains("empty `do` block has no value"))
+                .count(),
+            1,
+            "the malformed do reports once, not a double: {called:?}"
+        );
+
+        // NO false positive: a well-formed `do` (value forms, or a def followed by a value) is clean.
+        for ok in [
+            "(module m (def (g) (do 1 2)) (export g))",
+            "(module m (def (g) (do (def x 5) x)) (export g))",
+        ] {
+            assert!(
+                crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
+                    .iter()
+                    .all(|d| !d.message.contains("`do` block")),
+                "a well-formed do produces no do-block fault: {ok}"
+            );
+        }
+    }
+
+    #[test]
     fn a_do_local_declaration_binds_the_following_forms() {
         // 02-binding-and-control §A Declaration In A Sequencing Block Is Scoped To The Forms That Follow
         // It: a `(def …)` form of a `do` binds its name for the LATER forms — a VALUE declaration
