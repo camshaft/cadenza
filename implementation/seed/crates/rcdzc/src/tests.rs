@@ -22006,6 +22006,46 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_element_literal_pattern_of_the_wrong_type_is_a_type_error() {
+        // A refutable LITERAL leading element `(list "x" .. r)` on an `(List Int64)` writes a String where
+        // an Int64 is required. Before, it desugared to a `(= __le "x")` guard that silently never matched
+        // (String-vs-Int folds to `false`), accepting a mistyped element as dead code. It is now CDZ0201
+        // naming both types, anchored at the literal (the list-element twin of the scalar-match + map-key
+        // pattern-type checks).
+        let d = reject_full(
+            "(module m (def (main) (match (list 1 2 3) ((list \"x\" .. r) 1) (_ 0))) (export main))",
+        )
+        .expect("must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("list-element pattern is String")
+                && d.message.contains("the list's elements are Int64"),
+            "names both element types: {}",
+            d.message
+        );
+        // The symmetric case (an Int element on a String list) rejects too.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (match (list \"a\" \"b\") ((list 5 .. r) 1) (_ 0))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201")
+        );
+        // NO OVER-REJECTION: a well-typed literal element matches + runs (an Int literal on an Int list).
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(
+                    "(module m (def (main) (match (list 1 2 3) ((list 1 .. _r) 10) (_ 0))) (export main))"
+                )))
+                .expect("compile"),
+                "main"
+            ),
+            10,
+            "a well-typed list-element literal dispatches by value"
+        );
+    }
+
+    #[test]
     fn a_map_value_sub_pattern_may_be_a_literal() {
         // A map-pattern VALUE sub-pattern MAY be a refutable LITERAL — `(map ("a" 0) …)` matches only a map
         // whose value at "a" is 0. `desugar_map_value_subpatterns` lifts it into the body as `(match __mv (0

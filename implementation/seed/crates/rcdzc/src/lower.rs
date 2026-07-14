@@ -3828,6 +3828,53 @@ fn desugar_refutable_map_list_elements(
 }
 
 fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // WELL-FORMEDNESS (before any desugar): each LITERAL leading element must type-agree with the list's
+    // element type. `(list "x" .. r)` on an `(List Int64)` writes a String where an Int64 is required —
+    // without this it desugars to a `(= __le "x")` guard that silently never matches (String-vs-Int folds
+    // to `false`), accepting a mistyped element as dead code. Reject it CDZ0201 naming both types, anchored
+    // at the literal — the list-element twin of the scalar-match + map-key pattern-type checks. Runs before
+    // the literal desugar (which would otherwise hide the mismatch inside a synthesized guard). `Any`
+    // element type (unsolved) is not checked (not-yet-constrained).
+    if let crate::ty::Ty::List(elem) = crate::infer::type_of(db, scrutinee)
+        && !matches!(*elem, crate::ty::Ty::Any)
+    {
+        for &(pat, _) in arms {
+            let inner = match db.ast.as_form(pat, "guard") {
+                Some(g) if g.len() == 2 => g[0],
+                _ => pat,
+            };
+            let Some(es) = db
+                .ast
+                .as_ctor_form(inner, "list")
+                .or_else(|| db.ast.as_form(inner, "list"))
+                .map(<[_]>::to_vec)
+            else {
+                continue;
+            };
+            let lead = es
+                .iter()
+                .position(|&e| db.ast.as_name(e) == Some(".."))
+                .unwrap_or(es.len());
+            for &e in &es[..lead] {
+                if is_refutable_literal_element(db, e) {
+                    let et = crate::infer::type_of(db, e);
+                    if !matches!(et, crate::ty::Ty::Any) && !et.agrees_with(&elem) {
+                        return Core::Poison(
+                            Reject::coded(
+                                Code::Malformed,
+                                format!(
+                                    "this list-element pattern is {}, but the list's elements are {}",
+                                    et.render_name(),
+                                    elem.render_name()
+                                ),
+                            )
+                            .at(e),
+                        );
+                    }
+                }
+            }
+        }
+    }
     // PRE-PASS (nested list): a refutable nested LIST leading element (`(list (list a .. r1) .. r2)`)
     // dispatches on the INNER list's length — desugar to a fresh binder + an inner-length guard + a body
     // re-match binding the inner sub-patterns. Run FIRST (a nested-list element is neither a ctor nor a
