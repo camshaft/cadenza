@@ -2735,6 +2735,33 @@
   (call   mk (: (tuple 1 2) (Tuple Int64 Int64)))
   (output (: (map (1 100) (2 200)) (Map Int64 Int64))))
 
+; The tuple-arg × list-result composition extends to the MULTI-EXPORT shape: N same-signature closures sharing
+; ONE list-returning `call` each rebuild the flattened tuple arg cell (the multi bytes/value-form/value-encode
+; cores + the shared multi list<u8> envelope thread the `TupleArgRebuild`).
+
+(case "MULTI-EXPORT: two Tuple-arg closures sharing a List-returning `call`"
+  (doc    "Two same-sig `(-> (Tuple Int64 Int64) (List Int64))` closures (`mk-fwd`, `mk-rev`) share one
+           value-encode `call` that rebuilds the flattened tuple arg. Driving `mk-rev`: `make-rev()` → handle,
+           `call(handle, (10, 3))` → `(list 3 10)`. The multi value-encode core + the shared multi list<u8>
+           envelope thread the tuple rebuild.")
+  (input  (do (def (mk-fwd) (fn ((: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))))
+              (def (mk-rev) (fn ((: p (Tuple Int64 Int64))) (list (. p 1) (. p 0))))
+              (export mk-fwd) (export mk-rev)))
+  (call   mk-rev (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (list 3 10) (List Int64))))
+
+(case "MULTI-EXPORT: two Tuple-arg closures sharing a Tuple-returning `call`"
+  (doc    "The same multi-export shape with a fixed-shape COMPOUND (value-form) result: `(-> (Tuple Int64
+           Int64) (Tuple Int64 Int64))`. Driving `mk-sum`: `call(handle, (10, 3))` → `(tuple 13 7)`. The multi
+           value-form core threads the tuple-arg rebuild.")
+  (input  (do (def (mk-sum) (fn ((: p (Tuple Int64 Int64)))
+                          (tuple (+ (. p 0) (. p 1)) (- (. p 0) (. p 1)))))
+              (def (mk-prod) (fn ((: p (Tuple Int64 Int64)))
+                           (tuple (* (. p 0) (. p 1)) (. p 0))))
+              (export mk-sum) (export mk-prod)))
+  (call   mk-sum (: (tuple 10 3) (Tuple Int64 Int64)))
+  (output (: (tuple 13 7) (Tuple Int64 Int64))))
+
 ; A higher-order closure whose INNER closure has an UNANNOTATED COMPOUND parameter now compiles: the inner
 ; `(fn (p) …)` param `p` types `Any` bottom-up (no annotation, no def entry), but the higher-order parameter
 ; `g`'s DECLARED arrow `(-> (-> (Tuple …) R) R)` fixes it — `expected_arrow_for_lambda` recovers the inner

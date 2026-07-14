@@ -2208,15 +2208,11 @@ fn emit_multi_closure_resource(
             crate::lower::sum_shape_descriptor(db, ret_ty.strip_nominal())
         };
     let ret_is_collection = ret_descriptor.is_some();
-    // A fixed-shape compound ARG is supported only with a SCALAR result (the list-result multi cores don't
-    // thread the `TupleArgRebuild`, so combining would emit a scalar-arg envelope over a flattened-field core
-    // — an INVALID component). Decline cleanly (mirrors the single-export + distinct-sig guards).
-    if tuple_arg.is_some() && (ret_is_bytes || ret_is_compound || ret_is_collection) {
-        return Err(Reject::decline(
-            "a multi-export closure with BOTH a fixed-shape compound ARGUMENT and a byte-rope/compound/\
-             collection RESULT is not yet emitted (a later widening; a scalar-result compound arg works)",
-        ));
-    }
+    // A fixed-shape compound ARG now composes with EVERY multi-export result shape too — scalar, byte-rope,
+    // fixed-compound (value-form), collection (value-encode): all three multi list-result cores + the shared
+    // multi list<u8> envelope thread the `TupleArgRebuild`. No result-shape decline remains for a multi-export
+    // tuple arg. (A compound-arg-alongside-others / variable-length-field compound arg still declines at
+    // detection.)
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
         0 // unused by the list-returning paths; `call` returns list<u8>
     } else {
@@ -2360,6 +2356,10 @@ fn emit_multi_closure_resource(
             make_param_bytes: m.param_bytes.clone(),
         })
         .collect();
+    // A fixed-shape tuple ARG (shared by all makes): the shared list-`call` cores rebuild the arg cell from
+    // the flattened fields, the shared list<u8> envelope emits the `tuple<…>` type. `None` on the scalar path.
+    let rebuild = tuple_arg.as_ref().map(|(_, _, rb)| rb);
+    let tuple_bytes = tuple_arg.as_ref().map(|(fb, _, _)| fb.as_slice());
     // A COMPOUND shared result → the N-makes-one-list-`call` VALUE-FORM core (walks each closure's returned
     // handle into the value-form template) + the SAME memory/realloc envelope as the bytes path. cdz-run
     // try-decodes the `list<u8>` result to the typed `(: value T)` form.
@@ -2375,18 +2375,22 @@ fn emit_multi_closure_resource(
             template,
             &layout,
             true,
+            rebuild,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_multi_closure_bytes_resource_borrow(
-            &main_core,
-            &dtor_core,
-            &imports,
-            &import_name,
-            &abi_makes,
-            &arg_bytes,
-            &[],
-            true,
-        ));
+        return Ok(
+            envelope::assemble_multi_closure_bytes_resource_borrow_tuple(
+                &main_core,
+                &dtor_core,
+                &imports,
+                &import_name,
+                &abi_makes,
+                &arg_bytes,
+                &[],
+                true,
+                tuple_bytes,
+            ),
+        );
     }
     // A VARIABLE-LENGTH collection shared result → the N-makes-one-list-`call` VALUE-ENCODE core (each `call`
     // dispatches, then value-encodes the returned collection handle) + the SAME memory/realloc envelope.
@@ -2402,18 +2406,22 @@ fn emit_multi_closure_resource(
             descriptor,
             &layout,
             true,
+            rebuild,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_multi_closure_bytes_resource_borrow(
-            &main_core,
-            &dtor_core,
-            &imports,
-            &import_name,
-            &abi_makes,
-            &arg_bytes,
-            &[],
-            true,
-        ));
+        return Ok(
+            envelope::assemble_multi_closure_bytes_resource_borrow_tuple(
+                &main_core,
+                &dtor_core,
+                &imports,
+                &import_name,
+                &abi_makes,
+                &arg_bytes,
+                &[],
+                true,
+                tuple_bytes,
+            ),
+        );
     }
     // A byte-rope shared result → the N-makes-one-list-`call` bytes core + memory/realloc envelope. No plain
     // (non-closure) exports on the pure multi-export path.
@@ -2428,18 +2436,22 @@ fn emit_multi_closure_resource(
             lifted_type_idx,
             &layout,
             true,
+            rebuild,
         )
         .map_err(Reject::decline)?;
-        return Ok(envelope::assemble_multi_closure_bytes_resource_borrow(
-            &main_core,
-            &dtor_core,
-            &imports,
-            &import_name,
-            &abi_makes,
-            &arg_bytes,
-            &[],
-            true,
-        ));
+        return Ok(
+            envelope::assemble_multi_closure_bytes_resource_borrow_tuple(
+                &main_core,
+                &dtor_core,
+                &imports,
+                &import_name,
+                &abi_makes,
+                &arg_bytes,
+                &[],
+                true,
+                tuple_bytes,
+            ),
+        );
     }
     // DIRECT-CALL COMPOUND ARG (multi-export): N same-sig closures share one `call` whose single argument is
     // a fixed-shape scalar tuple/record. The shared `call` receives the FLATTENED fields (`arg_vts`) and
@@ -2841,6 +2853,7 @@ fn emit_mixed_closure_resource(
             template,
             &layout,
             true,
+            None,
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_multi_closure_bytes_resource_borrow(
@@ -2868,6 +2881,7 @@ fn emit_mixed_closure_resource(
             descriptor,
             &layout,
             true,
+            None,
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_multi_closure_bytes_resource_borrow(
@@ -2894,6 +2908,7 @@ fn emit_mixed_closure_resource(
             lifted_type_idx,
             &layout,
             true,
+            None,
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_multi_closure_bytes_resource_borrow(

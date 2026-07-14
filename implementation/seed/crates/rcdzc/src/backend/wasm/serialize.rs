@@ -2546,6 +2546,7 @@ pub fn multi_closure_bytes_resource_core_module(
     lifted_type_idx: u32,
     layout: &Layout,
     call_borrow: bool,
+    tuple_arg: Option<&TupleArgRebuild>,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -2731,9 +2732,11 @@ pub fn multi_closure_bytes_resource_core_module(
         let bh = cell + 1;
         let nlen = bh + 1;
         let iv = nlen + 1;
+        let tuple_local = iv + 1;
+        let n_locals = if tuple_arg.is_some() { 5 } else { 4 };
         let mut inner = Vec::new();
         inner.extend_from_slice(&wasm_vec(1, &{
-            let mut g = uleb_bytes(4);
+            let mut g = uleb_bytes(n_locals as u64);
             g.push(wasm_abi::CORE_I32);
             g
         }));
@@ -2757,8 +2760,12 @@ pub fn multi_closure_bytes_resource_core_module(
         }
         set(cell, &mut inner);
         get(cell, &mut inner);
-        for a in 0..arity {
-            get(1 + a, &mut inner);
+        if let Some(rebuild) = tuple_arg {
+            emit_tuple_rebuild(rebuild, tuple_local, &imp, &mut inner);
+        } else {
+            for a in 0..arity {
+                get(1 + a, &mut inner);
+            }
         }
         get(cell, &mut inner);
         ci32(0, &mut inner);
@@ -2771,6 +2778,11 @@ pub fn multi_closure_bytes_resource_core_module(
         uleb128(lifted_type_idx as u64, &mut inner);
         uleb128(0, &mut inner);
         set(bh, &mut inner);
+        // The rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally). Separate
+        // from the closure cell + the transient Bytes handle.
+        if tuple_arg.is_some() {
+            emit_tuple_rebuilt_drop(tuple_local, &imp, &mut inner);
+        }
         // OWN: drop the cell now. BORROW: host keeps it (repeatable), dtor reclaims — do NOT drop. The
         // transient Bytes handle `bh` is separate and dropped after the copy either way.
         if !call_borrow {
@@ -2873,6 +2885,7 @@ pub fn multi_closure_value_encode_resource_core_module(
     descriptor: &[u8],
     layout: &Layout,
     call_borrow: bool,
+    tuple_arg: Option<&TupleArgRebuild>,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -3060,9 +3073,11 @@ pub fn multi_closure_value_encode_resource_core_module(
         let doc = desc + 1;
         let nlen = doc + 1;
         let iv = nlen + 1;
+        let tuple_local = iv + 1;
+        let n_locals = if tuple_arg.is_some() { 7 } else { 6 };
         let mut inner = Vec::new();
         inner.extend_from_slice(&wasm_vec(1, &{
-            let mut g = uleb_bytes(6);
+            let mut g = uleb_bytes(n_locals as u64);
             g.push(wasm_abi::CORE_I32);
             g
         }));
@@ -3086,8 +3101,12 @@ pub fn multi_closure_value_encode_resource_core_module(
         }
         set(cell, &mut inner);
         get(cell, &mut inner);
-        for a in 0..arity {
-            get(1 + a, &mut inner);
+        if let Some(rebuild) = tuple_arg {
+            emit_tuple_rebuild(rebuild, tuple_local, &imp, &mut inner);
+        } else {
+            for a in 0..arity {
+                get(1 + a, &mut inner);
+            }
         }
         get(cell, &mut inner);
         ci32(0, &mut inner);
@@ -3100,6 +3119,11 @@ pub fn multi_closure_value_encode_resource_core_module(
         uleb128(lifted_type_idx as u64, &mut inner);
         uleb128(0, &mut inner);
         set(rep, &mut inner);
+        // The rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally), before
+        // the value-encode. Separate from the closure cell + the collection result handle.
+        if tuple_arg.is_some() {
+            emit_tuple_rebuilt_drop(tuple_local, &imp, &mut inner);
+        }
         // OWN: drop the cell now. BORROW: host keeps it (repeatable), dtor reclaims — do NOT drop. The
         // transient collection handle `rep` is separate and released after value-encode.
         if !call_borrow {
@@ -3228,6 +3252,7 @@ pub fn multi_closure_value_resource_core_module(
     template: &crate::lower::ValueFormTemplate,
     layout: &Layout,
     call_borrow: bool,
+    tuple_arg: Option<&TupleArgRebuild>,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -3425,10 +3450,13 @@ pub fn multi_closure_value_resource_core_module(
         let arity = arg_vts.len() as u32;
         let cell = 1 + arity;
         let rep = cell + 1;
-        let scratch = rep + 1;
+        // i32 group FIRST (cell, rep, [tuple]) then the i64 scratch — scratch index = cell + n_i32.
+        let n_i32: u32 = if tuple_arg.is_some() { 3 } else { 2 };
+        let tuple_local = rep + 1; // only valid when tuple_arg.is_some()
+        let scratch = cell + n_i32;
         let mut inner = Vec::new();
         inner.extend_from_slice(&wasm_vec(2, &{
-            let mut g = uleb_bytes(2);
+            let mut g = uleb_bytes(n_i32 as u64);
             g.push(wasm_abi::CORE_I32);
             let mut g2 = uleb_bytes(1);
             g2.push(wasm_abi::CORE_I64);
@@ -3451,8 +3479,12 @@ pub fn multi_closure_value_resource_core_module(
         }
         set(cell, &mut inner);
         get(cell, &mut inner);
-        for a in 0..arity {
-            get(1 + a, &mut inner);
+        if let Some(rebuild) = tuple_arg {
+            emit_tuple_rebuild(rebuild, tuple_local, &imp, &mut inner);
+        } else {
+            for a in 0..arity {
+                get(1 + a, &mut inner);
+            }
         }
         get(cell, &mut inner);
         inner.push(op::I32_CONST);
@@ -3466,6 +3498,11 @@ pub fn multi_closure_value_resource_core_module(
         uleb128(lifted_type_idx as u64, &mut inner);
         uleb128(0, &mut inner);
         set(rep, &mut inner);
+        // The rebuilt tuple-arg cell is an owned per-call temporary — drop it now (unconditionally), before
+        // walking the compound result. Separate from the closure cell + the compound result handle.
+        if tuple_arg.is_some() {
+            emit_tuple_rebuilt_drop(tuple_local, &imp, &mut inner);
+        }
         // OWN: drop the cell now. BORROW: host keeps it (repeatable), dtor reclaims — do NOT drop. The
         // transient compound handle `rep` is separate and dropped after the walk.
         if !call_borrow {
