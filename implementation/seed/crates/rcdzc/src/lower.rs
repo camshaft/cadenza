@@ -54,6 +54,32 @@ pub struct LiftedLambda {
 
 /// The core (A-normal) form of the node at `id`, filling the column on demand (memoized). Reads the
 /// resolved form; children stay ids, lowered on their own demand.
+/// If any of `elems` lowers to a REDUCTION-BOUND poison (`Code::RecursionBound`), return that poison so a
+/// compound construction (tuple / list / record value) built around it COLLAPSES to the poison rather than
+/// surviving as a giant `Core::Tuple`/`ListNew`/`Record`. A non-normalizing self-application in a compound
+/// slot — `((fn v (tuple (v v) 1)) (fn v (tuple (v v) 1)))` — β-reduces (bounded by `REDUCE_NODE_BUDGET`)
+/// into a memoized core chain thousands of `Core::Tuple` levels deep, bottoming out in that poison; without
+/// this collapse, every downstream structural walk over the core tree (`layout::collect_call_callees`,
+/// `compile::collect_reached_poisons`, emit/serialize) would descend the whole chain in native recursion
+/// and OVERFLOW THE COMPILER'S STACK on a small valid-to-parse program. Collapsing at the source — the ONE
+/// place the compound is built — stops that at every consumer at once, not walk-by-walk.
+///
+/// Only `RecursionBound` (a resource-limit poison — the reduction could not finish) collapses; a `ConstTrap`
+/// element does NOT, preserving dead-code elimination (`(. (tuple 42 (/ 100 0)) 0)` projects away its
+/// trapping element and warns CDZ0305, never rejecting). A `RecursionBound` element is not DCE-eligible: the
+/// compiler did not PROVE the computation traps, it ran out of budget, so the enclosing compound genuinely
+/// cannot be built and the poison must propagate.
+fn reduction_bound_element(db: &mut Db, elems: &[StructId]) -> Option<Reject> {
+    for &e in elems {
+        if let Core::Poison(r) = core_of(db, e)
+            && r.code == Some(Code::RecursionBound)
+        {
+            return Some(r);
+        }
+    }
+    None
+}
+
 pub fn core_of(db: &mut Db, id: StructId) -> Core {
     if let Slot::Filled(c) = db.core.get(id) {
         trace!(target: "rcdzc::lower", node = id.0, "memo hit");
@@ -302,7 +328,13 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // `Resolved::Record.fields` and `Core::Record.fields` are BOTH `Arc<BTreeMap<…>>`, so SHARE the
         // map by an Arc clone (a refcount bump) — no O(fields) copy at all, and `Core::Record`'s own
         // per-read clone is likewise O(1).
-        Resolved::Record { fields } => Core::Record { fields },
+        Resolved::Record { fields } => {
+            let vals: Vec<StructId> = fields.values().copied().collect();
+            if let Some(r) = reduction_bound_element(db, &vals) {
+                return Core::Poison(r);
+            }
+            Core::Record { fields }
+        }
         // Member access FOLDS: reduce the operand to a record (following refs, reducing a ctor
         // application) and lower the field's value directly, so `(. (record (x 1)) x)` and `(. (Int
         // 64) max)` both fold to the field's value with no record built. The one projection, via the
@@ -371,14 +403,24 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // A tuple literal — kept as a compound. Like a record, it folds away only when a projection
         // reads a visible element of it; a tuple that survives (constructed from runtime operands, or a
         // constant tuple that escapes) is a `Core::Tuple` the backend builds on the heap.
-        Resolved::Tuple { elems } => Core::Tuple {
-            elems: elems.to_vec(),
-        },
+        Resolved::Tuple { elems } => {
+            if let Some(r) = reduction_bound_element(db, &elems) {
+                return Core::Poison(r);
+            }
+            Core::Tuple {
+                elems: elems.to_vec(),
+            }
+        }
         // A list literal — a `Core::ListNew` the backend builds on the persistent `vec-*` heap. (Unlike a
         // tuple, a list has no projection-fold: `List.len`/`List.at` are operations, not a static index.)
-        Resolved::List { elems } => Core::ListNew {
-            elems: elems.to_vec(),
-        },
+        Resolved::List { elems } => {
+            if let Some(r) = reduction_bound_element(db, &elems) {
+                return Core::Poison(r);
+            }
+            Core::ListNew {
+                elems: elems.to_vec(),
+            }
+        }
         // A map literal `(map (k v) …)` — a `Core::MapNew` the backend builds on the persistent CHAMP
         // `map-*` heap (`map-empty` + a `map-insert` per entry, in source order). The key/value types come
         // from the node's own solved `Ty::Map` (fully determined by unification — key/value homogeneity is

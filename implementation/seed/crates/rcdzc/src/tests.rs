@@ -28156,6 +28156,43 @@ mod stage1 {
     }
 
     #[test]
+    fn a_compound_wrapped_self_application_declines_not_a_stack_overflow() {
+        // A THIRD hang shape the fuzzer surfaced: `(fn v (tuple (v v) 1))` applied to a copy of itself. Here
+        // the reduction BUDGET already terminates inference (β-reduction gives up past `REDUCE_NODE_BUDGET`)
+        // — but that leaves a MEMOIZED core chain thousands of nodes deep, `Tuple[Tuple[…poison…, 1], 1]`,
+        // bottoming out in the reduction-bound poison. That chain is built bottom-up at shallow demand
+        // depths, so lowering's own descent guard never fired on it; the reached-poison walk
+        // (`collect_reached_poisons`) then descended the whole pre-built chain in ONE native recursion and
+        // OVERFLOWED THE COMPILER'S STACK — a process abort. Giving that walk the same `DESCENT_DEPTH_LIMIT`
+        // guard lowering has makes it surface the reduction-bound poison (CDZ0999) past the limit instead of
+        // crashing. The guard is at the walk's single recursive entry and the walk dispatches structurally,
+        // so the whole compound-construction class (tuple / record / list / …) is covered by ONE guard, not
+        // one syntactic wrapper at a time. The property is 'never crash': it must TERMINATE with a coded
+        // rejection on any input, regardless of the compound the divergence hides in.
+        let tup = "(module m (def (main) ((fn (v0) (tuple (v0 v0) 1)) (fn (v2) (tuple (v2 v2) 1)))) (export main))";
+        let reject = compile_component(&crate::codec::encode(&parse(tup)))
+            .expect_err("a tuple-wrapped self-application must decline, not crash");
+        assert_eq!(
+            reject.code.as_deref(),
+            Some("CDZ0999"),
+            "a tuple-wrapped diverging reduction declines at the resource bound (CDZ0999): {} / {:?}",
+            reject.message,
+            reject.code
+        );
+        // The record-wrapped sibling is the SAME class (a self-app in a record field) — it must likewise
+        // TERMINATE with a coded rejection, exercising the shared structural guard on a different compound.
+        let rec = "(module m (def (main) ((fn (v0) (record (a (v0 v0)) (b 1))) (fn (v2) (record (a (v2 v2)) (b 1))))) (export main))";
+        let reject = compile_component(&crate::codec::encode(&parse(rec)))
+            .expect_err("a record-wrapped self-application must decline, not crash");
+        assert!(
+            reject.code.is_some(),
+            "a record-wrapped diverging reduction is a coded decline, not a crash: {} / {:?}",
+            reject.message,
+            reject.code
+        );
+    }
+
+    #[test]
     fn a_pathologically_deep_expression_declines_not_crashes() {
         // A `(+ 1 (+ 1 …))` nest far past the recursive-descent depth bound must DECLINE (a
         // resource-limit rejection) rather than overflow the stack and abort — a completes-or-declines,

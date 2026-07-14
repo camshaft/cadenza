@@ -1389,7 +1389,34 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>) -> Vec<Reject> {
 /// Collect poisons reached UNCONDITIONALLY from `id`. Descends the core form into positions a value is
 /// unconditionally used (an `if` CONDITION), but NOT into a conditional's branches — a poison shielded
 /// by an untaken branch is not a build failure. Reads the core column on demand.
+///
+/// This is the RECURSIVE-DESCENT DEPTH GUARD in front of the walk: β-reduction can leave a MEMOIZED core
+/// chain thousands of nodes deep (a non-normalizing self-application bottoms out in a `RecursionBound`
+/// poison only after the reduction budget clips it — e.g. `((fn v (tuple (v v) 1)) (fn v (tuple (v v) 1)))`
+/// leaves a `Tuple[Tuple[…poison…, 1], 1]` chain ~`REDUCE_NODE_BUDGET`-deep). That chain is built bottom-up
+/// at shallow demand depths, so `core_of`'s own descent guard never fires on it — but the poison walk then
+/// descends the whole pre-built chain in one native recursion and OVERFLOWS THE STACK (a process abort) on
+/// a small valid-to-parse program. Past [`DESCENT_DEPTH_LIMIT`] surface the reduction-bound poison (CDZ0999,
+/// the same code the chain's innermost node carries) instead of recursing — a compiler must never crash on
+/// well-formed input, only decline or complete. The guard sits at the ONE recursive entry and the walk
+/// dispatches structurally, so it covers the whole compound-construction class (tuple/record/list/sum/map/
+/// set/…) at once, not one syntactic wrapper.
 fn collect_reached_poisons(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
+    if db.descent_depth >= crate::db::DESCENT_DEPTH_LIMIT {
+        let mut r = Reject::coded(
+            Code::RecursionBound,
+            "an expression does not reduce to a value within the compiler's reduction limits (a call chain nested too deeply, or a non-terminating / explosively-growing reduction)",
+        );
+        r.set_origin_if_absent(id);
+        out.push(r);
+        return;
+    }
+    db.descent_depth += 1;
+    collect_reached_poisons_at(db, id, out);
+    db.descent_depth -= 1;
+}
+
+fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
     // A `do` SEQUENCING block resolves to a `Ref` to its LAST form, so `core_of` follows only that. But
     // every INTERMEDIATE form is UNCONDITIONALLY evaluated (its value discarded), so a provable trap in
     // one is a build failure — descend into every form here (the raw AST head, since the core collapsed
