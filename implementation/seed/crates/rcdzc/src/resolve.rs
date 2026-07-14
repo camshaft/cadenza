@@ -1167,6 +1167,18 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             heads: heads.into(),
         });
     }
+    // Case 6lg: `form` is a GUARD `(guard (list p… [.. rest]) <cond>)`, ascended from `<cond>` → a LEADING
+    // element binder or the REST binder of the list pattern is in scope in the guard cond (`(guard (list x
+    // .. rest) (> x 0))` — the guard reads `x`). Like Case 6g but the binder is in a LIST pattern, so it
+    // resolves to a `SumPayload` at an `Elem`/`RestFrom` path. Caught here for the same reason as 6g (at
+    // the arm, `from` is the guard wrapper, not the cond).
+    if let Some((scrutinee, steps, heads)) = guard_cond_list_binds(db, form, from, name) {
+        return Some(Resolved::SumPayload {
+            scrutinee,
+            steps: steps.into(),
+            heads: heads.into(),
+        });
+    }
     // Case 7: `form` is a HANDLE ARM `(op (params…) state body)`, ascended from `body`, and `name` is one
     // of the operation PARAMETERS or the STATE binder → it binds for this arm's body. Like a lambda
     // parameter, the binder resolves to its own occurrence (a `Param` formal) — the compile-time evaluator
@@ -1612,6 +1624,55 @@ fn guard_cond_variant_binds(
     }
 }
 
+/// If `form` is a guard `(guard (list p… [.. rest]) <cond>)` ascended from its `<cond>`, and the LIST
+/// pattern binds `name` (a leading element or the rest binder), the `(scrutinee, path, heads)` for the
+/// `SumPayload` read — the LIST analogue of [`guard_cond_variant_binds`]. `(guard (list x .. rest) (> x
+/// 0))` binds `x` at `[Elem(0)]` and `rest` at `[RestFrom(1)]` for the guard cond. `None` otherwise.
+/// Complements Cases 6l/6r: a reference in the guard cond ascends into the `(guard …)` form (this case)
+/// before it would reach the arm (where `from` is the guard wrapper, not the cond).
+fn guard_cond_list_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, Vec<crate::core::PathStep>, Vec<StructId>)> {
+    // `form` must be `(guard <list-pattern> <cond>)`, ascended from the cond.
+    let g = db.ast.as_form(form, "guard")?;
+    if g.len() != 2 || g[1] != from {
+        return None;
+    }
+    let pattern = g[0];
+    // Only a `(list …)` inner pattern (a `(map …)`/variant/tuple guard is another case's concern).
+    if db.ast.as_form(pattern, "list").is_none() && db.ast.as_ctor_form(pattern, "list").is_none() {
+        return None;
+    }
+    // The guard must be the PATTERN of a match arm `((guard …) body)` whose parent is a `(match …)`.
+    let arm = db.parent_of(form)?;
+    let Struct::List(pb) = db.ast.get(arm) else {
+        return None;
+    };
+    if pb.len() != 2 || pb[0] != form {
+        return None; // `form` must be the arm's pattern position
+    }
+    let matchf = db.parent_of(arm)?;
+    let mtail = db.ast.as_form(matchf, "match")?;
+    let scrutinee = *mtail.first()?;
+    if arm == scrutinee {
+        return None;
+    }
+    // A LEADING element sub-pattern (path `[Elem(i), …]`, possibly nested) or the REST binder
+    // (`[RestFrom(lead)]`) — the same descent Cases 6l/6r use over the arm body.
+    if let Some((path, heads)) = find_leading_binder_in_list_pattern(db, pattern, name) {
+        return Some((scrutinee, path, heads));
+    }
+    let lead = find_rest_binder_in_list_pattern(db, pattern, name)?;
+    Some((
+        scrutinee,
+        vec![crate::core::PathStep::RestFrom(lead)],
+        Vec::new(),
+    ))
+}
+
 /// If `form` is a match ARM `(pattern body)` whose parent is a `(match scrutinee arm…)`, ascended from
 /// the arm's `body` (or, for a GUARDED arm, its guard cond), and `pattern` is a bare BINDER name equal to
 /// `name` (not a literal, not the wildcard `_`), the enclosing match's SCRUTINEE occurrence — the value
@@ -1888,37 +1949,57 @@ fn is_list_pattern_element_occurrence(db: &Db, id: StructId) -> bool {
     if nm == "_" || nm == ".." {
         return false;
     }
-    // Ascend from `id` to the enclosing `(list …)` form that is an arm's PATTERN. Bounded (patterns are
-    // shallow). A reference in the arm BODY ascends from the body, never through the pattern, so this only
-    // fires for an occurrence sitting inside the pattern subtree.
+    // Ascend from `id` to the enclosing `(list …)` form that is an arm's PATTERN — directly `((list …)
+    // body)` OR under a guard `((guard (list …) cond) body)`. Bounded (patterns are shallow). A reference
+    // in the arm BODY ascends from the body, never through the pattern, so this only fires for an
+    // occurrence sitting inside the pattern subtree.
     let mut node = id;
     let mut hops = 0;
     while hops < 64 {
         let Some(parent) = db.parent_of(node) else {
             return false;
         };
-        // Is `parent` a `(list …)` form that is the PATTERN of a match arm `(pattern body)`?
-        if db.ast.as_form(parent, "list").is_some()
-            && let Some(arm) = db.parent_of(parent)
-            && let Struct::List(pb) = db.ast.get(arm)
-            && pb.len() == 2
-            && pb[0] == parent
-            && let Some(matchf) = db.parent_of(arm)
-            && let Some(mtail) = db.ast.as_form(matchf, "match")
-            && mtail.first().copied() != Some(arm)
-            && mtail.contains(&arm)
-        {
+        // Is `parent` a `(list …)` pattern whose enclosing form is a match arm — directly, or wrapped in a
+        // `(guard <list> cond)` (whose grandparent is then the arm)?
+        if db.ast.as_form(parent, "list").is_some() && list_pattern_is_arm_pattern(db, parent) {
             // `parent` is the arm's list pattern. `id` is a genuine binder iff a leading element sub-pattern
-            // or the rest binder binds its name — the SAME walk Case 6l/6r use, so it agrees exactly with
-            // where a body reference resolves. (A pattern HEAD — the `(. Sum V)` parts, a bare variant name —
-            // is not a binder; those never match here since the walkers skip heads.)
-            return list_pattern_element_binds(db, arm, pb[1], nm).is_some()
-                || list_pattern_rest_binds(db, arm, pb[1], nm).is_some();
+            // or the rest binder binds its name — the SAME form-independent walk Cases 6l/6r/6lg use, so it
+            // agrees exactly with where a body/guard reference resolves. (A pattern HEAD — the `(. Sum V)`
+            // parts, a bare variant name — is not a binder; the walkers skip heads.)
+            return find_leading_binder_in_list_pattern(db, parent, nm).is_some()
+                || find_rest_binder_in_list_pattern(db, parent, nm).is_some();
         }
         node = parent;
         hops += 1;
     }
     false
+}
+
+/// Whether the `(list …)` node `list_pat` is a match ARM's pattern — either directly `((list …) body)` or
+/// under a guard wrapper `((guard (list …) cond) body)` — of a `(match scrutinee arm…)`. Shared by the
+/// inert-binder classifier (which fires for a binder in the pattern position of both shapes).
+fn list_pattern_is_arm_pattern(db: &Db, list_pat: StructId) -> bool {
+    // The pattern node the arm holds is `list_pat` itself, or the `(guard <list_pat> cond)` wrapping it.
+    let arm_pat = match db.parent_of(list_pat) {
+        Some(p) if matches!(db.ast.as_form(p, "guard"), Some(g) if g.len() == 2 && g[0] == list_pat) => {
+            p
+        }
+        _ => list_pat,
+    };
+    let Some(arm) = db.parent_of(arm_pat) else {
+        return false;
+    };
+    let Struct::List(pb) = db.ast.get(arm) else {
+        return false;
+    };
+    if pb.len() != 2 || pb[0] != arm_pat {
+        return false;
+    }
+    match db.parent_of(arm) {
+        Some(matchf) => matches!(db.ast.as_form(matchf, "match"),
+            Some(mtail) if mtail.first().copied() != Some(arm) && mtail.contains(&arm)),
+        None => false,
+    }
 }
 
 /// The MAP PATTERN `(map (k v) … .. rest)` of the arm whose pattern is `pat`, as `(entries, rest)`:

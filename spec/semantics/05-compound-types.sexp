@@ -1849,6 +1849,26 @@
             (def (main) (sum-firsts (build 1 4 (list)))) (export main)))
   (output (: 6 Int64)))
 
+(case "a list match arm may carry a guard on its element binders"
+  (doc    "A list-pattern arm MAY carry a `(guard <list-pattern> <cond>)` guard, exactly as a scalar or sum
+           arm does (`core-semantics.md` §Matching Is Exhaustive Or Rejected: a guard is a boolean the arm's
+           binders are in scope for). The guard reads the list pattern's LEADING/REST binders and gates the
+           arm: `((guard (list x .. rest) (> x 0)) …)` fires only when the head is positive; on a FALSE
+           guard the arm FALLS THROUGH to the next, exactly as a non-matching length does. A guarded arm
+           does NOT count toward the list's length-coverage exhaustiveness (its guard may fail), so an
+           unguarded catch-all is still required. `classify` returns 1 for a positive head, 2 for a
+           negative one, 0 for the empty list — over the runtime one-element list `(list -5)`, the first
+           guard `(> -5 0)` fails, the second `(< -5 0)` holds → 2. This is the list twin of the guarded
+           scalar/sum arms the corpus covers elsewhere.")
+  (input  (do
+            (def (one v) ((. List push) (list) v))
+            (def (classify (: xs (List Int64))) (match xs
+                                                  ((guard (list x .. rest) (> x 0)) 1)
+                                                  ((guard (list x .. rest) (< x 0)) 2)
+                                                  (_                                0)))
+            (def (main) (classify (one -5))) (export main)))
+  (output (: 2 Int64)))
+
 (case "an expression tree built at run time is evaluated by matching its node variants"
   (doc    "The compiler's own expression-evaluator shape: a multi-variant recursive sum `Expr` — the
            canonical little AST — is built at run time by `build` (its structure decided by a runtime

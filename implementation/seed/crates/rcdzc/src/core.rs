@@ -111,11 +111,18 @@ pub enum ListArmCond {
     Any,
 }
 
-/// One arm of a runtime list match: its length [`ListArmCond`] and the body occurrence to emit when the
-/// condition holds. Binders (leading elements, the rest sublist) resolve independently via `SumPayload`.
+/// One arm of a runtime list match: its length [`ListArmCond`], an optional GUARD, and the body occurrence
+/// to emit when the condition holds. Binders (leading elements, the rest sublist) resolve independently via
+/// `SumPayload`. A `guard: Some(cond)` arm fires only when its length condition holds AND `cond` (a boolean
+/// the arm's binders are in scope for, resolve Case 6lg) evaluates true; on a false guard, matching FALLS
+/// THROUGH to the next arm — so the backend tests `length-cond AND guard` and the existing `else` chain
+/// handles the fall-through. A guarded arm does NOT count toward length-coverage exhaustiveness (its guard
+/// may fail), exactly as a guarded scalar/sum arm does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ListArm {
     pub cond: ListArmCond,
+    /// The arm's guard condition (a boolean expression occurrence), or `None` for an unguarded arm.
+    pub guard: Option<StructId>,
     pub body: StructId,
 }
 

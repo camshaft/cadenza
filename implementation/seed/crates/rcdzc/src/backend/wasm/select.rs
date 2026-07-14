@@ -1377,11 +1377,15 @@ pub fn collect_used_ops(
             collect_cont_ops(db, scrutinee, &root, out);
         }
         // A list match reads `vec-len` to dispatch by length; arm bodies' element/rest binders bring in
-        // `vec-get`/`vec-split` via their own `SumPayload` occurrences.
+        // `vec-get`/`vec-split` via their own `SumPayload` occurrences. A guarded arm's GUARD is also
+        // emitted (its ops must be collected too).
         Core::MatchList { scrutinee, arms } => {
             out.insert(OP_VEC_LEN);
             collect_used_ops(db, scrutinee, out);
             for arm in &arms {
+                if let Some(g) = arm.guard {
+                    collect_used_ops(db, g, out);
+                }
                 collect_used_ops(db, arm.body, out);
             }
         }
@@ -6266,57 +6270,99 @@ fn emit_list_arms_tailable(
         out.push(Lir::Unreachable);
         return Ok(());
     };
-    let is_tail_arm = rest.is_empty() || matches!(first.cond, crate::core::ListArmCond::Any);
+    // An UNGUARDED `Any` (or the final) arm is the unconditional tail. A GUARDED arm — even an `Any`/rest
+    // one — may FAIL its guard, so it is NOT unconditional: it still tests its guard and falls through.
+    let is_tail_arm = first.guard.is_none()
+        && (rest.is_empty() || matches!(first.cond, crate::core::ListArmCond::Any));
     if is_tail_arm {
         // The unconditional final arm — its body is in the SAME tail position as the whole match.
         return emit_arm_body(
             db, first.body, result_it, arm_slots, arm_base, high, scratch_ty, layout, out, tail,
         );
     }
-    out.push(Lir::LocalGet(len_slot));
-    match first.cond {
-        crate::core::ListArmCond::LenEq(n) => {
-            out.push(Lir::ConstI32(n as i32));
-            out.push(Lir::I32Eq);
+    // Open the LENGTH test — except for an `Any` cond (a guarded catch-all/rest), whose length always holds
+    // so its only gate is the guard. For a length-carrying cond, `if (len ⋈ k)` wraps the arm.
+    let has_len_test = !matches!(first.cond, crate::core::ListArmCond::Any);
+    if has_len_test {
+        out.push(Lir::LocalGet(len_slot));
+        match first.cond {
+            crate::core::ListArmCond::LenEq(n) => {
+                out.push(Lir::ConstI32(n as i32));
+                out.push(Lir::I32Eq);
+            }
+            crate::core::ListArmCond::LenGe(k) => {
+                out.push(Lir::ConstI32(k as i32));
+                out.push(Lir::I32GeU);
+            }
+            crate::core::ListArmCond::Any => unreachable!(),
         }
-        crate::core::ListArmCond::LenGe(k) => {
-            out.push(Lir::ConstI32(k as i32));
-            out.push(Lir::I32GeU);
-        }
-        crate::core::ListArmCond::Any => unreachable!("Any is the tail arm"),
+        out.push(Lir::If(block_ty));
     }
-    out.push(Lir::If(block_ty));
-    // This arm's body sits inside the freshly-opened `if`; a self-loop `br` from it must target one level
-    // further out, so bump the tail depth.
-    emit_arm_body(
-        db,
-        first.body,
-        result_it,
-        arm_slots,
-        arm_base,
-        high,
-        scratch_ty,
-        layout,
-        out,
-        deeper_tail(tail),
-    )?;
-    out.push(Lir::Else);
-    // The remaining arms are ALSO one `if` deeper — pass the bumped tail.
-    emit_list_arms_tailable(
-        db,
-        rest,
-        len_slot,
-        block_ty,
-        result_it,
-        arm_slots,
-        arm_base,
-        high,
-        scratch_ty,
-        layout,
-        out,
-        deeper_tail(tail),
-    )?;
-    out.push(Lir::End);
+    // Inside the length `if` (or unconditionally, for an `Any` guarded arm): emit the arm's body, gated on
+    // its GUARD when present. A guarded arm becomes `if guard then body else <rest>` — a false guard FALLS
+    // THROUGH to the remaining arms, exactly as a false length test does; the guard is a boolean the arm's
+    // element/rest binders are in scope for (resolve Case 6lg), emitted as an operand before the `if`. The
+    // body/rest sit one `if` deeper per opened `if`, so the tail depth bumps accordingly.
+    let after_len_tail = if has_len_test {
+        deeper_tail(tail)
+    } else {
+        tail
+    };
+    match first.guard {
+        None => {
+            emit_arm_body(
+                db,
+                first.body,
+                result_it,
+                arm_slots,
+                arm_base,
+                high,
+                scratch_ty,
+                layout,
+                out,
+                after_len_tail,
+            )?;
+        }
+        Some(g) => {
+            // The guard reads the scrutinee handle (in `arm_slots`) via its binders' `SumPayload`; emit it
+            // as an i32 boolean at `arm_base`. The body/rest start scratch ABOVE the guard's high-water (a
+            // guard stashing a heap handle types a low slot i32; a body reusing that slot at i64 would fail
+            // validation — the same discipline the scalar guard emit follows).
+            emit(db, g, arm_slots, arm_base, high, scratch_ty, layout, out)?;
+            let body_base = *high;
+            out.push(Lir::If(block_ty));
+            let deeper = deeper_tail(after_len_tail);
+            emit_arm_body(
+                db, first.body, result_it, arm_slots, body_base, high, scratch_ty, layout, out,
+                deeper,
+            )?;
+            out.push(Lir::Else);
+            emit_list_arms_tailable(
+                db, rest, len_slot, block_ty, result_it, arm_slots, body_base, high, scratch_ty,
+                layout, out, deeper,
+            )?;
+            out.push(Lir::End);
+        }
+    }
+    if has_len_test {
+        out.push(Lir::Else);
+        // The remaining arms are ALSO one `if` deeper — pass the bumped tail.
+        emit_list_arms_tailable(
+            db,
+            rest,
+            len_slot,
+            block_ty,
+            result_it,
+            arm_slots,
+            arm_base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+            deeper_tail(tail),
+        )?;
+        out.push(Lir::End);
+    }
     Ok(())
 }
 

@@ -19016,6 +19016,132 @@ mod match_engine {
     }
 
     #[test]
+    fn a_list_match_arm_may_carry_a_guard() {
+        // A list pattern arm MAY carry a `(guard <list-pat> <cond>)` guard, exactly as a scalar/sum arm
+        // does (`core-semantics.md` §Matching Is Exhaustive Or Rejected: a guard is a boolean the arm's
+        // binders are in scope for). The guard reads the list-pattern's LEADING/REST binders (resolve Case
+        // 6lg → `SumPayload{Elem}`/`{RestFrom}`); on a false guard the arm FALLS THROUGH to the next. A
+        // guarded arm does NOT count toward length-coverage exhaustiveness (a `_` tail is still needed).
+        // Before, a guarded list arm reported a spurious `unbound name` for its binder + declined.
+
+        // RUNTIME list, guard reads a LEADING binder: `((guard (list x .. rest) (> x 0)) 1)` fires only when
+        // the head is positive; else falls to the catch-all. build pushes 5,6,7 (head 5 > 0) → 1.
+        let Some(v) = run_heap_value(
+            "(module m \
+               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (+ i 5))) out)) \
+               (def (f (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 0)) 1) (_ 0))) \
+               (def (main) (f (build 0 3 (list)))) (export main))",
+            vec![],
+        ) else {
+            eprintln!("runtime wasm not found; skipping guarded list-match run");
+            return;
+        };
+        assert_eq!(v, "1", "a guarded list arm fires when its guard holds");
+
+        // The guard FALLS THROUGH when false: an empty runtime list has no head, so `(list x .. rest)` (len
+        // ≥ 1) does not even match the length → catch-all → 0. AND a non-empty list whose head is NOT
+        // positive falls through the guard to the catch-all. `pick` returns 100 for a positive head, else -1.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
+                   (def (pick (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 10)) 100) (_ -1))) \
+                   (def (main) (pick (build 0 3 (list)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "-1",
+            "a guarded list arm falls through when its guard is false (head 0, not > 10)"
+        );
+
+        // A guard that DOES hold selects the guarded arm over a later fixed arm — first-match-wins with the
+        // guard gating. [20 21 22]: head 20 > 10 → 100.
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (+ i 20))) out)) \
+                   (def (pick (: xs (List Int64))) (match xs ((guard (list x .. rest) (> x 10)) 100) (_ -1))) \
+                   (def (main) (pick (build 0 3 (list)))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "100",
+            "a guarded list arm with a holding guard is selected"
+        );
+
+        // TWO guarded arms over the same length + a catch-all: classify by the head's sign. A negative head
+        // takes the second guarded arm; the catch-all covers the empty list. [-5 …] → 2 (head < 0).
+        assert_eq!(
+            run_heap_value(
+                "(module m \
+                   (def (one v) ((. List push) (list) v)) \
+                   (def (sign (: xs (List Int64))) (match xs \
+                       ((guard (list x .. r) (> x 0)) 1) \
+                       ((guard (list x .. r) (< x 0)) 2) \
+                       (_ 0))) \
+                   (def (main) (sign (one -5))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "2",
+            "the second guarded list arm fires when the first guard fails"
+        );
+
+        // CONSTANT scrutinee: the guard folds at compile time. `(list 5 6)` head 5 > 0 → 1 (no runtime).
+        assert_eq!(
+            run_heap_value(
+                "(module m (def (main) \
+                   (match (list 5 6) ((guard (list x .. rest) (> x 0)) 1) (_ 0))) (export main))",
+                vec![],
+            )
+            .unwrap(),
+            "1",
+            "a guarded list arm folds over a constant list when the guard folds true"
+        );
+    }
+
+    #[test]
+    fn a_guarded_list_arm_does_not_count_toward_exhaustiveness() {
+        // A guarded list arm may fail its guard, so it covers NO length unconditionally — a match whose only
+        // tail-covering arm is GUARDED is non-exhaustive (CDZ0210), exactly as a guarded scalar/sum tail is.
+        // `(match xs ((guard (list .. all) (> (List.len all) 0)) 1))` — the guarded catch-all does not close
+        // coverage, so the empty list (and a failing guard) are uncovered.
+        let code = |body: &str| -> Option<String> {
+            let src = format!("(module m (def (f (: xs (List Int64))) {body}) (export f))");
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(&src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            if out
+                .artifact(crate::backend::Target::Wasm.artifact_kind())
+                .is_some()
+            {
+                return None;
+            }
+            out.diagnostics
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .and_then(|d| d.code.clone())
+        };
+        // A guarded rest-arm alone is non-exhaustive (its guard may fail).
+        assert_eq!(
+            code("(match xs ((guard (list x .. rest) (> x 0)) 1))").as_deref(),
+            Some("CDZ0210"),
+            "a lone guarded list arm does not cover every length"
+        );
+        // Adding an UNGUARDED catch-all makes it exhaustive again (no over-rejection).
+        assert_eq!(
+            code("(match xs ((guard (list x .. rest) (> x 0)) 1) (_ 0))"),
+            None,
+            "a guarded arm plus an unguarded catch-all is exhaustive"
+        );
+    }
+
+    #[test]
     fn a_recursive_list_consumer_infers_its_element_via_list_at() {
         // A recursive function whose list PARAMETER is touched ONLY through `List.at` (never a direct
         // operator on the list itself) now infers its element type — before, the `(Some x)` payload binder

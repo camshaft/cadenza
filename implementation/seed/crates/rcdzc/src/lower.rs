@@ -2588,10 +2588,14 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
 //= spec/capabilities/core-semantics.md#a-list-is-deconstructed-by-element-patterns-with-an-optional-rest
 //# Each element position and the rest binder MUST be a binder position in the sense of *Patterns Compose*, so an element MAY itself be any pattern (a wildcard, a name, a tuple pattern, a constructor pattern, or a nested element pattern) matched recursively, and the whole pattern MUST remain linear (`CDZ0102`). The rest binder MUST bind a value of the same list type as the scrutinee, so a recursive function MAY match it again.
 fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) -> Core {
+    // Each arm's length condition + an optional GUARD (a boolean the arm's binders are in scope for). A
+    // guarded arm fires only when its length holds AND the guard is true; on a false guard it FALLS THROUGH
+    // to the next arm, and it does NOT count toward length-coverage exhaustiveness (its guard may fail) —
+    // exactly as a guarded scalar/sum arm behaves.
     enum Arm {
-        Fixed(usize, StructId), // a fixed-arity `(list …)` of this exact arity
-        Rest(usize, StructId), // a rest `(list p0 … p_{k-1} .. rest)` — matches length ≥ k (lead = k)
-        Wild(StructId),        // a bare binder / `_` — matches any length
+        Fixed(usize, Option<StructId>, StructId), // a fixed-arity `(list …)` of this exact arity
+        Rest(usize, Option<StructId>, StructId), // a rest `(list p… .. rest)` — matches length ≥ k (lead=k)
+        Wild(Option<StructId>, StructId),        // a bare binder / `_` — matches any length
     }
     // The list's element type (from the scrutinee), used to classify each element sub-pattern's shape
     // (`Any` when unsolved — permissive, the same treatment a binding position gets).
@@ -2601,8 +2605,20 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
     };
     let mut classified: Vec<Arm> = Vec::with_capacity(arms.len());
     for &(pat, body) in arms {
+        // Peel a `(guard <inner-pattern> <cond>)` wrapper: the arm's list/binder pattern is `<inner>`, and
+        // `<cond>` is the guard (a boolean the pattern's binders are in scope for, resolve Case 6lg / 5g).
+        let (pat, guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            Some(_) => {
+                return Core::Poison(Reject::coded(
+                    Code::Malformed,
+                    "a guarded pattern must be (guard <pattern> <cond>)",
+                ));
+            }
+            None => (pat, None),
+        };
         if db.ast.as_name(pat).is_some() {
-            classified.push(Arm::Wild(body));
+            classified.push(Arm::Wild(guard, body));
             continue;
         }
         match db
@@ -2643,7 +2659,7 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
                                 return Core::Poison(r);
                             }
                         }
-                        classified.push(Arm::Rest(i, body));
+                        classified.push(Arm::Rest(i, guard, body));
                     }
                     None => {
                         // Fixed arity: each element sub-pattern must be IRREFUTABLE (composes to any depth).
@@ -2652,7 +2668,7 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
                                 return Core::Poison(r);
                             }
                         }
-                        classified.push(Arm::Fixed(es.len(), body));
+                        classified.push(Arm::Fixed(es.len(), guard, body));
                     }
                 }
             }
@@ -2669,10 +2685,15 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
     // If there is no `Wild`/`Rest` arm at all, no arm covers the infinite tail → non-exhaustive. Otherwise
     // lengths [m, ∞) are covered by that arm; the finite prefix 0..m must be covered by `Fixed` arms (no
     // `Rest(j)` with j < m exists, since m is the minimum). Else CDZ0210.
+    //
+    // A GUARDED arm covers NOTHING unconditionally (its guard may fail), so it does not contribute to
+    // coverage — only UNGUARDED arms count (`guard.is_none()`), exactly as a guarded scalar/sum arm is
+    // excluded from exhaustiveness. So a guarded rest/wild does not close the tail, and a guarded fixed arm
+    // does not cover its length.
     let tail_start = classified.iter().filter_map(|a| match a {
-        Arm::Wild(_) => Some(0),
-        Arm::Rest(k, _) => Some(*k),
-        Arm::Fixed(_, _) => None,
+        Arm::Wild(None, _) => Some(0),
+        Arm::Rest(k, None, _) => Some(*k),
+        _ => None,
     });
     let Some(m) = tail_start.min() else {
         // NO catch-all arm → no arm covers the infinite tail. The mechanical repair is a WILDCARD `_` arm
@@ -2691,12 +2712,12 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
             None => reject,
         });
     };
-    // Every length in 0..m must have a matching `Fixed` arm.
+    // Every length in 0..m must have a matching UNGUARDED `Fixed` arm (a guarded one may not fire).
     let missing: Vec<usize> = (0..m)
         .filter(|&n| {
             !classified
                 .iter()
-                .any(|a| matches!(a, Arm::Fixed(k, _) if *k == n))
+                .any(|a| matches!(a, Arm::Fixed(k, None, _) if *k == n))
         })
         .collect();
     if !missing.is_empty() {
@@ -2730,20 +2751,53 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
             None => reject,
         });
     }
+    // The runtime `Core::MatchList` arms built from the classified arms (each an `(cond, guard, body)`).
+    // Used both when the scrutinee is a runtime list AND when a constant fold aborts because a guard reads
+    // a runtime value (so it cannot be decided at compile time).
+    let build_match_list = |classified: &[Arm]| -> Core {
+        Core::MatchList {
+            scrutinee,
+            arms: classified
+                .iter()
+                .map(|arm| {
+                    let (cond, guard, body) = match arm {
+                        Arm::Fixed(k, g, body) => (crate::core::ListArmCond::LenEq(*k), *g, *body),
+                        Arm::Rest(lead, g, body) => {
+                            (crate::core::ListArmCond::LenGe(*lead), *g, *body)
+                        }
+                        Arm::Wild(g, body) => (crate::core::ListArmCond::Any, *g, *body),
+                    };
+                    crate::core::ListArm { cond, guard, body }
+                })
+                .collect(),
+        }
+    };
     // A CONSTANT scrutinee FOLDS: the length selects the arm; the body's element binders read the
     // constant elements via their `SumPayload` `Elem`/`RestFrom` folds, so lowering the SELECTED body is
-    // all that is needed (no β-substitution).
+    // all that is needed (no β-substitution). A GUARDED arm folds only if its guard folds to a constant
+    // bool: `true` selects it, `false` falls through to the next arm; a guard that does NOT fold to a const
+    // (reads a runtime value) ABORTS the fold to the runtime probe chain (like the scalar guard fold).
     match core_of(db, scrutinee) {
         Core::ListNew { elems } => {
             let n = elems.len();
             for arm in &classified {
-                let (matches, body) = match arm {
-                    Arm::Fixed(k, body) => (*k == n, *body),
-                    Arm::Rest(lead, body) => (n >= *lead, *body), // rest: length ≥ leading count
-                    Arm::Wild(body) => (true, *body),
+                let (len_matches, guard, body) = match arm {
+                    Arm::Fixed(k, g, body) => (*k == n, *g, *body),
+                    Arm::Rest(lead, g, body) => (n >= *lead, *g, *body), // rest: length ≥ leading count
+                    Arm::Wild(g, body) => (true, *g, *body),
                 };
-                if matches {
-                    return core_of(db, body);
+                if !len_matches {
+                    continue; // this arm's length doesn't match the constant — try the next
+                }
+                match guard {
+                    None => return core_of(db, body),
+                    Some(g) => match core_of(db, g) {
+                        Core::ConstBool(true) => return core_of(db, body),
+                        Core::ConstBool(false) => continue, // guard fails → fall through to the next arm
+                        // The guard did not fold to a const bool (reads a runtime value) → we cannot decide
+                        // this arm at compile time; emit the runtime dispatch chain instead.
+                        _ => return build_match_list(&classified),
+                    },
                 }
             }
             Core::Poison(Reject::decline(
@@ -2754,23 +2808,7 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
         // A RUNTIME list scrutinee — emit `Core::MatchList`, which dispatches on `vec-len` at run time.
         // Each arm's length condition drives the dispatch; the leading element binders + rest binder read
         // the runtime list on their own (`SumPayload` `Elem`/`RestFrom` → `vec-get`/`vec-split`).
-        _ => {
-            let match_arms: Vec<crate::core::ListArm> = classified
-                .iter()
-                .map(|arm| {
-                    let (cond, body) = match arm {
-                        Arm::Fixed(k, body) => (crate::core::ListArmCond::LenEq(*k), *body),
-                        Arm::Rest(lead, body) => (crate::core::ListArmCond::LenGe(*lead), *body),
-                        Arm::Wild(body) => (crate::core::ListArmCond::Any, *body),
-                    };
-                    crate::core::ListArm { cond, body }
-                })
-                .collect();
-            Core::MatchList {
-                scrutinee,
-                arms: match_arms,
-            }
-        }
+        _ => build_match_list(&classified),
     }
 }
 
