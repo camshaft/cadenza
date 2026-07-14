@@ -940,11 +940,23 @@ the component type. The new work:
   arg still emits. +1 corpus todo anchor + `a_compound_arg_with_a_compound_result_declines_not_miscompiles`.
   🔑 the FIX for this = thread `TupleArgRebuild` through the 3 list-result serializers + their envelopes (the
   next real widening); this tick made it an honest decline first (correctness over the miscompile).
+- **✅ TUPLE ARG + BYTE-ROPE RESULT (single-export)** (`@5e97fafe`, baseline `@c4299d05`). The FIRST of the
+  compound-arg + list-result widenings: a closure taking a fixed-shape scalar tuple/record arg AND returning
+  Bytes/String now compiles + runs. Factored `serialize::emit_tuple_rebuild` + `emit_tuple_rebuilt_drop` free
+  helpers (shared by every `call` body); threaded `tuple_arg` into `closure_bytes_resource_core_module_borrow`
+  (rebuild the cell before dispatch, drop after the copy). Envelope: `closure_call_list_tuple_arg_functype` +
+  `assemble_closure_bytes_resource_borrow_tuple` + `resource_inner_component_closure_bytes_borrow_tuple` mint
+  the `tuple<…>` type before the `list<u8>` result type (running type counter, both import + export sides).
+  `emit_closure_resource`'s guard relaxed to allow byte-rope + tuple arg (still declines compound/collection
+  result). Corpus: `(fn (p) (bin (u8 (.p 0)) (u8 (.p 1))))`, `call(handle,(5,6))`→(5 6) e2e. Still to do:
+  the SAME for the value-form (fixed compound) + value-encode (collection) result cores; multi/mixed/
+  distinct-sig byte-rope + tuple arg (their multi bytes cores/envelopes also need the thread).
 - **REMAINING (all optional, none blocking):** a compound closure ARG on the DIRECT-CALL path — FIXED-SHAPE
-  SCALAR tuple/record is DONE for single-export, multi-export, mixed, AND distinct-sig (above); still to
-  widen: a compound arg ALONGSIDE other args (the `TupleArgRebuild` currently assumes the tuple is the SOLE
-  arg — needs interleaving flattened-tuple fields with pass-through scalars), a VARIABLE-LENGTH collection arg
-  (needs a `value-decode` runtime op that does not exist), a tuple arg on a byte-rope/compound/collection-
+  SCALAR tuple/record is DONE for single-export, multi-export, mixed, AND distinct-sig (scalar result), plus
+  single-export BYTE-ROPE result (above); still to widen: a compound arg ALONGSIDE other args (the
+  `TupleArgRebuild` currently assumes the tuple is the SOLE arg — needs interleaving flattened-tuple fields
+  with pass-through scalars), a VARIABLE-LENGTH collection arg
+  (needs a `value-decode` runtime op that does not exist), a tuple arg on a compound/collection-
   RESULT group. (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works — no
   direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-resource passed
   INTO a call); a closure TRANSFORMER (`own<t>` both directions — cleanly declined). **The entire byte-rope
