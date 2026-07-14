@@ -43221,6 +43221,68 @@ mod stage1 {
     }
 
     #[test]
+    fn a_zero_arm_match_on_an_inhabited_sum_offers_the_full_add_arms_fix() {
+        // A ZERO-arm `(match c)` on an inhabited sum is the DEGENERATE non-exhaustive case: EVERY variant is
+        // uncovered. It named the situation but carried NO fix; now it routes through the same
+        // `non_exhaustive_sum_reject` a partially-covered match uses (empty `tested` set), so it gets the
+        // FULL "add the missing arms" fix — one arm per variant — not just a dead-end message.
+        use crate::testkit::parse;
+        let err = compile_component(&crate::codec::encode(&parse(
+            "(module m (type C (A) (B)) (def (f (: c C)) (match c)) (export f))",
+        )))
+        .expect_err("a zero-arm match on an inhabited sum must reject");
+        assert_eq!(err.code.as_deref(), Some("CDZ0210"), "got: {}", err.message);
+        assert!(
+            err.message.contains("`A`")
+                && err.message.contains("`B`")
+                && err.message.contains("not covered"),
+            "names ALL uncovered variants: {}",
+            err.message
+        );
+        let fix = err
+            .fix
+            .expect("a zero-arm match carries the full add-arms fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::InsertInto);
+        assert_eq!(
+            fix.replacement, "(A (trap \"TODO: A\")) (B (trap \"TODO: B\"))",
+            "one covering arm per variant"
+        );
+        // The added arms make the match exhaustive — the CDZ0210 non-exhaustiveness is cleared (the fix
+        // resolves its OWN fault, the one-shot rule). (A full wasm lowering of an all-nullary trap-bodied
+        // match is a separate concern; here we pin that the exhaustiveness error is gone.)
+        assert!(
+            !compile_component(&crate::codec::encode(&parse(
+                "(module m (type C (A) (B)) (def (f (: c C)) (match c (A (trap \"TODO: A\")) (B (trap \"TODO: B\")))) (export f))"
+            )))
+            .is_err_and(|d| d.code.as_deref() == Some("CDZ0210")),
+            "the zero-arm match with the added arms is no longer non-exhaustive"
+        );
+        // NO false change: a zero-arm match on the EMPTY sum (uninhabited) is vacuously exhaustive — it does
+        // NOT become a CDZ0210 non-exhaustiveness error (it may decline later at the host boundary for an
+        // unrelated reason, but the match itself is exhaustive).
+        assert_ne!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (type Void) (def (f (: v Void)) (match v)) (export f))"
+            )))
+            .err()
+            .and_then(|d| d.code),
+            Some("CDZ0210".to_string()),
+            "a zero-arm match on the empty sum is not flagged non-exhaustive"
+        );
+        // A zero-arm match on a SCALAR keeps the generic message (its cover is a wildcard, not named arms).
+        let scalar = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (f (: n Int64)) (match n)) (export f))",
+        )))
+        .expect_err("a zero-arm match on a scalar rejects");
+        assert!(
+            scalar.message.contains("zero-arm match is exhaustive only") && scalar.fix.is_none(),
+            "a scalar zero-arm match keeps the generic message, no arms fix: {} fix={:?}",
+            scalar.message,
+            scalar.fix
+        );
+    }
+
+    #[test]
     fn a_runtime_sum_match_dispatches_on_the_discriminant() {
         // The RUNTIME sum match, composed + run: a function builds a sum from a runtime param, matches
         // it, and returns a scalar. `(pick n)` builds `(Some n)` when n>0 else `None`, then matches:

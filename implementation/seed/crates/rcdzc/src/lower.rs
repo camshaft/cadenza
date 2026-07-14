@@ -2735,10 +2735,22 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         }
         return match core_of(db, scrutinee) {
             c @ (Core::Trap | Core::Poison(_)) => c,
-            _ => Core::Poison(Reject::coded(
-                Code::NonExhaustive,
-                "a zero-arm match is exhaustive only on an uninhabited (Never) scrutinee; this scrutinee has values a case must cover",
-            )),
+            // An inhabited scrutinee with NO arms is the degenerate non-exhaustive case: EVERY variant is
+            // uncovered. When the scrutinee is a SUM or a nominal (its decl carries the variant set), reuse
+            // `non_exhaustive_sum_reject` with an empty `tested` set — so a zero-arm match gets the SAME
+            // "add the missing arms" fix a partially-covered one does (the full variant set as
+            // `(V (trap "TODO: V"))` arms), not just a dead-end message. A non-sum inhabited scrutinee (a
+            // bare scalar with zero arms) keeps the generic message — its cover is a wildcard, and a bare
+            // `(match n)` is a rarer malformation.
+            _ => match &scrut_ty {
+                crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => {
+                    Core::Poison(non_exhaustive_sum_reject(db, *decl, &[], scrutinee))
+                }
+                _ => Core::Poison(Reject::coded(
+                    Code::NonExhaustive,
+                    "a zero-arm match is exhaustive only on an uninhabited (Never) scrutinee; this scrutinee has values a case must cover",
+                )),
+            },
         };
     }
     // A COMPOUND scrutinee — a SUM, a TUPLE, or a RECORD — is matched by the DECISION TREE, not the
