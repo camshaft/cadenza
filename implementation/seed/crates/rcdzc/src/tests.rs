@@ -25547,6 +25547,60 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_catch_all_after_the_specific_arms_saturate_a_finite_type_is_redundant() {
+        // The DUAL of the exhaustiveness check: a catch-all (or any arm) is unreachable when the SPECIFIC
+        // arms before it already cover EVERY value of a FINITE scrutinee type — all variants of a sum, or
+        // both booleans. `(match c (R 1) (G 2) (B 3) (_ 4))` on `(type C R G B)`: R/G/B exhaust `C`, so the
+        // `_` can never match → CDZ0213. Before, the pass flagged only a catch-all-then-arm or a duplicate;
+        // a trailing catch-all after a complete specific cover slipped through (it looked "reachable"
+        // because no earlier CATCH-ALL preceded it). Each of these emits exactly one CDZ0213.
+        for src in [
+            // A wildcard after all three sum variants.
+            "(module m (type C R G B) (def (f (: c C)) (match c ((C.R) 1) ((C.G) 2) ((C.B) 3) (_ 4))) (def (main) (f (C.R))) (export main))",
+            // A wildcard after both booleans.
+            "(module m (def (f (: b Bool)) (match b (true 1) (false 2) (_ 3))) (def (main) (f true)) (export main))",
+            // A duplicate VARIANT arm after the type is saturated (not just a wildcard).
+            "(module m (type C R G B) (def (f (: c C)) (match c ((C.R) 1) ((C.G) 2) ((C.B) 3) ((C.R) 5))) (def (main) (f (C.R))) (export main))",
+            // Option: both variants covered, then a wildcard.
+            "(module m (def (f (: o (Option Int64))) (match o ((Some n) n) ((None) 0) (_ -1))) (def (main) (f (Some 5))) (export main))",
+            // A SINGLE-VARIANT sum (an erased newtype `Ty::Nominal`): its sole constructor saturates it, so
+            // a trailing `_` is dead. `finite_cover_size` reads the variant count off the nominal's decl.
+            "(module m (type Id (Mk Int64)) (def (f (: x Id)) (match x ((Id.Mk n) n) (_ 0))) (def (main) (f (Id.Mk 5))) (export main))",
+        ] {
+            let redundant = redundant_arms_of(src);
+            assert_eq!(
+                redundant.len(),
+                1,
+                "a catch-all after a finite type is fully covered is redundant (CDZ0213): `{src}`, got {redundant:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_exhaustive_finite_match_without_a_trailing_catch_all_does_not_warn() {
+        // The boundary: coverage closes AFTER the last covering arm, so an EXHAUSTIVE finite match with no
+        // trailing arm has nothing to flag (no false positive). A wildcard that is REACHABLE (the specific
+        // arms do NOT yet saturate the type) also must not warn, and an OPEN scalar type is never saturated
+        // by literals, so its wildcard stays reachable.
+        for src in [
+            // Exhaustive sum, NO wildcard — the last arm closes coverage but nothing follows it.
+            "(module m (type C R G B) (def (f (: c C)) (match c ((C.R) 1) ((C.G) 2) ((C.B) 3))) (def (main) (f (C.R))) (export main))",
+            // Exhaustive bool, no wildcard.
+            "(module m (def (f (: b Bool)) (match b (true 1) (false 2))) (def (main) (f true)) (export main))",
+            // Missing a variant, so the wildcard is REACHABLE — not redundant.
+            "(module m (type C R G B) (def (f (: c C)) (match c ((C.R) 1) ((C.G) 2) (_ 4))) (def (main) (f (C.R))) (export main))",
+            // Open Int scalar — a finite set of literals never saturates it, so the wildcard is reachable.
+            "(module m (def (f (: n Int64)) (match n (0 1) (1 2) (_ 3))) (def (main) (f 0)) (export main))",
+        ] {
+            assert!(
+                redundant_arms_of(src).is_empty(),
+                "no false positive: `{src}` got {:?}",
+                redundant_arms_of(src)
+            );
+        }
+    }
+
+    #[test]
     fn a_redundant_arm_warning_carries_a_delete_fix_for_the_whole_arm() {
         // The rustc-gold repair for an unreachable arm: DELETE it. The warning now carries a `delete` fix
         // targeting the ARM node (the `(pattern body)` list, the pattern's PARENT) — not the pattern alone

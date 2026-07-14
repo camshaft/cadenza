@@ -2563,14 +2563,36 @@ fn arm_cover(db: &mut Db, pat: StructId) -> Option<ArmCover> {
     None
 }
 
-/// Collect REDUNDANT-ARM warnings (CDZ0211) across every `match` in every def body — an arm an EARLIER
-/// arm already fully covers, so first-match-wins makes it dead. Walks all user nodes (like the unused-
-/// binding pass) rather than only reached bodies, so a redundant arm in an uncalled helper is surfaced
-/// too. For each match, scan arms left to right keeping the set of already-covered keys plus whether a
-/// catch-all has appeared; an arm whose cover is already subsumed (a prior catch-all shadows anything, a
-/// prior identical literal/variant shadows its repeat) warns. Conservative: an unclassifiable arm
-/// (`arm_cover` → `None`) neither shadows nor is flagged, so a guarded/refining/tuple arm never yields a
-/// false positive.
+/// The number of DISTINCT full-variant / bool covers that EXHAUST the scrutinee's type — `Some(n)` for a
+/// FINITE type (a `Ty::Sum` with `n` variants, or `Bool` with 2), `None` for an OPEN type (Int/String/…,
+/// which no finite literal set exhausts). Used by [`collect_redundant_arm_warnings`] to flag a catch-all /
+/// arm that is unreachable because the SPECIFIC arms before it already cover every value of the type — the
+/// dual of the exhaustiveness check (which faults a match MISSING coverage; this warns on coverage the
+/// arms make REDUNDANT). Reads the sum's declaration by its `decl` occurrence (the same source of truth
+/// `lower`'s exhaustiveness uses), so the count agrees exactly with what a full cover needs.
+fn finite_cover_size(db: &mut Db, scrutinee: StructId) -> Option<usize> {
+    // Read the variant count off a SUM declaration, whether the scrutinee's type is a boxed `Ty::Sum` or an
+    // ERASED single-variant newtype `Ty::Nominal { decl }` (whose `decl` is still that sum — a newtype has
+    // exactly one variant, so its sole constructor arm saturates it). A nominal wrapping a NON-sum (a
+    // newtype over a scalar) has no variant set → not finite here.
+    match crate::infer::type_of(db, scrutinee) {
+        crate::ty::Ty::Bool => Some(2),
+        crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } => db
+            .type_decl_by_occ(decl)
+            .and_then(|d| (!d.variants.is_empty()).then_some(d.variants.len())),
+        _ => None,
+    }
+}
+
+/// Collect REDUNDANT-ARM warnings (CDZ0213) across every `match` in every def body — an arm an EARLIER
+/// arm (or set of arms) already fully covers, so first-match-wins makes it dead. Walks all user nodes
+/// (like the unused-binding pass) rather than only reached bodies, so a redundant arm in an uncalled
+/// helper is surfaced too. For each match, scan arms left to right keeping the set of already-covered keys
+/// plus whether coverage is CLOSED — a catch-all has appeared, OR (for a FINITE scrutinee type — a sum or
+/// Bool) the distinct full-variant/bool covers already SATURATE the type. An arm whose cover is subsumed
+/// (a repeat of a covered literal/variant) OR any arm after coverage closed warns. Conservative: an
+/// unclassifiable arm (`arm_cover` → `None`) neither shadows, saturates, nor is flagged, so a
+/// guarded/refining/tuple arm never yields a false positive.
 fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
     use crate::resolved::Resolved;
     let node_count = db.ast.structure.len();
@@ -2580,10 +2602,15 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
         if !db.is_user_node(id) {
             continue;
         }
-        let Resolved::Match { arms, .. } = crate::resolve::resolved_of(db, id) else {
+        let Resolved::Match { scrutinee, arms } = crate::resolve::resolved_of(db, id) else {
             continue;
         };
-        let mut catch_all_seen = false;
+        // The scrutinee's finite cover size — `Some(n)` iff the specific arms CAN exhaust the type (a sum
+        // of `n` variants, or Bool = 2). `None` for an open type, where only a catch-all closes coverage.
+        let cover_size = finite_cover_size(db, scrutinee);
+        // Coverage is CLOSED once a catch-all is seen OR the distinct full-variant/bool covers reach the
+        // finite type's size — either way every subsequent arm is unreachable.
+        let mut coverage_closed = false;
         // A HASH SET of already-covered literal/variant keys — an O(1) membership probe per arm. A `Vec`
         // + `contains` was O(covered) per arm → O(arms²) for a match over an N-variant sum (each of N
         // distinct-variant arms scanned the growing covered list).
@@ -2591,8 +2618,8 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
         for (pat, _) in &arms {
             let cover = arm_cover(db, *pat);
             let redundant = match &cover {
-                // Any arm after a catch-all is unreachable.
-                _ if catch_all_seen => true,
+                // Any arm after coverage closed (a catch-all, or the type saturated) is unreachable.
+                _ if coverage_closed => true,
                 // A repeat of an already-covered literal / full-variant cover.
                 Some(c) => covered.contains(c),
                 // Unclassifiable — not provably redundant.
@@ -2601,8 +2628,9 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
             if redundant && db.is_user_node(*pat) {
                 let mut diag = Diagnostic::warning(
                     crate::diag::Code::RedundantArm,
-                    "this match arm is unreachable — an earlier arm already covers every value it \
-                     would match (a duplicate or a pattern shadowed by an earlier catch-all)",
+                    "this match arm is unreachable — the earlier arms already cover every value it \
+                     would match (a duplicate, a pattern shadowed by an earlier catch-all, or a \
+                     catch-all after the specific arms already cover the whole type)",
                     Some(*pat),
                 );
                 // The rustc-gold repair: DELETE the whole `(<pattern> <body>)` arm. An unreachable arm
@@ -2623,9 +2651,15 @@ fn collect_redundant_arm_warnings(db: &mut Db) -> Vec<Diagnostic> {
                 out.push(diag);
             }
             match cover {
-                Some(ArmCover::CatchAll) => catch_all_seen = true,
+                Some(ArmCover::CatchAll) => coverage_closed = true,
                 Some(c) => {
                     covered.insert(c);
+                    // If the distinct full covers now saturate a FINITE type, coverage is closed: any
+                    // later arm (including a catch-all) is unreachable. Count only `Variant`/`Lit` covers
+                    // (a `CatchAll` already closed above), which is exactly `covered`'s size here.
+                    if cover_size.is_some_and(|n| covered.len() >= n) {
+                        coverage_closed = true;
+                    }
                 }
                 _ => {}
             }
