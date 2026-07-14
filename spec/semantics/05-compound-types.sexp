@@ -611,6 +611,22 @@
   (input  (= (record (x 1) (y 2)) (record (x 1) (y 2))))
   (output (: true Bool)))
 
+(case "runtime structural equality over a payload-carrying sum agrees on both backends"
+  (doc    "A RUNTIME `(= a b)` over a payload-carrying sum — `(type W (V (Option Int64)) (Z))`, comparing
+           `W.V (Option.Some k)` against `W.V (Option.Some 5)`. On the wasm backend this is a value-heap
+           equality walk; on the Rust backend the sum maps to a native enum that derives `PartialEq, Eq`
+           (its payload `Option<i64>` is itself `Eq`), so `=` emits a native `a == b`. The two backends must
+           AGREE on the structural result: `f(5)` compares equal → 1, `f(9)` compares unequal → 0. Pins the
+           two-compiler agreement on runtime structural equality over a sum carrying another sum — a Rust
+           backend that only derived `PartialEq` for all-nullary enums declined this while wasm ran it.")
+  (needs  sum-type-declaration)
+  (input  (do
+            (type W (V (Option Int64)) (Z))
+            (def (f (: k Int64)) (if (= (W.V (Option.Some k)) (W.V (Option.Some 5))) 1 0))
+            (export f)))
+  (call   f (: 5 Int64))
+  (output (: 1 Int64)))
+
 ; --- Record equality is by field-name SET, so it is independent of the order fields are written ---
 ; core-semantics.md #A Record Has A Fixed Set Of Named Fields (a record's fields are a SET) together
 ; with deterministic-value-form.md #Ordering Of Aggregate Members Is Fixed ("The canonical encoding of

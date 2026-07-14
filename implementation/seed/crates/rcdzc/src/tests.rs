@@ -29127,12 +29127,13 @@ mod stage1 {
 
     #[test]
     fn an_all_nullary_enum_derives_partial_eq_on_the_rust_backend() {
-        // RUST-BACKEND / CROSS-BACKEND: the `=` intrinsic on an all-nullary enum lowers (rust backend) to a
-        // native `x == y`, which needs `PartialEq` — so an all-nullary enum MUST be emitted with
-        // `#[derive(Clone, PartialEq, Eq)]`, else the generated Rust fails to build (E0369) even though the
-        // SAME program runs on wasm (where the enum is a bare i32 discriminant and `=` is `i32.eq`). A
-        // payload-carrying sum, on which the seed defines no structural `=`, stays `#[derive(Clone)]` only —
-        // deriving `PartialEq` there could fail to compile if a payload type is not itself `PartialEq`.
+        // RUST-BACKEND / CROSS-BACKEND: the `=` intrinsic lowers (rust backend) to a native `x == y`, which
+        // needs `PartialEq`/`Eq` — so a sum MUST be emitted with `#[derive(Clone, PartialEq, Eq)]` whenever
+        // its payloads are themselves `Eq`-derivable, else the generated Rust fails to build even though the
+        // SAME program runs on wasm (a value-heap equality walk). An all-nullary enum trivially qualifies; a
+        // payload sum of Int/Bool/nested comparable payloads does too. A sum whose payload is NOT `Eq` (a
+        // float — `PartialEq` but not `Eq`) stays `#[derive(Clone)]` only (its runtime `=` then declines,
+        // decline-don't-miscompile).
         use crate::testkit::parse;
 
         // An all-nullary enum compared with `=` → its emitted Rust enum derives PartialEq/Eq and builds.
@@ -29150,8 +29151,8 @@ mod stage1 {
             "an all-nullary enum must derive PartialEq/Eq so native `==` builds; got:\n{rs}"
         );
 
-        // A payload-carrying sum stays Clone-only (no `=` defined on it; deriving PartialEq is not gated by
-        // its payloads' capabilities, so it would be unsound to add unconditionally).
+        // A payload-carrying sum whose payloads are Eq-derivable (Int64) NOW derives PartialEq/Eq too, so a
+        // runtime `(= a b)` over it emits a native `==` (was Clone-only + a decline).
         let payload = "(module m (type Box (Mk Int64) (Nil)) \
                          (def (unbox (: b Box)) (match b ((Mk n) n) ((Nil) 0))) \
                          (def (main) (unbox (Mk 42))) \
@@ -29163,8 +29164,26 @@ mod stage1 {
                 .expect("rust artifact");
         let rs2 = String::from_utf8(rs2).expect("utf8");
         assert!(
-            rs2.contains("#[derive(Clone)]\n#[allow(dead_code)]\npub enum Box"),
-            "a payload-carrying sum stays Clone-only; got:\n{rs2}"
+            rs2.contains("#[derive(Clone, PartialEq, Eq)]\n#[allow(dead_code)]\npub enum Box"),
+            "a payload sum with Eq-derivable payloads now derives PartialEq/Eq; got:\n{rs2}"
+        );
+
+        // A FLOAT-carrying sum stays Clone-only — `f64` is `PartialEq` but NOT `Eq`, so `#[derive(Eq)]`
+        // would fail to compile; its runtime `=` declines (the wasm heap-walk path also declines a float
+        // compound `=` in the seed).
+        let float_sum = "(module m (type FBox (Mk Float64) (Nil)) \
+                           (def (unbox (: b FBox)) (match b ((Mk n) n) ((Nil) 0.0))) \
+                           (def (main) (unbox (Mk 4.0))) \
+                           (export main))";
+        let mut db3 = crate::db::Db::load(parse(float_sum));
+        let layout3 = crate::layout::compute(&mut db3).expect("layout");
+        let rs3 =
+            crate::backend::emit(crate::backend::Target::Rust, &mut db3, &layout3, None, None)
+                .expect("rust artifact");
+        let rs3 = String::from_utf8(rs3).expect("utf8");
+        assert!(
+            rs3.contains("#[derive(Clone)]\n#[allow(dead_code)]\npub enum FBox"),
+            "a float-carrying sum stays Clone-only (f64 is not Eq); got:\n{rs3}"
         );
     }
 

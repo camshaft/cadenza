@@ -1180,6 +1180,27 @@ fn rustc_roundtrip_generic_sum_with_a_type_param_nested_in_a_variant_payload() {
 }
 
 #[test]
+fn rustc_roundtrip_runtime_equality_over_a_payload_sum() {
+    // Runtime `(= a b)` over a PAYLOAD-carrying sum. On wasm this is a value-heap equality walk; on the
+    // Rust backend the sum maps to a native enum that now `#[derive(PartialEq, Eq)]` (its payloads are
+    // Eq-derivable), so `=` emits a native `a == b` — was a decline ("does not yet render this compound
+    // value"). `f(5)` compares `W.V(Some 5) == W.V(Some 5)` → 1; `f(9)` → `Some 9 != Some 5` → 0. Matches
+    // the wasm oracle's structural equality.
+    let rs = compile_rust(
+        "(module m (type W (V (Option Int64)) (Z)) \
+           (def (f (: k Int64)) (if (= (W.V (Option.Some k)) (W.V (Option.Some 5))) 1 0)) (export f))",
+    );
+    assert!(rs.contains("PartialEq, Eq"), "payload sum derives Eq:\n{rs}");
+    assert!(rs.contains("=="), "emits a native == :\n{rs}");
+    if let Some(out) = rustc_run(&rs, "f(5)") {
+        assert_eq!(out, "1");
+    }
+    if let Some(out) = rustc_run(&rs, "f(9)") {
+        assert_eq!(out, "0");
+    }
+}
+
+#[test]
 fn rustc_roundtrip_builtin_option_matches() {
     // unwrap-or(Some 8, _) = 8, unwrap-or(None, -1) = -1 — a match over std's Option, constructed with
     // std's `Some`/`None` in the driver, runs and matches the oracle.
