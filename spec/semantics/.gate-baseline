@@ -130,6 +130,7 @@ pass	a NaN nested in a list compares equal under the canonical byte form
 pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
+pass	a RADIX literal carries the N type suffix
 pass	a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)
 pass	a RECORD closure ARG on the MULTI-EXPORT path
 pass	a RECORD closure ARG whose fields are NOT in sorted source order
@@ -190,6 +191,7 @@ pass	a bin pattern must consume the whole scrutinee or it does not match
 pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
 pass	a binary literal with digit separators
+pass	a binary-radix literal carries the N suffix and an underscore group
 pass	a binding form with bindings but no body is rejected, not a crash
 pass	a bit-field value that needs more bits than its width does not fit its segment
 pass	a bit-field wider than a byte packs across the byte boundary big-endian
@@ -823,6 +825,7 @@ pass	a quote-pattern match with no catch-all is non-exhaustive
 pass	a quoted compound form equals the same AST built by the Ast.List constructor
 pass	a quoted integer equals the same node built by the Ast.Int constructor
 pass	a quoted name equals the same node built by the Ast.Name constructor
+pass	a radix literal carries the R (Rational) suffix
 pass	a radix literal with a bad digit is a malformed literal, not an unbound name
 pass	a radix literal with an empty body is a malformed literal, not an unbound name
 pass	a rate derived by division mixes with a named rate unit of the same dimension
