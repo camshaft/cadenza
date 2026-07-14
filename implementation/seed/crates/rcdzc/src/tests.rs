@@ -28542,6 +28542,12 @@ mod diagnostics {
             "(module m (def (main) (match (Some 5) ((Some _x) 0) ((None) 1))) (export main))",
             "(module m (def (g (: t (Tuple Int64 Int64))) (match t ((tuple a b) (+ a b)))) (export g))",
             "(module m (def (g (: o (Option (Option Int64)))) (match o ((Some (Some y)) y) (_ 0))) (export g))",
+            // A GUARDED binder used only in the guard COND (not the body) is used — the usage scan must
+            // cover the cond subtree, not just the arm body. (Regression: the resolution-kind heuristic
+            // mis-classified the cond's `Ref`-to-scrutinee occurrence and false-flagged this binder.)
+            "(module m (def (f (: n Int64)) (match n ((guard x (> x 0)) 5) (_ 0))) (export f))",
+            // A guarded scalar binder used in BOTH cond and body.
+            "(module m (def (f (: n Int64)) (match n ((guard x (> x 0)) x) (_ 0))) (export f))",
         ] {
             assert!(
                 unused_of(ok).is_empty(),
@@ -28549,6 +28555,18 @@ mod diagnostics {
                 unused_of(ok)
             );
         }
+        // A genuinely-unused GUARDED binder (bound but referenced in NEITHER the cond nor the body) still
+        // warns — the guard-cond scan widens usage, it does not blanket-suppress. Here the cond tests `n`,
+        // the body is a constant, so `x` is dead.
+        let dead_guard = unused_of(
+            "(module m (def (f (: n Int64)) (match n ((guard x (> n 0)) 5) (_ 0))) (export f))",
+        );
+        assert_eq!(
+            dead_guard.len(),
+            1,
+            "a guard binder used in neither cond nor body still warns: {dead_guard:?}"
+        );
+        assert!(dead_guard[0].contains("`x`"), "{dead_guard:?}");
     }
 
     /// An ANONYMOUS-lambda `(fn (x) …)` parameter never referenced in the body is unused — like an unused

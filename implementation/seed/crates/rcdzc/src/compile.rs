@@ -3544,14 +3544,27 @@ fn collect_unused_binding_warnings(db: &mut Db) -> Vec<Diagnostic> {
             continue;
         };
         for (pat, body) in arms.iter() {
+            // A GUARD pattern `(guard <pat> <cond>)` binds names in `<pat>`, and its `<cond>` is a USE
+            // site (`(guard x (> x 0))` reads `x`) — NOT a second binding. Split them: binders come from
+            // the inner `<pat>`, and the guard `<cond>` is scanned for uses alongside the arm body.
+            // `arm_pattern_binders` over the WHOLE guard form would wrongly collect the cond's `x` as a
+            // binder AND miss it as a use — a false "unused" (a guard binder used only in the cond).
+            let (binder_pat, guard_cond) = match db.ast.as_form(*pat, "guard") {
+                Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+                _ => (*pat, None),
+            };
             // The arm's pattern binders (variant payloads, tuple elements, scalar binders); a `_`/`..`
             // separator and a literal bind nothing.
-            let pat_binders = crate::resolve::arm_pattern_binders(db, *pat);
+            let pat_binders = crate::resolve::arm_pattern_binders(db, binder_pat);
             if pat_binders.is_empty() {
                 continue;
             }
-            // The binder NAMES the arm body references (resolving to a match binder) — one walk per arm.
-            let referenced = used_match_binder_names(db, *body);
+            // The binder NAMES referenced in the arm body OR the guard cond (both resolving to a match
+            // binder) — a binder used in either is used.
+            let mut referenced = used_match_binder_names(db, *body);
+            if let Some(cond) = guard_cond {
+                referenced.extend(used_match_binder_names(db, cond));
+            }
             for (name, name_occ) in pat_binders {
                 if name.starts_with('_') || referenced.contains(&name) {
                     continue;
@@ -3821,19 +3834,22 @@ fn used_param_names(db: &mut Db, body: StructId) -> std::collections::HashSet<St
     out
 }
 
-/// The binder NAMES referenced in a match-arm BODY that resolve to a MATCH BINDER — the match-arm
-/// analogue of [`used_param_names`]. A reference to a variant-pattern binder resolves to a `SumPayload`
-/// (reading the scrutinee's payload); a scalar/whole-scrutinee binder resolves to a `Ref` whose target is
-/// the SCRUTINEE (not a param/let binding). So a name occurrence is a match-binder use iff its resolution
-/// is a `SumPayload`, OR a `Ref` to a target that is itself NOT a param/let/def binding (i.e. the
-/// scrutinee occurrence). Skips a `let`-binding NAME occurrence (a `let` in the arm body is its own
-/// binder, not a match-binder use). Scope-correct: `resolved_of` honors shadowing, so a name shadowed by
-/// an inner `let`/pattern resolves to the inner binder, not the arm's — no false "used".
+/// The NAME occurrences in an arm-body / guard-cond subtree that could REFERENCE a match-arm binder — a
+/// plain name-presence scan (every name occurrence that is not itself a binding-declaration name). Used
+/// to decide whether a match-arm pattern binder is used: a match binder is scoped to its OWN arm, and its
+/// declaration occurrences live in the PATTERN (not the body/cond) — so ANY occurrence of the binder name
+/// in the arm body/cond subtree is a use of it. A resolution-KIND check is NOT reliable here (a scalar /
+/// whole-value binder resolves to `Ref { value: scrutinee }` — indistinguishable from an ordinary
+/// variable `Ref` without knowing the scrutinee shape, which varies: a param → `Ref`-to-`Param`, a
+/// literal → `Ref`-to-`Int`, …). The name-presence scan is robust regardless of scrutinee shape;
+/// `is_let_binding_name` skips an inner `let`'s own NAME position (a declaration, not a use). CONSERVATIVE
+/// on inner shadowing: a binder shadowed by an inner same-named binder that is then used counts the outer
+/// as "used" (under-reports the rare shadow case — never a false "unused"), the right side to err on for a
+/// warning.
 fn used_match_binder_names(db: &mut Db, body: StructId) -> std::collections::HashSet<String> {
     fn walk(db: &mut Db, id: StructId, out: &mut std::collections::HashSet<String>) {
         if let Some(name) = db.ast.as_name(id).map(str::to_string)
             && !is_let_binding_name(db, id)
-            && resolves_to_match_binder(db, id)
         {
             out.insert(name);
         }
@@ -3846,28 +3862,6 @@ fn used_match_binder_names(db: &mut Db, body: StructId) -> std::collections::Has
     let mut out = std::collections::HashSet::new();
     walk(db, body, &mut out);
     out
-}
-
-/// Whether `id` resolves to a MATCH-ARM pattern binder — a `SumPayload` (a variant/nested-payload binder),
-/// or a `Ref` to a SCRUTINEE occurrence (a scalar / whole-value binder resolves to `Ref { value:
-/// scrutinee }`, where the scrutinee is neither a param nor a let/def binding). A `Ref` to a param/let/def
-/// is an ordinary variable use, not a match-binder use — excluded so a genuinely-used match binder is not
-/// confused with (nor confuses) the param/let checks.
-fn resolves_to_match_binder(db: &mut Db, id: StructId) -> bool {
-    match crate::resolve::resolved_of(db, id) {
-        crate::resolved::Resolved::SumPayload { .. } => true,
-        crate::resolved::Resolved::Ref { value } => matches!(
-            crate::resolve::resolved_of(db, value),
-            // The scrutinee occurrence a scalar-match binder points at is itself a value expression
-            // (an application/literal/param-ref), NOT a `Param`/`Ref`-to-binding declaration site. A `Ref`
-            // to a Param/Ref is an ordinary variable use; only a Ref to a non-binding target is a
-            // scalar-match binder reading the scrutinee.
-            crate::resolved::Resolved::Apply { .. }
-                | crate::resolved::Resolved::Int(_)
-                | crate::resolved::Resolved::Member { .. }
-        ),
-        _ => false,
-    }
 }
 
 /// Whether `id` resolves to a parameter — its own `Param`, or a `Ref` to one (a body reference is a
