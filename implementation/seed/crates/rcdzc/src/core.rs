@@ -257,8 +257,10 @@ pub enum Core {
     /// positive (`> 0`, never zero — a zero denominator traps at construction, never reaching here). A
     /// `Ty::Rational` value folded in `lower` (`Rational.of`/`of-int` + exact `+`/`-`/`*`/`/`/compare over
     /// the pair, via `IntValue` bignum arithmetic — B4-1). Two equal rationals share ONE normalized pair,
-    /// so `=` is structural over `(num, den)`. Crossing the boundary as a `{numerator, denominator}` record
-    /// + a runtime rational compound are a later B4 slice (the escape/emit paths decline for now).
+    /// so `=` is structural over `(num, den)`. As an in-body runtime value it materializes to a runtime
+    /// rational handle (`rational-of` over two BigInt leaves, R3b) and crosses the host boundary via the
+    /// value-form escape as a `{numerator, denominator}` record (R3c); the whole-export constant takes the
+    /// baked-bytes `constant_value_form` path instead.
     ConstRational(IntValue, IntValue),
     /// A boolean constant.
     ConstBool(bool),

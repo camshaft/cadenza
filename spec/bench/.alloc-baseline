@@ -20,6 +20,8 @@
 1000	map_lookup_tuplekey x1000
 0	map_remove x1000
 6685	map_remove_shared x1000
+3000	rational_add x1000
+0	rational_cmp x1000
 266	set_difference x1000
 488	set_difference_unique_small_b x1000
 263	set_intersection x1000

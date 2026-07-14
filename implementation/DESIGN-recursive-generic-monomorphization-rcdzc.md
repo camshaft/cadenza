@@ -302,10 +302,11 @@ specialization, since each already registers internal defs.
 
 # ADDENDUM: type-valued parameters — a generic def takes the TYPE as a regular argument
 
-Status: DESIGN — direction chosen by the operator (2026-07-14): "use types as values and pass the type
-as a regular argument." This is the spec's OWN model (`type-system.md §Generics Are Type-Valued
-Parameters`), NOT implicit ML-style type variables. Scope assessment below — this is a MULTI-INCREMENT
-vertical, not a single step; the seams are mapped so it can proceed increment by increment.
+Status: COMPLETE (T1–T4 landed) — a generic definition takes the TYPE as a regular argument, the
+operator's chosen model (`type-system.md §Generics Are Type-Valued Parameters`), working end to end for
+both non-recursive and recursive callees, with the compile-time-only type argument erased from the
+emitted signature/calls, and a type-value that would reach a runtime slot rejected with a coded CDZ0201.
+T1 `@72a5a8f0` · T2+T3-nonrec `@064f81c1` · T3-rec `@a37223ca` · T4 (this increment).
 
 ## The chosen surface
 A generic def takes a TYPE-VALUED PARAMETER — an ordinary parameter whose VALUE is a type — and uses it as
@@ -371,10 +372,18 @@ constructor … applied by ordinary application"; `:250` monomorphized before th
   runtime args. So each specialized `len` takes just the list handle (`(i32)->i64`), no type arg. The memo
   key includes each type arg's VALUE (`@Int64`) so distinct instantiations stay distinct. Verified: `len`
   over `Lst Int64`+`Lst String` → 5, two specializations with the type param erased.
-- **T4 — NEXT.** A type-value arg that is NOT compile-time-resolvable (flows from runtime data) → CDZ0302
-  (`:226` "a type-value never flows from runtime data into a position that determines a type"). Today
-  `typeval_of` returns `None` for a non-constant type expression → the specialization declines (a clean
-  reject, not a miscompile); T4 makes it the CODED CDZ0302 with the actionable message.
+- ✅ **T4 — LANDED (this increment).** A type-value can never flow into RUNTIME data — `Ty::Type` has no
+  machine representation, so any position that would force it into a runtime slot is rejected. FINDING:
+  every compile-time-RESOLVABLE flow (a `let`-bound type, a type threaded through another type-valued
+  param) already works (the type-value is statically known → monomorphized), and a NON-resolvable one is
+  ALREADY rejected — the guarantee holds structurally. The one gap was DIAGNOSTIC QUALITY: a type-value
+  stored in a COMPOUND result (`(def (main) (tuple Int64 5))` : `(Tuple Type Int64)`) leaked the emit
+  path's 4-error uncoded no-runtime-form cascade instead of one coded reject. FIX: `Ty::has_type_value`
+  (a `Ty::Type`-anywhere walker) + a `collect_faults` arm reporting ONE coded CDZ0201 naming the compound
+  (message embeds `TYPE_EXPORT_MARKER` so `dedup_faults` drops the downstream declines), extending the
+  bare-type-export CDZ0201 to the nested case. (Note: the guarantee's code is CDZ0201 "not a runtime
+  value", NOT CDZ0302 `IntOutOfRange` — the design note misremembered the code; there is no dedicated
+  type-determination code, and CDZ0201 is the established "a type is not a runtime value" reject.)
 
 ## Not doing (out of scope, distinct features)
 Implicit ML-style quantification `(: l (Lst a))` with a bare `a` (the operator chose type-valued params

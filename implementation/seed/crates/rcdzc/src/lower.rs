@@ -1485,7 +1485,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // `Rational.of n d` — CONSTRUCT an exact rational. A CONSTANT numerator/denominator pair
                 // folds to a NORMALIZED `Core::ConstRational` (gcd-reduce, sign on the numerator, denom
                 // strictly positive); a ZERO denominator TRAPS ("rational with zero denominator"). A
-                // runtime operand declines until the runtime rational compound (a later B4 slice).
+                // runtime operand emits `Core::RationalOfInts` (the runtime `rational-of` op, R3b).
                 Some(Prim::RationalOf) if args.len() == 2 => {
                     lower_rational_of(db, args[0], args[1])
                 }
@@ -2524,14 +2524,21 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     }
 }
 
-/// Lower a `(match scrutinee (list-pattern body)…)` over a LIST scrutinee — this increment folds a
-/// COMPILE-TIME-CONSTANT scrutinee against element patterns, both FIXED-ARITY and REST. Its `Core::ListNew`
-/// gives the length; select the FIRST arm whose pattern matches — a `(list p0 … p_{k-1})` of arity k
-/// matches length exactly k, a rest pattern `(list p0 … p_{k-1} .. rest)` matches length ≥ k, a bare
-/// binder / `_` matches any — and lower that arm's body. The body's leading-element binders resolve to
-/// `SumPayload` `Elem(i)` reads and the rest binder to the tail sublist (`RestFrom(k)`), each FOLDing
-/// against the constant list (resolve Case 6l). A RUNTIME list scrutinee declines (a later increment), as
-/// does a NESTED leading sub-pattern (a leading position must be a bare binder / `_`).
+/// Lower a `(match scrutinee (list-pattern body)…)` over a LIST scrutinee — folds a COMPILE-TIME-CONSTANT
+/// scrutinee against element patterns (FIXED-ARITY and REST) and emits `Core::MatchList` (a `vec-len`
+/// dispatch) for a runtime one. Its length gives the dispatch; select the FIRST arm whose pattern matches
+/// — a `(list p0 … p_{k-1})` of arity k matches length exactly k, a rest pattern `(list p0 … p_{k-1} ..
+/// rest)` matches length ≥ k, a bare binder / `_` matches any — and lower that arm's body. The body's
+/// leading-element binders resolve to `SumPayload` `Elem(i)` reads and the rest binder to the tail sublist
+/// (`RestFrom(k)`), each FOLDing against the constant list (resolve Case 6l/6r).
+///
+/// A leading element position COMPOSES (`core-semantics.md §145`): it MAY itself be any IRREFUTABLE nested
+/// pattern — a wildcard, a name, a tuple pattern `(tuple a b)`, or a single-variant constructor `(Mk n)` —
+/// matched recursively to any depth, binding the union of its sub-binders (which resolve down the extended
+/// `Elem`/`Payload` path). Since dispatch is by LENGTH, an irrefutable element always matches once the
+/// length holds, so the length-coverage exhaustiveness reasoning is unchanged. A REFUTABLE element (a
+/// literal, a multi-variant constructor) would need element-VALUE refinement `Core::MatchList` does not yet
+/// express, so it DECLINES honestly (a later increment); the whole arm pattern must be LINEAR (CDZ0102).
 ///
 /// A list observed ONLY through its length and its elements in order — never any cell/node structure of
 /// the representation (the fold reads `vec-len`/`vec-get`/`vec-split`, representation-agnostic). A
@@ -2549,6 +2556,12 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
         Rest(usize, StructId), // a rest `(list p0 … p_{k-1} .. rest)` — matches length ≥ k (lead = k)
         Wild(StructId),        // a bare binder / `_` — matches any length
     }
+    // The list's element type (from the scrutinee), used to classify each element sub-pattern's shape
+    // (`Any` when unsolved — permissive, the same treatment a binding position gets).
+    let elem_ty = match crate::infer::type_of(db, scrutinee) {
+        crate::ty::Ty::List(e) => (*e).clone(),
+        _ => crate::ty::Ty::Any,
+    };
     let mut classified: Vec<Arm> = Vec::with_capacity(arms.len());
     for &(pat, body) in arms {
         if db.ast.as_name(pat).is_some() {
@@ -2561,8 +2574,16 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
             .or_else(|| db.ast.as_form(pat, "list"))
         {
             Some(es) => {
-                // Split at a `..` marker: `lead` leading binders, then (for a rest pattern) the rest
-                // binder name. A rest pattern needs EXACTLY one binder after `..`.
+                let es = es.to_vec();
+                // LINEARITY across the WHOLE list pattern (`core-semantics.md §145`: "the whole pattern
+                // MUST remain linear (CDZ0102)") — the same check the tuple/sum matchers run, previously
+                // MISSING for list patterns (so `(list a a)` / `(list a b .. a)` silently bound `a` twice).
+                // `check_pattern_linear` skips `..`/`_`/ctor heads and faults a repeated binder.
+                if let Err(r) = check_pattern_linear(db, pat) {
+                    return Core::Poison(r);
+                }
+                // Split at a `..` marker: `lead` leading element sub-patterns, then (for a rest pattern) the
+                // rest binder. A rest pattern needs EXACTLY one binder after `..`.
                 match es.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
                     Some(i) => {
                         if i + 2 != es.len() {
@@ -2571,27 +2592,30 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
                                 "a list rest pattern is `(list p… .. rest)` — exactly one binder after `..`",
                             ));
                         }
-                        // Each leading element must be a bare name binder / `_` (a nested/literal element
-                        // pattern is a later increment). The leading binders read via `SumPayload`; the
-                        // rest binder is a sublist (bound in the body — resolve's list-pattern case; over a
-                        // constant scrutinee, the tail folds when referenced).
-                        if es[..i].iter().all(|&e| db.ast.as_name(e).is_some()) {
-                            classified.push(Arm::Rest(i, body));
-                        } else {
+                        // The rest binder itself must be a bare name / `_` (it binds the tail SUBLIST — a
+                        // nested pattern over the rest is a further increment).
+                        if db.ast.as_name(es[i + 1]).is_none() {
                             return Core::Poison(Reject::decline(
-                                "a list element sub-pattern that is not a binder is not yet supported",
+                                "a list rest binder must be a name or `_` (a nested rest pattern is not yet supported)",
                             ));
                         }
+                        // Each LEADING element sub-pattern must be IRREFUTABLE (composes to any depth); a
+                        // refutable/unsupported one declines.
+                        for &e in &es[..i] {
+                            if let Err(r) = list_element_irrefutable_or_decline(db, e, &elem_ty) {
+                                return Core::Poison(r);
+                            }
+                        }
+                        classified.push(Arm::Rest(i, body));
                     }
                     None => {
-                        // Fixed arity: each element must be a bare name binder / `_`.
-                        if es.iter().all(|&e| db.ast.as_name(e).is_some()) {
-                            classified.push(Arm::Fixed(es.len(), body));
-                        } else {
-                            return Core::Poison(Reject::decline(
-                                "a list element sub-pattern that is not a binder is not yet supported",
-                            ));
+                        // Fixed arity: each element sub-pattern must be IRREFUTABLE (composes to any depth).
+                        for &e in &es {
+                            if let Err(r) = list_element_irrefutable_or_decline(db, e, &elem_ty) {
+                                return Core::Poison(r);
+                            }
                         }
+                        classified.push(Arm::Fixed(es.len(), body));
                     }
                 }
             }
@@ -2710,6 +2734,39 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
                 arms: match_arms,
             }
         }
+    }
+}
+
+/// Classify a single LEADING list-element sub-pattern for a `match` arm: accept it (Ok) iff it is
+/// IRREFUTABLE — a wildcard/name (binds anything), a tuple pattern of irrefutable elements, or a
+/// single-variant constructor of irrefutable payloads, composed to any depth (`core-semantics.md §145`).
+/// A dispatch-by-LENGTH list match binds an accepted element's sub-binders down an `Elem`/`Payload` path
+/// (resolve Case 6l) and always matches once the length condition holds, so an irrefutable element needs
+/// no per-element runtime test.
+///
+/// This reuses [`check_binding_pattern`] — a binding position is exactly "must be irrefutable", the same
+/// property a leading element needs — with ONE reinterpretation for the match context: a REFUTABLE element
+/// (a literal, a multi-variant constructor) is `check_binding_pattern`'s CDZ0210, but in a `match` arm a
+/// refutable element is not an error — it is a not-yet-supported element-VALUE refinement (`Core::MatchList`
+/// dispatches only on length), so map that CDZ0210 to a DECLINE (a later increment refines on element
+/// values). A SHAPE error (CDZ0201 — e.g. a tuple pattern against a scalar element) and a NON-LINEAR binder
+/// (CDZ0102) stay HARD rejects (the whole-arm linearity check in `lower_match_list` also covers CDZ0102).
+fn list_element_irrefutable_or_decline(
+    db: &mut Db,
+    elem_pat: StructId,
+    elem_ty: &crate::ty::Ty,
+) -> Result<(), Reject> {
+    match check_binding_pattern(db, elem_pat, elem_ty) {
+        Ok(()) => Ok(()),
+        // A refutable element (literal / multi-variant ctor) → not-yet-supported in a length-dispatch list
+        // match; decline honestly rather than reject (nothing is ill-formed — the refinement is unbuilt).
+        Err(r) if r.code == Some(Code::NonExhaustive) => Err(Reject::decline(
+            "a refutable list element sub-pattern (a literal or multi-variant constructor) needs \
+             element-value refinement, which the length-dispatch list matcher does not yet support",
+        )),
+        // A shape error (CDZ0201), a non-linear binder (CDZ0102), or a not-yet-supported irrefutable
+        // shape (a record / single-variant-sum element declines) propagates as-is.
+        Err(r) => Err(r),
     }
 }
 
@@ -4898,6 +4955,23 @@ fn ctor_spine(db: &mut Db, id: StructId) -> Option<(StructId, Vec<StructId>)> {
     ctor_spine_fueled(db, id, 64)
 }
 
+/// Follow a chain of `Resolved::Ref` (a `let`/`def` binding) and `Resolved::Annot` (`(: expr T)`, a value
+/// annotation transparent to the value's identity) to the underlying value node — so a constructor reached
+/// through a binding or an annotation wrapper (both introduced by `apply_lambda` when it inlines a HOF that
+/// took a constructor as a first-class arg) is found. Bounded by a small fuel so a self-referential ref
+/// cannot cycle. Stops at the first node that is neither a `Ref` nor an `Annot`.
+fn peel_ref_annot(db: &mut Db, id: StructId) -> StructId {
+    let mut cur = id;
+    for _ in 0..64 {
+        match resolved_of(db, cur) {
+            Resolved::Ref { value } => cur = value,
+            Resolved::Annot { expr, .. } => cur = expr,
+            _ => break,
+        }
+    }
+    cur
+}
+
 fn ctor_spine_fueled(db: &mut Db, id: StructId, fuel: u32) -> Option<(StructId, Vec<StructId>)> {
     if fuel == 0 {
         return None;
@@ -4907,10 +4981,11 @@ fn ctor_spine_fueled(db: &mut Db, id: StructId, fuel: u32) -> Option<(StructId, 
     // same as the inline `((Pair 3) 4)`. Without this, the ref head is neither an `Apply` (so no deeper
     // spine) nor a constructor record (so no bottom), and the partial ctor reaches "not applyable". A ref
     // that cycles back to `id` (a recursive nullary self-call) is caught by the fuel bound above.
-    let node = match resolved_of(db, id) {
-        Resolved::Ref { value } => value,
-        _ => id,
-    };
+    // Also PEEL a value ANNOTATION `(: expr T)`: when a HOF `(def (app (: g (-> Int64 W)) x) (g x))` is
+    // inlined with `g ↦ W.Mk`, `apply_lambda` wraps the substituted arg in the param's annotation, so the
+    // body becomes `((: W.Mk (-> Int64 W)) x)` — the head is an `Annot` hiding the constructor. A value
+    // annotation is transparent to WHAT the value is, so peel it to reach the ctor spine underneath.
+    let node = peel_ref_annot(db, id);
     let Resolved::Apply { head, args } = resolved_of(db, node) else {
         return None;
     };
@@ -4924,9 +4999,12 @@ fn ctor_spine_fueled(db: &mut Db, id: StructId, fuel: u32) -> Option<(StructId, 
     // through the recursive arm above (the OUTER `Apply`'s head is the inner `Apply`) or directly when a
     // followed ref lands on a half-applied constructor `(Pair 3)`. A genuine FLAT construction never lands
     // here — its own head is the bare `(. Sum V)` record, so `ctor_spine` on it returns `None` at the
-    // `let…else` (a record is not an `Apply`) and the flat `Some(Prim::SumNew)` path builds it.
-    if crate::eval::variant_disc_of(db, head).is_some() {
-        return Some((head, args.to_vec()));
+    // `let…else` (a record is not an `Apply`) and the flat `Some(Prim::SumNew)` path builds it. PEEL a
+    // ref/annotation on the head too, so a `g ↦ W.Mk` (bare ctor) or `(: W.Mk T)` (annotated bare ctor)
+    // head reaches the constructor and builds from this level's args — the inlined-HOF shape above.
+    let ctor_head = peel_ref_annot(db, head);
+    if crate::eval::variant_disc_of(db, ctor_head).is_some() {
+        return Some((ctor_head, args.to_vec()));
     }
     // The head is a LAMBDA (a def / `fn`) applied to this level's args, and that application REDUCES to a
     // constructor — `((mk1 3) 4)` where the head `(mk1 3)` applies the helper `(def (mk1 x) (Pair x))` to
@@ -7929,7 +8007,7 @@ fn lower_rational_of(db: &mut Db, num: StructId, den: StructId) -> Core {
 }
 
 /// The two `IntValue`s of a `Core::ConstRational` operand (already normalized), or `None` if `id` did not
-/// fold to a constant rational (a runtime rational — declines this increment).
+/// fold to a constant rational (a runtime rational — the caller then emits the runtime `rational-*` op, R3b).
 fn const_rational_of(
     db: &mut Db,
     id: StructId,
@@ -7987,10 +8065,11 @@ fn lower_rational_arith(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> 
     normalized_rational(num, den)
 }
 
-/// Lower a rational comparison `<`/`>`/`<=`/`>=`/`=` — fold a constant pair to a `Core::ConstBool` by
+/// Lower a rational comparison `<`/`>`/`<=`/`>=`/`=` — fold a CONSTANT pair to a `Core::ConstBool` by
 /// comparing the two normalized rationals EXACTLY: `a/b <=> c/d` ⇔ `a*d <=> c*b` (both denominators are
-/// strictly positive after normalization, so cross-multiplication preserves the order direction). A
-/// runtime rational compare is a later B4 slice (declines). A poison propagates.
+/// strictly positive after normalization, so cross-multiplication preserves the order direction), or
+/// (R3b) emit `Core::RationalCmp` (the runtime `rational-cmp` op + a fixed compare-with-zero) when an
+/// operand is RUNTIME-valued. A poison propagates.
 fn lower_rational_cmp(db: &mut Db, op: Prim, lhs: StructId, rhs: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, lhs) {
         return Core::Poison(r);
@@ -10173,8 +10252,8 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     }
     // A comparison over RATIONAL operands — a constant pair folds by comparing the two normalized
     // rationals exactly (cross-multiply: `a/b <=> c/d` ⇔ `a*d <=> c*b`, denominators strictly positive so
-    // the direction is preserved), via `IntValue` bignum. A runtime rational compare is a later B4 slice
-    // (declines). Checked before the scalar folds (a Rational is not `is_scalar`).
+    // the direction is preserved), via `IntValue` bignum; a runtime operand emits `Core::RationalCmp` (the
+    // runtime `rational-cmp` op, R3b). Checked before the scalar folds (a Rational is not `is_scalar`).
     if rational_operand(db, args) {
         return lower_rational_cmp(db, op, args[0], args[1]);
     }

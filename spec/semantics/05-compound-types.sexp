@@ -619,7 +619,6 @@
            AGREE on the structural result: `f(5)` compares equal → 1, `f(9)` compares unequal → 0. Pins the
            two-compiler agreement on runtime structural equality over a sum carrying another sum — a Rust
            backend that only derived `PartialEq` for all-nullary enums declined this while wasm ran it.")
-  (needs  sum-type-declaration)
   (input  (do
             (type W (V (Option Int64)) (Z))
             (def (f (: k Int64)) (if (= (W.V (Option.Some k)) (W.V (Option.Some 5))) 1 0))
@@ -636,7 +635,6 @@
            emits a native `a == b` that recurses structurally. Both backends must AGREE: `f(5)` → the trees
            are equal → 1, `f(9)` → unequal at the `Leaf` payload → 0. Pins that structural equality composes
            with the generic + recursive + Box + derive-bound interaction, the hardest sum-equality shape.")
-  (needs  sum-type-declaration)
   (input  (do
             (type T (Leaf a) (Node (Tuple T T)))
             (def (mk (: k Int64)) (T.Node (tuple (T.Leaf k) (T.Leaf 2))))
@@ -1051,7 +1049,6 @@
            sum → 0 (the `C.R` arm). Pins that a sum value composes as a map value: it is stored, retrieved
            through the `Option` lookup result, and matched — the collection carries the sum's heap value
            unchanged. The sum companion of the scalar-valued map cases.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C (R) (G))
             (def (main)
@@ -1067,7 +1064,6 @@
            deconstructs a sum), yielding `(Option.Some 42)` → 42. Pins that a sum value is a well-formed
            map key: it hashes/compares by its canonical structure, so two equal variants address the same
            entry. The key companion of the sum-value case above.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C (R) (G))
             (def (main)
@@ -1082,7 +1078,6 @@
            `(Set.contains … (C.G))` is true by the same structural equality a sum match uses. Pins that a
            sum value is a well-formed set element (membership is total, never a trap), the set companion of
            the map key/value cases. Returns 1 when the queried variant is present.")
-  (needs  sets)
   (input  (do
             (type C (R) (G) (B))
             (def (main) (if (Set.contains (Set.of (list (C.R) (C.G))) (C.G)) 1 0))
@@ -1289,7 +1284,6 @@
            the variant (the Rational payload need not be re-computed to select the arm). Pins that the newer
            `Rational` scalar composes as a sum payload — construction and match — exactly as an Int64 or
            Char payload does; the leaf's own arithmetic is a separate capability, not exercised here.")
-  (needs  sum-type-declaration)
   (input  (do
             (type W (V Rational) (Z))
             (def (f (: w W)) (match w ((W.V r) 1) ((W.Z) 0)))
@@ -1302,7 +1296,6 @@
            canonical value form `(V 3/4)` — the Rational payload survives the value-escape walk (rendered
            as its `numerator/denominator` form) exactly as an Int64/Char payload does. Pins that a Rational
            is a first-class sum payload end to end (construction/match AND escape).")
-  (needs  sum-type-declaration)
   (input  (do (type W (V Rational) (Z)) (def (main) (W.V (Rational.of 3 4))) (export main)))
   (call   main)
   (output (: (V 3/4) W)))
@@ -1314,7 +1307,6 @@
            a full-fledged operand of the leaf's own arithmetic (not merely stored/discriminated) and the
            result crosses the boundary in canonical normalized form — the payload participates in
            computation, then re-escapes.")
-  (needs  sum-type-declaration)
   (input  (do
             (type W (V Rational) (Z))
             (def (f (: w W)) (match w ((W.V r) (+ r r)) ((W.Z) (Rational.of 0 1))))
@@ -1818,6 +1810,45 @@
             (def (main) (sum (list 10 20 30))) (export main)))
   (output (: 60 Int64)))
 
+(case "a list element position composes with a nested tuple pattern"
+  (doc    "A list ELEMENT position is a *Patterns Compose* binder position (`core-semantics.md` §A List Is
+           Deconstructed By Element Patterns With An Optional Rest): an element MAY itself be any pattern —
+           here a `(tuple k v)` — matched recursively, binding the union of its sub-binders. `first-key`
+           reads the FIRST element of a runtime association list of pairs by `((list (tuple k v) .. rest)
+           …)`, binding both the key and value of that pair in one arm. The dispatch stays LENGTH-based (the
+           arm matches a list of length ≥ 1), so an IRREFUTABLE element pattern like a tuple always matches
+           once the length holds — its binders resolve down the extended `Elem`/`Payload` access path, no
+           new runtime test. Before, a non-bare-binder leading element declined \"not a binder is not yet
+           supported\", forcing a bind-then-rematch (`((list p .. rest) (match p ((tuple k v) …)))`). This
+           is the shape a reader takes to destructure the head of a sequence of tagged pairs directly. The
+           list `(list (tuple 1 10) (tuple 2 20))` binds `k`=1, `v`=10 → 11.")
+  (input  (do
+            (def (first-key xs) (match xs
+                                  ((list (tuple k v) .. rest) (+ k v))
+                                  (_                          -1)))
+            (def (main) (first-key (list (tuple 1 10) (tuple 2 20)))) (export main)))
+  (output (: 11 Int64)))
+
+(case "a nested tuple list element is bound over a runtime list and folded across the rest"
+  (doc    "The RUNTIME-scrutinee form of list-element composition, recursing across the rest: `sum-firsts`
+           sums the FIRST component of every pair in a runtime-built `(List (Tuple Int64 Int64))`, matching
+           `((list (tuple a _) .. rest) (+ a (sum-firsts rest)))` — a nested tuple element (its second
+           position a wildcard, dropped) plus a rest binder recursed as the tail. The list is built by a
+           push-loop (a genuine heap vector, not a constant that folds away), so each `(tuple a _)` reads a
+           runtime pair element out of the list by `vec-get` then destructures its first slot. Pins that a
+           nested element pattern composes with the length-dispatch runtime list matcher AND with rest
+           recursion — the exact idiom a self-hosted pass uses to walk a list of key/value or head/payload
+           pairs. build pushes (1,·)(2,·)(3,·); the fold yields 1 + 2 + 3 = 6.")
+  (input  (do
+            (def (build i n out) (if (< i n)
+                                     (build (+ i 1) n ((. List push) out (tuple i 99)))
+                                     out))
+            (def (sum-firsts xs) (match xs
+                                   ((list)                    0)
+                                   ((list (tuple a _) .. rest) (+ a (sum-firsts rest)))))
+            (def (main) (sum-firsts (build 1 4 (list)))) (export main)))
+  (output (: 6 Int64)))
+
 (case "an expression tree built at run time is evaluated by matching its node variants"
   (doc    "The compiler's own expression-evaluator shape: a multi-variant recursive sum `Expr` — the
            canonical little AST — is built at run time by `build` (its structure decided by a runtime
@@ -2116,7 +2147,6 @@
            Pins that a recursive-sum CONSUME (not just render) recurses on each recursive payload position at
            scale — a fold that walked only one child, or truncated, would give a wrong sum. Exercises the
            recursive construct + match + arithmetic path to a non-trivial depth in one program.")
-  (needs  sum-type-declaration)
   (input  (do
             (type T (Leaf Int64) (Node (Tuple T T)))
             (def (build (: d Int64) (: v Int64))
@@ -2140,7 +2170,6 @@
            observable at the boundary; the flat form is the one the constructor and the non-recursive
            render agree on). Pins that a multi-payload RECURSIVE variant escapes flattened, distinct from a
            single-tuple-payload one (both build a tuple handle; only the render arity differs).")
-  (needs  sum-type-declaration)
   (input  (do
             (type L (Nil) (Cons Int64 L))
             (def (build (: n Int64)) (if (= n 0)
@@ -2158,7 +2187,6 @@
            5)))`). Pins that spread-flattening composes with a nested sum/tuple/record element (the element
            is walked by its shape; only the variant-level tuple boxing is elided), distinct from the
            scalar-only multi-payload case above.")
-  (needs  sum-type-declaration)
   (input  (do
             (type W (P Int64 (Option Int64)) (E))
             (def (mk (: b Int64)) (if (> b 0) (W.P b (Some b)) (W.E)))
@@ -2175,7 +2203,6 @@
            recursive payload positions (each its own `T`) at every level, the tree analogue of the flat
            cons-list — a walk that tuple-wrapped, or descended only one recursive child, would render a
            wrong structure.")
-  (needs  sum-type-declaration)
   (input  (do
             (type T (Leaf Int64) (Node Int64 T T))
             (def (build (: n Int64)) (if (= n 0)
@@ -2230,7 +2257,6 @@
            runtime decision tree: the wasm backend walks `sum-disc` at each level, the Rust backend emits a
            nested `match` (outer `Option::Some(p)`, inner `match p { Result::Ok(n) => n, … }`) — both must
            reproduce this output, distinct from the constant case that folds to the arm.")
-  (needs  sum-type-declaration)
   (input  (do
             (def (f (: x (Option (Result Int64 Int64))))
               (match x ((Some (Ok n)) n) ((Some (Err e)) e) ((None) 0)))
@@ -2250,7 +2276,6 @@
            C Int64))` fully determines the Err type (Int64); the sibling case below pins that even an
            UNANNOTATED build whose Err type stays a free var (no `Err` ever constructed) now compiles — its
            dead `Err` arm grounds to the uniform heap cell.")
-  (needs  sum-type-declaration)
   (input  (do
             (type C (R Int64) (G))
             (def (f (: x (Option (Result C Int64))))
@@ -2276,7 +2301,6 @@
            never value-correct. `(f 7)` takes the live `Ok(C.R 7)` path → 7; the dead `Err` arm never runs.
            Pins that a total match over a sum whose type is only PARTLY determined by construction compiles
            (an ESCAPE of such an under-determined value still rejects — that boundary is unchanged).")
-  (needs  sum-type-declaration)
   (input  (do
             (type C (R Int64) (G))
             (def (f (: k Int64))
@@ -2530,7 +2554,6 @@
            the Rust backend folds each binder directly to its constant payload NODE (a constant `SumNew`'s
            payloads indexed) rather than re-matching — the two-compiler agreement over a multi-payload
            match, distinct from the recursive/runtime cases below.")
-  (needs  sum-type-declaration)
   (input  (do
             (type V (P Int64 Int64) (Z))
             (def (f v) (match v ((V.P a b) (+ a b)) ((V.Z) 0)))
@@ -2574,7 +2597,6 @@
            words — a backend that maps names to its own syntax must ESCAPE a keyword collision (the Rust
            backend emits `r#fn` for a raw-escapable keyword and a `cdz_kw_`-prefixed identifier for a
            non-escapable one like `Self`), never reject or miscompile the well-formed program.")
-  (needs  sum-type-declaration)
   (input  (do
             (type W (fn Int64) (struct Int64) (enum))
             (def (f (: w W)) (match w ((W.fn n) n) ((W.struct n) (* n 2)) ((W.enum) 0)))
@@ -3452,7 +3474,6 @@
            variant PAST THE FIRST — the outer `V` is covered, but its payload's `Some | None` variant set is
            not — the disc-≥1 companion of the `Option (Option …)` nested case (which nests at disc 0). A
            compiler that checked nested exhaustiveness only at variant 0 would accept this ill-typed match.")
-  (needs  sum-type-declaration)
   (input  (do
             (type W (A Int64) (V (Option Int64)))
             (def (f (: w W)) (match w ((W.A n) n) ((W.V (Option.Some n)) n)))
@@ -3468,7 +3489,6 @@
            not a variant cover (core-semantics.md #Matching Is Exhaustive Or Rejected — a literal arm may
            fail its test, so it covers no variant), the sum-variant companion of the int-literal-arms
            non-exhaustiveness rule.")
-  (needs  sum-type-declaration)
   (input  (do
             (type W (V Int64) (Z))
             (def (f (: w W)) (match w ((W.V 0) 100) ((W.Z) 0)))
@@ -3501,7 +3521,6 @@
            β-reduction) resolved the PATTERN occurrence `n` to the shadowed param, corrupting the pattern
            head. Pins that a variant-payload binder shadowing a param resolves as a fresh binder (scoped to
            the arm), lexical-scope §Shadowing Is Well-Defined, even on the call-driven path.")
-  (needs  sum-type-declaration)
   (input  (do
             (type W (V Int64) (Z))
             (def (f (: n Int64)) (match (W.V (+ n 1)) ((W.V n) n) ((W.Z) 0)))
@@ -3518,7 +3537,6 @@
            is scoped to its arm ONLY (core-semantics.md §Bindings Introduced By A Pattern Are Scoped To Its
            Branch), so a reference to the same name outside the match resolves to the enclosing param, not
            the arm binder — the exact scope boundary the shadow-in-a-called-def fix must preserve.")
-  (needs  sum-type-declaration)
   (input  (do
             (type W (V Int64) (Z))
             (def (f (: n Int64)) (+ (match (W.V (+ n 1)) ((W.V n) n) ((W.Z) 0)) n))
@@ -3534,7 +3552,6 @@
            `n * 2` = 10. Pins that a sum value produced by one match flows as the scrutinee of another — a
            match is an ordinary sum-valued expression, composable as a scrutinee, with the binders of each
            match scoped to its own arms.")
-  (needs  sum-type-declaration)
   (input  (do
             (type W (A Int64) (B Int64))
             (def (f (: k Int64))
@@ -3552,7 +3569,6 @@
            false branch threads to the fall-through continuation, and the Rust backend emits the same
            `V::A(p) => if p > 5 { 1 } else { p }` — the guarded-arm continuation both must reproduce (was a
            Rust-backend decline).")
-  (needs  sum-type-declaration)
   (input  (do
             (type V (A Int64) (B))
             (def (f (: v V)) (match v ((guard (V.A n) (> n 5)) 1) ((V.A n) n) ((V.B) 0)))
@@ -3568,7 +3584,6 @@
            wasm backend reads the payload leaf and compares it to the literal (an `if`), the Rust backend
            emits `Option::Some(p) => if p == 0 { 100 } else { p }` — the literal-payload continuation both
            must reproduce (was a Rust-backend decline).")
-  (needs  sum-type-declaration)
   (input  (do
             (def (f (: x (Option Int64))) (match x ((Some 0) 100) ((Some n) n) ((None) 0)))
             (def (main (: k Int64)) (f (if (> k 0) (Some k) (None))))
@@ -3586,7 +3601,6 @@
            (the newtype occupies no slot), and the Rust backend erases the nominal switch step so it emits
            `match w { Result::Ok(p) => p, Result::Err(p) => p }` — the wrapper invisible at runtime on
            both (was a Rust-backend decline, `sum payload has no bound match arm`).")
-  (needs  sum-type-declaration)
   (input  (do
             (type W (V (Result Int64 Int64)))
             (def (f (: w W)) (match w ((W.V (Result.Ok n)) n) ((W.V (Result.Err e)) e)))
@@ -3603,7 +3617,6 @@
            consumed the inner sum's payload step too and folded `n` to the whole `Result` — a wrong value
            that compiled. Pins that the fold peels EXACTLY ONE nominal layer per erased step, so `n` = 7 on
            both backends (the wasm oracle and the Rust fold agree).")
-  (needs  sum-type-declaration)
   (input  (do
             (type W (V (Result Int64 Int64)))
             (def (main) (match (W.V (Result.Ok 7)) ((W.V (Result.Ok n)) n) ((W.V (Result.Err e)) e)))
@@ -3619,7 +3632,6 @@
            the two-compiler agreement on a NON-switch root continuation over a recursive sum: the wasm
            backend tests the payload leaf, and the Rust backend routes the root literal test through its
            continuation emitter (`if x == 0 { 100 } else { x }`) rather than declining a non-switch root.")
-  (needs  sum-type-declaration)
   (input  (do
             (type L (Nil) (Cons Int64 L))
             (def (f (: x Int64)) (match (L.Cons x (L.Nil)) ((L.Cons 0 t) 100) ((L.Cons h t) h) ((L.Nil) -1)))
@@ -3637,7 +3649,6 @@
            two-compiler agreement on a nested match past the first variant: the wasm backend reads the
            entered variant's payload directly, and the Rust backend resolves the inner switch's subject to
            the ENTERED variant's payload (was a Rust-backend decline for a disc-≥1 nested-sum variant).")
-  (needs  sum-type-declaration)
   (input  (do
             (type W (A Int64) (V (Option Int64)))
             (def (f (: k Int64)) (match (W.V (if (> k 0) (Option.Some k) (Option.None)))
@@ -3656,7 +3667,6 @@
            distinct nested sums under a runtime discriminant: the Rust backend records each entered arm's
            payload type as it descends (the twin of the wasm decision-tree's per-branch path types) so each
            inner switch resolves its own subject, rather than reading variant 0's payload for all of them.")
-  (needs  sum-type-declaration)
   (input  (do
             (type W (A Int64) (U (Option Int64)) (V (Result Int64 Int64)))
             (def (f (: k Int64)) (match (if (> k 0) (W.U (Option.Some k)) (W.V (Result.Ok 0)))
@@ -3885,7 +3895,6 @@
            generation that rendered `(: (Mk 42) Id)` — the tag in the payload — would give a nominal value
            a DIFFERENT payload from its underlying Int64, breaking that invariant. Distinct from a
            MULTI-variant sum (above), whose variant name IS load-bearing payload (it selects the arm).")
-  (needs  sum-type-declaration)
   (input  (do
             (type Id (Mk Int64))
             (def (mk (: b Int64)) (Id.Mk b))
@@ -3901,7 +3910,6 @@
            as the scalar-inner newtype above. Pins that the tag-erased payload rule holds when the
            underlying value is itself a compound (a tuple/record/sum), not only a scalar — the nominal
            payload is byte-identical to its underlying structural value at every shape.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Pt (Mk (Tuple Int64 Int64)))
             (def (mk (: b Int64)) (Pt.Mk (tuple b b)))
@@ -3919,7 +3927,6 @@
            tag-erasure rule holds for the multi-payload struct spelling too (distinct from a multi-payload
            variant of a MULTI-variant sum, which spreads FLAT under its load-bearing variant NAME — here
            there is no name to keep, only the erased tuple).")
-  (needs  sum-type-declaration)
   (input  (do
             (type Pt (Mk Int64 Int64))
             (def (mk (: b Int64)) (Pt.Mk b b))
@@ -3943,7 +3950,6 @@
            their value forms differ: a nullary variant's reconstructed payload is `unit`, an
            empty-tuple-payload variant's is `(tuple)`. Pins that the escape renders the payload's OWN value
            form (a zero-element tuple) rather than collapsing an empty tuple to unit.")
-  (needs  sum-type-declaration)
   (input  (do
             (type V (A (Tuple)) (B))
             (def (mk (: b Int64)) (if (> b 0) (V.A (tuple)) (V.B)))
@@ -3997,7 +4003,6 @@
            the tuple/record generic-payload cases. On the Rust backend the enum emits `enum Box<T0> { E,
            W(Option<T0>) }` (the nested param rendered as the enum's own type parameter), where a
            whole-payload-param-only mapping would have declined the generic enum.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Box (E) (W (Option a)))
             (def (f (: k Int64)) (match (if (> k 0) (Box.W (Option.Some k)) (Box.E))
@@ -4029,7 +4034,6 @@
            the constructor's type-lambda threads ONE parameter through payloads of different shapes at
            once, not just a single payload position — the multi-payload, multi-depth generalization of the
            tuple-/record-/option-payload cases above.")
-  (needs  sum-type-declaration)
   (input  (do
             (type W (Mk a (Tuple a a) (Option a)) (E))
             (def (f w) (match w
@@ -4064,7 +4068,6 @@
            its argument. The generic cases above fold to scalars; this pins the escape-render descriptor
            carries a user generic sum's instantiation to the host, distinct from a monomorphic sum (whose
            frame is a bare name) and matching the parametric frame a runtime List/Map/Set already gets.")
-  (needs  sum-type-declaration)
   (input  (do
             (type Box (W a) (E))
             (def (mk (: b Int64)) (if (> b 0) (Box.W b) (Box.E)))
@@ -4081,7 +4084,6 @@
            carries a NESTED parameter's instantiation (not just a bare-param payload): the wasm value-encode
            walks the `Option` inside the `W`, and the rust gate substitutes the result frame's arg into the
            generic descriptor's `T0` placeholder (`(W (Option T0))` → `(W (Option Int64))`).")
-  (needs  sum-type-declaration)
   (input  (do
             (type Box (E) (W (Option a)))
             (def (main) (: (Box.W (Option.Some 42)) (Box Int64)))
@@ -4291,7 +4293,6 @@
             (def (main (: k Int64))
               (ev (Expr.Block (Stmt.Seq (tuple (Stmt.Ret (Expr.Lit k)) (Stmt.Ret (Expr.Neg (Expr.Lit 3))))))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 10 Int64))
   (output (: 7 Int64)))
 
@@ -4311,7 +4312,6 @@
                 ((Tree.Br rec)  (+ (. rec w) (+ (sum (. rec l)) (sum (. rec r)))))))
             (def (main (: k Int64)) (sum (Tree.Br (record (l (Tree.Leaf k)) (r (Tree.Leaf 2)) (w 1)))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 7 Int64))
   (output (: 10 Int64)))
 
@@ -4330,7 +4330,6 @@
             (def (unwrap (: b (Box Tree))) (match b ((Box.W t) (sz t)) ((Box.E) 0)))
             (def (main (: k Int64)) (unwrap (Box.W (Tree.Node (tuple (Tree.Leaf k) (Tree.Leaf 2))))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (output (: 2 Int64)))
 
@@ -4347,7 +4346,6 @@
             (def (f (: x i64)) (match x ((i64.A n) n) ((i64.B) -1)))
             (def (main (: k Int64)) (f (i64.A k)))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
@@ -4365,7 +4363,6 @@
             (def (f (: s Sign)) (match s ((Sign.X n) n) ((Sign.Y) -1)))
             (def (main (: k Int64)) (f (Sign.X k)))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
@@ -4385,7 +4382,6 @@
                  (match y ((foo_bar.C m) m) ((foo_bar.D) 0))))
             (def (main (: k Int64)) (f (foo-bar.A k) (foo_bar.C 3)))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (output (: 8 Int64)))
 
@@ -4403,7 +4399,6 @@
               (match t ((GTree.GLeaf x) x) ((GTree.GNode (tuple l r)) (leftmost l))))
             (def (main (: k Int64)) (leftmost (GTree.GNode (tuple (GTree.GLeaf k) (GTree.GLeaf 9)))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
@@ -4422,7 +4417,6 @@
               (match p ((Pair.First n _) n) ((Pair.Swapped _ n) n)))
             (def (main (: k Int64)) (f (Pair.First k true)))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
@@ -4441,7 +4435,6 @@
             (def (cnt (: x Nat))   (match x ((Nat.Z) 0) ((Nat.S p) (+ 1 (cnt p)))))
             (def (main (: k Int64)) (cnt (mk k)))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 500 Int64))
   (output (: 500 Int64)))
 
@@ -4459,7 +4452,6 @@
             (def (od  (: x Nat))   (match x ((Nat.Z) 0) ((Nat.S p) (evn p))))
             (def (main (: k Int64)) (evn (mk k)))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 4 Int64))
   (output (: 1 Int64)))
 
@@ -4482,7 +4474,6 @@
                 ((Option.None)                                     -3)))
             (def (main (: k Int64)) (f k))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 7 Int64))
   (output (: 7 Int64)))
 
@@ -4498,7 +4489,6 @@
             (def (len-of (: m Msg)) (match m ((Msg.Text s) (String.scalar-len s)) ((Msg.Empty) 0)))
             (def (main (: k Int64)) (len-of (Msg.Text "hello")))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 0 Int64))
   (output (: 5 Int64)))
 
@@ -4514,7 +4504,6 @@
             (def (sz (: c Cache)) (match c ((Cache.Empty) 0) ((Cache.Full m) (Map.size m))))
             (def (main (: k Int64)) (sz (Cache.Full (Map.insert (Map.insert (Map.empty) k 1) 2 2))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (output (: 2 Int64)))
 
@@ -4524,6 +4513,63 @@
            argument, it produces a Sum tagged 'Some' carrying that argument as payload.")
   (input  (Some 42))
   (output (: (Some 42) (Option Int64))))
+
+(case "a bare user constructor is passed as a first-class function to a higher-order function"
+  (doc    "A sum constructor IS a single-arity function (core-semantics.md §A Sum Type Constructor Is A
+           Single-Arity Function), so it is a first-class value: `(app W.Mk k)` passes the BARE constructor
+           `W.Mk` — unapplied — to a HOF `app` whose parameter is typed `(-> Int64 W)`, and `app` applies it
+           to `k`. This is the constructor analogue of passing a named function `(app add10 k)`. The
+           inlined HOF wraps the substituted constructor in the parameter's annotation `(: W.Mk (-> Int64
+           W))`; the construction path sees THROUGH that wrapper to build `(W.Mk k)` → 5. Pins that a bare
+           payload constructor is a first-class curried function value, not only a syntactic apply-head.")
+  (input  (do
+            (type W (Mk Int64) (N))
+            (def (app (: g (-> Int64 W)) (: x Int64)) (g x))
+            (def (main (: k Int64)) (match (app W.Mk k) ((W.Mk n) n) ((W.N) -1)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "a PARTIALLY-applied multi-payload constructor is a first-class function value"
+  (doc    "A multi-payload constructor applied to SOME of its payloads — `(P.Mk 10)` for `(type P (Mk Int64
+           Int64))` — is a first-class function awaiting the rest. Passed to a HOF `app` typed `(-> Int64
+           P)`, `app` supplies the final payload `k`, completing `(P.Mk 10 k)`. `(f (app (P.Mk 10) k))`
+           reads both fields: 10 + 5 = 15. Pins that a curried constructor partially applied to a prefix of
+           its payloads is a first-class value — the constructor companion of `(add 10)`.")
+  (input  (do
+            (type P (Mk Int64 Int64))
+            (def (app (: g (-> Int64 P)) (: x Int64)) (g x))
+            (def (main (: k Int64)) (match (app (P.Mk 10) k) ((P.Mk a b) (+ a b))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 15 Int64)))
+
+(case "a bare built-in constructor Some is passed as a first-class function"
+  (doc    "The built-in `Some` is likewise a first-class single-arity function: `(app Some k)` passes it
+           bare to a HOF typed `(-> Int64 (Option Int64))`, which applies it to `k` → `Some k`. `(match …
+           ((Some n) n) …)` = 5. Pins that the first-class-constructor treatment is uniform across a
+           built-in `Option`/`Result` constructor and a user one (both are single-arity functions).")
+  (input  (do
+            (def (app (: g (-> Int64 (Option Int64))) (: x Int64)) (g x))
+            (def (main (: k Int64)) (match (app Some k) ((Option.Some n) n) ((Option.None) -1)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "a constructor selected at RUNTIME is a first-class value that is then applied"
+  (doc    "The constructor to use is chosen at RUNTIME — `(if (> which 0) W.A W.B)` returns one of two
+           bare constructors of `(type W (A Int64) (B Int64))` — and the SELECTED one is then applied to a
+           payload: `((pick k) k)`. Neither branch is known at compile time, so the constructor is a genuine
+           first-class value flowing through the `if`, returned, and applied. `(pick 5)` picks `W.A`, `(W.A
+           5)` matches the `A` arm → 5. Pins the strongest first-class-constructor shape: a constructor
+           value that is not statically determined, selected and applied at run time.")
+  (input  (do
+            (type W (A Int64) (B Int64))
+            (def (pick (: which Int64)) (if (> which 0) W.A W.B))
+            (def (main (: k Int64)) (match ((pick k) k) ((W.A n) n) ((W.B n) (+ n 100))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
 
 (case "nullary constructor patterns are uniform with unary"
   (doc    "Witnesses core-semantics.md #A Sum Type Constructor Is A Single-Arity Function Producing
@@ -4794,7 +4840,6 @@
            parameter, or — as here — the result of a conditional. A backend that only handled a constant or
            bound tuple scrutinee declined this (the elements had no compile-time source and no match-arm
            binding); it now indexes the scrutinee value.")
-  (needs  sum-type-declaration)
   (input  (do
             (def (g (: k Int64)) (if (> k 0) (tuple k 0) (tuple 0 k)))
             (def (f (: k Int64)) (match (g k) ((tuple a b) (+ a b))))

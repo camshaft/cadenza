@@ -1068,6 +1068,24 @@ fn op_bigint_cmp(a: Handle, b: Handle) -> i64 {
 // normalizes, and re-boxes the canonical pair, dropping the inputs); the constant fold in the compiler
 // never calls these (it emits the folded `num/den` value form directly).
 
+/// Read a Rational node's `(num, den)` components as `i64`s DIRECTLY from the child leaves' raw bytes —
+/// `None` if EITHER exceeds i64 range or the node is malformed. No `Big`, no limb `Vec`. The small-operand
+/// fast path for the READ-ONLY `rational-cmp`: a runtime Rational built from i64 params (the common R3b
+/// case) has i64 components, and then two i64 components cross-multiply into an i128 that CANNOT overflow
+/// (|i64| · |i64| < 2¹²⁷), so the compare is exact native arithmetic with zero allocation.
+fn rational_components_as_i64(h: Handle) -> Option<(i64, i64)> {
+    let n = unsafe { h.0.as_ref() }?;
+    if n.handles.len() != 2 {
+        return None;
+    }
+    let read = |slot: usize| -> Option<i64> {
+        let ch = n.handles.get(slot).copied()?;
+        let raw = unsafe { ch.0.as_ref() }.map_or(&[][..], |cn| cn.raw.as_slice());
+        bigint::Big::i64_checked_from_sign_magnitude_bytes(raw)
+    };
+    Some((read(0)?, read(1)?))
+}
+
 /// Read a Rational node's two children as `(num, den)` `Big`s. Total: a null/mismatched node reads as
 /// `0/1` (deterministic, never a trap — the scalar-read discipline). Borrows the child leaves; does NOT
 /// consume the handles.
@@ -1088,6 +1106,37 @@ fn box_rational_normalized(num: &bigint::Big, den: &bigint::Big) -> Handle {
         Handles::inline_from(&[box_bigint(num), box_bigint(den)]),
         Raw::inline(&[]),
     )
+}
+
+/// Normalize + box an i128 `(num, den)` Rational NATIVELY (no `Big`) — the small-operand arithmetic fast
+/// path's write half. `den != 0` (the caller ensures). Reduces to lowest terms via an i128 gcd, moves the
+/// sign onto the numerator (den strictly positive), then boxes each component via `box_bigint_i128`. Returns
+/// `None` (→ caller falls back to the full `Big` path) if either component is `i128::MIN` (whose `abs`
+/// overflows i128 — a value that anyway only arises from operands far outside the i64 fast-path domain).
+/// Byte-identical to `box_rational_normalized(normalize_rational(Big(num), Big(den)))`.
+fn rational_from_i128_pair(mut num: i128, mut den: i128) -> Option<Handle> {
+    if num == i128::MIN || den == i128::MIN {
+        return None; // abs would overflow — bail to the Big path (unreachable from i64-domain operands)
+    }
+    if den < 0 {
+        num = -num;
+        den = -den;
+    }
+    // i128 gcd (Euclid) over the magnitudes; gcd(0, d) = d.
+    let (mut a, mut b) = (num.unsigned_abs(), den.unsigned_abs());
+    while b != 0 {
+        let t = a % b;
+        a = b;
+        b = t;
+    }
+    let g = a as i128; // g > 0 (den != 0)
+    Some(box_rational_node(box_bigint_i128(num / g), box_bigint_i128(den / g)))
+}
+
+/// Box two already-BigInt-handle children as a Rational node (the shared node-build for both the `Big` and
+/// the i128 fast paths). CONSUMES the two handles into the node's `handles`.
+fn box_rational_node(num: Handle, den: Handle) -> Handle {
+    alloc_raw(Handles::inline_from(&[num, den]), Raw::inline(&[]))
 }
 
 /// Normalize `(num, den)` → lowest terms, denominator strictly positive, sign on the numerator. REQUIRES
@@ -1137,6 +1186,18 @@ fn op_rational_den(r: Handle) -> Handle {
 /// their operands (unbox reads the child leaves without consuming) and return a FRESH normalized rational.
 /// `÷` by `0/1` gives a zero denominator → TRAPS (the rational analogue of ÷0). Never overflow (BigInt).
 fn op_rational_add(a: Handle, b: Handle) -> Handle {
+    // FAST PATH: all four components fit i64. A cross-product `an·bd`/`bn·ad` is i64·i64 → fits i128; the
+    // numerator SUM can reach ±2¹²⁷ so use `checked_add` (overflow → the `Big` path). The denominator
+    // `ad·bd` is i64·i64 → fits i128. Byte-identical result; ~23/op → the result node + 2 leaves only.
+    if let (Some((an, ad)), Some((bn, bd))) =
+        (rational_components_as_i64(a), rational_components_as_i64(b))
+    {
+        if let Some(num) = (an as i128 * bd as i128).checked_add(bn as i128 * ad as i128) {
+            if let Some(h) = rational_from_i128_pair(num, ad as i128 * bd as i128) {
+                return h;
+            }
+        }
+    }
     let ((an, ad), (bn, bd)) = (unbox_rational(a), unbox_rational(b));
     let num = an.mul(&bd).add(&bn.mul(&ad));
     let den = ad.mul(&bd);
@@ -1144,6 +1205,15 @@ fn op_rational_add(a: Handle, b: Handle) -> Handle {
     box_rational_normalized(&n, &d)
 }
 fn op_rational_sub(a: Handle, b: Handle) -> Handle {
+    if let (Some((an, ad)), Some((bn, bd))) =
+        (rational_components_as_i64(a), rational_components_as_i64(b))
+    {
+        if let Some(num) = (an as i128 * bd as i128).checked_sub(bn as i128 * ad as i128) {
+            if let Some(h) = rational_from_i128_pair(num, ad as i128 * bd as i128) {
+                return h;
+            }
+        }
+    }
     let ((an, ad), (bn, bd)) = (unbox_rational(a), unbox_rational(b));
     let num = an.mul(&bd).sub(&bn.mul(&ad));
     let den = ad.mul(&bd);
@@ -1151,11 +1221,32 @@ fn op_rational_sub(a: Handle, b: Handle) -> Handle {
     box_rational_normalized(&n, &d)
 }
 fn op_rational_mul(a: Handle, b: Handle) -> Handle {
+    // `an·bn / ad·bd` — both products are i64·i64 → fit i128, no overflow possible, so no `checked` guard.
+    if let (Some((an, ad)), Some((bn, bd))) =
+        (rational_components_as_i64(a), rational_components_as_i64(b))
+    {
+        if let Some(h) = rational_from_i128_pair(an as i128 * bn as i128, ad as i128 * bd as i128) {
+            return h;
+        }
+    }
     let ((an, ad), (bn, bd)) = (unbox_rational(a), unbox_rational(b));
     let (n, d) = normalize_rational(&an.mul(&bn), &ad.mul(&bd));
     box_rational_normalized(&n, &d)
 }
 fn op_rational_div(a: Handle, b: Handle) -> Handle {
+    // `an·bd / ad·bn` — both products i64·i64 → fit i128. A zero result-denominator (÷ by 0/1) TRAPS,
+    // exactly as the `Big` path does (checked BEFORE the fast-path box, so the trap fires either way).
+    if let (Some((an, ad)), Some((bn, bd))) =
+        (rational_components_as_i64(a), rational_components_as_i64(b))
+    {
+        let den = ad as i128 * bn as i128;
+        if den == 0 {
+            trap_rational_zero_denom();
+        }
+        if let Some(h) = rational_from_i128_pair(an as i128 * bd as i128, den) {
+            return h;
+        }
+    }
     let ((an, ad), (bn, bd)) = (unbox_rational(a), unbox_rational(b));
     let num = an.mul(&bd);
     let den = ad.mul(&bn);
@@ -1167,8 +1258,22 @@ fn op_rational_div(a: Handle, b: Handle) -> Handle {
 }
 /// `rational-cmp(a, b)` — three-way `-1`/`0`/`1` for `a < b`/`a = b`/`a > b`. Both normalized with a
 /// strictly-positive denominator, so `a/b <=> c/d` ⇔ `a·d <=> c·b` (cross-multiply, direction preserved).
-/// Borrows both operands.
+/// Borrows both operands. FAST PATH: when all four components fit `i64` (the common case — a Rational
+/// built from i64 params), the cross-products `an·bd` and `bn·ad` fit `i128` without overflow (i64·i64 <
+/// 2¹²⁷), so the compare is exact NATIVE arithmetic with NO `Big`/limb `Vec` (was 6/op: 4 unbox Vecs + 2
+/// mul Vecs → 0). A component out of i64 range falls back to the full `Big` cross-multiply — same result.
 fn op_rational_cmp(a: Handle, b: Handle) -> i64 {
+    if let (Some((an, ad)), Some((bn, bd))) =
+        (rational_components_as_i64(a), rational_components_as_i64(b))
+    {
+        // an/ad <=> bn/bd ⇔ an·bd <=> bn·ad (both dens > 0). i64·i64 fits i128 exactly.
+        let (lhs, rhs) = (an as i128 * bd as i128, bn as i128 * ad as i128);
+        return match lhs.cmp(&rhs) {
+            core::cmp::Ordering::Less => -1,
+            core::cmp::Ordering::Equal => 0,
+            core::cmp::Ordering::Greater => 1,
+        };
+    }
     let ((an, ad), (bn, bd)) = (unbox_rational(a), unbox_rational(b));
     match an.mul(&bd).cmp(&bn.mul(&ad)) {
         core::cmp::Ordering::Less => -1,
@@ -9273,6 +9378,51 @@ mod tests {
             bigto, 0,
             "bigint_to_i64 x{N} allocs {bigto} — the narrowing reads the raw slice directly, allocating NOTHING (a regression to unbox would be ~1/op)"
         );
+
+        // (K4d) `rational-cmp` — the READ-ONLY Rational comparison (`<`/`>`/`=`/… on Rationals, R3b). Both
+        // operands normalized (den > 0), so `a/b <=> c/d` ⇔ `a·d <=> c·b`. FAST PATH: when all four
+        // components fit i64 (the common case), the cross-products fit i128 without overflow and the compare
+        // is exact NATIVE arithmetic — ZERO allocation (was 6/op: 4 unbox limb Vecs + 2 mul Vecs, via the
+        // full `Big` cross-multiply). The bigint-cmp read-the-raw-slice lesson, extended to a rational.
+        let (rc_a, rc_b) = (
+            op_rational_of(op_bigint_of_i64(1), op_bigint_of_i64(3)),
+            op_rational_of(op_bigint_of_i64(1), op_bigint_of_i64(6)),
+        );
+        let rcmp = measure(&mut || {
+            for _ in 0..N {
+                core::hint::black_box(op_rational_cmp(rc_a, rc_b));
+            }
+        });
+        println!("ALLOC rational_cmp x{N}: {rcmp}");
+        assert_eq!(
+            rcmp, 0,
+            "rational_cmp x{N} allocs {rcmp} — the i64-components fast path cross-multiplies in i128 with NO Big (a regression to the full unbox+Big-mul would be ~6/op)"
+        );
+
+        // (K4e) `rational-add` — a RESULT-BUILDING Rational op (R3b emits it for runtime rational `+`). The
+        // i64-COMPONENTS FAST PATH (all four `(num,den)` fit i64 — the common case) cross-multiplies + adds
+        // in i128 (`checked_add`; overflow → the `Big` path), gcd-reduces in i128, and boxes — so the ONLY
+        // allocation is the result Rational node + its 2 BigInt-leaf children = 3/op (was ~23/op: 4 unbox
+        // limb Vecs + cross-multiply + gcd-normalize Vecs on the full `Big` path). Same fast-path shape as
+        // `rational-cmp` above and bigint's i128 add. A component out of i64 range falls back to `Big`.
+        let (ra_a, ra_b) = (
+            op_rational_of(op_bigint_of_i64(1), op_bigint_of_i64(3)),
+            op_rational_of(op_bigint_of_i64(1), op_bigint_of_i64(6)),
+        );
+        let radd = measure(&mut || {
+            for _ in 0..N {
+                op_drop(op_rational_add(ra_a, ra_b));
+            }
+        });
+        println!("ALLOC rational_add x{N}: {radd}");
+        assert!(
+            radd <= 3500,
+            "rational_add x{N} allocs {radd} exceeds ceiling 3500 (~3/op = result node + 2 BigInt children; the i64-components fast path cross-multiplies + gcd-reduces in i128 with no `Big`/limb Vec. Was 23/op on the full-Big path — a lost fast path would climb back to ~23000)"
+        );
+        op_drop(rc_a);
+        op_drop(rc_b);
+        op_drop(ra_a);
+        op_drop(ra_b);
 
         // (K2) `vec-of-arr` — the bulk list-literal constructor. EVERY `(list e0…e{n-1})` literal lowers to
         // `arr-alloc(n)` + n×`arr-set` then ONE `vec-of-arr` (NOT `vec-empty` + n×`vec-push`), so this op is

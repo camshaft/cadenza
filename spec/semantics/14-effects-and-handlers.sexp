@@ -497,6 +497,37 @@
                 (let ((k (fn (y) (* y 2)))) (+ (k 3) (Amb.flip))))) (export main)))
   (output (: 15 Int64)))
 
+(case "a MULTI-shot arm folds a perform under a CURRIED lambda applied to pure arguments"
+  (doc    "The applied-lambda pre-reduction reduces a CURRIED redex — nested applications — as long as each
+           argument is pure. `(((fn (a) (fn (b) (+ a (+ b (Amb.flip))))) 10) 20)` applies the outer lambda to
+           `10` (yielding the inner `(fn (b) …)`) then to `20`, β-reducing to `(+ 10 (+ 20 (Amb.flip)))` =
+           `(+ 30 (Amb.flip))` — a single perform in a pure one-hole context `C = (+ 30 [])`. Both arguments
+           are pure literals, so the substitution (into params each used once) duplicates no effect, and the
+           reduced body folds under the multi-shot arm: `(+ (+ 30 1) (+ 30 2))` = 63. Pins that pre-reduction
+           follows a curried application chain, not only a single β-redex.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s))))
+                (((fn (a) (fn (b) (+ a (+ b (Amb.flip))))) 10) 20))) (export main)))
+  (output (: 63 Int64)))
+
+(case "a pure lambda passed as an argument to a performing callee folds"
+  (doc    "A HIGHER-ORDER call whose function ARGUMENT is a pure lambda and whose CALLEE performs. `apply1 g n
+           = (+ (g n) (Amb.flip))` takes a function `g` and performs; called with `g = (fn (z) (* z 2))` (an
+           effect-free lambda) and `n = 10`. The argument lambda is strongly pure (a lambda VALUE carries no
+           effect), so the pre-reduction inlines the call — `(g 10)` reduces to `(* 10 2)` = 20, leaving
+           `(+ 20 (Amb.flip))`, a single perform in a pure one-hole context. The handler resumes 5, so the
+           result is `(+ 20 5)` = 25. Pins that a pure function-valued argument does not block the fold — the
+           closure is passed and applied inside the reduced body with no effect duplication.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (apply1 (: g (-> Int64 Int64)) (: n Int64)) (+ (g n) (Amb.flip)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (resume 5 s)))
+                (apply1 (fn (z) (* z 2)) 10))) (export main)))
+  (output (: 25 Int64)))
+
 (case "a performing argument to a multiply-using performing callee is not duplicated"
   (doc    "The SOUNDNESS ANCHOR for the applied-lambda pre-reduction: a call is β-reduced early (before the
            pure-one-hole classifier) ONLY when its arguments are strongly PURE. Here the argument itself
@@ -730,6 +761,37 @@
               (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
                 (match (Fresh.next) (0 100) (_ 200)))) (export main)))
   (output (: 100 Int64)))
+
+(case "a performed operation whose result is a sum is matched on its variant"
+  (doc    "Extends the match-scrutinee composition to an operation whose declared RESULT is a SUM type — the
+           resume value is a compound sum, not a scalar. `Look.find : Int64 -> (Option Int64)`; the arm
+           resumes with `(Some (+ k 1))`, a constructed `Option` value carrying the incremented key. The
+           handle body `(match (Look.find 41) ((Some v) v) (None 0))` performs, folds the resume value into
+           the scrutinee position, and dispatches on its variant: `Look.find 41` yields `(Some 42)`, the
+           `(Some v)` arm binds `v = 42`. Pins that the pure one-hole fold substitutes a SUM-typed resume
+           value soundly (the value column carries the compound through the match), the effect analogue of a
+           sum-typed handler return — a compiler pass performing a lookup that returns an optional result.")
+  (input  (do
+            (effect Look (op find (-> Int64 (Option Int64))))
+            (def (main)
+              (handle Look 0 ((find (k) s (resume (Some (+ k 1)) s)))
+                (match (Look.find 41) ((Some v) v) (None 0)))) (export main)))
+  (output (: 42 Int64)))
+
+(case "a handler whose STATE is a sum destructures it in the arm"
+  (doc    "The handler's threaded STATE is a SUM (`Option Int64`), and the arm DESTRUCTURES it with a `match`
+           to decide the resume value — the state-as-sum analogue of the scalar-countdown handlers. Seeded
+           `(Some 5)`, the `get` arm matches its state `s`: `(Some n)` resumes with the payload `n`, `None`
+           resumes `0` (a total handler over the state's variants). The body `(+ 1 (St.get))` performs once,
+           reads `5` from the `(Some 5)` state, and yields `(+ 1 5)` = 6. Pins that a handler's state slot
+           carries a compound sum through the fold and the arm may pattern-match it — the shape of a pass
+           threading an optional/typed piece of context (a `Maybe`-valued accumulator) across performs.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main)
+              (handle St (Some 5) ((get (u) s (match s ((Some n) (resume n s)) (None (resume 0 s)))))
+                (+ 1 (St.get)))) (export main)))
+  (output (: 6 Int64)))
 
 (case "a performed operation composes under a projection and a negation"
   (doc    "Witnesses that an effect operation composes under the STRICT one-operand forms — a tuple

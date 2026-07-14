@@ -115,21 +115,68 @@ fn variant_payload_renders_generic(
         .iter()
         .filter_map(|&occ| {
             let ty = sentinel_payload_ty(db, decl, occ)?;
-            Some(rewrite_sentinel_vars(&ty.render_name(), decl.params.len()))
+            Some(rewrite_sentinel_vars(&ty, decl).render_name())
         })
         .collect()
 }
 
-/// Rewrite each sentinel param var `?{PARAM_SENTINEL_BASE+k}` in a `render_name` string to the placeholder
-/// `T{k}` (`k` in `0..nparams`). The sentinel base is far above any real inference var, so a genuine free
-/// `?N` in a payload (there should be none at a resolved sentinel instantiation) is untouched.
-fn rewrite_sentinel_vars(rendered: &str, nparams: usize) -> String {
-    let mut s = rendered.to_string();
-    for k in 0..nparams {
-        let from = format!("?{}", PARAM_SENTINEL_BASE + k as u32);
-        s = s.replace(&from, &format!("T{k}"));
+/// Replace each sentinel param var `Ty::Var(PARAM_SENTINEL_BASE+k)` in `ty` with a placeholder type that
+/// `render_name`s to `T{k}` (a nullary `Ty::Sum` named `T{k}` — `render_name` prints a no-arg sum as its
+/// bare name), so the Cadenza-syntax descriptor shows the placeholder in `(W T0)` / `(Option T0)`. Done as
+/// a Ty-TREE substitution BEFORE `render_name` (not a string replace on its output): an unsolved `Ty::Var`
+/// now renders as the placeholder `_` (a user-facing diagnostic reads `_`, not the internal `?{n}`), so a
+/// string match on `?{n}` no longer works — the sentinel var must be resolved to its `T{k}` placeholder in
+/// the type itself. A genuine free var (none should occur at a resolved sentinel instantiation) is left as
+/// `_`, matching the diagnostic render. `decl.occ` is a harmless dummy decl for the placeholder sum (a
+/// nullary sum's `render_name` reads only its `name`).
+fn rewrite_sentinel_vars(ty: &crate::ty::Ty, decl: &crate::db::TypeDecl) -> crate::ty::Ty {
+    use crate::ty::Ty;
+    match ty {
+        Ty::Var(n) if *n >= PARAM_SENTINEL_BASE => Ty::Sum {
+            decl: decl.occ,
+            name: format!("T{}", n - PARAM_SENTINEL_BASE),
+            args: Vec::new(),
+        },
+        Ty::List(e) => Ty::List(Box::new(rewrite_sentinel_vars(e, decl))),
+        Ty::Set(e) => Ty::Set(Box::new(rewrite_sentinel_vars(e, decl))),
+        Ty::Map(k, v) => Ty::Map(
+            Box::new(rewrite_sentinel_vars(k, decl)),
+            Box::new(rewrite_sentinel_vars(v, decl)),
+        ),
+        Ty::Tuple(elems) => Ty::Tuple(
+            elems
+                .iter()
+                .map(|e| rewrite_sentinel_vars(e, decl))
+                .collect(),
+        ),
+        Ty::Sum {
+            decl: d,
+            name,
+            args,
+        } => Ty::Sum {
+            decl: *d,
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|a| rewrite_sentinel_vars(a, decl))
+                .collect(),
+        },
+        Ty::Nominal {
+            decl: d,
+            name,
+            args,
+            inner,
+        } => Ty::Nominal {
+            decl: *d,
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|a| rewrite_sentinel_vars(a, decl))
+                .collect(),
+            inner: Box::new(rewrite_sentinel_vars(inner, decl)),
+        },
+        other => other.clone(),
     }
-    s
 }
 
 /// Emit a machine-readable DESCRIPTOR note per erased NEWTYPE — the inner type its name erases to, so the
