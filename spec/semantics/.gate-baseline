@@ -660,6 +660,7 @@ pass	a lookup at a runtime key finds the present value, else None
 pass	a lowercase-named type cross-references another lowercase-named type in a field
 pass	a lowercase-named type is referenceable in a field (types are values, not gated by case)
 pass	a magic header and a length-prefixed chunk parse together
+pass	a many-arm scalar match in tail position selects each arm by a runtime scrutinee
 pass	a map KEYED by a user sum looks up by the variant
 pass	a map built at run time escapes to the host as its value form
 pass	a map can be a key, compared by its value
@@ -1220,6 +1221,7 @@ pass	a tautology comparison against a masked value's derived range still traps o
 pass	a tautology comparison against the type minimum still traps on a div-by-zero operand
 pass	a tautology comparison still folds when its operand cannot trap
 pass	a three-argument closure exported to the host is called with all three
+pass	a three-arm match consumed as an operand yields into the enclosing expression
 pass	a three-element runtime tuple is returned as a result
 pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a three-payload constructor fully curried builds the variant

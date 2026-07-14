@@ -1861,6 +1861,42 @@
             (def (main) (negate false)) (export main)))
   (output (: true Bool)))
 
+; A scalar `match` with MANY literal arms (≥4) lowers to a jump table rather than an if/probe chain. These
+; pin the two positions the table lowering must get right: (1) in TAIL position — the match value IS the
+; result — each arm is selected by the runtime scrutinee and produces its value; (2) in NON-TAIL position
+; — the match value is CONSUMED by surrounding code — the match must YIELD into the enclosing expression,
+; so the following code runs. (The ≥4-arm non-tail case is currently miscompiled — a jump-table arm
+; escapes to the function result, discarding the consumer; tracked in the failures queue. These pin the
+; ≤3-arm non-tail case and the ≥4-arm TAIL case, which are correct — the working boundary around it.)
+
+(case "a many-arm scalar match in tail position selects each arm by a runtime scrutinee"
+  (doc    "A FOUR-arm scalar match `(match a (0 10) (1 20) (2 30) (_ 40))` as the whole function body (TAIL
+           position), driven by a runtime scrutinee `a`: each literal arm and the wildcard is selected in
+           turn — a=0 → 10, a=1 → 20, a=2 → 30, a=9 → 40. Pins that the many-arm (jump-table) lowering
+           dispatches to the correct arm for every scrutinee and produces that arm's value as the result —
+           the opcode/tag-dispatch idiom a compiler's evaluator leans on, exercised across all arms.")
+  (input  (do
+            (def (main (: a Int64)) (match a (0 10) (1 20) (2 30) (_ 40)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: 1 Int64)) (output (: 20 Int64))
+  (call   main (: 2 Int64)) (output (: 30 Int64))
+  (call   main (: 9 Int64)) (output (: 40 Int64)))
+
+(case "a three-arm match consumed as an operand yields into the enclosing expression"
+  (doc    "A THREE-arm match `(match a (0 10) (1 20) (_ 40))` consumed by `(+ … 100)` — the match value is
+           NOT the function result, so the match must yield into the addition and `+ 100` must run: a=0 →
+           110, a=1 → 120, a=9 → 140. Pins that a match in NON-TAIL (operand) position produces its value
+           into the enclosing expression rather than escaping — for the ≤3-arm (if/probe-chain) lowering,
+           which is correct. (The ≥4-arm jump-table lowering of the same shape currently escapes to the
+           function result and drops the `+ 100` — the failures-queue miscompile this case brackets.)")
+  (input  (do
+            (def (main (: a Int64)) (+ (match a (0 10) (1 20) (_ 40)) 100))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 110 Int64))
+  (call   main (: 1 Int64)) (output (: 120 Int64))
+  (call   main (: 9 Int64)) (output (: 140 Int64)))
+
 (case "a Bool match with its arms in either order is exhaustive"
   (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: exhaustiveness of a Bool match is a
            property of the arm-value SET {true, false}, not the arm order. `(match b (false 2) (true
