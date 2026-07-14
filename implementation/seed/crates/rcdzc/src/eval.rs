@@ -1656,10 +1656,30 @@ pub fn record_field_names(db: &mut Db, operand: StructId) -> Vec<String> {
 pub fn runtime_member_index(db: &mut Db, operand: StructId, key: &Symbol) -> Option<usize> {
     // A NOMINAL newtype over a record IS that record handle at run time (the tag is erased), so a field
     // read on a runtime nominal operand indexes the inner record's sorted position — strip the tag.
-    match crate::infer::type_of(db, operand).strip_nominal() {
-        crate::ty::Ty::Record(fields) => fields.keys().position(|k| k == key),
-        _ => None,
-    }
+    let operand_ty = crate::infer::type_of(db, operand);
+    let crate::ty::Ty::Record(fields) = operand_ty.strip_nominal() else {
+        return None;
+    };
+    // The sorted slot of `key` was a LINEAR `fields.keys().position(…)` scan — O(fields) PER projection, so
+    // a wide record projected field-by-field was O(N²). The field order is a pure function of the record
+    // type, and every projection of the same record shares its type `Rc`, so build the whole
+    // `name → sorted-slot` map ONCE per record type (keyed by the `Rc`'s address) and read it O(1). The
+    // `guard` `Rc` pins the allocation so its address can't be reused while cached (ABA safety).
+    let ptr = std::rc::Rc::as_ptr(fields) as usize;
+    let entry = db.record_field_index.entry(ptr).or_insert_with(|| {
+        #[cfg(test)]
+        crate::db::RECORD_FIELD_INDEX_KEYS_SCANNED.with(|c| c.set(c.get() + fields.len() as u64));
+        let index = fields
+            .keys()
+            .enumerate()
+            .map(|(i, k)| (k.clone(), i))
+            .collect();
+        crate::db::RecordFieldIndex {
+            guard: std::rc::Rc::clone(fields),
+            index,
+        }
+    });
+    entry.index.get(key).copied()
 }
 
 /// Reduce the value at `id` to the element occurrences of a COMPILE-TIME-VISIBLE tuple, if it reduces

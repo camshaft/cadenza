@@ -37512,6 +37512,78 @@ mod stage1 {
     }
 
     #[test]
+    fn runtime_record_field_projection_indexes_in_bounded_time() {
+        // REGRESSION (perf): `eval::runtime_member_index` (the sorted-slot lookup for a field read on a
+        // RUNTIME record `(. r f)` — one whose value does not fold to a visible record) found the slot by a
+        // LINEAR `fields.keys().position(|k| k == key)` scan — O(fields) PER projection. A wide record
+        // projected field-by-field (`(+ (. r f0) (+ (. r f1) …))`) was O(fields × projections) = O(N²) (a
+        // param record at N=6400: 1066ms, growth ~3.1×/doubling). FIX: build the `name → sorted-slot` map
+        // ONCE per record type (keyed by the type's shared `Rc<BTreeMap>` address) and read it O(1); the
+        // total field keys ENUMERATED is then O(fields), not O(fields × projections).
+        //
+        // The shape: `use` takes a P-field record parameter and projects every field once; a runtime record
+        // (a parameter) never folds, so each projection goes through `runtime_member_index`. Because all P
+        // projections share the one parameter's record TYPE, the index is built ONCE → exactly P keys
+        // enumerated, regardless of P. The counter is the noise-free signal (a wall-clock ratio is diluted
+        // by inference's own per-field cost).
+        fn proj_param_src(p: usize) -> String {
+            let fields_ty: String = (0..p)
+                .map(|i| format!("(f{i} Int64)"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            fn tree(items: &[String]) -> String {
+                if items.len() == 1 {
+                    return items[0].clone();
+                }
+                let m = items.len() / 2;
+                format!("(+ {} {})", tree(&items[..m]), tree(&items[m..]))
+            }
+            let projs: Vec<String> = (0..p).map(|i| format!("(. r f{i})")).collect();
+            format!(
+                "(module m (def (use (: r (Record {fields_ty}))) {}) \
+                   (def (main) 0) (export main))",
+                tree(&projs)
+            )
+        }
+        // Compiles clean (a runtime record projection lowers to a `Core::Proj` at the field's slot).
+        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&proj_param_src(4))));
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a wide runtime-record projection compiles with no error diagnostics: {diags:?}"
+        );
+        fn keys_scanned(src: &str) -> u64 {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::RECORD_FIELD_INDEX_KEYS_SCANNED.with(|c| c.set(0));
+                let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+                crate::db::RECORD_FIELD_INDEX_KEYS_SCANNED.with(|c| c.get())
+            })
+        }
+        // The whole point: enumerating keys is O(fields), NOT O(fields × projections). Building the index
+        // once per record type means the total keys scanned for a P-field record projected P times is a
+        // SMALL MULTIPLE of P (the type may be indexed from a couple of distinct occurrences — the param
+        // read and the fold path — but a bounded, projection-COUNT-independent number), never the O(P²) of
+        // the old per-projection scan. Assert it is well under P² even at a modest P where P² dwarfs the
+        // margin. Deterministic (a pure function of the program) — no min-of-runs.
+        let p = 400usize;
+        let scanned = keys_scanned(&proj_param_src(p));
+        // `scanned > 0` proves the per-type index CACHE actually ran (a revert to the old
+        // `keys().position()` scan never populates `record_field_index`, so this counter would stay 0 —
+        // catching the regression); `scanned <= P·8` proves it is O(P), not the O(P²) of a per-projection
+        // scan. The bound P·8 leaves margin for the type being indexed from a few distinct occurrences (the
+        // param read + the fold path) while sitting far below P² = 160000.
+        assert!(
+            scanned > 0 && scanned <= (p as u64) * 8,
+            "a P-field runtime record projected field-by-field must index in O(P) keys via the per-type \
+             cache, not O(P²) via a per-projection `keys().position()` scan: P={p} projected {p} times \
+             enumerated {scanned} keys (expected 0 < n ≤ {}); the O(P²) scan was ~{}",
+            (p as u64) * 8,
+            (p as u64) * (p as u64)
+        );
+    }
+
+    #[test]
     fn newtype_underlying_reads_the_erased_structural_type() {
         // `Db::newtype_underlying` reports the underlying structural type of an erasable single-variant
         // sum (a nominal newtype), and declines (None) for everything that must stay boxed. This is the
@@ -53280,7 +53352,8 @@ mod cross_component_oracle {
         );
         {
             let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
-            v.validate_all(&a).expect("the compound-arg provider validates");
+            v.validate_all(&a)
+                .expect("the compound-arg provider validates");
         }
         // CONSUMER: builds the tuple `(x, x+1)` and passes it INTO the peer's `sum` op. main(9) =
         // S.sum((9,10)) = 9 + 10 = 19 — the tuple crossed as a handle, read by the provider.
@@ -53291,7 +53364,10 @@ mod cross_component_oracle {
             (export main))";
         let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
             .unwrap_or_else(|d| {
-                panic!("compound-arg consumer compiles: {} [{:?}]", d.message, d.code)
+                panic!(
+                    "compound-arg consumer compiles: {} [{:?}]",
+                    d.message, d.code
+                )
             });
         {
             let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());

@@ -57,6 +57,15 @@ thread_local! {
     /// noise-free regression signal (a wall-clock ratio is diluted by the rest of `check`) — see the
     /// `check_no_home_follows_a_shared_callee_body_once_per_handler_context` lock-in test.
     pub(crate) static CHECK_NO_HOME_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+
+    /// Test-only: total record-field KEYS enumerated while building `record_field_index` entries since the
+    /// last reset. `eval::runtime_member_index` found a field's sorted slot by a LINEAR `keys().position()`
+    /// scan — O(fields) PER projection, so a wide record projected field-by-field was O(N²). The per-type
+    /// index map (built once, keyed by the type `Rc`) makes the total keys enumerated O(fields) regardless
+    /// of projection count. This counter is the noise-free regression signal (a wall-clock ratio is diluted
+    /// by inference's own cost) — see the `runtime_record_field_projection_indexes_in_bounded_time` test.
+    pub(crate) static RECORD_FIELD_INDEX_KEYS_SCANNED: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
@@ -531,6 +540,18 @@ pub(crate) type CallSiteIndex = crate::fxhash::FxHashMap<usize, Vec<(StructId, V
 /// or `— closest matches: …`).
 pub(crate) type NoFieldSuggestion = (Option<String>, String);
 
+/// A cached record-type field index (`Db::record_field_index`): a `guard` `Rc` pinning the record type's
+/// `BTreeMap` allocation alive (so its `as_ptr` key cannot be reused) plus the `field-name → sorted-slot`
+/// map built once from its sorted keys. Reading `index.get(key)` replaces the O(fields) `.position()` scan.
+pub(crate) struct RecordFieldIndex {
+    /// Held ONLY to keep the record type's `BTreeMap` allocation alive so its `as_ptr` cache KEY cannot be
+    /// reused by a later, different `BTreeMap` (ABA safety) — never read directly.
+    #[allow(dead_code)]
+    pub(crate) guard:
+        std::rc::Rc<std::collections::BTreeMap<crate::resolved::Symbol, crate::ty::Ty>>,
+    pub(crate) index: crate::fxhash::FxHashMap<crate::resolved::Symbol, usize>,
+}
+
 /// The compiler's whole state for one program: the AST, the top-level index, and the lazily-filled
 /// columns. Constructed once per subject program; every query is a free function in a query module
 /// that takes `&mut Db`. The columns are `pub(crate)` so a query module can fill its own and read the
@@ -989,6 +1010,17 @@ pub struct Db {
     /// — so a shared canonical scheme is correct for all uses. `None` caches "has no scheme". Mirrors
     /// `recursive`/`callee_edges` (a pure fact keyed by node identity).
     pub(crate) scheme_cache: crate::fxhash::FxHashMap<StructId, Option<crate::ty::Scheme>>,
+
+    /// Memo of a RECORD TYPE's `field-name → sorted-position` index (`eval::runtime_member_index`), keyed
+    /// by the identity of the type's shared `Rc<BTreeMap<Symbol, Ty>>` (its `Rc::as_ptr` address). A field
+    /// read on a RUNTIME record `(. r f)` lowers to a `Core::Proj` at `f`'s sorted slot, which was found by
+    /// a LINEAR `fields.keys().position(|k| k == key)` scan — O(fields) per projection, so a wide record
+    /// projected field-by-field was O(N²) (a 3200-field record: 644ms, ~O(N²) growth). The field order is a
+    /// pure function of the (immutable) record type, and every projection of the same record shares its type
+    /// `Rc`, so building the full name→index map ONCE per record type and reading it O(1) removes the
+    /// per-projection scan. The stored `guard` `Rc` keeps that allocation alive, so its `as_ptr` address
+    /// cannot be reused by a different `BTreeMap` while the entry is cached (ABA safety).
+    pub(crate) record_field_index: crate::fxhash::FxHashMap<usize, RecordFieldIndex>,
 
     /// Memo for the wasm backend's `mutual_loop_group(self_def)` — the tail-recursive SCC a def compiles
     /// its shared loop over. `select_function_of` computes it for EVERY def, and the computation is a
@@ -1738,6 +1770,7 @@ impl Db {
             reaches_host_call: crate::fxhash::FxHashMap::default(),
             callee_edges: crate::fxhash::FxHashMap::default(),
             scheme_cache: crate::fxhash::FxHashMap::default(),
+            record_field_index: crate::fxhash::FxHashMap::default(),
             mutual_loop_cache: crate::fxhash::FxHashMap::default(),
             reduce_cache: crate::fxhash::FxHashMap::default(),
             collect_cache: crate::fxhash::FxHashMap::default(),
