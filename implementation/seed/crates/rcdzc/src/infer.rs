@@ -4429,14 +4429,25 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     Code::TypeMismatch
                 };
                 trace!(target: "rcdzc::infer", node = id.0, then_ty = %then_ty.render_name(), else_ty = %else_ty.render_name(), ?code, "fault: if branches differ");
-                out.push(Reject::coded(
+                let mut reject = Reject::coded(
                     code,
                     format!(
                         "if branches differ: {} vs {}",
                         then_ty.render_name(),
                         else_ty.render_name()
                     ),
-                ));
+                );
+                // An INT-LITERAL-vs-FLOAT branch clash has the same one-shot repair the list-element and
+                // annotation sites give (`(: 3 Float64)` → `3.0`): rewrite the integer-literal branch as a
+                // float literal so both branches unify at the float type. The literal may be EITHER branch
+                // (`(if b 1 2.0)`, fix `then_`; `(if b 1.0 2)`, fix `else_`); offer on whichever is the int
+                // literal (a computed integer branch yields no fix).
+                if let Some(fix) = float_literal_retype_fix(db, then_, &then_ty, &else_ty)
+                    .or_else(|| float_literal_retype_fix(db, else_, &else_ty, &then_ty))
+                {
+                    reject = reject.with_fix(fix);
+                }
+                out.push(reject);
             }
             collect(db, cond, out);
             collect(db, then_, out);
@@ -4777,14 +4788,26 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 for (_, body) in arms.iter().skip(1) {
                     let bt = type_of(db, *body);
                     if !first_ty.agrees_with(&bt) {
-                        out.push(Reject::coded(
+                        let mut reject = Reject::coded(
                             Code::TypeMismatch,
                             format!(
                                 "match arms differ: {} vs {}",
                                 first_ty.render_name(),
                                 bt.render_name()
                             ),
-                        ));
+                        );
+                        // An INT-LITERAL-vs-FLOAT arm clash has the same one-shot repair the if-branch,
+                        // list-element, and annotation sites give (`(: 3 Float64)` → `3.0`): rewrite the
+                        // integer-literal arm body as a float literal so the arms unify at the float type.
+                        // The literal may be the FIRST arm (`(match x (0 1) (_ 2.0))`, fix `first_body`) or
+                        // THIS one (`(match x (0 1.0) (_ 2))`, fix `body`); offer on whichever is the int
+                        // literal (a computed integer arm body yields no fix).
+                        if let Some(fix) = float_literal_retype_fix(db, *first_body, &first_ty, &bt)
+                            .or_else(|| float_literal_retype_fix(db, *body, &bt, &first_ty))
+                        {
+                            reject = reject.with_fix(fix);
+                        }
+                        out.push(reject);
                     }
                 }
             }

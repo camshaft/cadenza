@@ -11830,6 +11830,59 @@ mod match_engine {
     }
 
     #[test]
+    fn if_and_match_int_literal_vs_float_offer_a_float_literal_retype_fix() {
+        // An `if`-branch / match-arm clash between an INTEGER LITERAL and a FLOAT branch has the SAME
+        // one-shot repair the list-element and annotation sites give: rewrite the integer literal `n` as a
+        // float literal `n.0` so both branches unify at the float type (the int-lit↔float retype now fires
+        // at annotation + list + if + match sites — `spec/capabilities/diagnostics.md` §A Diagnostic
+        // Carries A Route To A Fix). Either branch may hold the int literal.
+        let d = reject_full("(module m (def (f (: b Bool)) (if b 1 2.0)) (export f))")
+            .expect("an if-branch numeric clash must reject");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert_eq!(
+            d.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("1.0"),
+            "retypes the then-branch int literal: {}",
+            d.message
+        );
+        // The FLOAT branch is first → the int literal is the else-branch (`2` → `2.0`).
+        let d2 =
+            reject_full("(module m (def (f (: b Bool)) (if b 1.0 2)) (export f))").expect("reject");
+        assert_eq!(
+            d2.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("2.0"),
+            "message: {}",
+            d2.message
+        );
+        // A match arm: the first arm's int literal is retyped to match a later float arm.
+        let d3 = reject_full("(module m (def (f (: x Int64)) (match x (0 1) (_ 2.0))) (export f))")
+            .expect("a match-arm numeric clash must reject");
+        assert_eq!(
+            d3.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("1.0"),
+            "retypes the first arm's int literal: {}",
+            d3.message
+        );
+        // Symmetric: a later arm's int literal (`2` → `2.0`) when the first arm is float.
+        let d4 = reject_full("(module m (def (f (: x Int64)) (match x (0 1.0) (_ 2))) (export f))")
+            .expect("reject");
+        assert_eq!(
+            d4.fix.as_ref().map(|f| f.replacement.as_str()),
+            Some("2.0"),
+            "message: {}",
+            d4.message
+        );
+        // A cross-KIND clash (Int64 vs Bool) is NOT coercible — no float-retype fix is offered.
+        let d5 = reject_full("(module m (def (f (: b Bool)) (if b 1 true)) (export f))")
+            .expect("reject");
+        assert!(
+            d5.fix.is_none(),
+            "an int-vs-bool if clash has no literal-retype fix: {:?}",
+            d5.fix
+        );
+    }
+
+    #[test]
     fn a_text_operand_against_a_scalar_in_a_builtin_op_is_cdz0201() {
         // 07-type-system "an operation on mismatched types is rejected" + "ordering a string against an
         // integer is a type error": a built-in arithmetic/comparison/equality operator with ONE text
