@@ -2555,6 +2555,101 @@ fn a_repeated_condition_in_a_nested_if_collapses() {
     );
 }
 
+#[test]
+fn a_negated_repeated_condition_in_a_nested_if_collapses() {
+    use crate::backend::wasm::lir::Lir;
+    use crate::db::Db;
+    use wasmtime::component::Val;
+    // A nested `if` guarded by the NEGATION of an enclosing condition collapses too: in the else-branch
+    // `c` is known false, so `(if (not c) A B)` is `A`. `(if c 1 (if (not c) 2 3))` → `(if c 1 2)` — the
+    // inner `(not c)` re-test (an `i32.eqz` + second condition read) is gone, leaving one `local.get 0`
+    // feeding a branchless `select`. Both nesting positions (negation in the then- or else-branch).
+    let lir = |body: &str| -> Vec<Lir> {
+        let ast = crate::testkit::parse(&format!(
+            "(module m (def (f (: c Bool)) {body}) (def (main) 0) (export main))"
+        ));
+        let mut db = Db::load(ast);
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("def f");
+        let params: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let b = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (b, crate::infer::type_of(&mut db, b))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+            .expect("select")
+            .code
+    };
+    // The inner `(not c)` collapses away: one condition read, no `i32.eqz` (the negation is gone).
+    let w = lir("(if c 1 (if (not c) 2 3))");
+    assert_eq!(
+        w.iter().filter(|i| matches!(i, Lir::LocalGet(0))).count(),
+        1,
+        "one condition read (the inner (not c) re-test is gone), got: {w:?}"
+    );
+    assert!(
+        !w.iter().any(|i| matches!(i, Lir::I32Eqz)),
+        "the (not c) negation is folded away, got: {w:?}"
+    );
+    // Value parity, both nesting positions and both polarities.
+    let pick = |src: &str, c: bool| -> i64 {
+        let bytes =
+            compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect("compile");
+        run_returns_with::<i64>(&bytes, "f", &[Val::Bool(c)])
+    };
+    // `(if c 1 (if (not c) 2 3))`: c=true→1; c=false→(not c)=true→2.
+    let else_neg = "(module m (def (f (: c Bool)) (if c 1 (if (not c) 2 3))) (export f))";
+    assert_eq!(pick(else_neg, true), 1);
+    assert_eq!(
+        pick(else_neg, false),
+        2,
+        "else-branch (not c) is true → inner then"
+    );
+    // `(if c (if (not c) 2 3) 4)`: c=true→(not c)=false→3; c=false→4.
+    let then_neg = "(module m (def (f (: c Bool)) (if c (if (not c) 2 3) 4)) (export f))";
+    assert_eq!(
+        pick(then_neg, true),
+        3,
+        "then-branch (not c) is false → inner else"
+    );
+    assert_eq!(pick(then_neg, false), 4);
+    // SAFETY: the flipped-away inner arm may hold a runtime trap — it is unreachable under the known
+    // condition, so it is dropped (mirrors the non-negated repeated-condition reachability). Here the
+    // else-branch takes `2` (c=false → (not c) true), so the `(/ 5 0)` in the inner else is dropped.
+    let trap_src = "(module m (def (f (: c Bool)) (if c 1 (if (not c) 2 (/ 5 0)))) (export f))";
+    assert_eq!(
+        pick(trap_src, false),
+        2,
+        "unreachable trapping arm dropped, no trap"
+    );
+    assert_eq!(pick(trap_src, true), 1);
+    // A DIFFERENT (non-negation) inner condition must NOT collapse — dispatches on both.
+    let diff = {
+        let src =
+            "(module m (def (f (: c Bool) (: d Bool)) (if c 1 (if (not d) 2 3)) ) (export f))";
+        let bytes =
+            compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect("compile");
+        (
+            run_returns_with::<i64>(&bytes, "f", &[Val::Bool(false), Val::Bool(true)]),
+            run_returns_with::<i64>(&bytes, "f", &[Val::Bool(false), Val::Bool(false)]),
+        )
+    };
+    assert_eq!(
+        diff,
+        (3, 2),
+        "a distinct negated inner condition dispatches on d (not-d: d=true→3, d=false→2)"
+    );
+}
+
 /// A NESTED checked op `(* (+ a b) c)` runs correctly AND still traps on overflow after the
 /// dest-threading optimization (the inner `(+ a b)` writes its result directly into the outer mul's
 /// operand slot rather than a separate scratch slot + copy). Both the value and the guards must
