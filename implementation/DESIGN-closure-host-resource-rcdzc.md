@@ -1060,19 +1060,23 @@ the component type. The new work:
   (value-encode walker, → `(Some 5)`) — the matrix now covers scalar / byte-rope (Bytes+String) / fixed-
   compound / collection (List+Map) / sum. (A Char tuple field declines project-wide: `valtype_of(Ty::Char)=None`
   — no runtime Char slot yet, cross-cutting, not closure-specific.)
-- **🏗️ NESTED fixed-shape compound ARG — vertical STARTED (2/3 bricks):** brick 1 (`274398d9`, oracle) proves
-  `tuple<s64, tuple<s64,s64>>` flattens RECURSIVELY to 3 leaf core params (no `value-decode` — an
-  implementation gap, not an ABI wall). Brick 2 (`9361f77f`, byte-neutral) made the CORE rebuild recursive:
-  `TupleArgRebuild.fields: Vec<FieldRebuild>` (`Scalar` | `Nested`), `emit_tuple_rebuild` → recursive
-  `emit_cell_rebuild` threading a leaf cursor depth-first. Brick 3 (next, the big one): recurse
-  `tuple_field_abi` into nested fields + mint the inner `tuple<…>` defined type by index in the envelope
-  (16 sites), then flip the decline + add e2e corpus.
+- **✅ NESTED fixed-shape compound ARG — vertical COMPLETE (single-export scalar-result)** (3/3 bricks). Brick 1
+  (`274398d9`, oracle) proved `tuple<s64, tuple<s64,s64>>` flattens RECURSIVELY to 3 leaf core params (no
+  `value-decode`). Brick 2 (`9361f77f`, byte-neutral) made the CORE rebuild recursive (`FieldRebuild` tree +
+  `emit_cell_rebuild` threading a leaf cursor). Brick 3 (`c8d193b7`) added the envelope's recursive type mint:
+  `TupleFieldShape` + `mint_tuple_type_nested` (inner tuples first, referenced by sleb128 type-index) +
+  `nested_tuple_type_count`; `assemble_closure_resource_borrow_tuple` + its inner component gained a
+  `tuple_shape` param; `mod.rs::nested_fixed_shape_tuple_arg` recurses. e2e: tuple-in-tuple/record-in-record/
+  tuple-in-record/3-deep/nested-Bool-leaf, all → correct under wasmtime. SCOPE: single-export, scalar result
+  (a nested arg with a list<u8>-crossing result, or on multi/mixed/distinct-sig, still declines — a widening
+  that reuses the same `TupleFieldShape` machinery).
 - **REMAINING (all optional, none blocking) — the DIRECT-CALL arg frontier, all HOST→GUEST transfer:** these
   are GENUINE declines (confirmed by probing, distinct from the record-DRIVER test-harness gap). (1) **N
   compound args** (two tuple args) — `single_compound_among_scalars` rejects >1 tuple; `TupleArgRebuild` + ~65
   envelope sites + 16 `tuple_defined_type` mint sites assume EXACTLY ONE tuple; a `Vec<TupleArgRebuild>`
-  generalization is a large multi-tick vertical. (2) **NESTED compound fields** — vertical started (above),
-  brick 3 remaining. (3) a **SUM (Option) direct-call arg** (needs host→guest decode of
+  generalization is a large multi-tick vertical. (2) **NESTED compound fields on the OTHER shapes/results** —
+  single-export scalar-result DONE (above); the multi/mixed/distinct-sig + list-result paths thread the same
+  `tuple_shape` (a mechanical widening). (3) a **SUM (Option) direct-call arg** (needs host→guest decode of
   the discriminant+payload). (4) a **VARIABLE-LENGTH collection arg** (needs a `value-decode` runtime op that
   does not exist). (⚠ the ROUND-TRIP path where the CONSUMER builds the arg in-guest ALREADY works for all of
   these — no direct-call round-trip gap.) A closure-typed closure ARG on the direct-call path (a closure-
