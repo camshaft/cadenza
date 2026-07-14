@@ -26660,6 +26660,42 @@ mod match_engine {
     }
 
     #[test]
+    fn a_br_table_match_in_non_tail_position_yields_into_the_enclosing_expression() {
+        use wasmtime::component::Val;
+        // ⚠ REGRESSION (silent WRONG VALUE, valid wasm): a ≥4-arm scalar match (a `br_table` jump-table
+        // lowering) consumed in NON-TAIL position escaped to the FUNCTION result — each arm branched ONE
+        // BLOCK PAST the match's `$join` (depth `n_arms - k + 1` instead of `n_arms - k`), so the arm value
+        // became the whole result and the consuming code never ran. `(+ (match a …4…) 100)`: a=0 must be
+        // 110 (was 10 — the escape). The default arm falls through to $join with no branch, so it was
+        // unaffected (a=9 → 140 was already right) — which is why it validated and only the covered arms
+        // were wrong. Fixed: each arm branches to the match's own `$join` block.
+        let operand = component(
+            "(module m (def (main (: a Int64)) (+ (match a (0 10) (1 20) (2 30) (_ 40)) 100)) (export main))",
+        );
+        let run = |bytes: &[u8], a: i64| run_returns_with::<i64>(bytes, "main", &[Val::S64(a)]);
+        assert_eq!(run(&operand, 0), 110);
+        assert_eq!(run(&operand, 2), 130);
+        assert_eq!(run(&operand, 9), 140); // default arm
+        // A FIVE-arm match — the escape hit any ≥4-arm (jump-table) match, not exactly 4.
+        let five = component(
+            "(module m (def (main (: a Int64)) (+ (match a (0 10) (1 20) (2 30) (3 50) (_ 40)) 100)) (export main))",
+        );
+        assert_eq!(run(&five, 3), 150);
+        // A LET-bound then consumed match — not operand-specific.
+        let bound = component(
+            "(module m (def (main (: a Int64)) (let ((m (match a (0 10) (1 20) (2 30) (_ 40)))) (+ m 100))) (export main))",
+        );
+        assert_eq!(run(&bound, 1), 120);
+        // CONTROL — a 4-arm match in TAIL position (nothing after it) was always correct: the escape to the
+        // function result IS the intended return there. Must stay correct.
+        let tail = component(
+            "(module m (def (main (: a Int64)) (match a (0 10) (1 20) (2 30) (_ 40))) (export main))",
+        );
+        assert_eq!(run(&tail, 1), 20);
+        assert_eq!(run(&tail, 9), 40);
+    }
+
+    #[test]
     fn a_binder_pattern_binds_the_scrutinee() {
         // A bare-name arm `k` binds the whole scrutinee for its body — the exhaustive tail (like `_`,
         // but named). `(match n (0 100) (k (+ k 1)))`: f(0)=100 (literal arm wins), f(41)=42 (k binds

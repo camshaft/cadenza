@@ -1865,9 +1865,11 @@
 ; pin the two positions the table lowering must get right: (1) in TAIL position — the match value IS the
 ; result — each arm is selected by the runtime scrutinee and produces its value; (2) in NON-TAIL position
 ; — the match value is CONSUMED by surrounding code — the match must YIELD into the enclosing expression,
-; so the following code runs. (The ≥4-arm non-tail case is currently miscompiled — a jump-table arm
-; escapes to the function result, discarding the consumer; tracked in the failures queue. These pin the
-; ≤3-arm non-tail case and the ≥4-arm TAIL case, which are correct — the working boundary around it.)
+; so the following code runs. The ≥4-arm NON-TAIL case was once miscompiled — a jump-table arm branched
+; ONE BLOCK PAST the match's result-join to the function result, escaping the consumer; each arm now
+; branches to the match's own `$join` block (`n_arms - k`, not `n_arms - k + 1`), so the following code
+; runs in every position. These pin the ≥4-arm non-tail case (the fix), the ≤3-arm non-tail case (a
+; distinct if/probe-chain lowering), and the ≥4-arm TAIL case — the whole boundary.
 
 (case "a many-arm scalar match in tail position selects each arm by a runtime scrutinee"
   (doc    "A FOUR-arm scalar match `(match a (0 10) (1 20) (2 30) (_ 40))` as the whole function body (TAIL
@@ -1883,13 +1885,43 @@
   (call   main (: 2 Int64)) (output (: 30 Int64))
   (call   main (: 9 Int64)) (output (: 40 Int64)))
 
+(case "a many-arm match consumed in non-tail position yields into the enclosing expression"
+  (doc    "A FOUR-arm match `(match a (0 10) (1 20) (2 30) (_ 40))` (a jump-table lowering) consumed by
+           `(+ … 100)` — its value is NOT the function result, so it must yield into the addition and
+           `+ 100` must run: a=0 → 110, a=2 → 130, a=9 → 140. This was a SILENT WRONG-VALUE miscompile
+           (valid wasm): a jump-table arm branched ONE BLOCK PAST the match's result-join to the FUNCTION
+           result, so the arm value became the whole result and `+ 100` never ran (a=0 → 10). The default
+           arm, which falls through to the join with no branch, was unaffected (a=9 → 140 was already
+           right) — masking the bug. Fixed: each arm branches to the match's own `$join` block. The 3-arm
+           operand case above (a different lowering) and the ≥4-arm TAIL case both worked throughout — this
+           pins the ≥4-arm NON-tail position, the shape a compiler's 4+-way tag dispatch used as an operand
+           takes.")
+  (input  (do
+            (def (main (: a Int64)) (+ (match a (0 10) (1 20) (2 30) (_ 40)) 100))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 110 Int64))
+  (call   main (: 2 Int64)) (output (: 130 Int64))
+  (call   main (: 9 Int64)) (output (: 140 Int64)))
+
+(case "a many-arm match let-bound then consumed yields into the enclosing expression"
+  (doc    "The same jump-table lowering reached through a LET binding: `(let ((m (match a …4 arms…)))
+           (+ m 100))`. The escape was not operand-specific — a let-bound then-used ≥4-arm match dropped the
+           `+ 100` too (a=1 → 20 instead of 120), because the arm branch still escaped the match's join.
+           Fixed alongside the operand case. a=1 → 120, a=9 → 140. Pins that the fix covers a match whose
+           value is bound and later consumed, not only one directly in an operator's operand slot.")
+  (input  (do
+            (def (main (: a Int64)) (let ((m (match a (0 10) (1 20) (2 30) (_ 40)))) (+ m 100)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 120 Int64))
+  (call   main (: 9 Int64)) (output (: 140 Int64)))
+
 (case "a three-arm match consumed as an operand yields into the enclosing expression"
   (doc    "A THREE-arm match `(match a (0 10) (1 20) (_ 40))` consumed by `(+ … 100)` — the match value is
            NOT the function result, so the match must yield into the addition and `+ 100` must run: a=0 →
            110, a=1 → 120, a=9 → 140. Pins that a match in NON-TAIL (operand) position produces its value
-           into the enclosing expression rather than escaping — for the ≤3-arm (if/probe-chain) lowering,
-           which is correct. (The ≥4-arm jump-table lowering of the same shape currently escapes to the
-           function result and drops the `+ 100` — the failures-queue miscompile this case brackets.)")
+           into the enclosing expression rather than escaping — for the ≤3-arm (if/probe-chain) lowering, a
+           DISTINCT path from the ≥4-arm jump table (the case above), so both lowerings are pinned in
+           non-tail position.")
   (input  (do
             (def (main (: a Int64)) (+ (match a (0 10) (1 20) (_ 40)) 100))
             (export main)))

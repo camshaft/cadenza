@@ -7195,8 +7195,15 @@ fn try_emit_scalar_br_table(
     out.push(Lir::BrTable(targets, default_depth));
 
     // Emit each covered arm's body after its label's `end`, innermost (arm 0) first, then `br` its value
-    // to $join. After `End`ing $a_0..$a_k, the enclosing blocks (inner→outer) are a_{k+1}…a_{n-1},
-    // default, join — so $join is at depth `(n_arms - 1 - k) + 1 + 1 = n_arms - k + 1`.
+    // to $join. After `End`ing $a_0..$a_k, the enclosing blocks (inner→outer) are a_{k+1}…a_{n-1} (that is
+    // `n_arms - 1 - k` blocks), then $default (1 block), then $join — so $join sits at DEPTH
+    // `(n_arms - 1 - k) + 1 = n_arms - k` (the count of blocks BEFORE it; $join is AT that depth, not one
+    // past). This mirrors `try_emit_disc_br_table`'s `(m - 1 - k) + join_from_arm_extra` with the always-
+    // present $default block (extra = 1). A bare `n_arms - k + 1` branched ONE BLOCK TOO FAR — past $join
+    // to the FUNCTION-result label, so in NON-tail position the arm value escaped the whole function and the
+    // consuming code (`+ 100`, a `bytes-concat`, a `let` body) never ran (a silent wrong value; the default
+    // arm, which falls through to $join with no `br`, was unaffected — masking the bug in tail position
+    // where the function result IS $join).
     for (k, arm) in int_arms.iter().enumerate() {
         out.push(Lir::End); // close $a_k → br_table target `k` lands here
         emit_arm_body(
@@ -7211,7 +7218,7 @@ fn try_emit_scalar_br_table(
             out,
             TailPos::NonTail,
         )?;
-        out.push(Lir::Br(n_arms - k as u32 + 1)); // → $join, carrying the value
+        out.push(Lir::Br(n_arms - k as u32)); // → $join, carrying the value
     }
     // Close $default; emit the default body (falls through to $join's end — no `br` needed).
     out.push(Lir::End); // close $default
