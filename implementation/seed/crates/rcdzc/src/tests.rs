@@ -18157,7 +18157,9 @@ mod diagnostics {
             errs.len(),
             1,
             "one fault, not the old CDZ0301+CDZ0203 double: {:?}",
-            errs.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>()
+            errs.iter()
+                .map(|d| (&d.code, &d.message))
+                .collect::<Vec<_>>()
         );
         let d = &errs[0];
         assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
