@@ -216,14 +216,24 @@ pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>
             //# A host-delegated effect operation MUST appear as its declared signature verbatim: an operation `(op nm (-> P… R))` an entrypoint delegates MUST become the imported function `nm` whose parameters are `P…` and whose result is `R`, with the compiler injecting no additional parameter, no resume or continuation argument, no state, and no error or outcome arm the operation did not itself declare, so that the WIT import contract is exactly the effect operation's type and a host implements precisely what the program declared.
             //= spec/contracts/host-interface-binding.md#a-host-import-is-a-wit-typed-function-the-manifest-enumerates
             //# An operation whose declared result type is itself fallible MUST carry that fallibility in its own result type, which the program handles as an ordinary value, so that error handling is the program's declared contract rather than something the boundary adds to a delegated operation.
+            // An effect BOUND to a peer contract (`db.effect_bindings`, U2) crosses a COMPOUND arg/result
+            // as its opaque `u32` heap handle over the shared runtime (U5), not by-value like a host op —
+            // so a peer-bound op uses `extern_abi_val_type` (compound → `U32` handle). A genuine HOST op
+            // keeps the scalar/string mapping (a compound has no host boundary form). `Unit` is elided.
+            let peer_bound = db.effect_bindings.contains_key(&effect);
             let mut params = Vec::new();
             for &a in &args {
                 let at = crate::infer::type_of(db, a);
                 match &at {
                     Ty::Unit => {}
-                    Ty::String => params.push(HostParam::Str),
+                    Ty::String if !peer_bound => params.push(HostParam::Str),
                     _ => {
-                        if let Some(v) = abi_val_type(&at) {
+                        let v = if peer_bound {
+                            extern_abi_val_type(&at)
+                        } else {
+                            abi_val_type(&at)
+                        };
+                        if let Some(v) = v {
                             params.push(HostParam::Scalar(v));
                         }
                     }
@@ -231,6 +241,8 @@ pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>
             }
             let result_abi = if matches!(result, Ty::Unit) {
                 None
+            } else if peer_bound {
+                extern_abi_val_type(&result)
             } else {
                 abi_val_type(&result)
             };
@@ -323,29 +335,38 @@ pub fn first_unrepresentable_host_op(
     id: StructId,
 ) -> Option<(String, &'static str, String)> {
     if let Core::HostCall {
-        op, args, result, ..
+        effect,
+        op,
+        args,
+        result,
     } = core_of(db, id)
     {
-        // The RESULT: emittable iff Unit or scalar. A DETERMINED non-scalar (a `String`, a compound) is
-        // deferred → decline. An UNDETERMINED result (`Ty::Any` / a free var) is NOT flagged: a fold-
-        // SYNTHESIZED `Core::HostCall` (a forwarded/interposed perform) types its result `Ty::Any`
-        // (infer.rs), and its real emittability is decided when selection resolves it — flagging `Any` here
-        // would falsely reject the working interpose-forward case. Only a genuinely-determined non-scalar
-        // (e.g. a declared `(-> Unit String)` op) is the unsupported feature.
-        if !matches!(result, Ty::Unit)
-            && !ty_undetermined(&result)
-            && abi_val_type(&result).is_none()
-        {
+        // A PEER-BOUND effect (`db.effect_bindings`) crosses a COMPOUND as its opaque runtime handle
+        // (`extern_abi_val_type`, X5b), so its representable set is WIDER than a plain host op's — a
+        // runtime-owned compound result/argument is emittable, not a decline. `abi_ok` picks the right
+        // predicate for this call's surface: a peer-bound effect widens to the handle transport, a plain
+        // host effect keeps the scalar-only boundary this increment emits.
+        let peer_bound = db.effect_bindings.contains_key(&effect);
+        let abi_ok = |ty: &Ty| {
+            if peer_bound {
+                extern_abi_val_type(ty).is_some()
+            } else {
+                abi_val_type(ty).is_some()
+            }
+        };
+        // The RESULT: emittable iff Unit or (peer-bound) a handle-crossable value / (host) a scalar. A
+        // DETERMINED unrepresentable result is deferred → decline. An UNDETERMINED result (`Ty::Any` / a
+        // free var) is NOT flagged: a fold-SYNTHESIZED `Core::HostCall` (a forwarded/interposed perform)
+        // types its result `Ty::Any` (infer.rs), and its real emittability is decided when selection
+        // resolves it — flagging `Any` here would falsely reject the working interpose-forward case.
+        if !matches!(result, Ty::Unit) && !ty_undetermined(&result) && !abi_ok(&result) {
             return Some((op, "result", result.render_name()));
         }
-        // Each ARGUMENT: emittable iff Unit, String, or scalar. A DETERMINED compound argument is deferred;
-        // an undetermined arg type (a synthesized node) is skipped for the same reason as the result.
+        // Each ARGUMENT: emittable iff Unit, String, or (peer-bound) a handle-crossable value / (host) a
+        // scalar. An undetermined arg type (a synthesized node) is skipped for the same reason as the result.
         for &a in &args {
             let at = crate::infer::type_of(db, a);
-            if !matches!(at, Ty::Unit | Ty::String)
-                && !ty_undetermined(&at)
-                && abi_val_type(&at).is_none()
-            {
+            if !matches!(at, Ty::Unit | Ty::String) && !ty_undetermined(&at) && !abi_ok(&at) {
                 return Some((op, "argument", at.render_name()));
             }
         }

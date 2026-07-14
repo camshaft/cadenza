@@ -92,6 +92,20 @@ boundary envelope) → **U3** (compile-request override) → **U4** (remove `ext
   surface (old x5b/c/d proved it over `extern`; x5a still proves the compound TRANSPORT hand-built, U2/U3
   prove the effects surface at scalar); a `(bind …)` / `(effect …)` well-formedness diagnostic.
 
+- **U5 — COMPOUND value over the EFFECTS surface, from source. ✅ DONE (`spec`).** Closes the U4 follow-up:
+  a peer-bound effect whose op returns/takes a runtime compound now crosses it as the opaque `u32` handle
+  over the shared runtime, from an ordinary `(effect …)`/`(bind …)`/`(host …)` — no `extern`. Two fixes to
+  the front of the emit path (the transport already carried compounds since X5b): (1) `collect_host_imports`
+  uses `extern_abi_val_type` (compound→U32 handle) instead of `abi_val_type` (compound→None, dropped) for a
+  peer-bound effect's params/result; (2) `first_unrepresentable_host_op` widens its representable set for a
+  peer-bound effect — a runtime-owned compound result/argument is a handle-crossable value, not a decline
+  (the plain host boundary stays scalar-only). Test `u5_*`: a hand-built runtime-importing tuple peer
+  (`pair : func(s64)->u32` building `(x,x)` on the shared heap, exported as `cadenza:pairs/api`) composed
+  with a SOURCE consumer `(effect P (op pair (-> Int64 (Tuple Int64 Int64)))) (bind P "cadenza:pairs/api")
+  (def (main (: x Int64)) (host (P) (. (P.pair x) 0)))` → main(9)=9 (the tuple crossed as a handle, element
+  0 read back). Routes through `assemble_extern_runtime`. Gate 2076/0/0, clippy clean, byte-neutral (no
+  corpus program is peer-bound). 9 cross-component tests.
+
 🎉 **THE UNIFICATION IS COMPLETE.** Cross-component interop IS the effect system: a contract is an
 `(effect …)`, a peer dependency is that effect `(bind …)`-ed to a peer interface, a test overrides with a
 `(handle …)` or a compile-request `--bind`. ONE concept — an escaping effect the manifest records — for
