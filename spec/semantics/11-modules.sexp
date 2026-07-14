@@ -13,8 +13,8 @@
 ; §Sequencing), which is why these cases are `(do (module m …) <form-using-m>)`.
 ;
 ; Scope of this file: SINGLE-module semantics, which the seed realizes (options/realized-capability-set/).
-; Cases with no (needs …) are core (the seed runs them); those comparing against a built manifest list
-; carry (needs collections).
+; The seed runs the core cases; a case comparing against a built manifest list needs collections, so a
+; generation without collections declines it.
 ;
 ; MULTI-FILE PACKAGE composition — explicit imports, visibility, cyclic-dependency rejection, colliding-
 ; import rejection (modules-and-namespaces.md) — IS now witnessed, at the end of this file, via the
@@ -439,9 +439,9 @@
 ; never ignored: a meaning-changing directive that some toolchain silently dropped would let one source
 ; compile to two meanings, the drift the one-executable-semantics / canonical-form principles forbid
 ; (constitution §IX, §X). A recognized key with the wrong argument shape is CDZ0602. The pinned registry
-; today defines one key, `default-integer` (its behavior witnessed in 06-numeric-model.sexp under
-; `needs numeric-model`); these cases pin the general mechanism. `(needs module-pragmas)`: the pragma
-; channel is realized by a later generation, so the seed's gate skips these — they pin the contract.
+; today defines one key, `default-integer` (its behavior witnessed by the numeric cases in
+; 06-numeric-model.sexp); these cases pin the general mechanism. The pragma
+; channel is realized by a later generation, so the seed declines these — they pin the contract.
 
 (case "an unrecognized pragma key is rejected rather than ignored"
   (doc    "`(pragma frobnicate 3)` names a key the pinned registry does not define, so the module is

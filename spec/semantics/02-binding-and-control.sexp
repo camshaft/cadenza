@@ -1045,7 +1045,6 @@
             (def (g (: o (Option Int64))) (Option.expect o "boom"))
             (def (main (: k Int64)) (g (if (> k 0) (Option.None) (Option.None))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (trap   "unreachable"))
 
@@ -1089,7 +1088,6 @@
             (def (g (: r (Result Int64 Int64))) (Result.expect r "boom"))
             (def (main (: k Int64)) (g (if (> k 0) (Result.Err 1) (Result.Err 2))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (trap   "unreachable"))
 
@@ -1945,8 +1943,8 @@
 ; and negation over Bool. Conjunction evaluates its right operand ONLY when the left is true;
 ; disjunction ONLY when the left is false — so a connective shields a trapping or effectful right
 ; operand exactly as an unselected conditional branch does (#Conditionals Evaluate One Branch). Each
-; operand is type-checked as a Bool whether or not it is evaluated. Tagged (needs boolean-connectives):
-; the seed does not yet realize `and`/`or`/`not`, so it SKIPS these until a generation adds them; they
+; operand is type-checked as a Bool whether or not it is evaluated. The seed does not yet realize
+; `and`/`or`/`not`, so it DECLINES these until a generation adds them; they
 ; desugar to short-circuit conditionals (`(and a b)` = `(if a b false)`, `(or a b)` = `(if a true b)`,
 ; `(not a)` = `(if a false true)`), which the seed already lowers.
 

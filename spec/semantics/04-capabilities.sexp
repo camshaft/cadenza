@@ -9,8 +9,8 @@
 ; effect never reached is CDZ0404 (latent authority). An operation is performed as <name>.<op>. The
 ; optional effect-row TYPING layer is NOT witnessed here (it is a later capability).
 ;
-; These carry (needs effects): the surface is realized when the seed's reader learns the (effect …)
-; declaration and the entrypoint (host …) delegation. Until then the seed skips them; it still enforces
+; These exercise the effect surface, realized when the seed's reader learns the (effect …)
+; declaration and the entrypoint (host …) delegation. Until then the seed declines them; it still enforces
 ; the capability floor itself once it lowers the new surface.
 
 (case "an entrypoint delegation lets a program reach its host function"

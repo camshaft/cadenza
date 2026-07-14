@@ -2,8 +2,8 @@
 ; program's terminal value or trap, or — for an ill-typed program — its (error <CODE>) rejection, because
 ; an ill-typed program has no run and therefore no terminal value. For a type rule a generation does not
 ; yet cover it DECLINES rather than running the program (reject-don't-miscompile); the gate scores a
-; decline as todo, not disagreement. (needs numeric-model) marks the extended numerics a later generation
-; realizes (the seed realizes only the checked Int64 core and Float64 literals/equality —
+; decline as todo, not disagreement. A generation that has not yet realized the extended numerics
+; declines those cases (the seed realizes only the checked Int64 core and Float64 literals/equality —
 ; options/realized-capability-set/). Diagnostic codes are from options/diagnostics-schema/.
 
 (case "arithmetic within one integer type"
@@ -117,8 +117,8 @@
 ; `/` (truncates) and float `/` (rounds). A zero denominator denotes no number, so it traps. `Rational`
 ; is a DISTINCT numeric type opted into explicitly; no operation silently produces or consumes one (the
 ; old-Cadenza behavior where integer `/` yielded a rational is exactly the silent promotion this model
-; rejects). The written value form is `n/d` in lowest terms. `(needs numeric-model)`: the seed realizes
-; only the checked Int64 core and Float64 literals/equality.
+; rejects). The written value form is `n/d` in lowest terms. A generation realizing only the checked
+; Int64 core and Float64 literals/equality declines this until the extended numerics land.
 
 (case "exact rational arithmetic is exact and normalized"
   (doc    "Witnesses numeric-model.md #Exact Arithmetic Is Exact; reduced to lowest terms per
@@ -251,7 +251,7 @@
 ; factorial, a cryptographic modulus, an exact accumulator. `(BigInt.of x)` converts a fixed-width
 ; integer up; `Int64.of`/`(UInt N).of` convert back CHECKED (trap out of range). It is a DISTINCT type
 ; opted into explicitly: no operation silently produces or consumes one (a BigInt/Int64 mix is CDZ0301).
-; `(needs numeric-model)`: the seed realizes only the checked Int64 core.
+; A generation realizing only the checked Int64 core declines this until the extended numerics land.
 
 (case "an arbitrary-precision integer multiplication does not overflow"
   (doc    "`(* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807))` multiplies two values
@@ -518,7 +518,8 @@
 ; Declared Default Fixes A Type, Not A Conversion). DEFINITION-SITE scoped (the module the literal is
 ; WRITTEN in, never a module that imports it — #A Declared Default Applies At The Definition Site), so
 ; importing a module never changes the type of its literals. An explicit annotation wins over the
-; default. Resolved at compile time, then types erase — zero ABI impact. `(needs numeric-model)`.
+; default. Resolved at compile time, then types erase — zero ABI impact. A generation without the
+; extended numerics declines it.
 
 (case "a default-integer pragma makes a bare literal take the declared integer type"
   (doc    "The `crypto` module declares `(pragma default-integer BigInt)`, so the bare literal 2 in
@@ -603,7 +604,7 @@
             ((. m x) unit)))
   (error  CDZ0101))
 ; (The general pragma mechanism — an unrecognized key rejected CDZ0601, malformed args CDZ0602 — is
-;  witnessed in 11-modules.sexp under `needs module-pragmas`; here we pin only the numeric-domain
+;  witnessed by the module-pragma cases in 11-modules.sexp; here we pin only the numeric-domain
 ;  behavior of the `default-integer` key.)
 
 (case "floating-point uses the fixed rounding mode"
@@ -1481,7 +1482,7 @@
 ; cases run each operator over runtime Int64 operands and pin that the emitted path AGREES with the
 ; folded constant cases above (`/ % & | ^ << >>`, and the ordering comparisons). A self-hosted compiler
 ; runs exactly this — its LEB128/section arithmetic operates on section sizes and operands computed at
-; run time, not on literals. CORE cases (no `(needs …)`): the seed realizes runtime Int64 operators.
+; run time, not on literals. The seed realizes runtime Int64 operators, so it runs these.
 
 (case "a runtime division truncates toward zero"
   (doc    "`(def (main (: a Int64) (: b Int64)) (/ a b))` called with (-7, 2). The division cannot fold
@@ -1561,10 +1562,10 @@
 ; are ALIASES for the eight aliased widths (`Int64` ≡ `(Int 64)`), not separate primitives; those eight
 ; are the ones with a boundary representation, so a non-aliased width like `(UInt 48)` is internal-only.
 ; `Int64` stays the type a bare literal takes (the cases above); these witness the other widths, the
-; alias equivalence, the width constraint (CDZ0302), and the two explicit conversion forms. All carry
-; (needs numeric-model): the seed realizes only the 64-bit checked Int64 core
-; (options/realized-capability-set/) and lowers every integer as an i64 with no width-indexed types, so
-; it SKIPS these; the M4 generation that realizes width-indexed integers (riding on generics —
+; alias equivalence, the width constraint (CDZ0302), and the two explicit conversion forms. A
+; generation realizing only the 64-bit checked Int64 core
+; (options/realized-capability-set/) lowers every integer as an i64 with no width-indexed types, so
+; it DECLINES these; the M4 generation that realizes width-indexed integers (riding on generics —
 ; a compile-time width as a type-constructor argument) runs them. A compiler needs UInt8 (a module's
 ; bytes) and UInt32 (section sizes, LEB128 operands, table and memory indices); an unusual width like
 ; `(UInt 48)` (a packed timestamp) is a first-class type the compiler COMPUTES rather than a wrapper the
@@ -1968,9 +1969,8 @@
            naturals rather than dependent types — no runtime value ever determines a type. A width the
            compiler cannot resolve to a compile-time natural — negative, non-natural, OR runtime — reduces
            to the invalid sentinel width 0 and is rejected at the annotation (CDZ0302), never dropped so
-           the literal falls back to its default type. (Previously `(needs numeric-model)`-gated, which
-           SKIPPED the case and hid the miscompile — the seed ran `(mk 8)` to 5; ungated + fixed, it
-           rejects.)")
+           the literal falls back to its default type. (An earlier annotation SKIPPED this case and hid
+           the miscompile — the seed ran `(mk 8)` to 5; run unconditionally + fixed, it rejects.)")
   (input  (do
             (def (mk n) (: 5 (UInt n)))
             (def (main) (mk 8)) (export main)))

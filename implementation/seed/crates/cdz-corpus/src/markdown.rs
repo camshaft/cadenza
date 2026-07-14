@@ -21,7 +21,6 @@
 //! | `(output (: v T))`         | `` ```cdz output ``  | `v : T` (ML ascription)      |
 //! | `(error CODE)`             | `` ```error ``       | `CODE`                       |
 //! | `(trap "…")`               | `` ```trap ``        | the reason (an ML string)    |
-//! | `(needs cap)`              | `` ```needs ``       | one capability per line      |
 //! | `(compiler (error CODE))`  | `` ```compiler-error `` | `CODE`                    |
 //! | `(call export a…)`         | `` ```cdz call ``    | export then args, one/line   |
 //! | `(host-calls c…)`          | `` ```cdz host-calls `` | one call per line, ML     |
@@ -184,7 +183,6 @@ fn fence_for(a: &Arenas, clause: StructId, head: &str) -> Result<(String, String
         "output" => ("cdz output", true),
         "error" => ("error", true),
         "trap" => ("trap", true),
-        "needs" => ("needs", false),
         "call" => ("cdz call", false),
         "host-calls" => ("cdz host-calls", false),
         "host-responses" => ("cdz host-responses", false),
@@ -412,16 +410,6 @@ fn reconstruct_clause(fence: &MdFence) -> Result<String, String> {
             Ok(format!("({} {})", fence.role, sexpr_of_ml(body)?))
         }
         "compiler-error" => Ok(format!("(compiler (error {}))", sexpr_of_ml(body)?)),
-        "needs" => {
-            // One capability per non-empty line -> one (needs cap) clause each.
-            let clauses: Result<Vec<String>, String> = body
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .map(|l| Ok(format!("(needs {})", sexpr_of_ml(l)?)))
-                .collect();
-            Ok(clauses?.join(" "))
-        }
         "call" | "host-calls" | "host-responses" => {
             // One ML form per non-empty line -> the clause's children.
             let children: Result<Vec<String>, String> = body
@@ -740,14 +728,11 @@ mod tests {
     }
 
     #[test]
-    fn needs_and_module_input() {
+    fn module_input() {
         let sexpr = r#"(case "a named higher-order function"
-          (needs collections)
           (input (module m (def (ap g v) (g v)) (def (main) (ap (fn (x) (* x 2)) 7))))
           (output (: 14 Int64)))"#;
         let md = migrate(sexpr).unwrap();
-        assert!(md.contains("```needs"), "md:\n{md}");
-        assert!(md.contains("collections"), "md:\n{md}");
         assert!(md.contains("module m {"), "md:\n{md}");
         assert_preserves(sexpr);
     }
@@ -755,7 +740,6 @@ mod tests {
     #[test]
     fn call_and_host_clauses() {
         let sexpr = r#"(case "a deterministic host response"
-          (needs effects)
           (input (module m (effect ask (op ask (-> Unit Int64))) (def (main) (host (ask) (+ 1 (ask.ask))))))
           (host-responses (respond ask.ask (: 41 Int64)))
           (host-calls (call ask.ask))

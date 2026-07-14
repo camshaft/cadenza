@@ -2,14 +2,14 @@
 ; compiler can construct a component's wasm bytes as an ordinary value
 ; (bootstrap.md §"The Compiler Is Authored In Cadenza, Not In The Seed";
 ; self-hosting-and-bootstrap.md §"Each Generation Is Derived By The Previous";
-; options/realized-capability-set/seed-ignition-set.md). Tagged (needs bytes): the
-; seed realizes this capability, so it runs these cases; a generation that does not
-; realize Bytes skips them. Results are (: <value> <Type>); an out-of-range byte is a
+; options/realized-capability-set/seed-ignition-set.md). The
+; seed realizes the Bytes capability, so it runs these cases; a generation that does not
+; realize Bytes declines them. Results are (: <value> <Type>); an out-of-range byte is a
 ; runtime trap that survives type-checking, not a static rejection. An out-of-bounds
 ; index or slice is instead FALLIBLE — it yields None, not a trap (collections-and-text.md
-; #Indexing And Lookup Are Fallible, Not Trapping) — so those cases are tagged
-; (needs fallible-access), a capability the seed does not yet realize (they skip until a
-; generation returns an Option from Bytes.at / Bytes.slice).
+; #Indexing And Lookup Are Fallible, Not Trapping) — so a generation that does not yet
+; realize fallible access declines those cases (until it returns an Option from
+; Bytes.at / Bytes.slice).
 ;
 ; THE OBSERVABLE FORM — `b"…"`. A byte sequence's canonical display is the byte-string literal
 ; `b"…"` (options/binary-syntax), the SAME shape the `bytes` crate's `Debug` prints and this

@@ -18,7 +18,6 @@
 //!   call\t<export>                 (present only when the case has a `(call …)` clause)
 //!   arg\t<value-form>              (zero or more, in order; the arguments to the call)
 //!   expect\t(output <value-form>) | (error <CODE>) | (trap <reason>)
-//!   needs\t<capability>            (zero or more; omitted when the case is core)
 //!   ---
 
 pub mod markdown;
@@ -45,8 +44,6 @@ pub struct Record {
     /// arguments (`(def (main (: x UInt8)) (+ x 1))` called with 100→101, 200→(traps), …). The case
     /// passes iff EVERY trial passes. Always non-empty.
     pub trials: Vec<Trial>,
-    /// Capabilities the case declares via `(needs …)` — documentation only (the gate runs every case).
-    pub needs: Vec<String>,
     /// The recorded HOST-CALL RESPONSES (E2h) — `(op, value-form)` pairs from a `(host-responses (respond
     /// E.op (: v T)) …)` clause, in call order. A case whose program delegates an effect to the host
     /// consumes these when it performs an operation; the gate driver passes each to `cdz-run
@@ -181,11 +178,6 @@ pub fn render(records: &[Record]) -> String {
             }
             out.push('\n');
         }
-        for cap in &r.needs {
-            out.push_str("needs\t");
-            out.push_str(cap);
-            out.push('\n');
-        }
         // HOST-CALL RESPONSES (E2h): one `host-response\t<op>\t<value>` line each, in call order. The
         // gate driver forwards each to `cdz-run --host-response op=value`. Absent for a non-host case.
         for (op, value) in &r.host_responses {
@@ -225,7 +217,6 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         .ok_or("case has no description string")?;
 
     let mut input: Option<StructId> = None;
-    let mut needs: Vec<String> = Vec::new();
     let mut modules: Vec<Module> = Vec::new();
     let mut host_responses: Vec<(String, String)> = Vec::new();
     let mut host_calls: Vec<String> = Vec::new();
@@ -339,15 +330,6 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     }
                 }
             }
-            Some("needs") => {
-                if let Some(cap) = a
-                    .as_form(clause, "needs")
-                    .and_then(|t| t.first().copied())
-                    .and_then(|id| a.as_name(id))
-                {
-                    needs.push(cap.to_string());
-                }
-            }
             // `(host-responses (respond E.op (: v T)) …)` — the values the host returns to the program's
             // delegated host calls, in call order. Each `respond` names its operation (`E.op`, rendered
             // dotted) and carries the value form; the gate driver passes each `(op, value)` to
@@ -397,7 +379,6 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         program,
         modules,
         trials,
-        needs,
         host_responses,
         host_calls,
     })

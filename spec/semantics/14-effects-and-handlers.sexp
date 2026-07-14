@@ -29,8 +29,9 @@
 ; function may perform an operation its CALLER discharges and the same function called under two handlers is
 ; discharged by each in turn — which handler is fixed statically by monomorphizing the handler context.
 ;
-; These are (needs effects) cases a later generation realizes; the seed realizes the mandatory capability
-; floor but not the effect surface or the algebraic-handler layer. A response-returning delegated call fixes
+; These exercise the effect surface, which a later generation realizes; the seed realizes the mandatory
+; capability floor but not the effect surface or the algebraic-handler layer (so it declines these). A
+; response-returning delegated call fixes
 ; its response with (host-responses …) so the run is a deterministic function of input and that response.
 
 (case "a run's result is a deterministic function of a host call's recorded response"
@@ -1800,7 +1801,6 @@
               (handle Ask unit ((query (n) s (resume (Resp.Yes n) s)))
                 (match (Ask.query k) ((Resp.Yes v) v) ((Resp.No) -1))))
             (export main)))
-  (needs  effects)
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
@@ -1819,7 +1819,6 @@
                 ((run (c) s (match c ((Cmd.Add n) (resume (+ n 1) s)) ((Cmd.Mul n) (resume (* n 2) s)))))
                 (Exec.run (Cmd.Mul k))))
             (export main)))
-  (needs  effects)
   (call   main (: 5 Int64))
   (output (: 10 Int64)))
 
@@ -1839,6 +1838,5 @@
               (handle Tick (St.Cnt 0) ((bump (u) s (resume (cur s) (nxt s))))
                 (+ (Tick.bump) (Tick.bump))))
             (export main)))
-  (needs  effects)
   (call   main (: 0 Int64))
   (output (: 1 Int64)))

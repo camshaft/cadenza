@@ -588,10 +588,9 @@
 ; every nullary variant takes — and a consumer deconstructs it with an exhaustive three-arm match.
 ; `compare` is the PRIMITIVE from which `<` `>` `<=` `>=` `=` are each definable (the operators MUST
 ; AGREE with it), so a type has one order surfaced two ways that cannot disagree. It also names the
-; canonical element order Set/Map serialize in. Tagged `(needs ordering)` — a FRESH capability the
-; seed does not realize (NOT `collections`; the seed would otherwise RUN these and reject the unbound
-; `Ordering`/`compare` names with a coded diagnostic — a gate FAIL — rather than skip). A later
-; generation realizes `compare`; until then the seed's behavior gate SKIPS these.
+; canonical element order Set/Map serialize in. Ordering is a FRESH capability the
+; seed does not realize (distinct from `collections`). A later generation realizes `compare`; until
+; then the seed DECLINES these rather than running them to a wrong value.
 
 (case "comparing a lesser value to a greater yields Less"
   (doc    "`(compare 1 2)` is `(Ordering.Less unit)` — the three-way comparison reports that 1 is less

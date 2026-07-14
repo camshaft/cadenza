@@ -1,7 +1,7 @@
 ; Self-hosting surface — witnesses the behavioral requirements of self-hosting-surface.md that a
-; later generation realizes when the reader/printer are authored in Cadenza. Tagged
-; (needs self-hosting-surface): the seed provides the reader/printer natively and does NOT realize the
-; Cadenza-authored surface (options/realized-capability-set/), so it skips these cases; the generation
+; later generation realizes when the reader/printer are authored in Cadenza. The seed provides the
+; reader/printer natively and does NOT realize the Cadenza-authored surface
+; (options/realized-capability-set/), so it declines these cases; the generation
 ; that authors the reader/printer in Cadenza runs them. See spec/capabilities/self-hosting-surface.md.
 ;
 ; Note: there is no `eval` case. The compiler the bootstrap targets needs AST *construction and

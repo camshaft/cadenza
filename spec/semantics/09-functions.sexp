@@ -2,9 +2,8 @@
 ; first-class values (fn), applied by (fn-expr arg), capturing their enclosing
 ; scope. Functions are SINGLE-ARITY: each function takes exactly one argument.
 ; Multi-parameter syntax (fn (x y) body) is sugar for currying: (fn x (fn y body)).
-; Application (f a b) is sugar for ((f a) b). These are CORE cases (no (needs …)):
-; the seed realizes them, because a compiler authored in Cadenza is built from
-; functions and closures. Results are (: <value> <Type>).
+; Application (f a b) is sugar for ((f a) b). The seed realizes these, because a compiler authored
+; in Cadenza is built from functions and closures. Results are (: <value> <Type>).
 
 (case "a function applied to an argument"
   (doc    "Witnesses core-semantics.md §A Function Is A First-Class Value and §Applying A Function
@@ -193,7 +192,8 @@
            directly), a USER variant's payload is a declared arrow `(-> Int64 Int64)` reached through the
            payload binder; applying it must peel that arrow to type the result. Pins that a closure
            carried in a user-declared sum applies exactly as one in a built-in sum — the callback-in-a-
-           variant idiom a user's own event/AST types rely on. `needs sum-type-declaration`.")
+           variant idiom a user's own event/AST types rely on. A generation without sum-type
+           declaration declines it.")
   (input  (do
             (type T (Mk (-> Int64 Int64)))
             (def (main) (match (T.Mk (fn ((: n Int64)) (* n 2))) ((T.Mk f) (f 5))))
@@ -2430,7 +2430,7 @@
 ; is a `(: <value> <Type>)` value-form; the runner coerces it to the export's declared parameter type.
 ; The parameter MUST be annotated (`(: x Int64)`) — an entry's boundary representation follows its
 ; declared signature, and an unannotated parameter has no boundary width, so the compiler declines it.
-; CORE cases (no `(needs …)`): the seed realizes a parameterized export, because a compiler authored in
+; The seed realizes a parameterized export, because a compiler authored in
 ; Cadenza is itself a component whose entry takes its input as a runtime argument.
 
 (case "the entrypoint returns its runtime argument unchanged"
@@ -2507,8 +2507,8 @@
 ; a wider machine slot. So a `(: n UInt8)` entry parameter takes a `u8` at the edge — the host cannot
 ; pass 300 for it (wasmtime rejects an out-of-range u8), which is exactly the safety a narrow width buys.
 ; These `(call …)` cases run a narrow-width entry over a runtime argument, exercising the faithful
-; boundary lift on the parameter side and the emitted narrow (i32-slot, range-checked) operation. CORE
-; cases (no `(needs …)`): the seed realizes the aliased widths' boundary forms.
+; boundary lift on the parameter side and the emitted narrow (i32-slot, range-checked) operation. The
+; seed realizes the aliased widths' boundary forms.
 
 (case "an unsigned-byte entrypoint takes and returns a u8 at the boundary"
   (doc    "`(def (main (: n UInt8)) n)` exported and called with 200. The parameter crosses as the
@@ -2715,7 +2715,7 @@
 ; runtime operand it cannot fold, so the conversion is EMITTED (a slot move + a mask, + a sign-extend for
 ; a signed target). These `(call …)` cases run `wrap` over a runtime Int64 argument, pinning that the
 ; emitted path agrees with the constant fold across the slot-crossing (i64 source → narrow target) the
-; folded cases never reach. CORE (no `(needs …)`): the seed realizes `wrap` for the aliased widths.
+; folded cases never reach. The seed realizes `wrap` for the aliased widths.
 
 (case "a runtime truncation to an unsigned byte keeps the low bits, total on negatives"
   (doc    "`(def (main (: n Int64)) (UInt8.wrap n))` — a runtime truncating conversion (a self-hosted

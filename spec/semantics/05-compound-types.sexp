@@ -3,8 +3,8 @@
 ; recorded oracle: a well-typed program's value or trap, or — for an ill-typed program — its
 ; (error <CODE>) rejection, because an ill-typed program has no run and therefore no terminal value.
 ; For a type rule a generation does not yet cover it DECLINES rather than running (reject-don't-
-; miscompile); the gate scores a decline as todo, not disagreement. (needs …) marks later
-; capabilities. Diagnostic codes are from options/diagnostics-schema/.
+; miscompile); the gate scores a decline as todo, not disagreement — so a case a generation has not
+; yet realized is not skipped, it runs and declines. Diagnostic codes are from options/diagnostics-schema/.
 
 (case "a record is constructed and a field is read"
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field. The dotted
@@ -1241,7 +1241,7 @@
 ; (encode_ty/decode_ty) must handle EVERY leaf: an omitted arm collapsed the payload to `Unit`, so a
 ; `(Ch Char)` variant read as nullary and its `#\a` argument then failed to type ("Char and Unit must
 ; be the same type"). These pin that a Char and a Symbol payload construct, match, and bind exactly as
-; an Int64 payload does. Tagged `(needs chars)`/`(needs symbols)` — the leaf's own capability.
+; an Int64 payload does. A generation without the Char/Symbol leaf declines the corresponding case.
 
 (case "a variant carrying a Char payload constructs, matches, and binds it"
   (doc    "`(type Tok (Ch Char) (End))` declares a variant `Ch` whose payload is a `Char` — a leaf type
@@ -4588,7 +4588,6 @@
               (let ((pair (tuple W.Mk 5)))
                 (match ((. pair 0) (. pair 1)) ((W.Mk n) n) ((W.N) -1))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 0 Int64))
   (output (: 5 Int64)))
 
@@ -4605,7 +4604,6 @@
             (def (pick (: s Sel)) (match s ((Sel.UseA) W.A) ((Sel.UseB) W.B)))
             (def (main (: k Int64)) (match ((pick (Sel.UseA)) k) ((W.A n) n) ((W.B n) (+ n 100))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 7 Int64))
   (output (: 7 Int64)))
 
@@ -4621,7 +4619,6 @@
               (let ((pair (tuple W.N k)))
                 (match (. pair 0) ((W.Mk n) n) ((W.N) (. pair 1)))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
@@ -4655,7 +4652,6 @@
                 (other  (match other ((T.B) 20) ((T.C) 30) ((T.A m) m)))))
             (def (main (: k Int64)) (f (T.C)))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 0 Int64))
   (output (: 30 Int64)))
 
@@ -4671,7 +4667,6 @@
             (def (f (: b Box8)) (match b ((Box8.V u) (Int64.wrap (UInt8.wrap (+ u (UInt8.wrap 1))))) ((Box8.Z) 0)))
             (def (main (: k Int64)) (f (Box8.V (UInt8.wrap k))))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 5 Int64))
   (output (: 6 Int64)))
 
@@ -4686,7 +4681,6 @@
             (def (f (: b FBox)) (match b ((FBox.F x) x) ((FBox.Z) 0.0)))
             (def (main) (f (FBox.F 3.5)))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main)
   (output (: 3.5 Float64)))
 
@@ -4702,7 +4696,6 @@
             (def (f (: r Rec)) (match r ((Rec.Mk a b p) (+ (Int64.wrap a) (if p b 0))) ((Rec.Z) -1)))
             (def (main (: k Int64)) (f (Rec.Mk (UInt8.wrap 5) k true)))
             (export main)))
-  (needs  sum-type-declaration)
   (call   main (: 100 Int64))
   (output (: 105 Int64)))
 
@@ -4974,8 +4967,8 @@
 ; each name at most once; a pattern that binds the same name more than once MUST be a compile-time
 ; error (CDZ0102)." So `(tuple x x)` — binding `x` twice — is rejected, rather than silently letting
 ; the second binder shadow the first (which would make `(tuple x x)` bind `x` to the second element)
-; or imposing a hidden equality constraint (matching only a tuple whose two elements are equal). A core
-; case (no `(needs …)` gate): the seed enforces pattern linearity, rejecting the repeated binder with
+; or imposing a hidden equality constraint (matching only a tuple whose two elements are equal). The
+; seed enforces pattern linearity, rejecting the repeated binder with
 ; CDZ0102.
 
 (case "a pattern that binds the same name twice is rejected"
@@ -5011,8 +5004,8 @@
 ; #Patterns Compose: the same "bind each name at most once" surface). So `(def (f x x) …)` — binding `x`
 ; twice in the signature — is the SAME CDZ0102 non-linear-binder error as `(tuple x x)`, rather than a
 ; last-wins shadow that makes the first parameter (and any argument passed to it, including a trap it
-; would raise) silently unreachable. The parameter companion of the pattern cases above; unlike them it
-; needs no `(needs …)` gate — the seed enforces parameter linearity.
+; would raise) silently unreachable. The parameter companion of the pattern cases above — the seed
+; enforces parameter linearity.
 
 (case "a function binding the same parameter name twice is rejected"
   (doc    "`(def (f x x) x)` declares the parameter `x` twice. A parameter list must be LINEAR, like a
@@ -5113,7 +5106,7 @@
 ; (a contiguous array for a small or literal one, a structurally-shared persistent tree for a grown one)
 ; and keep the choice invisible, so a `(list …)` literal and a pushed-onto list are the SAME type and
 ; render `(list …)` alike. The elements are runtime values (a parameter, a computed value), so the list
-; lives on the value heap, not folded. Tagged (needs list-growth).
+; lives on the value heap, not folded. A generation without list-growth declines it.
 
 (case "pushing an element onto a list appends it"
   (doc    "`List.push` is a functional constructor: it produces a NEW list with the element appended.
@@ -5292,8 +5285,8 @@
 ; cases above pin equality/homogeneity/key-set on the `(map (k v)…)` LITERAL; these pin the OPERATIONS
 ; that build and query a map — empty, insert/swap, lookup (fallible → Option), remove/take, size — and
 ; the canonical render. Keys here are VALUES (integers), compared by value (§Keys Are Compared By
-; Value). Gated `(needs maps)`: the compiler does not yet lower `Map.*` to the runtime's persistent map
-; ops, so they SKIP until that lands (then each moves to a real value).
+; Value). A generation that does not yet lower `Map.*` to the runtime's persistent map ops
+; declines these until that lands (then each runs to a real value).
 
 (case "inserting into the empty map then looking a key up yields the value"
   (doc    "`Map.empty` is the empty map; `Map.insert` adds an association and produces a NEW map
@@ -5498,7 +5491,7 @@
   (input  (do (def (main) (Map.size (map ((map (1 10)) 1) ((map (2 20)) 2)))) (export main)))
   (output (: 2 Int64)))
 
-; --- Map PATTERN matching (ask-61) — a SEPARATE phase, gated `(needs map-patterns)`. A map's key set is
+; --- Map PATTERN matching (ask-61) — a SEPARATE phase a generation declines until it lands. A map's key set is
 ; a RUNTIME collection, not a static shape, so a map pattern is a KEY-DIRECTED LOOKUP: `(map (k p) .. rest)`
 ; matches when the map HAS key `k` bound to a value matching `p`, binding `rest` to the remaining map. This
 ; is a QUERY (lowering to `Map.lookup` per key + `Map.remove` for the rest), distinct from the structural
