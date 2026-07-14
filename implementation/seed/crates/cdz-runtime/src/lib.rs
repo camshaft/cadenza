@@ -3083,6 +3083,17 @@ fn op_str_from_bytes(buf: Handle) -> Handle {
 /// `NO_SCALAR`=out-of-range, so the compiler builds the `(Option Char)` sum), plus the runtime emit —
 /// the flatten + UTF-8 scalar walk is done and proven here. The SCALAR-indexed String family
 /// (`scalar-len`/`scalar-at`/`slice`) all rest on this same UTF-8 walk.
+///
+/// ⚡ COST — O(scalar_index): reaching the i-th scalar walks the UTF-8 from the START (a String is not
+/// scalar-indexable in O(1) — variable-width encoding). This is INHERENT to random access by scalar
+/// index, NOT a defect. ⚠ CONSEQUENCE for the compiler agent: a LEXER that scans a string left-to-right
+/// via repeated `scalar-at(s, 0)`, `scalar-at(s, 1)`, … is O(N²) (measured: ~67 ns/scalar at N=64 rising
+/// to ~3300 ns/scalar at N=4096). A sequential scan wants a CURSOR (`scalar-next(buf, byte_off) ->
+/// (codepoint, next_byte_off)`, advancing by the scalar's width) — that would be a SEPARATE coordinated
+/// op (a different ABI: a pair return). `scalar-at` is the right primitive for RANDOM access; do NOT
+/// build a left-to-right lexer on it. (The current compiler-in-Cadenza lexer sidesteps the whole area by
+/// lexing `List Int64` char-codes — which is O(N) via `List` iteration, so the cursor gap is not yet
+/// blocking; raise the cursor only when a real-String sequential scan is written.)
 #[cfg_attr(not(test), allow(dead_code))]
 fn op_bytes_scalar_at(buf: Handle, scalar_index: u32) -> u32 {
     const NO_SCALAR: u32 = u32::MAX; // out-of-range / ill-formed sentinel (not a valid Unicode scalar)
@@ -12794,6 +12805,7 @@ mod tests {
     /// index (`"café"` byte-len 5, scalar 3 = 'é' = 233); (3) a 4-byte scalar (emoji U+1F600); (4) a ROPE
     /// input (flatten across the concat seam); (5) out-of-range + empty/immediate → the `u32::MAX` sentinel;
     /// (6) it BORROWS (no consume — the buffer survives + reads again, node count balances).
+
     #[test]
     fn bytes_scalar_at_reads_the_nth_unicode_scalar_by_codepoint() {
         reset();
