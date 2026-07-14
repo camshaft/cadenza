@@ -2022,7 +2022,9 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
             && btail.get(1).is_some_and(|&i| db.ast.as_str(i).is_some());
         if !well_shaped {
             let anchor = btail.first().copied().unwrap_or(form);
-            faults.push(Reject::coded(Code::Malformed, crate::diag::MALFORMED_BIND_MESSAGE).at(anchor));
+            faults.push(
+                Reject::coded(Code::Malformed, crate::diag::MALFORMED_BIND_MESSAGE).at(anchor),
+            );
             continue;
         }
         // Well-shaped: the bound name must be an effect, not a value. Flag only an UNAMBIGUOUS value def
@@ -2031,7 +2033,8 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         let name = db.ast.as_name(name_occ).unwrap().to_string();
         if db.effect_decl_by_name(&name).is_none() && db.def_by_name(&name).is_some() {
             faults.push(
-                Reject::coded(Code::Malformed, crate::diag::BIND_NOT_AN_EFFECT_MESSAGE).at(name_occ),
+                Reject::coded(Code::Malformed, crate::diag::BIND_NOT_AN_EFFECT_MESSAGE)
+                    .at(name_occ),
             );
         }
     }

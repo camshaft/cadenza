@@ -50454,17 +50454,20 @@ mod cross_component_oracle {
     fn a_malformed_or_non_effect_bind_directive_is_cdz0201_not_a_silent_drop() {
         use crate::testkit::parse;
         // (a) a MALFORMED `(bind …)` — missing the interface string — is CDZ0201, not silently dropped.
-        let malformed = "(do (effect E (op e (-> Int64 Int64))) (bind E) (def (main) 0) (export main))";
+        let malformed =
+            "(do (effect E (op e (-> Int64 Int64))) (bind E) (def (main) 0) (export main))";
         let d1 = crate::diagnostics(&mut crate::db::Db::load(parse(malformed)));
         assert!(
             d1.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
-                && d.message.contains("binds an EFFECT to a peer interface string")),
+                && d.message
+                    .contains("binds an EFFECT to a peer interface string")),
             "a malformed (bind …) is CDZ0201: {:?}",
             d1.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
         // (b) a `(bind …)` naming a VALUE DEFINITION (not an effect) is CDZ0201 — binding a non-effect to a
         // peer routes nothing.
-        let non_effect = "(do (def (foo) 1) (bind foo \"cadenza:x/y\") (def (main) 0) (export main))";
+        let non_effect =
+            "(do (def (foo) 1) (bind foo \"cadenza:x/y\") (def (main) 0) (export main))";
         let d2 = crate::diagnostics(&mut crate::db::Db::load(parse(non_effect)));
         assert!(
             d2.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
